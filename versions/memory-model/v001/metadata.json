@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-01-31T03:50:00Z",
+  "category": "memory-model",
+  "version": "001",
+  "gap_title": "Expression-Scoped Borrow Patterns - Multi-Statement Access",
+  "gap_priority": "HIGH",
+  "result": "integrated",
+  "lines_added": 52,
+  "lines_removed": 0,
+  "cross_references": [
+    "dynamic-data-structures.md"
+  ]
+}

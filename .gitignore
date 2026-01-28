@@ -1,0 +1,9 @@
+.env
+*__pycache__/
+*.pyc
+
+# Refinement working files (temporary analysis)
+.refinement/current/
+
+# Keep the history log tracked
+!.refinement/history.jsonl

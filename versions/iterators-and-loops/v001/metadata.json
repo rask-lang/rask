@@ -1,0 +1,16 @@
+{
+  "version": "v001",
+  "category": "iterators-and-loops",
+  "gap_number": 1,
+  "gap_title": "Collection Borrowing During Iteration",
+  "priority": "HIGH",
+  "timestamp": "2026-01-31T00:00:00Z",
+  "result": "integrated",
+  "lines_added": 50,
+  "sections_modified": [
+    "Loop Borrowing Semantics (new section)",
+    "Mutation During Iteration (enhanced)"
+  ],
+  "conflicts": "none",
+  "notes": "Core semantics clarified: index iteration creates NO borrow, collection remains accessible."
+}

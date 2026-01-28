@@ -1,0 +1,16 @@
+{
+  "version": "v002",
+  "category": "iterators-and-loops",
+  "gap_number": 2,
+  "gap_title": "Iterator Adapter Implementation & Closure Capture",
+  "priority": "HIGH",
+  "timestamp": "2026-01-31T00:00:00Z",
+  "result": "integrated",
+  "lines_added": 60,
+  "sections_modified": [
+    "Iterator Adapters (expanded with detailed semantics)",
+    "Integration Notes (clarified closure modes)"
+  ],
+  "conflicts": "none",
+  "notes": "Specified expression-scoped closure execution for adapters. Closures can access outer scope without capturing when used immediately. This extends the closure model from memory-model.md with a second mode."
+}

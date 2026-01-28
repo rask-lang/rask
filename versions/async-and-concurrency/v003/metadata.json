@@ -1,0 +1,11 @@
+{
+  "version": "v003",
+  "category": "async-and-concurrency",
+  "gap_title": "Async Function Syntax and Types",
+  "gap_priority": "HIGH",
+  "timestamp": "2026-01-31",
+  "result": "integrated",
+  "lines_added": 30,
+  "lines_removed": 0,
+  "notes": "Added Async Function Syntax section specifying async fn declaration, await operator, async blocks/closures, function color boundaries, and block_on for sync callers."
+}
