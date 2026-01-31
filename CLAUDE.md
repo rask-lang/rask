@@ -1,5 +1,7 @@
 # Rask Design Objectives
 
+Keep the documents short and concise, but in the chat you need to explain things to me, I'm not a language architect expert.
+
 ## Goal
 Systems language where **safety is invisible**—it's just how the language works, not something you fight. Eliminate abstraction tax, cover 80%+ of real use cases.
 
@@ -147,3 +149,6 @@ Must naturally express:
 
 
 No solution is locked in. Test everything against real use cases.
+
+## Refine
+see [REFINEMENT_PROTOCOL.md](METRICREFINEMENT_PROTOCOLS.md) for how to refine

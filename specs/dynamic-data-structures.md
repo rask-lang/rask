@@ -107,13 +107,29 @@ See [Memory Model](memory-model.md#multi-statement-collection-access) for borrow
 
 ### Handle-Based Access (Pool)
 
-**Handles are compact opaque identifiers (12 bytes):**
+**Handles are opaque identifiers with configurable sizes:**
 ```
+Pool<T, PoolId=u32, Index=u32, Gen=u64>  // Defaults
+
 Handle<T> = {
-    pool_id: u32,      // Unique per pool instance
-    index: u32,        // Slot in internal storage
-    generation: u32,   // Version counter
+    pool_id: PoolId,   // Unique per pool instance
+    index: Index,      // Slot in internal storage
+    generation: Gen,   // Version counter
 }
+```
+
+**Handle size** = `sizeof(PoolId) + sizeof(Index) + sizeof(Gen)`
+
+Default: `4 + 4 + 8 = 16 bytes` (exactly at copy threshold).
+
+**Common configurations:**
+| Config | Size | Pools | Slots | Gens | Use Case |
+|--------|------|-------|-------|------|----------|
+| `Pool<T>` | 16 bytes | 4B | 4B | ∞ | General purpose |
+| `Pool<T, Gen=u32>` | 12 bytes | 4B | 4B | 4B | Smaller handles |
+| `Pool<T, PoolId=u16, Index=u16, Gen=u32>` | 8 bytes | 64K | 64K | 4B | Memory-constrained |
+
+**Copy rule:** Handle is Copy if total size ≤ 16 bytes
 ```
 
 **Access via handle:**
@@ -281,8 +297,8 @@ for h in files.handles() {
 | `Vec<LinearResource>` | Compile error |
 | `Pool<LinearResource>` | Allowed, must explicitly consume each |
 | Closure panics in `modify` | Collection left in valid state |
-| Generation overflow (u32::MAX) | Slot becomes permanently dead |
-| Pool ID overflow (u32::MAX) | Wraps, effectively infinite |
+| Generation overflow | Slot becomes permanently dead (saturates at max) |
+| Pool ID overflow | Panic (runtime error) |
 
 ### Thread Safety
 

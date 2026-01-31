@@ -123,6 +123,35 @@ The compiler tracks ownership statically:
 
 (Per Principle 7, IDE shows move vs. copy at each use site as ghost annotation.)
 
+### Implicit copying
+
+- Types ≤16 bytes: implicit copy (if all fields are Copy)
+- Types >16 bytes: explicit `.clone()` or move semantics
+- Threshold is **NOT configurable** (semantic stability, portability)
+- `move struct` keyword allows opt-out for move-only semantics
+- Platform ABI differences handled at compiler level (semantics are portable)
+
+**Specifications:**
+- [Why Implicit Copy?](specs/memory-model.md#why-implicit-copy) - Fundamental justification
+- [Threshold Configurability](specs/memory-model.md#threshold-configurability) - Fixed threshold rationale
+- [Move-Only Types](specs/memory-model.md#move-only-types-opt-out) - Opt-out via `move` keyword
+- [Copy Trait and Generics](specs/memory-model.md#copy-trait-and-generics) - Generic bounds behavior
+- [Platform ABI Considerations](specs/memory-model.md#platform-abi-considerations) - Cross-platform portability
+- [Structs](specs/structs.md) - Struct definition, methods, visibility, layout
+
+### Integer Overflow
+
+**Default: Panic on overflow** — consistent in debug and release (safer than Rust's wrap-in-release).
+
+- `Wrapping<T>` — type where `+` wraps (hashing, checksums)
+- `Saturating<T>` — type where `+` saturates (audio, DSP)
+- `.wrapping_add()` — one-off wrapping operation
+- Compiler elides checks via range analysis when overflow is provably impossible
+
+No custom operators — types are clearer and reduce mental tax.
+
+See [Integer Overflow](specs/integer-overflow.md) for full specification.
+
 ### Scoped Borrowing
 
 **Block-scoped** for plain values (strings, struct fields):
@@ -157,12 +186,23 @@ Three collection types cover most use cases:
 
 Expression-scoped allows mutation between accesses—borrow ends at semicolon, so `pool.remove(h)` works after `pool[h].field = x`.
 
-**Handles** are compact identifiers (pool_id + index + generation). Runtime validation catches:
-- Wrong pool (pool_id mismatch)
-- Stale handle (generation mismatch)
-- Invalid index (out of bounds)
+**Handles** are configurable identifiers with runtime validation:
+
+```
+Pool<T, PoolId=u32, Index=u32, Gen=u64>  // Defaults
+```
+
+Handle size = `sizeof(PoolId) + sizeof(Index) + sizeof(Gen)`. Default is 16 bytes.
+
+Override any parameter for different tradeoffs:
+- `Pool<T, Gen=u32>` — 12-byte handles
+- `Pool<T, PoolId=u16, Index=u16, Gen=u32>` — 8-byte compact handles
+
+Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generation mismatch), invalid index (out of bounds).
 
 **Linear resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for linear types.
+
+See [Dynamic Data Structures](specs/dynamic-data-structures.md) for full specification.
 
 ### Optionals
 
@@ -204,6 +244,24 @@ Two kinds of closures:
 
 See [Memory Model - Closure Capture](specs/memory-model.md#closure-capture-and-mutation) for full specification.
 
+### Iteration
+
+Loops yield indices or handles (Copy values), not borrowed references. Collection access uses expression-scoped borrows. This enables mutation during iteration while preventing iterator invalidation.
+
+**Basic patterns:**
+- `for i in vec { vec[i] }` — Index iteration, mutation allowed
+- `for h in pool { pool[h] }` — Handle iteration
+- `for item in vec.consume() { }` — Ownership transfer (consuming)
+- `for i in 0..n { }` — Range iteration
+
+**Key properties:**
+- Collection is NOT borrowed during loop (mutation allowed)
+- Each `collection[i]` access is independent (expression-scoped)
+- Explicit `.consume()` required for ownership transfer
+- No lifetime parameters needed
+
+See [Iterators and Loops](specs/iterators-and-loops/README.md) for full specification.
+
 ### Scope-Exit Cleanup (`ensure`)
 
 Guarantees cleanup runs when a block exits, regardless of how (normal, early return, `?`).
@@ -219,7 +277,7 @@ let data = file.read()?      // Safe: ensure registered
 - Explicit consumption cancels ensure (transaction pattern)
 - Satisfies linear tracking: `?` allowed after ensure
 
-See [Ensure Cleanup](specs/ensure-cleanup.md) for full specification.
+See [Ensure Cleanup](specs/ensure.md) for full specification.
 
 ### Strings
 
@@ -294,6 +352,8 @@ Use `any Trait` when you need heterogeneous collections: HTTP handlers, UI widge
 
 Cost: Small indirection (vtable lookup—a table of function pointers). The compiler stores type information alongside the value to dispatch method calls at runtime.
 
+See [Generics](specs/generics.md) and [Runtime Polymorphism](specs/runtime-polymorphism.md) for full specification.
+
 ### Concurrency
 
 **Task isolation:** Each task owns its data. No shared mutable memory between tasks.
@@ -302,13 +362,34 @@ Cost: Small indirection (vtable lookup—a table of function pointers). The comp
 
 **Structured parallelism:** Parallel computation over owned data with compiler-verified constraints on what can be read vs. mutated.
 
+See [Async and Concurrency](specs/async-and-concurrency.md) for full specification.
+
 ### Compile-Time Execution
 
-Functions can be evaluated at compile time when their inputs are known. Enables:
-- Constant folding
-- Compile-time configuration
-- Generic specialization
-- Static assertions
+The `comptime` keyword marks code that executes during compilation. A restricted subset of Rask runs in the compiler's interpreter—pure computation without I/O, pools, or concurrency.
+
+**Use cases:**
+- Compile-time constants and lookup tables
+- Generic specialization with comptime parameters
+- Conditional compilation based on features
+- Type-level computation
+
+**Example:**
+```
+comptime fn build_table() -> [u8; 256] {
+    let mut table = [0u8; 256]
+    for i in 0..256 {
+        table[i] = (i * 2) as u8
+    }
+    table
+}
+
+const LOOKUP: [u8; 256] = comptime build_table()
+```
+
+**Separate from build scripts:** Comptime runs in-compiler (limited subset). Build scripts (`rask.build`) run as separate programs before compilation (full language, I/O allowed).
+
+See [Compile-Time Execution](specs/compile-time-execution.md) for full specification.
 
 ### C Interop
 
@@ -316,6 +397,8 @@ Functions can be evaluated at compile time when their inputs are known. Enables:
 - Raw pointers exist only in unsafe code
 - At boundaries: convert between safe Rask values and C pointers
 - Unsafe is quarantined; most code never touches pointers
+
+See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and safety boundaries. See [Module System](specs/module-system.md) for C import/export syntax.
 
 ### Module System
 
@@ -332,6 +415,10 @@ Functions can be evaluated at compile time when their inputs are known. Enables:
 **Built-in types:** `String`, `Vec`, `Result`, `Option`, etc. are always available without import. Fixed set—cannot be extended.
 
 **Re-exports:** `export internal.Parser` exposes internal types through a clean public API.
+
+**Libraries vs Executables:** Package role determined by presence of `pub fn main()`. Libraries export `pub` API; executables have entry point. See [Libraries vs Executables](specs/lib-vs-executable.md).
+
+**Dependencies:** Semantic versioning with minimal version selection (MVS), optional `rask.toml` manifest, generated lock file. See [Package Versioning and Dependencies](specs/package-versioning-and-dependencies.md).
 
 See [Module System](specs/module-system.md) for full specification.
 
@@ -365,54 +452,7 @@ When a linear resource operation fails:
 
 This ensures linear values cannot be forgotten even in error paths.
 
-**Using `ensure` for cleanup:** Register cleanup with `ensure` to enable `?` propagation without manual cleanup on every path. See [Ensure Cleanup](specs/ensure-cleanup.md).
-
----
-
-## Open Design Questions
-
-These areas are not yet finalized. Design exploration continues.
-
-### Lib vs Executable
-
-How do libraries differ from executables?
-- Entry points (`main` function?)
-- Can a package be both?
-- Build configuration
-
-### Package Versioning & Dependencies
-
-How are external dependencies managed?
-- Semantic versioning?
-- Dependency resolution algorithm?
-- Lock files?
-- Version constraints syntax?
-
-This is intentionally out of scope for now—focus is on language semantics first.
-
-### Iterators and Loops
-
-Borrows cannot be stored, but iterators need to hold a reference between `.next()` calls.
-
-| Option | Tradeoff |
-|--------|----------|
-| Copy on iteration | Expensive for large items |
-| Yield handles | `Pool` yields `Handle<T>`, user dereferences |
-| Yield indices | `Vec` yields `usize`, user accesses via `vec[i]` |
-| Compiler-special `for` | Loop body borrows collection for its scope |
-
-Critical for ED ≤ 1.2 validation.
-
-### Async and Concurrency
-
-**Unspecified:** async syntax, `ensure` + task cancellation, structured concurrency vs. free-spawn, channel types (bounded/unbounded/rendezvous), select/multiplex.
-
-### Copy Size Threshold
-
-What is the size threshold for implicit Copy?
-- Types below threshold: implicit clone on assignment/pass
-- Types above threshold: require explicit `.clone()`
-- Suggested: 16-32 bytes (2-4 machine words)
+**Using `ensure` for cleanup:** Register cleanup with `ensure` to enable `?` propagation without manual cleanup on every path. See [Ensure Cleanup](specs/ensure.md).
 
 ---
 

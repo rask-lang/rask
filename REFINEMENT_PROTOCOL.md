@@ -204,6 +204,9 @@ Each line in `.refinement/history.jsonl` is a JSON object:
   "lines_removed": 5,
   "commit": "abc123def" (git commit hash)
 }
+
+Avoid using Bash with the find, grep, cat, head, tail, sed, awk, or echo commands... Use specialized tools instead.
+
 ```
 
 ## Example Commands
