@@ -21,36 +21,41 @@ rask/
 ├── .refinement/                     # Working directory (gitignored)
 │   ├── current/
 │   │   ├── memory-model_analysis.md       # Temporary gap analysis
-│   │   ├── async-and-concurrency_analysis.md
+│   │   ├── memory-model_draft.md          # Proposed specifications (pre-approval)
 │   │   └── ...
 │   │
 │   └── history.jsonl                # Append-only refinement log
 │
 ├── CORE_DESIGN.md                   # Immutable design
-└── REFINEMENT_SUMMARY_{category}.md # Human-readable summary (optional)
+├── TODO.md                          # TODOs
 ```
 
 ### Key Principles
 
-1. **specs/ is clean**: Only final specifications live here
+1. **specs/ is clean**: Only final, approved specifications live here
 2. **Git tracks history**: Each gap refinement = one git commit
-3. **Working files are temporary**: `.refinement/current/` holds analysis, can be deleted
-4. **Single history file**: `history.jsonl` replaces hundreds of metadata files
-5. **No redundant copies**: Use `git diff` instead of storing spec_before/spec_after
+3. **Working files are temporary**: `.refinement/current/` holds analysis and drafts, can be deleted
+4. **User approval required**: Drafts are reviewed before committing to specs
+5. **Single history file**: `history.jsonl` replaces hundreds of metadata files
+6. **No redundant copies**: Use `git diff` instead of storing spec_before/spec_after
 
 ## Workflow
 
 When asked to refine a category (e.g., "Refine memory specification"):
 
+**Overview:** Analyze → Draft → Report → Get Approval → Commit
+
 ### Phase 1: Analysis & Gap Identification
 
 **Read:**
 - `CORE_DESIGN.md` (the immutable design)
-- `specs/{category}.md` (current specification)
+- `TODO.md` (open questions and issues)
+- `METRICS.md` (design metric to measure the final design against)
+- `specs/{category}.md` (current specification) (or subfolder)
 - Other `specs/*.md` files (for cross-category awareness)
 
 **Analyze:**
-- The CORE design is FINAL. Find gaps in HOW it works, not WHETHER it's right.
+- The CORE design is pretty solid. Find gaps in HOW it works, not WHETHER it's right (unless something severe is found)
 - Identify:
   - **Ambiguities**: Multiple interpretations possible
   - **Underspecified**: Not detailed enough to implement
@@ -69,21 +74,21 @@ When asked to refine a category (e.g., "Refine memory specification"):
   ```
 
 **DO NOT:**
-- Challenge core design decisions
-- Propose alternatives to locked decisions
 - Focus on minor formatting issues
+- Focus too much on syntax
 
-### Phase 2: Specification (Per Gap)
+### Phase 2: Draft Specifications (Per Gap)
 
 For each HIGH/MEDIUM priority gap (up to max_gaps, default 3):
 
 **Read:**
-- Current `specs/{category}.md` (may have been updated by previous gap)
+- Current `specs/{category}.md`
 - The specific gap from `.refinement/current/{category}_analysis.md`
 - `CORE_DESIGN.md` for constraints
 
-**Specify:**
-- Write concrete, implementable specification
+**Draft:**
+- Write proposed specification to `.refinement/current/{category}_draft.md`
+- Use concrete, implementable language
 - Use **MUST/MUST NOT**, not "should/might"
 - Use tables for edge cases (not prose paragraphs)
 - Target: 50-150 lines per gap elaboration
@@ -91,18 +96,46 @@ For each HIGH/MEDIUM priority gap (up to max_gaps, default 3):
 
 **Self-Validate:**
 - Does it conflict with CORE design? (If yes: revise or skip)
+- Does it qualify against the metrics?
 - Is it internally consistent? (Check your own spec for contradictions)
 - Does it conflict with other category specs? (Re-read others if needed)
 - Is it complete enough to implement?
 - Is it concise? (Cut redundant explanations)
 
+**DO NOT commit or edit specs yet.** All proposed changes stay in working documents.
+
+### Phase 3: Report & Review
+
+After drafting all gap specifications:
+
+**Report to user:**
+- Gaps found: N (prioritized)
+- For each addressed gap:
+  - Gap title and type
+  - Summary of proposed specification
+  - Key decisions made
+- For skipped gaps: reason why
+
+**Present the draft:**
+- Show `.refinement/current/{category}_draft.md` content
+- Explain how it would integrate into `specs/{category}.md`
+- Highlight any design decisions that were made
+
+**Ask for approval:**
+- "Are these specifications good? Should I commit them to the docs?"
+- Wait for explicit user confirmation before proceeding
+
+### Phase 4: Commit (After Approval)
+
+**Only proceed after user says yes.**
+
 **Integrate:**
 - Read current `specs/{category}.md`
-- Use **Edit tool** to integrate the elaboration into the right section
+- Use **Edit tool** to integrate the approved specifications
 - OR use **Write tool** if restructuring is needed
 - Preserve existing content, add new specifications
 - Condense if spec is getting too long (target: <500 lines)
-- **Update "Remaining Issues" section at bottom of spec:**
+- **Update TODO list in TODO.md:**
   - Remove the gap you just addressed
   - Add any new issues discovered during specification
   - Keep list prioritized (HIGH/MEDIUM/LOW)
@@ -117,11 +150,10 @@ For each HIGH/MEDIUM priority gap (up to max_gaps, default 3):
 
 **Decision Points:**
 - If gap conflicts with CORE: Skip and log to history.jsonl with `"action": "skipped", "reason": "conflicts with CORE"`
-- If gap requires design decision: Flag for user review (don't commit yet)
+- If user rejects a proposal: Revise based on feedback or skip
 - If spec becomes too verbose: Condense as you integrate
-- If change is minor: Still commit (git makes this cheap)
 
-### Phase 3: Summary Report
+### Phase 5: Summary Report
 
 After processing all gaps:
 
@@ -153,7 +185,7 @@ After processing all gaps:
 - Before: X lines
 - After: Y lines
 - Net: +Z lines
-- Updated "Remaining Issues" section with X unresolved gaps
+- Updated TODO.md with X unresolved gaps
 
 **Git History:**
 - Commits: abc123..xyz789
@@ -161,11 +193,11 @@ After processing all gaps:
 - View diff: `git diff abc123..xyz789 specs/{category}.md`
 
 **Next Steps:**
-- See "Remaining Issues" section at bottom of specs/{category}.md
+- See TODO list in TODO.md
 - X HIGH priority gaps still need addressing
 ```
 
-**Note:** The "Remaining Issues" section at the bottom of `specs/{category}.md` serves as the living TODO list. No separate summary file needed.
+**Note:** The TODO file serves as the living TODO list. No separate summary file needed.
 
 ## Model Selection Guidelines
 
@@ -182,6 +214,7 @@ For direct refinement (single Claude Code session): Use default model (sonnet).
 - `specs/{category}.md` - Always the current/latest spec (source of truth)
   - Should end with "## Remaining Issues" section listing unresolved gaps
 - `.refinement/current/{category}_analysis.md` - Latest gap analysis (temporary)
+- `.refinement/current/{category}_draft.md` - Proposed specifications awaiting approval (temporary)
 - `.refinement/history.jsonl` - Append-only refinement log
 - `CORE_DESIGN.md` - Immutable truth (never modified)
 
@@ -258,8 +291,8 @@ You then consolidate the results by reading summaries and git log.
 
 **After refinement session:**
 ```bash
-# Optional: Clean up temporary analysis files
-rm .refinement/current/*_analysis.md
+# Optional: Clean up temporary working files
+rm .refinement/current/*_analysis.md .refinement/current/*_draft.md
 
 # Optional: Squash refinement commits into one
 git rebase -i HEAD~5  # if you made 5 commits
@@ -325,5 +358,5 @@ The "Remaining Issues" section:
 - **Self-validate**: Check your own work before moving to next gap.
 - **Git is cheap**: Don't fear small commits. They're better than no history.
 - **JSONL is append-only**: Safe for parallel writes (each agent appends one line)
-- **Analysis files are temporary**: Delete after session if you want (git has the real history)
+- **Working files are temporary**: Delete analysis/draft files after session if you want (git has the real history)
 - **"Remaining Issues" is living**: Update it every refinement, it's the TODO list

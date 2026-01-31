@@ -1,45 +1,74 @@
-# Rask Documentation
+# Rask
 
-## Design
+A systems language where safety is invisible—it's just how the language works, not something you fight.
 
-Core language design documents.
+**Status:** Design phase (language specification only, no implementation yet)
 
-- **[SPECIFICATION.md](design/SPECIFICATION.md)** - Complete language specification
-- **[MODE-BRIDGE.md](design/MODE-BRIDGE.md)** - How ergonomic and performance modes interact
-- **[SYNTAX-STUDY.md](design/SYNTAX-STUDY.md)** - Syntax design rationale
-- **[C-INTEROP.md](design/C-INTEROP.md)** - C foreign function interface
+## What is Rask?
 
-## Analysis
+Most languages force a tradeoff: safe but slow (GC), safe but complex (borrow checker), or fast but dangerous (manual memory). Rask takes a different path—safety that emerges from simple rules, not from runtime overhead or annotation burden.
 
-Design validation and implementation planning.
+**Core insight:** Most safety problems come from dangling references. Rask's memory model makes them structurally impossible without lifetime annotations.
 
-- **[IMPLEMENTATION-NOTES.md](analysis/IMPLEMENTATION-NOTES.md)** - Compiler architecture and decisions
-- **[DEVILS-ADVOCATE-REVIEW.md](analysis/DEVILS-ADVOCATE-REVIEW.md)** - Critical design review
+### Key Concepts
 
----
+| Concept | What It Does |
+|---------|--------------|
+| **Value semantics** | Everything is a value, no hidden sharing |
+| **Single ownership** | Every value has one owner, deterministic cleanup |
+| **Scoped borrowing** | Temporary access that cannot escape scope |
+| **Handles** | Safe references into collections (key + generation) |
+| **Linear types** | Resources that must be explicitly consumed |
+| **Task isolation** | No shared mutable memory between tasks |
+| **Comptime** | Pure computation at compile time |
 
-## Quick Reference
+### The Tradeoffs
 
-### Two Modes
+**What Rask makes harder:**
+- Graph structures with arbitrary cross-references (use handles or arenas)
+- Shared mutable state across tasks (use channels)
+- Escaping references (by design—prevents bugs)
 
-| Mode | Keyword | Borrow Checker | Use Case |
-|------|---------|----------------|----------|
-| Ergonomic | (default) | OFF | 90% of code |
-| Performance | `#[perf]` | ON | Hot paths |
+**What Rask eliminates:**
+- Use-after-free, double-free, dangling pointers
+- Data races (impossible by construction)
+- Null pointer crashes (optional types)
+- Memory leaks for linear resources
+- Lifetime annotation burden
+- GC pauses and overhead
 
-### Syntax Changes from Rust
+## Where to Start
 
-| Rust | Rask |
-|------|--------|
-| `<T>` | `[T]` |
-| `::` | `.` |
-| `let x` | `x =` |
-| `format!("{}", x)` | `"{x}"` |
-| `value.await` | `await value` |
+| If you want to... | Read this |
+|-------------------|-----------|
+| Understand the core design | [CORE_DESIGN.md](CORE_DESIGN.md) |
+| See specific language features | [specs/](specs/) |
+| Understand design constraints | [METRICS.md](METRICS.md) |
+| See what's still being designed | [TODO.md](TODO.md) |
 
-### Key Rules
+## Directory Structure
 
-1. **No lifetimes in structs** - Use owned data or handles
-2. **Methods use `&self`** - Even in ergonomic mode
-3. **Closures capture by value** - In ergonomic mode
-4. **`no_std` = perf only** - No goroutine runtime
+```
+├── CORE_DESIGN.md          # Core language design principles
+├── METRICS.md              # Design scoring methodology
+├── TODO.md                 # Known gaps and open questions
+├── REFINEMENT_PROTOCOL.md  # How specs are iteratively refined
+├── specs/                  # Language specifications
+│   ├── types/              # What values can be
+│   ├── memory/             # How values are owned
+│   ├── control/            # How execution flows
+│   ├── concurrency/        # How tasks run in parallel
+│   ├── structure/          # How code is organized
+│   └── stdlib/             # Standard library
+├── versions/               # Historical spec versions (design evolution)
+└── research/               # Archived exploration and experiments
+```
+
+## Design Principles
+
+From [CLAUDE.md](CLAUDE.md) (project objectives):
+
+1. **Transparency of Cost** — Major costs (allocations, I/O) visible in code
+2. **Mechanical Safety** — Safety by structure, not runtime checks
+3. **Practical Coverage** — Handle 80%+ of real use cases
+4. **Ergonomic Simplicity** — Common code paths must be low ceremony

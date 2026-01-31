@@ -517,7 +517,7 @@ for h in handles {
 }
 ```
 
-See [Dynamic Data Structures](dynamic-data-structures.md) for full collection API specification.
+See [Collections](../stdlib/collections.md) for full collection API specification.
 
 ### Handle System
 

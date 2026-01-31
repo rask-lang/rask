@@ -132,12 +132,12 @@ The compiler tracks ownership statically:
 - Platform ABI differences handled at compiler level (semantics are portable)
 
 **Specifications:**
-- [Why Implicit Copy?](specs/memory-model.md#why-implicit-copy) - Fundamental justification
-- [Threshold Configurability](specs/memory-model.md#threshold-configurability) - Fixed threshold rationale
-- [Move-Only Types](specs/memory-model.md#move-only-types-opt-out) - Opt-out via `move` keyword
-- [Copy Trait and Generics](specs/memory-model.md#copy-trait-and-generics) - Generic bounds behavior
-- [Platform ABI Considerations](specs/memory-model.md#platform-abi-considerations) - Cross-platform portability
-- [Structs](specs/structs.md) - Struct definition, methods, visibility, layout
+- [Why Implicit Copy?](specs/memory/ownership.md#why-implicit-copy) - Fundamental justification
+- [Threshold Configurability](specs/memory/ownership.md#threshold-configurability) - Fixed threshold rationale
+- [Move-Only Types](specs/memory/ownership.md#move-only-types-opt-out) - Opt-out via `move` keyword
+- [Copy Trait and Generics](specs/memory/ownership.md#copy-trait-and-generics) - Generic bounds behavior
+- [Platform ABI Considerations](specs/memory/ownership.md#platform-abi-considerations) - Cross-platform portability
+- [Structs](specs/types/structs.md) - Struct definition, methods, visibility, layout
 
 ### Integer Overflow
 
@@ -150,7 +150,7 @@ The compiler tracks ownership statically:
 
 No custom operators — types are clearer and reduce mental tax.
 
-See [Integer Overflow](specs/integer-overflow.md) for full specification.
+See [Integer Overflow](specs/types/integer-overflow.md) for full specification.
 
 ### Scoped Borrowing
 
@@ -162,7 +162,7 @@ See [Integer Overflow](specs/integer-overflow.md) for full specification.
 
 **Expression-scoped** for collections—see Collections section.
 
-See [Memory Model](specs/memory-model.md) for full specification.
+See [Memory Model](specs/memory/ownership.md) for full specification.
 
 ### Collections and Handles
 
@@ -202,16 +202,33 @@ Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generat
 
 **Linear resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for linear types.
 
-See [Dynamic Data Structures](specs/dynamic-data-structures.md) for full specification.
+See [Dynamic Data Structures](specs/stdlib/collections.md) for full specification.
 
 ### Optionals
 
-Optional types represent values that may be absent. Used for:
-- Handle lookups that may fail
-- Parsing that may not match
-- Any operation with a "not found" case
+`Option<T>` represents values that may be absent. Rask provides syntax sugar for ergonomic handling:
 
-Pattern matching or propagation extracts the value.
+| Syntax | Meaning |
+|--------|---------|
+| `T?` | `Option<T>` (type shorthand) |
+| `none` | Absence literal (type inferred) |
+| `x?.field` | Access if present, else none |
+| `x ?? default` | Value or default |
+| `x!` | Force unwrap (panic if none) |
+| `if x?` | Check + smart unwrap in block |
+
+**Example:**
+```
+let name = get_user(id)?.profile?.name ?? "Anonymous"
+
+if user? {
+    process(user)    // user is T here, not T?
+}
+```
+
+`Option<T>` is a standard enum underneath — pattern matching with `Some`/`None` still works.
+
+See [Optionals](specs/optionals.md) for full specification.
 
 ### Pattern Matching
 
@@ -223,7 +240,7 @@ One keyword: `match`. The compiler infers binding modes from how bindings are us
 
 Highest mode wins across all arms. IDE displays inferred mode as ghost annotation.
 
-See [Sum Types](specs/sum-types---enums.md) for full specification.
+See [Sum Types](specs/types/enums.md) for full specification.
 
 ### Closures
 
@@ -242,7 +259,7 @@ Two kinds of closures:
 
 (Per Principle 7, IDE shows the capture list and capture mode as ghost annotation.)
 
-See [Memory Model - Closure Capture](specs/memory-model.md#closure-capture-and-mutation) for full specification.
+See [Memory Model - Closure Capture](specs/memory/ownership.md#closure-capture-and-mutation) for full specification.
 
 ### Iteration
 
@@ -260,7 +277,7 @@ Loops yield indices or handles (Copy values), not borrowed references. Collectio
 - Explicit `.consume()` required for ownership transfer
 - No lifetime parameters needed
 
-See [Iterators and Loops](specs/iterators-and-loops/README.md) for full specification.
+See [Iterators and Loops](specs/stdlib/iteration.md) for full specification.
 
 ### Scope-Exit Cleanup (`ensure`)
 
@@ -293,7 +310,7 @@ One owned type: `string` (UTF-8 validated, move semantics).
 
 **C interop:** `cstring` type for null-terminated strings. Conversion requires unsafe block.
 
-See [String Handling](specs/string-handling.md) for full specification.
+See [String Handling](specs/stdlib/strings.md) for full specification.
 
 ### Traits
 
@@ -352,7 +369,7 @@ Use `any Trait` when you need heterogeneous collections: HTTP handlers, UI widge
 
 Cost: Small indirection (vtable lookup—a table of function pointers). The compiler stores type information alongside the value to dispatch method calls at runtime.
 
-See [Generics](specs/generics.md) and [Runtime Polymorphism](specs/runtime-polymorphism.md) for full specification.
+See [Generics](specs/types/generics.md) and [Runtime Polymorphism](specs/types/traits.md) for full specification.
 
 ### Concurrency
 
@@ -362,7 +379,7 @@ See [Generics](specs/generics.md) and [Runtime Polymorphism](specs/runtime-polym
 
 **Structured parallelism:** Parallel computation over owned data with compiler-verified constraints on what can be read vs. mutated.
 
-See [Async and Concurrency](specs/async-and-concurrency.md) for full specification.
+See [Concurrency](specs/concurrency/) for full specification.
 
 ### Compile-Time Execution
 
@@ -389,7 +406,7 @@ const LOOKUP: [u8; 256] = comptime build_table()
 
 **Separate from build scripts:** Comptime runs in-compiler (limited subset). Build scripts (`rask.build`) run as separate programs before compilation (full language, I/O allowed).
 
-See [Compile-Time Execution](specs/compile-time-execution.md) for full specification.
+See [Compile-Time Execution](specs/control/comptime.md) for full specification.
 
 ### C Interop
 
@@ -398,7 +415,7 @@ See [Compile-Time Execution](specs/compile-time-execution.md) for full specifica
 - At boundaries: convert between safe Rask values and C pointers
 - Unsafe is quarantined; most code never touches pointers
 
-See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and safety boundaries. See [Module System](specs/module-system.md) for C import/export syntax.
+See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and safety boundaries. See [Module System](specs/structure/modules.md) for C import/export syntax.
 
 ### Module System
 
@@ -416,11 +433,11 @@ See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and sa
 
 **Re-exports:** `export internal.Parser` exposes internal types through a clean public API.
 
-**Libraries vs Executables:** Package role determined by presence of `pub fn main()`. Libraries export `pub` API; executables have entry point. See [Libraries vs Executables](specs/lib-vs-executable.md).
+**Libraries vs Executables:** Package role determined by presence of `pub fn main()`. Libraries export `pub` API; executables have entry point. See [Libraries vs Executables](specs/structure/targets.md).
 
-**Dependencies:** Semantic versioning with minimal version selection (MVS), optional `rask.toml` manifest, generated lock file. See [Package Versioning and Dependencies](specs/package-versioning-and-dependencies.md).
+**Dependencies:** Semantic versioning with minimal version selection (MVS), optional `rask.toml` manifest, generated lock file. See [Package Versioning and Dependencies](specs/structure/packages.md).
 
-See [Module System](specs/module-system.md) for full specification.
+See [Module System](specs/structure/modules.md) for full specification.
 
 ---
 

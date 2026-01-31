@@ -103,7 +103,7 @@ vec.modify(i, |item| {
 - 2+ statements → `vec.modify(i, |v| { ... })?`
 - Error propagation → `vec.modify(i, |v| -> Result { ... })?`
 
-See [Memory Model](memory-model.md#multi-statement-collection-access) for borrowing semantics.
+See [Ownership](../memory/ownership.md#multi-statement-collection-access) for borrowing semantics.
 
 ### Handle-Based Access (Pool)
 

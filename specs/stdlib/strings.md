@@ -402,4 +402,4 @@ for (i, c) in text.char_indices() {
 - **Compile-time execution:** String literals and `format!` at comptime produce static strings
 - **Module system:** `string`, `string_view`, `string_builder`, `StringPool`, `StringSlice` are in core prelude
 - **C interop boundary:** Unsafe blocks required for `cstring.as_ptr()` and raw pointer operations
-- **Iteration:** String iteration follows the general iteration design (to be specified separately)
+- **Iteration:** String iteration follows the general iteration design (see [Iteration](iteration.md))

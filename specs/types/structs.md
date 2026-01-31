@@ -77,7 +77,7 @@ move struct UserId {
 }
 ```
 
-See [Memory Model](memory-model.md) for complete Copy/move semantics.
+See [Ownership](../memory/ownership.md) for complete Copy/move semantics.
 
 ### Methods
 
@@ -229,7 +229,7 @@ pub struct CPoint {
 
 **C interop requirement:** Types used with `extern "C"` MUST use `#[repr(C)]`.
 
-See [Module System](module-system.md) for C interop details.
+See [Modules](../structure/modules.md) for C interop details.
 
 ### Default Values
 

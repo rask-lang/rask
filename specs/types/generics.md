@@ -316,7 +316,7 @@ pub fn insert<K: HashKey, V>(map: mut HashMap<K, V>, key: K, val: V) {
 - **C interop**: Generic functions cannot be exported to C (no stable ABI); monomorphized wrappers required
 - **Error handling**: Generic functions with Result<T, E> work normally; linearity tracked per instantiation
 - **Closures**: Generics in closures capture by value; traits verified at closure instantiation
-- **Runtime polymorphism**: `any Trait` enables heterogeneous collections; see runtime-polymorphism.md
+- **Runtime polymorphism**: `any Trait` enables heterogeneous collections; see [traits.md](traits.md)
 
 ## Standard Library Traits
 

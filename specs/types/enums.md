@@ -386,5 +386,5 @@ if opt.is_some() {          // ✅ opt still valid (read self)
 - **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked
 - **C interop:** `#[repr(C)]` disables optimizations; discriminant size stable
 - **Compiler:** Exhaustiveness checking and binding mode inference are local analysis only (no whole-program tracing)
-- **Error handling:** `?` operator requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure-cleanup.md](ensure-cleanup.md))
+- **Error handling:** `?` operator requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
 - **Tooling:** IDE displays inferred match modes, binding modes, discriminant values, enum sizes, and move/copy decisions as ghost annotations

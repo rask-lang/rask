@@ -1,0 +1,168 @@
+# Optionals
+
+## The Question
+
+How do optional values (values that may be absent) work in Rask?
+
+## Decision
+
+`Option<T>` is a standard enum with syntax sugar for ergonomic handling: `T?` for the type, `none` for absence, `?.` for chaining, `??` for defaults, `if x?` for smart unwrap.
+
+## Rationale
+
+Optional handling is extremely common. Rask provides both uniformity (Option is a normal enum) and ergonomics (syntax sugar eliminates ceremony). This matches Swift's approach: the type exists, but sugar makes it pleasant to use.
+
+## Specification
+
+### The Option Type
+
+```
+enum Option<T> {
+    Some(T),
+    None,
+}
+```
+
+`Option<T>` is a standard enum with pattern matching, traits, and generics.
+
+### Syntax Sugar
+
+| Sugar | Meaning |
+|-------|---------|
+| `T?` | `Option<T>` |
+| `none` | `Option.None` (type inferred) |
+| `x?.field` | Access field if present, else none |
+| `x ?? y` | x if present, else y |
+| `x!` | Force unwrap (panic if none) |
+| `if x?` | Check + smart unwrap in block |
+
+### The `none` Literal
+
+`none` is a literal representing absence:
+
+```
+let x: User? = none
+fn find(id: i64) -> User? { none }
+```
+
+Type is inferred from context. Equivalent to `Option.None`.
+
+### Auto-wrapping
+
+`T` coerces to `Option<T>` automatically:
+
+```
+let user: User? = load_user()    // wraps to Some(user)
+```
+
+`Option<T>` does NOT coerce to `T` — must unwrap explicitly.
+
+### Optional Chaining: `?.`
+
+```
+user?.profile?.settings?.theme
+```
+
+| x is | `x?.field` |
+|------|------------|
+| Some(v) | Some(v.field) or v.field wrapped |
+| None | none |
+
+### Nil-Coalescing: `??`
+
+```
+let name = user?.name ?? "Anonymous"
+```
+
+| x is | `x ?? y` |
+|------|----------|
+| Some(v) | v (unwrapped) |
+| None | y |
+
+Short-circuits: `y` only evaluated if `x` is none.
+
+### Force Unwrap: `!`
+
+```
+let user = get_user()!    // panics if none
+```
+
+Use sparingly. Prefer `??` or `if x?`.
+
+### Conditional Check: `if x?`
+
+```
+let user: User? = get_user(id)
+
+if user? {
+    // user is User here (smart unwrapped)
+    process(user)
+}
+// user is User? again
+```
+
+**Combined conditions:**
+```
+if user? && user.active {
+    // user unwrapped, active checked
+}
+```
+
+**Negation:** `if !x?` does NOT smart-unwrap in else (too error-prone).
+
+### Methods
+
+| Method | Behavior |
+|--------|----------|
+| `map(f)` | Transform if present |
+| `filter(pred)` | Keep if predicate true |
+| `ok_or(err)` | Convert to Result |
+| `unwrap()` | Extract or panic |
+| `unwrap_or(default)` | Extract or default |
+| `is_some()` | Has value? |
+| `is_none()` | Is absent? |
+
+### Pattern Matching
+
+Standard enum matching works:
+
+```
+match user {
+    Some(u) => process(u),
+    None => handle_missing(),
+}
+```
+
+Rarely needed — prefer `if x?` and `??`.
+
+### Linear Resources
+
+If `T` is linear, `T?` is linear. Must handle both paths:
+
+```
+let file: File? = open("data.txt")
+if file? {
+    file.close()
+}
+```
+
+### Comparison
+
+```
+x == none       // is absent
+x != none       // has value
+x == y          // compare inner values or both none
+```
+
+## Integration
+
+- **Result:** Unchanged. Use `opt.ok_or(err)` to convert.
+- **Control Flow:** `if x?` integrates with expression-oriented design.
+- **Error Propagation:** `?` is for Result, `?.` is for Option.
+
+---
+
+## Remaining Issues
+
+### Low Priority
+1. **`if let` compatibility** — Should `if let Some(x) = opt` also work? (Yes, for uniformity)

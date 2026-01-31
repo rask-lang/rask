@@ -4,10 +4,12 @@
 How does Rask enable low-level code (OS interaction, FFI, performance-critical sections) while maintaining safety guarantees elsewhere?
 
 ## Decision
-Explicit `unsafe` blocks quarantine operations that bypass safety checks. Raw pointers exist only in unsafe contexts. Safe wrappers encapsulate unsafe operations behind safe interfaces.
+Explicit `unsafe` blocks quarantine operations that bypass safety checks. Raw pointers exist only in unsafe contexts. Safe wrappers encapsulate unsafe operations behind safe interfaces. **Debug mode catches common pointer errors at runtime** (Zig-inspired), while release mode allows full optimization.
 
 ## Rationale
 Safety is Rask's core property—but some code inherently cannot be verified by the compiler (FFI, hardware access, hand-optimized algorithms). The `unsafe` keyword marks these regions explicitly, making the safety boundary visible. All code outside unsafe blocks retains full safety guarantees. This follows Principle 4 (Transparent Costs): the risk is visible, not hidden.
+
+**Pragmatic UB handling:** Rather than making all pointer errors "just UB" like Rust, Rask provides debug-mode runtime checks. This dramatically reduces debugging time without sacrificing release performance. The philosophy: **crash loudly in development, run fast in production**.
 
 ## Specification
 
@@ -363,9 +365,124 @@ unsafe {
 | Implementing safe trait unsafely | Compile error (use unsafe impl) |
 | Nested unsafe blocks | Redundant but allowed |
 
+### Debug-Mode Safety (Zig-inspired)
+
+Unlike Rust where UB is UB regardless of build mode, Rask provides **debug-mode safety nets** for common pointer errors.
+
+**Build modes:**
+
+| Mode | Pointer Checks | Performance | Use Case |
+|------|----------------|-------------|----------|
+| `debug` | Runtime checks enabled | Slower | Development, testing |
+| `release` | Checks removed (UB if wrong) | Fast | Production |
+| `release-safe` | Checks kept | Medium | Safety-critical production |
+
+**Debug-mode checks:**
+
+| Operation | Debug Behavior | Release Behavior |
+|-----------|----------------|------------------|
+| Null pointer deref | Panic with location | UB |
+| Out-of-bounds pointer | Panic with location | UB |
+| Use-after-free | Panic (if detectable) | UB |
+| Double-free | Panic (if detectable) | UB |
+| Unaligned access | Panic | Platform-dependent |
+
+**Implementation:**
+```
+unsafe {
+    // In debug: inserts `if ptr.is_null() { panic!(...) }`
+    // In release: no check
+    let x = *ptr
+}
+```
+
+**Explicit unchecked (skips even debug checks):**
+```
+unsafe {
+    // No checks even in debug mode - for when you've already validated
+    let x = ptr.read_unchecked()
+}
+```
+
+**Rationale:** Most pointer bugs are detectable at runtime. Catching them in debug mode dramatically reduces the time to find bugs, without sacrificing release performance. This follows Zig's pragmatic approach.
+
+### Unsafe Contracts
+
+Every unsafe operation has an implicit **contract**—preconditions the caller must ensure.
+
+**Contract documentation syntax:**
+```
+/// Reads value from pointer.
+///
+/// # Safety
+/// - `ptr` MUST be non-null
+/// - `ptr` MUST be valid for reads of size `size_of::<T>()`
+/// - `ptr` MUST be properly aligned for `T`
+/// - The memory MUST be initialized as a valid `T`
+/// - No other thread may write to this memory during the read
+unsafe fn read<T>(ptr: *T) -> T
+```
+
+**Contract categories:**
+
+| Category | Description | Example |
+|----------|-------------|---------|
+| **Validity** | Pointer must point to valid memory | "ptr must be valid for reads" |
+| **Alignment** | Pointer must be properly aligned | "ptr must be aligned to 4 bytes" |
+| **Initialization** | Memory must contain valid data | "memory must be initialized" |
+| **Aliasing** | No conflicting concurrent access | "no other writes during read" |
+| **Lifetime** | Pointer must not dangle | "ptr must remain valid for 'a" |
+
+**Exit invariants:**
+
+When exiting an unsafe block, these MUST hold:
+
+| Invariant | Description |
+|-----------|-------------|
+| **Type validity** | All values of Rask types must be valid for their type |
+| **Ownership** | Ownership invariants must be restored (no double-ownership) |
+| **Borrow rules** | If returning to safe code, borrow checker assumptions must hold |
+| **Linear resources** | Linear values must still be tracked (consumed or live) |
+
+**Example of broken exit invariant:**
+```
+let v: Vec<i32> = unsafe {
+    // BAD: Creates Vec with invalid internal state
+    Vec::from_raw_parts(null(), 0, 100)  // null ptr, claims 100 capacity
+}
+// Safe code now has a "valid" Vec that will crash on use
+```
+
+### Checked Unsafe Mode
+
+For safety-critical code that needs low-level access but can afford overhead:
+
+```
+#[checked_unsafe]
+fn memory_copy(dst: *mut u8, src: *u8, len: usize) {
+    // All pointer operations have runtime checks, even in release
+    for i in 0..len {
+        *dst.add(i) = *src.add(i)  // Each add/deref is checked
+    }
+}
+```
+
+**Behavior:**
+
+| Attribute | Debug | Release |
+|-----------|-------|---------|
+| (none) | Checked | Unchecked (UB) |
+| `#[checked_unsafe]` | Checked | Checked |
+| `#[unchecked_unsafe]` | Unchecked | Unchecked |
+
+**Use cases:**
+- Medical devices, aerospace (safety-critical)
+- Parsing untrusted input in release builds
+- When you want guaranteed crash over silent corruption
+
 ### FFI and C Interop
 
-See [Module System](module-system.md) for C interop details. Summary:
+See [Modules](../structure/modules.md) for C interop details. Summary:
 
 | Operation | Requirement |
 |-----------|-------------|
@@ -465,10 +582,16 @@ fn increment() -> u64 {
 ## Remaining Issues
 
 ### High Priority
-(none)
+1. **Atomics and memory ordering** — No specification for atomic types, memory orderings, or concurrent unsafe patterns. Required for embedded/OS kernel use cases.
+2. **Inline assembly** — Syntax and semantics for `asm!` blocks. Required for embedded, SIMD, and kernel code.
 
 ### Medium Priority
-1. **Inline assembly** — Syntax and semantics for `asm!` blocks
+3. **Provenance rules** — Pointer provenance (like Rust's Stacked Borrows) is unspecified. May cause optimization unsoundness or UB edge cases with pointer-to-int casts.
 
 ### Low Priority
-2. **Provenance** — Should Rask have strict pointer provenance rules like Rust's Stacked Borrows?
+4. **Safe wrapper verification** — No mechanism to verify that safe wrappers correctly encapsulate unsafe. Consider unsafe field patterns or auditing tools.
+5. **Storable pointer guidelines** — Tension with "no storable references" principle. Need patterns for safely managing stored raw pointers.
+
+### Addressed in This Version
+- ~~UB detection tooling~~ — Debug-mode safety catches common pointer errors at runtime
+- ~~Formal unsafe contracts~~ — Added contract documentation syntax and exit invariants

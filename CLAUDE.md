@@ -150,5 +150,20 @@ Must naturally express:
 
 No solution is locked in. Test everything against real use cases.
 
+## Specs Organization
+
+```
+specs/
+├── types/       # What values can be
+├── memory/      # How values are owned
+├── control/     # How execution flows
+├── concurrency/ # How tasks run in parallel
+├── structure/   # How code is organized
+└── stdlib/      # Standard library
+```
+
+See [specs/README.md](specs/README.md) for detailed index.
+
 ## Refine
-see [REFINEMENT_PROTOCOL.md](METRICREFINEMENT_PROTOCOLS.md) for how to refine
+
+See [REFINEMENT_PROTOCOL.md](REFINEMENT_PROTOCOL.md) for how to refine.
