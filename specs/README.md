@@ -5,9 +5,14 @@ Organized by what each category governs.
 ## Reading Order
 
 **New to Rask?** Start here:
-1. [memory/ownership.md](memory/ownership.md) — Foundation: ownership, borrowing, handles
-2. [types/primitives.md](types/primitives.md) — Basic types
-3. [control/control-flow.md](control/control-flow.md) — if, loops, expressions
+1. [memory/ownership.md](memory/ownership.md) — Foundation: single ownership, move semantics
+2. [memory/value-semantics.md](memory/value-semantics.md) — Copy vs move, 16-byte threshold
+3. [memory/borrowing.md](memory/borrowing.md) — Block-scoped and expression-scoped borrowing
+4. [types/primitives.md](types/primitives.md) — Basic types
+5. [control/control-flow.md](control/control-flow.md) — if, loops, expressions
+
+**Working with dynamic data?**
+- [memory/pools.md](memory/pools.md) — Handle-based indirection for graphs, entity systems
 
 ---
 
@@ -29,8 +34,15 @@ Organized by what each category governs.
 
 | Spec | Description |
 |------|-------------|
-| [ownership.md](memory/ownership.md) | Ownership, borrowing, handles, linear types |
+| [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
+| [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
+| [borrowing.md](memory/borrowing.md) | Block-scoped and expression-scoped borrowing |
+| [parameters.md](memory/parameters.md) | Parameter modes: borrow (default) vs `take` |
+| [linear-types.md](memory/linear-types.md) | Must-consume resources, `ensure` integration |
+| [closures.md](memory/closures.md) | Capture rules, scope constraints, Pool+Handle pattern |
+| [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |
+| [atomics.md](memory/atomics.md) | Atomic types, memory orderings, lock-free primitives |
 
 ## Control — How execution flows
 
@@ -65,10 +77,17 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 | Spec | Description |
 |------|-------------|
-| [collections.md](stdlib/collections.md) | Vec, Map, Pool |
+| [README.md](stdlib/README.md) | **Overview**: 24 modules, batteries-included philosophy |
+| [collections.md](stdlib/collections.md) | Vec, Map (indexed and keyed collections) |
 | [strings.md](stdlib/strings.md) | String types, encoding |
 | [iteration.md](stdlib/iteration.md) | Collection iteration patterns |
 | [testing.md](stdlib/testing.md) | Test conventions |
+
+## Compiler — Compiler internals
+
+| Spec | Description |
+|------|-------------|
+| [generation-coalescing.md](compiler/generation-coalescing.md) | Redundant generation check elimination |
 
 ---
 

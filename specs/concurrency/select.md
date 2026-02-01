@@ -113,22 +113,14 @@ select {
    - When multiple arms ready, which fires?
    - Random? First-listed? Implementation-defined?
 
-2. **Async select**
-   - Does select work in async context?
-   - Same syntax? Different primitive?
-
 ### Medium Priority
 
-3. **Select on async operations**
-   - Can you select on `.await` instead of channel ops?
-   - `case fetch_user(1).await -> |u| ...`
-
-4. **Biased select**
+2. **Biased select**
    - Syntax for priority-based selection?
    - `select_biased { ... }`
 
 ### Low Priority
 
-5. **Select macros**
+3. **Select macros**
    - Should select be a macro for flexibility?
    - Currently specified as language construct

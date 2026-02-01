@@ -67,6 +67,8 @@ I/O handles and system resources are linear types: they must be consumed exactly
 - Linear values must eventually be consumed (closed, transferred, etc.)
 - Forgetting to consume a linear value is a compile error
 
+See [Linear Types](specs/memory/linear-types.md) for full specification.
+
 ### 7. Compiler Knowledge is Visible
 
 Information the compiler can infer should be displayed by tooling, not required in source code. Code stays minimal; the IDE shows the full picture.
@@ -132,11 +134,11 @@ The compiler tracks ownership statically:
 - Platform ABI differences handled at compiler level (semantics are portable)
 
 **Specifications:**
-- [Why Implicit Copy?](specs/memory/ownership.md#why-implicit-copy) - Fundamental justification
-- [Threshold Configurability](specs/memory/ownership.md#threshold-configurability) - Fixed threshold rationale
-- [Move-Only Types](specs/memory/ownership.md#move-only-types-opt-out) - Opt-out via `move` keyword
-- [Copy Trait and Generics](specs/memory/ownership.md#copy-trait-and-generics) - Generic bounds behavior
-- [Platform ABI Considerations](specs/memory/ownership.md#platform-abi-considerations) - Cross-platform portability
+- [Why Implicit Copy?](specs/memory/value-semantics.md#why-implicit-copy) - Fundamental justification
+- [Threshold Configurability](specs/memory/value-semantics.md#threshold-non-configurability) - Fixed threshold rationale
+- [Move-Only Types](specs/memory/value-semantics.md#move-only-types-opt-out) - Opt-out via `move` keyword
+- [Copy Trait and Generics](specs/memory/value-semantics.md#copy-trait-and-generics) - Generic bounds behavior
+- [Platform ABI Considerations](specs/memory/value-semantics.md#platform-abi-considerations) - Cross-platform portability
 - [Structs](specs/types/structs.md) - Struct definition, methods, visibility, layout
 
 ### Integer Overflow
@@ -162,7 +164,7 @@ See [Integer Overflow](specs/types/integer-overflow.md) for full specification.
 
 **Expression-scoped** for collections—see Collections section.
 
-See [Memory Model](specs/memory/ownership.md) for full specification.
+See [Borrowing](specs/memory/borrowing.md) for full specification.
 
 ### Collections and Handles
 
@@ -189,20 +191,22 @@ Expression-scoped allows mutation between accesses—borrow ends at semicolon, s
 **Handles** are configurable identifiers with runtime validation:
 
 ```
-Pool<T, PoolId=u32, Index=u32, Gen=u64>  // Defaults
+Pool<T, PoolId=u32, Index=u32, Gen=u32>  // Defaults
 ```
 
-Handle size = `sizeof(PoolId) + sizeof(Index) + sizeof(Gen)`. Default is 16 bytes.
+Handle size = `sizeof(PoolId) + sizeof(Index) + sizeof(Gen)`. Default is 12 bytes (4 bytes under copy threshold, leaving headroom for future extension).
 
 Override any parameter for different tradeoffs:
-- `Pool<T, Gen=u32>` — 12-byte handles
+- `Pool<T, Gen=u64>` — 16-byte handles for high-churn scenarios
 - `Pool<T, PoolId=u16, Index=u16, Gen=u32>` — 8-byte compact handles
 
 Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generation mismatch), invalid index (out of bounds).
 
 **Linear resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for linear types.
 
-See [Dynamic Data Structures](specs/stdlib/collections.md) for full specification.
+**Specifications:**
+- [Collections (Vec, Map)](specs/stdlib/collections.md) - Indexed and keyed collections
+- [Pools and Handles](specs/memory/pools.md) - Handle-based sparse storage, weak handles, cursors, freezing
 
 ### Optionals
 
@@ -259,7 +263,7 @@ Two kinds of closures:
 
 (Per Principle 7, IDE shows the capture list and capture mode as ghost annotation.)
 
-See [Memory Model - Closure Capture](specs/memory/ownership.md#closure-capture-and-mutation) for full specification.
+See [Closure Capture](specs/memory/closures.md) for full specification.
 
 ### Iteration
 
@@ -281,20 +285,22 @@ See [Iterators and Loops](specs/stdlib/iteration.md) for full specification.
 
 ### Scope-Exit Cleanup (`ensure`)
 
-Guarantees cleanup runs when a block exits, regardless of how (normal, early return, `?`).
+Guarantees cleanup runs when a block exits, regardless of how (normal, early return, `try`).
 
 ```
-let file = open("data.txt")?
-ensure file.close()          // Runs at scope exit
-let data = file.read()?      // Safe: ensure registered
+let file = try open("data.txt")
+ensure file.close()              // Runs at scope exit
+let data = try file.read()       // Safe: ensure registered
 ```
 
 - Block-scoped, LIFO order (last ensure runs first)
 - Errors ignored by default; `catch |e| ...` for opt-in handling
 - Explicit consumption cancels ensure (transaction pattern)
-- Satisfies linear tracking: `?` allowed after ensure
+- Satisfies linear tracking: `try` allowed after ensure
 
-See [Ensure Cleanup](specs/ensure.md) for full specification.
+**Specifications:**
+- [Ensure Cleanup](specs/control/ensure.md) - Deferred cleanup mechanism
+- [Linear Types](specs/memory/linear-types.md) - Linear resource consumption requirements
 
 ### Strings
 
@@ -373,11 +379,67 @@ See [Generics](specs/types/generics.md) and [Runtime Polymorphism](specs/types/t
 
 ### Concurrency
 
+**Explicit resources:** `with multitasking { }` and `with threads { }` create and scope concurrency resources. No hidden schedulers or thread pools.
+
+```
+fn main() {
+    with multitasking, threads {
+        run_server()
+    }
+}
+
+// With configuration (rare)
+with multitasking(4), threads(8) { ... }
+```
+
+**Concurrency vs Parallelism:**
+- **Concurrency** (green tasks): Many tasks interleaved on few threads. For I/O-bound work. Use `spawn { }`.
+- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work. Use `threads.spawn { }`.
+
+**Three spawn constructs:**
+
+| Construct | Purpose | Requires |
+|-----------|---------|----------|
+| `spawn { }` | Green task | `with multitasking` |
+| `threads.spawn { }` | Thread from pool | `with threads` |
+| `raw_thread { }` | Raw OS thread | Nothing |
+
+**No function coloring:** There is no `async`/`await`. Functions are just functions—I/O operations pause the task automatically. No ecosystem split.
+
+**Affine handles:** All spawn constructs return handles that must be consumed—either joined or explicitly detached. Compile error if forgotten.
+
+```
+fn fetch_user(id: u64) -> User {
+    let response = http_get(url)?  // Pauses task, not thread
+    parse_user(response)
+}
+
+// Spawn and wait
+let h = spawn { fetch_user(1) }
+let user = h.join()?
+
+// Fire-and-forget (explicit)
+spawn { fetch_user(2) }.detach()
+
+// Multiple tasks
+let (a, b) = join_all(
+    spawn { work1() },
+    spawn { work2() }
+)
+
+// CPU-bound work on thread pool
+fn process_image(img: Image) -> Image {
+    threads.spawn { apply_filter(img) }.join()?
+}
+```
+
 **Task isolation:** Each task owns its data. No shared mutable memory between tasks.
 
 **Ownership transfer:** Sending a value on a channel transfers ownership. Sender loses the value; receiver gains it. No copies for large values, no locks, no races.
 
-**Structured parallelism:** Parallel computation over owned data with compiler-verified constraints on what can be read vs. mutated.
+**Sync mode (default):** Without Multitasking, I/O blocks and `spawn { }` is unavailable. Thread pool still works. This is the default for CLI tools, batch processing, and embedded systems.
+
+**Async mode (opt-in):** With `with multitasking { }`, I/O pauses and green tasks are available.
 
 See [Concurrency](specs/concurrency/) for full specification.
 
@@ -469,7 +531,7 @@ When a linear resource operation fails:
 
 This ensures linear values cannot be forgotten even in error paths.
 
-**Using `ensure` for cleanup:** Register cleanup with `ensure` to enable `?` propagation without manual cleanup on every path. See [Ensure Cleanup](specs/ensure.md).
+**Using `ensure` for cleanup:** Register cleanup with `ensure` to enable `try` propagation without manual cleanup on every path. See [Ensure Cleanup](specs/control/ensure.md).
 
 ---
 

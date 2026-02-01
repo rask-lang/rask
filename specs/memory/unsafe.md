@@ -582,7 +582,7 @@ fn increment() -> u64 {
 ## Remaining Issues
 
 ### High Priority
-1. **Atomics and memory ordering** — No specification for atomic types, memory orderings, or concurrent unsafe patterns. Required for embedded/OS kernel use cases.
+1. ~~**Atomics and memory ordering**~~ — See [Atomics](atomics.md) for atomic types, memory orderings, and concurrent patterns.
 2. **Inline assembly** — Syntax and semantics for `asm!` blocks. Required for embedded, SIMD, and kernel code.
 
 ### Medium Priority

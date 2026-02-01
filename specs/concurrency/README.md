@@ -1,63 +1,128 @@
 # Concurrency Specifications
 
-This folder contains the concurrency model for Rask, split into focused, independently-designable pieces.
+This folder contains the concurrency model for Rask.
 
 ## Design Philosophy
 
-**Sync-first:** Most programs need OS threads + channels. Async is an optimization for 10k+ connections.
+**Go-like ergonomics, compile-time safety:** Simple spawn syntax with affine handles that catch forgotten tasks at compile time.
 
-**Layered design:** Each layer builds on the previous:
+**Concurrency != Parallelism:**
+- **Concurrency** (green tasks): Many tasks interleaved on few threads. For I/O-bound work.
+- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work.
 
-```
-Layer 1: sync.md      ← Foundation (80% of programs)
-Layer 2: parallel.md  ← CPU-bound work (orthogonal)
-Layer 3: async.md     ← High-concurrency optimization
-Layer 4: select.md    ← Advanced patterns
-```
+**No function coloring:** Functions are just functions. I/O pauses automatically (IDE shows pause points as ghost annotations). No ecosystem split.
+
+**Affine handles:** All spawn constructs return handles that must be consumed (joined or detached). Compile error if forgotten.
+
+**Explicit resources:** `with multitasking { }` and `with threads { }` clearly declare what's available.
 
 ## Specifications
 
 | Spec | Status | Purpose |
 |------|--------|---------|
-| [sync.md](sync.md) | Draft | OS threads, nurseries, channels, task capture |
-| [parallel.md](parallel.md) | Draft | parallel_map, thread pools, CPU parallelism |
-| [async.md](async.md) | Draft | Green tasks, async/await, runtime |
+| [async.md](async.md) | Draft | **Execution model**: Multitasking, Threads, spawn, handles |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
+
+**Start here:** [async.md](async.md) for the execution model overview.
+
+## Quick Reference
+
+```
+// Async mode - green tasks for I/O
+fn main() {
+    with multitasking {
+        spawn { handle_connection(conn) }.detach()
+    }
+}
+
+// Async + CPU work
+fn main() {
+    with multitasking, threads {
+        spawn {
+            let data = fetch(url)?                              // I/O - pauses
+            let result = threads.spawn { analyze(data) }.join()?  // CPU on threads
+            save(result)?                                       // I/O - pauses
+        }.join()?
+    }
+}
+
+// Sync mode - CPU parallelism only
+fn main() {
+    with threads {
+        let handles = files.map { |f| threads.spawn { process(f) } }
+        for h in handles { h.join()? }
+    }
+}
+
+// Spawn and wait for result
+let h = spawn { compute() }
+let result = h.join()?
+
+// Fire-and-forget (explicit)
+spawn { background_work() }.detach()
+
+// Multiple tasks
+let (a, b) = join_all(
+    spawn { work1() },
+    spawn { work2() }
+)
+
+// Dynamic spawning
+let group = TaskGroup.new()
+for url in urls {
+    group.spawn { fetch(url) }
+}
+let results = group.join_all()?
+
+// Raw OS thread (works anywhere)
+let h = raw_thread { needs_thread_affinity() }
+h.join()?
+```
+
+## Three Spawn Constructs
+
+| Construct | Purpose | Requires | Pauses? |
+|-----------|---------|----------|---------|
+| `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
+| `threads.spawn { }` | Thread from pool | `with threads` | No |
+| `raw_thread { }` | Raw OS thread | Nothing | No |
+
+## Key Patterns
+
+| Pattern | Syntax |
+|---------|--------|
+| Spawn and wait | `spawn { }.join()?` |
+| Fire-and-forget | `spawn { }.detach()` |
+| Wait for all | `join_all(spawn{}, spawn{})` |
+| Dynamic spawning | `TaskGroup` |
+| CPU parallelism | `threads.spawn { }` |
+| Raw OS thread | `raw_thread { }` |
+| Unused handle | **Compile error** |
+
+## Resource Combinations
+
+| Setup | Green Tasks | Thread Pool | Use Case |
+|-------|-------------|-------------|----------|
+| `with multitasking` | Yes | No | I/O-heavy servers |
+| `with threads` | No | Yes | CLI tools, batch processing |
+| `with multitasking, threads` | Yes | Yes | Full-featured applications |
 
 ## Validation Criteria
 
-Each layer has clear test criteria before moving to the next:
-
-**Layer 1 (sync-concurrency):**
-- Can build HTTP server handling 1000 concurrent connections?
+- Can build HTTP server handling 100k concurrent connections?
 - Can build CLI pipeline tool (grep | sort | uniq)?
 - Can build producer-consumer with multiple workers?
-
-**Layer 2 (parallel-compute):**
 - Can process 1M items across all CPU cores?
-- Can handle errors in parallel operations?
+- Is the model as simple as Go for web services?
 
-**Layer 3 (async-runtime):**
-- Can build proxy handling 100k connections?
-- Is sync/async interaction well-defined?
+## Key Principles
 
-**Layer 4 (select-and-multiplex):**
-- Can wait on multiple channels with timeout?
-- Does select work in both sync and async contexts?
-
-## Critical Design Issues
-
-These issues span multiple specs and need resolution:
-
-1. **Sync nursery in async context** — Does `nursery` block the async runtime? (See async.md)
-2. **Linear types in channels** — Silent cleanup on drop? (See sync.md)
-3. **Cooperative cancellation** — No forced termination (See sync.md)
-
-## Integration
-
-All specs share these principles from CORE_DESIGN.md:
+- `with multitasking { }` creates M:N scheduler for green tasks
+- `with threads { }` creates thread pool for CPU work
+- Configuration: `multitasking(N)`, `threads(N)` - just numbers
+- Affine handles (must join or detach)
+- `.join()` pauses in async mode, blocks in sync mode
 - Tasks own their data (no shared mutable state)
-- Channels transfer ownership (move semantics)
-- TaskHandle is affine (must be consumed)
-- No storable references (captures by move only)
-- Local analysis only (no cross-function lifetime tracking)
+- Channels work everywhere (pause in async, block in sync)
+- No function coloring (no async/await keywords)
+- Sync mode is default (no Multitasking needed for CLI/embedded)

@@ -174,6 +174,7 @@ fn example() {
 | Enums | ✅ Full | Variant construction, pattern matching |
 | Strings | ✅ Limited | Literals, concatenation (see below) |
 | Type operations | ✅ Full | `sizeof`, `alignof`, type checks |
+| File embedding | ✅ `@embed_file` | Read-only, compile-time path (see below) |
 
 **Partial support (restricted):**
 
@@ -188,7 +189,7 @@ fn example() {
 
 | Feature | Why Not Allowed |
 |---------|-----------------|
-| **I/O operations** | Network, files, sockets require runtime |
+| **General I/O** | Network, sockets, file writes require runtime (exception: `@embed_file`) |
 | **Pools and handles** | Require runtime generation tracking |
 | **Linear resources** | Files, sockets, cleanup tracking is runtime |
 | **Tasks and channels** | Concurrency doesn't exist at compile time |
@@ -225,6 +226,55 @@ comptime fn read_file(path: String) -> String {
 - Comptime strings are stored in compiler memory, not runtime heap
 - String operations are compiler intrinsics (concat, slice, etc.)
 - Result must fit in comptime string buffer (e.g., 64KB limit)
+
+### File Embedding at Comptime
+
+**The `@embed_file` intrinsic:**
+
+```rask
+// Embed file contents as byte array
+const SCHEMA: []u8 = comptime @embed_file("schema.json")
+
+// Embed as string (file must be valid UTF-8)
+const VERSION: String = comptime @embed_file("VERSION")
+
+// Use in comptime computation
+const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
+```
+
+**Constraints:**
+
+| Constraint | Rationale |
+|------------|-----------|
+| Path MUST be a string literal | No runtime path injection |
+| Path is relative to package root | Reproducible across machines |
+| Read-only operation | No side effects |
+| File read at compile time | Contents embedded in binary |
+| File size limit (16 MB default) | Prevent memory issues |
+
+**Error cases:**
+
+| Case | Handling |
+|------|----------|
+| File not found | Compile error with path |
+| File not readable | Compile error with OS error |
+| Path is runtime value | Compile error: "Path must be string literal" |
+| File too large | Compile error: "File exceeds embed limit" |
+| Invalid UTF-8 (for String) | Compile error: "File is not valid UTF-8" |
+
+**Why this is safe:**
+- No arbitrary I/O—only reads files at known paths
+- Deterministic—same source always embeds same content
+- Sandboxed—cannot read outside package directory
+- Auditable—embedded files listed in build output
+
+**Use cases:**
+- Embedding version strings, build info
+- Bundling static assets (small icons, schemas)
+- Including configuration templates
+- Embedding test fixtures
+
+For complex codegen (parsing schemas, calling external tools), use build scripts instead.
 
 ### Error Handling at Comptime
 
@@ -514,8 +564,9 @@ fn buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
 |--------|----------|---------------|
 | **When runs** | During compilation | Before compilation |
 | **Language** | Restricted Rask subset | Full Rask |
-| **Purpose** | Constants, generic specialization | Build orchestration, codegen |
-| **Can do I/O?** | ❌ No | ✅ Yes |
+| **Purpose** | Constants, generic specialization, embedding | Build orchestration, codegen |
+| **Can read files?** | ✅ `@embed_file` only | ✅ Yes (full I/O) |
+| **Can write files?** | ❌ No | ✅ Yes |
 | **Can call C code?** | ❌ No | ✅ Yes |
 | **Can spawn tasks?** | ❌ No | ✅ Yes |
 | **File** | In source files (comptime keyword) | `rask.build` |
@@ -527,6 +578,7 @@ fn buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
 - Generic specialization
 - Conditional compilation
 - Type-level computation
+- Embedding files (`@embed_file`)
 
 **Use build scripts for:**
 - Code generation from schemas (protobuf, etc.)
@@ -534,6 +586,116 @@ fn buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
 - Calling external build tools (C compiler, etc.)
 - Complex dependency resolution logic
 - Pre-build validation
+
+### Choosing Between Comptime and Build Scripts
+
+**Decision tree:**
+
+```
+Need to transform/process files (not just embed)?
+  YES → Build script
+  NO  → Need network or environment?
+          YES → Build script
+          NO  → Just embedding file contents?
+                  YES → Comptime (@embed_file)
+                  NO  → Result size known at compile time?
+                          YES → Comptime (direct)
+                          NO  → Can calculate size first?
+                                  YES → Comptime (two-pass pattern)
+                                  NO  → Build script
+```
+
+**Examples:**
+
+| Task | Approach | Why |
+|------|----------|-----|
+| CRC lookup table (256 entries) | Comptime | Size known |
+| Primes up to N | Comptime (two-pass) | Count first, then fill |
+| Embed version string | Comptime (`@embed_file`) | Simple file read |
+| Embed small config file | Comptime (`@embed_file`) | No transform needed |
+| Types from JSON schema | Build script | Needs parsing + codegen |
+| Protobuf codegen | Build script | Needs external tool |
+| Keyword lookup map | Comptime (two-pass) | Count keywords, then fill |
+| Protobuf codegen | Build script | External tool + file I/O |
+
+### Workaround Patterns for Dynamic-Size Results
+
+Comptime does not support heap allocation (`Vec`, `Map`). When result size is unknown, use these patterns:
+
+**Pattern 1: Two-Pass Computation**
+
+Compute size first, then fill a fixed-size array:
+
+```rask
+// Step 1: Count (comptime function)
+comptime fn count_primes(max: u32) -> usize {
+    let mut count = 0
+    for i in 2..max {
+        if is_prime(i) { count += 1 }
+    }
+    count
+}
+
+// Step 2: Fill (size now known via comptime generic)
+comptime fn fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
+    let mut result = [0u32; N]
+    let mut idx = 0
+    for i in 2..max {
+        if is_prime(i) {
+            result[idx] = i
+            idx += 1
+        }
+    }
+    result
+}
+
+// Usage
+const PRIME_COUNT: usize = comptime count_primes(100)
+const PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
+```
+
+**Pattern 2: Sparse Table with Fixed Upper Bound**
+
+When maximum size is known, use a struct with length field:
+
+```rask
+struct Table<T, comptime MAX: usize> {
+    data: [T; MAX],
+    len: usize,
+}
+
+comptime fn build_keywords<comptime MAX: usize>() -> Table<([]u8, u32), MAX> {
+    let mut table = Table { data: [([], 0); MAX], len: 0 }
+
+    // Add keywords
+    table.data[table.len] = ("if", 1)
+    table.len += 1
+    table.data[table.len] = ("else", 2)
+    table.len += 1
+    // ...
+
+    table
+}
+
+const KEYWORDS: Table<([]u8, u32), 50> = comptime build_keywords<50>()
+// Access: KEYWORDS.data[0..KEYWORDS.len]
+```
+
+**Pattern 3: Build Script for External Data**
+
+For codegen from files, use build scripts (full Rask, I/O allowed):
+
+```rask
+// rask.build
+fn main() -> Result<(), Error> {
+    let schema = fs.read_file("schema.json")?
+    let code = generate_types_from_schema(schema)
+    fs.write_file("generated/types.rask", code)?
+    Ok(())
+}
+```
+
+Then import generated code normally in source files.
 
 ### Examples
 
@@ -684,11 +846,11 @@ let reg32 = Register<32> { value: 0u32 }
 None identified.
 
 ### Medium Priority
-1. **Comptime heap allocation** — Should comptime have limited heap allocation (e.g., fixed-size arena)? Useful for Vec/Map at comptime, but adds complexity.
-2. **Comptime memoization** — Should identical comptime calls be memoized to speed up compilation? (e.g., `fib(10)` called multiple times)
-3. **Step-through debugger** — Should IDEs support stepping through comptime interpreter? Complex but valuable for debugging.
+1. **Comptime memoization** — Should identical comptime calls be memoized to speed up compilation? (e.g., `fib(10)` called multiple times)
+2. **Step-through debugger** — Should IDEs support stepping through comptime interpreter? Complex but valuable for debugging.
+3. **Comptime standard library** — Which stdlib functions should be `comptime` compatible? (e.g., string formatting, math)
 
 ### Low Priority
 4. **Comptime imports** — Can comptime code import modules? Or only use built-in types?
-5. **Comptime standard library** — Which stdlib functions should be `comptime` compatible? (e.g., string formatting, math)
-6. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
+5. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
+6. **Comptime heap allocation** — Deferred. Workarounds exist (two-pass, sparse tables). Build scripts handle I/O-heavy codegen. Can revisit if user demand warrants.

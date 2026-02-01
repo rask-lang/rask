@@ -29,23 +29,49 @@ For `Option<T>`, see [Optionals](optionals.md).
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
-| `unwrap` | `fn(transfer self) -> T` | Returns T, panics on Err |
-| `unwrap_or` | `fn(transfer self, default: T) -> T` | Returns T or default |
-| `expect` | `fn(transfer self, msg: string) -> T` | Returns T, panics with msg |
+| `on_err` | `fn(transfer self, default: T) -> T` | Returns T or default (discards error) |
+| `ok` | `fn(transfer self) -> T?` | `Ok(t)` → `Some(t)`, `Err(_)` → `None` |
+| `err` | `fn(transfer self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
 | `is_ok` | `fn(self) -> bool` | True if Ok |
 | `is_err` | `fn(self) -> bool` | True if Err |
 | `map` | `fn<U>(transfer self, f: fn(T) -> U) -> Result<U, E>` | Transform Ok value |
 | `map_err` | `fn<F>(transfer self, f: fn(E) -> F) -> Result<T, F>` | Transform Err value |
 
-## The `?` Operator
+Force unwrap uses operators, not methods:
+- `x!` — panic with auto message (includes error info)
+- `x! "msg"` — panic with custom message
 
-Extracts `Ok`/`Some` or returns early with `Err`/`None`.
+## Error Propagation: `?`
+
+Extracts `Ok` or returns early with `Err`. Postfix operator, same as Rust.
 
 ```
 fn process() -> Result<Data, IoError> {
     let file = open(path)?
     let data = file.read_all()?
-    Ok(data)
+    data  // auto-wrapped to Ok(data)
+}
+```
+
+**Why `?` for both Option and Result:** The `?` operator uniformly means "propagate failure". Type-specific optional syntax (`T?` type, `x?.field` chaining) doesn't conflict—context is clear.
+
+**IDE support:** Per Principle 7, the IDE shows `→ returns Err` as ghost text after `?` to make control flow visible.
+
+### Auto-Ok Wrapping
+
+If a function returns `Result<T, E>` and the final expression is of type `T`, it's automatically wrapped in `Ok`:
+
+```
+fn load() -> Result<Config, IoError> {
+    let content = read_file(path)?
+    parse(content)?   // Returns Config, auto-wrapped to Ok(Config)
+}
+
+fn might_fail() -> Result<i32, Error> {
+    if bad_condition {
+        return Err(Error::Bad)  // Explicit Err still works
+    }
+    42  // Auto-wrapped to Ok(42)
 }
 ```
 
@@ -57,7 +83,7 @@ When return type is a union, `?` auto-widens:
 fn load() -> Result<Config, IoError | ParseError> {
     let content = read_file(path)?   // IoError widens to union
     let config = parse(content)?     // ParseError widens to union
-    Ok(config)
+    config
 }
 ```
 
@@ -108,7 +134,7 @@ enum IoError {
 fn read_both() -> Result<Data, IoError> {
     let a = read_file(x)?   // IoError
     let b = read_file(y)?   // IoError
-    Ok(combine(a, b))
+    combine(a, b)
 }
 ```
 
@@ -118,7 +144,7 @@ fn read_both() -> Result<Data, IoError> {
 fn load() -> Result<Config, IoError | ParseError> {
     let content = read_file(path)?   // IoError ⊆ union
     let config = parse(content)?     // ParseError ⊆ union
-    Ok(config)
+    config
 }
 ```
 
@@ -126,9 +152,9 @@ fn load() -> Result<Config, IoError | ParseError> {
 
 ```
 fn process() -> Result<Output, IoError | ParseError | ValidationError> {
-    let config = load()?        // IoError | ParseError ⊆ union
-    let valid = validate(config)?   // ValidationError ⊆ union
-    Ok(transform(valid))
+    let config = load()?           // IoError | ParseError ⊆ union
+    let valid = validate(config)?  // ValidationError ⊆ union
+    transform(valid)
 }
 ```
 
@@ -168,9 +194,23 @@ match result {
 |---------|-----------|
 | Error trait | `fn message(self) -> string` |
 | Result/Option | Built-in enums |
-| Propagation | `?` operator |
+| Propagation | `?` operator (works on both) |
 | Composition | Union types (`A | B`) |
 | Custom errors | Enums with `message()` |
+| Auto-Ok | Final expression auto-wrapped |
+
+### The `?` Family
+
+| Syntax | Option | Result |
+|--------|--------|--------|
+| `x?` | Propagate None | Propagate Err |
+| `x ?? y` | Value or default | — |
+| `x!` | Force (panic) | Force (panic with error info) |
+| `x! "msg"` | Force (panic with message) | Force (panic with message) |
+
+**Why `??` doesn't work on Result:** Silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
+
+Type-specific optional syntax (`T?`, `x?.field`, `if x?`) doesn't conflict with `?` propagation—context disambiguates.
 
 ---
 

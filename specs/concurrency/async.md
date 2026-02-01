@@ -1,271 +1,598 @@
-# Async Runtime
+# Execution Model
 
-Green tasks for high-concurrency scenarios (10k+ connections).
+Green tasks with affine handles. No function coloring. Explicit resource declaration.
 
 ## Overview
 
-**Opt-in layer** for programs needing massive concurrency. Most programs should use sync-concurrency instead.
+Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work. Unlike Rust/JavaScript, there is no `async`/`await` syntax—all functions work the same way regardless of whether they perform I/O.
 
 | Property | Value |
 |----------|-------|
-| Task type | Green tasks (stackless coroutines) |
-| Scaling | 100k+ concurrent tasks |
-| Cost | ~4KB per task |
-| I/O model | Non-blocking (yields at await points) |
+| Green tasks | ~4KB each, 100k+ concurrent |
+| I/O model | Non-blocking (multitasking handles pausing) |
+| Function coloring | **None** |
+| Task tracking | Affine handles (compile-time) |
 
-## When to Use Async
+## Three Spawn Constructs
 
-| Scenario | Recommendation |
-|----------|----------------|
-| HTTP server, <1000 connections | Sync (simpler) |
-| Proxy, 10k+ connections | Async |
-| CLI tool | Sync |
-| Database with connection pool | Sync |
-| Real-time game server | Async |
-| Background job processor | Sync |
+| Construct | Purpose | Requires | Pauses? |
+|-----------|---------|----------|---------|
+| `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
+| `threads.spawn { }` | Thread from pool | `with threads` | No |
+| `raw_thread { }` | Raw OS thread | Nothing | No |
 
-**Rule of thumb:** If you're not sure, use sync. Async adds complexity.
+**All return affine handles** - must be joined or detached (compile error if forgotten).
 
-## Async Functions
+### Naming Rationale
 
-### Declaration
+- `multitasking` - describes the capability (cooperative green tasks, M:N scheduling)
+- `threads` - direct name for thread pool (avoids collision with `Pool<T>` collection)
+- `raw_thread` - single raw OS thread, distinct from pooled threads
+
+## Concurrency vs Parallelism
+
+| Concept | What it means | Rask construct |
+|---------|--------------|----------------|
+| **Concurrency** | Interleaved execution | Green tasks via `spawn { }` |
+| **Parallelism** | Simultaneous execution | Thread pool via `threads.spawn { }` |
+
+Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `threads.spawn { }`.
+
+## Basic Usage
 
 ```
-async fn fetch_user(id: u64) -> Result<User, Error> {
-    let response = async_http_get(url).await?
+fn fetch_user(id: u64) -> Result<User, Error> {
+    let response = http_get(format("/users/{id}"))?  // Pauses task, not thread
     parse_user(response)
 }
-```
 
-- `async` keyword precedes `fn`
-- Return type is the eventual value (not a task/future type)
-- Body can use `.await` to suspend
+fn main() -> Result<()> {
+    with multitasking {
+        let listener = TcpListener.bind("0.0.0.0:8080")?
 
-### Await Operator
-
-Postfix `.await` suspends until completion:
-
-```
-async fn caller() {
-    let user = fetch_user(123).await?  // Suspends, then unwraps
-    print(user.name)
-}
-```
-
-### Async Blocks and Closures
-
-```
-let task = async { expensive_work().await }
-let result = task.await?
-
-urls.map(async |url| async_fetch(url).await)
-```
-
-## Async Nurseries
-
-```
-async nursery { |n|
-    n.async_spawn { work1().await }
-    n.async_spawn { work2().await }
-}
-```
-
-### Syntax Rules
-
-| Syntax | Spawns | Method | Available In |
-|--------|--------|--------|--------------|
-| `nursery { \|n\| ... }` | OS threads | `n.spawn` | Anywhere |
-| `async nursery { \|n\| ... }` | Green tasks | `n.async_spawn` | Async context only |
-
-**Keyword determines task type, NOT context:**
-
-```
-async fn main() {
-    // BOTH allowed in async context:
-
-    nursery { |n|
-        n.spawn { blocking_work() }  // OS thread
-    }
-
-    async nursery { |n|
-        n.async_spawn { async_work().await }  // Green task
+        loop {
+            let conn = listener.accept()?
+            spawn { handle_connection(conn) }.detach()  // Fire-and-forget
+        }
     }
 }
+
+fn handle_connection(conn: TcpConnection) -> Result<()> {
+    let request = conn.read()?
+    let user = fetch_user(request.id)?
+    conn.write(user.to_json())?
+}
 ```
 
-**Compile errors:**
+**Key points:**
+- `with multitasking { }` enables green tasks
+- `spawn { }` returns a `TaskHandle` (affine type)
+- `.detach()` explicitly opts out of tracking (fire-and-forget)
+- No `.await`, no `async` keywords
+- 100k concurrent connections? No problem.
+
+## Task Spawning
+
+### Affine Handles
+
+`spawn { }` returns a `TaskHandle<T>` that **must be consumed**:
+
+```
+// Get result - must join
+let h = spawn { compute() }
+let result = h.join()?
+
+// Fire and forget - explicit detach
+spawn { background_work() }.detach()
+
+// Compile error - handle not consumed
+spawn { work() }  // ERROR: unused TaskHandle
+```
+
+| Pattern | Syntax | Handle consumed? |
+|---------|--------|------------------|
+| Wait for result | `spawn { }.join()?` | Yes |
+| Fire-and-forget | `spawn { }.detach()` | Yes |
+| Unused | `spawn { }` | **Compile error** |
+
+### Multiple Tasks
+
+```
+// Wait for all
+let (a, b) = join_all(
+    spawn { work1() },
+    spawn { work2() }
+)
+
+// First to complete
+let result = select_first(
+    spawn { fast_path() },
+    spawn { slow_path() }
+)  // Remaining task cancelled
+```
+
+### TaskGroup (Dynamic Spawning)
+
+For loops or dynamic number of tasks:
+
+```
+let group = TaskGroup.new()
+
+for url in urls {
+    group.spawn { fetch(url) }
+}
+
+let results = group.join_all()?  // Vec<Result<T>>
+```
+
+### Handle API
+
+```
+struct TaskHandle<T> {
+    // Affine - cannot be cloned
+}
+
+impl TaskHandle<T> {
+    fn join(self) -> Result<T, TaskError>    // Wait and get result
+    fn detach(self)                           // Fire-and-forget
+    fn cancel(self) -> Result<T, TaskError>  // Request cancel, wait
+}
+```
+
+## Multitasking
+
+### Setup
 
 ```
 fn main() {
-    // COMPILE ERROR: async nursery requires async context
-    async nursery { |n| ... }
+    with multitasking {
+        run_server()
+    }
 }
 ```
 
-### Nursery Parameter Types
+The `with` block creates and scopes the multitasking scheduler. No explicit construction needed.
 
-- `nursery` -> `n: SyncNursery` (has `spawn` method)
-- `async nursery` -> `n: AsyncNursery` (has `async_spawn` method)
-
-Using the wrong method is a compile error (method doesn't exist on type).
-
-## Async Runtime
-
-### Properties
-
-| Property | Value |
-|----------|-------|
-| Scope | Per-thread (thread-local) |
-| Initialization | Lazy, on first async operation |
-| Shutdown | Automatic at thread exit |
-| Initial cost | ~64KB heap allocation |
-| Worker threads | 1 per runtime |
-
-### Main Function
+For configuration:
 
 ```
-async fn main() -> Result<()> {
-    // Async runtime initialized for main thread
-    server().await
+with multitasking(4) { }              // 4 scheduler threads
+with threads(8) { }                    // 8 pool threads
+with multitasking(4), threads(8) { }  // Both
+```
+
+### What Multitasking Provides
+
+| Component | Purpose |
+|-----------|---------|
+| M:N Scheduler | Many green tasks on few OS threads |
+| I/O Event Loop | epoll/kqueue for non-blocking I/O |
+
+**Default:** Scheduler threads = num_cpus
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Multitasking                    │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
+│  │ Thread 1 │ │ Thread 2 │ │ Thread N │        │
+│  │   ◇◇◇◇   │ │   ◇◇◇◇   │ │   ◇◇◇◇   │        │
+│  └──────────┘ └──────────┘ └──────────┘        │
+└─────────────────────────────────────────────────┘
+  ◇ = green task (concurrent, interleaved)
+```
+
+### Lifecycle
+
+1. `with multitasking { }` creates scheduler (threads start lazily)
+2. Multitasking is ambient within the block
+3. `spawn { }` uses the ambient scheduler
+4. Block exit waits for non-detached tasks
+
+## How I/O Works
+
+**Stdlib I/O automatically pauses the task:**
+
+```
+fn process_file(path: String) -> Result<Data> {
+    let file = File.open(path)?      // Pauses while opening
+    let contents = file.read_all()?  // Pauses while reading
+    parse(contents)
 }
 ```
 
-`async fn main()` MUST be used for async programs.
+The programmer doesn't write `.await`. The stdlib handles pausing internally:
 
-### Multi-core Parallelism
+1. Function calls `file.read_all()`
+2. Stdlib issues non-blocking syscall
+3. If not ready, scheduler parks this task
+4. Scheduler runs other tasks
+5. When I/O completes, scheduler wakes the task
+6. Function continues from where it left off
 
-Each OS thread has its own async runtime:
+**IDE shows pause points as ghost annotations** (per Principle 7: "Compiler Knowledge is Visible"):
 
 ```
-nursery { |n|
-    for cpu in 0..num_cpus() {
-        n.spawn {
-            async nursery { |a|
-                // Each thread has own async runtime
-                a.async_spawn { work_chunk(cpu).await }
-            }
+let data = file.read()?  // IDE shows: ⟨pauses⟩
+```
+
+No code ceremony required. Transparency achieved through tooling.
+
+## Thread Pool (CPU Parallelism)
+
+For CPU-bound work that needs true parallelism, use an explicit thread pool:
+
+```
+fn main() {
+    with multitasking, threads {
+        spawn {
+            let data = fetch(url)?                              // I/O - pauses
+            let result = threads.spawn { analyze(data) }.join()?  // CPU on threads
+            save(result)?                                       // I/O - pauses
+        }.join()?
+    }
+}
+```
+
+### Why a Separate Thread Pool?
+
+Without a thread pool, CPU-heavy code starves other tasks:
+
+```
+spawn { cpu_intensive() }.detach()  // BAD: Hogs scheduler thread
+spawn { handle_io() }.detach()       // Starved!
+```
+
+With a thread pool:
+
+```
+with multitasking, threads {
+    spawn {
+        threads.spawn { cpu_intensive() }.join()?  // Runs on thread pool
+    }.detach()
+    spawn { handle_io() }.detach()                  // Runs fine
+}
+```
+
+### Threads API
+
+```
+with threads {
+    // Spawn on thread pool, get handle
+    let h = threads.spawn { work() }
+    let result = h.join()?
+
+    // Fire-and-forget
+    threads.spawn { background() }.detach()
+}
+```
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `threads.spawn { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
+
+### Thread Pool Without Multitasking
+
+Thread pool works independently for pure CPU-parallelism (CLI tools, batch processing):
+
+```
+fn main() {
+    with threads {
+        let handles = files.map { |f|
+            threads.spawn { process(f) }
+        }
+        for h in handles {
+            print(h.join()?)
         }
     }
 }
 ```
 
-### Binary Overhead
+| Setup | Green Tasks | Thread Pool | Use Case |
+|-------|-------------|-------------|----------|
+| `with multitasking` | Yes | No | I/O-heavy servers |
+| `with threads` | No | Yes | CLI tools, batch processing |
+| `with multitasking, threads` | Yes | Yes | Full-featured applications |
 
-Runtime (~50KB) included only if `async` keyword used.
+## Raw OS Thread
 
-## Sync/Async Boundaries
-
-### Function Color
-
-| From Context | Calling Async | Calling Sync |
-|--------------|---------------|--------------|
-| Async | `.await` | Direct call (blocks runtime!) |
-| Sync | `block_on(...)` | Direct call |
-
-### block_on
-
-Bridges sync to async:
+For code requiring thread affinity (OpenGL, thread-local FFI):
 
 ```
-fn sync_main() {
-    let user = block_on(fetch_user(123))?
+let h = raw_thread {
+    init_graphics_context()  // Needs stable thread identity
+    render_loop()
 }
+h.join()?
 ```
 
-Creates a runtime, blocks thread until complete.
+Same affine handle rules apply. Works anywhere (no multitasking or threads required).
 
-### Blocking in Async Context
+## Sync Mode (Default)
 
-Calling sync I/O from async context blocks the runtime thread:
-
-```
-async fn handler() {
-    let data = blocking_file_read(path)  // BLOCKS RUNTIME
-    process(data).await
-}
-```
-
-**IDE warning:** "blocks runtime" shown at call site.
-
-**Allowed but dangerous:** All other async tasks on this runtime are frozen.
-
----
-
-## Critical Design Issues
-
-### Issue 1: Sync Nursery Blocks Async Runtime
+Without Multitasking, I/O operations block the thread:
 
 ```
-async fn handler() {
-    nursery { |n|           // Blocks async runtime thread!
-        n.spawn { cpu_work() }
+fn main() {
+    // No Multitasking = sync mode (default)
+    let data = file.read()?  // Blocks thread
+
+    // Thread pool still works
+    with threads {
+        let handles = files.map { |f| threads.spawn { process(f) } }
+        for h in handles { h.join()? }
     }
-    // All other async tasks frozen until nursery exits
 }
 ```
 
-**Current status:** Allowed but dangerous.
+| Feature | With Multitasking | Without Multitasking (default) |
+|---------|-------------------|--------------------------------|
+| `spawn { }` | Green tasks | Compile error (no scheduler) |
+| `threads.spawn { }` | Thread pool | Thread pool (same) |
+| Stdlib I/O | Pauses task | Blocks thread |
 
-**Options:**
+**No special attribute needed.** The presence of `with multitasking { }` is the opt-in.
 
-| Option | Tradeoff |
+## Join Semantics
+
+`.join()` behavior depends on calling context:
+
+| Calling from | `.join()` behavior |
+|--------------|-------------------|
+| Green task | **Pauses** the task (scheduler runs others) |
+| Sync mode | **Blocks** the thread |
+
+This is consistent with all wait operations (I/O, channels, etc.).
+
+```
+with multitasking, threads {
+    spawn {
+        let h = threads.spawn { cpu_work() }
+        h.join()?  // YIELDS the green task, doesn't block scheduler
+    }
+}
+```
+
+## Comparison with Go
+
+```go
+// Go - fire and forget, no tracking
+go handleRequest(conn)
+```
+
+```
+// Rask - explicit detach required
+spawn { handle_request(conn) }.detach()
+```
+
+| Aspect | Go | Rask |
+|--------|-----|------|
+| Spawn syntax | `go func()` | `spawn { }.detach()` |
+| Track tasks | Manual (WaitGroup) | Compile-time (affine) |
+| Forgotten tasks | Silent | **Compile error** |
+| Function coloring | No | No |
+
+**Safety difference:** Rask catches forgotten tasks at compile time.
+
+## Cancellation
+
+Cooperative model with cleanup guarantees:
+
+```
+let h = spawn {
+    let file = File.open("data.txt")?
+    ensure file.close()       // ALWAYS runs, even on cancel
+
+    loop {
+        if cancelled() { break }
+        do_work()
+    }
+}  // ensure runs here
+
+sleep(5.seconds)
+h.cancel()?  // Request cancellation, wait for exit
+```
+
+**Rules:**
+- `ensure` blocks always run (cancellation doesn't skip cleanup)
+- Cancellation is cooperative (task checks `cancelled()` flag)
+- If task ignores flag, it keeps running
+- I/O operations check the flag and return `Err(Cancelled)` if set
+- Linear resources are handled by `ensure` blocks
+
+## Channels
+
+Channels work in both modes:
+
+| Mode | Channel behavior |
+|------|------------------|
+| With multitasking | Pauses task on send/recv |
+| Without multitasking | Blocks thread on send/recv |
+
+```
+let (tx, rx) = Channel<Message>.buffered(100)
+
+let producer = spawn {
+    for msg in generate_messages() {
+        tx.send(msg)?  // Pauses if buffer full
+    }
+}
+
+let consumer = spawn {
+    while let Ok(msg) = rx.recv() {  // Pauses if buffer empty
+        process(msg)
+    }
+}
+
+join_all(producer, consumer)?
+```
+
+Channels are useful for inter-thread communication even without green tasks.
+
+### Channel Types
+
+```
+struct Sender<T> { ... }     // NOT linear - can be dropped
+struct Receiver<T> { ... }   // NOT linear - can be dropped
+```
+
+**Channel handles are NOT linear types.** They can be dropped without explicit close.
+
+**Rationale:**
+- Fire-and-forget patterns (`.detach()` tasks) would require close ceremony
+- Go's channels can be dropped without explicit close (ED ≤ 1.2)
+- Matches `ensure` philosophy: explicit handling available, implicit path is simple
+
+### Channel Creation
+
+| Constructor | Description |
+|-------------|-------------|
+| `Channel<T>.unbuffered()` | Synchronous - send pauses until recv |
+| `Channel<T>.buffered(n)` | Async buffer of size n |
+
+### Channel Operations
+
+| Operation | Returns | Description |
+|-----------|---------|-------------|
+| `tx.send(val)` | `Result<(), SendError>` | Send value, pauses/blocks if full |
+| `rx.recv()` | `Result<T, RecvError>` | Receive value, pauses/blocks if empty |
+| `tx.close()` | `Result<(), CloseError>` | Explicit close with error handling |
+| `rx.close()` | `Result<(), CloseError>` | Explicit close with error handling |
+| `tx.try_send(val)` | `Result<(), TrySendError>` | Non-blocking send |
+| `rx.try_recv()` | `Result<T, TryRecvError>` | Non-blocking receive |
+
+### Close and Drop Semantics
+
+**Key design:** Explicit `close()` for error handling, implicit drop ignores errors.
+
+| Action | Behavior |
 |--------|----------|
-| Compile error | Too restrictive, can't mix CPU/IO work |
-| `nursery.await` | Yield while waiting for OS threads |
-| Warning only | Easy to miss, causes subtle bugs |
-| spawn_blocking | Explicit offload to thread pool |
+| `tx.close()` | Explicit close, returns `Result` for error handling |
+| `rx.close()` | Explicit close, returns `Result` for error handling |
+| `tx` dropped | Implicit close, errors silently ignored |
+| `rx` dropped | Implicit close, errors silently ignored |
 
-**Recommended:** Add `nursery.await` or `spawn_blocking` pattern.
+This matches `ensure` semantics: explicit handling when needed, simple implicit path.
 
-### Issue 2: Async Block Capture
-
-Do async blocks capture by move (like task closures)?
-
+**Example - explicit close when errors matter:**
 ```
-let data = load_data()
-let task = async { process(data).await }  // Move or borrow?
-```
-
-**Current status:** Unspecified.
-
-**Recommendation:** Move semantics (consistent with task closures).
-
-### Issue 3: block_on Nesting
-
-What happens if block_on called from async context?
-
-```
-async fn outer() {
-    block_on(inner())  // Nested runtime? Deadlock?
+fn reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
+    for item in items {
+        tx.send(item)?
+    }
+    tx.close()?  // Explicit: propagate close errors
+    Ok(())
 }
 ```
 
-**Current status:** Unspecified.
+**Example - implicit close (fire-and-forget):**
+```
+spawn {
+    for item in items {
+        tx.send(item)?
+    }
+    // tx drops here - close errors ignored
+}.detach()
+```
 
-**Recommendation:** Compile error or panic.
+### Buffered Items on Drop
+
+| Scenario | Behavior |
+|----------|----------|
+| Sender dropped, buffer has items | Items remain - receivers can drain them |
+| All senders dropped | Channel closed for writing, readable until empty |
+| Receiver dropped, buffer has items | Items are **dropped** (lost) |
+| All receivers dropped | Senders get `Err(Closed)` on next send |
+
+**Rationale:** This is standard MPSC/MPMC semantics. Items are not "lost" unless all receivers are gone.
+
+**Example - draining a closed channel:**
+```
+let (tx, rx) = Channel<i32>.buffered(10)
+
+spawn {
+    for i in 0..5 {
+        tx.send(i)?
+    }
+    // tx drops, channel closed for writing
+}.join()?
+
+// Can still drain remaining items
+while let Ok(item) = rx.recv() {
+    process(item)
+}
+// Eventually: Err(Closed) when buffer empty
+```
+
+### Error Types
+
+```
+enum SendError {
+    Closed,           // All receivers dropped
+}
+
+enum RecvError {
+    Closed,           // All senders dropped AND buffer empty
+}
+
+enum CloseError {
+    AlreadyClosed,    // Channel already closed
+    FlushFailed,      // Buffered data couldn't be flushed (rare)
+}
+
+enum TrySendError {
+    Full(T),          // Buffer full, value returned
+    Closed(T),        // Channel closed, value returned
+}
+
+enum TryRecvError {
+    Empty,            // Buffer empty, no senders blocked
+    Closed,           // Channel closed
+}
+```
+
+### Design Decisions
+
+| Decision | Chosen | Rejected | Why |
+|----------|--------|----------|-----|
+| Channel linearity | Non-linear | Linear | Fire-and-forget ergonomics (ED ≤ 1.2) |
+| Close on drop | Implicit, errors ignored | Require explicit close | Matches `ensure` philosophy |
+| Buffered items on rx drop | Dropped (lost) | Error, keep forever | Standard semantics, predictable |
+| Close error handling | Explicit `close()` method | Always propagate | User chooses when errors matter |
+
+## Select
+
+Wait on multiple operations:
+
+```
+loop {
+    select {
+        case rx1.recv() -> |msg| handle_a(msg),
+        case rx2.recv() -> |msg| handle_b(msg),
+        timeout 5.seconds -> handle_timeout(),
+    }
+}
+```
 
 ---
 
-## Remaining Issues
+## Design Decisions
 
-### High Priority
+| Decision | Chosen | Rejected | Why |
+|----------|--------|----------|-----|
+| Task grouping | Affine handles | Mandatory nursery | Ergonomics (ED <= 1.2) |
+| Fire-and-forget | Explicit `.detach()` | Implicit (Go-style) | Safety (MC >= 0.90) |
+| Function coloring | None | async/await | No ecosystem split |
+| Green task keyword | `multitasking` | `runtime` | More intuitive |
+| Thread pool keyword | `threads` | `pool` | Avoids collision with Pool<T> |
+| CPU work | Explicit `threads.spawn` | Implicit pool | Transparency (TC >= 0.90) |
 
-1. **Sync nursery blocking async runtime** (see Critical Issues)
-2. **Async block capture semantics**
-3. **block_on nesting behavior**
+## Metrics Validation
 
-### Medium Priority
-
-4. **Async cancellation**
-   - Does `.await` check cancelled() flag?
-   - Can async I/O be interrupted?
-
-5. **Runtime configuration**
-   - Worker thread count?
-   - Task scheduling policy?
-
-### Low Priority
-
-6. **Async drop**
-   - Can destructors be async?
-   - Currently: no (drop is sync)
+| Metric | Target | This Design |
+|--------|--------|-------------|
+| TC (Transparency) | >= 0.90 | `with multitasking`, `with threads`, spawns all visible |
+| ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
+| SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
+| MC (Mechanical Correctness) | >= 0.90 | Affine handles catch forgotten tasks |

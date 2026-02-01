@@ -24,12 +24,12 @@ Gaps and incomplete areas identified in the design documents.
 - [ ] `char` necessity — Is `char` needed or just use `u32` + validation?
 
 ### Union Types (Type System)
-- [ ] Union type syntax (`A | B`)
-- [ ] Canonical ordering and deduplication
-- [ ] Subtyping rules (`A ⊆ A | B`)
-- [ ] Memory layout (max size + discriminant)
-- [ ] Pattern matching across union members
-- [ ] Interaction with generics
+- [x] ~~Union type syntax (`A | B`)~~ (specs/types/union-types.md)
+- [x] ~~Canonical ordering and deduplication~~ (specs/types/union-types.md)
+- [x] ~~Subtyping rules (`A ⊆ A | B`)~~ (specs/types/union-types.md)
+- [x] ~~Memory layout (max size + discriminant)~~ (specs/types/union-types.md)
+- [x] ~~Pattern matching across union members~~ (specs/types/union-types.md)
+- [x] ~~Interaction with generics~~ (specs/types/union-types.md)
 
 ---
 
@@ -53,11 +53,37 @@ Gaps and incomplete areas identified in the design documents.
 - [ ] Code generation hooks
 
 ### Standard Library Outline
-- [ ] Core module contents
-- [ ] I/O module (`io`, `fs`)
-- [ ] Networking (`net`)
-- [ ] Time and duration
-- [ ] What's built-in vs imported?
+- [x] ~~Core module contents~~ (specs/stdlib/README.md)
+- [x] ~~What's built-in vs imported?~~ (specs/stdlib/README.md — Prelude section)
+- [x] ~~Batteries-included scope~~ (specs/stdlib/README.md — 24 modules total)
+
+**Core I/O (High Priority):**
+- [ ] `io` — Reader/Writer traits
+- [ ] `fs` — File operations
+- [ ] `path` — Path manipulation
+
+**Networking & Web (High Priority):**
+- [ ] `net` — TCP/UDP sockets
+- [ ] `http` — HTTP client and server (RFC 7230)
+- [ ] `tls` — TLS/SSL connections
+- [ ] `url` — URL parsing (RFC 3986)
+
+**Data Formats:**
+- [ ] `json` — JSON parsing (RFC 8259)
+- [ ] `csv` — CSV parsing (RFC 4180)
+- [ ] `encoding` — Base64, hex, URL encoding (RFC 4648)
+
+**Utilities:**
+- [ ] `cli` — Command-line argument parsing
+- [ ] `time` — Duration, Instant, timestamps
+- [ ] `hash` — SHA256, MD5, CRC32 (integrity)
+- [ ] `bits` — Bit manipulation, byte order
+- [ ] `unicode` — Unicode utilities
+- [ ] `terminal` — ANSI colors, terminal detection
+- [ ] `math` — Mathematical functions
+- [ ] `random` — Random number generation
+- [ ] `os` — Platform-specific operations
+- [ ] `fmt` — String formatting
 
 ### Error Types
 - [x] ~~Built-in `Error` type definition~~ (specs/error-types.md)
@@ -102,23 +128,23 @@ Walk through the 7 litmus test programs from CLAUDE.md:
 
 ## Known Issues from Specs
 
-### Concurrency (from sync-concurrency.md)
-- [ ] Linear types + channels silent failure (RAII wrapper silences close errors)
-- [ ] Nursery nesting rules unclear
-- [ ] Thread pool and resource limits unspecified
-- [ ] Channel drop with items ("best-effort" undefined)
-
-### Async (from async-runtime.md)
-- [ ] Sync nursery blocks async runtime
+### Concurrency (specs/concurrency/)
+- [x] ~~Nursery model replaced with affine handles~~ (spawn/join/detach)
+- [x] ~~Runtime vs Workers confusion~~ (now `multitasking` + `threads`)
+- [x] ~~Function coloring~~ (no async/await, I/O pauses implicitly)
+- [x] ~~Linear types + channels: close error handling on drop~~ (channels are non-linear, explicit close() for errors, implicit drop ignores errors)
+- [x] ~~Channel drop with buffered items~~ (sender drop: items remain for receivers; receiver drop: items lost)
+- [ ] Task-local storage syntax and semantics
+- [ ] Select arm evaluation order (random vs first-listed)
 
 ### Comptime (from compile-time-execution.md)
-- [ ] Should comptime have limited heap allocation (Vec/Map)?
+- [x] ~~Should comptime have limited heap allocation (Vec/Map)?~~ (No — workarounds exist, see specs/control/comptime.md)
 - [ ] Comptime memoization strategy
 - [ ] Step-through debugger for comptime?
 - [ ] Which stdlib functions are comptime-compatible?
 
 ### Unsafe (from unsafe.md)
-- [ ] Atomics and memory ordering specification
+- [x] ~~Atomics and memory ordering specification~~ (specs/memory/atomics.md)
 - [ ] Inline assembly (`asm!`) syntax and semantics
 - [ ] Pointer provenance rules (Stacked Borrows equivalent?)
 - [x] ~~UB detection tooling~~ (debug-mode safety added)
@@ -131,9 +157,9 @@ Walk through the 7 litmus test programs from CLAUDE.md:
 Identified during comprehensive design review (2026-01):
 
 ### Closure Model Complexity
-- [ ] Expression-scoped vs storable closure distinction is subtle — needs crystal-clear compiler errors
-- [ ] Rules for when closure "accesses outer scope" vs "captures" need better documentation
-- [ ] Learning curve concern: users may struggle without excellent diagnostics
+- [x] ~~Expression-scoped vs storable closure distinction is subtle~~ (added "Closures Are Suitcases" mental model + error message specs in closures.md)
+- [x] ~~Rules for when closure "accesses outer scope" vs "captures" need better documentation~~ (added decision flowchart in closures.md)
+- [x] ~~Learning curve concern: users may struggle without excellent diagnostics~~ (added detailed error message templates + IDE tooling section in closures.md)
 
 ### Multi-Element Access Ergonomics
 - [ ] Closure pattern for multi-statement collection access adds ceremony:
@@ -155,7 +181,7 @@ Identified during comprehensive design review (2026-01):
 - [ ] Need consolidated parameter passing spec (currently scattered across memory-model, structs, etc.)
 
 ### Syntax Still TBD
-- [ ] Nursery syntax marked "TBD pending full language syntax design" (sync-concurrency.md)
+- [x] ~~Nursery syntax~~ (replaced with affine handles: `spawn { }.join()` / `.detach()`)
 - [ ] `discard` keyword for wildcards on non-Copy types (sum-types.md) — needs documentation
 - [ ] Exact attribute syntax (`#[...]` vs `@...`) not finalized
 
@@ -164,7 +190,7 @@ Identified during comprehensive design review (2026-01):
 - [ ] Semantic hash caching for generics may be complex to implement correctly
 
 ### Metrics Validation Needed
-- [ ] User study: Closure scope rules (BC1-BC5) predictability for PI ≥ 0.85 validation
+- [ ] User study: Closure scope rules (BC1-BC5) predictability for PI >= 0.85 validation (mental model and error messages added; validation still needed during prototyping)
 - [ ] Quantify UCC: Test 10 canonical programs against 80%+ coverage claim
 - [ ] SN metric calibration: Current 0.3 target may need adjustment (Go error handling is ~2.4)
 - [ ] Add metrics sections to specs without them (~17 specs missing explicit metrics references)
