@@ -57,6 +57,7 @@ Packages are compilation units—default package visibility keeps related code a
 | `import pkg using Name` | Unqualified: `Name` directly |
 | `import pkg using Name, Other` | Multiple unqualified |
 | `import pkg using Name as N` | Renamed unqualified: `N` |
+| `import lazy pkg` | Lazy init: deferred until first use |
 
 **Design rationale:**
 - Qualified access is the default (shows provenance)
@@ -67,6 +68,47 @@ Packages are compilation units—default package visibility keeps related code a
 - NO wildcard imports (no `import pkg using *`)
 - Unused imports: compile error
 - Shadowing imported name with local definition: compile error
+
+### Lazy Imports
+
+`import lazy` defers package initialization until first runtime use:
+
+```
+import lazy database  // init() deferred until first function call
+
+fn main() -> Result<(), Error> {
+    if args.has("--help") {
+        print_help()
+        return Ok(())  // Fast exit, database never initialized
+    }
+
+    let conn = database.connect()?  // init() runs here, errors propagate via ?
+}
+```
+
+**When init runs:**
+
+| Access type | Triggers init? |
+|-------------|----------------|
+| Function call (`pkg.foo()`) | ✓ Yes |
+| Constructor (`pkg.Type { }`) | ✓ Yes |
+| Const access (`pkg.CONST`) | ✗ No (compile-time) |
+| Type reference (`pkg.Type`) | ✗ No (compile-time) |
+
+**Semantics:**
+- First function call to a lazy-imported package triggers its `init()`
+- Init runs exactly once, synchronized across threads (like `OnceLock`)
+- Init errors propagate to the call site via `?`
+- If ANY importer uses eager import, package initializes eagerly (eager wins)
+
+**When to use:**
+
+| Use case | Import style |
+|----------|--------------|
+| Server (fail-fast) | `import pkg` (eager, default) |
+| CLI tool (fast startup) | `import lazy pkg` |
+| Rarely-used feature | `import lazy pkg` |
+| Hot-path performance | `import pkg` (no init check overhead)
 
 ### Re-exports (for library facades)
 
@@ -199,6 +241,23 @@ struct Node {
 
 Handles are **not** trait objects—they're indices into a pool. No vtable, no indirection beyond array lookup.
 
+### Package-Level State
+
+**Allowed at package level:**
+
+| Declaration | Example | Notes |
+|-------------|---------|-------|
+| `const` | `const MAX: i32 = 100` | Immutable, computed at compile time |
+| Sync-wrapped mutable | `var counter: Atomic<i32> = Atomic::new(0)` | Thread-safe by construction |
+| Sync-wrapped mutable | `var config: Shared<Config> = Shared::new(...)` | Thread-safe by construction |
+
+**Not allowed:**
+```
+var counter: i32 = 0  // ✗ Compile error: package-level mutable state must be sync-safe
+```
+
+**Rationale:** Unsynchronized mutable globals are race conditions waiting to happen. Requiring sync primitives makes the intent explicit and enables safe parallel initialization.
+
 ### Package Initialization
 
 **Syntax:**
@@ -208,15 +267,42 @@ init() -> Result<(), Error> {
 }
 ```
 
+**Constraints:**
+- At most ONE `init()` function per file
+- Multiple `init()` in same file: compile error
+
 **Order:**
-- Inter-package: topological by import graph
-- Intra-package: **UNSPECIFIED** (may run in parallel, do NOT depend on file order)
-- Create ordering: file A imports item from file B → A's init runs after B's
+
+Intra-package init order is a **parallel topological sort** of the file import DAG:
+
+1. Build directed graph: edge B → A if file A imports from file B (same package)
+2. Files with in-degree 0 run their inits **in parallel**
+3. When init completes, decrement dependents' in-degree
+4. Files reaching in-degree 0 start immediately
+5. Inter-package: dependencies fully initialize before dependents
+
+```
+Example:
+    api.rask imports db.rask, cache.rask
+    db.rask, cache.rask, util.rask have no intra-package imports
+
+    ┌────────┐
+    │  api   │  ← waits for db, cache
+    └────┬───┘
+    ┌────┴────┐
+    ▼         ▼
+  ┌────┐  ┌───────┐  ┌──────┐
+  │ db │  │ cache │  │ util │  ← run in PARALLEL (no dependencies)
+  └────┘  └───────┘  └──────┘
+```
+
+**Why parallel is safe:** Package-level mutable state requires sync primitives, so concurrent init cannot race.
 
 **Failure:**
 - Init returning `Err`: dependent packages do NOT run, independent packages continue
 - First error reported immediately (fail-fast per dependency chain)
 - Already-initialized packages remain initialized (no automatic rollback)
+- If any init in a package fails, remaining inits in that package are cancelled
 - Linear resources in init: consumed or returned in `Err` per normal error handling
 
 ### Compilation Model
@@ -248,62 +334,16 @@ init() -> Result<(), Error> {
 | Change algorithm | Yes (different hash) |
 | Change called function | Yes (different hash) |
 
-### C Interop (Zig-style)
+### C Interop
 
-**Importing C headers:**
+See [C Interop](c-interop.md) for full specification. Summary:
 
-| Syntax | Effect |
-|--------|--------|
-| `import c "header.h"` | Parse header, expose as `c.symbol` |
-| `import c "header.h" as name` | Parse header, expose as `name.symbol` |
-| `import c { "a.h", "b.h" }` | Multiple headers, unified namespace |
+| Approach | Use Case |
+|----------|----------|
+| `import c "header.h"` | Automatic parsing (built-in C parser, like Zig) |
+| `extern "C" { }` | Explicit bindings for C++, complex macros |
 
-**How it works:**
-- Compiler includes C parser (libclang or similar)
-- Header parsed at compile time; C types/functions available immediately
-- C types mapped to Rask equivalents (`int` → `c_int`, `char*` → `*u8`, etc.)
-- Macros: function-like macros become inline functions; constant macros become constants
-- Calling C functions requires `unsafe` context (C cannot guarantee Rask's safety invariants)
-
-**Example:**
-```
-import c "stdio.h"
-import c "mylib.h" as mylib
-
-fn main() {
-    unsafe {
-        c.printf("Hello %s\n".ptr, name.ptr)
-        mylib.process(data.ptr, data.len)
-    }
-}
-```
-
-**Exporting to C:**
-
-| Feature | Mechanism |
-|---------|-----------|
-| Export function | `pub extern "C" fn name()` |
-| Export type | `pub extern "C" struct Name { ... }` (must be C-compatible layout) |
-| Header generation | `raskc --emit-header pkg` produces `pkg.h` |
-| ABI | `extern "C"` uses C ABI; `pub` alone uses Rask ABI |
-
-**C-compatible types:**
-- Primitives: `i8`-`i64`, `u8`-`u64`, `f32`, `f64`, `bool`
-- C-specific: `c_int`, `c_long`, `c_size`, `c_char` (platform-dependent sizes)
-- Pointers: `*T`, `*mut T`
-- `extern "C" struct` with only C-compatible fields
-
-**NOT C-compatible:**
-- `String`, `Vec`, `Pool` (internal layout not stable)
-- Handles (generational references have no C equivalent)
-- Closures, trait objects
-
-**Build integration:**
-```
-// rask.build or CLI
-c_include_paths: ["/usr/include", "vendor/"]
-c_link_libs: ["ssl", "crypto"]
-```
+All C calls require `unsafe` context.
 
 ### Edge Cases
 
@@ -320,10 +360,14 @@ c_link_libs: ["ssl", "crypto"]
 | Generic with pkg-visible helper type | Legal within package; cannot expose via `pub fn` signature |
 | Self-referential struct | Use `Handle<Self>` not `any Trait`; pool required |
 | Generic body unchanged (hash match) | Skip recompilation of instantiation sites |
-| C header parse failure | Compile error with location in header; suggest `-I` path or missing dependency |
-| C macro with side effects | Not imported; warning emitted; use wrapper function |
-| C variadic functions | Callable from unsafe; Rask cannot export variadic |
-| C opaque struct | Becomes opaque type in Rask; only pointer operations allowed |
+| Unsync package-level mutable | Compile error: "must be sync-safe" (use `Atomic`, `Mutex`, `Shared`) |
+| Multiple `init()` in same file | Compile error: "at most one init() per file" |
+| Circular intra-package init | Compile error: "circular init dependency: a.rask → b.rask → a.rask" |
+| Init order dependency | Use explicit imports to establish ordering between files |
+| Lazy + eager import same pkg | Eager wins: package initializes before main() |
+| Lazy init failure | Error propagates to call site via `?` |
+| Circular lazy init | Runtime error: "circular lazy initialization: A → B → A" |
+| Lazy import with `using` | `import lazy pkg using Foo` — Foo() call triggers init |
 
 ## Examples
 
@@ -413,48 +457,12 @@ fn walk_up(pool: Pool<Node>, node: Handle<Node>) {
 }
 ```
 
-### C Interop
-```
-// file: sqlite_wrapper.rask
-import c "sqlite3.h" as sql
-
-pub struct Database {
-    handle: *sql.sqlite3  // C opaque pointer
-}
-
-pub fn open(path: String) -> Result<Database, Error> {
-    let db: *sql.sqlite3 = null
-    unsafe {
-        let rc = sql.sqlite3_open(path.cstr(), &db)
-        if rc != sql.SQLITE_OK {
-            return Err(Error::new("sqlite open failed"))
-        }
-    }
-    Ok(Database { handle: db })
-}
-
-pub fn close(db: Database) {
-    unsafe { sql.sqlite3_close(db.handle) }
-}
-
-// Exporting to C:
-pub extern "C" fn rask_process(data: *const u8, len: c_size) -> c_int {
-    unsafe {
-        let slice = slice_from_raw(data, len)
-        match process(slice) {
-            Ok(_) => 0,
-            Err(_) => -1,
-        }
-    }
-}
-```
-
 ## Integration Notes
 
 - **Memory Model**: Package boundaries do NOT affect ownership—values passed across packages transfer ownership identically to intra-package calls
 - **Type System**: Trait structural matching works across packages; impl visibility inferred from trait+type (pub+pub=pub)
 - **Concurrency**: Channels can send types across package boundaries; type identity preserved (origin-based)
 - **Error Handling**: `Result` as built-in eliminates ceremony; propagation (`?`) works uniformly regardless of import style
-- **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; C header parsing cached per header+flags; generic instantiations cached by semantic hash
-- **C Interop**: Compiler bundles C parser; `unsafe` required for all C calls (C cannot provide Rask safety guarantees); raw pointers exist only in unsafe blocks
+- **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; generic instantiations cached by semantic hash
+- **C Interop**: See [C Interop](c-interop.md) for full specification
 - **Tooling Contract**: IDEs MUST show ghost `pub` on impl when inferred (both trait and type are pub); SHOULD show ghost annotations for qualified names when selective imports used, and monomorphization locations

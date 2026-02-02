@@ -192,6 +192,45 @@ pub fn add(a: i32, b: i32) -> i32 { a + b }
 | ` ```no_run ` | Compiled, not run |
 | ` ```ignore ` | Not compiled |
 
+## Benchmarking
+
+### Bench Blocks
+
+Benchmarks use `bench` blocks, mirroring `test` blocks:
+
+```
+bench "vec push" {
+    let vec = Vec.new()
+    for _ in 0..1000 {
+        vec.push(42)
+    }
+}
+```
+
+| Property | Value |
+|----------|-------|
+| Syntax | `bench "description" { body }` |
+| Location | Same rules as `test` blocks |
+| Compilation | Stripped unless `rask bench` |
+| Optimization | Release optimizations when run |
+
+### Measurement
+
+The runner handles iteration and statistics:
+- Warmup (discarded)
+- Auto-calibrated iterations
+- Reports: min, median, mean, max, ops/sec
+
+Entire block is timed. For setup, use helper functions.
+
+### Bench CLI
+
+```
+rask bench              # Run all benchmarks
+rask bench -f "vec"     # Filter by pattern
+rask bench --json       # Machine-readable output
+```
+
 ## Mocking
 
 Trait-based injection (no magic frameworks):
@@ -225,7 +264,6 @@ rask test --verbose    # Show all names
 ## Remaining Issues
 
 ### Low Priority
-1. **Benchmark support** — Should `bench "name" { }` blocks exist?
-2. **Fuzzing** — Property-based / fuzz testing built-in?
-3. **Coverage** — Code coverage reporting approach?
-4. **Fixtures** — Setup/teardown beyond `ensure`?
+1. **Fuzzing** — Property-based / fuzz testing built-in?
+2. **Coverage** — Code coverage reporting approach?
+3. **Fixtures** — Setup/teardown beyond `ensure`?

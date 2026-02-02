@@ -468,6 +468,57 @@ for h in files.handles().collect::<Vec<_>>() {
 }
 ```
 
+### Drop Behavior
+
+When a `Pool<Linear>` is dropped:
+- If empty: normal drop, no additional action
+- If non-empty: runtime panic
+
+This ensures linear resources cannot be silently leaked through pool abandonment.
+
+**Safe patterns:**
+
+```
+// Pattern 1: Explicit take_all loop
+for file in files.take_all() {
+    file.close()?
+}
+
+// Pattern 2: take_all_with (ignore errors)
+files.take_all_with(|f| { f.close(); })
+
+// Pattern 3: take_all_with_result (propagate errors)
+files.take_all_with_result(|f| f.close())?
+
+// Pattern 4: ensure block (cleanup on any exit)
+ensure files.take_all_with(|f| { f.close(); })
+```
+
+**Anti-patterns (will panic):**
+
+```
+// BAD: Dropping non-empty pool
+let files: Pool<File> = Pool::new()
+files.insert(File::open("a.txt")?)?
+// scope exit: PANIC - files not taken
+
+// BAD: Forgetting to take_all in error path
+let files: Pool<File> = Pool::new()
+files.insert(File::open("a.txt")?)?
+some_operation()?  // If this fails, files not taken - PANIC
+for file in files.take_all() { file.close()?; }
+```
+
+**Correct pattern with ensure:**
+
+```
+let files: Pool<File> = Pool::new()
+ensure files.take_all_with(|f| { f.close(); })
+
+files.insert(File::open("a.txt")?)?
+some_operation()?  // If this fails, ensure runs, takes all from pool
+```
+
 ---
 
 ## Thread Safety
@@ -609,6 +660,9 @@ fn next_level(entities: mut Pool<Entity>) {
 | Closure panics in `modify` | Pool left in valid state |
 | Empty pool cursor | `next()` returns None immediately |
 | Nested cursors | Compile error (pool already borrowed) |
+| Drop Pool<Linear> while non-empty | Runtime panic |
+| take_all() on Pool<Linear> | Returns owned elements for consumption |
+| clear() on Pool<Linear> | Compile error (would abandon linear elements) |
 
 ---
 

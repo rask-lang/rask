@@ -4,26 +4,76 @@
 How do temporary references work? When can code read or mutate data without taking ownership?
 
 ## Decision
-Two borrowing modes: **block-scoped** for plain values (strings, struct fields) and **expression-scoped** for collections (Pool, Vec, Map). Both enforce aliasing rules but with different ergonomic tradeoffs.
+Two borrowing modes: **stable borrowing** for plain values (strings, struct fields) and **volatile access** for collections (Pool, Vec, Map). Both enforce aliasing rules but with different ergonomic tradeoffs.
 
 ## Rationale
-Block-scoped borrowing enables ergonomic multi-statement operations on strings and struct fields. Expression-scoped borrowing for collections prevents the "borrowed collection can't be mutated" problem that would otherwise block common patterns like conditional removal.
+Stable borrowing enables ergonomic multi-statement operations on strings and struct fields. Volatile access for collections prevents the "borrowed collection can't be mutated" problem that would otherwise block common patterns like conditional removal.
 
 The split is pragmatic: plain values benefit from named borrows that span multiple statements, while collections need to release borrows quickly to allow interleaved mutation.
 
+## Mental Model: Stability Determines Borrowing
+
+Rask has one borrowing principle: **borrows follow stability**.
+
+| Source Category | Structural Stability | Borrowing Behavior |
+|-----------------|---------------------|-------------------|
+| **Stable** (String, struct fields) | Cannot grow, shrink, or relocate | Stable borrow — valid until block ends |
+| **Volatile** (Pool, Vec, Map) | May insert, remove, resize, reallocate | Volatile access — released at semicolon |
+
+**The rule is simple:** If the source might change between statements, the borrow cannot persist.
+
+### Quick Heuristic
+
+> **Can this source grow or shrink?**
+> - Yes → Volatile access (released at semicolon)
+> - No → Stable borrow (valid until block end)
+
+### Why Collections Are Volatile
+
+Collections can change structurally at any time:
+- `Vec` may reallocate when capacity is exceeded (all element addresses change)
+- `Pool` may compact or remove elements (handle becomes stale)
+- `Map` may rehash on insert (all bucket positions change)
+
+A borrow that persists across statements would become dangling if the collection changes. Therefore, collection accesses are volatile—they complete within the expression and release immediately.
+
+### Why Strings Are Stable
+
+A string's structure is fixed once created:
+- Characters cannot be inserted/removed without creating a new string
+- The backing memory cannot relocate during a borrow
+- Slicing creates a view into existing memory
+
+A stable source permits stable borrows—the reference remains valid until the block ends.
+
+This is why `let key = line[0..n]; validate(key)` works (string can't change), but `let entity = pool[h]; entity.update()` fails (pool might change between statements).
+
+**The solution for multi-statement container access:** Either copy the value out, or use a closure that holds the borrow for a defined scope:
+```
+// Copy out
+let health = pool[h].health    // Value copied, borrow released
+if health <= 0 { ... }
+
+// Closure for multi-statement
+pool.modify(h, |entity| {
+    entity.health -= damage
+    entity.last_hit = now()
+})
+```
+
 ## Specification
 
-### Block-Scoped Borrowing (Plain Values)
+### Stable Borrowing (Strings, Struct Fields)
 
-Borrows from plain values (strings, struct fields) are block-scoped.
+Borrows from stable sources (strings, struct fields) persist until block end.
 
 | Rule | Description |
 |------|-------------|
-| **B1: Block lifetime** | Borrow valid from creation until end of enclosing block |
-| **B2: Source outlives borrow** | Source must be valid for borrow's entire lifetime |
-| **B3: No escape** | Cannot store in struct, return, or send cross-task |
-| **B4: Lifetime extension** | Borrowing a temporary extends its lifetime to match borrow |
-| **B5: Aliasing XOR mutation** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
+| **S1: Block lifetime** | Stable borrow valid from creation until end of enclosing block |
+| **S2: Source outlives borrow** | Source must be valid for borrow's entire lifetime |
+| **S3: No escape** | Cannot store in struct, return, or send cross-task |
+| **S4: Lifetime extension** | Borrowing a temporary extends its lifetime to match borrow |
+| **S5: Aliasing XOR mutation** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
 
 **Basic usage:**
 ```
@@ -115,21 +165,22 @@ let outer: ???
 }
 ```
 
-### Expression-Scoped Borrowing (Collections)
+### Volatile Access (Collections)
 
-Borrows from collections (Pool, Vec, Map) are expression-scoped.
+Access to collections (Pool, Vec, Map) is volatile—released at the semicolon.
 
 | Rule | Description |
 |------|-------------|
-| **E1: Expression lifetime** | Borrow valid only within the expression |
-| **E2: Released at semicolon** | Borrow ends when statement completes |
-| **E3: Chain calls OK** | `pool[h].field.method()` is one expression |
+| **V1: Expression lifetime** | Access valid only within the expression |
+| **V2: Released at semicolon** | Access ends when statement completes |
+| **V3: Chain calls OK** | `pool[h].field.method()` is one expression |
+| **V4: Same aliasing rules** | Aliasing XOR mutation still applies within expression |
 
-**Why expression-scoped for collections?**
+**Why volatile for collections?**
 
-Block-scoped would prevent mutation:
+Stable borrowing would prevent mutation:
 ```
-// ❌ If block-scoped, this would fail:
+// ❌ If stable, this would fail:
 let entity = pool[h]         // Borrow starts
 entity.health -= damage
 if entity.health <= 0 {
@@ -137,11 +188,11 @@ if entity.health <= 0 {
 }
 ```
 
-Expression-scoped allows:
+Volatile access allows:
 ```
-// ✅ Expression-scoped works:
-pool[h].health -= damage     // Borrow released at semicolon
-if pool[h].health <= 0 {     // New borrow
+// ✅ Volatile access works:
+pool[h].health -= damage     // Access released at semicolon
+if pool[h].health <= 0 {     // New access
     pool.remove(h)           // No active borrow - OK
 }
 ```
@@ -159,7 +210,7 @@ if health <= 0 {
 
 ### Multi-Statement Collection Access
 
-**Problem:** Expression-scoped borrows prevent multi-statement operations on collection elements.
+**Problem:** Volatile access prevents multi-statement operations on collection elements.
 
 **Solution:** Closure-based access via `read()` and `modify()` methods (canonical pattern).
 
@@ -240,6 +291,89 @@ The compiler performs local borrow analysis:
 
 All checks are performed **locally** within the function. No cross-function analysis required.
 
+### Error Messages
+
+Error messages should explain **why** the rules differ. The goal is to teach the stability principle through errors.
+
+**Volatile access spanning statements:**
+```
+ERROR: cannot hold reference from volatile source
+   |
+5  |  let entity = pool[h]
+   |               ^^^^^^^ Pool is volatile - may change between statements
+   |                       Access must be used within this expression
+6  |  entity.update()
+   |  ^^^^^^ reference no longer valid
+
+WHY: Pool, Vec, and Map are volatile because they may:
+  - Reallocate when growing (invalidating all references)
+  - Remove elements (creating dangling references)
+  - Rehash or compact (moving elements in memory)
+
+FIX: Copy the value out, or use a closure for multi-statement access:
+
+  // Option 1: Copy out the fields you need
+  let health = pool[h].health
+  if health <= 0 { pool.remove(h) }
+
+  // Option 2: Closure for multi-statement mutation
+  pool.modify(h, |entity| {
+      entity.health -= damage
+      entity.last_hit = now()
+  })
+```
+
+**Mutation during stable borrow:**
+```
+ERROR: cannot mutate stable source while borrowed
+   |
+3  |  let slice = line[0..5]
+   |              ^^^^^^^^^ stable borrow created here
+4  |  line.push('!')
+   |  ^^^^^^^^^^^^^ cannot mutate - would invalidate slice
+5  |  process(slice)
+   |          ^^^^^ borrow still active
+
+WHY: Mutating a string might reallocate or shift contents,
+     invalidating the stable borrow.
+
+FIX: Either complete the borrow first, or clone:
+
+  // Complete borrow first
+  let slice = line[0..5]
+  process(slice)
+  line.push('!')  // OK - borrow ended
+
+  // Or work with a clone
+  let copy = line[0..5].to_string()
+  line.push('!')  // OK - copy is independent
+  process(copy)
+```
+
+**Mutation during closure borrow:**
+```
+ERROR: cannot mutate collection while borrowed
+   |
+5  |  pool.modify(h, |entity| {
+   |  ---- mutable borrow of pool starts here
+6  |      entity.health -= 10
+7  |      pool.remove(other)
+   |      ^^^^^^^^^^^^^^^^^ cannot mutate pool inside its own closure
+
+FIX: Collect handles first, then mutate:
+   |
+5  |  let to_remove = pool.handles().filter(...).collect()
+6  |  for h in to_remove {
+7  |      pool.remove(h)
+8  |  }
+```
+
+**Key principles:**
+- Explain "volatile" or "stable" to teach the underlying reason
+- Show WHY section explaining the structural instability
+- Always suggest the idiomatic alternative (closure, copy, collect-first)
+- Show concrete code fixes, not abstract advice
+
 ## Edge Cases
 
 | Case | Handling |
@@ -251,29 +385,29 @@ All checks are performed **locally** within the function. No cross-function anal
 | Borrow across match arms | All arms see same borrow mode |
 | Clone of borrowed | Allowed (creates independent copy) |
 | Borrow of clone | Borrows the new copy, not original |
-| Expression-scoped in method chain | Borrow spans entire chain |
-| Mixed block/expression | Each follows its own rules |
+| Volatile access in method chain | Access spans entire chain |
+| Mixed stable/volatile | Each follows its source's rules |
 
 ## Examples
 
-### String Parsing (Block-Scoped)
+### String Parsing (Stable Borrow)
 ```
 fn parse_header(line: string) -> Option<(string, string)> {
     let colon = line.find(':')?
-    let key = line[0..colon].trim()      // Block-scoped borrow
-    let value = line[colon+1..].trim()   // Another borrow
+    let key = line[0..colon].trim()      // Stable borrow
+    let value = line[colon+1..].trim()   // Another stable borrow
     Some((key.to_string(), value.to_string()))
 }
 ```
 
-### Entity Update (Expression-Scoped)
+### Entity Update (Volatile Access)
 ```
 fn update_combat(pool: mut Pool<Entity>) {
     let targets: Vec<Handle<Entity>> = find_targets(pool)
 
     for h in targets {
-        pool[h].health -= 10             // Expression borrow
-        if pool[h].health <= 0 {         // New expression borrow
+        pool[h].health -= 10             // Volatile access
+        if pool[h].health <= 0 {         // New volatile access
             pool.remove(h)               // No active borrow - OK
         }
     }
@@ -293,13 +427,89 @@ fn apply_buff(pool: mut Pool<Entity>, h: Handle<Entity>) -> Result<(), Error> {
 }
 ```
 
+## Stable vs Volatile: Quick Reference
+
+| Aspect | Stable Borrow | Volatile Access |
+|--------|---------------|-----------------|
+| Sources | String, struct fields, arrays | Pool, Vec, Map |
+| Duration | Until block ends | Until semicolon |
+| Can store in `let`? | Yes | No (must use immediately) |
+| Multiple per block? | Yes | Yes (each expression independent) |
+| Multi-statement use? | Direct | Closure (`read`/`modify`) or copy out |
+| Why? | Source structure is fixed | Source may change |
+
+## IDE Integration
+
+The IDE makes borrow scopes visible through ghost annotations, reducing the cognitive load of the stability-based borrowing model.
+
+### Ghost Annotations
+
+| Context | Annotation |
+|---------|------------|
+| Stable borrow | `[stable borrow: until line N]` |
+| Volatile access | `[volatile: released at ;]` |
+| After volatile access | `[access released]` (on hover) |
+| Conflict site | `[conflict: borrowed on line N]` |
+
+**Example: Volatile access (collection)**
+```
+let health = pool[h].health  // [volatile: released at ;]
+if health <= 0 {             // pool access released
+    pool.remove(h)           // OK - no conflict indicator
+}
+```
+
+**Example: Stable borrow (string)**
+```
+let key = line[0..eq]        // [stable borrow: until line 8]
+let value = line[eq+1..]     // [stable borrow: until line 8]
+validate(key)                // [uses borrow from line 3]
+process(key, value)          // [uses borrows from lines 3-4]
+}                            // line 8: borrows released
+```
+
+### Hover Information
+
+When hovering over a volatile collection access:
+
+```
+pool[h].health
+^^^^^^ Volatile access from Pool<Entity>
+
+This access is released at the semicolon because Pool
+may change between statements. For multi-statement access:
+  • Copy:    let x = pool[h].health
+  • Closure: pool.modify(h, |e| { ... })
+```
+
+When hovering over a stable borrow:
+
+```
+let key = line[0..eq]
+    ^^^ Stable borrow from String
+
+This borrow is valid until the end of the current block (line 15).
+The source string cannot be mutated while this borrow exists.
+```
+
+### Conflict Highlighting
+
+When a borrow conflict would occur, the IDE highlights both the borrow source and the conflict site:
+
+```
+pool.modify(h, |entity| {    // [mutable borrow of pool]
+    entity.health -= 10
+    pool.remove(other)       // [conflict: pool borrowed on line 1]
+                             //  ^^^^^^^^^^ highlighted in red
+})
+```
+
 ## Integration Notes
 
 - **Value Semantics:** Borrowing is an alternative to copy/move (see [value-semantics.md](value-semantics.md))
 - **Ownership:** Borrows temporarily suspend exclusive ownership (see [ownership.md](ownership.md))
 - **Collections:** Full collection API in [collections.md](../stdlib/collections.md)
 - **Pools:** Handle-based access in [pools.md](pools.md)
-- **Tooling:** IDE shows active borrow scopes, highlights conflicts
 
 ## See Also
 

@@ -8,6 +8,8 @@ The Rask standard library provides foundational types and modules for systems pr
 
 **Batteries included:** Stdlib provides everything needed to build real programs without external packages. HTTP servers, JSON parsing, CLI tools — all built-in.
 
+**Pay for what you use:** Unused modules add zero cost. Don't import `http`? No HTTP code in your binary. Dead code elimination is aggressive — stdlib size doesn't affect minimal programs.
+
 **Timeless standards:** Only includes modules based on stable RFCs and standards that won't change. JSON (RFC 8259), HTTP (RFC 7230), TLS, Base64 (RFC 4648) — all decades-old and stable.
 
 **Mechanical, not opinionated:** Stdlib implements protocols and formats, not frameworks. `http.Server` handles requests; routing/middleware are packages.
@@ -181,8 +183,8 @@ The `io` module provides traits for reading and writing byte streams.
 
 ```
 trait Reader {
-    fn read(mutate self, buf: mutate []u8) -> Result<usize, IoError>
-    fn read_all(mutate self) -> Result<[]u8, IoError>
+    fn read(self, buf: []u8) -> Result<usize, IoError>
+    fn read_all(self) -> Result<[]u8, IoError>
 }
 ```
 
@@ -190,9 +192,9 @@ trait Reader {
 
 ```
 trait Writer {
-    fn write(mutate self, data: read []u8) -> Result<usize, IoError>
-    fn write_all(mutate self, data: read []u8) -> Result<(), IoError>
-    fn flush(mutate self) -> Result<(), IoError>
+    fn write(self, data: []u8) -> Result<usize, IoError>
+    fn write_all(self, data: []u8) -> Result<(), IoError>
+    fn flush(self) -> Result<(), IoError>
 }
 ```
 

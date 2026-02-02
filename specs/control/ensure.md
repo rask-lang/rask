@@ -224,6 +224,45 @@ fn transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> Result
 }
 ```
 
+### Pool<Linear> Cleanup
+
+Cleaning up pools of linear resources:
+
+```
+fn process_many_files(paths: Vec<String>) -> Result<(), Error> {
+    let files: Pool<File> = Pool::new()
+    ensure files.take_all_with(|f| { f.close(); })
+
+    for path in paths {
+        let h = files.insert(File::open(path)?)?
+        // ... use files[h] ...
+    }
+
+    // Normal exit: ensure takes and closes all files
+    // Early return (error): ensure still takes and closes all files
+    Ok(())
+}
+```
+
+**Note:** Errors during cleanup (e.g., close() fails) are ignored in the ensure block. If cleanup errors matter, don't use ensure - explicitly take_all before returning:
+
+```
+fn process_many_files_careful(paths: Vec<String>) -> Result<(), Error> {
+    let files: Pool<File> = Pool::new()
+
+    for path in paths {
+        let h = files.insert(File::open(path)?)?
+        // ... use files[h] ...
+    }
+
+    // Explicit take_all - propagate close errors
+    for file in files.take_all() {
+        file.close()?
+    }
+    Ok(())
+}
+```
+
 ### Ensure + Explicit Consumption Conflict
 
 **Problem:** What if you `ensure` something but then consume it explicitly?

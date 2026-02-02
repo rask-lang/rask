@@ -39,8 +39,8 @@ linear struct Connection {
 ### Consuming Operations
 
 A linear value is consumed by:
-- Calling a method with `transfer self` (takes ownership)
-- Passing to a function with `transfer` parameter mode
+- Calling a method with `take self` (takes ownership)
+- Passing to a function with `take` parameter mode
 - Explicit consumption function (e.g., `file.close()`)
 
 ```
@@ -48,12 +48,12 @@ linear struct File { ... }
 
 impl File {
     // Consuming method - takes ownership
-    fn close(transfer self) -> Result<(), Error> {
+    fn close(take self) -> Result<(), Error> {
         // ... close logic ...
     }
 
-    // Non-consuming - borrows only
-    fn read(read self, buf: mut [u8]) -> Result<usize, Error> {
+    // Non-consuming - borrows (default)
+    fn read(self, buf: mut [u8]) -> Result<usize, Error> {
         // ... read logic ...
     }
 }
@@ -208,6 +208,111 @@ for h in connections.handles() {
     conn.close()?
 }
 // connections can now be dropped (empty)
+```
+
+### Pool<Linear> Drop Behavior
+
+A `Pool<Linear>` MUST enforce consumption of all linear elements before the pool can be safely dropped.
+
+**Rule L5: Pool Drop Enforcement**
+
+| Scenario | Behavior |
+|----------|----------|
+| Pool is empty at drop | Normal drop, no action |
+| Pool contains linear elements at drop | Runtime panic |
+
+**Rationale:** The compiler cannot statically track the dynamic contents of a pool. Runtime enforcement is necessary to prevent silent resource leaks. A panic is preferable to a silent leak because:
+- The program fails loudly rather than silently leaking resources
+- Linear types' purpose (resource safety) is maintained
+- The developer is immediately alerted to the bug
+
+**The take_all pattern (REQUIRED for Pool<Linear>):**
+
+```
+let files: Pool<File> = Pool::new()
+let h1 = files.insert(File::open("a.txt")?)?
+let h2 = files.insert(File::open("b.txt")?)?
+
+// Before allowing pool to drop, consume all elements:
+for file in files.take_all() {
+    file.close()?
+}
+// Pool is now empty, safe to drop
+```
+
+**With ensure (errors ignored):**
+
+```
+let files: Pool<File> = Pool::new()
+ensure for file in files.take_all() {
+    file.close()  // Result ignored - cannot use ? in ensure
+}
+
+// ... use files ...
+// At scope exit: all files taken and closed
+```
+
+**With ensure and error handling:**
+
+```
+let files: Pool<File> = Pool::new()
+ensure for file in files.take_all() {
+    file.close()
+} catch |e| log("Cleanup error: {}", e)
+```
+
+### Pool Helper Methods for Linear Types
+
+When `T` is linear, `Pool<T>` provides additional convenience methods:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `take_all_with(f)` | `fn(T) -> ()` | Take all and apply consuming function to each element |
+| `take_all_with_result(f)` | `fn(T) -> Result<(), E> -> Result<(), E>` | Take all with fallible consumer, stops on first error |
+
+**Usage:**
+
+```
+// Ignore close errors
+files.take_all_with(|f| { f.close(); })
+
+// Propagate close errors
+files.take_all_with_result(|f| f.close())?
+```
+
+### Why Runtime Panic for Pool<Linear> Drop?
+
+**Q: Why not a compile error?**
+
+The compiler would need to track whether a pool is empty at every point where it could be dropped. This requires:
+- Escape analysis (pool passed to function that might not call take_all)
+- Cross-function dataflow analysis
+- Tracking dynamic insert/remove operations
+
+This violates Rask's "local analysis only" principle (CS metric: no whole-program analysis).
+
+**Q: Why not just leak the resources?**
+
+This defeats the purpose of linear types. Linear types exist to guarantee resources are properly cleaned up. Silent leaks make the entire feature pointless.
+
+**Q: Is a runtime panic "mechanical correctness"?**
+
+The MC metric requires bugs be "impossible by construction." A runtime panic on `Pool<Linear>` drop is analogous to bounds checking:
+- The bug (resource leak) is impossible - program terminates rather than leaking
+- The mechanism is runtime, not compile-time
+- This is acceptable per METRICS.md which lists bounds checks as "implicit OK"
+
+### Panic Message
+
+The panic message MUST clearly indicate:
+1. That a Pool with linear elements was dropped while non-empty
+2. The number of unconsumed elements
+3. The element type
+
+Example:
+```
+panic: Pool<File> dropped with 3 unconsumed linear elements.
+Linear resources must be explicitly consumed (use take_all() before drop).
 ```
 
 ### Comparison with Other Mechanisms

@@ -225,7 +225,7 @@ impl SafeBuffer {
         }
     }
 
-    fn close(transfer self) {
+    fn close(take self) {
         unsafe { dealloc(self.ptr, self.len) }
     }
 }
@@ -302,7 +302,133 @@ unsafe {
 
 ### Inline Assembly
 
-Platform-specific machine code (out of scope for core spec; will be separate spec when needed).
+Inline assembly allows embedding platform-specific machine code within Rask functions.
+
+**Syntax:**
+```
+asm {
+    "template with {placeholders}"
+    out(constraint) name
+    in(constraint) name
+    inout(constraint) name
+    clobber(list)
+    options(list)
+}
+```
+
+**Components:**
+
+| Component | Purpose |
+|-----------|---------|
+| Template string | Assembly instructions; `{name}` substituted with operand locations |
+| `out(constraint) name` | Output: assembly writes to this variable |
+| `in(constraint) name` | Input: variable value available to assembly |
+| `inout(constraint) name` | Both input and output |
+| `clobber(list)` | Registers/memory modified as side effect |
+| `options(list)` | Behavior modifiers |
+
+**Constraints:**
+
+| Constraint | Meaning |
+|------------|---------|
+| `reg` | Any general-purpose register |
+| `reg_byte` | Byte-sized register (al, bl, etc.) |
+| `xmm`, `ymm` | SSE/AVX registers |
+| `mem` | Memory operand |
+| `imm` | Immediate constant |
+| `"rax"` | Specific register by name |
+
+**Clobbers:**
+
+| Clobber | Meaning |
+|---------|---------|
+| `clobber("rax", "rbx")` | Named registers destroyed |
+| `clobber(memory)` | Memory may be modified |
+| `clobber(flags)` | CPU flags modified |
+
+**Options:**
+
+| Option | Effect |
+|--------|--------|
+| `volatile` | Prevent reordering/elimination (default if no outputs) |
+| `pure` | No side effects beyond outputs; eliminable if unused |
+| `nomem` | Does not access memory |
+| `nostack` | Does not use stack |
+
+**Examples:**
+
+```
+// Read timestamp counter
+fn rdtsc() -> u64 {
+    unsafe {
+        let result: u64
+        asm {
+            "rdtsc; shl rdx, 32; or rax, rdx"
+            out("rax") result
+            clobber("rdx")
+        }
+        result
+    }
+}
+
+// Memory fence
+fn mfence() {
+    unsafe {
+        asm {
+            "mfence"
+            options(volatile, nomem, nostack)
+        }
+    }
+}
+
+// Add with carry
+fn add_carry(a: u64, b: u64) -> (u64, bool) {
+    unsafe {
+        let sum: u64
+        let carry: u8
+        asm {
+            "add {sum}, {b}; setc {carry}"
+            inout(reg) sum = a
+            in(reg) b
+            out(reg_byte) carry
+            clobber(flags)
+        }
+        (sum, carry != 0)
+    }
+}
+```
+
+**Comptime Integration:**
+
+Assembly strings can be built at compile time:
+
+```
+const ARCH_ADD = comptime {
+    if target.arch == .x86_64 { "add {out}, {a}" }
+    else if target.arch == .aarch64 { "add {out}, {a}, {b}" }
+}
+
+unsafe {
+    asm {
+        ARCH_ADD
+        out(reg) result
+        in(reg) a, b
+    }
+}
+
+// Include from external file
+const CRYPTO_KERNEL = comptime @embed_file("sha256_x64.s")
+```
+
+**Rules:**
+
+| Rule | Description |
+|------|-------------|
+| **ASM1** | `asm` blocks MUST be inside `unsafe` |
+| **ASM2** | All modified registers not in outputs MUST be in clobber list |
+| **ASM3** | Memory side effects require `clobber(memory)` or `volatile` |
+| **ASM4** | Template is passed to assembler; errors surface at link time |
+| **ASM5** | Multiple operands of same direction can share a line: `in(reg) a, b, c` |
 
 ### Mutable Statics
 
@@ -528,7 +654,7 @@ impl CString {
         self.ptr  // Safe: pointer creation, not use
     }
 
-    fn close(transfer self) {
+    fn close(take self) {
         unsafe { dealloc(self.ptr, self.len) }
     }
 }
@@ -583,7 +709,7 @@ fn increment() -> u64 {
 
 ### High Priority
 1. ~~**Atomics and memory ordering**~~ — See [Atomics](atomics.md) for atomic types, memory orderings, and concurrent patterns.
-2. **Inline assembly** — Syntax and semantics for `asm!` blocks. Required for embedded, SIMD, and kernel code.
+2. ~~**Inline assembly**~~ — See Inline Assembly section above.
 
 ### Medium Priority
 3. **Provenance rules** — Pointer provenance (like Rust's Stacked Borrows) is unspecified. May cause optimization unsoundness or UB edge cases with pointer-to-int casts.

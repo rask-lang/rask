@@ -158,6 +158,37 @@ fn example() {
 - `comptime if` conditionally compiles code
 - Comptime variables can be used in runtime code (their values are known)
 
+### Why No Heap Allocation
+
+Comptime excludes heap allocation (`Vec`, `Map`, unbounded collections) by design. This is a deliberate tradeoff, not an oversight.
+
+**Rationale:**
+
+| Reason | Explanation |
+|--------|-------------|
+| Compiler simplicity | No memory management in comptime interpreter |
+| Determinism | No allocator behavior differences across machines |
+| Bounded compilation | Memory limits are explicit, not emergent |
+| Clear mental model | Comptime = pure computation, build script = effectful |
+| Fast compilation | CS >= 5x Rust requires minimal comptime overhead |
+
+**What this means:**
+- Fixed-size arrays and structs: full support
+- Dynamic collections (`Vec`, `Map`): not allowed
+- String operations: via compiler intrinsics with size limits
+- File I/O: only `@embed_file` (read-only, compile-time path)
+
+**Comparison with Zig:**
+
+| Capability | Zig | Rask | Rask Alternative |
+|------------|-----|------|------------------|
+| Comptime allocation | Yes (arena) | No | Two-pass pattern |
+| Dynamic arrays | Yes | No | Fixed-size arrays |
+| Comptime I/O | Yes | Limited | Build scripts |
+| JSON parsing | Comptime | Build script | Full language available |
+
+Zig's approach is more powerful but adds interpreter complexity. Rask prioritizes compilation speed and simplicity.
+
 ### Allowed Features in Comptime
 
 **Full support (works identically to runtime):**

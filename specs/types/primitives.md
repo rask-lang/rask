@@ -23,6 +23,73 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts requir
 
 **Other:** `bool` (1 byte), `char` (4 bytes, Unicode scalar), `()` (0 bytes, unit).
 
+### The `char` Type
+
+`char` is a 4-byte value representing a **Unicode scalar value**—any code point in the range 0x0000–0xD7FF or 0xE000–0x10FFFF. Surrogate code points (0xD800–0xDFFF) are explicitly excluded.
+
+**Why `char` exists (not just `u32` + validation):**
+
+| Concern | `char` | `u32` + validation |
+|---------|--------|-------------------|
+| Type safety | Guaranteed valid scalar | Can hold invalid values |
+| API clarity | `c.is_alphabetic()` makes sense | Methods on arbitrary integers? |
+| Intent | `fn process(c: char)` documents expectation | Ambiguous |
+| Optimization | Compiler knows value is valid | Must re-validate on every use |
+
+**Construction:**
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `'a'`, `'\n'`, `'\u{1F600}'` | `char` | Compile-time validated literal |
+| `char.from_u32(n)` | `Option<char>` | Runtime validation, `None` if invalid |
+| `char.from_u32_unchecked(n)` | `char` | Unsafe, no validation |
+
+**Conversion:**
+
+| Operation | Notes |
+|-----------|-------|
+| `c as u32` | Always succeeds (lossless) |
+| `n as char` | Compile error—use `char.from_u32(n)` |
+
+**Properties:**
+
+| Method | Return | Notes |
+|--------|--------|-------|
+| `c.len_utf8()` | `usize` | Bytes needed to encode (1–4) |
+| `c.is_ascii()` | `bool` | True if 0x00–0x7F |
+
+**Unicode Categories (common subset):**
+
+| Method | Unicode Category |
+|--------|-----------------|
+| `c.is_alphabetic()` | Letter (L) |
+| `c.is_numeric()` | Number (N) |
+| `c.is_alphanumeric()` | Letter or Number |
+| `c.is_whitespace()` | Whitespace (includes tabs, newlines, space) |
+| `c.is_control()` | Control (Cc) |
+
+**Case Conversion:**
+
+| Method | Return | Notes |
+|--------|--------|-------|
+| `c.to_lowercase()` | `char` | Simple lowercase mapping |
+| `c.to_uppercase()` | `char` | Simple uppercase mapping |
+| `c.is_lowercase()` | `bool` | |
+| `c.is_uppercase()` | `bool` | |
+
+**Note:** `to_lowercase()`/`to_uppercase()` use simple (1:1) Unicode case mappings. For full case mappings (e.g., 'ß' → "SS"), use string methods.
+
+**ASCII Shortcuts:**
+
+| Method | Notes |
+|--------|-------|
+| `c.to_ascii_lowercase()` | Fast, ASCII-only |
+| `c.to_ascii_uppercase()` | Fast, ASCII-only |
+| `c.is_ascii_alphabetic()` | a-z, A-Z |
+| `c.is_ascii_digit()` | 0-9 |
+| `c.is_ascii_hexdigit()` | 0-9, a-f, A-F |
+| `c.is_ascii_punctuation()` | ASCII punctuation |
+
 ### Literals
 
 | Form | Example | Default Type |
@@ -97,4 +164,3 @@ All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX`.
 
 ### Medium Priority
 1. **SIMD types** — Built-in vector types (`f32x4`)?
-2. **`char` necessity** — Is `char` needed or just use `u32` + validation?

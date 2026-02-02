@@ -28,17 +28,45 @@ result = select {
 
 ## Semantics
 
-### Selection
+### Selection Policy
 
 When multiple arms are ready simultaneously:
 
-| Policy | Behavior |
-|--------|----------|
-| **First-ready** | Select first arm that becomes ready |
-| Random | Select randomly among ready arms |
-| Priority | Select in listed order |
+| Construct | Policy | Rationale |
+|-----------|--------|-----------|
+| `select` | **Random** among ready arms | Prevents starvation |
+| `select_priority` | **First-listed** wins | Deterministic, explicit priority |
 
-**Current status:** Unspecified. Recommendation: First-ready with implementation-defined tie-breaking.
+#### `select` (Default)
+
+The runtime selects **uniformly at random** among all ready arms. This prevents starvation—no arm can be indefinitely skipped if it's always ready.
+
+```
+select {
+    case rx1.recv() -> |v| handle(v),  // 50% if both ready
+    case rx2.recv() -> |v| handle(v),  // 50% if both ready
+}
+```
+
+**Guarantee:** If an arm is ready on N consecutive iterations, it fires with probability approaching 1 as N increases.
+
+#### `select_priority` (Opt-in)
+
+When priority or determinism is required:
+
+```
+select_priority {
+    case shutdown.recv() -> |_| return,   // Always checked first
+    case work.recv() -> |w| process(w),   // Only if shutdown not ready
+}
+```
+
+**Semantics:** Arms evaluated in listed order. First ready arm fires.
+
+**Use cases:**
+- Control signals that must preempt work
+- Graceful shutdown patterns
+- Deterministic testing
 
 ### Ownership
 
@@ -107,20 +135,8 @@ select {
 
 ## Remaining Issues
 
-### High Priority
-
-1. **Arm evaluation order**
-   - When multiple arms ready, which fires?
-   - Random? First-listed? Implementation-defined?
-
-### Medium Priority
-
-2. **Biased select**
-   - Syntax for priority-based selection?
-   - `select_biased { ... }`
-
 ### Low Priority
 
-3. **Select macros**
+1. **Select macros**
    - Should select be a macro for flexibility?
    - Currently specified as language construct
