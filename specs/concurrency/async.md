@@ -18,7 +18,7 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
 | `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `threads.spawn { }` | Thread from pool | `with threads` | No |
+| `threading.spawn { }` | Thread from pool | `with threading` | No |
 | `raw_thread { }` | Raw OS thread | Nothing | No |
 
 **All return affine handles** - must be joined or detached (compile error if forgotten).
@@ -26,7 +26,7 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 ### Naming Rationale
 
 - `multitasking` - describes the capability (cooperative green tasks, M:N scheduling)
-- `threads` - direct name for thread pool (avoids collision with `Pool<T>` collection)
+- `threading` - describes the capability (thread pool), consistent with `multitasking`, avoids collision with common variable name `threads`
 - `raw_thread` - single raw OS thread, distinct from pooled threads
 
 ## Concurrency vs Parallelism
@@ -34,32 +34,32 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | Concept | What it means | Rask construct |
 |---------|--------------|----------------|
 | **Concurrency** | Interleaved execution | Green tasks via `spawn { }` |
-| **Parallelism** | Simultaneous execution | Thread pool via `threads.spawn { }` |
+| **Parallelism** | Simultaneous execution | Thread pool via `threading.spawn { }` |
 
-Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `threads.spawn { }`.
+Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `threading.spawn { }`.
 
 ## Basic Usage
 
-```
-fn fetch_user(id: u64) -> Result<User, Error> {
-    let response = http_get(format("/users/{id}"))?  // Pauses task, not thread
+```rask
+func fetch_user(id: u64) -> Result<User, Error> {
+    const response = http_get(format("/users/{id}"))?  // Pauses task, not thread
     parse_user(response)
 }
 
-fn main() -> Result<()> {
+func main() -> Result<()> {
     with multitasking {
-        let listener = TcpListener.bind("0.0.0.0:8080")?
+        const listener = TcpListener.bind("0.0.0.0:8080")?
 
         loop {
-            let conn = listener.accept()?
+            const conn = listener.accept()?
             spawn { handle_connection(conn) }.detach()  // Fire-and-forget
         }
     }
 }
 
-fn handle_connection(conn: TcpConnection) -> Result<()> {
-    let request = conn.read()?
-    let user = fetch_user(request.id)?
+func handle_connection(conn: TcpConnection) -> Result<()> {
+    const request = conn.read()?
+    const user = fetch_user(request.id)?
     conn.write(user.to_json())?
 }
 ```
@@ -77,10 +77,10 @@ fn handle_connection(conn: TcpConnection) -> Result<()> {
 
 `spawn { }` returns a `TaskHandle<T>` that **must be consumed**:
 
-```
+```rask
 // Get result - must join
-let h = spawn { compute() }
-let result = h.join()?
+const h = spawn { compute() }
+const result = h.join()?
 
 // Fire and forget - explicit detach
 spawn { background_work() }.detach()
@@ -97,7 +97,7 @@ spawn { work() }  // ERROR: unused TaskHandle
 
 ### Multiple Tasks
 
-```
+```rask
 // Wait for all
 let (a, b) = join_all(
     spawn { work1() },
@@ -105,7 +105,7 @@ let (a, b) = join_all(
 )
 
 // First to complete
-let result = select_first(
+const result = select_first(
     spawn { fast_path() },
     spawn { slow_path() }
 )  // Remaining task cancelled
@@ -115,27 +115,27 @@ let result = select_first(
 
 For loops or dynamic number of tasks:
 
-```
-let group = TaskGroup.new()
+```rask
+const group = TaskGroup.new()
 
 for url in urls {
     group.spawn { fetch(url) }
 }
 
-let results = group.join_all()?  // Vec<Result<T>>
+const results = group.join_all()?  // Vec<Result<T>>
 ```
 
 ### Handle API
 
-```
+```rask
 struct TaskHandle<T> {
     // Affine - cannot be cloned
 }
 
-impl TaskHandle<T> {
-    fn join(self) -> Result<T, TaskError>    // Wait and get result
-    fn detach(self)                           // Fire-and-forget
-    fn cancel(self) -> Result<T, TaskError>  // Request cancel, wait
+extend TaskHandle<T> {
+    func join(take self) -> Result<T, TaskError>    // Wait and get result
+    func detach(take self)                           // Fire-and-forget
+    func cancel(take self) -> Result<T, TaskError>  // Request cancel, wait
 }
 ```
 
@@ -143,8 +143,8 @@ impl TaskHandle<T> {
 
 ### Setup
 
-```
-fn main() {
+```rask
+func main() {
     with multitasking {
         run_server()
     }
@@ -155,10 +155,10 @@ The `with` block creates and scopes the multitasking scheduler. No explicit cons
 
 For configuration:
 
-```
+```rask
 with multitasking(4) { }              // 4 scheduler threads
-with threads(8) { }                    // 8 pool threads
-with multitasking(4), threads(8) { }  // Both
+with threading(8) { }                    // 8 pool threads
+with multitasking(4), threading(8) { }  // Both
 ```
 
 ### What Multitasking Provides
@@ -172,7 +172,7 @@ with multitasking(4), threads(8) { }  // Both
 
 ### Architecture
 
-```
+```rask
 ┌─────────────────────────────────────────────────┐
 │                  Multitasking                    │
 │  ┌──────────┐ ┌──────────┐ ┌──────────┐        │
@@ -194,10 +194,10 @@ with multitasking(4), threads(8) { }  // Both
 
 **Stdlib I/O automatically pauses the task:**
 
-```
-fn process_file(path: String) -> Result<Data> {
-    let file = File.open(path)?      // Pauses while opening
-    let contents = file.read_all()?  // Pauses while reading
+```rask
+func process_file(path: String) -> Result<Data> {
+    const file = File.open(path)?      // Pauses while opening
+    const contents = file.read_all()?  // Pauses while reading
     parse(contents)
 }
 ```
@@ -213,8 +213,8 @@ The programmer doesn't write `.await`. The stdlib handles pausing internally:
 
 **IDE shows pause points as ghost annotations** (per Principle 7: "Compiler Knowledge is Visible"):
 
-```
-let data = file.read()?  // IDE shows: ⟨pauses⟩
+```rask
+const data = file.read()?  // IDE shows: ⟨pauses⟩
 ```
 
 No code ceremony required. Transparency achieved through tooling.
@@ -223,12 +223,12 @@ No code ceremony required. Transparency achieved through tooling.
 
 For CPU-bound work that needs true parallelism, use an explicit thread pool:
 
-```
-fn main() {
-    with multitasking, threads {
+```rask
+func main() {
+    with multitasking, threading {
         spawn {
-            let data = fetch(url)?                              // I/O - pauses
-            let result = threads.spawn { analyze(data) }.join()?  // CPU on threads
+            const data = fetch(url)?                              // I/O - pauses
+            const result = threading.spawn { analyze(data) }.join()?  // CPU on threads
             save(result)?                                       // I/O - pauses
         }.join()?
     }
@@ -239,17 +239,17 @@ fn main() {
 
 Without a thread pool, CPU-heavy code starves other tasks:
 
-```
+```rask
 spawn { cpu_intensive() }.detach()  // BAD: Hogs scheduler thread
 spawn { handle_io() }.detach()       // Starved!
 ```
 
 With a thread pool:
 
-```
-with multitasking, threads {
+```rask
+with multitasking, threading {
     spawn {
-        threads.spawn { cpu_intensive() }.join()?  // Runs on thread pool
+        threading.spawn { cpu_intensive() }.join()?  // Runs on thread pool
     }.detach()
     spawn { handle_io() }.detach()                  // Runs fine
 }
@@ -257,30 +257,30 @@ with multitasking, threads {
 
 ### Threads API
 
-```
-with threads {
+```rask
+with threading {
     // Spawn on thread pool, get handle
-    let h = threads.spawn { work() }
-    let result = h.join()?
+    const h = threading.spawn { work() }
+    const result = h.join()?
 
     // Fire-and-forget
-    threads.spawn { background() }.detach()
+    threading.spawn { background() }.detach()
 }
 ```
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `threads.spawn { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
+| `threading.spawn { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
 
 ### Thread Pool Without Multitasking
 
 Thread pool works independently for pure CPU-parallelism (CLI tools, batch processing):
 
-```
-fn main() {
-    with threads {
-        let handles = files.map { |f|
-            threads.spawn { process(f) }
+```rask
+func main() {
+    with threading {
+        const handles = files.map { |f|
+            threading.spawn { process(f) }
         }
         for h in handles {
             print(h.join()?)
@@ -292,35 +292,35 @@ fn main() {
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
 | `with multitasking` | Yes | No | I/O-heavy servers |
-| `with threads` | No | Yes | CLI tools, batch processing |
-| `with multitasking, threads` | Yes | Yes | Full-featured applications |
+| `with threading` | No | Yes | CLI tools, batch processing |
+| `with multitasking, threading` | Yes | Yes | Full-featured applications |
 
 ## Raw OS Thread
 
 For code requiring thread affinity (OpenGL, thread-local FFI):
 
-```
-let h = raw_thread {
+```rask
+const h = raw_thread {
     init_graphics_context()  // Needs stable thread identity
     render_loop()
 }
 h.join()?
 ```
 
-Same affine handle rules apply. Works anywhere (no multitasking or threads required).
+Same affine handle rules apply. Works anywhere (no multitasking or threading required).
 
 ## Sync Mode (Default)
 
 Without Multitasking, I/O operations block the thread:
 
-```
-fn main() {
+```rask
+func main() {
     // No Multitasking = sync mode (default)
-    let data = file.read()?  // Blocks thread
+    const data = file.read()?  // Blocks thread
 
     // Thread pool still works
-    with threads {
-        let handles = files.map { |f| threads.spawn { process(f) } }
+    with threading {
+        const handles = files.map { |f| threading.spawn { process(f) } }
         for h in handles { h.join()? }
     }
 }
@@ -329,7 +329,7 @@ fn main() {
 | Feature | With Multitasking | Without Multitasking (default) |
 |---------|-------------------|--------------------------------|
 | `spawn { }` | Green tasks | Compile error (no scheduler) |
-| `threads.spawn { }` | Thread pool | Thread pool (same) |
+| `threading.spawn { }` | Thread pool | Thread pool (same) |
 | Stdlib I/O | Pauses task | Blocks thread |
 
 **No special attribute needed.** The presence of `with multitasking { }` is the opt-in.
@@ -345,10 +345,10 @@ fn main() {
 
 This is consistent with all wait operations (I/O, channels, etc.).
 
-```
-with multitasking, threads {
+```rask
+with multitasking, threading {
     spawn {
-        let h = threads.spawn { cpu_work() }
+        const h = threading.spawn { cpu_work() }
         h.join()?  // YIELDS the green task, doesn't block scheduler
     }
 }
@@ -361,7 +361,7 @@ with multitasking, threads {
 go handleRequest(conn)
 ```
 
-```
+```rask
 // Rask - explicit detach required
 spawn { handle_request(conn) }.detach()
 ```
@@ -379,9 +379,9 @@ spawn { handle_request(conn) }.detach()
 
 Cooperative model with cleanup guarantees:
 
-```
-let h = spawn {
-    let file = File.open("data.txt")?
+```rask
+const h = spawn {
+    const file = File.open("data.txt")?
     ensure file.close()       // ALWAYS runs, even on cancel
 
     loop {
@@ -410,17 +410,17 @@ Channels work in both modes:
 | With multitasking | Pauses task on send/recv |
 | Without multitasking | Blocks thread on send/recv |
 
-```
+```rask
 let (tx, rx) = Channel<Message>.buffered(100)
 
-let producer = spawn {
+const producer = spawn {
     for msg in generate_messages() {
         tx.send(msg)?  // Pauses if buffer full
     }
 }
 
-let consumer = spawn {
-    while let Ok(msg) = rx.recv() {  // Pauses if buffer empty
+const consumer = spawn {
+    while rx.recv() is Ok(msg) {  // Pauses if buffer empty
         process(msg)
     }
 }
@@ -432,7 +432,7 @@ Channels are useful for inter-thread communication even without green tasks.
 
 ### Channel Types
 
-```
+```rask
 struct Sender<T> { ... }     // NOT linear - can be dropped
 struct Receiver<T> { ... }   // NOT linear - can be dropped
 ```
@@ -476,8 +476,8 @@ struct Receiver<T> { ... }   // NOT linear - can be dropped
 This matches `ensure` semantics: explicit handling when needed, simple implicit path.
 
 **Example - explicit close when errors matter:**
-```
-fn reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
+```rask
+func reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
     for item in items {
         tx.send(item)?
     }
@@ -487,7 +487,7 @@ fn reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
 ```
 
 **Example - implicit close (fire-and-forget):**
-```
+```rask
 spawn {
     for item in items {
         tx.send(item)?
@@ -508,7 +508,7 @@ spawn {
 **Rationale:** This is standard MPSC/MPMC semantics. Items are not "lost" unless all receivers are gone.
 
 **Example - draining a closed channel:**
-```
+```rask
 let (tx, rx) = Channel<i32>.buffered(10)
 
 spawn {
@@ -519,7 +519,7 @@ spawn {
 }.join()?
 
 // Can still drain remaining items
-while let Ok(item) = rx.recv() {
+while rx.recv() is Ok(item) {
     process(item)
 }
 // Eventually: Err(Closed) when buffer empty
@@ -527,7 +527,7 @@ while let Ok(item) = rx.recv() {
 
 ### Error Types
 
-```
+```rask
 enum SendError {
     Closed,           // All receivers dropped
 }
@@ -565,12 +565,12 @@ enum TryRecvError {
 
 Wait on multiple operations:
 
-```
+```rask
 loop {
     select {
-        case rx1.recv() -> |msg| handle_a(msg),
-        case rx2.recv() -> |msg| handle_b(msg),
-        timeout 5.seconds -> handle_timeout(),
+        rx1 -> msg: handle_a(msg),
+        rx2 -> msg: handle_b(msg),
+        timeout 5.seconds: handle_timeout(),
     }
 }
 ```
@@ -585,14 +585,14 @@ loop {
 | Fire-and-forget | Explicit `.detach()` | Implicit (Go-style) | Safety (MC >= 0.90) |
 | Function coloring | None | async/await | No ecosystem split |
 | Green task keyword | `multitasking` | `runtime` | More intuitive |
-| Thread pool keyword | `threads` | `pool` | Avoids collision with Pool<T> |
-| CPU work | Explicit `threads.spawn` | Implicit pool | Transparency (TC >= 0.90) |
+| Thread pool keyword | `threading` | `threads`, `pool` | Consistent with `multitasking`, avoids `threads` variable collision |
+| CPU work | Explicit `threading.spawn` | Implicit pool | Transparency (TC >= 0.90) |
 
 ## Metrics Validation
 
 | Metric | Target | This Design |
 |--------|--------|-------------|
-| TC (Transparency) | >= 0.90 | `with multitasking`, `with threads`, spawns all visible |
+| TC (Transparency) | >= 0.90 | `with multitasking`, `with threading`, spawns all visible |
 | ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
 | SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
 | MC (Mechanical Correctness) | >= 0.90 | Affine handles catch forgotten tasks |

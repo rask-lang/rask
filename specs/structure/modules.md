@@ -4,7 +4,7 @@
 How are programs organized? What are the visibility rules, import/export mechanism, and namespace management?
 
 ## Decision
-Package-visible default with explicit `pub`, fixed built-in types, `import`/`using` for selective imports, `export` for library facades, transparent re-exports with origin-based identity.
+Package-visible default with explicit `public`, fixed built-in types, `import`/`using` for selective imports, `export` for library facades, transparent re-exports with origin-based identity.
 
 ## Rationale
 Packages are compilation units—default package visibility keeps related code accessible without ceremony. Fixed built-in types eliminate noise for ubiquitous types while preserving predictability (you always know what's in scope). Qualified imports are the default (shows provenance); `using` keyword makes selective import a conscious choice with natural English flow. `export` clearly communicates re-export intent for library authors. Transparent re-exports (identity = origin) preserve composability.
@@ -16,11 +16,11 @@ Packages are compilation units—default package visibility keeps related code a
 | Level | Scope | Declaration | Default |
 |-------|-------|-------------|---------|
 | **pkg** | All files in package | (no keyword) | YES |
-| **pub** | External packages | `pub` | No |
+| **public** | External packages | `public` | No |
 
 **Rules:**
 - Package-visible default: items visible to all files in package
-- `pub` exposes to external packages
+- `public` exposes to external packages
 - Test files (`*_test.rask`) access all package items
 - No file-private visibility (same package = same team)
 
@@ -73,10 +73,10 @@ Packages are compilation units—default package visibility keeps related code a
 
 `import lazy` defers package initialization until first runtime use:
 
-```
+```rask
 import lazy database  // init() deferred until first function call
 
-fn main() -> Result<(), Error> {
+func main() -> Result<(), Error> {
     if args.has("--help") {
         print_help()
         return Ok(())  // Fast exit, database never initialized
@@ -120,7 +120,7 @@ fn main() -> Result<(), Error> {
 
 **Purpose:** Library authors expose a clean API without revealing internal structure.
 
-```
+```rask
 // mylib/api.rask
 export internal.parser.Parser
 export internal.lexer.Lexer
@@ -137,38 +137,38 @@ mylib.Parser  // works, don't need to know about internal/parser
 - Re-exports preserve type equality for interoperability
 
 **Constraints:**
-- CANNOT export non-pub item: compile error
+- CANNOT export non-public item: compile error
 - Export cycles detected at import graph construction: compile error
 
 ### Struct Visibility
 
 | Scenario | External Construction |
 |----------|----------------------|
-| `pub struct` + all `pub` fields | Literal construction allowed |
-| `pub struct` + any non-pub fields | Literal construction FORBIDDEN |
+| `public struct` + all `public` fields | Literal construction allowed |
+| `public struct` + any non-public fields | Literal construction FORBIDDEN |
 | Mixed visibility struct | MUST provide factory function |
 
 **Field addition semantics:**
-- Adding `pub` field to all-pub struct: **breaking change**
-- Adding non-pub field to all-pub struct: **breaking change** (disables literals)
+- Adding `public` field to all-public struct: **breaking change**
+- Adding non-public field to all-public struct: **breaking change** (disables literals)
 - Adding any field to mixed struct: **non-breaking** (already factory-only)
 
 **Factory-first pattern:**
-```
-pub struct Request {
-    pub method: String
-    pub path: String
-    id: u64  // non-pub → factory required
+```rask
+public struct Request {
+    public method: String
+    public path: String
+    id: u64  // non-public → factory required
 }
 
-pub fn new_request(method: String, path: String) -> Request {
+public func new_request(method: String, path: String) -> Request {
     Request { method, path, id: next_id() }
 }
 ```
 
 **Pattern matching:**
 - Same package: all fields accessible
-- External: `pub` fields only; non-pub fields automatically ignored (no `..` required)
+- External: `public` fields only; non-public fields automatically ignored (no `..` required)
 
 ### Trait Implementation Visibility
 
@@ -176,18 +176,18 @@ pub fn new_request(method: String, path: String) -> Request {
 
 | Trait | Type | Impl visibility |
 |-------|------|-----------------|
-| `pub` | `pub` | `pub` (automatic) |
-| `pub` | pkg | pkg |
-| pkg | `pub` | pkg |
+| `public` | `public` | `public` (automatic) |
+| `public` | pkg | pkg |
+| pkg | `public` | pkg |
 | pkg | pkg | pkg |
 
-**Rule:** `impl visibility = min(trait visibility, type visibility)`
+**Rule:** `extend visibility = min(trait visibility, type visibility)`
 
-No `pub impl` keyword needed—compiler infers it. IDE shows ghost `pub` when inferred.
+No `public extend` keyword needed—compiler infers it. IDE shows ghost `public` when inferred.
 
 **Generic bound visibility:**
-- `pub fn foo<T: Trait>`: caller's `T` must have pub-visible impl (both trait and type are pub)
-- `fn foo<T: Trait>` (pkg): `T` must have pkg-visible impl
+- `public func foo<T: Trait>`: caller's `T` must have public-visible extend (both trait and type are public)
+- `func foo<T: Trait>` (pkg): `T` must have pkg-visible extend
 - Monomorphization at call site: caller's visibility context determines bound satisfaction
 
 ### Circular Dependencies
@@ -199,19 +199,19 @@ No `pub impl` keyword needed—compiler infers it. IDE shows ghost `pub` when in
 | Mutual type dependencies | Use trait indirection |
 
 **Trait-based cycle breaking:**
-```
+```rask
 // pkg: ast
-pub trait Visitor {
-    fn visit_node(self: mut, node: Node)
+public trait Visitor {
+    func visit_node(self: mut, node: Node)
 }
 
-pub struct Node {
+public struct Node<V: Visitor> {
     value: i32
-    accept: fn(Node, impl Visitor)  // generic, not trait object
+    accept: func(Node<V>, V)  // generic, not trait object
 }
 
 // pkg: visitor
-impl ast.Visitor for ConcreteVisitor { ... }
+extend ConcreteVisitor with ast.Visitor { ... }
 
 // Call site:
 node.accept(concrete_visitor)  // Monomorphized: zero indirection
@@ -220,12 +220,12 @@ node.accept(concrete_visitor)  // Monomorphized: zero indirection
 **When trait objects required:**
 - Heterogeneous collections: `[]any Visitor`
 - Runtime polymorphism: storing different visitor types
-- NOT required for compile-time-known cycles: use `impl Trait` parameter
+- NOT required for compile-time-known cycles: use explicit generics `<T: Trait>`
 
 **Self-referential types (NOT cycles):**
 
 Recursive structures like trees use handles, not trait objects:
-```
+```rask
 struct Node {
     value: i32
     parent: Handle<Node>    // zero-cost: index + generation
@@ -236,7 +236,7 @@ struct Node {
 | Approach | When to use |
 |----------|-------------|
 | `Handle<T>` | Self-referential structures (trees, graphs, linked lists) |
-| `impl Trait` | Cross-package interaction with statically-known types |
+| `<T: Trait>` | Cross-package interaction with statically-known types (generics) |
 | `any Trait` | Heterogeneous collections, runtime polymorphism |
 
 Handles are **not** trait objects—they're indices into a pool. No vtable, no indirection beyond array lookup.
@@ -248,12 +248,12 @@ Handles are **not** trait objects—they're indices into a pool. No vtable, no i
 | Declaration | Example | Notes |
 |-------------|---------|-------|
 | `const` | `const MAX: i32 = 100` | Immutable, computed at compile time |
-| Sync-wrapped mutable | `var counter: Atomic<i32> = Atomic::new(0)` | Thread-safe by construction |
-| Sync-wrapped mutable | `var config: Shared<Config> = Shared::new(...)` | Thread-safe by construction |
+| `const` + Atomic | `const COUNTER: Atomic<i32> = Atomic.new(0)` | Thread-safe via interior mutability |
+| `const` + Shared | `const CONFIG: Shared<Config> = Shared.new(...)` | Thread-safe via interior mutability |
 
 **Not allowed:**
-```
-var counter: i32 = 0  // ✗ Compile error: package-level mutable state must be sync-safe
+```rask
+let counter: i32 = 0  // ✗ Compile error: no mutable globals (use Atomic or Shared)
 ```
 
 **Rationale:** Unsynchronized mutable globals are race conditions waiting to happen. Requiring sync primitives makes the intent explicit and enables safe parallel initialization.
@@ -261,7 +261,7 @@ var counter: i32 = 0  // ✗ Compile error: package-level mutable state must be 
 ### Package Initialization
 
 **Syntax:**
-```
+```rask
 init() -> Result<(), Error> {
     // Runs once per package before main
 }
@@ -310,8 +310,8 @@ Example:
 | Aspect | Behavior |
 |--------|----------|
 | Compile unit | Package (all files together) |
-| Incremental trigger | `pub` signature change → recompile importers |
-| Incremental trigger | Non-pub change → recompile package only |
+| Incremental trigger | `public` signature change → recompile importers |
+| Incremental trigger | Non-public change → recompile package only |
 | Generic instantiation | At call site; body change triggers recompilation of instantiation sites |
 | Parallelization | Independent packages compile in parallel |
 
@@ -352,12 +352,12 @@ All C calls require `unsafe` context.
 | Built-in type shadowing | Compile error (prevents silent breakage) |
 | Same-package qualified access | Optional: `Request` and `request.Request` both valid within `request` package |
 | Diamond exports | Same identity (origin-based): `std.Vec` == `collections.Vec` if both export `core.Vec` |
-| Export of pkg item | Compile error: cannot `export` non-pub item |
-| Trait bound with pkg type | Generic caller must have visibility to both type and impl |
+| Export of pkg item | Compile error: cannot `export` non-public item |
+| Trait bound with pkg type | Generic caller must have visibility to both type and extend |
 | Init with linear resource failure | Resource consumed or returned in error per linear semantics |
 | Cycle detection timing | Import graph construction (before type checking), O(edges) |
 | Field defaults | Must be `const` expressions; no side effects |
-| Generic with pkg-visible helper type | Legal within package; cannot expose via `pub fn` signature |
+| Generic with pkg-visible helper type | Legal within package; cannot expose via `public func` signature |
 | Self-referential struct | Use `Handle<Self>` not `any Trait`; pool required |
 | Generic body unchanged (hash match) | Skip recompilation of instantiation sites |
 | Unsync package-level mutable | Compile error: "must be sync-safe" (use `Atomic`, `Mutex`, `Shared`) |
@@ -372,35 +372,35 @@ All C calls require `unsafe` context.
 ## Examples
 
 ### Basic Package Structure
-```
+```rask
 // file: http/request.rask
-pub struct Request {
-    pub method: String
-    pub path: String
+public struct Request {
+    public method: String
+    public path: String
     id: u64  // pkg-visible
 }
 
-pub fn new(method: String, path: String) -> Request {
+public func new(method: String, path: String) -> Request {
     Request { method, path, id: next_id() }
 }
 
-fn next_id() -> u64 { ... }  // pkg-visible helper
+func next_id() -> u64 { ... }  // pkg-visible helper
 
-fn debug_id(r: Request) -> u64 { r.id }  // pkg-visible
+func debug_id(r: Request) -> u64 { r.id }  // pkg-visible
 
 // file: http/handler.rask (same package)
-fn log(r: Request) {
+func log(r: Request) {
     print(debug_id(r))  // OK: pkg-visible
 }
 ```
 
 ### Import Patterns
-```
+```rask
 // file: main.rask
 import http
 import json using parse, stringify  // selective unqualified
 
-fn main() {
+func main() {
     let req = http.new("GET", "/")     // qualified
     let body = parse(read())           // unqualified
     let s: String = ...                // built-in
@@ -409,23 +409,23 @@ fn main() {
 ```
 
 ### Trait-Based Cycles
-```
+```rask
 // pkg: ast
-pub trait Visitor {
-    fn visit(self: mut, node: Node)
+public trait Visitor {
+    func visit(self: mut, node: Node)
 }
 
-pub struct Node {
+public struct Node {
     children: Vec<Node>
 }
 
-pub fn traverse(node: Node, v: impl Visitor) {
+public func traverse<V: Visitor>(node: Node, v: V) {
     v.visit(node)  // Monomorphized: zero-cost
 }
 
 // pkg: printer
-impl ast.Visitor for Printer {
-    fn visit(self: mut, node: ast.Node) { ... }
+extend Printer with ast.Visitor {
+    func visit(self: mut, node: ast.Node) { ... }
 }
 
 // Usage:
@@ -433,7 +433,7 @@ ast.traverse(tree, Printer{})  // No vtable; compile-time dispatch
 ```
 
 ### Self-Referential Structures
-```
+```rask
 // Tree with parent pointers—uses handles, not trait objects
 struct Node {
     value: i32
@@ -441,16 +441,16 @@ struct Node {
     children: Vec<Handle<Node>>
 }
 
-fn build_tree(pool: mut Pool<Node>) -> Handle<Node> {
+func build_tree(pool: Pool<Node>) -> Handle<Node> {
     let root = pool.insert(Node { value: 0, parent: None, children: [] })
     let child = pool.insert(Node { value: 1, parent: Some(root), children: [] })
     pool[root].children.push(child)
     root
 }
 
-fn walk_up(pool: Pool<Node>, node: Handle<Node>) {
+func walk_up(pool: Pool<Node>, node: Handle<Node>) {
     let current = node
-    while let Some(parent) = pool[current].parent {
+    while pool[current].parent is Some(parent) {
         print(pool[parent].value)  // O(1) lookup, no vtable
         current = parent
     }
@@ -460,9 +460,9 @@ fn walk_up(pool: Pool<Node>, node: Handle<Node>) {
 ## Integration Notes
 
 - **Memory Model**: Package boundaries do NOT affect ownership—values passed across packages transfer ownership identically to intra-package calls
-- **Type System**: Trait structural matching works across packages; impl visibility inferred from trait+type (pub+pub=pub)
+- **Type System**: Trait structural matching works across packages; extend visibility inferred from trait+type (public+public=public)
 - **Concurrency**: Channels can send types across package boundaries; type identity preserved (origin-based)
 - **Error Handling**: `Result` as built-in eliminates ceremony; propagation (`?`) works uniformly regardless of import style
 - **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; generic instantiations cached by semantic hash
 - **C Interop**: See [C Interop](c-interop.md) for full specification
-- **Tooling Contract**: IDEs MUST show ghost `pub` on impl when inferred (both trait and type are pub); SHOULD show ghost annotations for qualified names when selective imports used, and monomorphization locations
+- **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names when selective imports used, and monomorphization (code generation) locations

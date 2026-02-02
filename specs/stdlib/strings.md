@@ -33,15 +33,16 @@ Eliminates the reference type problem by making slices ephemeral (expression-onl
 
 | Parameter | Meaning |
 |-----------|---------|
-| `fn foo(s: string)` | Takes ownership |
-| `fn foo(read s: string)` | Borrows for call duration |
-| `fn foo(mutate s: string)` | Exclusive mutable borrow |
+| `func foo(s: string)` | Compiler infers borrow mode from usage |
+| `func foo(take s: string)` | Explicit ownership transfer |
+
+The compiler infers whether a parameter needs read-only borrow, mutable borrow, or can accept a slice based on how it's used in the function body.
 
 **Never use `string_view` or `StringSlice` in public APIs.** They are internal storage tools.
 
-```
+```rask
 // Library defines:
-fn search(read text: string, read pattern: string) -> Option<usize>
+func search(text: string, pattern: string) -> Option<usize>
 
 // All of these work - no conversion needed:
 search(my_string, "foo")           // owned strings
@@ -58,11 +59,10 @@ search(my_string[view], "foo")     // string_view converted via indexing
 
 | Operation | Behavior |
 |-----------|----------|
-| `let s2 = s1` | MOVE: `s1` becomes invalid, `s2` owns the data |
-| `let s2 = s1.clone()` | CLONE: both valid, visible allocation |
-| `fn foo(s: string)` | Transfer ownership to callee |
-| `fn foo(read s: string)` | Temporary borrow for call duration |
-| `fn foo(mutate s: string)` | Exclusive mutable borrow for call duration |
+| `const s2 = s1` | MOVE: `s1` becomes invalid, `s2` owns the data |
+| `const s2 = s1.clone()` | CLONE: both valid, visible allocation |
+| `func foo(s: string)` | Borrow for call duration (compiler infers read vs mutable) |
+| `func foo(take s: string)` | Transfer ownership to callee |
 
 ### Expression-Scoped Slicing
 
@@ -73,33 +73,32 @@ Slicing syntax `s[i..j]` creates a temporary view valid ONLY within the expressi
 | Function argument | `process(s[0..5])` | ✅ |
 | Method receiver | `s[0..5].len()` | ✅ |
 | Chained expression | `s[0..5].to_uppercase()` | ✅ |
-| Variable assignment | `let x = s[0..5]` | ❌ Compile error |
+| Variable assignment | `const x = s[0..5]` | ❌ Compile error |
 | Struct field | `Foo { field: s[0..5] }` | ❌ Compile error |
 | Return value | `return s[0..5]` | ❌ Compile error |
 
-**Implementation:** Compiler creates stack-local (ptr, len) view, passes to callee as `read string` parameter, invalidates after expression completes.
+**Implementation:** Compiler creates stack-local (ptr, len) view, passes to callee as borrowed parameter, invalidates after expression completes.
 
 ### Parameter Passing with Slicing
 
 | Declaration | Accepts | What callee receives |
 |-------------|---------|---------------------|
-| `fn foo(s: string)` | `string` only | Ownership |
-| `fn foo(read s: string)` | `string`, `s[i..j]`, `view.as_slice(src)` | Read-only (ptr, len) view |
-| `fn foo(mutate s: string)` | `string` only | Exclusive mutable access |
+| `func foo(s: string)` | `string`, `s[i..j]`, `view.as_slice(src)` | Borrow (compiler infers mode) |
+| `func foo(take s: string)` | `string` only | Ownership transfer |
 
-Slicing is only valid when passing to `read string` parameters.
+Slicing syntax `s[i..j]` is only valid when passing to borrowed parameters (not `take`).
 
 ### The `string_view` Type
 
 Plain indices for lightweight stored references. No validation—user ensures the source string is still valid and unchanged (like storing an index into a Vec).
 
-```
+```rask
 // Create view (just stores indices)
-let view = string_view(0, 5)
+const view = string_view(0, 5)
 
 // Access via source string
 process(source[view])           // equivalent to source[view.start..view.end]
-let sub = source.substr(view)?  // bounds-checked, returns Option
+const sub = source.substr(view)?  // bounds-checked, returns Option
 ```
 
 | Operation | Return | Notes |
@@ -117,14 +116,14 @@ let sub = source.substr(view)?  // bounds-checked, returns Option
 
 For validated stored references (parsers, tokenizers, ASTs). Follows the `Pool<T>` pattern from dynamic data structures.
 
-```
-let pool = StringPool.new()
+```rask
+const pool = StringPool.new()
 
 // Insert strings, get handles
-let h = pool.insert("hello world")?  // Handle<string>
+const h = pool.insert("hello world")?  // Handle<string>
 
 // Create slices (handle + indices)
-let slice = pool.slice(h, 0, 5)?  // StringSlice
+const slice = pool.slice(h, 0, 5)?  // StringSlice
 
 // Access - validates handle, then expression-scoped
 pool[slice]                      // panics if invalid handle
@@ -174,15 +173,15 @@ Slicing uses **byte indices**. Slicing mid-codepoint MUST panic at runtime.
 
 Iterators borrow for expression scope only. Cannot be stored.
 
-```
+```rask
 // Valid: immediate use
 for c in s.chars() { ... }
 
 // Valid: chained
-let count = s.chars().filter(is_vowel).count()
+const count = s.chars().filter(is_vowel).count()
 
 // Invalid: cannot store iterator
-let iter = s.chars()  // Compile error
+const iter = s.chars()  // Compile error
 ```
 
 | Method | Yields | Notes |
@@ -217,11 +216,11 @@ let iter = s.chars()  // Compile error
 |-----------|-----------|-------|
 | `string_builder.new()` | `() -> string_builder` | Empty builder |
 | `string_builder.with_capacity(n)` | `(usize) -> string_builder` | Pre-allocate |
-| `b.append(read s: string)` | `(mutate self)` | Append string/slice |
-| `b.append_char(c)` | `(mutate self, c: char)` | Append char |
+| `b.append(s: string)` | `(self)` | Append string/slice |
+| `b.append_char(c)` | `(self, c: char)` | Append char |
 | `b.build()` | `(self) -> string` | Consume builder, return string |
-| `b.clear()` | `(mutate self)` | Clear contents, keep capacity |
-| `b.len()` | `(read self) -> usize` | Current byte length |
+| `b.clear()` | `(self)` | Clear contents, keep capacity |
+| `b.len()` | `(self) -> usize` | Current byte length |
 
 **`build()` consumes the builder.** To reuse: call `clear()` after building.
 
@@ -238,10 +237,10 @@ let iter = s.chars()  // Compile error
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
-| `s.push_char(c)` | `(mutate self, c: char)` | Append char, may reallocate |
-| `s.push_str(read other: string)` | `(mutate self)` | Append string/slice |
-| `s.truncate(len)` | `(mutate self, len: usize)` | Truncate to `len` bytes |
-| `s.clear()` | `(mutate self)` | Clear contents, keep capacity |
+| `s.push_char(c)` | `(self, c: char)` | Append char, may reallocate |
+| `s.push_str(other: string)` | `(self)` | Append string/slice |
+| `s.truncate(len)` | `(self, len: usize)` | Truncate to `len` bytes |
+| `s.clear()` | `(self)` | Clear contents, keep capacity |
 
 ### Searching
 
@@ -287,10 +286,10 @@ let iter = s.chars()  // Compile error
 | `cstring.to_string()` | `result<string, utf8_error>` |
 
 **Example:**
-```
+```rask
 unsafe {
-    let c_path = path.to_cstring()?
-    let fd = c_open(cstring.as_ptr(c_path), O_RDONLY)
+    const c_path = path.to_cstring()?
+    const fd = c_open(cstring.as_ptr(c_path), O_RDONLY)
 }
 ```
 
@@ -314,59 +313,59 @@ unsafe {
 ## Examples
 
 ### Basic Usage
-```
+```rask
 // Owned strings
-let s1 = "hello"
-let s2 = s1  // MOVE: s1 invalid
+const s1 = "hello"
+const s2 = s1  // MOVE: s1 invalid
 
 // Expression slicing (zero-copy)
 process(s2[0..3])  // passes "hel" as read borrow
 
 // Plain string_view (no validation)
-let view = string_view(0, 3)
+const view = string_view(0, 3)
 process(s2[view])  // user ensures s2 is still valid
 ```
 
 ### Building Strings
-```
-let mut builder = string_builder.with_capacity(100)
+```rask
+const builder = string_builder.with_capacity(100)
 builder.append("User: ")
 builder.append(name)
 builder.append_char('\n')
-let msg = builder.build()
+const msg = builder.build()
 ```
 
 ### Formatting
-```
-let msg = format!("User {} logged in at {}", name, time)
+```rask
+const msg = format!("User {} logged in at {}", name, time)
 ```
 
 ### Parsing with Plain Views (User Manages Validity)
-```
-let line = "field1,field2,field3"
-let fields: Vec<string_view> = Vec.new()
+```rask
+const line = "field1,field2,field3"
+const fields: Vec<string_view> = Vec.new()
 
 for (start, end) in find_field_boundaries(line) {
     fields.push(string_view(start, end))?
 }
 
 // Later: access via original string (user ensures line unchanged)
-for view in &fields {
-    if line[*view].starts_with("field") {
-        process(line[*view])
+for view in fields.iter() {
+    if line[view].starts_with("field") {
+        process(line[view])
     }
 }
 ```
 
 ### Parsing with StringPool (Validated Access)
-```
-fn tokenize(source: string) -> Result<(StringPool, Vec<Token>), Error> {
-    let pool = StringPool.new()
-    let source_handle = pool.insert(source)?
-    let tokens: Vec<Token> = Vec.new()
+```rask
+func tokenize(source: string) -> Result<(StringPool, Vec<Token>), Error> {
+    const pool = StringPool.new()
+    const source_handle = pool.insert(source)?
+    const tokens: Vec<Token> = Vec.new()
 
     for (start, end, kind) in scan(pool[source_handle]) {
-        let slice = pool.slice(source_handle, start, end)?
+        const slice = pool.slice(source_handle, start, end)?
         tokens.push(Token { text: slice, kind })?
     }
 
@@ -374,17 +373,17 @@ fn tokenize(source: string) -> Result<(StringPool, Vec<Token>), Error> {
 }
 
 // Later: safe access even if token is stored/passed around
-fn print_token(pool: read StringPool, token: Token) {
+func print_token(pool: StringPool, token: Token) {
     match pool.get(token.text) {
-        some(s) => print(s),
-        none => print("<invalid>"),
+        Some(s) => print(s),
+        None => print("<invalid>"),
     }
 }
 ```
 
 ### Safe Character-Boundary Access
-```
-let text = "日本語"
+```rask
+const text = "日本語"
 for (i, c) in text.char_indices() {
     // i is guaranteed safe boundary
     process(text[i..i+c.len_utf8()])

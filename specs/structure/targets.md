@@ -20,8 +20,8 @@ Maximum simplicity: the compiler determines package role from code structure. No
 | Package with `*_test.rask` | Library + tests | Test binary (when testing) |
 
 **Rules:**
-- Presence of ANY `pub fn main()` or `pub async fn main()` → executable
-- `main()` MUST be `pub` (external tools need to find entry point)
+- Presence of ANY `public func main()` → executable
+- `main()` MUST be `public` (external tools need to find entry point)
 - `main()` MUST be in root package directory (not nested packages)
 - Multiple files can each have `main()`; compiler error if more than one is built
 - Nested packages (`pkg/sub/`) are ALWAYS libraries (cannot have `main()`)
@@ -30,10 +30,8 @@ Maximum simplicity: the compiler determines package role from code structure. No
 
 | Signature | When to Use |
 |-----------|-------------|
-| `pub fn main()` | Sync program, infallible |
-| `pub fn main() -> Result<()>` | Sync program, can fail |
-| `pub async fn main()` | Async program, infallible |
-| `pub async fn main() -> Result<()>` | Async program, can fail |
+| `public func main()` | Sync program, infallible |
+| `public func main() -> Result<()>` | Sync program, can fail |
 
 **Error handling:**
 - Returning `Err(e)` from `main()`: process exits with non-zero status, error printed to stderr
@@ -44,8 +42,8 @@ Maximum simplicity: the compiler determines package role from code structure. No
 
 **Built-in type:** `Args` (always available, like `String`, `Vec`)
 
-```
-pub fn main(args: Args) {
+```rask
+public func main(args: Args) {
     for arg in args {
         print(arg)  // arg is String
     }
@@ -53,11 +51,14 @@ pub fn main(args: Args) {
 ```
 
 **API:**
-```
-type Args
-    fn len(self: Args) -> usize
-    fn get(self: Args, i: usize) -> Option<String>
-    fn iter(self: Args) -> ArgsIter
+```rask
+struct Args { ... }  // opaque built-in
+
+extend Args {
+    func len(self) -> usize
+    func get(self, i: usize) -> Option<String>
+    func iter(self) -> ArgsIter
+}
 
 // Implements Iterate trait
 for arg in args { ... }  // yields String
@@ -73,8 +74,8 @@ for arg in args { ... }  // yields String
 
 **Built-in handles:** `stdin`, `stdout`, `stderr` (always available)
 
-```
-pub fn main() {
+```rask
+public func main() {
     stdin.read_line()?  // stdin: linear resource, can be consumed
     stdout.write("hello\n")?
     stderr.write("error\n")?
@@ -90,23 +91,23 @@ pub fn main() {
 ### Process Exit
 
 **Implicit exit:**
-```
-pub fn main() {
+```rask
+public func main() {
     print("done")
     // Exits with status 0 when main returns
 }
 
-pub fn main() -> Result<()> {
+public func main() -> Result<()> {
     if error { return Err(e) }  // Exits with status 1
     Ok(())  // Exits with status 0
 }
 ```
 
 **Explicit exit:**
-```
+```rask
 import sys
 
-pub fn main() {
+public func main() {
     sys.exit(42)  // Immediate exit with status 42
 }
 ```
@@ -126,28 +127,28 @@ pub fn main() {
 ### Libraries (No main())
 
 **Library packages:**
-- Export `pub` functions, types, traits
+- Export `public` functions, types, traits
 - Cannot be executed directly
 - Must be imported by executables or other libraries
 - Can have `init()` for package initialization
 
 **Example:**
-```
+```rask
 // pkg: http
 // file: http/request.rask
-pub struct Request { ... }
-pub fn new(method: String, path: String) -> Request { ... }
+public struct Request { ... }
+public func new(method: String, path: String) -> Request { ... }
 
 // NO main() → this is a library
 ```
 
 **Usage:**
-```
+```rask
 // pkg: myapp
 import http
 
-pub fn main() {
-    let req = http.new("GET", "/")
+public func main() {
+    const req = http.new("GET", "/")
 }
 ```
 
@@ -155,31 +156,31 @@ pub fn main() {
 
 **Test files can import the package they're testing:**
 
-```
+```rask
 // pkg: http
 // file: http/request.rask
-pub fn parse(input: String) -> Result<Request> { ... }
+public func parse(input: String) -> Result<Request> { ... }
 
 // file: http/request_test.rask
 import http  // Can import own package in tests
 
-pub fn test_parse() {
-    let req = http.parse("GET / HTTP/1.1")?
+public func test_parse() {
+    const req = http.parse("GET / HTTP/1.1")?
     assert(req.method == "GET")
 }
 ```
 
 **Test entry point:**
-```
-pub fn main() {
+```rask
+public func main() {
     // Auto-generated test runner (by test framework)
     run_all_tests()
 }
 ```
 
 **OR explicit test main:**
-```
-pub fn main(args: Args) {
+```rask
+public func main(args: Args) {
     if args.len() > 1 && args[1] == "--bench" {
         run_benchmarks()
     } else {
@@ -190,13 +191,13 @@ pub fn main(args: Args) {
 
 **Rules:**
 - Test files (`*_test.rask`) can have their own `main()` for custom test runners
-- Tests access all package items (pub and non-pub)
+- Tests access all package items (public and non-public)
 - Test binaries are separate from package binary
 
 ### Build Configuration (Minimal)
 
 **No configuration needed for basic cases:**
-```
+```rask
 raskc myapp          # Builds myapp/main.rask → myapp binary
 raskc mylib          # Error: no main() found
 raskc --lib mylib    # Success: builds library (for checking only, no output)
@@ -233,7 +234,7 @@ c_link_libs = ["ssl", "crypto"]
 **Problem:** Some projects want multiple executables in one package.
 
 **Solution:** Explicit file selection via CLI
-```
+```rask
 raskc myapp/cli.rask → cli binary
 raskc myapp/server.rask → server binary
 ```
@@ -258,9 +259,9 @@ path = "server.rask"
 
 **Common pattern:** Library with example executables
 
-```
+```bash
 mylib/
-  core.rask         # Library code, pub API
+  core.rask         # Library code, public API
   internal.rask     # Library code, pkg-visible
   examples/
     basic.rask      # Example program with main()
@@ -268,12 +269,12 @@ mylib/
 ```
 
 **Without rask.toml:**
-```
+```bash
 raskc mylib/examples/basic.rask → basic binary
 ```
 
 **With rask.toml:**
-```
+```toml
 [[example]]
 name = "basic"
 path = "examples/basic.rask"
@@ -292,16 +293,16 @@ path = "examples/advanced.rask"
 
 | Case | Handling |
 |------|----------|
-| `main()` not `pub` | Compile error: entry point must be public |
+| `main()` not `public` | Compile error: entry point must be public |
 | Multiple `main()` in same package | Compile error (unless using rask.toml `[[bin]]`) |
 | `main()` in nested package | Compile error: only root package can have main |
-| `async fn main()` without async runtime | Runtime initialized automatically for main thread |
+| `async func main()` without async runtime | Runtime initialized automatically for main thread |
 | Linear resource leak in `main()` | Compile error: must consume before return |
 | `sys.exit()` with unconsumed linear resource | Resource leaked (exit is unsafe operation) |
 | Package has both library code and `main()` | Legal: can `import myapp` OR `raskc myapp` (but confusing, discouraged) |
 | Test with multiple `test_*.rask` files | Each file can have tests, one `main()` total (framework-generated) |
 | `init()` failure before `main()` | `main()` never runs, process exits with init error |
-| Args not used in `main()` | Legal: `pub fn main()` or `pub fn main(_: Args)` both fine |
+| Args not used in `main()` | Legal: `public func main()` or `public func main(_: Args)` both fine |
 
 ## Integration Notes
 
@@ -309,7 +310,7 @@ path = "examples/advanced.rask"
 - **Type System**: `main()` signatures are checked for exact match (no inference of return type)
 - **Module System**: Importing a package with `main()` imports its library API, not its entry point (main is special, never exported)
 - **Error Handling**: `?` propagation works in `main() -> Result<()>`; error returned becomes process exit status
-- **Concurrency**: `async fn main()` initializes async runtime for main thread; sync threads can be spawned from async main
+- **Concurrency**: `async func main()` initializes async runtime for main thread; sync threads can be spawned from async main
 - **Compiler Architecture**: Entry point detection happens during package parsing; multiple `main()` error caught early
 - **C Interop**: `extern "C"` functions can be entry points for embedding Rask in C programs, but that's separate from `main()`
 
@@ -317,17 +318,17 @@ path = "examples/advanced.rask"
 
 | Language | Library/Executable Distinction | Entry Point |
 |----------|-------------------------------|-------------|
-| **Rask** | Presence of `main()` | `pub fn main()` |
-| Rust | `Cargo.toml` `[lib]` vs `[[bin]]` | `fn main()` |
+| **Rask** | Presence of `main()` | `public func main()` |
+| Rust | `Cargo.toml` `[lib]` vs `[[bin]]` | `func main()` |
 | Go | No distinction (package main) | `func main()` in package main |
-| Zig | Build script `exe()` vs `lib()` | `pub fn main()` |
+| Zig | Build script `exe()` vs `lib()` | `public func main()` |
 | Odin | Implicit (package main) | `main :: proc()` |
 | C | Linker (main.o vs lib.a) | `int main()` |
 
 **Rask approach:**
 - No build script needed (simpler than Zig)
 - No special package name needed (simpler than Go)
-- Structure determines role (like Odin, but with explicit pub)
+- Structure determines role (like Odin, but with explicit public)
 - Optional manifest only for complex cases (like Cargo, but not required)
 
 ## Migration Path

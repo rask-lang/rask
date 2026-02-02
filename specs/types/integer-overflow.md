@@ -33,20 +33,20 @@ Standard operators panic on overflow:
 | `*` | Multiplication | Panic |
 | `/` | Division | Panic on divide-by-zero |
 | `%` | Remainder | Panic on divide-by-zero |
-| `-x` | Negation | Panic (e.g., `-i32::MIN`) |
+| `-x` | Negation | Panic (e.g., `-i32.MIN`) |
 
-```
+```rask
 let x: u8 = 255
-let y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
+const y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
 ```
 
 ### Wrapping Type
 
 For algorithms that intentionally wrap (hashing, checksums, cyclic counters):
 
-```
-fn hash(data: &[u8]) -> u32 {
-    let h = Wrapping(5381u32)
+```rask
+func hash(data: []u8) -> u32 {
+    const h = Wrapping(5381u32)
     for byte in data {
         h = h * Wrapping(33) + Wrapping(byte as u32)
     }
@@ -68,10 +68,10 @@ fn hash(data: &[u8]) -> u32 {
 
 For algorithms that clamp to bounds (audio, DSP, color):
 
-```
-fn apply_gain(samples: &mut [Saturating<i16>], gain: i16) {
+```rask
+func apply_gain(samples: []Saturating<i16>, gain: i16) {
     for s in samples {
-        *s = *s * Saturating(gain)
+        s = s * Saturating(gain)
     }
 }
 ```
@@ -96,9 +96,9 @@ When you need a single wrapping/saturating operation without changing types:
 | `a.saturating_sub(b)` | `T` | Saturating subtract |
 | `a.saturating_mul(b)` | `T` | Saturating multiply |
 
-```
+```rask
 let counter: u8 = 255
-let next = counter.wrapping_add(1)  // 0
+const next = counter.wrapping_add(1)  // 0
 ```
 
 ### Checked Methods
@@ -114,11 +114,11 @@ For explicit handling of overflow conditions:
 
 **Use cases:** Parsing user input, validating calculations.
 
-```
-fn parse_quantity(s: String) -> Result<u32, Error> {
-    let base = parse_u32(s)?
-    let total = base.checked_mul(unit_size)
-        .ok_or(Error::Overflow)?
+```rask
+func parse_quantity(s: String) -> Result<u32, Error> {
+    const base = parse_u32(s)?
+    const total = base.checked_mul(unit_size)
+        .ok_or(Error.Overflow)?
     Ok(total)
 }
 ```
@@ -133,7 +133,7 @@ Returns result and overflow flag:
 | `a.overflowing_sub(b)` | `(T, bool)` |
 | `a.overflowing_mul(b)` | `(T, bool)` |
 
-```
+```rask
 let (result, overflowed) = x.overflowing_add(y)
 if overflowed {
     log_warning("overflow occurred")
@@ -151,8 +151,8 @@ Shift amounts are checked:
 | `1u8 >> 9` | Panic |
 
 For wrapping shifts, use methods:
-```
-let result = value.wrapping_shl(shift)  // Masks shift amount
+```rask
+const result = value.wrapping_shl(shift)  // Masks shift amount
 ```
 
 ### Division and Remainder
@@ -161,8 +161,8 @@ let result = value.wrapping_shl(shift)  // Masks shift amount
 |------|----------|
 | `x / 0` | Panic: "division by zero" |
 | `x % 0` | Panic: "remainder by zero" |
-| `i32::MIN / -1` | Panic: "signed division overflow" |
-| `i32::MIN % -1` | Panic: "signed remainder overflow" |
+| `i32.MIN / -1` | Panic: "signed division overflow" |
+| `i32.MIN % -1` | Panic: "signed remainder overflow" |
 
 ## Compiler-Elided Overflow Checks
 
@@ -172,28 +172,28 @@ The compiler uses **range analysis** to prove when overflow is impossible. No sp
 
 | Pattern | Compiler Reasoning | Check? |
 |---------|-------------------|--------|
-| `for i in 0..100 { sum += i }` | `i < 100`, max sum = 4950 < u32::MAX | Elided |
+| `for i in 0..100 { sum += i }` | `i < 100`, max sum = 4950 < u32.MAX | Elided |
 | `let x = a & 0xFF; x + 1` | `x <= 255`, result fits u16 | Elided |
 | `if x < 100 { x + 50 }` | Branch proves `x < 100` | Elided |
 | `sum += user_input` | `user_input` unbounded | Check needed |
 
 ### Range Propagation
 
-```
+```rask
 let a: u8 = read_byte()       // Range: [0, 255]
-let b = a & 0x0F              // Range: [0, 15]
-let c = b + 10                // Range: [10, 25] — no check needed
+const b = a & 0x0F              // Range: [0, 15]
+const c = b + 10                // Range: [10, 25] — no check needed
 
-let d = a + 10                // Range: [10, 265] — check needed
+const d = a + 10                // Range: [10, 265] — check needed
 ```
 
 ### Explicit Widening
 
 Cast to wider type to prove no overflow:
 
-```
+```rask
 // Instead of u8 + u8 (may overflow):
-let sum = (a as u16) + (b as u16)   // Can't overflow
+const sum = (a as u16) + (b as u16)   // Can't overflow
 
 // Narrow back if needed:
 let result: u8 = sum.try_into()?    // Or .truncate() for wrapping
@@ -201,11 +201,11 @@ let result: u8 = sum.try_into()?    // Or .truncate() for wrapping
 
 ### Loop Analysis
 
-```
-// Compiler proves: max iterations = 1000, max item = u8::MAX
-// Total max = 1000 * 255 = 255,000 < u32::MAX
+```rask
+// Compiler proves: max iterations = 1000, max item = u8.MAX
+// Total max = 1000 * 255 = 255,000 < u32.MAX
 let sum: u32 = 0
-for item in buffer {   // buffer: &[u8], len <= 1000
+for item in buffer {   // buffer: []u8, len <= 1000
     sum += item as u32
 }
 ```
@@ -220,9 +220,9 @@ for item in buffer {   // buffer: &[u8], len <= 1000
 
 For extreme performance cases where you've proven safety externally:
 
-```
+```rask
 unsafe {
-    let result = a.unchecked_add(b)   // No check, UB if overflows
+    const result = a.unchecked_add(b)   // No check, UB if overflows
 }
 ```
 
@@ -252,7 +252,7 @@ unsafe {
 
 Panic messages include context:
 
-```
+```rask
 thread 'main' panicked at 'integer overflow: 255 + 1 exceeds u8 range'
   --> src/main.rsk:42:15
    |
@@ -270,19 +270,19 @@ thread 'main' panicked at 'shift amount 9 exceeds u8 bit width (8)'
 
 | Expression | Result |
 |------------|--------|
-| `u8::MAX + 1` | Panic |
-| `Wrapping(u8::MAX) + Wrapping(1)` | `Wrapping(0)` |
-| `Saturating(u8::MAX) + Saturating(1)` | `Saturating(255)` |
-| `i8::MIN - 1` | Panic |
+| `u8.MAX + 1` | Panic |
+| `Wrapping(u8.MAX) + Wrapping(1)` | `Wrapping(0)` |
+| `Saturating(u8.MAX) + Saturating(1)` | `Saturating(255)` |
+| `i8.MIN - 1` | Panic |
 | `0u8 - 1` | Panic |
-| `-i32::MIN` | Panic |
+| `-i32.MIN` | Panic |
 | `1u32 << 32` | Panic |
 
 ## Comptime Arithmetic
 
 Compile-time arithmetic is always checked. Overflow is a compile error:
 
-```
+```rask
 const X: u8 = 200 + 100   // Compile error: overflow in constant
 const Y: u8 = Wrapping(200u8) + Wrapping(100)  // OK via wrapping type
 const Z: u8 = (200u8).wrapping_add(100)        // OK via method
@@ -292,13 +292,13 @@ const Z: u8 = (200u8).wrapping_add(100)        // OK via method
 
 Generic code uses the same operators:
 
-```
-fn increment<T: Integer>(x: T) -> T {
-    x + T::ONE   // Checked by default
+```rask
+func increment<T: Integer>(x: T) -> T {
+    x + T.ONE   // Checked by default
 }
 
-fn wrapping_increment<T: Integer>(x: Wrapping<T>) -> Wrapping<T> {
-    x + Wrapping(T::ONE)  // Wraps via type
+func wrapping_increment<T: Integer>(x: Wrapping<T>) -> Wrapping<T> {
+    x + Wrapping(T.ONE)  // Wraps via type
 }
 ```
 

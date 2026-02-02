@@ -1,0 +1,9 @@
+[package]
+name = "rask-types"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-resolve = { path = "../rask-resolve" }
+thiserror.workspace = true

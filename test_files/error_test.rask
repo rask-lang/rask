@@ -1,0 +1,36 @@
+// Error test: demonstrates multiple error recovery
+
+func broken_params(x : i32, y : i32) {
+    let a = @@@
+    let b = 123abc
+    let c =
+    return ###
+}
+
+func missing_body()
+
+struct BadStruct {
+    field1
+    field2: ,
+}
+
+func math_errors() {
+    let x = 5 +
+    2
+    let y = * 3
+    let z = (1 + 2
+}
+
+enum Broken {
+    A(
+    B = $$
+}
+
+func control_flow() {
+    if
+    for in items {
+    while { }
+    match {
+        => println()
+    }
+}

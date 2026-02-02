@@ -1,0 +1,9 @@
+[package]
+name = "rask-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-lexer = { path = "../rask-lexer" }
+thiserror.workspace = true

@@ -42,7 +42,7 @@ This balances Rask's core constraints: transparent costs (all allocations return
 | `map.insert(k, v)` | `Result<Option<V>, InsertError<V>>` | `Full(V)` or `Alloc(V)` |
 
 **Error types:**
-```
+```rask
 enum PushError<T> {
     Full(T),   // Bounded collection at capacity
     Alloc(T),  // Allocation failed
@@ -50,7 +50,7 @@ enum PushError<T> {
 ```
 
 **Convenience methods:**
-```
+```rask
 vec.push(x)?                // Propagate error
 vec.push(x).unwrap()        // Panic on error
 vec.push_or_panic(x)        // Explicit panic variant
@@ -59,10 +59,10 @@ vec.push_or_panic(x)        // Explicit panic variant
 ### Vec - Indexed Access
 
 **Expression-scoped borrows via `[]`:**
-```
+```rask
 vec[i].field              // Read field (expression-scoped borrow)
 vec[i].field = value      // Mutate field (expression-scoped mutable borrow)
-let x = vec[i]            // Copy out (T: Copy only)
+const x = vec[i]          // Copy out (T: Copy only)
 ```
 
 **Methods for safe access:**
@@ -70,7 +70,7 @@ let x = vec[i]            // Copy out (T: Copy only)
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
 | `vec[i]` | `T` | `T: Copy` | Yes (OOB) |
-| `vec[i].field` | expression-scoped `&T` | None | Yes (OOB) |
+| `vec[i].field` | expression-scoped borrow | None | Yes (OOB) |
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
 | `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
 | `vec.read(i, \|v\| R)` | `Option<R>` | None | No |
@@ -78,8 +78,8 @@ let x = vec[i]            // Copy out (T: Copy only)
 
 **Closure access (for multi-statement operations):**
 
-```
-let name = vec.read(i, |v| v.name.clone())?  // Option<String>
+```rask
+const name = vec.read(i, |v| v.name.clone())?  // Option<String>
 vec.modify(i, |v| v.count += 1)?             // Option<()>
 ```
 
@@ -94,7 +94,7 @@ vec.modify(i, |v| v.count += 1)?             // Option<()>
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `map[k]` | `V` | Panics if missing (V: Copy) |
-| `map[k].field` | expression-scoped `&V` | Panics if missing |
+| `map[k].field` | expression-scoped borrow | Panics if missing |
 | `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
 | `map.get_clone(k)` | `Option<V>` | Clone out (V: Clone) |
 | `map.read(k, \|v\| R)` | `Option<R>` | Read if exists |
@@ -108,7 +108,7 @@ vec.modify(i, |v| v.count += 1)?             // Option<()>
 | `map.ensure(k, \|\| v)` | `Result<(), InsertError>` | Insert if missing, no-op if present |
 | `map.ensure_modify(k, \|\| v, \|v\| R)` | `Result<R, InsertError>` | Insert if missing, then mutate |
 
-```
+```rask
 // Ensure user exists, then update
 map.ensure(user_id, || User.new(user_id))?
 map.modify(user_id, |u| u.last_seen = now())?
@@ -135,15 +135,15 @@ map.ensure_modify(user_id, || User.new(user_id), |u| {
 
 ### Iteration
 
-**Standard borrowing semantics:**
-```
-for item in &vec { }      // item: &T
-for item in &mut vec { }  // item: &mut T
-for item in vec { }       // item: T (consuming)
+**Iteration modes:**
+```rask
+for i in vec { }              // i: usize (index iteration)
+for item in vec.iter() { }    // item: borrowed T (ref iteration)
+for item in vec.take_all() { } // item: T (consuming iteration)
 ```
 
 **Conditional removal:**
-```
+```rask
 // Remove matching elements (no allocation)
 vec.remove_where(|x| x.expired) -> usize  // Returns count
 
@@ -157,7 +157,7 @@ vec.retain(|x| !x.expired)
 ### Shrinking
 
 **Infallible, best-effort:**
-```
+```rask
 vec.shrink_to_fit()      // Shrink to len, may keep larger if realloc fails
 vec.shrink_to(n)         // Shrink to at least n capacity
 ```
@@ -167,8 +167,8 @@ Shrinking never fails — if the allocator can't provide a smaller block, the co
 ### In-Place Construction
 
 **Construct directly in collection storage:**
-```
-let idx = vec.push_with(|slot| {
+```rask
+const idx = vec.push_with(|slot| {
     slot.field1 = compute_expensive()
     slot.field2 = [0; 1000]
 })?
@@ -179,20 +179,20 @@ Avoids constructing on stack then moving. Useful for large types.
 ### Linear Resources in Collections
 
 **Linear types CANNOT be stored in Vec or Map:**
-```
+```rask
 let files: Vec<File> = Vec.new()  // COMPILE ERROR
 ```
 
-**Reason:** Collection drop would need to call `T::drop()` for each element, but linear resource drop can fail (returns `Result`), and collection drop cannot propagate errors.
+**Reason:** Collection drop would need to call `T.drop()` for each element, but linear resource drop can fail (returns `Result`), and collection drop cannot propagate errors.
 
 **Solution:** Use `Pool<Linear>` with explicit consumption. See [pools.md](../memory/pools.md#linear-types-in-pools).
 
 ### Slice Descriptors
 
-Slices (`&[T]`) are ephemeral fat pointers (ptr + len) that cannot be stored. For long-lived slices, use `SliceDescriptor<T>`.
+Slices (`[]T`) are ephemeral fat pointers (ptr + len) that cannot be stored. For long-lived slices, use `SliceDescriptor<T>`.
 
 **Problem:** Slices are expression-scoped borrows:
-```
+```rask
 // COMPILE ERROR: Can't store slice
 struct View {
     data: &[u8],  // Slice is not storable
@@ -201,7 +201,7 @@ struct View {
 
 **Solution:** Store the "recipe" for a slice instead of the slice itself:
 
-```
+```rask
 struct SliceDescriptor<T> {
     handle: Handle<T>,    // 8 bytes
     range: Range,         // 8 bytes (start..end)
@@ -209,17 +209,17 @@ struct SliceDescriptor<T> {
 ```
 
 **Usage with String or Vec:**
-```
-let strings: Pool<String> = Pool::new()
-let s = strings.insert("Hello World")?
+```rask
+const strings: Pool<String> = Pool.new()
+const s = strings.insert("Hello World")?
 
 // Create storable slice descriptor
-let slice_desc = s.slice(0..5)   // SliceDescriptor { handle: s, range: 0..5 }
+const slice_desc = s.slice(0..5)   // SliceDescriptor { handle: s, range: 0..5 }
 
 // Later, access the slice
 with strings {
     for i in slice_desc.range {
-        let char = slice_desc.handle[i]
+        const char = slice_desc.handle[i]
     }
 }
 ```
@@ -243,7 +243,7 @@ with strings {
 - Storing references to substrings or sub-vectors
 - Event systems with text ranges
 - Undo buffers with slices of document state
-- Any place you'd want `&[T]` but need to store it
+- Any place you'd want `[]T` but need to store it
 
 ### Capacity Introspection
 
@@ -259,10 +259,10 @@ with strings {
 
 | Case | Handling |
 |------|----------|
-| `vec[usize::MAX]` | Panic (bounds check) |
-| `vec.get(usize::MAX)` | Returns `None` |
-| `Vec.fixed(0).push(x)` | Returns `Err(PushError::Full(x))` |
-| OOM on unbounded `push()` | Returns `Err(PushError::Alloc(x))` |
+| `vec[usize.MAX]` | Panic (bounds check) |
+| `vec.get(usize.MAX)` | Returns `None` |
+| `Vec.fixed(0).push(x)` | Returns `Err(PushError.Full(x))` |
+| OOM on unbounded `push()` | Returns `Err(PushError.Alloc(x))` |
 | `modify_many([i, i], _)` | Panic (duplicate index) |
 | ZST in `Vec<()>` | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | Compile error |
@@ -278,38 +278,78 @@ with strings {
 ### FFI
 
 **Vec ↔ C:**
-```
+```rask
 vec.as_ptr() -> *const T       // unsafe
 vec.as_mut_ptr() -> *mut T     // unsafe
 Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
 ```
 
+### Comptime Collections with Freeze
+
+At compile time, collections use a **compiler-managed allocator** and must be **frozen** to escape comptime as const data. See [comptime.md](../control/comptime.md#comptime-collections-with-freeze) for full details.
+
+**The `.freeze()` method:**
+
+| Collection | `freeze()` Returns | Description |
+|------------|-------------------|-------------|
+| `Vec<T>` | `[T; N]` | Fixed-size array, size inferred from length |
+| `Map<K,V>` | Static map | Perfect hash or similar compile-time representation |
+| `String` | `str` | String literal |
+
+**Example:**
+```rask
+const PRIMES: [u32; _] = comptime {
+    const v = Vec<u32>.new()
+    for n in 2..100 {
+        if is_prime(n) { v.push(n) }
+    }
+    v.freeze()
+}
+
+const KEYWORDS: Map<str, TokenKind> = comptime {
+    const m = Map<str, TokenKind>.new()
+    m.insert("if", TokenKind.If)
+    m.insert("else", TokenKind.Else)
+    m.freeze()
+}
+```
+
+**Rules:**
+- `.freeze()` is only valid in comptime context (compile error at runtime)
+- Unfrozen collections cannot escape comptime (compile error)
+- Subject to comptime memory limits (256MB total, 16MB per array)
+- After freeze, the data is immutable const
+
+**Why freeze?**
+- Makes the "materialization" step explicit
+- Compiler knows exactly what escapes comptime
+- Familiar collection APIs, no new types to learn
+
 ## Examples
 
 ### Web Server Request Buffer
-```
-fn handle_requests(buffer: &mut Vec<Request>) -> Result<(), Error> {
+<!-- test: skip -->
+```rask
+func handle_requests(buffer: Vec<Request>) -> Result<(), Error> {
     loop {
-        let req = receive_request()?
+        const req = receive_request()?
 
         match buffer.push(req) {
             Ok(()) => {}
-            Err(PushError::Full(rejected)) => {
+            Err(PushError.Full(rejected)) => {
                 process_batch(buffer)?
                 buffer.clear()
                 buffer.push(rejected)?
             }
-            Err(PushError::Alloc(rejected)) => {
-                return Err(Error::OutOfMemory)
-            }
+            Err(PushError.Alloc(rejected)) => return Err(Error.OutOfMemory)
         }
     }
 }
 ```
 
 ### Session Cache with Ensure
-```
-fn track_session(cache: &mut Map<SessionId, Session>, id: SessionId) -> Result<(), Error> {
+```rask
+func track_session(cache: Map<SessionId, Session>, id: SessionId) -> Result<(), Error> {
     cache.ensure_modify(id,
         || Session.new(id),
         |s| {
@@ -324,7 +364,7 @@ fn track_session(cache: &mut Map<SessionId, Session>, id: SessionId) -> Result<(
 ## Integration Notes
 
 - **Memory Model:** Collections own their data (value semantics). No lifetime parameters required.
-- **Type System:** Generic code works uniformly: `fn process<T>(v: &Vec<T>)` handles bounded and unbounded transparently.
+- **Type System:** Generic code works uniformly: `func process<T>(v: Vec<T>)` handles bounded and unbounded transparently.
 - **Error Handling:** All allocations return `Result`, composable with `?` operator. Rejected values are returned for retry/logging.
 - **Concurrency:** Collections are not `Sync` by default. Send ownership via channels. Use `Arc<Mutex<Vec<T>>>` for shared mutable access.
 - **Compiler:** No whole-program analysis needed. Expression-scoped borrows determined by syntax. Closure borrow checking is local.
@@ -333,5 +373,5 @@ fn track_session(cache: &mut Map<SessionId, Session>, id: SessionId) -> Result<(
 ## See Also
 
 - [Pools](../memory/pools.md) — Handle-based sparse storage for graphs, entity systems
-- [Borrowing](../memory/borrowing.md) — Expression-scoped vs block-scoped borrowing
+- [Borrowing](../memory/borrowing.md) — One rule: views last as long as the source is stable
 - [Iterator Protocol](iterator-protocol.md) — Iterator trait and adapters

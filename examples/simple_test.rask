@@ -1,0 +1,21 @@
+// Simple test file for parser testing
+
+func add(a: i32, b: i32) -> i32 {
+    a + b
+}
+
+func greet(name: String) {
+    println("Hello, {name}")
+}
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+func main() {
+    const x = 10
+    let y = 20
+    const result = add(x, y)
+    println("Result: {result}")
+}

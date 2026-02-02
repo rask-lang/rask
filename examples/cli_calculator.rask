@@ -1,0 +1,425 @@
+// CLI Calculator - Expression Evaluator
+// Demonstrates: Parsing, enums, match expressions, error handling, REPL pattern
+
+// Token types from lexer
+enum Token {
+    Number(f64),
+    Plus,
+    Minus,
+    Star,
+    Slash,
+    Percent,
+    Caret,       // Power
+    LParen,
+    RParen,
+    Eof,
+}
+
+// AST nodes
+enum Expr {
+    Number(f64),
+    Binary(left: Owned<Expr>, op: BinaryOp, right: Owned<Expr>),
+    Unary(op: UnaryOp, expr: Owned<Expr>),
+}
+
+enum BinaryOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+}
+
+enum UnaryOp {
+    Neg,
+}
+
+enum CalcError {
+    UnexpectedChar(char),
+    UnexpectedToken(String),
+    DivisionByZero,
+    EmptyExpression,
+}
+
+extend CalcError {
+    func message(self) -> String {
+        match self {
+            UnexpectedChar(c) => "unexpected character: '{c}'",
+            UnexpectedToken(s) => "unexpected token: {s}",
+            DivisionByZero => "division by zero",
+            EmptyExpression => "empty expression",
+        }
+    }
+}
+
+// Lexer
+struct Lexer {
+    input: String
+    pos: usize
+}
+
+extend Lexer {
+    func new(input: String) -> Lexer {
+        Lexer { input: input, pos: 0 }
+    }
+
+    func peek_char(self) -> char? {
+        if self.pos >= self.input.len(): return None
+        Some(self.input.char_at(self.pos))
+    }
+
+    func advance(self) -> char? {
+        const c = self.peek_char()?
+        self.pos += 1
+        Some(c)
+    }
+
+    func skip_whitespace(self) {
+        while self.peek_char() is Some(c) {
+            if !c.is_whitespace(): break
+            self.advance()
+        }
+    }
+
+    func next_token(self) -> Result<Token, CalcError> {
+        self.skip_whitespace()
+
+        const c = match self.peek_char() {
+            Some(c) => c,
+            None => return Ok(Token.Eof),
+        }
+
+        // Single-character tokens
+        const token = match c {
+            '+' => { self.advance(); Token.Plus }
+            '-' => { self.advance(); Token.Minus }
+            '*' => { self.advance(); Token.Star }
+            '/' => { self.advance(); Token.Slash }
+            '%' => { self.advance(); Token.Percent }
+            '^' => { self.advance(); Token.Caret }
+            '(' => { self.advance(); Token.LParen }
+            ')' => { self.advance(); Token.RParen }
+            _ if c.is_digit() || c == '.' => self.read_number()?,
+            _ => return Err(CalcError.UnexpectedChar(c)),
+        }
+
+        Ok(token)
+    }
+
+    func read_number(self) -> Result<Token, CalcError> {
+        let num_str = String.new()
+        let has_dot = false
+
+        while self.peek_char() is Some(c) {
+            if c.is_digit() {
+                num_str.push(c)
+                self.advance()
+            } else if c == '.' && !has_dot {
+                has_dot = true
+                num_str.push(c)
+                self.advance()
+            } else {
+                break
+            }
+        }
+
+        const value: f64 = num_str.parse().unwrap()
+        Ok(Token.Number(value))
+    }
+}
+
+// Parser with operator precedence
+struct Parser {
+    lexer: Lexer
+    current: Token
+}
+
+extend Parser {
+    func new(input: String) -> Result<Parser, CalcError> {
+        let lexer = Lexer.new(input)
+        const current = lexer.next_token()?
+        Ok(Parser { lexer: lexer, current: current })
+    }
+
+    func advance(self) -> Result<(), CalcError> {
+        self.current = self.lexer.next_token()?
+    }
+
+    func parse(self) -> Result<Expr, CalcError> {
+        const expr = self.parse_expression()?
+        
+        match self.current {
+            Eof => Ok(expr),
+            _ => Err(CalcError.UnexpectedToken(self.token_string())),
+        }
+    }
+    
+
+    func token_string(self) -> String {
+        match self.current {
+            Number(n) => "{n}",
+            Plus => "+",
+            Minus => "-",
+            Star => "*",
+            Slash => "/",
+            Percent => "%",
+            Caret => "^",
+            LParen => "(",
+            RParen => ")",
+            Eof => "end of input",
+        }
+    }
+
+    // expression = term (('+' | '-') term)*
+    func parse_expression(self) -> Result<Expr, CalcError> {
+        let left = self.parse_term()?
+
+        loop {
+            const op = match self.current {
+                Plus => BinaryOp.Add,
+                Minus => BinaryOp.Sub,
+                _ => break,
+            }
+            self.advance()?
+            const right = self.parse_term()?
+            left = Expr.Binary(left: own left, op: op, right: own right)
+        }
+
+        Ok(left)
+    }
+
+    // term = power (('*' | '/' | '%') power)*
+    func parse_term(self) -> Result<Expr, CalcError> {
+        let left = self.parse_power()?
+
+        loop {
+            const op = match self.current {
+                Star => BinaryOp.Mul,
+                Slash => BinaryOp.Div,
+                Percent => BinaryOp.Mod,
+                _ => break,
+            }
+            self.advance()?
+            const right = self.parse_power()?
+            left = Expr.Binary(left: own left, op: op, right: own right)
+        }
+
+        Ok(left)
+    }
+
+    // power = unary ('^' power)?  (right associative)
+    func parse_power(self) -> Result<Expr, CalcError> {
+        const base = self.parse_unary()?
+
+        if self.current is Caret {
+            self.advance()?
+            const exp = self.parse_power()?  // Right associative
+            Ok(Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp))
+        } else {
+            Ok(base)
+        }
+    }
+
+    // unary = '-' unary | primary
+    func parse_unary(self) -> Result<Expr, CalcError> {
+        if self.current is Minus {
+            self.advance()?
+            const expr = self.parse_unary()?
+            Ok(Expr.Unary(op: UnaryOp.Neg, expr: own expr))
+        } else {
+            self.parse_primary()
+        }
+    }
+
+    // primary = NUMBER | '(' expression ')'
+    func parse_primary(self) -> Result<Expr, CalcError> {
+        match self.current {
+            Number(n) => {
+                self.advance()?
+                Ok(Expr.Number(n))
+            }
+            LParen => {
+                self.advance()?
+                const expr = self.parse_expression()?
+                match self.current {
+                    RParen => {
+                        self.advance()?
+                        Ok(expr)
+                    }
+                    _ => Err(CalcError.UnexpectedToken("expected ')'".to_string())),
+                }
+            }
+            Eof => Err(CalcError.EmptyExpression),
+            _ => Err(CalcError.UnexpectedToken(self.token_string())),
+        }
+    }
+}
+
+// Evaluator
+func evaluate(expr: Expr) -> Result<f64, CalcError> {
+    match expr {
+        Number(n) => Ok(n),
+        Unary(op, inner) => {
+            const val = evaluate(inner)?
+            match op {
+                Neg => Ok(-val),
+            }
+        }
+        Binary(left, op, right) => {
+            const l = evaluate(left)?
+            const r = evaluate(right)?
+            match op {
+                Add => Ok(l + r),
+                Sub => Ok(l - r),
+                Mul => Ok(l * r),
+                Div => {
+                    if r == 0.0: return Err(CalcError.DivisionByZero)
+                    Ok(l / r)
+                }
+                Mod => {
+                    if r == 0.0: return Err(CalcError.DivisionByZero)
+                    Ok(l % r)
+                }
+                Pow => Ok(l.powf(r)),
+            }
+        }
+    }
+}
+
+func calc(input: String) -> Result<f64, CalcError> {
+    const parser = Parser.new(input)?
+    const expr = parser.parse()?
+    evaluate(expr)
+}
+
+func print_help() {
+    println("Calculator - Enter expressions to evaluate")
+    println("")
+    println("Operators:")
+    println("  + - * /  Basic arithmetic")
+    println("  %        Modulo")
+    println("  ^        Power (right associative)")
+    println("  ( )      Grouping")
+    println("")
+    println("Examples:")
+    println("  2 + 3 * 4      => 14")
+    println("  (2 + 3) * 4    => 20")
+    println("  2 ^ 3 ^ 2      => 512 (right associative)")
+    println("  -5 + 3         => -2")
+    println("")
+    println("Commands:")
+    println("  help     Show this help")
+    println("  quit     Exit calculator")
+}
+
+func main() -> Result<(), Error> {
+    println("Rask Calculator")
+    println("Type 'help' for usage, 'quit' to exit")
+    println("")
+
+    loop {
+        print("> ")
+        const input = std.read_line()?.trim()
+
+        if input.is_empty(): continue
+
+        match input {
+            "quit" | "exit" | "q" => break,
+            "help" | "h" | "?" => print_help(),
+            _ => {
+                match calc(input.to_string()) {
+                    Ok(result) => println("= {result}"),
+                    Err(e) => println("Error: {e.message()}"),
+                }
+            }
+        }
+    }
+
+    println("Goodbye!")
+}
+
+// ============================================================================
+// Tests - Demonstrates @test attribute
+// ============================================================================
+
+@test
+func test_addition() {
+    assert(calc("2 + 3") == Ok(5.0))
+    assert(calc("10 + 20 + 30") == Ok(60.0))
+}
+
+@test
+func test_subtraction() {
+    assert(calc("10 - 3") == Ok(7.0))
+    assert(calc("5 - 10") == Ok(-5.0))
+}
+
+@test
+func test_multiplication() {
+    assert(calc("4 * 5") == Ok(20.0))
+    assert(calc("2 * 3 * 4") == Ok(24.0))
+}
+
+@test
+func test_division() {
+    assert(calc("20 / 4") == Ok(5.0))
+    assert(calc("7 / 2") == Ok(3.5))
+}
+
+@test
+func test_precedence() {
+    // Multiplication before addition
+    assert(calc("2 + 3 * 4") == Ok(14.0))
+    assert(calc("2 * 3 + 4") == Ok(10.0))
+
+    // Division before subtraction
+    assert(calc("10 - 6 / 2") == Ok(7.0))
+}
+
+@test
+func test_parentheses() {
+    assert(calc("(2 + 3) * 4") == Ok(20.0))
+    assert(calc("2 * (3 + 4)") == Ok(14.0))
+    assert(calc("((1 + 2) * (3 + 4))") == Ok(21.0))
+}
+
+@test
+func test_power_right_associative() {
+    // 2^3^2 = 2^(3^2) = 2^9 = 512, not (2^3)^2 = 64
+    assert(calc("2 ^ 3 ^ 2") == Ok(512.0))
+    assert(calc("2 ^ 3") == Ok(8.0))
+}
+
+@test
+func test_unary_negation() {
+    assert(calc("-5") == Ok(-5.0))
+    assert(calc("-5 + 3") == Ok(-2.0))
+    assert(calc("--5") == Ok(5.0))  // Double negation
+    assert(calc("3 * -2") == Ok(-6.0))
+}
+
+@test
+func test_modulo() {
+    assert(calc("10 % 3") == Ok(1.0))
+    assert(calc("15 % 4") == Ok(3.0))
+}
+
+@test
+func test_floating_point() {
+    assert(calc("3.14 * 2") == Ok(6.28))
+    assert(calc("1.5 + 2.5") == Ok(4.0))
+}
+
+@test
+func test_division_by_zero() {
+    assert(calc("5 / 0") == Err(CalcError.DivisionByZero))
+    assert(calc("10 % 0") == Err(CalcError.DivisionByZero))
+}
+
+@test
+func test_invalid_input() {
+    assert(calc("2 +").is_err())
+    assert(calc("") == Err(CalcError.EmptyExpression))
+    assert(calc("@").is_err())
+}

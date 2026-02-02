@@ -1,0 +1,184 @@
+// HTTP JSON API Server
+// Demonstrates: Concurrency (spawn, channels), JSON, error handling, with multitasking
+
+import net
+import json
+import time
+
+// User data stored in memory
+struct User {
+    public id: i64
+    public name: String
+    public email: String
+}
+
+// API request/response types
+struct CreateUserRequest {
+    name: String
+    email: String
+}
+
+struct UserResponse {
+    id: i64
+    name: String
+    email: String
+}
+
+struct ErrorResponse {
+    error: String
+}
+
+// Log entry for request logging via channel
+struct LogEntry {
+    timestamp: time.Instant
+    method: String
+    path: String
+    status: i32
+    duration_ms: f64
+}
+
+// Simple in-memory database using Shared for concurrent access
+struct Database {
+    users: Map<i64, User>
+    next_id: i64
+}
+
+extend Database {
+    func new() -> Database {
+        Database {
+            users: Map.new(),
+            next_id: 1,
+        }
+    }
+}
+
+// Handle a single HTTP request with logging
+func handle_request(
+    conn: net.TcpConnection,
+    db: Shared<Database>,
+    log_tx: Sender<LogEntry>
+) -> Result<(), Error> {
+    const start = time.Instant.now()
+    const request = conn.read_http_request()?
+
+    const response = match (request.method, request.path) {
+        ("GET", "/users") => list_users(db),
+        ("GET", path) if path.starts_with("/users/") => {
+            const id = path[7..].parse<i64>()?
+            get_user(db, id)
+        }
+        ("POST", "/users") => create_user(db, request.body),
+        ("DELETE", path) if path.starts_with("/users/") => {
+            const id = path[7..].parse<i64>()?
+            delete_user(db, id)
+        }
+        _ => http_response(404, json.encode(ErrorResponse { error: "Not found" })),
+    }
+
+    conn.write_http_response(response)?
+
+    // Send log entry through channel (non-blocking with buffered channel)
+    log_tx.send(LogEntry {
+        timestamp: start,
+        method: request.method,
+        path: request.path,
+        status: response.status,
+        duration_ms: start.elapsed().as_secs_f64() * 1000.0,
+    })?
+
+    Ok(())
+}
+
+func list_users(db: Shared<Database>) -> HttpResponse {
+    const users = db.read(|d| {
+        d.users.values().map(|u| UserResponse {
+            id: u.id,
+            name: u.name.clone(),
+            email: u.email.clone(),
+        }).collect()
+    })
+    http_response(200, json.encode(users))
+}
+
+func get_user(db: Shared<Database>, id: i64) -> HttpResponse {
+    const user = db.read(|d| d.users.get(id).map(|u| UserResponse {
+        id: u.id,
+        name: u.name.clone(),
+        email: u.email.clone(),
+    }))
+
+    match user {
+        Some(u) => http_response(200, json.encode(u)),
+        None => http_response(404, json.encode(ErrorResponse { error: "User not found" })),
+    }
+}
+
+func create_user(db: Shared<Database>, body: String) -> HttpResponse {
+    const req = match json.decode<CreateUserRequest>(body) {
+        Ok(r) => r,
+        Err(e) => return http_response(400, json.encode(ErrorResponse {
+            error: "Invalid JSON: {e}"
+        })),
+    }
+
+    const user = db.write(|d| {
+        const id = d.next_id
+        d.next_id += 1
+        const user = User { id: id, name: req.name, email: req.email }
+        d.users.insert(id, user.clone())?
+        UserResponse { id: user.id, name: user.name, email: user.email }
+    })
+
+    http_response(201, json.encode(user))
+}
+
+func delete_user(db: Shared<Database>, id: i64) -> HttpResponse {
+    const removed = db.write(|d| d.users.remove(id))
+
+    match removed {
+        Some(_) => http_response(204, ""),
+        None => http_response(404, json.encode(ErrorResponse { error: "User not found" })),
+    }
+}
+
+func http_response(status: i32, body: String) -> HttpResponse {
+    HttpResponse {
+        status: status,
+        headers: Map.from([("Content-Type", "application/json")]),
+        body: body,
+    }
+}
+
+func main() -> Result<(), Error> {
+    const db = Shared.new(Database.new())
+
+    // Create buffered channel for request logging
+    let (log_tx, log_rx) = Channel<LogEntry>.buffered(100)
+
+    with multitasking {
+        // Spawn logger task that consumes log entries
+        spawn {
+            while log_rx.recv() is Ok(entry) {
+                const elapsed = entry.timestamp.elapsed().as_secs_f64()
+                println("[{elapsed:.3}s] {entry.method} {entry.path} -> {entry.status} ({entry.duration_ms:.2}ms)")
+            }
+        }.detach()
+
+        const listener = net.tcp_listen("0.0.0.0:8080")?
+        println("Server listening on :8080")
+
+        loop {
+            const conn = listener.accept()?
+            const db_ref = db.clone()
+            const log_tx_ref = log_tx.clone()
+
+            // Spawn a green task for each connection
+            spawn {
+                match handle_request(conn, db_ref, log_tx_ref) {
+                    Ok(()) => {}
+                    Err(e) => println("Request error: {e}"),
+                }
+            }.detach()
+        }
+    }
+}

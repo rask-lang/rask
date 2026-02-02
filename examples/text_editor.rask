@@ -1,0 +1,284 @@
+// Text Editor with Undo
+// Demonstrates: Pool/Handle pattern, linear types, ensure cleanup, command pattern
+
+import fs
+
+// A line in the document
+struct Line {
+    text: String
+}
+
+// Edit commands that can be undone
+enum EditCommand {
+    InsertLine(after: i32, text: String),
+    DeleteLine(at: i32, deleted_text: String),
+    ModifyLine(at: i32, old_text: String, new_text: String),
+}
+
+extend EditCommand {
+    // Create the inverse command for undo
+    func inverse(self) -> EditCommand {
+        match self {
+            InsertLine(after, text) => DeleteLine(at: after + 1, deleted_text: text),
+            DeleteLine(at, deleted_text) => InsertLine(after: at - 1, text: deleted_text),
+            ModifyLine(at, old_text, new_text) => ModifyLine(at: at, old_text: new_text, new_text: old_text),
+        }
+    }
+}
+
+// The document model
+struct Document {
+    lines: Pool<Line>
+    line_order: Vec<Handle<Line>>  // Maintains line ordering
+    undo_stack: Vec<EditCommand>
+    redo_stack: Vec<EditCommand>
+    modified: bool
+}
+
+extend Document {
+    func new() -> Document {
+        Document {
+            lines: Pool.new(),
+            line_order: Vec.new(),
+            undo_stack: Vec.new(),
+            redo_stack: Vec.new(),
+            modified: false,
+        }
+    }
+
+    func from_file(path: String) -> Result<Document, fs.IoError> {
+        const file = fs.File.open(path)?
+        ensure file.close()
+
+        let doc = Document.new()
+        for line in file.lines() {
+            const text = line?
+            const h = doc.lines.insert(Line { text: text })?
+            doc.line_order.push(h)?
+        }
+        Ok(doc)
+    }
+
+    func line_count(self) -> i32 {
+        self.line_order.len() as i32
+    }
+
+    func get_line(self, index: i32) -> Option<String> {
+        if index < 0 || index >= self.line_count(): return None
+        const h = self.line_order[index as usize]
+        Some(self.lines[h].text.clone())
+    }
+
+    // Insert a new line after the given index (-1 for beginning)
+    func insert_line(self, after: i32, text: String) -> Result<(), Error> {
+        const h = self.lines.insert(Line { text: text.clone() })?
+        const insert_pos = (after + 1) as usize
+        self.line_order.insert(insert_pos, h)?
+
+        // Record for undo
+        self.undo_stack.push(EditCommand.InsertLine(after: after, text: text))?
+        self.redo_stack.clear()
+        self.modified = true
+    }
+
+    // Delete a line at the given index
+    func delete_line(self, at: i32) -> Result<(), Error> {
+        if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
+
+        const h = self.line_order.remove(at as usize)
+        const deleted = self.lines.remove(h).unwrap()
+
+        // Record for undo
+        self.undo_stack.push(EditCommand.DeleteLine(at: at, deleted_text: deleted.text))?
+        self.redo_stack.clear()
+        self.modified = true
+    }
+
+    // Modify text at the given line
+    func modify_line(self, at: i32, new_text: String) -> Result<(), Error> {
+        if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
+
+        const h = self.line_order[at as usize]
+        const old_text = self.lines[h].text.clone()
+        self.lines[h].text = new_text.clone()
+
+        // Record for undo
+        self.undo_stack.push(EditCommand.ModifyLine(at: at, old_text: old_text, new_text: new_text))?
+        self.redo_stack.clear()
+        self.modified = true
+    }
+
+    // Undo the last edit
+    func undo(self) -> Result<bool, Error> {
+        const cmd = match self.undo_stack.pop() {
+            Some(c) => c,
+            None => return Ok(false),
+        }
+
+        // Apply inverse without recording to undo stack
+        self.apply_command_silent(cmd.inverse())?
+        self.redo_stack.push(cmd)?
+        Ok(true)
+    }
+
+    // Redo the last undone edit
+    func redo(self) -> Result<bool, Error> {
+        const cmd = match self.redo_stack.pop() {
+            Some(c) => c,
+            None => return Ok(false),
+        }
+
+        // Apply command without recording to undo stack
+        self.apply_command_silent(cmd.clone())?
+        self.undo_stack.push(cmd)?
+        Ok(true)
+    }
+
+    // Apply a command without recording it
+    func apply_command_silent(self, cmd: EditCommand) -> Result<(), Error> {
+        match cmd {
+            InsertLine(after, text) => {
+                const h = self.lines.insert(Line { text: text })?
+                self.line_order.insert((after + 1) as usize, h)?
+            }
+            DeleteLine(at, _) => {
+                const h = self.line_order.remove(at as usize)
+                self.lines.remove(h)
+            }
+            ModifyLine(at, _, new_text) => {
+                const h = self.line_order[at as usize]
+                self.lines[h].text = new_text
+            }
+        }
+        self.modified = true
+    }
+
+    // Save document to file
+    func save(self, path: String) -> Result<(), fs.IoError> {
+        const file = fs.File.create(path)?
+        ensure file.close()
+
+        for h in self.line_order.iter() {
+            file.write_line(self.lines[h].text)?
+        }
+
+        self.modified = false
+        Ok(())
+    }
+
+    // Display the document
+    func display(self) {
+        for i in 0..self.line_count() {
+            const line = self.get_line(i).unwrap()
+            println("{i + 1}: {line}")
+        }
+    }
+}
+
+// Simple command parser for the editor REPL
+enum EditorCommand {
+    Insert(after: i32, text: String),
+    Delete(line: i32),
+    Edit(line: i32, text: String),
+    Undo,
+    Redo,
+    Save(path: String),
+    Print,
+    Quit,
+    Help,
+}
+
+func parse_command(input: String) -> Option<EditorCommand> {
+    const parts = input.trim().split_whitespace().collect<Vec<String>>()
+    if parts.is_empty(): return None
+
+    match parts[0] {
+        "i" | "insert" if parts.len() >= 3 => {
+            const after = parts[1].parse<i32>().ok()?
+            const text = parts[2..].join(" ")
+            Some(EditorCommand.Insert(after: after, text: text))
+        }
+        "d" | "delete" if parts.len() >= 2 => {
+            const line = parts[1].parse<i32>().ok()?
+            Some(EditorCommand.Delete(line: line))
+        }
+        "e" | "edit" if parts.len() >= 3 => {
+            const line = parts[1].parse<i32>().ok()?
+            const text = parts[2..].join(" ")
+            Some(EditorCommand.Edit(line: line, text: text))
+        }
+        "u" | "undo" => Some(EditorCommand.Undo),
+        "r" | "redo" => Some(EditorCommand.Redo),
+        "w" | "save" if parts.len() >= 2 => Some(EditorCommand.Save(path: parts[1].clone())),
+        "p" | "print" => Some(EditorCommand.Print),
+        "q" | "quit" => Some(EditorCommand.Quit),
+        "h" | "help" => Some(EditorCommand.Help),
+        _ => None,
+    }
+}
+
+func print_help() {
+    println("Commands:")
+    println("  i/insert <line> <text>  - Insert text after line (0 for beginning)")
+    println("  d/delete <line>         - Delete line")
+    println("  e/edit <line> <text>    - Replace line content")
+    println("  u/undo                  - Undo last change")
+    println("  r/redo                  - Redo last undone change")
+    println("  w/save <path>           - Save to file")
+    println("  p/print                 - Print document")
+    println("  q/quit                  - Quit editor")
+    println("  h/help                  - Show this help")
+}
+
+func main() -> Result<(), Error> {
+    let doc = Document.new()
+
+    println("Simple Text Editor - type 'help' for commands")
+
+    loop {
+        print("> ")
+        const input = std.read_line()?
+
+        const cmd = match parse_command(input) {
+            Some(c) => c,
+            None => {
+                println("Unknown command. Type 'help' for usage.")
+                continue
+            }
+        }
+
+        match cmd {
+            Insert(after, text) => {
+                doc.insert_line(after, text)?
+                println("Inserted line")
+            }
+            Delete(line) => {
+                doc.delete_line(line - 1)?  // 1-indexed to 0-indexed
+                println("Deleted line {line}")
+            }
+            Edit(line, text) => {
+                doc.modify_line(line - 1, text)?
+                println("Modified line {line}")
+            }
+            Undo => {
+                if doc.undo()?: println("Undone") else: println("Nothing to undo")
+            }
+            Redo => {
+                if doc.redo()?: println("Redone") else: println("Nothing to redo")
+            }
+            Save(path) => {
+                doc.save(path.clone())?
+                println("Saved to {path}")
+            }
+            Print => doc.display(),
+            Quit => {
+                if doc.modified {
+                    println("Warning: unsaved changes")
+                }
+                break
+            }
+            Help => print_help(),
+        }
+    }
+
+}

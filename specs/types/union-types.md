@@ -18,21 +18,21 @@ Error composition is extremely common. Requiring explicit error enums for every 
 
 Union types are only valid in error position of `Result<T, E>`:
 
-```
+```rask
 // Valid: error unions
-fn load() -> Result<Config, IoError | ParseError>
-fn process() -> Result<Output, IoError | ParseError | ValidationError>
+func load() -> Result<Config, IoError | ParseError>
+func process() -> Result<Output, IoError | ParseError | ValidationError>
 
 // Invalid: general unions not allowed
 let x: int | string = ...              // Compile error
-fn foo(input: A | B) -> C              // Compile error
+func foo(input: A | B) -> C              // Compile error
 ```
 
 ### Semantics
 
 `A | B | C` compiles to an anonymous enum:
 
-```
+```rask
 // IoError | ParseError compiles to:
 enum __ErrorUnion_IoError_ParseError {
     IoError(IoError),
@@ -66,15 +66,15 @@ For `?` propagation, error types widen automatically:
 
 **Rule:** `?` succeeds if expression error type ⊆ return error union.
 
-```
-fn load() -> Result<Config, IoError | ParseError> {
-    let content = read_file(path)?   // IoError ⊆ union: OK
-    let config = parse(content)?     // ParseError ⊆ union: OK
+```rask
+func load() -> Result<Config, IoError | ParseError> {
+    const content = read_file(path)?   // IoError ⊆ union: OK
+    const config = parse(content)?     // ParseError ⊆ union: OK
     config
 }
 
-fn process() -> Result<Output, IoError | ParseError | ValidationError> {
-    let config = load()?             // IoError | ParseError ⊆ union: OK
+func process() -> Result<Output, IoError | ParseError | ValidationError> {
+    const config = load()?             // IoError | ParseError ⊆ union: OK
     validate(config)?
 }
 ```
@@ -93,7 +93,7 @@ Storage is inline (no heap allocation).
 
 Match on union errors by type name:
 
-```
+```rask
 match result {
     Ok(config) => use(config),
     Err(IoError.NotFound(p)) => println("not found: {}", p),
@@ -109,8 +109,8 @@ Exhaustiveness checking works because all variants are known from the union defi
 
 Unions can extend generic error types:
 
-```
-fn transform<T, E>(result: Result<T, E>) -> Result<U, E | TransformError>
+```rask
+func transform<T, E>(result: Result<T, E>) -> Result<U, E | TransformError>
 ```
 
 The union extends E with additional variants.
@@ -119,7 +119,7 @@ The union extends E with additional variants.
 
 For data modeling, use explicit enums:
 
-```
+```rask
 // Instead of: let value: int | string = ...
 // Use:
 enum IntOrString { Int(i32), String(string) }
@@ -135,27 +135,27 @@ Explicit enums are:
 
 ### Layered Error Handling
 
-```
+```rask
 // Low-level
-fn read_file(path: string) -> Result<string, IoError>
+func read_file(path: string) -> Result<string, IoError>
 
 // Mid-level
-fn parse_config(path: string) -> Result<Config, IoError | ParseError> {
-    let content = read_file(path)?
+func parse_config(path: string) -> Result<Config, IoError | ParseError> {
+    const content = read_file(path)?
     parse(content)?
 }
 
 // High-level
-fn load_app() -> Result<App, IoError | ParseError | ValidationError> {
-    let config = parse_config("app.toml")?
-    let valid = validate(config)?
+func load_app() -> Result<App, IoError | ParseError | ValidationError> {
+    const config = parse_config("app.toml")?
+    const valid = validate(config)?
     App.new(valid)
 }
 ```
 
 ### Handling Specific Errors
 
-```
+```rask
 match load_app() {
     Ok(app) => app.run(),
     Err(IoError.NotFound(_)) => create_default_config(),

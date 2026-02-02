@@ -24,9 +24,9 @@ The biggest pain comes from **handles being separated from their pools**. This s
 
 **Idea:** Instead of passing pools everywhere, make them "ambient" in a scope. Handles can auto-dereference through the ambient pool.
 
-```
+```rask
 with players {
-    let h = players.insert(Entity{...})
+    const h = players.insert(Entity{...})
     h.health -= 10              // Auto-dereference through ambient 'players'
     if h.health <= 0 {
         players.remove(h)       // Explicit for mutation
@@ -58,10 +58,10 @@ with players {
 
 **Idea:** Replace per-type Pools with Arenas that hold multiple types. References are valid for the arena's lifetime.
 
-```
-let arena = Arena::new()
-let player = arena.alloc(Player{...})   // Returns &'arena Player
-let enemy = arena.alloc(Enemy{...})     // Returns &'arena Enemy
+```rask
+const arena = Arena.new()
+const player = arena.alloc(Player{...})   // Returns &'arena Player
+const enemy = arena.alloc(Enemy{...})     // Returns &'arena Enemy
 player.target = enemy                    // Cross-type reference OK (same arena)
 // Arena freed → all references invalid (compile-time tracked)
 ```
@@ -80,7 +80,7 @@ player.target = enemy                    // Cross-type reference OK (same arena)
 **Key insight:** This is closer to Rust's arenas but with simpler "one lifetime per arena" rather than complex lifetime relationships.
 
 **Variations:**
-- **Region polymorphism:** Functions generic over region `fn process<R>(entity: &R Entity)`
+- **Region polymorphism:** Functions generic over region `func process<R>(entity: &R Entity)`
 - **Nested regions:** Inner regions freed before outer
 - **Hybrid:** Arenas for graphs, Pools for entity systems
 
@@ -90,13 +90,13 @@ player.target = enemy                    // Cross-type reference OK (same arena)
 
 **Idea:** Handles carry their pool identity at compile time. The compiler tracks which pool a handle belongs to.
 
-```
+```rask
 pool players: Pool<Player>          // Named pool declaration
 
-let h = players.insert(...)         // h: Handle<Player, @players>
+const h = players.insert(...)         // h: Handle<Player, @players>
 h.health -= 10                      // Compiler knows source, auto-resolves
 
-fn damage(target: Handle<Player, @players>) {
+func damage(target: Handle<Player, @players>) {
     target.health -= 10             // Works: pool identity matches
 }
 ```
@@ -115,7 +115,7 @@ fn damage(target: Handle<Player, @players>) {
 
 **Open questions:**
 - How do you pass handles to functions that don't know the pool name?
-- Generic pool identity? `fn damage<P>(target: Handle<Player, P>)`?
+- Generic pool identity? `func damage<P>(target: Handle<Player, P>)`?
 - Does this just recreate lifetime parameters with different syntax?
 
 ---
@@ -124,19 +124,19 @@ fn damage(target: Handle<Player, @players>) {
 
 **Idea:** A task-local implicit context carries commonly needed state.
 
-```
+```rask
 // Context is implicitly available
-fn update_player(h: PlayerHandle) {
+func update_player(h: PlayerHandle) {
     context.players[h].health -= 10
     // or with sugar:
     h@players.health -= 10
 }
 
 // Context setup
-fn main() {
-    let ctx = Context {
-        players: Pool::new(),
-        enemies: Pool::new(),
+func main() {
+    const ctx = Context {
+        players: Pool.new(),
+        enemies: Pool.new(),
         allocator: default_allocator(),
     }
     with_context(ctx) {
@@ -189,7 +189,7 @@ fn main() {
 
 ### E.1: Generation Check Coalescing
 
-```
+```rask
 pool[h].health -= damage
 if pool[h].health <= 0 { ... }
 
@@ -201,8 +201,8 @@ if pool[h].health <= 0 { ... }
 
 ### E.2: Weak Handles
 
-```
-let weak = pool.weak(h)           // Weak handle, can be invalidated
+```rask
+const weak = pool.weak(h)           // Weak handle, can be invalidated
 
 pool.remove(h)                    // Invalidates all weak handles to h
 
@@ -213,10 +213,10 @@ if weak.valid() {
 
 ### E.3: Cursor Iteration
 
-```
-let cursor = pool.cursor()
+```rask
+const cursor = pool.cursor()
 while cursor.next() {
-    let h = cursor.handle()
+    const h = cursor.handle()
     pool[h].update()
     if pool[h].dead {
         cursor.remove()           // Safe removal during iteration
@@ -230,7 +230,7 @@ while cursor.next() {
 
 **Idea:** Explicit "view" that extends borrow lifetime within a controlled scope.
 
-```
+```rask
 pool.with_view(h, |entity| {
     entity.health -= damage
     entity.last_hit = now()
@@ -240,7 +240,7 @@ pool.with_view(h, |entity| {
 })
 
 // Or with explicit view binding:
-let view = pool.view(h)?          // View locks the slot
+const view = pool.view(h)?          // View locks the slot
 view.health -= damage
 view.position.x += 1
 drop(view)                        // Explicit unlock
@@ -300,7 +300,7 @@ Combine elements for maximum leverage:
 
 ### Example of Hybrid
 
-```
+```rask
 // Ambient pool for clean game loop
 with (players, enemies) {
     for h in players.cursor() {
@@ -316,7 +316,7 @@ with (players, enemies) {
 }
 
 // Explicit access still works
-fn standalone_function(pool: Pool<Player>, h: Handle<Player>) {
+func standalone_function(pool: Pool<Player>, h: Handle<Player>) {
     pool[h].health -= 10                 // Traditional syntax
 }
 ```
@@ -364,15 +364,15 @@ When choosing between options, consider:
 |--------------|-----------------|---------|
 | Generational references | Pool handles | Already have this |
 | Region freezing | `pool.freeze()` / `pool.read_only()` | **New idea**: frozen pools skip generation checks |
-| Pure functions | `pure fn` annotation? | Functions on frozen data get zero-cost access |
+| Pure functions | `pure func` annotation? | Functions on frozen data get zero-cost access |
 
 **Potential Feature: Frozen Pools**
-```
-let frozen = players.freeze()     // Pool becomes immutable
+```rask
+const frozen = players.freeze()     // Pool becomes immutable
 for h in frozen {
     frozen[h].render()            // Zero generation checks!
 }
-let players = frozen.thaw()       // Make mutable again
+const players = frozen.thaw()       // Make mutable again
 ```
 
 This directly addresses **#14 (Double Access)** and **RO ≤ 1.10** with zero syntax overhead for read-heavy code paths.
@@ -405,11 +405,11 @@ This directly addresses **#14 (Double Access)** and **RO ≤ 1.10** with zero sy
 - **Lifetime categories** — inform Pool design patterns
 
 **Potential Feature: Temporary Allocator in Context**
-```
+```rask
 // Jai-inspired: temp allocator for short-lived data
-fn process_frame() {
-    let scratch = context.temp      // Per-frame scratch space
-    let handles = pool.handles().collect_in(scratch)  // No heap alloc!
+func process_frame() {
+    const scratch = context.temp      // Per-frame scratch space
+    const handles = pool.handles().collect_in(scratch)  // No heap alloc!
     for h in handles {
         pool[h].update()
     }
@@ -426,7 +426,7 @@ This addresses **#11 (Iterator Allocation)** without hidden costs—`context.tem
 |--------|---------|-----------------|---------|
 | **Vale** | Generational refs | Already have (handles) | — |
 | **Vale** | Region freezing | Frozen pools | RO ✅ (zero checks) |
-| **Vale** | Pure functions | `pure fn` annotation | RO ✅ |
+| **Vale** | Pure functions | `pure func` annotation | RO ✅ |
 | **Jai** | Implicit context | **Rejected** (TC violation) | TC ❌ |
 | **Jai** | Temp allocator | Scoped scratch space | TC ✅, ED ✅ |
 | **Jai** | Lifetime categories | Inform Pool patterns | Documentation |
@@ -479,11 +479,11 @@ If a value is on the stack, moving it to a background thread is hard without GC.
 
 Allow `with` blocks to enable cross-pool operations that the compiler optimizes.
 
-```
+```rask
 // Rask can do "relational" logic that Hylo can't easily express
 with (users, teams) {
-    let u = users[h_user]
-    let t = teams[u.team_id]    // Allowed: both pools are "active"
+    const u = users[h_user]
+    const t = teams[u.team_id]    // Allowed: both pools are "active"
     t.score += u.points
 }
 ```
@@ -503,15 +503,15 @@ with (users, teams) {
 
 When sending a handle through a channel, automatically "pin" that generation so the pool can't reuse the slot until the receiving task is done.
 
-```
-let h = players.insert(Player{...})
+```rask
+const h = players.insert(Player{...})
 
 // Sending pins the handle
 channel.send(h)                    // Generation is now "sticky"
 
 // Receiver can safely use it
 spawn {
-    let h = channel.recv()
+    const h = channel.recv()
     players[h].update()            // Guaranteed valid
 }                                  // Unpin on task completion
 ```
@@ -532,7 +532,7 @@ spawn {
 
 Generate handles that only allow access to specific fields—smaller, faster, and capability-restricted.
 
-```
+```rask
 struct User {
     id: u64,
     name: string,
@@ -550,8 +550,8 @@ let email_view: ViewHandle<User, .email> = h.view(.email)
 // Can only access email field
 send_notification(email_view)
 
-fn send_notification(h: ViewHandle<User, .email>) {
-    let email = users[h]          // Returns only the email field
+func send_notification(h: ViewHandle<User, .email>) {
+    const email = users[h]          // Returns only the email field
 }
 ```
 
@@ -566,14 +566,14 @@ fn send_notification(h: ViewHandle<User, .email>) {
 
 If a function takes a `Handle<User>`, the compiler finds the `Users` pool in the ambient scope without explicit `with`.
 
-```
+```rask
 // Instead of:
-fn damage(h: Handle<Player>, players: Pool<Player>) {
+func damage(h: Handle<Player>, players: Pool<Player>) {
     players[h].health -= 10
 }
 
 // Allow:
-fn damage(h: Handle<Player>) {
+func damage(h: Handle<Player>) {
     h.health -= 10                 // Compiler finds ambient pool
 }
 
@@ -599,8 +599,8 @@ with players {
 
 Split a pool into read-only and write-only views for safe multi-threaded access.
 
-```
-let players: Pool<Player> = Pool::new()
+```rask
+let players: Pool<Player> = Pool.new()
 
 // Partition for parallel processing
 let (readers, writer) = players.partition()
@@ -616,7 +616,7 @@ parallel for r in readers.chunks(4) {
 writer[h].health = 100
 
 // Reunify
-players = Pool::reunify(readers, writer)
+players = Pool.reunify(readers, writer)
 ```
 
 **What it enables:**

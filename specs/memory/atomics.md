@@ -75,7 +75,7 @@ These types are only available on platforms with native hardware support. Code u
 
 **Conditional usage:**
 
-```
+```rask
 comptime if target.has_atomic128 {
     static TAGGED_PTR: AtomicU128 = AtomicU128.new(0)
 } else {
@@ -142,7 +142,7 @@ Memory orderings control how atomic operations synchronize with other memory acc
 
 **Mental model:**
 
-```
+```rask
 Thread A (producer):         Thread B (consumer):
   data = 42                    while !ready.load(Acquire) {}
   ready.store(true, Release)   print(data)  // guaranteed to see 42
@@ -159,22 +159,22 @@ Release-Acquire forms a "happens-before" relationship. All writes before the Rel
 | `new(v)` | `T -> AtomicT` | Create atomic with initial value |
 | `default()` | `() -> AtomicT` | Create atomic with default value (0, false, null) |
 
-```
-let counter = AtomicU64.new(0)
-let flag = AtomicBool.default()  // false
+```rask
+const counter = AtomicU64.new(0)
+const flag = AtomicBool.default()  // false
 ```
 
 #### Load and Store
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `load(order)` | `read self, Ordering -> T` | Atomically read the value |
-| `store(v, order)` | `read self, T, Ordering -> ()` | Atomically write the value |
+| `load(order)` | `self, Ordering -> T` | Atomically read the value |
+| `store(v, order)` | `self, T, Ordering -> ()` | Atomically write the value |
 
-**Note:** `store` takes `read self` because atomics use interior mutability—the atomic handles synchronization internally.
+**Note:** `store` takes `self` because atomics use interior mutability—the atomic handles synchronization internally.
 
-```
-let value = counter.load(Relaxed)
+```rask
+const value = counter.load(Relaxed)
 counter.store(100, Release)
 ```
 
@@ -182,25 +182,25 @@ counter.store(100, Release)
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `swap(v, order)` | `read self, T, Ordering -> T` | Atomically replace, return old value |
+| `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
 
-```
-let old = counter.swap(new_value, AcqRel)
+```rask
+const old = counter.swap(new_value, AcqRel)
 ```
 
 #### Compare-and-Exchange
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `compare_exchange(current, new, success, fail)` | `read self, T, T, Ordering, Ordering -> Result<T, T>` | If value == current, set to new. Returns Ok(old) on success, Err(actual) on failure. |
+| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> Result<T, T>` | If value == current, set to new. Returns Ok(old) on success, Err(actual) on failure. |
 | `compare_exchange_weak(current, new, success, fail)` | Same | MAY spuriously fail. Use in loops. |
 
 **Compare-exchange ordering constraint:** `failure_order` MUST be no stronger than `success_order`, and MUST NOT be `Release` or `AcqRel`.
 
-```
+```rask
 // Increment if below threshold
 loop {
-    let current = counter.load(Relaxed)
+    const current = counter.load(Relaxed)
     if current >= threshold {
         break
     }
@@ -219,17 +219,17 @@ loop {
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `fetch_add(v, order)` | `read self, T, Ordering -> T` | Add and return OLD value |
-| `fetch_sub(v, order)` | `read self, T, Ordering -> T` | Subtract and return OLD value |
-| `fetch_and(v, order)` | `read self, T, Ordering -> T` | Bitwise AND and return OLD value |
-| `fetch_or(v, order)` | `read self, T, Ordering -> T` | Bitwise OR and return OLD value |
-| `fetch_xor(v, order)` | `read self, T, Ordering -> T` | Bitwise XOR and return OLD value |
-| `fetch_nand(v, order)` | `read self, T, Ordering -> T` | Bitwise NAND and return OLD value |
-| `fetch_max(v, order)` | `read self, T, Ordering -> T` | Max and return OLD value |
-| `fetch_min(v, order)` | `read self, T, Ordering -> T` | Min and return OLD value |
+| `fetch_add(v, order)` | `self, T, Ordering -> T` | Add and return OLD value |
+| `fetch_sub(v, order)` | `self, T, Ordering -> T` | Subtract and return OLD value |
+| `fetch_and(v, order)` | `self, T, Ordering -> T` | Bitwise AND and return OLD value |
+| `fetch_or(v, order)` | `self, T, Ordering -> T` | Bitwise OR and return OLD value |
+| `fetch_xor(v, order)` | `self, T, Ordering -> T` | Bitwise XOR and return OLD value |
+| `fetch_nand(v, order)` | `self, T, Ordering -> T` | Bitwise NAND and return OLD value |
+| `fetch_max(v, order)` | `self, T, Ordering -> T` | Max and return OLD value |
+| `fetch_min(v, order)` | `self, T, Ordering -> T` | Min and return OLD value |
 
-```
-let old_count = counter.fetch_add(1, Relaxed)
+```rask
+const old_count = counter.fetch_add(1, Relaxed)
 ```
 
 **Wrapping:** Fetch operations MUST wrap on overflow (like `Wrapping<T>` arithmetic). No panic, no undefined behavior.
@@ -238,10 +238,10 @@ let old_count = counter.fetch_add(1, Relaxed)
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `fetch_and(v, order)` | `read self, bool, Ordering -> bool` | AND and return OLD |
-| `fetch_or(v, order)` | `read self, bool, Ordering -> bool` | OR and return OLD |
-| `fetch_xor(v, order)` | `read self, bool, Ordering -> bool` | XOR and return OLD |
-| `fetch_nand(v, order)` | `read self, bool, Ordering -> bool` | NAND and return OLD |
+| `fetch_and(v, order)` | `self, bool, Ordering -> bool` | AND and return OLD |
+| `fetch_or(v, order)` | `self, bool, Ordering -> bool` | OR and return OLD |
+| `fetch_xor(v, order)` | `self, bool, Ordering -> bool` | XOR and return OLD |
+| `fetch_nand(v, order)` | `self, bool, Ordering -> bool` | NAND and return OLD |
 
 #### AtomicPtr Operations
 
@@ -250,17 +250,17 @@ let old_count = counter.fetch_add(1, Relaxed)
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `new(ptr)` | `*T -> AtomicPtr<T>` | Create from raw pointer |
-| `load(order)` | `read self, Ordering -> *T` | Load pointer |
-| `store(ptr, order)` | `read self, *T, Ordering -> ()` | Store pointer |
-| `swap(ptr, order)` | `read self, *T, Ordering -> *T` | Swap pointer |
+| `load(order)` | `self, Ordering -> *T` | Load pointer |
+| `store(ptr, order)` | `self, *T, Ordering -> ()` | Store pointer |
+| `swap(ptr, order)` | `self, *T, Ordering -> *T` | Swap pointer |
 | `compare_exchange(...)` | Same as integers | CAS on pointer |
 
 **Dereferencing the loaded pointer requires unsafe:**
 
-```
-let ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
+```rask
+const ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
 unsafe {
-    let value = *ptr  // Unsafe: dereferencing raw pointer
+    const value = *ptr  // Unsafe: dereferencing raw pointer
 }
 ```
 
@@ -275,7 +275,7 @@ Fences enforce ordering without an atomic variable:
 | `fence(AcqRel)` | Both Acquire and Release |
 | `fence(SeqCst)` | Full memory barrier |
 
-```
+```rask
 // Using fence instead of Release store
 data = 42
 fence(Release)
@@ -303,7 +303,7 @@ Use for signal handlers, memory-mapped I/O, or when you know hardware provides o
 | Unknown / unsure | `SeqCst` (safest, may be slower) |
 
 **Performance hierarchy (fastest to slowest):**
-```
+```rask
 Relaxed < Acquire = Release < AcqRel < SeqCst
 ```
 
@@ -327,55 +327,55 @@ Getting the inner value when you have exclusive ownership:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `get_mut()` | `mutate self -> *mut T` | Get raw pointer to inner value (unsafe to dereference) |
-| `into_inner()` | `transfer self -> T` | Consume atomic, return inner value |
+| `get_mut()` | `self -> *mut T` | Get raw pointer to inner value (unsafe to dereference) |
+| `into_inner()` | `take self -> T` | Consume atomic, return inner value |
 
-```
-let mut counter = AtomicU64.new(0)
-let final_value = counter.into_inner()  // Consume and extract
+```rask
+letcounter = AtomicU64.new(0)
+const final_value = counter.into_inner()  // Consume and extract
 ```
 
-`into_inner` is safe because `transfer self` guarantees exclusive ownership—no other tasks can access the atomic.
+`into_inner` is safe because `take self` guarantees exclusive ownership—no other tasks can access the atomic.
 
 ## Examples
 
 ### Simple Counter
 
-```
+```rask
 static REQUESTS: AtomicU64 = AtomicU64.new(0)
 
-fn handle_request(req: Request) {
+func handle_request(req: Request) {
     REQUESTS.fetch_add(1, Relaxed)  // No ordering needed for stats
     // ... process request
 }
 
-fn get_stats() -> u64 {
+func get_stats() -> u64 {
     REQUESTS.load(Relaxed)
 }
 ```
 
 ### Flag for Signaling
 
-```
+```rask
 static SHUTDOWN: AtomicBool = AtomicBool.new(false)
 
-fn worker_loop() {
+func worker_loop() {
     while !SHUTDOWN.load(Acquire) {
         do_work()
     }
 }
 
-fn request_shutdown() {
+func request_shutdown() {
     SHUTDOWN.store(true, Release)
 }
 ```
 
 ### Bounded Counter (CAS Loop)
 
-```
-fn increment_if_below(counter: read AtomicU64, max: u64) -> bool {
+```rask
+func increment_if_below(counter: read AtomicU64, max: u64) -> bool {
     loop {
-        let current = counter.load(Relaxed)
+        const current = counter.load(Relaxed)
         if current >= max {
             return false
         }
@@ -391,7 +391,7 @@ fn increment_if_below(counter: read AtomicU64, max: u64) -> bool {
 
 This sketch shows how atomics enable reference counting. Actual `Arc<T>` implementation uses raw pointers internally:
 
-```
+```rask
 // Conceptual structure (uses raw pointers internally)
 struct ArcInner<T> {
     count: AtomicUsize,
@@ -399,7 +399,7 @@ struct ArcInner<T> {
 }
 
 // Clone increments count
-fn arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
+func arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
     unsafe {
         (*ptr).count.fetch_add(1, Relaxed)  // Relaxed: already have access
     }
@@ -407,7 +407,7 @@ fn arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
 }
 
 // Drop decrements count, frees if zero
-fn arc_drop<T>(ptr: *mut ArcInner<T>) {
+func arc_drop<T>(ptr: *mut ArcInner<T>) {
     unsafe {
         // AcqRel: synchronize with other drops
         if (*ptr).count.fetch_sub(1, AcqRel) == 1 {
@@ -422,13 +422,13 @@ fn arc_drop<T>(ptr: *mut ArcInner<T>) {
 
 This sketch shows how atomics enable spin locks. The actual stdlib implementation wraps this in a safe API:
 
-```
+```rask
 struct SpinLockInner<T> {
     locked: AtomicBool,
     data: T,  // Access requires holding lock
 }
 
-fn spin_acquire(lock: *SpinLockInner<T>) {
+func spin_acquire(lock: *SpinLockInner<T>) {
     unsafe {
         while (*lock).locked.compare_exchange_weak(
             false, true, Acquire, Relaxed
@@ -440,7 +440,7 @@ fn spin_acquire(lock: *SpinLockInner<T>) {
     }
 }
 
-fn spin_release(lock: *SpinLockInner<T>) {
+func spin_release(lock: *SpinLockInner<T>) {
     unsafe {
         (*lock).locked.store(false, Release)
     }
@@ -471,3 +471,9 @@ fn spin_release(lock: *SpinLockInner<T>) {
 2. **Consume ordering** — C11 has `memory_order_consume` but compilers treat it as `Acquire`. Omitted for now.
 
 3. **Seqlock pattern** — Common read-heavy pattern. Consider library support or documentation.
+
+## See Also
+
+- [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data
+- [Concurrency](../concurrency/async.md) — Channels and task spawning
+- [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results

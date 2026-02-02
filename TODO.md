@@ -7,20 +7,20 @@ Gaps and incomplete areas identified in the design documents.
 ## High Priority (Core Design)
 
 ### Control Flow
-- [x] ~~`if`/`else` semantics~~ (specs/control-flow.md)
-- [x] ~~`while` loops~~ (specs/control-flow.md)
-- [x] ~~`loop` (infinite loop with break)~~ (specs/control-flow.md)
-- [x] ~~`break`/`continue` with labels~~ (specs/control-flow.md)
-- [x] ~~`return` semantics~~ (specs/control-flow.md)
-- [x] ~~Expression vs statement distinction~~ (specs/control-flow.md)
+- [x] ~~`if`/`else` semantics~~ (specs/control/control-flow.md)
+- [x] ~~`while` loops~~ (specs/control/control-flow.md)
+- [x] ~~`loop` (infinite loop with break)~~ (specs/control/control-flow.md)
+- [x] ~~`break`/`continue` with labels~~ (specs/control/control-flow.md)
+- [x] ~~`return` semantics~~ (specs/control/control-flow.md)
+- [x] ~~Expression vs statement distinction~~ (specs/control/control-flow.md)
 
 ### Primitives and Numeric Types
-- [x] ~~Full list of primitive types~~ (specs/primitives.md)
-- [x] ~~Floating point semantics (NaN, infinity, comparison)~~ (specs/primitives.md)
-- [x] ~~Casting rules between numeric types~~ (specs/primitives.md)
-- [x] ~~Numeric traits beyond `Numeric`~~ (specs/primitives.md)
-- [x] ~~Boolean operations~~ (specs/primitives.md)
-- [ ] SIMD types — Built-in vector types?
+- [x] ~~Full list of primitive types~~ (specs/types/primitives.md)
+- [x] ~~Floating point semantics (NaN, infinity, comparison)~~ (specs/types/primitives.md)
+- [x] ~~Casting rules between numeric types~~ (specs/types/primitives.md)
+- [x] ~~Numeric traits beyond `Numeric`~~ (specs/types/primitives.md)
+- [x] ~~Boolean operations~~ (specs/types/primitives.md)
+- [x] ~~SIMD types~~ (specs/types/simd.md — Vec[T, N] with native width, masking, reductions, shuffles)
 - [ ] `char` necessity — Is `char` needed or just use `u32` + validation?
 
 ### Union Types (Type System)
@@ -41,7 +41,7 @@ Gaps and incomplete areas identified in the design documents.
 - [x] ~~Assertion functions~~ (`assert`/`check`, specs/testing.md)
 - [x] ~~Test runner behavior~~ (specs/testing.md)
 - [x] ~~Mocking/dependency injection patterns~~ (trait-based, specs/testing.md)
-- [ ] Benchmark support (`bench` blocks?)
+- [x] ~~Benchmark support~~ (`bench` blocks, specs/stdlib/testing.md)
 - [ ] Fuzzing / property-based testing
 - [ ] Code coverage tooling
 
@@ -77,7 +77,7 @@ Gaps and incomplete areas identified in the design documents.
 - [ ] `cli` — Command-line argument parsing
 - [ ] `time` — Duration, Instant, timestamps
 - [ ] `hash` — SHA256, MD5, CRC32 (integrity)
-- [ ] `bits` — Bit manipulation, byte order
+- [x] ~~`bits`~~ — Bit manipulation, byte order (specs/stdlib/bits.md)
 - [ ] `unicode` — Unicode utilities
 - [ ] `terminal` — ANSI colors, terminal detection
 - [ ] `math` — Mathematical functions
@@ -93,11 +93,11 @@ Gaps and incomplete areas identified in the design documents.
 - [ ] Panic vs Error guidelines
 
 ### Operators
-- [ ] Full operator precedence table
-- [ ] Bitwise operators (`&`, `|`, `^`, `~`, `<<`, `>>`)
-- [ ] Assignment operators (`+=`, `-=`, etc.)
-- [ ] Logical operators (`&&`, `||`, `!`)
-- [ ] Comparison operators
+- [x] ~~Full operator precedence table~~ (specs/types/operators.md)
+- [x] ~~Bitwise operators~~ (`&`, `|`, `^`, `~`, `<<`, `>>`, specs/types/operators.md)
+- [x] ~~Assignment operators~~ (`+=`, `-=`, etc., specs/types/operators.md)
+- [x] ~~Logical operators~~ (`&&`, `||`, `!`, specs/types/operators.md)
+- [x] ~~Comparison operators~~ (specs/types/operators.md)
 
 ---
 
@@ -130,12 +130,12 @@ Walk through the 7 litmus test programs from CLAUDE.md:
 
 ### Concurrency (specs/concurrency/)
 - [x] ~~Nursery model replaced with affine handles~~ (spawn/join/detach)
-- [x] ~~Runtime vs Workers confusion~~ (now `multitasking` + `threads`)
+- [x] ~~Runtime vs Workers confusion~~ (now `multitasking` + `threading`)
 - [x] ~~Function coloring~~ (no async/await, I/O pauses implicitly)
 - [x] ~~Linear types + channels: close error handling on drop~~ (channels are non-linear, explicit close() for errors, implicit drop ignores errors)
 - [x] ~~Channel drop with buffered items~~ (sender drop: items remain for receivers; receiver drop: items lost)
 - [ ] Task-local storage syntax and semantics
-- [ ] Select arm evaluation order (random vs first-listed)
+- [x] ~~Select arm evaluation order~~ (`select` = random, `select_priority` = first-listed, specs/concurrency/select.md)
 
 ### Comptime (from compile-time-execution.md)
 - [x] ~~Should comptime have limited heap allocation (Vec/Map)?~~ (No — workarounds exist, see specs/control/comptime.md)
@@ -183,10 +183,10 @@ Identified during comprehensive design review (2026-01):
 ### Syntax Still TBD
 - [x] ~~Nursery syntax~~ (replaced with affine handles: `spawn { }.join()` / `.detach()`)
 - [ ] `discard` keyword for wildcards on non-Copy types (sum-types.md) — needs documentation
-- [ ] Exact attribute syntax (`#[...]` vs `@...`) not finalized
+- [x] ~~Attribute syntax~~ (`@` prefix for both attributes and comptime intrinsics)
 
 ### Compilation Model Concerns
-- [ ] Intra-package init order "UNSPECIFIED" (module-system.md) — could cause subtle bugs
+- [x] ~~Intra-package init order~~ (parallel topological sort, sync required for mutable state, specs/structure/modules.md)
 - [ ] Semantic hash caching for generics may be complex to implement correctly
 
 ### Metrics Validation Needed

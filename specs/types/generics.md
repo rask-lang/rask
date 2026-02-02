@@ -1,13 +1,13 @@
 # Solution: Generics and Traits
 
 ## The Question
-How do generic types and functions work in Rask? What is the bounds syntax, how do generics interact with traits, and what is the monomorphization strategy?
+How do generic types and functions work in Rask? What is the constraint syntax, how do generics interact with traits, and what is the monomorphization strategy?
 
 ## Decision
 Structural traits with local verification, operator-to-method desugaring, compiler-verified clone semantics, full monomorphization, and opt-in runtime polymorphism via `any Trait`.
 
 ## Rationale
-Explicit trait bounds catch errors early without whole-program analysis. Structural satisfaction avoids global coherence complexity. Operator desugaring enables ergonomic numeric code. Compiler-verified clone prevents aliasing bugs. Full monomorphization maintains transparent costs and compilation speed. `explicit trait` option provides library stability when needed.
+Explicit trait constraints catch errors early without whole-program analysis. Structural satisfaction avoids global coherence complexity. Operator desugaring enables ergonomic numeric code. Compiler-verified clone prevents aliasing bugs. Full monomorphization maintains transparent costs and compilation speed. `explicit trait` option provides library stability when needed.
 
 ## Specification
 
@@ -16,15 +16,15 @@ Explicit trait bounds catch errors early without whole-program analysis. Structu
 | Principle | Rule |
 |-----------|------|
 | Traits are structural | Type satisfies trait if it has all required methods with matching signatures |
-| Verification is local | Compiler checks satisfaction at each monomorphization site only |
+| Verification is local | Compiler checks satisfaction at each monomorphization (code generation) site only |
 | Operators desugar | `a + b` becomes `a.add(b)` before trait checking |
-| Clone is verified | Compiler ensures clone produces deep copy; types with pointers require unsafe impl |
+| Clone is verified | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
 | Monomorphization is full | Each `<T>` instantiation produces specialized code |
 | Runtime polymorphism opt-in | `any Trait` for heterogeneous collections; vtable dispatch |
 
 ### Trait Definition
 
-```
+```rask
 trait Name<T> {
     method_name(self, params...) -> ReturnType
     another_method(self) -> OtherType
@@ -43,35 +43,35 @@ Traits MAY compose using `:` syntax.
 | Trait Form | Meaning |
 |------------|---------|
 | `trait Comparable<T>` | Structural matching allowed |
-| `explicit trait Serializable<T>` | Requires explicit `impl` (for library stability) |
+| `explicit trait Serializable<T>` | Requires explicit `extend` (for library stability) |
 | `trait HashKey<T>: Hashable<T>` | Composition (requires all methods from Hashable plus HashKey's own) |
 
-**Explicit traits:** When a trait is marked `explicit`, types must provide an explicit `impl` block. This protects library APIs from accidental breakage when method signatures change.
+**Explicit traits:** When a trait is marked `explicit`, types must provide an explicit `extend` block. This protects library APIs from accidental breakage when method signatures change.
 
 ### Generic Functions
 
-```
-pub fn max<T: Comparable>(a: T, b: T) -> T {
+```rask
+public func max<T: Comparable>(a: T, b: T) -> T {
     if a.compare(b) == Greater { a } else { b }
 }
 ```
 
-ALL generic functions MUST declare trait bounds (public AND private).
+ALL generic functions MUST declare trait constraints (public AND private).
 This preserves local analysis—no call-graph tracing required.
 
-```
-// Both must have explicit bounds
-pub fn process<T: Hashable>(items: []T) { ... }
-fn helper<T: Hashable>(item: T) { ... }  // Also needs bounds
+```rask
+// Both must have explicit constraints
+public func process<T: Hashable>(items: []T) { ... }
+func helper<T: Hashable>(item: T) { ... }  // Also needs constraints
 ```
 
 ### Structural Satisfaction
 
 | Type has | Trait requires | Satisfied |
 |----------|----------------|-----------|
-| `fn compare(self, other: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ✅ Yes |
-| `fn compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | ❌ No (return type mismatch) |
-| `fn compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ❌ No (free function, not method) |
+| `func compare(self, other: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ✅ Yes |
+| `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | ❌ No (return type mismatch) |
+| `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ❌ No (free function, not method) |
 
 Compiler MUST check:
 1. Method exists on type (not free function)
@@ -79,11 +79,11 @@ Compiler MUST check:
 3. Return type matches exactly
 4. Self parameter matches (value/mut/none)
 
-**Explicit impl:** Types can provide explicit implementations to override defaults or satisfy `explicit trait` requirements:
+**Explicit extend:** Types can provide explicit implementations to override defaults or satisfy `explicit trait` requirements:
 
-```
-impl Comparable for Point {
-    fn compare(self, other: Point) -> Ordering {
+```rask
+extend Point with Comparable {
+    func compare(self, other: Point) -> Ordering {
         // Custom implementation
     }
 }
@@ -105,7 +105,7 @@ Compiler MUST verify desugared method exists in trait bound.
 
 ### Compiler-Verified Clone
 
-```
+```rask
 trait Clone<T> {
     clone(self) -> T
 }
@@ -119,16 +119,16 @@ Compiler MUST auto-derive Clone for types where:
 |------|--------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
 | Struct with all Clone fields | Auto-derived (deep copy) |
-| Struct with raw pointer | NOT Clone unless `unsafe impl` |
+| Struct with raw pointer | NOT Clone unless `unsafe extend` |
 | Array/Vec of Clone | Auto-derived (element-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
 
-Unsafe impl Clone MUST be explicit and marked unsafe.
+Unsafe extend Clone MUST be explicit and marked unsafe.
 
 ### Const Generics
 
-```
-fn dot<const N: usize>(a: [f32; N], b: [f32; N]) -> f32
+```rask
+func dot<const N: usize>(a: [f32; N], b: [f32; N]) -> f32
 ```
 
 Compiler MUST infer `N` from:
@@ -139,29 +139,6 @@ Compiler MUST error if:
 - Array lengths differ at call site
 - Inference is ambiguous
 - Non-literal const expression used without explicit parameter
-
-### Extension Methods
-
-```
-// Define extension
-fn String.to_snake_case(self) -> String { ... }
-
-// Import extension
-import string_utils::String.ext.to_snake_case
-
-// Call
-"HelloWorld".to_snake_case()
-```
-
-| Resolution Order | Rule |
-|------------------|------|
-| 1. Type's own method | Always preferred |
-| 2. Imported extension | If no type method exists |
-| 3. Conflict | Error: "ambiguous method call" |
-
-Compiler MUST resolve type methods before extensions.  
-Compiler MUST error if multiple imported extensions match.  
-Compiler MUST NOT include extensions in wildcard imports.
 
 ### Linear Types in Traits
 
@@ -177,7 +154,7 @@ Pattern matching on `Option<Linear>` MUST bind the value (wildcards forbidden).
 
 ### Trait Composition
 
-```
+```rask
 trait Hashable<T> {
     hash(self) -> u64
     eq(self, other: T) -> bool
@@ -216,33 +193,33 @@ Compiler MUST NOT perform whole-program analysis.
 | Recursive generics | `Vec<Vec<T>>` allowed; compiler MUST prevent infinite expansion |
 | Trait visibility | Public by default; `priv trait` for module-private |
 | Generic struct fields | `struct Foo<T: Comparable>` requires T: Comparable at every instantiation |
-| Negative bounds | NOT in MVP; workaround via naming convention or separate functions |
+| Negative constraints | NOT in MVP; workaround via naming convention or separate functions |
 | Associated types | NOT in MVP; deferred |
 | More than 2 type params | NOT in MVP; traits limited to 1-2 parameters |
 
 ### Bounds Requirements
 
-All generic functions must declare their bounds explicitly:
+All generic functions must declare their constraints explicitly:
 
 | Function | Requirement |
 |----------|-------------|
-| Public generic | MUST declare trait bounds |
-| Private generic | MUST declare trait bounds |
-| Calling a bounded function | Caller must have same or stronger bounds |
+| Public generic | MUST declare trait constraints |
+| Private generic | MUST declare trait constraints |
+| Calling a constrained function | Caller must have same or stronger constraints |
 
-```
-fn helper<T: Hashable>(item: T) { item.hash() }
+```rask
+func helper<T: Hashable>(item: T) { item.hash() }
 
-pub fn process<T: Hashable>(items: []T) {
+public func process<T: Hashable>(items: []T) {
     for item in items { helper(item) }  // OK: same bound
 }
 
-pub fn bad<T>(items: []T) {
+public func bad<T>(items: []T) {
     for item in items { helper(item) }  // ERROR: T not bounded
 }
 ```
 
-Note: Methods on containers (like `[]T.len()`) don't require bounds on T.
+Note: Methods on containers (like `[]T.len()`) don't require constraints on T.
 
 ### Numeric Literals in Generics
 
@@ -250,7 +227,7 @@ Integer literals auto-coerce to T when `T: Numeric`.
 Compiler inserts `T.from_int()` automatically.
 IDE shows ghost text indicating the conversion (per Principle 7).
 
-```
+```rask
 trait Numeric<T> {
     add(self, other: T) -> T
     zero() -> T
@@ -258,11 +235,11 @@ trait Numeric<T> {
     from_int(n: i64) -> T
 }
 
-fn increment<T: Numeric>(val: T) -> T {
+func increment<T: Numeric>(val: T) -> T {
     val + 1  // Compiler inserts: val + T.from_int(1)
 }
 
-fn lerp<T: Numeric>(a: T, b: T, t: T) -> T {
+func lerp<T: Numeric>(a: T, b: T, t: T) -> T {
     a * (1 - t) + b * t  // Clean, IDE shows conversions
 }
 ```
@@ -271,14 +248,14 @@ fn lerp<T: Numeric>(a: T, b: T, t: T) -> T {
 
 ### Generic Sorting
 
-```
+```rask
 trait Comparable<T> {
     compare(self, other: T) -> Ordering
 }
 
-pub fn sort<T: Comparable>(items: mut []T) {
+public func sort<T: Comparable>(items: []T) {
     for i in 1..items.len() {
-        let mut j = i
+        let j = i
         while j > 0 && items[j] < items[j - 1] {
             swap(mut items[j], mut items[j - 1])
             j = j - 1
@@ -289,7 +266,7 @@ pub fn sort<T: Comparable>(items: mut []T) {
 
 ### HashMap with Verified Clone
 
-```
+```rask
 trait Hashable<T> {
     hash(self) -> u64
     eq(self, other: T) -> bool
@@ -297,12 +274,12 @@ trait Hashable<T> {
 
 trait HashKey<T>: Hashable<T> + Clone<T> {}
 
-pub struct HashMap<K: HashKey, V> {
+public struct HashMap<K: HashKey, V> {
     buckets: []Bucket<K, V>
 }
 
-pub fn insert<K: HashKey, V>(map: mut HashMap<K, V>, key: K, val: V) {
-    let idx = key.hash() % map.buckets.len()
+public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
+    const idx = key.hash() % map.buckets.len()
     map.buckets[idx].add(key.clone(), val)  // Clone is compiler-verified deep copy
 }
 ```

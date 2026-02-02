@@ -31,8 +31,8 @@ Expression-oriented design reduces ceremony for common patterns (assigning from 
 
 **Rule:** Trailing semicolon converts an expression to a statement (discards value).
 
-```
-let x = if cond { 1 } else { 2 }   // Expression position: no semicolon, value used
+```rask
+const x = if cond { 1 } else { 2 }   // Expression position: no semicolon, value used
 if cond { do_thing() };            // Statement position: semicolon discards unit
 ```
 
@@ -45,7 +45,7 @@ if cond { do_thing() };            // Statement position: semicolon discards uni
 ### Conditional: `if`/`else`
 
 **Syntax:**
-```
+```rask
 if condition { consequent } else { alternative }
 if condition { consequent }  // else branch implicitly ()
 ```
@@ -69,7 +69,7 @@ if condition { consequent }  // else branch implicitly ()
 - Only one branch executes; ownership tracked per branch
 - Linear resources: if consumed in one branch, MUST be consumed in other
 
-```
+```rask
 // Valid: linear consumed in both branches
 if cond {
     file.close()
@@ -83,10 +83,145 @@ if cond {
 }  // Error: file may not be consumed
 ```
 
+### Pattern Matching in Conditions: `is`
+
+The `is` keyword enables pattern matching within `if` and `while` conditions, with automatic binding of matched values.
+
+**Syntax:**
+```rask
+if expr is Pattern(binding) { body }
+while expr is Pattern(binding) { body }
+```
+
+**Semantics:**
+- Expression is evaluated once
+- If pattern matches, bindings are available in the block (smart unwrap)
+- If pattern doesn't match, block is skipped (or loop exits)
+- Works with any enum, not just Option
+
+```rask
+// Single-variant check with binding
+if state is Connected(sock) {
+    sock.send(data)
+}
+
+// Loop while pattern matches
+while reader.next() is Some(line) {
+    process(line)
+}
+
+// With else
+if result is Ok(value) {
+    use(value)
+} else {
+    handle_error()
+}
+```
+
+**Combined conditions:**
+```rask
+if state is Connected(sock) && sock.is_ready() {
+    sock.send(data)
+}
+```
+
+The binding `sock` is available after `&&` because `is` introduces it.
+
+**Negation:**
+```rask
+if !(state is Connected(_)) {
+    reconnect()
+}
+```
+
+Note: `!` applies to the whole `is` expression. There is no `is not` syntax.
+
+**Comparison with other constructs:**
+
+| Use Case | Recommended | Alternative |
+|----------|-------------|-------------|
+| Check Option | `if opt?` | `if opt is Some(x)` |
+| Check other enum variant | `if x is Variant(v)` | `match` |
+| Exhaustive handling | `match` | — |
+| Loop over iterator | `for x in iter` | `while iter.next() is Some(x)` |
+
+**Rules:**
+- `is` patterns are NOT exhaustive — unmatched cases skip the block
+- Bindings are scoped to the block (like `if opt?`)
+- Linear resources in bindings follow normal linear rules within the block
+- `is` is an expression returning `bool`, but bindings only available in truthy branch
+
+**Ownership:**
+- Expression is evaluated once; if it produces a non-Copy value, it's moved into the pattern
+- If pattern doesn't match and value is linear, it must still be handled
+
+```rask
+// Linear resource: must handle both paths
+if file_result is Ok(file) {
+    file.close()
+} else {
+    // file_result is Err here, still owned
+}
+```
+
+### Extracting with `let ... is ... else`
+
+When you need the binding to escape to the outer scope (for early returns), use `let` with `is` and a diverging `else`:
+
+**Syntax:**
+```rask
+const binding = expr is Pattern else { diverge }
+```
+
+**Semantics:**
+- `expr` is evaluated and matched against `Pattern`
+- If match succeeds, payload is bound to `binding` in outer scope
+- If match fails, `else` block executes (must diverge: `return`, `break`, `panic`, etc.)
+
+```rask
+// Early return on error
+const value = result is Ok else { return Err(e) }
+// value available here
+
+// Break from loop on None
+const item = queue.pop() is Some else { break }
+// item available here
+
+// Panic on unexpected state
+const sock = state is Connected else { panic("not connected") }
+// sock available here
+```
+
+**Multiple bindings:**
+```rask
+let (a, b) = result is Ok else { return Err(e) }
+```
+
+**Comparison with `if is`:**
+
+| Syntax | Binding Scope | Use Case |
+|--------|---------------|----------|
+| `if x is P(v) { ... }` | Inside block | Conditional execution |
+| `let v = x is P else { ... }` | Outer scope | Early exit / guard |
+
+**Rules:**
+- The `else` block MUST diverge (`return`, `break`, `continue`, `panic`, `deliver`)
+- If `else` doesn't diverge, compiler error: "else block must diverge"
+- Linear resources: if pattern doesn't match, the value is available in `else` for cleanup
+
+```rask
+// Linear: must handle the error case
+const file = result is Ok else {
+    // result is Err(e) here — e is the error, must handle
+    return Err(e)
+}
+file.close()
+```
+
 ### Conditional Chaining: `else if`
 
 **Syntax:**
-```
+```rask
 if c1 { a }
 else if c2 { b }
 else if c3 { c }
@@ -94,7 +229,7 @@ else { d }
 ```
 
 **Desugaring:**
-```
+```rask
 if c1 { a }
 else { if c2 { b } else { if c3 { c } else { d } } }
 ```
@@ -104,7 +239,7 @@ No special syntax; `else if` is just `else` followed by `if`.
 ### Infinite Loop: `loop`
 
 **Syntax:**
-```
+```rask
 loop { body }
 ```
 
@@ -114,9 +249,9 @@ loop { body }
 - `break` exits without a value (loop evaluates to `()`)
 - Type is determined by `deliver` expressions
 
-```
-let input = loop {
-    let x = read_input()
+```rask
+const input = loop {
+    const x = read_input()
     if x.is_valid() { deliver x }
     println("Invalid, try again")
 }
@@ -136,7 +271,7 @@ let input = loop {
 ### Conditional Loop: `while`
 
 **Syntax:**
-```
+```rask
 while condition { body }
 ```
 
@@ -152,9 +287,9 @@ while condition { body }
 - `continue` skips to next iteration
 - `deliver` NOT allowed (use `loop` for value-returning)
 
-```
+```rask
 while queue.len() > 0 {
-    let task = queue.pop()
+    const task = queue.pop()
     process(task)
 }
 ```
@@ -172,7 +307,7 @@ Fully specified in [Loops](loops.md) and [Iteration](../stdlib/iteration.md).
 ### Loop Labels
 
 **Syntax:**
-```
+```rask
 label: loop { ... }
 label: while cond { ... }
 label: for i in coll { ... }
@@ -180,7 +315,7 @@ label: for i in coll { ... }
 
 Labels enable breaking/continuing outer loops from nested contexts.
 
-```
+```rask
 outer: for i in rows {
     for j in cols {
         if grid[i][j] == target {
@@ -209,7 +344,7 @@ outer: for i in rows {
 ### Return
 
 **Syntax:**
-```
+```rask
 return           // Returns () from function
 return value     // Returns value from function
 ```
@@ -225,11 +360,11 @@ return value     // Returns value from function
 - `ensure` satisfies this requirement
 - See [Sum Types - Error Propagation](../types/enums.md#error-propagation-and-linear-resources)
 
-```
-fn process(file: File) -> Result<Data, Error> {
+```rask
+func process(file: File) -> Result<Data, Error> {
     ensure file.close()
 
-    let data = file.read()?   // ? may return early; ensure handles cleanup
+    const data = file.read()?   // ? may return early; ensure handles cleanup
     Ok(transform(data))
 }
 ```
@@ -238,12 +373,12 @@ fn process(file: File) -> Result<Data, Error> {
 
 The final expression in a function (without semicolon) is the return value.
 
-```
-fn double(x: i32) -> i32 {
+```rask
+func double(x: i32) -> i32 {
     x * 2           // Implicit return (no semicolon)
 }
 
-fn greet(name: string) {
+func greet(name: string) {
     println("Hello, " + name);  // Semicolon: returns ()
 }
 ```
@@ -259,9 +394,9 @@ fn greet(name: string) {
 
 Blocks are expressions; they evaluate to their final expression.
 
-```
-let result = {
-    let temp = compute()
+```rask
+const result = {
+    const temp = compute()
     transform(temp)    // Block value (no semicolon)
 }
 ```
@@ -286,7 +421,7 @@ Some expressions never complete normally:
 
 `Never` coerces to any type:
 
-```
+```rask
 let x: i32 = if cond { 42 } else { panic("nope") }
 // else branch is Never, coerces to i32
 ```
@@ -325,10 +460,10 @@ See [Ensure Cleanup](../ecosystem/ensure.md) for full specification.
 ## Examples
 
 ### Expression-Oriented If
-```
-let status = if count > 0 { "active" } else { "empty" }
+```rask
+const status = if count > 0 { "active" } else { "empty" }
 
-let message = if user.is_admin() {
+const message = if user.is_admin() {
     format!("Welcome, {}", user.name)
 } else if user.is_guest() {
     "Welcome, guest"
@@ -338,17 +473,18 @@ let message = if user.is_admin() {
 ```
 
 ### Loop with Deliver
-```
-let input = loop {
-    let x = read_input()
+```rask
+const input = loop {
+    const x = read_input()
     if x.is_valid() { deliver x }
     println("Invalid, try again")
 }
 ```
 
 ### Search Pattern
-```
-fn find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
+<!-- test: skip -->
+```rask
+func find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
     let i = 0
     loop {
         if i >= items.len() { deliver None }
@@ -359,8 +495,8 @@ fn find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
 ```
 
 ### Labeled Deliver
-```
-fn find_in_matrix<T: Eq>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
+```rask
+func find_in_matrix<T: Eq>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
     search: loop {
         for i in 0..matrix.len() {
             for j in 0..matrix[i].len() {
@@ -375,10 +511,11 @@ fn find_in_matrix<T: Eq>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize
 ```
 
 ### While with Mutation
-```
-fn drain_queue(mutate queue: Queue<Task>) {
+<!-- test: parse -->
+```rask
+func drain_queue(queue: Queue<Task>) {
     while queue.len() > 0 {
-        let task = queue.pop()
+        const task = queue.pop()
         if task.is_cancelled() {
             continue
         }
@@ -388,10 +525,11 @@ fn drain_queue(mutate queue: Queue<Task>) {
 ```
 
 ### Server Loop (No Value)
-```
-fn run_server(server: Server) {
+<!-- test: parse -->
+```rask
+func run_server(server: Server) {
     loop {
-        let conn = server.accept()
+        const conn = server.accept()
         handle(conn)
     }
 }

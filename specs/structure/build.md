@@ -19,7 +19,7 @@ Full Rask in build scripts (unlike comptime's restricted subset) enables I/O-hea
 ```rask
 import build using BuildContext
 
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     // Build logic here
     Ok(())
 }
@@ -38,18 +38,18 @@ pub fn build(ctx: BuildContext) -> Result<(), Error> {
 ```rask
 struct BuildContext {
     // Package information
-    pub package_name: String
-    pub package_version: String
-    pub package_dir: Path
+    public package_name: String
+    public package_version: String
+    public package_dir: Path
 
     // Build configuration
-    pub profile: Profile           // debug | release | custom
-    pub target: Target             // host or cross-compilation target
-    pub features: Set<String>      // enabled feature flags
+    public profile: Profile           // debug | release | custom
+    public target: Target             // host or cross-compilation target
+    public features: Set<String>      // enabled feature flags
 
     // Output directories
-    pub gen_dir: Path              // .rask-gen/ for generated code
-    pub out_dir: Path              // build artifacts
+    public gen_dir: Path              // .rask-gen/ for generated code
+    public out_dir: Path              // build artifacts
 }
 
 enum Profile {
@@ -59,9 +59,9 @@ enum Profile {
 }
 
 struct Target {
-    pub arch: String       // x86_64, aarch64, etc.
-    pub os: String         // linux, macos, windows, etc.
-    pub env: String        // gnu, musl, msvc, etc.
+    public arch: String       // x86_64, aarch64, etc.
+    public os: String         // linux, macos, windows, etc.
+    public env: String        // gnu, musl, msvc, etc.
 }
 ```
 
@@ -70,19 +70,19 @@ struct Target {
 **Writing generated Rask code:**
 
 ```rask
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     // Read schema file
-    let schema = fs.read_file("schema.json")?
+    const schema = fs.read_file("schema.json")?
 
     // Generate code
-    let code = generate_types(schema)
+    const code = generate_types(schema)
 
     // Write to gen_dir (automatically included in compilation)
     ctx.write_source("generated_types.rask", code)?
 
     Ok(())
 }
-```
+```rask
 
 **BuildContext methods for code generation:**
 
@@ -95,7 +95,7 @@ pub fn build(ctx: BuildContext) -> Result<(), Error> {
 **Generated file location:**
 - `ctx.write_source("foo.rask")` → `.rask-gen/foo.rask`
 - `.rask-gen/` is automatically added to package source set
-- Generated files have package visibility (not `pub` unless explicitly written as such)
+- Generated files have package visibility (not `public` unless explicitly written as such)
 
 ### Build Dependencies
 
@@ -150,12 +150,12 @@ codegen-utils = "0.5"
 **For incremental builds:**
 
 ```rask
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     // Declare input files (rebuild if these change)
     ctx.declare_dependency("schema.json")?
     ctx.declare_dependency("templates/*.tmpl")?  // glob supported
 
-    let schema = fs.read_file("schema.json")?
+    const schema = fs.read_file("schema.json")?
     // ... generate code
 
     Ok(())
@@ -172,7 +172,7 @@ pub fn build(ctx: BuildContext) -> Result<(), Error> {
 **Compiling C code:**
 
 ```rask
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     // Compile C sources
     ctx.compile_c(CompileOptions {
         sources: ["vendor/sqlite3.c"],
@@ -210,19 +210,18 @@ struct CompileOptions {
 ### Running External Tools
 
 ```rask
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     // Run protoc
-    let result = ctx.run(Command {
+    const result = ctx.run(Command {
         program: "protoc",
         args: ["--rask_out=.rask-gen/", "schema.proto"],
         env: [],
     })?
 
     if result.status != 0 {
-        return Err(Error::new("protoc failed: {}", result.stderr))
+        return Err(Error.new("protoc failed: {}", result.stderr))
     }
 
-    Ok(())
 }
 ```
 
@@ -231,18 +230,17 @@ pub fn build(ctx: BuildContext) -> Result<(), Error> {
 **Using features:**
 
 ```rask
-pub fn build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> Result<(), Error> {
     if ctx.features.contains("ssl") {
         ctx.link_library("ssl")?
         ctx.link_library("crypto")?
 
         // Generate feature flag for main code
-        ctx.write_source("features.rask", "pub const SSL_ENABLED: bool = true")?
+        ctx.write_source("features.rask", "public const SSL_ENABLED: bool = true")?
     } else {
-        ctx.write_source("features.rask", "pub const SSL_ENABLED: bool = false")?
+        ctx.write_source("features.rask", "public const SSL_ENABLED: bool = false")?
     }
 
-    Ok(())
 }
 ```
 
@@ -284,7 +282,7 @@ error: Build script failed
 | Case | Handling |
 |------|----------|
 | No `rask.build` file | Skip build script phase (most packages) |
-| `rask.build` without entry point | Compile error: "Missing `pub fn build(ctx: BuildContext)`" |
+| `rask.build` without entry point | Compile error: "Missing `public func build(ctx: BuildContext)`" |
 | Build script imports main package | Compile error: "Circular dependency" |
 | Generated file conflicts with source | Compile error: "Duplicate file" |
 | Build script modifies source files | Allowed but discouraged (declare dependency) |

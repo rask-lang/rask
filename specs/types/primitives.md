@@ -33,7 +33,7 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts requir
 |---------|--------|-------------------|
 | Type safety | Guaranteed valid scalar | Can hold invalid values |
 | API clarity | `c.is_alphabetic()` makes sense | Methods on arbitrary integers? |
-| Intent | `fn process(c: char)` documents expectation | Ambiguous |
+| Intent | `func process(c: char)` documents expectation | Ambiguous |
 | Optimization | Compiler knows value is valid | Must re-validate on every use |
 
 **Construction:**
@@ -143,11 +143,41 @@ IEEE 754 compliant. Special values: `INFINITY`, `NEG_INFINITY`, `NAN`.
 
 `&&`, `||` short-circuit. `!` negates. No implicit int↔bool conversion.
 
+### Endian-Explicit Types
+
+For binary data parsing/building (see [Binary Structs](binary.md)), endian-explicit type aliases specify byte order:
+
+| Type | Size | Byte Order | Runtime Type |
+|------|------|------------|--------------|
+| `u16be`, `i16be` | 2 bytes | Big-endian | u16, i16 |
+| `u16le`, `i16le` | 2 bytes | Little-endian | u16, i16 |
+| `u32be`, `i32be` | 4 bytes | Big-endian | u32, i32 |
+| `u32le`, `i32le` | 4 bytes | Little-endian | u32, i32 |
+| `u64be`, `i64be` | 8 bytes | Big-endian | u64, i64 |
+| `u64le`, `i64le` | 8 bytes | Little-endian | u64, i64 |
+| `f32be`, `f32le` | 4 bytes | Big/Little | f32 |
+| `f64be`, `f64le` | 8 bytes | Big/Little | f64 |
+
+**Usage context:** These types are primarily used in `@binary` struct field declarations. At runtime, values are stored in native byte order—the endian suffix only affects parsing and building.
+
+```rask
+@binary
+struct NetworkHeader {
+    port: u16be      // Parsed/built as big-endian, stored as native u16
+    addr: u32be
+}
+
+const header = NetworkHeader.parse(bytes)?
+let port: u16 = header.port   // Native u16
+```
+
+**Note:** Single-byte types (`u8`, `i8`) have no endian variants—byte order is irrelevant for single bytes.
+
 ### Numeric Traits
 
-```
+```rask
 trait Integer: Numeric { const MIN, MAX, BITS; }
-trait Float: Numeric { const INFINITY, NAN, EPSILON; fn is_nan(); }
+trait Float: Numeric { const INFINITY, NAN, EPSILON; func is_nan(); }
 ```
 
 All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX`.
@@ -157,10 +187,4 @@ All numeric types provide `ZERO`, `ONE`, `MIN`, `MAX`.
 - All primitives are Copy (≤16 bytes)
 - Arithmetic overflow: see [Integer Overflow](integer-overflow.md)
 - C interop: primitives have C-compatible layout
-
----
-
-## Remaining Issues
-
-### Medium Priority
-1. **SIMD types** — Built-in vector types (`f32x4`)?
+- SIMD vectors: see [SIMD Types](simd.md) for `Vec[T, N]` and shorthand `f32x4` etc.

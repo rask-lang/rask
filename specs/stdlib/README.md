@@ -141,13 +141,13 @@ These types and functions are always available without import:
 
 All other modules require explicit import:
 
-```
+```rask
 import fs
 import net
 import time
 import io
 
-let file = fs.open("data.txt")?
+const file = fs.open("data.txt")?
 ```
 
 ---
@@ -181,32 +181,32 @@ The `io` module provides traits for reading and writing byte streams.
 
 ### Reader Trait
 
-```
+```rask
 trait Reader {
-    fn read(self, buf: []u8) -> Result<usize, IoError>
-    fn read_all(self) -> Result<[]u8, IoError>
+    func read(self, buf: []u8) -> Result<usize, IoError>
+    func read_all(self) -> Result<[]u8, IoError>
 }
 ```
 
 ### Writer Trait
 
-```
+```rask
 trait Writer {
-    fn write(self, data: []u8) -> Result<usize, IoError>
-    fn write_all(self, data: []u8) -> Result<(), IoError>
-    fn flush(self) -> Result<(), IoError>
+    func write(self, data: []u8) -> Result<usize, IoError>
+    func write_all(self, data: []u8) -> Result<(), IoError>
+    func flush(self) -> Result<(), IoError>
 }
 ```
 
 ### Standard Streams
 
-```
+```rask
 import io
 
 // Global accessors (return linear handles)
-let stdin = io.stdin()
-let stdout = io.stdout()
-let stderr = io.stderr()
+const stdin = io.stdin()
+const stdout = io.stdout()
+const stderr = io.stderr()
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -236,18 +236,18 @@ The `fs` module provides file system operations.
 
 ### File Handle (Linear)
 
-```
+```rask
 // File is linear — must be closed
-let file = fs.open("data.txt")?
+const file = fs.open("data.txt")?
 ensure file.close()
 
-let data = file.read_all()?
+const data = file.read_all()?
 process(data)?
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `.read(buf)` | `(mutate []u8) -> Result<usize, IoError>` | Read bytes |
+| `.read(buf)` | `([]u8) -> Result<usize, IoError>` | Read bytes |
 | `.read_all()` | `() -> Result<[]u8, IoError>` | Read entire file |
 | `.write(data)` | `(read []u8) -> Result<usize, IoError>` | Write bytes |
 | `.close()` | `() -> Result<(), IoError>` | Close handle (consumes) |
@@ -288,14 +288,14 @@ The `net` module provides networking primitives.
 
 ### TCP Server
 
-```
+```rask
 import net
 
-let listener = net.tcp_listen("0.0.0.0:8080")?
+const listener = net.tcp_listen("0.0.0.0:8080")?
 ensure listener.close()
 
 loop {
-    let (stream, addr) = listener.accept()?
+    const (stream, addr) = listener.accept()?
     spawn {
         ensure stream.close()
         handle_connection(stream)?
@@ -305,12 +305,12 @@ loop {
 
 ### TCP Client
 
-```
-let stream = net.tcp_connect("example.com:80")?
+```rask
+const stream = net.tcp_connect("example.com:80")?
 ensure stream.close()
 
 stream.write_all(request)?
-let response = stream.read_all()?
+const response = stream.read_all()?
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -331,10 +331,10 @@ The `time` module provides time-related types and functions.
 
 ### Duration
 
-```
-let d = Duration.seconds(5)
-let d = Duration.millis(100)
-let d = Duration.nanos(1_000_000)
+```rask
+const d = Duration.seconds(5)
+const d = Duration.millis(100)
+const d = Duration.nanos(1_000_000)
 
 d.as_secs()    // -> u64
 d.as_millis()  // -> u64
@@ -343,10 +343,10 @@ d.as_nanos()   // -> u128
 
 ### Instant (Monotonic Clock)
 
-```
-let start = time.now()
+```rask
+const start = time.now()
 expensive_operation()
-let elapsed = time.now() - start
+const elapsed = time.now() - start
 
 if elapsed > Duration.seconds(1) {
     log("slow operation")
@@ -355,7 +355,7 @@ if elapsed > Duration.seconds(1) {
 
 ### Sleep
 
-```
+```rask
 time.sleep(Duration.millis(100))
 ```
 
@@ -375,17 +375,17 @@ The `path` module provides cross-platform path manipulation.
 
 ### Operations
 
-```
+```rask
 import path
 
-let p = Path.new("/home/user/file.txt")
+const p = Path.new("/home/user/file.txt")
 p.parent()      // -> Option<Path>  "/home/user"
 p.file_name()   // -> Option<string>  "file.txt"
 p.extension()   // -> Option<string>  "txt"
 p.stem()        // -> Option<string>  "file"
 p.is_absolute() // -> bool
 
-let p2 = p.join("subdir")  // "/home/user/file.txt/subdir"
+const p2 = p.join("subdir")  // "/home/user/file.txt/subdir"
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -398,7 +398,7 @@ The `os` module provides platform-specific operations.
 
 ### Environment
 
-```
+```rask
 import os
 
 os.env("HOME")              // -> Option<string>
@@ -409,7 +409,7 @@ os.args()                   // -> []string
 
 ### Process
 
-```
+```rask
 os.exit(0)
 os.getpid()  // -> u32
 ```
@@ -424,10 +424,10 @@ The `fmt` module provides string formatting.
 
 ### Format Macro
 
-```
-let s = format!("Hello, {}!", name)
-let s = format!("{} + {} = {}", a, b, a + b)
-let s = format!("{:08x}", value)  // Hex with padding
+```rask
+const s = format!("Hello, {}!", name)
+const s = format!("{} + {} = {}", a, b, a + b)
+const s = format!("{:08x}", value)  // Hex with padding
 ```
 
 ### Format Specifiers
@@ -490,11 +490,11 @@ The `random` module provides random number generation.
 
 ### Usage
 
-```
+```rask
 import random
 
-let rng = random.new()           // System-seeded
-let rng = random.from_seed(42)   // Deterministic
+const rng = random.new()           // System-seeded
+const rng = random.from_seed(42)   // Deterministic
 
 rng.u64()           // -> u64
 rng.range(0, 100)   // -> i64 in [0, 100)
@@ -522,7 +522,7 @@ The `json` module provides JSON parsing and serialization (RFC 8259).
 
 ### Types
 
-```
+```rask
 enum JsonValue {
     Null,
     Bool(bool),
@@ -535,26 +535,26 @@ enum JsonValue {
 
 ### Usage
 
-```
+```rask
 import json
 
-let data = json.parse(input)?
+const data = json.parse(input)?
 match data {
     JsonValue.Object(obj) => {
-        let name = obj["name"]?
+        const name = obj["name"]?
     }
     _ => return Err(InvalidFormat)
 }
 
-let output = json.stringify(data)
+const output = json.stringify(data)
 ```
 
 ### Typed Serialization
 
-```
+```rask
 // Types implementing Serialize/Deserialize traits
-let user: User = json.decode(input)?
-let output = json.encode(user)
+const user: User = json.decode(input)?
+const output = json.encode(user)
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -577,14 +577,14 @@ The `http` module provides HTTP client and server (RFC 7230-7235).
 
 ### Server
 
-```
+```rask
 import http
 
-let server = http.Server.listen(":8080")?
+const server = http.Server.listen(":8080")?
 ensure server.close()
 
 loop {
-    let (req, resp) = server.accept()?
+    const (req, resp) = server.accept()?
 
     if req.method == "GET" && req.path == "/health" {
         resp.status(200).body("OK").send()?
@@ -596,16 +596,16 @@ loop {
 
 ### Client
 
-```
+```rask
 import http
 
-let client = http.Client.new()
+const client = http.Client.new()
 
-let resp = client.get("https://api.example.com/data")?
-let body = resp.body_string()?
+const resp = client.get("https://api.example.com/data")?
+const body = resp.body_string()?
 
 // With headers
-let resp = client.post("https://api.example.com/submit")
+const resp = client.post("https://api.example.com/submit")
     .header("Content-Type", "application/json")
     .body(json_data)
     .send()?
@@ -640,30 +640,30 @@ The `tls` module provides TLS/SSL connections (wraps system TLS library).
 
 ### Client Connection
 
-```
+```rask
 import tls
 
-let stream = tls.connect("example.com:443")?
+const stream = tls.connect("example.com:443")?
 ensure stream.close()
 
 stream.write_all(request)?
-let response = stream.read_all()?
+const response = stream.read_all()?
 ```
 
 ### Server
 
-```
+```rask
 import tls
 
-let config = tls.Config.new()
+const config = tls.Config.new()
     .cert_file("server.crt")?
     .key_file("server.key")?
 
-let listener = tls.listen(":443", config)?
+const listener = tls.listen(":443", config)?
 ensure listener.close()
 
 loop {
-    let stream = listener.accept()?
+    const stream = listener.accept()?
     // handle encrypted connection
 }
 ```
@@ -678,19 +678,19 @@ The `cli` module provides command-line argument parsing.
 
 ### Basic Usage
 
-```
+```rask
 import cli
 
-let args = cli.parse()
+const args = cli.parse()
 
-let verbose = args.flag("verbose", "v")      // --verbose or -v
-let output = args.option("output", "o")?     // --output=file or -o file
-let files = args.positional()                // remaining args
+const verbose = args.flag("verbose", "v")      // --verbose or -v
+const output = args.option("output", "o")?     // --output=file or -o file
+const files = args.positional()                // remaining args
 ```
 
 ### Structured Parsing
 
-```
+```rask
 import cli
 
 struct Args {
@@ -704,15 +704,15 @@ let args: Args = cli.parse_into()?
 
 ### Help Generation
 
-```
-let parser = cli.Parser.new("myapp")
+```rask
+const parser = cli.Parser.new("myapp")
     .version("1.0.0")
     .description("My application")
     .flag("verbose", "v", "Enable verbose output")
     .option("output", "o", "Output file")
     .positional("files", "Input files")
 
-let args = parser.parse()?
+const args = parser.parse()?
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -725,28 +725,28 @@ The `encoding` module provides common encodings (RFC 4648).
 
 ### Base64
 
-```
+```rask
 import encoding
 
-let encoded = encoding.base64.encode(data)      // -> string
-let decoded = encoding.base64.decode(encoded)?  // -> []u8
+const encoded = encoding.base64.encode(data)      // -> string
+const decoded = encoding.base64.decode(encoded)?  // -> []u8
 
 // URL-safe variant
-let encoded = encoding.base64url.encode(data)
+const encoded = encoding.base64url.encode(data)
 ```
 
 ### Hex
 
-```
-let hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
-let data = encoding.hex.decode(hex)?     // -> []u8
+```rask
+const hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
+const data = encoding.hex.decode(hex)?     // -> []u8
 ```
 
 ### URL Encoding
 
-```
-let encoded = encoding.url.encode("hello world")  // "hello%20world"
-let decoded = encoding.url.decode(encoded)?       // "hello world"
+```rask
+const encoded = encoding.url.encode("hello world")  // "hello%20world"
+const decoded = encoding.url.decode(encoded)?       // "hello world"
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -768,17 +768,17 @@ The `hash` module provides hash functions for integrity (not security).
 
 ### Usage
 
-```
+```rask
 import hash
 
-let digest = hash.sha256(file_contents)
-let hex = encoding.hex.encode(digest)
+const digest = hash.sha256(file_contents)
+const hex = encoding.hex.encode(digest)
 
 // Incremental hashing
-let hasher = hash.Sha256.new()
+const hasher = hash.Sha256.new()
 hasher.update(chunk1)
 hasher.update(chunk2)
-let digest = hasher.finish()
+const digest = hasher.finish()
 ```
 
 **Note:** These are integrity functions. For cryptographic security (HMAC, signatures), use the `crypto` package.
@@ -793,7 +793,7 @@ The `url` module provides URL parsing (RFC 3986).
 
 ### Types
 
-```
+```rask
 struct Url {
     scheme: string,      // "https"
     host: string,        // "example.com"
@@ -806,10 +806,10 @@ struct Url {
 
 ### Parsing
 
-```
+```rask
 import url
 
-let u = url.parse("https://example.com:8080/path?query=1")?
+const u = url.parse("https://example.com:8080/path?query=1")?
 
 u.scheme    // "https"
 u.host      // "example.com"
@@ -820,18 +820,18 @@ u.query     // Some("query=1")
 
 ### Query Parameters
 
-```
-let params = url.parse_query("name=Alice&age=30")?
+```rask
+const params = url.parse_query("name=Alice&age=30")?
 params["name"]  // Some("Alice")
 
-let query = url.encode_query([("name", "Alice"), ("age", "30")])
+const query = url.encode_query([("name", "Alice"), ("age", "30")])
 // "name=Alice&age=30"
 ```
 
 ### Construction
 
-```
-let u = Url {
+```rask
+const u = Url {
     scheme: "https",
     host: "api.example.com",
     path: "/users",
@@ -850,7 +850,7 @@ The `unicode` module provides Unicode utilities beyond basic string operations.
 
 ### Character Properties
 
-```
+```rask
 import unicode
 
 unicode.is_letter('A')      // true
@@ -862,7 +862,7 @@ unicode.is_lowercase('a')   // true
 
 ### Case Conversion
 
-```
+```rask
 unicode.to_uppercase('a')   // 'A'
 unicode.to_lowercase('A')   // 'a'
 unicode.to_titlecase('a')   // 'A'
@@ -870,14 +870,14 @@ unicode.to_titlecase('a')   // 'A'
 
 ### Normalization
 
-```
-let nfc = unicode.normalize_nfc(text)   // Canonical composition
-let nfd = unicode.normalize_nfd(text)   // Canonical decomposition
+```rask
+const nfc = unicode.normalize_nfc(text)   // Canonical composition
+const nfd = unicode.normalize_nfd(text)   // Canonical decomposition
 ```
 
 ### Categories
 
-```
+```rask
 unicode.category('A')  // Category.UppercaseLetter
 unicode.category('5')  // Category.DecimalNumber
 unicode.category(' ')  // Category.SpaceSeparator
@@ -893,7 +893,7 @@ The `terminal` module provides terminal utilities and ANSI styling.
 
 ### Colors
 
-```
+```rask
 import terminal
 
 print(terminal.red("Error: ") + message)
@@ -922,7 +922,7 @@ print(terminal.bold(terminal.blue("Header")))
 
 ### Detection
 
-```
+```rask
 if terminal.is_tty() {
     print(terminal.green("colored"))
 } else {
@@ -943,36 +943,36 @@ The `csv` module provides CSV parsing and writing (RFC 4180).
 
 ### Reading
 
-```
+```rask
 import csv
 
-let reader = csv.Reader.from_string(data)
+const reader = csv.Reader.from_string(data)
 for row in reader {
-    let name = row[0]
-    let age = row[1]
+    const name = row[0]
+    const age = row[1]
 }
 
 // With headers
-let reader = csv.Reader.from_string(data).with_headers()
+const reader = csv.Reader.from_string(data).with_headers()
 for row in reader {
-    let name = row["name"]?
-    let age = row["age"]?
+    const name = row["name"]?
+    const age = row["age"]?
 }
 ```
 
 ### Writing
 
-```
-let writer = csv.Writer.new()
+```rask
+const writer = csv.Writer.new()
 writer.write_row(["name", "age"])?
 writer.write_row(["Alice", "30"])?
-let output = writer.finish()
+const output = writer.finish()
 ```
 
 ### Options
 
-```
-let reader = csv.Reader.from_string(data)
+```rask
+const reader = csv.Reader.from_string(data)
     .delimiter(';')
     .quote('"')
     .has_headers(true)
@@ -984,38 +984,29 @@ let reader = csv.Reader.from_string(data)
 
 ## Bits
 
-The `bits` module provides bit manipulation utilities.
+The `bits` module provides bit manipulation utilities and binary parsing helpers.
+
+See [bits.md](bits.md) for full specification.
 
 ### Bit Operations
 
-| Function | Description |
-|----------|-------------|
-| `bits.popcount(x)` | Count set bits |
-| `bits.leading_zeros(x)` | Count leading zeros |
-| `bits.trailing_zeros(x)` | Count trailing zeros |
-| `bits.reverse(x)` | Reverse bit order |
-| `bits.rotate_left(x, n)` | Rotate left |
-| `bits.rotate_right(x, n)` | Rotate right |
+Methods on integer types: `popcount()`, `leading_zeros()`, `trailing_zeros()`, `reverse_bits()`, `rotate_left(n)`, `rotate_right(n)`, `swap_bytes()`.
 
 ### Byte Order
 
-```
-import bits
+Methods for endianness: `to_be_bytes()`, `to_le_bytes()`, `from_be_bytes()`, `from_le_bytes()`.
 
-// Convert to/from big-endian
-let be = bits.to_be_u32(value)
-let value = bits.from_be_u32(bytes)
+### Binary Parsing
 
-// Convert to/from little-endian
-let le = bits.to_le_u32(value)
-let value = bits.from_le_u32(bytes)
+For one-off parsing without `@binary` structs:
 
-// Network byte order (big-endian)
-let net = bits.hton_u16(port)
-let port = bits.ntoh_u16(net)
+```rask
+let (magic, version, length, rest) = data.unpack(u32be, u8, u16be)?
 ```
 
-**Status:** Planned — detailed specification TODO.
+See also [Binary Structs](../types/binary.md) for declarative binary layouts.
+
+**Status:** Specified — see [bits.md](bits.md).
 
 ---
 

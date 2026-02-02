@@ -36,7 +36,7 @@ Closures pack values to travel. Different closure kinds are like different types
 
 The closure kind is determined by **how it's used**, not by what it captures:
 
-```
+```rask
 START: Creating a closure || ... or |x| ...
          |
          v
@@ -80,14 +80,15 @@ Capture by value (copy or move), never by reference. Can be stored in variables,
 | Mutable state | Requires Pool + Handle pattern |
 
 **Basic capture:**
-```
-let name = "Alice"
-let greet = || print("Hello, {name}")  // Copies name (String is small)
+<!-- test: parse -->
+```rask
+const name = "Alice"
+const greet = || print("Hello, {name}")  // Copies name (String is small)
 greet()  // "Hello, Alice"
 // name still valid
 
-let data = large_vec()
-let process_data = || transform(data)  // Moves data
+const data = large_vec()
+const process_data = || transform(data)  // Moves data
 process_data()
 // data invalid after move
 ```
@@ -95,11 +96,12 @@ process_data()
 **Closure parameters:**
 
 Closures can accept parameters passed on each invocation:
-```
-let double = |x| x * 2
-let result = double(5)  // 10
+<!-- test: parse -->
+```rask
+const double = |x| x * 2
+const result = double(5)  // 10
 
-let format_user = |id| "User #{id}"
+const format_user = |id| "User #{id}"
 button.on_click(|event| {  // event passed by caller
     print(format_user(event.user_id))
 })
@@ -108,26 +110,27 @@ button.on_click(|event| {  // event passed by caller
 ### The Capture Mutation Problem
 
 **WRONG — Capturing mutable state directly:**
-```
-let counter = 0
-let increment = || counter += 1  // Captures counter by COPY
+```rask
+const counter = 0
+const increment = || counter += 1  // Captures counter by COPY
 increment()
 increment()
 // counter is still 0! Each call mutates the closure's COPY.
 ```
 
 **CORRECT — Pool + Handle pattern:**
-```
-let state = Pool::new()
-let h = state.insert(Counter{value: 0})
+<!-- test: parse -->
+```rask
+const state = Pool.new()
+const h = state.insert(Counter{value: 0})
 
 // Pattern 1: Capture handle only, receive pool as parameter
-let increment = |state_pool| state_pool[h].value += 1
+const increment = |state_pool| state_pool[h].value += 1
 increment(state)  // Pass pool on each call
 increment(state)  // Still valid
 
 // Pattern 2: Use parameters only (no capture)
-let increment2 = |state_pool, handle| state_pool[handle].value += 1
+const increment2 = |state_pool, handle| state_pool[handle].value += 1
 increment2(state, h)
 
 // Pattern 3: For stored closures, capture handle + pass pool
@@ -139,22 +142,22 @@ button.on_click(|event, app_state| {
 ```
 
 **Canonical pattern for stateful callbacks:**
-```
+```rask
 struct App {
     state: Pool<AppState>,
     state_handle: Handle<AppState>,
 }
 
-fn setup_handlers(app: App) {
-    let h = app.state_handle
+func setup_handlers(app: App) {
+    const h = app.state_handle
 
     // Each handler captures its needed handles, receives app state
     button1.on_click(|event, state| {
-        state[h].mode = Mode::Edit
+        state[h].mode = Mode.Edit
     })
 
     button2.on_click(|event, state| {
-        state[h].mode = Mode::View
+        state[h].mode = Mode.View
     })
 
     button3.on_click(|event, state| {
@@ -198,35 +201,35 @@ Closures can capture block-scoped borrows (slices, struct field references) but 
 
 **Examples:**
 
-```
-let s = get_string()
-let slice = s[0..3]               // slice is scope-constrained to s's scope
-let f = || process(slice)         // ✅ OK: f inherits scope constraint
+```rask
+const s = get_string()
+const slice = s[0..3]               // slice is scope-constrained to s's scope
+const f = || process(slice)         // ✅ OK: f inherits scope constraint
 f()                               // ✅ OK: called in same scope
 return f                          // ❌ ERROR: cannot escape scope (BC4)
 ```
 
 **Assigning to outer variable:**
-```
+```rask
 let outer_closure: ???
 {
-    let s = "hello"
-    let slice = s[0..3]
+    const s = "hello"
+    const slice = s[0..3]
     outer_closure = || process(slice)  // ❌ ERROR: outer_closure outlives s (BC3)
 }
 ```
 
 **Storing in struct:**
-```
-let slice = s[0..3]
-let f = || process(slice)
-let handler = Handler { callback: f }  // ❌ ERROR: struct fields cannot hold scope-constrained closures (BC4)
+```rask
+const slice = s[0..3]
+const f = || process(slice)
+const handler = Handler { callback: f }  // ❌ ERROR: struct fields cannot hold scope-constrained closures (BC4)
 ```
 
 **Passing to immediate consumer:**
-```
-let slice = s[0..3]
-let f = || process(slice)
+```rask
+const slice = s[0..3]
+const f = || process(slice)
 execute_now(f)                    // ✅ OK: execute_now consumes f immediately (BC5)
 // f is moved to execute_now, not stored
 ```
@@ -235,18 +238,18 @@ execute_now(f)                    // ✅ OK: execute_now consumes f immediately 
 
 Scope constraints propagate through generic type parameters. No special annotations needed—the type system handles it at monomorphization:
 
-```
-fn run_twice<F: Fn()>(f: F) {
+```rask
+func run_twice<F: Fn()>(f: F) {
     f()
     f()
 }  // F dropped, never stored - works with scope-constrained closures
 
-fn store_callback<F: Fn()>(f: F) {
-    let holder = Holder { callback: f }  // ❌ ERROR if F is scope-constrained (BC4)
+func store_callback<F: Fn()>(f: F) {
+    const holder = Holder { callback: f }  // ❌ ERROR if F is scope-constrained (BC4)
 }
 
-let slice = s[0..3]
-let greet = || print(slice)   // scope-constrained
+const slice = s[0..3]
+const greet = || print(slice)   // scope-constrained
 
 run_twice(greet)              // ✅ Works - run_twice doesn't store F
 store_callback(greet)         // ❌ Fails - store_callback tries to store F
@@ -267,8 +270,8 @@ When `store_callback` is monomorphized:
 **IDE Support (Principle 7):**
 
 The IDE SHOULD display scope constraints as ghost annotations:
-```
-let f = || process(slice)  // ghost: [scoped to line 42]
+```rask
+const f = || process(slice)  // ghost: [scoped to line 42]
 ```
 
 **Interaction with closure kinds:**
@@ -293,9 +296,9 @@ Access outer scope WITHOUT capturing. MUST be called immediately within the expr
 | **EC4: Aliasing rules apply** | Mutable access excludes other access during execution |
 
 **Read access (iterators):**
-```
-let items = vec![...]
-let vec = vec![...]
+```rask
+const items = vec![...]
+const vec = vec![...]
 
 // Closure accesses vec WITHOUT capturing it
 items.filter(|i| vec[*i].active)
@@ -305,8 +308,8 @@ items.filter(|i| vec[*i].active)
 ```
 
 **Mutable access (immediate callbacks):**
-```
-let app = AppState::new()
+```rask
+const app = AppState.new()
 
 // Expression-scoped: closure executed immediately
 button.on_click(|event| {
@@ -317,7 +320,7 @@ button.on_click(|event| {
 // app still valid here
 
 // ❌ ILLEGAL: Cannot store expression-scoped closure
-let handler = button.on_click(|event| {
+const handler = button.on_click(|event| {
     app.counter += 1  // ERROR: captures mutable access to app
 })
 // Would violate aliasing - app borrowed while handler exists
@@ -326,14 +329,14 @@ let handler = button.on_click(|event| {
 **Storage detection:**
 
 Compiler enforces immediate execution:
-```
+```rask
 // ✅ Legal: Inline consumption
 for i in items.filter(|i| vec[*i].active) {
     process(i)
 }
 
 // ❌ Illegal: Stored closure accesses outer scope
-let f = items.filter(|i| vec[*i].active)
+const f = items.filter(|i| vec[*i].active)
 //          ^^^^^^^^^ ERROR: closure accesses 'vec' but iterator is stored
 ```
 
@@ -352,14 +355,14 @@ let f = items.filter(|i| vec[*i].active)
 ### Multiple Closures Sharing State
 
 Use Pool + Handle pattern:
-```
-let app = AppState::new()
-let state = Pool::new()
-let h = state.insert(AppData{...})
+```rask
+const app = AppState.new()
+const state = Pool.new()
+const h = state.insert(AppData{...})
 
 // All closures capture same handle, receive state as parameter
-button1.on_click(|_, s| s[h].mode = Mode::A)
-button2.on_click(|_, s| s[h].mode = Mode::B)
+button1.on_click(|_, s| s[h].mode = Mode.A)
+button2.on_click(|_, s| s[h].mode = Mode.B)
 button3.on_click(|_, s| s[h].save()?)
 
 // Framework provides state to all handlers
@@ -504,16 +507,16 @@ The IDE makes closure kinds and capture behavior visible through ghost annotatio
 | Immediate (hand-carry) | `[immediate]` |
 
 **Example:**
-```
-let greet = || print(slice)  // [local-only, scoped to line 5]
+```rask
+const greet = || print(slice)  // [local-only, scoped to line 5]
 ```
 
 ### Capture List Display (Hover)
 
 On hover over a closure, show what it captures:
 
-```
-let f = || process(slice, count)
+```rask
+const f = || process(slice, count)
     ^
     Closure captures:
       slice: borrowed from 's' (line 3) → makes closure local-only
@@ -526,10 +529,10 @@ let f = || process(slice, count)
 
 When cursor is in a local-only closure, highlight the scope boundary it's constrained to:
 
-```
-let s = "hello"        // ┐
-let slice = s[0..3]    // │ highlighted: closure scope boundary
-let f = || print(slice)// │
+```rask
+const s = "hello"        // ┐
+const slice = s[0..3]    // │ highlighted: closure scope boundary
+const f = || print(slice)// │
 use(f)                 // │
                        // ┘ f cannot escape past here
 ```
@@ -576,5 +579,5 @@ use(f)                 // │
 ## See Also
 
 - [Value Semantics](value-semantics.md) — Copy vs move for captured values
-- [Borrowing](borrowing.md) — Borrow rules in expression-scoped closures
+- [Borrowing](borrowing.md) — One rule: views last as long as the source is stable
 - [Pools](pools.md) — Pool+Handle pattern for state sharing

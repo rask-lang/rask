@@ -7,7 +7,7 @@ How do algebraic data types (sum types/enums) work in Rask? Covers enum syntax, 
 Tagged unions with inline payloads, compiler-inferred binding modes, compile-time exhaustiveness checking, and a single `match` keyword (no mode annotations).
 
 ## Rationale
-Enums are values like structs, following the same ownership rules. The compiler infers whether pattern bindings are read, mutated, or consumed based on how they're used in each arm—no explicit mode annotations needed. This aligns with Principle 7 (Compiler Knowledge is Visible): the compiler infers, the IDE displays inferred modes as ghost annotations. Exhaustiveness is checked locally (all variants known from definition). Linear resources tracked through match arms (no silent drops).
+Enums are values like structs, following the same ownership rules. The compiler infers whether pattern bindings are borrowed or taken based on how they're used in each arm—no explicit mode annotations needed. For borrowed bindings, the compiler further infers read vs mutate. This aligns with Principle 7 (Compiler Knowledge is Visible) => the compiler infers, the IDE displays inferred modes as ghost annotations. Exhaustiveness is checked locally (all variants known from definition). Linear resources tracked through match arms (no silent drops).
 
 ## Specification
 
@@ -15,7 +15,8 @@ Enums are values like structs, following the same ownership rules. The compiler 
 
 Enums are tagged unions with inline variant storage.
 
-```
+<!-- test: parse -->
+```rask
 enum Name { A, B }                    // Simple tag-only
 enum Name { A(T), B(U, V) }           // Variants with payloads  
 enum Name<T> { Some(T), None }        // Generic enum
@@ -31,7 +32,7 @@ enum Name<T> { Some(T), None }        // Generic enum
 
 | Property | Rule |
 |----------|------|
-| Inline storage | Variant payloads stored inline (no heap except `Box<T>`) |
+| Inline storage | Variant payloads stored inline (no heap except `Owned<T>`) |
 | Copy eligibility | Enum is Copy if total size ≤16 bytes AND all variants are Copy |
 | Move semantics | Non-Copy enums move on assignment; source invalidated |
 | Clone | Derived automatically if all variants implement Clone |
@@ -49,40 +50,40 @@ IDE SHOULD show move vs copy at each match site.
 
 One keyword: `match`. The compiler infers binding modes from usage.
 
-**Read (inferred when bindings only passed to `read` parameters):**
-```
-match result {                      // IDE ghost: [reads]
-    Ok(value) => println(value),    // value: read T (inferred)
-    Err(error) => log(error)        // error: read E (inferred)
+**Borrow (inferred when bindings only borrowed) =>**
+```rask
+match result {                      // IDE ghost: [borrows]
+    Ok(value) => println(value),    // value: borrowed (inferred read)
+    Err(error) => log(error)        // error: borrowed (inferred read)
 }
 // result still valid
 ```
 
-**Consume (inferred when any binding passed to `transfer` parameter):**
-```
-match result {                      // IDE ghost: [consumes]
-    Ok(value) => consume(value),    // value: T, owned (inferred)
-    Err(error) => handle(error)     // error: E, owned (inferred)
-}
-// result is consumed, invalid here
-```
-
-**Mutate (inferred when any binding passed to `mutate` parameter):**
-```
+**Borrow + mutate (inferred when any binding mutated) =>**
+```rask
 match connection {                          // IDE ghost: [mutates]
-    Connected(sock) => sock.set_timeout(30),  // sock: mutate Socket (inferred)
+    Connected(sock) => sock.set_timeout(30),  // sock: borrowed (inferred mutate)
     _ => {}
 }
 // connection still valid, possibly modified
 ```
 
+**Take (inferred when any binding passed to `take` parameter) =>**
+```rask
+match result {                      // IDE ghost: [takes]
+    Ok(value) => consume(value),    // value: taken (inferred)
+    Err(error) => handle(error)     // error: taken (inferred)
+}
+// result is consumed, invalid here
+```
+
 | Binding Usage | Inferred Mode | Source After |
 |---------------|---------------|--------------|
-| Only `read` parameters | Read (borrowed) | Valid |
-| Any `mutate` parameter | Mutate (borrowed) | Valid, may be modified |
-| Any `transfer` parameter | Owned (moved) | Consumed |
+| Only reads | Borrow (immutable) | Valid |
+| Any mutation | Borrow (mutable) | Valid, may be modified |
+| Any `take` parameter | Taken (moved) | Consumed |
 
-**Mode inference rule:** Highest mode wins across all arms. If any arm transfers, the whole match consumes. If any arm mutates (and none transfer), the match borrows mutably. Otherwise, read.
+**Mode inference rule:** Highest mode wins across all arms. If any arm takes, the whole match consumes. If any arm mutates (and none take), the match borrows mutably. Otherwise, immutable borrow.
 
 **Rules:**
 - Compiler MUST infer binding mode from usage in arm body
@@ -108,9 +109,9 @@ Compiler MUST report which specific variants are unhandled.
 
 Conditional matching requires explicit catch-all to prevent hidden gaps.
 
-```
+```rask
 match response {
-    Ok(body) if body.len() > 0 => process(body),
+    Ok(body) if body.len() > 0: process(body),
     Ok(body) => default(body),  // REQUIRED: catches guard failure
     Err(e) => handle(e)
 }
@@ -121,11 +122,61 @@ match response {
 | Guard on variant V | MUST have unguarded V arm OR wildcard after |
 | No catch-all for guarded variant | ❌ Error: "pattern `V(_)` may not match when guard fails" |
 
-```
+```rask
 // ❌ INVALID: guard may fail with no fallback
 match response {
-    Ok(body) if body.len() > 0 => process(body),
+    Ok(body) if body.len() > 0: process(body),
     Err(e) => handle(e)
+}
+```
+
+### Or-Patterns
+
+Multiple patterns can share a single arm using `|` (or).
+
+```rask
+match input {
+    "quit" | "exit" | "q" => break,
+    "help" | "h" | "?" => print_help(),
+    _ => process(input)
+}
+
+match token {
+    Plus | Minus => parse_additive(),
+    Star | Slash | Percent => parse_multiplicative(),
+    _ => parse_primary()
+}
+```
+
+**Rules:**
+- All alternatives MUST have the same type
+- All alternatives MUST bind the same names with compatible types
+- Or-patterns can be nested within other patterns
+- Or-patterns work with guards: `A(x) | B(x) if x > 0 => ...`
+
+| Pattern | Valid | Notes |
+|---------|-------|-------|
+| `A \| B => ...` | ✅ | Simple alternatives |
+| `A(x) \| B(x) => use(x)` | ✅ | Both bind `x` with same type |
+| `A(x) \| B(y) => ...` | ❌ | Different binding names |
+| `A(x: i32) \| B(x: String) => ...` | ❌ | Incompatible types for `x` |
+| `(A \| B, C \| D) => ...` | ✅ | Nested or-patterns |
+
+**With Payloads:**
+```rask
+match result {
+    Ok(0) | Err(0) => println("zero"),
+    Ok(n) | Err(n) => println("value: {n}"),
+}
+```
+
+**Linear Resources:**
+Or-patterns with linear payloads follow the same rules—all alternatives must bind the linear value, and it must be consumed:
+
+```rask
+match file_result {
+    Ok(file) | Recovered(file) => file.close(),
+    Err(e) => log(e)
 }
 ```
 
@@ -140,7 +191,7 @@ Enums may contain linear payloads (File, Socket, etc.).
 | Bound value must be consumed | Standard linear tracking applies per arm |
 | Must transfer | Compiler enforces consuming usage; read-only usage is compile error |
 
-```
+```rask
 // ✅ VALID: linear value consumed in each arm
 match file_result {                 // IDE ghost: [consumes]
     Ok(file) => file.close()?,      // file transferred to close()
@@ -162,6 +213,26 @@ match file_result {
 // Error: "linear resource `file` must be consumed, not just read"
 ```
 
+### Guards with Linear Resources
+
+When using pattern guards on variants containing linear resources, the catch-all arm must also bind and consume the resource:
+
+```rask
+// ✅ VALID: guard with linear resource — both arms consume
+match file_result {
+    Ok(file) if file.size() > 1000: process(file),  // Large files: process
+    Ok(file) => file.close()?,                       // Small files: still must close
+    Err(e) => log(e)
+}
+
+// ❌ INVALID: wildcard catch-all discards linear resource
+match file_result {
+    Ok(file) if file.size() > 1000: process(file),
+    Ok(_) => {},                                     // Error: discards linear File
+    Err(e) => log(e)
+}
+```
+
 ### Wildcard Warnings for Large Payloads
 
 | Payload Type | Wildcard Behavior |
@@ -171,7 +242,7 @@ match file_result {
 | Non-Copy, >64 bytes | ⚠️ Warning: "wildcard discards large value (N bytes)" |
 
 Use explicit `discard` to silence:
-```
+```rask
 match result {
     Ok(discard) => {},  // Explicit acknowledgment
     Err(e) => handle(e)
@@ -180,15 +251,18 @@ match result {
 
 ### Enum Methods
 
-Methods default to non-consuming (`read self`).
+Methods are defined in `extend` blocks, separate from the enum definition. Methods default to non-consuming (borrow `self`).
 
-```
+<!-- test: parse -->
+```rask
 enum Option<T> {
     Some(T),
     None,
+}
 
-    // Implicitly: read self
-    fn is_some(self) -> bool {
+extend Option<T> {
+    // Default: borrows self (compiler infers read vs mutate)
+    func is_some(self) -> bool {
         match self {               // IDE ghost: [reads] (inferred from wildcard-only usage)
             Some(_) => true,
             None => false
@@ -196,7 +270,7 @@ enum Option<T> {
     }
 
     // Explicitly consuming
-    fn unwrap(transfer self) -> T {
+    func unwrap(take self) -> T {
         match self {               // IDE ghost: [consumes] (inferred from returning v)
             Some(v) => v,
             None => panic("unwrap on None")
@@ -207,54 +281,54 @@ enum Option<T> {
 
 | Self Mode | Behavior |
 |-----------|----------|
-| `self` (default) | Read, non-consuming |
-| `transfer self` | Consumes enum |
-| `mutate self` | Mutates in place |
+| `self` (default) | Borrow (compiler infers read vs mutate) |
+| `take self` | Consumes enum |
 
 ### Recursive Enums
 
-Self-referential enums require explicit `Box<T>` indirection.
+Self-referential enums require explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md) for full specification.
 
-```
+<!-- test: parse -->
+```rask
 enum Tree<T> {
     Leaf(T),
-    Node(Box<Tree<T>>, Box<Tree<T>>)
+    Node(Owned<Tree<T>>, Owned<Tree<T>>)
 }
 
-let tree = Node(box Leaf(1), box Leaf(2))  // `box` = visible allocation
+const tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 ```
 
 | Syntax | Meaning |
 |--------|---------|
-| `box expr` | Heap-allocate expr, return Box<T> |
-| `Box<T>` | Owning heap pointer (linear) |
+| `own expr` | Heap-allocate expr, return `Owned<T>` |
+| `Owned<T>` | Owning heap pointer (linear) |
 
 **Rules:**
-- `box` keyword makes allocation visible at construction site
-- Box<T> is linear: must be consumed exactly once
+- `own` keyword makes allocation visible at construction site
+- `Owned<T>` is linear: must be consumed exactly once
 - Drop deallocates automatically when consumed
 - Compiler MUST reject recursive enum without indirection
 
 ### Discriminant Access
 
-```
+```rask
 enum Status { Pending, Done, Failed }
 
-let s = Done
-let d = discriminant(s)  // 1 (zero-indexed)
+const s = Done
+const d = discriminant(s)  // 1 (zero-indexed)
 ```
 
 | Attribute | Behavior |
 |-----------|----------|
 | None | Compiler MAY reorder variants for size optimization |
-| `#[repr(ordered)]` | Discriminant values locked to declaration order |
-| `#[repr(C)]` | C-compatible layout, no niche optimization |
+| `@layout(ordered)` | Discriminant values locked to declaration order |
+| `@layout(C)` | C-compatible layout, no niche optimization |
 
 Discriminant values assigned 0, 1, 2, ... in declaration order unless reordered.
 
 **Function signature:**
-```
-fn discriminant<T>(read e: T) -> u16 where T: Enum
+```rask
+func discriminant(e: T) -> u16 where T: Enum
 ```
 
 ### Null-Pointer Optimization
@@ -263,14 +337,15 @@ Compiler MUST apply niche optimization automatically when possible.
 
 | Type | Representation |
 |------|----------------|
-| `Option<Box<T>>` | Null = None, non-null = Some |
+| `Option<Owned<T>>` | Null = None, non-null = Some |
 | `Option<Handle<T>>` | generation=0 = None, else Some |
 
-`#[repr(C)]` disables niche optimization for ABI stability.
+`@layout(C)` disables niche optimization for ABI stability.
 
 ### Empty Enum (Never Type)
 
-```
+<!-- test: parse -->
+```rask
 enum Never {}  // Cannot be constructed
 ```
 
@@ -281,10 +356,10 @@ enum Never {}  // Cannot be constructed
 | Pattern match | No arms needed |
 | `Result<T, Never>` | Err arm unreachable, compiler optimizes |
 
-```
-fn infallible() -> Result<i32, Never> { Ok(42) }
+```rask
+func infallible() -> Result<i32, Never> { Ok(42) }
 
-let value = infallible().unwrap()  // Cannot panic (compiler knows)
+const value = infallible().unwrap()  // Cannot panic (compiler knows)
 ```
 
 ### Error Propagation and Linear Resources
@@ -293,30 +368,30 @@ The `?` operator extracts Ok or returns early with Err.
 
 **Rule:** All linear resources in scope MUST be resolved before `?`.
 
-```
+```rask
 // ❌ INVALID: file2 may leak on early return
-fn process(file1: File, file2: File) -> Result<(), Error> {
-    let data = file1.read()?  // file2 not consumed!
+func process(file1: File, file2: File) -> Result<(), Error> {
+    const data = file1.read()?  // file2 not consumed!
     file2.close()?
 }
 // Error: "linear resource `file2` may leak on early return at `?`"
 
 // ✅ VALID: all linear resources resolved before `?`
-fn process(file1: File, file2: File) -> Result<(), Error> {
-    let result1 = file1.read()
-    let result2 = file2.close()
-    let data = result1?
+func process(file1: File, file2: File) -> Result<(), Error> {
+    const result1 = file1.read()
+    const result2 = file2.close()
+    const data = result1?
     result2?
     Ok(())
 }
 ```
 
 Alternative: use `ensure` for guaranteed cleanup:
-```
-fn process(file1: File, file2: File) -> Result<(), Error> {
+```rask
+func process(file1: File, file2: File) -> Result<(), Error> {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
-    let data = file1.read()?  // ✅ Safe: ensure registered
+    const data = file1.read()?  // ✅ Safe: ensure registered
     Ok(())
 }
 ```
@@ -333,13 +408,14 @@ fn process(file1: File, file2: File) -> Result<(), Error> {
 | Enum in Vec | Allowed if non-linear |
 | Enum in Pool | Allowed; linear payloads require explicit `remove()` + consume |
 | Option<File> in Pool | ❌ Error: "Pool cannot contain linear payloads" |
-| Generic bounds | `enum Foo<T: Clone>` — bound applies to ALL variants uniformly |
+| Generic constraints | `enum Foo<T: Clone>` — constraint applies to ALL variants uniformly |
 | Match on Copy type | Copies enum, mutations in arm affect copy not original |
 
 ## Examples
 
 ### State Machine
-```
+<!-- test: skip -->
+```rask
 enum Connection {
     Idle,
     Connecting(Address),
@@ -347,44 +423,46 @@ enum Connection {
     Failed(Error)
 }
 
-fn step(transfer conn: Connection) -> Connection {
-    match conn {                    // IDE ghost: [consumes]
-        Idle => Connecting(resolve_address()),
-        Connecting(addr) => match try_connect(addr) {
-            Ok(sock) => Connected(sock),
-            Err(e) => Failed(e)
-        },
-        Connected(sock) => {
-            sock.send(heartbeat())
-            Connected(sock)
-        },
-        Failed(e) => Failed(e)
+extend Connection {
+    func step(take self) -> Connection {
+        match self {                    // IDE ghost: [consumes]
+            Idle => Connecting(resolve_address()),
+            Connecting(addr) => match try_connect(addr) {
+                Ok(sock) => Connected(sock),
+                Err(e) => Failed(e)
+            },
+            Connected(sock) => {
+                sock.send(heartbeat())
+                Connected(sock)
+            },
+            Failed(e) => Failed(e)
+        }
     }
-}
 
-fn is_connected(conn: Connection) -> bool {
-    match conn {                    // IDE ghost: [reads]
-        Connected(_) => true,
-        _ => false
+    func is_connected(self) -> bool {
+        match self {                    // IDE ghost: [reads]
+            Connected(_) => true,
+            _ => false
+        }
     }
 }
 ```
 
 ### Option Methods
-```
-let opt = Some(5)
-if opt.is_some() {          // ✅ opt still valid (read self)
-    let val = opt.unwrap()  // ✅ opt consumed (transfer self)
+```rask
+const opt = Some(5)
+if opt.is_some() {          // ✅ opt still valid (borrows self)
+    const val = opt.unwrap()  // ✅ opt consumed (take self)
 }
 ```
 
 ## Integration Notes
 
-- **Type system:** Enum variants participate in structural trait matching; explicit `impl` optional
+- **Type system:** Enum variants participate in structural trait matching; explicit `extend` optional
 - **Generics:** Bounds on `enum Foo<T: Bound>` checked at instantiation, applied to all variants
 - **Collections:** Vec<Enum> and Map<K, Enum> allowed if enum is non-linear; Pool<Enum> allowed with manual linear cleanup
 - **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked
-- **C interop:** `#[repr(C)]` disables optimizations; discriminant size stable
+- **C interop:** `@layout(C)` disables optimizations; discriminant size stable
 - **Compiler:** Exhaustiveness checking and binding mode inference are local analysis only (no whole-program tracing)
 - **Error handling:** `?` operator requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
 - **Tooling:** IDE displays inferred match modes, binding modes, discriminant values, enum sizes, and move/copy decisions as ghost annotations

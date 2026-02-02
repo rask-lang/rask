@@ -39,9 +39,9 @@ Integer operands only. Shift exceeding bit width panics. `>>` is arithmetic on s
 
 ### Equal
 
-```
+```rask
 trait Equal {
-    fn eq(self, other: Self) -> bool
+    func eq(self, other: Self) -> bool
 }
 ```
 
@@ -60,9 +60,9 @@ trait Equal {
 
 ### Ordered
 
-```
+```rask
 trait Ordered: Equal {
-    fn cmp(self, other: Self) -> Ordering
+    func cmp(self, other: Self) -> Ordering
 }
 
 enum Ordering { Less, Equal, Greater }
@@ -75,7 +75,7 @@ enum Ordering { Less, Equal, Greater }
 - Transitive: `a < b` and `b < c` implies `a < c`
 - Antisymmetric: `a < b` implies `!(b < a)`
 
-**Derivable:** Structs derive lexicographic ordering (first field, then second, etc.).
+**Derivable:** Structs derive lexicographic ordering (first field, then second, etc.). Note: structs containing `f32` or `f64` cannot auto-derive `Ordered` since floats don't implement it. Use explicit `Comparable` extend with `.total_cmp()` if ordering is needed.
 
 **Floating-point:** `f32` and `f64` do NOT implement `Ordered` (NaN breaks totality).
 - Use `.total_cmp()` for total ordering where `NaN` sorts after all values
@@ -88,7 +88,7 @@ enum Ordering { Less, Equal, Greater }
 | `bool` | Yes | Yes | `false < true` |
 | `char` | Yes | Yes | Unicode scalar order |
 | `f32`, `f64` | Yes* | No | *NaN breaks reflexivity |
-| Structs | Derive | Derive | All fields must impl |
+| Structs | Derive | Derive | All fields must extend |
 | Enums | Derive | Derive | Variant order, then payload |
 
 ## Other Operator Traits

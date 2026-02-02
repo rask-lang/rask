@@ -1,0 +1,307 @@
+// Game Loop with Entities
+// Demonstrates: Pool pattern, handle-based refs, traits, threading, time/delta, game systems
+
+import time
+
+// Trait for updatable components
+trait Updatable {
+    func update(self, dt: f32)
+}
+
+// Position implements Updatable (applies velocity)
+extend Position with Updatable {
+    func update(self, dt: f32) {
+        // Position updated by movement system
+    }
+}
+
+// Component types
+struct Position {
+    x: f32
+    y: f32
+}
+
+struct Velocity {
+    dx: f32
+    dy: f32
+}
+
+struct Health {
+    current: i32
+    max: i32
+}
+
+struct Collider {
+    radius: f32
+}
+
+// Entity with all components
+struct Entity {
+    position: Position
+    velocity: Velocity
+    health: Health
+    collider: Collider
+    active: bool
+    entity_type: EntityType
+}
+
+enum EntityType {
+    Player,
+    Enemy,
+    Projectile,
+}
+
+// Game state
+struct GameState {
+    entities: Pool<Entity>
+    player: Handle<Entity>?
+    score: i32
+    game_over: bool
+}
+
+extend GameState {
+    func new() -> Result<GameState, Error> {
+        let entities = Pool.new()
+
+        // Spawn player at center
+        const player_handle = entities.insert(Entity {
+            position: Position { x: 400.0, y: 300.0 },
+            velocity: Velocity { dx: 0.0, dy: 0.0 },
+            health: Health { current: 100, max: 100 },
+            collider: Collider { radius: 16.0 },
+            active: true,
+            entity_type: EntityType.Player,
+        })?
+
+        Ok(GameState {
+            entities: entities,
+            player: Some(player_handle),
+            score: 0,
+            game_over: false,
+        })
+    }
+
+    func spawn_enemy(self, x: f32, y: f32) -> Result<Handle<Entity>, Error> {
+        self.entities.insert(Entity {
+            position: Position { x: x, y: y },
+            velocity: Velocity { dx: -50.0, dy: 0.0 },
+            health: Health { current: 20, max: 20 },
+            collider: Collider { radius: 12.0 },
+            active: true,
+            entity_type: EntityType.Enemy,
+        })
+    }
+
+    func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Result<Handle<Entity>, Error> {
+        self.entities.insert(Entity {
+            position: Position { x: x, y: y },
+            velocity: Velocity { dx: dx, dy: dy },
+            health: Health { current: 1, max: 1 },
+            collider: Collider { radius: 4.0 },
+            active: true,
+            entity_type: EntityType.Projectile,
+        })
+    }
+}
+
+// System: Update positions based on velocities
+// here we only use the entities pool from GameState, so we can use a projection
+// This allows us to avoid borrowing the entire GameState
+func movement_system(entities: GameState.{entities}, dt: f32) {
+    for h in entities {
+        if !entities[h].active: continue
+
+        entities[h].position.x += entities[h].velocity.dx * dt
+        entities[h].position.y += entities[h].velocity.dy * dt
+    }
+}
+
+// System: Check collisions between entities
+func collision_system(entities: GameState.{entities}) {
+    let to_check = entities.handles().collect<Vec<_>>()
+
+    for i in 0..to_check.len() {
+        for j in (i + 1)..to_check.len() {
+            const h1 = to_check[i]
+            const h2 = to_check[j]
+
+            if !entities[h1].active || !entities[h2].active: continue
+
+            const e1 = entities[h1]
+            const e2 = entities[h2]
+
+            // Calculate distance
+            const dx = e1.position.x - e2.position.x
+            const dy = e1.position.y - e2.position.y
+            const dist = (dx * dx + dy * dy).sqrt()
+            const min_dist = e1.collider.radius + e2.collider.radius
+
+            if dist < min_dist {
+                handle_collision(entities, h1, h2)
+            }
+        }
+    }
+}
+
+func handle_collision(state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) {
+    const type1 = state.entities[h1].entity_type
+    const type2 = state.entities[h2].entity_type
+
+    match (type1, type2) {
+        (Player, Enemy) | (Enemy, Player) => {
+            // Player takes damage from enemy
+            const player_h = if type1 == Player: h1 else: h2
+            const enemy_h = if type1 == Enemy: h1 else: h2
+
+            state.entities[player_h].health.current -= 10
+            state.entities[enemy_h].active = false
+
+            if state.entities[player_h].health.current <= 0 {
+                state.game_over = true
+            }
+        }
+        (Projectile, Enemy) | (Enemy, Projectile) => {
+            // Projectile destroys enemy
+            const enemy_h = if type1 == Enemy: h1 else: h2
+            const proj_h = if type1 == Projectile: h1 else: h2
+
+            state.entities[enemy_h].health.current -= 25
+            state.entities[proj_h].active = false
+
+            if state.entities[enemy_h].health.current <= 0 {
+                state.entities[enemy_h].active = false
+                state.score += 100
+            }
+        }
+        _ => {}
+    }
+}
+
+// System: Remove inactive entities
+func cleanup_system(state: GameState) {
+    let to_remove = Vec.new()
+
+    for h in state.entities {
+        if !state.entities[h].active {
+            to_remove.push(h)?
+        }
+    }
+
+    for h in to_remove {
+        state.entities.remove(h)
+    }
+}
+
+// System: Spawn enemies periodically
+func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
+    const spawn_interval = 2.0
+
+    if time_since_last_spawn >= spawn_interval {
+        // Spawn enemy at right edge with random y
+        const y = (random.f32() * 500.0) + 50.0
+        state.spawn_enemy(850.0, y).ok()
+        0.0  // Reset timer
+    } else {
+        time_since_last_spawn
+    }
+}
+
+// Parallel movement update - processes entity batches across threads
+func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threads: usize) {
+    let handles = entities.handles().collect<Vec<_>>()
+    let chunk_size = (handles.len() + num_threads - 1) / num_threads
+
+    // Split work across thread pool
+    let thread_handles = Vec.new()
+    for chunk in handles.chunks(chunk_size) {
+        let chunk = chunk.to_vec()
+        let task = threading.spawn(|| {
+            for h in chunk {
+                if !entities[h].active: continue
+                entities[h].position.x += entities[h].velocity.dx * dt
+                entities[h].position.y += entities[h].velocity.dy * dt
+            }
+        })
+        thread_handles.push(task)?
+    }
+
+    // Wait for all chunks to complete
+    for h in thread_handles {
+        h.join()?
+    }
+}
+
+// Main game loop with fixed timestep and threading
+func main() -> Result<(), Error> {
+    // Thread pool for CPU-bound physics work
+    with threading(4) {
+        let state = GameState.new()?
+
+        const target_fps = 60.0
+        const dt = 1.0 / target_fps
+        const NUM_PHYSICS_THREADS: usize = 4
+
+        let last_time = time.Instant.now()
+        let accumulator = 0.0
+        let spawn_timer = 0.0
+        let frame_count = 0
+
+        println("Game started! Score: 0")
+
+        // Simulate game for a few seconds
+        while !state.game_over && frame_count < 300 {
+            const current_time = time.Instant.now()
+            const frame_time = current_time.duration_since(last_time).as_secs_f32()
+            last_time = current_time
+
+            accumulator += frame_time
+
+            // Fixed timestep updates
+            while accumulator >= dt {
+                // Handle input (simulated - would be real input in actual game)
+                if frame_count % 30 == 0 {
+                    // Fire projectile
+                    if state.player is Some(player_h) {
+                        const px = state.entities[player_h].position.x
+                        const py = state.entities[player_h].position.y
+                        state.spawn_projectile(px + 20.0, py, 300.0, 0.0)?
+                    }
+                }
+
+                // Parallel physics: split entity updates across thread pool
+                // Each thread processes a batch of entities
+                parallel_movement_system(state, dt, NUM_PHYSICS_THREADS)
+
+                // Collision runs single-threaded (needs to see all entities)
+                collision_system(state)
+
+                // Game logic on main thread
+                spawn_timer = spawn_system(state, spawn_timer + dt)
+                cleanup_system(state)
+
+                accumulator -= dt
+            }
+
+            // Render (simulated - just print status occasionally)
+            if frame_count % 60 == 0 {
+                const entity_count = state.entities.len()
+                const player_health = state.player
+                    .map(|h| state.entities[h].health.current)
+                    .unwrap_or(0)
+                println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
+            }
+
+            frame_count += 1
+
+            // Sleep to maintain frame rate
+            time.sleep(time.Duration.from_millis(16))
+        }
+
+        if state.game_over {
+            println("Game Over! Final Score: {state.score}")
+        } else {
+            println("Demo complete! Final Score: {state.score}")
+        }
+
+    }
+}

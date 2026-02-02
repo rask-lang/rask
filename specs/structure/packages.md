@@ -28,7 +28,7 @@ Semantic versioning is well-understood and widely adopted. MVS (like Go modules)
 - Pre-release `1.0.0-beta.1` < `1.0.0`
 
 **Version ordering:**
-```
+```rask
 0.1.0 < 0.1.1 < 0.2.0 < 1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0-rc.1 < 1.0.0 < 1.0.1 < 1.1.0 < 2.0.0
 ```
 
@@ -79,7 +79,7 @@ testing = "1.0"             # Only for tests, not transitive
 c_include_paths = ["/usr/include/custom"]
 c_link_libs = ["ssl", "crypto"]
 c_flags = ["-O3"]
-```
+```rask
 
 **Field specifications:**
 
@@ -225,7 +225,7 @@ checksum = "sha256:def456abc789..."
 
 **Example:**
 
-```
+```rask
 Root depends on: http ^2.1.0, json ^1.3.0
 http 2.1.5 depends on: string-utils ^0.5.0
 json 1.3.2 depends on: string-utils ^0.5.0
@@ -328,7 +328,7 @@ private-lib = { version = "1.0", registry = "https://company.internal/registry" 
 - Override: `RASK_CACHE` environment variable
 
 **Structure:**
-```
+```rask
 ~/.rask/cache/deps/
 ├── http-2.1.5/
 │   ├── rask.toml
@@ -368,7 +368,7 @@ private-lib = { version = "1.0", registry = "https://company.internal/registry" 
 
 **Import resolution with dependencies:**
 
-```
+```rask
 // In source code
 import http
 
@@ -381,7 +381,7 @@ import http
 
 **Workspace support (monorepos):**
 
-```
+```rask
 workspace/
 ├── rask.toml           # Workspace manifest
 ├── app/
@@ -447,8 +447,8 @@ http = { workspace = true }  # Use version from workspace manifest
 
 ```rask
 // In library code
-#[deprecated(since = "2.1.0", note = "Use new_function instead")]
-pub fn old_function() { ... }
+@deprecated(since = "2.1.0", note = "Use new_function instead")
+public func old_function() { ... }
 ```
 
 Compiler emits warning when deprecated items are used. MAJOR version bump can remove deprecated items.
@@ -479,7 +479,7 @@ Compiler emits warning when deprecated items are used. MAJOR version bump can re
 ### Simple Application
 
 **Directory structure:**
-```
+```rask
 myapp/
 ├── rask.toml
 ├── main.rask
@@ -502,9 +502,9 @@ json = "1.3"
 import http
 import json
 
-fn main() {
-    let req = http.get("https://api.example.com/data")
-    let data = json.parse(req.body)
+func main() {
+    const req = http.get("https://api.example.com/data")
+    const data = json.parse(req.body)
     print(data)
 }
 ```
@@ -545,7 +545,7 @@ testing = "1.0"  # Only used in tests, not transitive
 ```rask
 import string_utils
 
-pub fn process(s: String) -> String {
+public func process(s: String) -> String {
     string_utils.normalize(s)
 }
 ```

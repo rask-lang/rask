@@ -1,0 +1,205 @@
+// File Copy Utility
+// Demonstrates: File I/O, linear types, ensure for cleanup, error propagation
+
+import fs
+import cli
+
+const BUFFER_SIZE: usize = 8192  // 8KB buffer
+
+enum CopyError {
+    SourceNotFound(String),
+    DestinationExists(String),
+    ReadError(String, fs.IoError),
+    WriteError(String, fs.IoError),
+    SameFile,
+}
+
+extend CopyError {
+    func message(self) -> String {
+        match self {
+            SourceNotFound(path) => "source file not found: {path}",
+            DestinationExists(path) => "destination already exists: {path} (use -f to overwrite)",
+            ReadError(path, err) => "error reading {path}: {err.message()}",
+            WriteError(path, err) => "error writing {path}: {err.message()}",
+            SameFile => "source and destination are the same file",
+        }
+    }
+}
+
+struct CopyOptions {
+    source: String
+    dest: String
+    force: bool       // Overwrite existing
+    verbose: bool     // Show progress
+    preserve: bool    // Preserve timestamps
+}
+
+func parse_args(args: Vec<String>) -> Result<CopyOptions, String> {
+    let opts = CopyOptions {
+        source: "",
+        dest: "",
+        force: false,
+        verbose: false,
+        preserve: false,
+    }
+
+    let positional = Vec.new()
+
+    for arg in args.iter().skip(1) {
+        match arg {
+            "-f" | "--force" => opts.force = true,
+            "-v" | "--verbose" => opts.verbose = true,
+            "-p" | "--preserve" => opts.preserve = true,
+            "-h" | "--help" => {
+                print_usage()
+                std.exit(0)
+            }
+            _ if arg.starts_with("-") => {
+                return Err("unknown option: {arg}".to_string())
+            }
+            _ => positional.push(arg.clone())?,
+        }
+    }
+
+    if positional.len() < 2 {
+        return Err("usage: rcopy [-fvp] SOURCE DEST".to_string())
+    }
+
+    opts.source = positional[0].clone()
+    opts.dest = positional[1].clone()
+
+    Ok(opts)
+}
+
+func print_usage() {
+    println("Usage: rcopy [OPTIONS] SOURCE DEST")
+    println("")
+    println("Copy SOURCE to DEST")
+    println("")
+    println("Options:")
+    println("  -f, --force     Overwrite destination if it exists")
+    println("  -v, --verbose   Show progress information")
+    println("  -p, --preserve  Preserve file timestamps")
+    println("  -h, --help      Show this help")
+}
+
+func copy_file(opts: CopyOptions) -> Result<u64, CopyError> {
+    // Check source exists
+    if !fs.exists(opts.source.clone()) {
+        return Err(CopyError.SourceNotFound(opts.source))
+    }
+
+    // Check destination
+    if fs.exists(opts.dest.clone()) {
+        if !opts.force {
+            return Err(CopyError.DestinationExists(opts.dest))
+        }
+    }
+
+    // Check not same file (using canonical paths)
+    const src_canonical = fs.canonicalize(opts.source.clone())
+        .map_err(|e| CopyError.ReadError(opts.source.clone(), e))?
+    const dst_canonical = fs.canonicalize(opts.dest.clone()).ok()
+
+    if dst_canonical is Some(dst) {
+        if src_canonical == dst {
+            return Err(CopyError.SameFile)
+        }
+    }
+
+    // Get source file size for progress
+    const src_size = fs.metadata(opts.source.clone())
+        .map_err(|e| CopyError.ReadError(opts.source.clone(), e))?
+        .size()
+
+    // Open source file (linear type - must be closed)
+    const src_file = fs.File.open(opts.source.clone())
+        .map_err(|e| CopyError.ReadError(opts.source.clone(), e))?
+    ensure src_file.close()  // Guaranteed cleanup on any exit
+
+    // Create destination file (linear type)
+    const dst_file = fs.File.create(opts.dest.clone())
+        .map_err(|e| CopyError.WriteError(opts.dest.clone(), e))?
+    ensure dst_file.close()
+
+    // Copy with buffer
+    let buffer: [u8; BUFFER_SIZE] = [0; BUFFER_SIZE]
+    let bytes_copied: u64 = 0
+    let last_progress = 0
+
+    loop {
+        const bytes_read = src_file.read(buffer)
+            .map_err(|e| CopyError.ReadError(opts.source.clone(), e))?
+
+        if bytes_read == 0: break  // EOF
+
+        dst_file.write(buffer[0..bytes_read])
+            .map_err(|e| CopyError.WriteError(opts.dest.clone(), e))?
+
+        bytes_copied += bytes_read as u64
+
+        // Show progress every 10%
+        if opts.verbose && src_size > 0 {
+            const progress = ((bytes_copied * 100) / src_size) as i32
+            if progress >= last_progress + 10 {
+                last_progress = progress
+                println("  {progress}% ({bytes_copied} / {src_size} bytes)")
+            }
+        }
+    }
+
+    // Preserve timestamps if requested
+    if opts.preserve {
+        const src_meta = fs.metadata(opts.source.clone())
+            .map_err(|e| CopyError.ReadError(opts.source.clone(), e))?
+        fs.set_times(opts.dest.clone(), src_meta.accessed(), src_meta.modified())
+            .map_err(|e| CopyError.WriteError(opts.dest.clone(), e))?
+    }
+
+    Ok(bytes_copied)
+}
+
+func format_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        "{bytes} B"
+    } else if bytes < 1024 * 1024 {
+        const kb = bytes as f64 / 1024.0
+        "{kb:.1} KB"
+    } else if bytes < 1024 * 1024 * 1024 {
+        const mb = bytes as f64 / (1024.0 * 1024.0)
+        "{mb:.1} MB"
+    } else {
+        const gb = bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+        "{gb:.2} GB"
+    }
+}
+
+func main() -> Result<(), Error> {
+    const args = cli.args()
+
+    const opts = match parse_args(args) {
+        Ok(o) => o,
+        Err(msg) => {
+            println("rcopy: {msg}")
+            std.exit(1)
+        }
+    }
+
+    if opts.verbose {
+        println("Copying '{opts.source}' to '{opts.dest}'...")
+    }
+
+    match copy_file(opts.clone()) {
+        Ok(bytes) => {
+            if opts.verbose {
+                println("Copied {format_size(bytes)}")
+            }
+        }
+        Err(e) => {
+            println("rcopy: {e.message()}")
+            std.exit(1)
+        }
+    }
+
+    Ok(())
+}

@@ -6,17 +6,17 @@ Errors are values. Any type with a `message()` method can be used as an error. E
 
 ## The Error Trait
 
-```
+```rask
 trait Error {
-    fn message(self) -> string
+    func message(self) -> string
 }
 ```
 
-Structural matching — any type with `fn message(self) -> string` satisfies `Error`.
+Structural matching — any type with `func message(self) -> string` satisfies `Error`.
 
 ## Result Type
 
-```
+```rask
 enum Result<T, E> {
     Ok(T),
     Err(E),
@@ -29,13 +29,13 @@ For `Option<T>`, see [Optionals](optionals.md).
 
 | Method | Signature | Behavior |
 |--------|-----------|----------|
-| `on_err` | `fn(transfer self, default: T) -> T` | Returns T or default (discards error) |
-| `ok` | `fn(transfer self) -> T?` | `Ok(t)` → `Some(t)`, `Err(_)` → `None` |
-| `err` | `fn(transfer self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
-| `is_ok` | `fn(self) -> bool` | True if Ok |
-| `is_err` | `fn(self) -> bool` | True if Err |
-| `map` | `fn<U>(transfer self, f: fn(T) -> U) -> Result<U, E>` | Transform Ok value |
-| `map_err` | `fn<F>(transfer self, f: fn(E) -> F) -> Result<T, F>` | Transform Err value |
+| `on_err` | `func(take self, default: T) -> T` | Returns T or default (discards error) |
+| `ok` | `func(take self) -> T?` | `Ok(t)` → `Some(t)`, `Err(_)` → `None` |
+| `err` | `func(take self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
+| `is_ok` | `func(self) -> bool` | True if Ok |
+| `is_err` | `func(self) -> bool` | True if Err |
+| `map` | `func<U>(take self, f: func(T) -> U) -> Result<U, E>` | Transform Ok value |
+| `map_err` | `func<F>(take self, f: func(E) -> F) -> Result<T, F>` | Transform Err value |
 
 Force unwrap uses operators, not methods:
 - `x!` — panic with auto message (includes error info)
@@ -45,8 +45,8 @@ Force unwrap uses operators, not methods:
 
 Extracts `Ok` or returns early with `Err`. Postfix operator, same as Rust.
 
-```
-fn process() -> Result<Data, IoError> {
+```rask
+func process() -> Result<Data, IoError> {
     let file = open(path)?
     let data = file.read_all()?
     data  // auto-wrapped to Ok(data)
@@ -61,26 +61,47 @@ fn process() -> Result<Data, IoError> {
 
 If a function returns `Result<T, E>` and the final expression is of type `T`, it's automatically wrapped in `Ok`:
 
-```
-fn load() -> Result<Config, IoError> {
+```rask
+func load() -> Result<Config, IoError> {
     let content = read_file(path)?
     parse(content)?   // Returns Config, auto-wrapped to Ok(Config)
 }
 
-fn might_fail() -> Result<i32, Error> {
+func might_fail() -> Result<i32, Error> {
     if bad_condition {
-        return Err(Error::Bad)  // Explicit Err still works
+        return Err(Error.Bad)  // Explicit Err still works
     }
     42  // Auto-wrapped to Ok(42)
 }
 ```
 
+### Implicit Ok(()) for Unit Results
+
+When a function returns `Result<(), E>`, reaching the end of the function without an explicit return automatically returns `Ok(())`:
+
+```rask
+func save(data: Data) -> Result<(), IoError> {
+    let file = File.create(path)?
+    file.write(data)?
+    // implicit Ok(()) — no need to write it
+}
+
+func main() -> Result<(), Error> {
+    println("Starting...")
+    run_app()?
+    println("Done!")
+    // implicit Ok(())
+}
+```
+
+**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `?`. Reaching the end of a `Result<(), E>` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
+
 ### Error Type Widening
 
 When return type is a union, `?` auto-widens:
 
-```
-fn load() -> Result<Config, IoError | ParseError> {
+```rask
+func load() -> Result<Config, IoError | ParseError> {
     let content = read_file(path)?   // IoError widens to union
     let config = parse(content)?     // ParseError widens to union
     config
@@ -95,13 +116,15 @@ See [Union Types](union-types.md) for union type semantics.
 
 Define errors as enums:
 
-```
+```rask
 enum AppError {
     NotFound(path: string),
     InvalidFormat(line: i32, col: i32),
     Timeout,
+}
 
-    fn message(self) -> string {
+extend AppError {
+    func message(self) -> string {
         match self {
             NotFound(p) => format("not found: {}", p),
             InvalidFormat(l, c) => format("invalid format at {}:{}", l, c),
@@ -113,7 +136,7 @@ enum AppError {
 
 ## Built-in IoError
 
-```
+```rask
 enum IoError {
     NotFound(path: string),
     PermissionDenied(path: string),
@@ -121,8 +144,10 @@ enum IoError {
     Timeout,
     Interrupted,
     Other(message: string),
+}
 
-    fn message(self) -> string { ... }
+extend IoError {
+    func message(self) -> string { ... }
 }
 ```
 
@@ -130,8 +155,8 @@ enum IoError {
 
 ### Same error type — direct propagation
 
-```
-fn read_both() -> Result<Data, IoError> {
+```rask
+func read_both() -> Result<Data, IoError> {
     let a = read_file(x)?   // IoError
     let b = read_file(y)?   // IoError
     combine(a, b)
@@ -140,8 +165,8 @@ fn read_both() -> Result<Data, IoError> {
 
 ### Different error types — union
 
-```
-fn load() -> Result<Config, IoError | ParseError> {
+```rask
+func load() -> Result<Config, IoError | ParseError> {
     let content = read_file(path)?   // IoError ⊆ union
     let config = parse(content)?     // ParseError ⊆ union
     config
@@ -150,8 +175,8 @@ fn load() -> Result<Config, IoError | ParseError> {
 
 ### Composing unions
 
-```
-fn process() -> Result<Output, IoError | ParseError | ValidationError> {
+```rask
+func process() -> Result<Output, IoError | ParseError | ValidationError> {
     let config = load()?           // IoError | ParseError ⊆ union
     let valid = validate(config)?  // ValidationError ⊆ union
     transform(valid)
@@ -160,7 +185,7 @@ fn process() -> Result<Output, IoError | ParseError | ValidationError> {
 
 ## Pattern Matching Errors
 
-```
+```rask
 match load() {
     Ok(config) => use(config),
     Err(IoError.NotFound(p)) => println("file not found: {}", p),
@@ -174,7 +199,7 @@ match load() {
 
 Errors can contain linear resources. Wildcards on linear payloads are compile errors.
 
-```
+```rask
 enum FileError {
     ReadFailed(file: File, reason: string),
 }
@@ -192,7 +217,7 @@ match result {
 
 | Feature | Mechanism |
 |---------|-----------|
-| Error trait | `fn message(self) -> string` |
+| Error trait | `func message(self) -> string` |
 | Result/Option | Built-in enums |
 | Propagation | `?` operator (works on both) |
 | Composition | Union types (`A | B`) |

@@ -22,12 +22,12 @@ Every value has exactly one owner. Ownership transfers on assignment/passing (fo
 | **O3: Invalid after move** | Source binding is invalid after move; use is compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 
-```
-let a = Vec::new()
-let b = a              // a moved to b
+```rask
+const a = Vec.new()
+const b = a              // a moved to b
 a.push(1)              // ❌ ERROR: a is invalid after move
 
-let c = b.clone()      // Explicit clone - visible allocation
+const c = b.clone()      // Explicit clone - visible allocation
 c.push(1)              // ✅ OK: c is independent copy
 b.push(2)              // ✅ OK: b still valid
 ```
@@ -40,15 +40,18 @@ Tasks are isolated. No shared mutable memory.
 |------|-------------|
 | **T1: Send transfers** | Sending on channel transfers ownership |
 | **T2: No shared mut** | Cannot share mutable references across tasks |
+| **T2.1: Closure-based OK** | `Shared<T>` and `Mutex<T>` provide cross-task mutable access via closures |
 | **T3: Borrows don't cross** | Block-scoped borrows cannot be sent to other tasks |
 
-```
-let data = load_data()
+**Rule T2.1 clarification:** `Shared<T>` and `Mutex<T>` don't violate T2 because they provide *operation-scoped* access through closures, not storable mutable references. When the closure returns, access is released. See [sync.md](../concurrency/sync.md).
+
+```rask
+const data = load_data()
 channel.send(data)        // Ownership transferred
 data.process()            // ❌ ERROR: data was sent
 
 // Receiving:
-let received = channel.recv()   // Ownership acquired
+const received = channel.recv()   // Ownership acquired
 received.process()              // ✅ OK: we own it now
 ```
 
@@ -68,7 +71,7 @@ The memory model is split across focused specifications:
 | Topic | Specification |
 |-------|---------------|
 | Copy vs move semantics | [value-semantics.md](value-semantics.md) |
-| Block-scoped and expression-scoped borrowing | [borrowing.md](borrowing.md) |
+| Borrowing (one rule: "can it grow?") | [borrowing.md](borrowing.md) |
 | Must-consume resources | [linear-types.md](linear-types.md) |
 | Closure capture rules | [closures.md](closures.md) |
 | Handle-based indirection | [pools.md](pools.md) |
@@ -78,7 +81,7 @@ The memory model is split across focused specifications:
 - **Type System:** Borrow types are compiler-internal; user sees owned types and parameter modes
 - **Generics:** Bounds can require Copy, which affects move/copy behavior
 - **Pattern Matching:** Match arms share borrow mode; highest mode wins
-- **Concurrency:** Channels transfer ownership; no shared-memory primitives in safe code
+- **Concurrency:** Channels transfer ownership; `Shared<T>` and `Mutex<T>` provide safe cross-task shared state via closures (see [sync.md](../concurrency/sync.md))
 - **C Interop:** Raw pointers in unsafe blocks; convert to/from safe types at boundaries
 - **Tooling:** IDE shows move/copy at each use site, borrow scopes
 

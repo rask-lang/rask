@@ -15,13 +15,15 @@ The `ensure` statement bridges linear types with error handling: you can commit 
 
 ### Linear Type Declaration
 
-```
-linear struct File {
+```rask
+@linear
+struct File {
     handle: RawHandle,
     path: String,
 }
 
-linear struct Connection {
+@linear
+struct Connection {
     socket: RawSocket,
     state: ConnectionState,
 }
@@ -43,17 +45,18 @@ A linear value is consumed by:
 - Passing to a function with `take` parameter mode
 - Explicit consumption function (e.g., `file.close()`)
 
-```
-linear struct File { ... }
+```rask
+@linear
+struct File { ... }
 
-impl File {
+extend File {
     // Consuming method - takes ownership
-    fn close(take self) -> Result<(), Error> {
+    func close(take self) -> Result<(), Error> {
         // ... close logic ...
     }
 
     // Non-consuming - borrows (default)
-    fn read(self, buf: mut [u8]) -> Result<usize, Error> {
+    func read(self, buf: [u8]) -> Result<usize, Error> {
         // ... read logic ...
     }
 }
@@ -61,11 +64,11 @@ impl File {
 
 ### Basic Usage
 
-```
-fn process() -> Result<(), Error> {
-    let file = File::open("data.txt")?    // file is linear
+```rask
+func process() -> Result<(), Error> {
+    const file = File.open("data.txt")?    // file is linear
 
-    let data = file.read_all()?           // Borrow: file still valid
+    const data = file.read_all()?           // Borrow: file still valid
     process_data(data)?
 
     file.close()?                          // Consumed: file no longer valid
@@ -74,19 +77,19 @@ fn process() -> Result<(), Error> {
 ```
 
 **Forgetting to consume:**
-```
-fn bad() -> Result<(), Error> {
-    let file = File::open("data.txt")?
-    let data = file.read_all()?
+```rask
+func bad() -> Result<(), Error> {
+    const file = File.open("data.txt")?
+    const data = file.read_all()?
     Ok(())
     // ❌ ERROR: file not consumed before scope exit
 }
 ```
 
 **Double consumption:**
-```
-fn also_bad() -> Result<(), Error> {
-    let file = File::open("data.txt")?
+```rask
+func also_bad() -> Result<(), Error> {
+    const file = File.open("data.txt")?
     file.close()?
     file.close()?    // ❌ ERROR: file already consumed
     Ok(())
@@ -97,15 +100,15 @@ fn also_bad() -> Result<(), Error> {
 
 `ensure` commits to consuming a linear resource at scope exit, satisfying L1 immediately.
 
-```
-fn process() -> Result<(), Error> {
-    let file = File::open("data.txt")?
+```rask
+func process() -> Result<(), Error> {
+    const file = File.open("data.txt")?
     ensure file.close()        // Consumption committed
 
-    let header = file.read_header()?    // ✅ OK: can still read
+    const header = file.read_header()?    // ✅ OK: can still read
     validate(header)?                    // Can use ? freely
 
-    let body = file.read_body()?
+    const body = file.read_body()?
     transform(body)?
 
     Ok(())
@@ -128,9 +131,9 @@ If the ensured operation returns `Result`, errors are:
 2. Accumulated if multiple ensures fail
 3. Returned as the scope's error if no explicit return
 
-```
-fn risky() -> Result<(), Error> {
-    let file = File::open("data.txt")?
+```rask
+func risky() -> Result<(), Error> {
+    const file = File.open("data.txt")?
     ensure file.close()        // May fail
 
     risky_operation()?         // If this fails, ensure still runs
@@ -145,27 +148,27 @@ fn risky() -> Result<(), Error> {
 
 Linear types integrate with `?` through `ensure`:
 
-```
-fn process(path: String) -> Result<Data, Error> {
-    let file = File::open(path)?
+```rask
+func process(path: String) -> Result<Data, Error> {
+    const file = File.open(path)?
     ensure file.close()        // Guarantees consumption on any exit
 
-    let header = file.read_header()?  // Early return? ensure runs
+    const header = file.read_header()?  // Early return? ensure runs
     if !header.valid {
         return Err(InvalidHeader)      // ensure runs, file closed
     }
 
-    let data = file.read_body()?      // Early return? ensure runs
+    const data = file.read_body()?      // Early return? ensure runs
     Ok(data)                           // Normal exit: ensure runs
 }
 ```
 
 **Without `ensure`, error handling is verbose:**
-```
-fn process_verbose(path: String) -> Result<Data, Error> {
-    let file = File::open(path)?
+```rask
+func process_verbose(path: String) -> Result<Data, Error> {
+    const file = File.open(path)?
 
-    let header = match file.read_header() {
+    const header = match file.read_header() {
         Ok(h) => h,
         Err(e) => {
             file.close()?     // Must close before returning
@@ -192,19 +195,19 @@ Linear types have restrictions in collections:
 | `Option<Linear>` | ✅ Yes | Must match and consume |
 
 **Pool pattern for linear resources:**
-```
-let connections: Pool<Connection> = Pool::new()
-let h = connections.insert(Connection::open(addr)?)?
+```rask
+const connections: Pool<Connection> = Pool.new()
+const h = connections.insert(Connection.open(addr)?)?
 
 // Later: explicit consumption required
-let conn = connections.remove(h).unwrap()
+const conn = connections.remove(h).unwrap()
 conn.close()?
 ```
 
 **All connections must be consumed before pool drops:**
-```
+```rask
 for h in connections.handles() {
-    let conn = connections.remove(h).unwrap()
+    const conn = connections.remove(h).unwrap()
     conn.close()?
 }
 // connections can now be dropped (empty)
@@ -228,10 +231,10 @@ A `Pool<Linear>` MUST enforce consumption of all linear elements before the pool
 
 **The take_all pattern (REQUIRED for Pool<Linear>):**
 
-```
-let files: Pool<File> = Pool::new()
-let h1 = files.insert(File::open("a.txt")?)?
-let h2 = files.insert(File::open("b.txt")?)?
+```rask
+const files: Pool<File> = Pool.new()
+const h1 = files.insert(File.open("a.txt")?)?
+const h2 = files.insert(File.open("b.txt")?)?
 
 // Before allowing pool to drop, consume all elements:
 for file in files.take_all() {
@@ -242,8 +245,8 @@ for file in files.take_all() {
 
 **With ensure (errors ignored):**
 
-```
-let files: Pool<File> = Pool::new()
+```rask
+const files: Pool<File> = Pool.new()
 ensure for file in files.take_all() {
     file.close()  // Result ignored - cannot use ? in ensure
 }
@@ -254,8 +257,8 @@ ensure for file in files.take_all() {
 
 **With ensure and error handling:**
 
-```
-let files: Pool<File> = Pool::new()
+```rask
+const files: Pool<File> = Pool.new()
 ensure for file in files.take_all() {
     file.close()
 } catch |e| log("Cleanup error: {}", e)
@@ -267,12 +270,12 @@ When `T` is linear, `Pool<T>` provides additional convenience methods:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `take_all_with(f)` | `fn(T) -> ()` | Take all and apply consuming function to each element |
-| `take_all_with_result(f)` | `fn(T) -> Result<(), E> -> Result<(), E>` | Take all with fallible consumer, stops on first error |
+| `take_all_with(f)` | `func(T) -> ()` | Take all and apply consuming function to each element |
+| `take_all_with_result(f)` | `func(T) -> Result<(), E> -> Result<(), E>` | Take all with fallible consumer, stops on first error |
 
 **Usage:**
 
-```
+```rask
 // Ignore close errors
 files.take_all_with(|f| { f.close(); })
 
@@ -310,7 +313,7 @@ The panic message MUST clearly indicate:
 3. The element type
 
 Example:
-```
+```rask
 panic: Pool<File> dropped with 3 unconsumed linear elements.
 Linear resources must be explicitly consumed (use take_all() before drop).
 ```
@@ -326,17 +329,17 @@ Linear resources must be explicitly consumed (use take_all() before drop).
 
 Linear types are "visible RAII"—you see the cleanup, and the compiler guarantees it happens.
 
-### Move-Only vs Linear
+### Unique vs Linear
 
-| Aspect | Move-only (`move struct`) | Linear (`linear struct`) |
-|--------|---------------------------|--------------------------|
+| Aspect | Unique (`@unique`) | Linear (`@linear`) |
+|--------|--------------------|--------------------|
 | Implicit copy | ❌ Disabled | ❌ Disabled |
 | Can drop | ✅ Yes | ❌ No (must consume) |
 | Explicit clone | ✅ Allowed | ❌ Not allowed |
 | Use case | Semantic safety | Resource safety |
 | Example | Unique ID | File handle |
 
-Move-only is "don't duplicate"; linear is "must properly close."
+Unique is "don't duplicate"; linear is "must properly close."
 
 ## Linear Resources in Error Types
 
@@ -344,38 +347,38 @@ When an operation fails, the linear resource must still be accounted for. The st
 
 ### Basic Pattern
 
-```
+```rask
 enum FileError {
     ReadFailed { file: File, reason: String },
     WriteFailed { file: File, reason: String },
 }
 
-fn read_config(file: File) -> Result<Config, FileError> {
-    let data = match file.read_all() {
+func read_config(file: File) -> Result<Config, FileError> {
+    const data = match file.read_all() {
         Ok(d) => d,
-        Err(reason) => return Err(FileError::ReadFailed { file, reason }),
+        Err(reason) => return Err(FileError.ReadFailed { file, reason }),
     }
 
-    let config = parse(data)?
+    const config = parse(data)?
     file.close()?
     Ok(config)
 }
 ```
 
 **Caller must handle the file in error paths:**
-```
-fn load_config(path: String) -> Result<Config, Error> {
-    let file = File::open(path)?
+```rask
+func load_config(path: String) -> Result<Config, Error> {
+    const file = File.open(path)?
 
     match read_config(file) {
         Ok(config) => Ok(config),
-        Err(FileError::ReadFailed { file, reason }) => {
+        Err(FileError.ReadFailed { file, reason }) => {
             file.close()?  // Must still consume the file
-            Err(Error::ConfigRead(reason))
+            Err(Error.ConfigRead(reason))
         }
-        Err(FileError::WriteFailed { file, reason }) => {
+        Err(FileError.WriteFailed { file, reason }) => {
             file.close()?
-            Err(Error::ConfigWrite(reason))
+            Err(Error.ConfigWrite(reason))
         }
     }
 }
@@ -385,7 +388,7 @@ fn load_config(path: String) -> Result<Config, Error> {
 
 When errors contain multiple linear resources, all must be consumed:
 
-```
+```rask
 enum TransferError {
     SourceReadFailed {
         source: File,
@@ -399,17 +402,17 @@ enum TransferError {
     },
 }
 
-fn handle_transfer_error(err: TransferError) -> Result<(), Error> {
+func handle_transfer_error(err: TransferError) -> Result<(), Error> {
     match err {
-        TransferError::SourceReadFailed { source, dest, reason } => {
+        TransferError.SourceReadFailed { source, dest, reason } => {
             source.close()?
             dest.close()?
-            Err(Error::Transfer(reason))
+            Err(Error.Transfer(reason))
         }
-        TransferError::DestWriteFailed { source, dest, reason } => {
+        TransferError.DestWriteFailed { source, dest, reason } => {
             source.close()?
             dest.close()?
-            Err(Error::Transfer(reason))
+            Err(Error.Transfer(reason))
         }
     }
 }
@@ -419,16 +422,16 @@ fn handle_transfer_error(err: TransferError) -> Result<(), Error> {
 
 The `ensure` pattern reduces verbosity when the cleanup is the same:
 
-```
-fn transfer(source_path: String, dest_path: String) -> Result<(), Error> {
-    let source = File::open(source_path)?
+```rask
+func transfer(source_path: String, dest_path: String) -> Result<(), Error> {
+    const source = File.open(source_path)?
     ensure source.close()
 
-    let dest = File::create(dest_path)?
+    const dest = File.create(dest_path)?
     ensure dest.close()
 
     // Now ? works naturally - both files cleaned up on any error
-    let data = source.read_all()?
+    const data = source.read_all()?
     dest.write_all(data)?
 
     Ok(())
@@ -447,18 +450,18 @@ fn transfer(source_path: String, dest_path: String) -> Result<(), Error> {
 
 For multiple resources with uniform cleanup, `ensure` handles everything:
 
-```
-fn process_files(paths: Vec<String>) -> Result<(), Error> {
-    let mut files = Vec::new()
+```rask
+func process_files(paths: Vec<String>) -> Result<(), Error> {
+    const files = Vec.new()
 
     for path in paths {
-        let file = File::open(path)?
+        const file = File.open(path)?
         ensure file.close()  // Each file gets its own ensure
         files.push(file)
     }
 
     // Process all files...
-    for file in &files {
+    for file in files.iter() {
         process(file)?
     }
 
@@ -477,17 +480,17 @@ fn process_files(paths: Vec<String>) -> Result<(), Error> {
 | Consider a `close_and_convert` helper | Reduces repetitive patterns |
 
 **Helper pattern:**
-```
-impl FileError {
-    fn close_and_convert(self) -> Result<Error, Error> {
+```rask
+extend FileError {
+    func close_and_convert(take self) -> Result<Error, Error> {
         match self {
-            FileError::ReadFailed { file, reason } => {
+            FileError.ReadFailed { file, reason } => {
                 file.close()?
-                Ok(Error::Read(reason))
+                Ok(Error.Read(reason))
             }
-            FileError::WriteFailed { file, reason } => {
+            FileError.WriteFailed { file, reason } => {
                 file.close()?
-                Ok(Error::Write(reason))
+                Ok(Error.Write(reason))
             }
         }
     }
@@ -510,8 +513,8 @@ read_config(file).map_err(|e| e.close_and_convert())?
 | Loop with linear | Can't create linear in loop without consuming each iteration |
 
 **Conditional consumption:**
-```
-fn conditional(file: File, keep_open: bool) -> Result<(), Error> {
+```rask
+func conditional(file: File, keep_open: bool) -> Result<(), Error> {
     if keep_open {
         GLOBAL_FILES.store(file)  // Consumes by transfer
     } else {
@@ -525,25 +528,25 @@ fn conditional(file: File, keep_open: bool) -> Result<(), Error> {
 ## Examples
 
 ### File Processing
-```
-fn process_file(path: String) -> Result<Data, Error> {
-    let file = File::open(path)?
+```rask
+func process_file(path: String) -> Result<Data, Error> {
+    const file = File.open(path)?
     ensure file.close()
 
-    let header = file.read_header()?
-    let data = file.read_body()?
+    const header = file.read_header()?
+    const data = file.read_body()?
 
     Ok(data)
 }
 ```
 
 ### Database Transaction
-```
-fn update_user(db: Database, user_id: u64) -> Result<(), Error> {
-    let txn = db.begin_transaction()?
+```rask
+func update_user(db: Database, user_id: u64) -> Result<(), Error> {
+    const txn = db.begin_transaction()?
     ensure txn.rollback()     // Default: rollback on error
 
-    let user = txn.query_user(user_id)?
+    const user = txn.query_user(user_id)?
     user.last_login = now()
     txn.update_user(user)?
 
@@ -554,14 +557,14 @@ fn update_user(db: Database, user_id: u64) -> Result<(), Error> {
 ```
 
 ### Connection Pool
-```
-fn handle_connections(pool: mut Pool<Connection>) -> Result<(), Error> {
+```rask
+func handle_connections(pool: Pool<Connection>) -> Result<(), Error> {
     // Process all connections
     for h in pool.cursor() {
         pool.modify(h, |conn| {
             if conn.should_close() {
                 // Remove and consume
-                let removed = pool.remove(h).unwrap()
+                const removed = pool.remove(h).unwrap()
                 removed.close()?
             }
             Ok(())
@@ -569,8 +572,8 @@ fn handle_connections(pool: mut Pool<Connection>) -> Result<(), Error> {
     }
 
     // Clean up remaining
-    for h in pool.handles().collect::<Vec<_>>() {
-        let conn = pool.remove(h).unwrap()
+    for h in pool.handles().collect<Vec<_>>() {
+        const conn = pool.remove(h).unwrap()
         conn.close()?
     }
 

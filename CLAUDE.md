@@ -1,169 +1,107 @@
 # Rask Design Objectives
 
-Keep the documents short and concise, but in the chat you need to explain things to me, I'm not a language architect expert.
+Keep docs short. In chat, explain things to me—I'm not a language architect expert.
 
 ## Goal
-Systems language where **safety is invisible**—it's just how the language works, not something you fight. Eliminate abstraction tax, cover 80%+ of real use cases.
 
-**Non-negotiable:** The language should feel simple, not safe. Safety is a property, not an experience.
+Systems language where **safety is invisible**. Eliminate abstraction tax, cover 80%+ of real use cases.
 
-The language should feel elegant and well designed, not an overengineered construction with alot of afterthoughts.
+**Non-negotiable:** Feel simple, not safe. Safety is a property, not an experience.
 
 ## Core Principles
 
-**1. Transparency of Cost (TC ≥ 0.90)**
-- Major costs (allocations, locks, I/O) visible in code
-- Small costs (bounds checks, generation checks) can be implicit
-- ✅ Explicit: `file.read()`, `arena.allocate()`, `channel.send()`
-- ✅ Implicit OK: bounds checks, null checks, generation validation
-- ❌ Hidden: silent allocation, implicit copies of large data
-
-**2. Mechanical Safety (MC ≥ 0.90)**
-- Safety by structure, not runtime checks
-- Bug classes impossible by construction:
-  - Use-after-free, double-free, data races
-  - Null derefs, buffer overflows, memory leaks
-  - Uninitialized reads, stale references
-
-**3. Practical Coverage (UCC ≥ 0.80)**
-- Must handle web services, CLI tools, data processing, embedded
-- Dynamic data structures where needed
-- Not limited to fixed-size programs
-
-**4. Ergonomic Simplicity (ES)**
-- Common code paths must be LOW CEREMONY
-- Error handling should not dominate every line
-- Nested blocks/callbacks for simple operations = design smell
-- If you need 3+ lines to do what Go does in 1, question the design
-- Inference over annotation where safe
-- "Happy path" should read clean; edge cases handled but not in your face
-
-## Design Constraints
+1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O). Small costs (bounds checks) can be implicit.
+2. **Mechanical Safety** — Safety by structure. Use-after-free, data races, null derefs impossible by construction.
+3. **Practical Coverage** — Handle web services, CLI, data processing, embedded. Not limited to fixed-size programs.
+4. **Ergonomic Simplicity** — Low ceremony. If Rask needs 3+ lines where Go needs 1, question the design.
 
 See [METRICS.md](METRICS.md) for scoring methodology.
 
-**Must achieve:**
+---
+
+## Design Status
+
+Start with [CORE_DESIGN.md](CORE_DESIGN.md). For specs: [specs/README.md](specs/README.md).
+
+### Decided
+
+| Area | Decision | Spec |
+|------|----------|------|
+| Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
+| Borrowing | Block-scoped (values) vs expression-scoped (collections) | [borrowing.md](specs/memory/borrowing.md) |
+| Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
+| Linear types | Must-consume, `ensure` cleanup | [linear-types.md](specs/memory/linear-types.md) |
+| Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |
+| Errors | Result, `?` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
+| Concurrency | spawn/join/detach, channels, no function coloring | [concurrency/](specs/concurrency/) |
+| Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
+| C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
+
+### Open
+
+| Area | Status |
+|------|--------|
+| Stdlib I/O | Not specified (io, fs, net, http) |
+| Build system | Skeleton only |
+| Macros/attributes | Not specified |
+
+See [TODO.md](TODO.md) for full list.
+
+---
+
+## Validation
+
+Test programs that must work naturally:
+1. HTTP JSON API server
+2. grep clone
+3. Text editor with undo
+4. Game loop with entities
+5. Embedded sensor processor
+
+**Litmus test:** If Rask is longer/noisier than Go for core loops, fix the design.
+
+---
+
+## Rask Syntax Quick Reference
+
+**Claude: Use this, not Rust syntax.**
+
+| Concept | Rask ✓ | Rust ✗ |
+|---------|--------|--------|
+| Immutable | `const x = 1` | `let x = 1` |
+| Mutable | `let x = 1` | `let mut x = 1` |
+| Function | `func foo()` | `fn foo()` |
+| Methods | `extend Type { }` | `impl Type { }` |
+| Visibility | `public` | `pub` |
+| Enum variant | `Token.Plus` | `Token::Plus` |
+| Read-only param | `func f(read x: T)` | N/A |
+| Take ownership | `func f(take x: T)` | implicit move |
+| Pass owned | `f(own value)` | implicit move |
+| Inline block | `if x > 0: return x` | N/A |
+| Pattern match | `if x is Some(v)` | `if let Some(v) = x` |
+| Guard pattern | `let v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
+| Loop with value | `deliver value` | `break value` |
+| Statement end | Newline | `;` |
+
+**Common patterns:**
+```rask
+const x = 42                              // immutable
+let y = 0; y = 1                          // mutable + reassign
+
+func add(a: i32, b: i32) -> i32 { a + b }
+
+extend Point {
+    func distance(self, other: Point) -> f64 { ... }
+}
+
+if x > 0: return x                        // inline (colon)
+if x > 0 { process(); return x }          // multi-line (braces)
+
+if result is Ok(v): use(v)                // pattern match
+let v = opt is Some else { return None }  // guard pattern
+
+match status {
+    Active => handle(),
+    Failed(e) => log(e),
+}
 ```
-TC ≥ 0.90 AND MC ≥ 0.90 AND UCC ≥ 0.80 AND PI ≥ 0.85 AND ED ≤ 1.2 AND SN ≤ 0.3 AND RO ≤ 1.10 AND CS ≥ 5×Rust
-```
-
-- **RO (Runtime Overhead)**: Hot paths within 10% of C/Rust. GC/RC/deep-copy must be opt-in.
-- **CS (Compilation Speed)**: ≥5× faster than Rust. No whole-program analysis.
-
-**Reject if:**
-- Common patterns require more ceremony than the simplest mainstream alternative
-- Error handling dominates the code
-- Nested callbacks/blocks for simple operations
-- The language "gets in the way"
-- Covers <80% of real use cases
-- Hidden costs (allocations, copies, locks)
-- Mandatory runtime overhead (GC/RC/deep-copy) with no opt-out
-- Whole-program analysis required for safety
-
-**Ergonomics red flags:**
-- Excessive annotations
-- Nesting > 2 for routine operations
-- Declaring things the compiler could infer
-- Validation ceremony on every access
-
-## Inspiration Sources
-
-Draw freely from ANY language. Good ideas are everywhere:
-
-- **Zig**: comptime, no hidden allocations, explicit allocators
-- **Odin**: implicit context, simple generics, SOA
-- **Jai**: compile-time execution, #run, implicit context
-- **Vale**: region-based memory, generational references
-- **Koka**: algebraic effects, effect handlers
-- **Swift**: optionals, value types, ARC
-- **Nim**: macros, effect system, compile-time execution
-- **OCaml/F#**: powerful inference, algebraic data types
-- **Elixir**: pipes, pattern matching, supervision
-- **Forth/Factor**: simplicity, stack-based thinking, concatenative
-- **APL/J**: notation as a tool of thought
-- **Erlang**: let it crash, supervision trees, message passing
-- **Pony**: reference capabilities, deny capabilities
-- **Austral**: linear types without borrow checker complexity
-
-**Not limited to:** Rust's borrow checker, Go's GC, C's manual memory. These are options, not requirements.
-
-## Focus Areas (CORE)
-
-**These are what we're designing:**
-
-1. **Memory Model**
-   - How is memory owned, shared, and freed?
-   - What are the primitives (regions, arenas, RC, GC, linear types)?
-   - What invariants does the compiler enforce?
-   - What does the runtime need to track?
-
-2. **Type System**
-   - What can types express? (ownership, effects, capabilities, linearity)
-   - What is inferred vs. declared?
-   - How do generics/polymorphism work?
-   - What compile-time guarantees are provided?
-
-3. **Concurrency Model**
-   - How do threads/tasks share data?
-   - Message passing vs. shared memory?
-   - What race conditions are impossible by construction?
-   - Actor model? CSP? Structured concurrency?
-
-4. **Compiler Architecture**
-   - What happens at compile time vs. runtime?
-   - Comptime execution? Metaprogramming?
-   - How much work can be done statically?
-   - Incremental compilation? Build system integration?
-
-5. **C Interop**
-   - How do we call C? How does C call us?
-   - ABI compatibility?
-   - Memory ownership across boundaries?
-   - Header generation? Binding generation?
-
-**NOT in scope (yet):**
-- Surface syntax (keywords, brackets, etc.)
-- Standard library design
-- Tooling (LSP, formatter, etc.)
-- Error message wording
-
-**Use abstract descriptions, not code:**
-- "Values in region R are freed when R exits"
-- "Types carry ownership: unique, shared, or borrowed"
-- "Cross-thread data requires capability C"
-
-Syntax is bikeshedding. Focus on semantics and compiler guarantees.
-
-## Test Programs
-
-Must naturally express:
-1. HTTP JSON API server (dynamic requests/responses)
-2. grep clone (arbitrary files)
-3. Text editor (dynamic buffer, undo)
-4. Log aggregation (streaming data)
-5. Sensor processor (fixed memory, real-time)
-6. Game loop (dynamic entities)
-7. Database (indexes, caching)
-
-**Ergonomics litmus test:** For each program, write the core loop in Rask and Go. If Rask is longer or noisier, justify why or fix the design.
-
-
-No solution is locked in. Test everything against real use cases.
-
-## Specs Organization
-
-```
-specs/
-├── types/       # What values can be
-├── memory/      # How values are owned
-├── control/     # How execution flows
-├── concurrency/ # How tasks run in parallel
-├── structure/   # How code is organized
-└── stdlib/      # Standard library
-```
-
-See [specs/README.md](specs/README.md) for detailed index.
-
-## Refine
-
-See [REFINEMENT_PROTOCOL.md](REFINEMENT_PROTOCOL.md) for how to refine.

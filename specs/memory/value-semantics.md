@@ -4,7 +4,7 @@
 How do values behave on assignment, parameter passing, and return? When are types copied implicitly vs moved?
 
 ## Decision
-All types are values with single ownership. Small types (≤16 bytes) that contain only copyable data are implicitly copied; larger types require explicit `.clone()` or move. The `move` keyword allows opt-out of implicit copy for semantic reasons.
+All types are values with single ownership. Small types (≤16 bytes) that contain only copyable data are implicitly copied; larger types require explicit `.clone()` or move. The `@unique` attribute allows opt-out of implicit copy for semantic reasons.
 
 ## Rationale
 Implicit copy is fundamental for ergonomic value semantics—without it, even integer assignments would invalidate the source. The 16-byte threshold balances ergonomics (covers common types like points, colors, pairs) with cost transparency (larger types require visible `.clone()`).
@@ -17,8 +17,8 @@ All types are values. There is no distinction between "value types" and "referen
 
 | Operation | Small types (≤16 bytes, Copy) | Large types |
 |-----------|-------------------------------|-------------|
-| Assignment `let y = x` | Copies | Moves (x invalid after) |
-| Parameter passing | Copies | Moves (unless `read`/`mutate` mode) |
+| Assignment `const y = x` | Copies | Moves (x invalid after) |
+| Parameter passing | Copies | Borrows by default, moves with `take` |
 | Return | Copies | Moves |
 
 **Copy eligibility:**
@@ -26,15 +26,16 @@ All types are values. There is no distinction between "value types" and "referen
 - Structs: Copy if all fields are Copy AND total size ≤16 bytes
 - Enums: Copy if all variants are Copy AND total size ≤16 bytes
 - Collections (Vec, Pool, Map): never Copy (own heap memory)
+- Sync types (Shared, Mutex, Atomic*): never Copy (contain synchronization state)
 
 ### Why Implicit Copy?
 
 Implicit copy is a fundamental requirement for ergonomic value semantics, not an optional optimization.
 
 **Without implicit copy, primitives would have move semantics:**
-```
-let x = 5
-let y = x              // Without copy: x moved to y
+```rask
+const x = 5
+const y = x              // Without copy: x moved to y
 print(x + y)           // ❌ ERROR: x was moved
 ```
 
@@ -43,7 +44,7 @@ Alternative approaches fail design constraints:
 | Approach | Problem |
 |----------|---------|
 | Everything moves | Violates ES ≥ 0.85 (ergonomics); every int assignment invalidates source |
-| Explicit `.clone()` for all | `let y = x.clone()` for every integer violates ED ≤ 1.2 (ceremony) |
+| Explicit `.clone()` for all | `const y = x.clone()` for every integer violates ED ≤ 1.2 (ceremony) |
 | Special-case primitives only | Creates "value types" vs "reference types" distinction, violates Principle 2 (uniform value semantics) |
 | Copy-on-write / GC | Violates RO ≤ 1.10 (runtime overhead), TC ≥ 0.90 (hidden costs) |
 
@@ -83,7 +84,7 @@ The 16-byte threshold is **fixed by the language specification** and is NOT conf
 | Reason | Justification |
 |--------|---------------|
 | **Semantic stability** | Changing threshold changes program semantics (copy vs move); code portability requires fixed behavior |
-| **Local analysis** | Per Principle 5, changing a compiler flag should not change whether `let y = x` copies or moves |
+| **Local analysis** | Per Principle 5, changing a compiler flag should not change whether `const y = x` copies or moves |
 | **Mental model simplicity** | Developers learn one rule: ≤16 bytes copies, >16 bytes moves |
 | **Library compatibility** | Generic code assumes stable Copy semantics; configurable threshold breaks abstraction boundaries |
 
@@ -155,19 +156,21 @@ The compiler automatically determines whether a type is Copy based on structure:
 - Primitives: always Copy (language-defined)
 - Structs/enums: Copy if all fields are Copy AND size ≤16 bytes
 
-No explicit `impl Copy` declaration is required—Copy is a structural property.
+No explicit `extend Copy` declaration is required—Copy is a structural property.
 
-### Move-Only Types (Opt-Out)
+### Unique Types (Opt-Out)
 
-Types can explicitly opt out of Copy using the `move` keyword, even if structurally eligible.
+Types can explicitly opt out of Copy using the `@unique` attribute, even if structurally eligible.
 
 **Syntax:**
-```
-move struct UserId {
+```rask
+@unique
+struct UserId {
     id: u64  // 8 bytes, Copy-eligible, but forced move-only
 }
 
-move enum Token {
+@unique
+enum Token {
     Access(u64),
     Refresh(u64),
 }
@@ -177,19 +180,20 @@ move enum Token {
 
 | Rule | Description |
 |------|-------------|
-| **MO1: No implicit copy** | Move-only types MUST be explicitly cloned; assignment/passing moves |
-| **MO2: Clone still available** | `.clone()` works if all fields implement Clone |
-| **MO3: Size independent** | Works for any size, but most useful for small types |
-| **MO4: Transitive** | Structs containing move-only fields are automatically move-only |
+| **U1: No implicit copy** | Unique types MUST be explicitly cloned; assignment/passing moves |
+| **U2: Clone still available** | `.clone()` works if all fields implement Clone |
+| **U3: Size independent** | Works for any size, but most useful for small types |
+| **U4: Transitive** | Structs containing unique fields are automatically unique |
 
 **Example:**
-```
-move struct UserId { id: u64 }
+```rask
+@unique
+struct UserId { id: u64 }
 
-let user1 = UserId{id: 42}
-let user2 = user1              // Moves, user1 invalid
-let user3 = user2.clone()      // ✅ OK: explicit clone
-let user4 = user3              // Moves, user3 invalid
+const user1 = UserId{id: 42}
+const user2 = user1              // Moves, user1 invalid
+const user3 = user2.clone()      // ✅ OK: explicit clone
+const user4 = user3              // Moves, user3 invalid
 ```
 
 **Use cases:**
@@ -203,34 +207,34 @@ let user4 = user3              // Moves, user3 invalid
 
 **Interaction with generics:**
 
-```
-fn process<T>(value: T) { ... }
+```rask
+func process<T>(value: T) { ... }
 
-let id = UserId{id: 1}
+const id = UserId{id: 1}
 process(id)           // Moves id (move-only type)
 
 // For Copy types:
-let num = 42
+const num = 42
 process(num)          // Copies num (i32 is Copy)
 ```
 
-Move-only types do NOT satisfy `T: Copy` bounds in generics (see Copy trait section below).
+Move-only types do NOT satisfy `T: Copy` constraints in generics (see Copy trait section below).
 
 **Design rationale:**
 
 - **Default ergonomic:** Most small types are Copy automatically (no annotation needed)
-- **Opt-in strictness:** Only use `move` when semantics require it
-- **Clear intent:** Keyword signals "this type should not be casually duplicated"
-- **Backward compatible:** Removing `move` from a type is a non-breaking change (makes it more permissive)
+- **Opt-in strictness:** Only use `@unique` when semantics require it
+- **Clear intent:** Attribute signals "this type should not be casually duplicated"
+- **Backward compatible:** Removing `@unique` from a type is a non-breaking change (makes it more permissive)
 
 **Comparison with linear types:**
 
-| Aspect | Move-only types | Linear types |
-|--------|-----------------|--------------|
+| Aspect | Unique types | Linear types |
+|--------|--------------|--------------|
 | Must consume | No (can drop) | Yes (compiler error if not consumed) |
 | Can clone | Yes (if fields are Clone) | No (unique ownership) |
 | Use case | Semantic safety | Resource safety |
-| Example | `move struct UserId` | `linear struct File` |
+| Example | `@unique struct UserId` | `@linear struct File` |
 
 ### Copy Trait and Generics
 
@@ -241,17 +245,17 @@ The `Copy` trait is a structural, compiler-known property that determines whethe
 A type satisfies the `Copy` trait if and only if:
 1. All fields are Copy (recursive check)
 2. Total size ≤16 bytes
-3. NOT marked with `move` keyword
+3. NOT marked with `@unique` attribute
 4. NOT a collection type (Vec, Pool, Map)
 
-**Generic bounds:**
+**Generic constraints:**
 
-```
-fn duplicate<T: Copy>(value: T) -> (T, T) {
+```rask
+func duplicate<T: Copy>(value: T) -> (T, T) {
     (value, value)  // ✅ OK: T is Copy, so value can be copied
 }
 
-fn try_duplicate<T>(value: T) -> (T, T) {
+func try_duplicate<T>(value: T) -> (T, T) {
     (value, value)  // ❌ ERROR: cannot use value twice (moved)
 }
 ```
@@ -263,22 +267,22 @@ fn try_duplicate<T>(value: T) -> (T, T) {
 | `i32` | ✅ Yes | Primitive, always Copy |
 | `(i32, i32)` | ✅ Yes | 8 bytes, all fields Copy |
 | `Point{x: i32, y: i32}` | ✅ Yes | 8 bytes, all fields Copy |
-| `move struct UserId{id: u64}` | ❌ No | Explicitly move-only |
+| `@unique struct UserId{id: u64}` | ❌ No | Explicitly unique (no copy) |
 | `String` | ❌ No | >16 bytes, owns heap memory |
 | `Vec<i32>` | ❌ No | Collection type, never Copy |
 
 **Monomorphization:**
 
-When a generic function is instantiated with a concrete type, the compiler checks bounds:
+When a generic function is instantiated with a concrete type, the compiler checks constraints:
 
-```
-let point = Point{x: 1, y: 2}
+```rask
+const point = Point{x: 1, y: 2}
 let (p1, p2) = duplicate(point)  // ✅ OK: Point satisfies Copy
 
-let id = UserId{id: 42}
+const id = UserId{id: 42}
 let (id1, id2) = duplicate(id)   // ❌ ERROR: UserId is move-only (doesn't satisfy Copy)
 
-let name = String::from("Alice")
+const name = String.from("Alice")
 let (n1, n2) = duplicate(name)   // ❌ ERROR: String doesn't satisfy Copy
 ```
 
@@ -286,51 +290,51 @@ let (n1, n2) = duplicate(name)   // ❌ ERROR: String doesn't satisfy Copy
 
 | Trait | Operation | When available | Cost |
 |-------|-----------|----------------|------|
-| `Copy` | Implicit copy on assign/pass | Structural: ≤16 bytes, no `move` | Bitwise copy (cheap) |
+| `Copy` | Implicit copy on assign/pass | Structural: ≤16 bytes, no `@unique` | Bitwise copy (cheap) |
 | `Clone` | Explicit `.clone()` call | If all fields are Clone | May allocate (visible cost) |
 
 All Copy types are also Clone (can call `.clone()` explicitly). Not all Clone types are Copy.
 
-```
+```rask
 // Copy type (implicit):
-let p1 = Point{x: 1, y: 2}
-let p2 = p1             // Implicit copy
-let p3 = p1.clone()     // Explicit clone (same as copy)
+const p1 = Point{x: 1, y: 2}
+const p2 = p1             // Implicit copy
+const p3 = p1.clone()     // Explicit clone (same as copy)
 
 // Clone-only type (explicit):
-let s1 = String::from("hello")
-let s2 = s1             // Move (s1 invalid)
-let s3 = s2.clone()     // Explicit clone (allocates)
+const s1 = String.from("hello")
+const s2 = s1             // Move (s1 invalid)
+const s3 = s2.clone()     // Explicit clone (allocates)
 ```
 
 **Relationship with traits system:**
 
-Per CORE_DESIGN Principle 7 (structural traits), Copy is automatically satisfied if the structure matches. No explicit `impl Copy` is required.
+Per CORE_DESIGN Principle 7 (structural traits), Copy is automatically satisfied if the structure matches. No explicit `extend Copy` is required.
 
 However, Copy is special:
 - It's a compiler-known trait (affects codegen)
 - It changes assignment semantics (copy vs move)
-- The `move` keyword overrides structural satisfaction
+- The `@unique` attribute overrides structural satisfaction
 
 For user-defined traits, structural matching is purely for dispatch. For Copy, it affects language semantics.
 
 **Generic constraints propagation:**
 
-```
+```rask
 struct Pair<T> {
     first: T,
     second: T,
 }
 
 // Pair<T> is Copy if T is Copy and Pair<T> ≤16 bytes
-let p1 = Pair{first: 1, second: 2}      // Pair<i32> is Copy (8 bytes)
-let p2 = p1                              // Implicit copy
+const p1 = Pair{first: 1, second: 2}      // Pair<i32> is Copy (8 bytes)
+const p2 = p1                              // Implicit copy
 
-let p3 = Pair{first: 1i64, second: 2i64} // Pair<i64> is Copy (16 bytes)
-let p4 = p3                              // Implicit copy
+const p3 = Pair{first: 1i64, second: 2i64} // Pair<i64> is Copy (16 bytes)
+const p4 = p3                              // Implicit copy
 
-let p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
-let p6 = p5                              // ❌ ERROR: move, not copy
+const p5 = Pair{first: [1i64; 2], second: [2i64; 2]} // Pair<[i64;2]> is NOT Copy (32 bytes > 16)
+const p6 = p5                              // ❌ ERROR: move, not copy
 ```
 
 The compiler automatically derives Copy for generic types when instantiated with Copy type arguments, subject to the size threshold.
@@ -339,12 +343,12 @@ The compiler automatically derives Copy for generic types when instantiated with
 
 - **Ownership:** Value semantics integrates with single-owner model (see [ownership.md](ownership.md))
 - **Borrowing:** Borrows allow temporary access without copy/move (see [borrowing.md](borrowing.md))
-- **Type System:** Copy is a structural trait; no explicit impl required
-- **Generics:** Copy bounds work with monomorphization
+- **Type System:** Copy is a structural trait; no explicit extend required
+- **Generics:** Copy constraints work with monomorphization (code generation)
 - **Tooling:** IDE shows copy vs move at each use site
 
 ## See Also
 
 - [Ownership Rules](ownership.md) — Single-owner model and move semantics
-- [Borrowing](borrowing.md) — Block-scoped and expression-scoped borrows
+- [Borrowing](borrowing.md) — One rule: views last as long as the source is stable
 - [Linear Types](linear-types.md) — Must-consume resources

@@ -21,8 +21,8 @@ Explicit marking (`comptime`) makes it clear when code runs at compile time vs r
 |-------|--------|---------|
 | Comptime variable | `comptime let x = expr` | Expression evaluated at compile time |
 | Comptime constant | `const X = comptime expr` | Constant initialized at compile time |
-| Comptime function | `comptime fn name() -> T { ... }` | Function can only be called at compile time |
-| Comptime parameter | `fn f<comptime N: usize>() { ... }` | Generic parameter must be compile-time known |
+| Comptime function | `comptime func name() -> T { ... }` | Function can only be called at compile time |
+| Comptime parameter | `func f<comptime N: usize>() { ... }` | Generic parameter must be compile-time known |
 | Comptime block | `comptime { ... }` | Block evaluated at compile time |
 
 **Semantics:**
@@ -57,16 +57,17 @@ const VERSION_STRING: String = comptime format_version(MAJOR, MINOR, PATCH)
 ### Comptime Functions
 
 **Declaration:**
+<!-- test: parse -->
 ```rask
-comptime fn factorial(n: u32) -> u32 {
+comptime func factorial(n: u32) -> u32 {
     if n <= 1 {
         return 1
     }
     n * factorial(n - 1)
 }
 
-comptime fn build_lookup_table() -> [u8; 256] {
-    let mut table = [0u8; 256]
+comptime func build_lookup_table() -> [u8; 256] {
+    const table = [0u8; 256]
     for i in 0..256 {
         table[i] = (i * 2) as u8
     }
@@ -88,21 +89,27 @@ comptime fn build_lookup_table() -> [u8; 256] {
 
 ### Generic Comptime Parameters
 
-**Type parameters:**
+**Type parameters** use regular generics (types are inherently compile-time):
+<!-- test: parse -->
 ```rask
-fn make_buffer<comptime T: type>() -> T {
-    T::default()
+func make_buffer<T>() -> T {
+    T.default()
 }
+```
 
-fn fixed_array<comptime N: usize>() -> [u8; N] {
+**Value parameters** use `comptime` modifier:
+<!-- test: parse -->
+```rask
+func fixed_array<comptime N: usize>() -> [u8; N] {
     [0u8; N]
 }
 ```
 
-**Value parameters:**
+**Combined:**
+<!-- test: parse -->
 ```rask
-fn repeat<comptime N: usize>(value: u8) -> [u8; N] {
-    let mut arr = [0u8; N]
+func repeat<comptime N: usize>(value: u8) -> [u8; N] {
+    const arr = [0u8; N]
     for i in 0..N {
         arr[i] = value
     }
@@ -110,9 +117,9 @@ fn repeat<comptime N: usize>(value: u8) -> [u8; N] {
 }
 
 // Usage
-let buf = repeat<16>(0xff)  // OK: 16 is comptime-known
-let n = read_config()
-let buf = repeat<n>(0xff)   // ❌ ERROR: n is runtime value
+const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
+const n = read_config()
+const buf = repeat<n>(0xff)   // ❌ ERROR: n is runtime value
 ```
 
 **Rules:**
@@ -124,7 +131,7 @@ let buf = repeat<n>(0xff)   // ❌ ERROR: n is runtime value
 
 **Conditional compilation:**
 ```rask
-fn process(data: []u8) {
+func process(data: []u8) {
     comptime {
         if FEATURE_LOGGING {
             // This code is conditionally included at compile time
@@ -143,7 +150,7 @@ fn process(data: []u8) {
 
 **Comptime variables in runtime context:**
 ```rask
-fn example() {
+func example() {
     comptime let iterations = if DEBUG_MODE { 100 } else { 10 }
 
     // Use comptime value in runtime loop
@@ -151,43 +158,88 @@ fn example() {
         println(i)
     }
 }
-```
+```rask
 
 **Rules:**
 - `comptime { ... }` executes at compile time, result affects compilation
 - `comptime if` conditionally compiles code
 - Comptime variables can be used in runtime code (their values are known)
 
-### Why No Heap Allocation
+### Comptime Collections with Freeze
 
-Comptime excludes heap allocation (`Vec`, `Map`, unbounded collections) by design. This is a deliberate tradeoff, not an oversight.
+Comptime supports standard collections (`Vec`, `Map`, `String`) with a **compiler-managed allocator**. Collections must be **frozen** to escape comptime as const data.
 
-**Rationale:**
+**How it works:**
 
-| Reason | Explanation |
-|--------|-------------|
-| Compiler simplicity | No memory management in comptime interpreter |
-| Determinism | No allocator behavior differences across machines |
-| Bounded compilation | Memory limits are explicit, not emergent |
-| Clear mental model | Comptime = pure computation, build script = effectful |
-| Fast compilation | CS >= 5x Rust requires minimal comptime overhead |
+1. **Compiler-managed allocator** — At comptime, collections use an internal scratch heap
+   - Subject to existing 256MB limit
+   - Deterministic: same source produces same result across all machines (fixed allocation strategy, not system allocator)
 
-**What this means:**
-- Fixed-size arrays and structs: full support
-- Dynamic collections (`Vec`, `Map`): not allowed
-- String operations: via compiler intrinsics with size limits
-- File I/O: only `@embed_file` (read-only, compile-time path)
+2. **Freeze to escape** — Collections must call `.freeze()` to become const
+   - `Vec<T>.freeze()` → `[T; N]` (size inferred from length)
+   - `Map<K,V>.freeze()` → static map (perfect hash or similar)
+   - `String.freeze()` → `str` (string literal)
+
+3. **Cannot escape unfrozen** — Compile error if comptime returns unfrozen collection
+
+**Examples:**
+
+```rask
+// Array generation - unknown size
+const PRIMES: [u32; _] = comptime {
+    const v = Vec<u32>.new()
+    for n in 2..100 {
+        if is_prime(n) { v.push(n) }
+    }
+    v.freeze()  // → [u32; 25]
+}
+
+// Map generation - lookup table
+const KEYWORDS: Map<str, TokenKind> = comptime {
+    const m = Map<str, TokenKind>.new()
+    m.insert("if", TokenKind.If)
+    m.insert("else", TokenKind.Else)
+    m.insert("for", TokenKind.For)
+    m.freeze()  // → perfect hash or static map
+}
+
+// String building
+const GREETING: str = comptime {
+    const s = String.new()
+    s.push_str("Hello, ")
+    s.push_str(USERNAME)
+    s.push_str("!")
+    s.freeze()  // → string literal
+}
+```
+
+**Error case:**
+```rask
+const BAD = comptime {
+    const v = Vec<u32>.new()
+    v.push(1)
+    v  // ❌ ERROR: cannot return unfrozen Vec from comptime
+}
+```rask
+
+**Why freeze?**
+
+| Concern | How Addressed |
+|---------|---------------|
+| Memory allocation | Compiler-managed scratch heap, bounded |
+| Determinism | No allocator variance, frozen = immutable |
+| Debuggability | `@comptime_print` works, normal collection APIs |
+| Clear boundary | `.freeze()` makes materialization explicit |
+| Existing limits | Subject to 256MB/10s/iteration limits |
 
 **Comparison with Zig:**
 
-| Capability | Zig | Rask | Rask Alternative |
-|------------|-----|------|------------------|
-| Comptime allocation | Yes (arena) | No | Two-pass pattern |
-| Dynamic arrays | Yes | No | Fixed-size arrays |
-| Comptime I/O | Yes | Limited | Build scripts |
-| JSON parsing | Comptime | Build script | Full language available |
-
-Zig's approach is more powerful but adds interpreter complexity. Rask prioritizes compilation speed and simplicity.
+| Capability | Zig | Rask |
+|------------|-----|------|
+| Comptime allocation | Arena-based | Compiler-managed with freeze |
+| Dynamic arrays | Implicit materialization | Explicit `.freeze()` |
+| Comptime I/O | Full | `@embed_file` only |
+| Build scripts | Separate | Separate (for complex codegen) |
 
 ### Allowed Features in Comptime
 
@@ -225,17 +277,21 @@ Zig's approach is more powerful but adds interpreter complexity. Rask prioritize
 | **Linear resources** | Files, sockets, cleanup tracking is runtime |
 | **Tasks and channels** | Concurrency doesn't exist at compile time |
 | **Ensure blocks** | Scope-based cleanup is runtime concept |
-| **Heap allocation** | No dynamic memory at compile time |
-| **Vec, Map (unbounded)** | Dynamic growth requires heap allocation |
 | **Unsafe blocks** | Raw pointers don't exist at compile time |
+
+**Allowed with restrictions:**
+
+| Feature | Restriction |
+|---------|-------------|
+| **Vec, Map, String** | Must call `.freeze()` to escape comptime (see Comptime Collections with Freeze) |
 
 ### String Handling at Comptime
 
 **Allowed:**
 ```rask
-comptime fn make_greeting(name: String) -> String {
+comptime func make_greeting(name: String) -> String {
     // String literals are comptime-known
-    let prefix = "Hello, "
+    const prefix = "Hello, "
 
     // Concatenation works if result size is comptime-known
     // This is a compiler intrinsic, not heap allocation
@@ -247,7 +303,7 @@ const GREETING = comptime make_greeting("World")  // "Hello, World!"
 
 **Not allowed:**
 ```rask
-comptime fn read_file(path: String) -> String {
+comptime func read_file(path: String) -> String {
     // ❌ ERROR: I/O not allowed at comptime
     file.read(path)
 }
@@ -311,7 +367,7 @@ For complex codegen (parsing schemas, calling external tools), use build scripts
 
 **Comptime functions can use Result:**
 ```rask
-comptime fn safe_divide(a: i32, b: i32) -> Result<i32, String> {
+comptime func safe_divide(a: i32, b: i32) -> Result<i32, String> {
     if b == 0 {
         return Err("Division by zero")
     }
@@ -324,8 +380,8 @@ const Y = comptime safe_divide(10, 0)?  // ❌ Compile error: "Division by zero"
 
 **Panic at comptime:**
 ```rask
-comptime fn get_value(i: usize) -> u8 {
-    let table = [1u8, 2, 3]
+comptime func get_value(i: usize) -> u8 {
+    const table = [1u8, 2, 3]
     table[i]  // Panics if i >= 3
 }
 
@@ -350,10 +406,10 @@ const B = comptime get_value(5)  // ❌ Compile error: "Index out of bounds: 5 >
 Output during compilation for debugging:
 
 ```rask
-comptime fn build_table() -> [u8; 256] {
+comptime func build_table() -> [u8; 256] {
     @comptime_print("Building lookup table...")
 
-    let mut table = [0u8; 256]
+    const table = [0u8; 256]
     for i in 0..256 {
         table[i] = compute(i)
 
@@ -392,7 +448,7 @@ $ raskc main.rask  # Without flag: silent
 Explicit checks with clear error messages:
 
 ```rask
-comptime fn safe_factorial(n: u32) -> u32 {
+comptime func safe_factorial(n: u32) -> u32 {
     @comptime_assert(n <= 20, "Factorial input too large: {} (max 20)", n)
 
     if n <= 1 { return 1 }
@@ -415,7 +471,7 @@ Fails with formatted message if condition is false.
 **Call stack collapsing for recursion:**
 
 ```rask
-comptime fn factorial(n: u32) -> u32 {
+comptime func factorial(n: u32) -> u32 {
     if n <= 1 { return 1 }
     n * factorial(n - 1)
 }
@@ -424,7 +480,7 @@ const F = comptime factorial(1000)
 ```
 
 **Error output:**
-```
+```rask
 error: Comptime evaluation exceeded backwards branch quota (1,000)
 
 Comptime call stack:
@@ -442,7 +498,7 @@ note: Or rewrite using iteration instead of recursion
 ```
 
 **For panics:**
-```
+```rask
 error: Comptime panic: Division by zero
 
 Comptime call stack:
@@ -460,14 +516,14 @@ Triggered by:
 
 ```rask
 // The comptime function
-comptime fn factorial(n: u32) -> u32 {
+comptime func factorial(n: u32) -> u32 {
     if n <= 1 { return 1 }
     n * factorial(n - 1)
 }
 
 // Runtime tests (can use debugger!)
-#[test]
-fn test_factorial() {
+@test
+func test_factorial() {
     // These run at runtime - full debugging available
     assert_eq(factorial(0), 1)
     assert_eq(factorial(1), 1)
@@ -521,8 +577,8 @@ const F5 = comptime factorial(5)
 
 **Exceeding branch quota:**
 ```rask
-comptime fn slow() {
-    let mut i = 0
+comptime func slow() {
+    let i = 0
     while i < 5000 {  // Exceeds default 1,000 backwards branches
         i += 1
     }
@@ -535,10 +591,10 @@ const X = comptime slow()
 
 **Override per-scope:**
 ```rask
-comptime fn large_computation() -> [u8; 10000] {
+comptime func large_computation() -> [u8; 10000] {
     @comptime_quota(20000)  // Allow 20,000 backwards branches
 
-    let mut table = [0u8; 10000]
+    const table = [0u8; 10000]
     for i in 0..10000 {
         table[i] = compute(i)
     }
@@ -548,9 +604,9 @@ comptime fn large_computation() -> [u8; 10000] {
 
 ### Integration with Type System
 
-**Comptime in generic bounds:**
+**Comptime in generic constraints:**
 ```rask
-fn process<T, comptime N: usize>(items: [T; N])
+func process<T, comptime N: usize>(items: [T; N])
 where T: Copy {
     // N is known at compile time, T is substituted
     for i in 0..N {
@@ -561,7 +617,7 @@ where T: Copy {
 
 **Comptime-dependent types:**
 ```rask
-comptime fn select_type(use_large: bool) -> type {
+comptime func select_type(use_large: bool) -> type {
     if use_large {
         u64
     } else {
@@ -578,11 +634,11 @@ struct Config {
 
 **Type-level computation:**
 ```rask
-comptime fn max(a: usize, b: usize) -> usize {
+comptime func max(a: usize, b: usize) -> usize {
     if a > b { a } else { b }
 }
 
-fn buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
+func buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
     [0u8; comptime max(A, B)]
 }
 ```
@@ -622,55 +678,67 @@ fn buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
 
 **Decision tree:**
 
-```
+```rask
 Need to transform/process files (not just embed)?
   YES → Build script
   NO  → Need network or environment?
           YES → Build script
           NO  → Just embedding file contents?
                   YES → Comptime (@embed_file)
-                  NO  → Result size known at compile time?
-                          YES → Comptime (direct)
-                          NO  → Can calculate size first?
-                                  YES → Comptime (two-pass pattern)
-                                  NO  → Build script
+                  NO  → Result fits in 256MB comptime limit?
+                          YES → Comptime (use collections with freeze)
+                          NO  → Build script
 ```
 
 **Examples:**
 
 | Task | Approach | Why |
 |------|----------|-----|
-| CRC lookup table (256 entries) | Comptime | Size known |
-| Primes up to N | Comptime (two-pass) | Count first, then fill |
+| CRC lookup table (256 entries) | Comptime | Size known, fixed array |
+| Primes up to N | Comptime (Vec + freeze) | Unknown size, use collection |
+| Keyword lookup map | Comptime (Map + freeze) | Build map, freeze to static |
 | Embed version string | Comptime (`@embed_file`) | Simple file read |
 | Embed small config file | Comptime (`@embed_file`) | No transform needed |
-| Types from JSON schema | Build script | Needs parsing + codegen |
+| Parse embedded JSON | Comptime (collections) | `@embed_file` + parse + freeze |
+| Types from JSON schema | Build script | Needs to generate source files |
 | Protobuf codegen | Build script | Needs external tool |
-| Keyword lookup map | Comptime (two-pass) | Count keywords, then fill |
-| Protobuf codegen | Build script | External tool + file I/O |
 
-### Workaround Patterns for Dynamic-Size Results
+### Patterns for Dynamic-Size Results
 
-Comptime does not support heap allocation (`Vec`, `Map`). When result size is unknown, use these patterns:
+**Preferred: Use Collections with Freeze**
 
-**Pattern 1: Two-Pass Computation**
-
-Compute size first, then fill a fixed-size array:
+For unknown-size results, use `Vec`, `Map`, or `String` with `.freeze()`:
 
 ```rask
-// Step 1: Count (comptime function)
-comptime fn count_primes(max: u32) -> usize {
-    let mut count = 0
+const PRIMES: [u32; _] = comptime {
+    const v = Vec<u32>.new()
+    for n in 2..100 {
+        if is_prime(n) { v.push(n) }
+    }
+    v.freeze()
+}
+```
+
+This is simpler than the legacy two-pass pattern.
+
+**Alternative: Two-Pass Computation**
+
+When you want to avoid collections entirely:
+
+```rask
+// Step 1: Count
+comptime func count_primes(max: u32) -> usize {
+    let count = 0
     for i in 2..max {
         if is_prime(i) { count += 1 }
     }
     count
 }
 
-// Step 2: Fill (size now known via comptime generic)
-comptime fn fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
-    let mut result = [0u32; N]
-    let mut idx = 0
+// Step 2: Fill
+comptime func fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
+    const result = [0u32; N]
+    let idx = 0
     for i in 2..max {
         if is_prime(i) {
             result[idx] = i
@@ -680,63 +748,33 @@ comptime fn fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
     result
 }
 
-// Usage
 const PRIME_COUNT: usize = comptime count_primes(100)
 const PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
 ```
 
-**Pattern 2: Sparse Table with Fixed Upper Bound**
+**Build Script for Complex Codegen**
 
-When maximum size is known, use a struct with length field:
-
-```rask
-struct Table<T, comptime MAX: usize> {
-    data: [T; MAX],
-    len: usize,
-}
-
-comptime fn build_keywords<comptime MAX: usize>() -> Table<([]u8, u32), MAX> {
-    let mut table = Table { data: [([], 0); MAX], len: 0 }
-
-    // Add keywords
-    table.data[table.len] = ("if", 1)
-    table.len += 1
-    table.data[table.len] = ("else", 2)
-    table.len += 1
-    // ...
-
-    table
-}
-
-const KEYWORDS: Table<([]u8, u32), 50> = comptime build_keywords<50>()
-// Access: KEYWORDS.data[0..KEYWORDS.len]
-```
-
-**Pattern 3: Build Script for External Data**
-
-For codegen from files, use build scripts (full Rask, I/O allowed):
+For codegen requiring external tools or extensive I/O:
 
 ```rask
 // rask.build
-fn main() -> Result<(), Error> {
-    let schema = fs.read_file("schema.json")?
-    let code = generate_types_from_schema(schema)
+func main() -> Result<(), Error> {
+    const schema = fs.read_file("schema.json")?
+    const code = generate_types_from_schema(schema)
     fs.write_file("generated/types.rask", code)?
     Ok(())
 }
 ```
-
-Then import generated code normally in source files.
 
 ### Examples
 
 #### Lookup Table Generation
 
 ```rask
-comptime fn crc8_table() -> [u8; 256] {
-    let mut table = [0u8; 256]
+comptime func crc8_table() -> [u8; 256] {
+    const table = [0u8; 256]
     for i in 0..256 {
-        let mut crc = i as u8
+        let crc = i as u8
         for _ in 0..8 {
             if crc & 0x80 != 0 {
                 crc = (crc << 1) ^ 0x07
@@ -751,8 +789,8 @@ comptime fn crc8_table() -> [u8; 256] {
 
 const CRC8_TABLE: [u8; 256] = comptime crc8_table()
 
-fn crc8(data: []u8) -> u8 {
-    let mut crc = 0u8
+func crc8(data: []u8) -> u8 {
+    let crc = 0u8
     for byte in data {
         crc = CRC8_TABLE[(crc ^ byte) as usize]
     }
@@ -763,18 +801,18 @@ fn crc8(data: []u8) -> u8 {
 #### Generic Buffer Size
 
 ```rask
-fn read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> Result<[u8; MAX_SIZE], Error> {
-    let mut buffer = [0u8; MAX_SIZE]
-    let n = socket.read(&mut buffer[..])?
+func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> Result<[u8; MAX_SIZE], Error> {
+    const buffer = [0u8; MAX_SIZE]
+    const n = socket.read(buffer[..])?
     if n > MAX_SIZE {
-        return Err(Error::new("Packet too large"))
+        return Err(Error.new("Packet too large"))
     }
     Ok(buffer)
 }
 
 // Usage with different sizes
-let small = read_packet<64>(socket1)?
-let large = read_packet<4096>(socket2)?
+const small = read_packet<64>(socket1)?
+const large = read_packet<4096>(socket2)?
 ```
 
 #### Conditional Compilation
@@ -783,7 +821,7 @@ let large = read_packet<4096>(socket2)?
 const DEBUG_MODE: bool = comptime cfg.debug
 const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
-fn process(data: []u8) -> Result<(), Error> {
+func process(data: []u8) -> Result<(), Error> {
     comptime if LOGGING_ENABLED {
         log.debug("Processing {} bytes", data.len)
     }
@@ -792,7 +830,7 @@ fn process(data: []u8) -> Result<(), Error> {
         comptime if DEBUG_MODE {
             // Validation only in debug builds
             if byte > 127 {
-                return Err(Error::new("Invalid byte"))
+                return Err(Error.new("Invalid byte"))
             }
         }
 
@@ -806,7 +844,7 @@ fn process(data: []u8) -> Result<(), Error> {
 #### Fibonacci at Compile Time
 
 ```rask
-comptime fn fib(n: u32) -> u32 {
+comptime func fib(n: u32) -> u32 {
     if n <= 1 {
         return n
     }
@@ -815,7 +853,7 @@ comptime fn fib(n: u32) -> u32 {
 
 const FIB_10: u32 = comptime fib(10)  // Computed at compile time: 55
 
-fn example() {
+func example() {
     // Comptime value used at runtime
     println("Fibonacci(10) = {}", FIB_10)
 }
@@ -824,13 +862,13 @@ fn example() {
 #### Type Selection
 
 ```rask
-comptime fn size_type(bits: usize) -> type {
+comptime func size_type(bits: usize) -> type {
     match bits {
         8 => u8,
         16 => u16,
         32 => u32,
         64 => u64,
-        else => panic("Invalid bit size"),
+        _ => panic("Invalid bit size"),
     }
 }
 
@@ -838,8 +876,8 @@ struct Register<comptime BITS: usize> {
     value: comptime size_type(BITS)
 }
 
-let reg8 = Register<8> { value: 0u8 }
-let reg32 = Register<32> { value: 0u32 }
+const reg8 = Register<8> { value: 0u8 }
+const reg32 = Register<32> { value: 0u32 }
 ```
 
 ### Edge Cases
@@ -884,4 +922,6 @@ None identified.
 ### Low Priority
 4. **Comptime imports** — Can comptime code import modules? Or only use built-in types?
 5. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
-6. **Comptime heap allocation** — Deferred. Workarounds exist (two-pass, sparse tables). Build scripts handle I/O-heavy codegen. Can revisit if user demand warrants.
+
+### Resolved
+6. ~~**Comptime heap allocation**~~ — Resolved via "Collections with Freeze" pattern. `Vec`, `Map`, `String` work at comptime with compiler-managed allocator; `.freeze()` materializes to const data.

@@ -15,7 +15,7 @@
 
 Tests are declared with `test` blocks. No attributes, no special function signatures.
 
-```
+```rask
 test "addition works" {
     assert 1 + 1 == 2
 }
@@ -38,7 +38,7 @@ Tests MAY appear:
 |----------|---------------|----------|
 | Inline | Yes | Unit tests near implementation |
 | `*_test.rask` (same package) | Yes | Larger test suites |
-| `*_test.rask` (external) | No (`pub` only) | Integration tests |
+| `*_test.rask` (external) | No (`public` only) | Integration tests |
 
 ## Assertions
 
@@ -47,7 +47,7 @@ Tests MAY appear:
 | `assert expr` | Test stops immediately | Critical invariant |
 | `check expr` | Test continues, marked failed | Gather all failures |
 
-```
+```rask
 test "multiple checks" {
     check 1 + 1 == 2      // if fails, continue
     check 2 + 2 == 4      // runs even if above failed
@@ -56,7 +56,7 @@ test "multiple checks" {
 ```
 
 **Messages:**
-```
+```rask
 assert a == b, "expected equal"
 check x > 0, "x must be positive, got {x}"
 ```
@@ -68,7 +68,7 @@ check x > 0, "x must be positive, got {x}"
 - Optional message
 
 **Rich comparison:**
-```
+```rask
 assert_eq(got, expected)  // Pretty-prints diff on failure
 ```
 
@@ -76,7 +76,7 @@ assert_eq(got, expected)  // Pretty-prints diff on failure
 
 Native support via tuple iteration:
 
-```
+```rask
 test "add cases" {
     for (a, b, expected) in [(1,2,3), (0,0,0), (-1,1,0)] {
         check add(a, b) == expected
@@ -85,7 +85,7 @@ test "add cases" {
 ```
 
 Named cases for clearer output:
-```
+```rask
 test "parse" {
     for (name, input, expected) in [
         ("empty", "", none),
@@ -100,9 +100,9 @@ test "parse" {
 
 Tests use `ensure` for cleanup (same semantics as regular code):
 
-```
+```rask
 test "file processing" {
-    let file = open("test.txt")?
+    const file = open("test.txt")?
     ensure file.close()
     assert file.read() == "expected"
 }
@@ -118,9 +118,9 @@ test "file processing" {
 | Determinism | Random uses per-test seed |
 
 **Seeded random:**
-```
+```rask
 test "deterministic" {
-    let rng = Random.from_seed(test.seed())
+    const rng = Random.from_seed(test.seed())
 }
 ```
 
@@ -130,7 +130,7 @@ Re-run with same seed: `rask test --seed 0xDEADBEEF`
 
 Tests that verify compile-time functions:
 
-```
+```rask
 comptime test "factorial" {
     assert factorial(5) == 120
 }
@@ -146,7 +146,7 @@ comptime test "factorial" {
 
 Nested `test` blocks for grouping:
 
-```
+```rask
 test "parser" {
     test "numbers" {
         check parse("42") == some(42)
@@ -161,7 +161,7 @@ Output: `PASS: parser > numbers`
 
 ## Skipping and Expected Failures
 
-```
+```rask
 test "platform specific" {
     if !platform.is_linux() { skip("linux only") }
     // ...
@@ -177,13 +177,13 @@ test "known issue #123" {
 
 Code blocks in doc comments are extracted and run as tests:
 
-```
+```rask
 /// Adds two numbers.
 ///
 /// ```
 /// assert add(2, 3) == 5
 /// ```
-pub fn add(a: i32, b: i32) -> i32 { a + b }
+public func add(a: i32, b: i32) -> i32 { a + b }
 ```
 
 | Block | Behavior |
@@ -198,9 +198,9 @@ pub fn add(a: i32, b: i32) -> i32 { a + b }
 
 Benchmarks use `bench` blocks, mirroring `test` blocks:
 
-```
+```rask
 bench "vec push" {
-    let vec = Vec.new()
+    const vec = Vec.new()
     for _ in 0..1000 {
         vec.push(42)
     }
@@ -225,7 +225,7 @@ Entire block is timed. For setup, use helper functions.
 
 ### Bench CLI
 
-```
+```rask
 rask bench              # Run all benchmarks
 rask bench -f "vec"     # Filter by pattern
 rask bench --json       # Machine-readable output
@@ -235,15 +235,15 @@ rask bench --json       # Machine-readable output
 
 Trait-based injection (no magic frameworks):
 
-```
-trait Clock { fn now() -> Timestamp }
+```rask
+trait Clock { func now() -> Timestamp }
 
-fn schedule(clock: read impl Clock, delay: Duration) -> Timestamp {
+func schedule<C: Clock>(clock: C, delay: Duration) -> Timestamp {
     clock.now() + delay
 }
 
 test "schedule" {
-    let fake = FakeClock { current: Timestamp(1000) }
+    const fake = FakeClock { current: Timestamp(1000) }
     assert schedule(fake, Duration.seconds(5)) == Timestamp(1005)
 }
 ```

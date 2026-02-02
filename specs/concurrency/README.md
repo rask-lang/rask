@@ -14,49 +14,50 @@ This folder contains the concurrency model for Rask.
 
 **Affine handles:** All spawn constructs return handles that must be consumed (joined or detached). Compile error if forgotten.
 
-**Explicit resources:** `with multitasking { }` and `with threads { }` clearly declare what's available.
+**Explicit resources:** `with multitasking { }` and `with threading { }` clearly declare what's available.
 
 ## Specifications
 
 | Spec | Status | Purpose |
 |------|--------|---------|
 | [async.md](async.md) | Draft | **Execution model**: Multitasking, Threads, spawn, handles |
+| [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 
 **Start here:** [async.md](async.md) for the execution model overview.
 
 ## Quick Reference
 
-```
+```rask
 // Async mode - green tasks for I/O
-fn main() {
+func main() {
     with multitasking {
         spawn { handle_connection(conn) }.detach()
     }
 }
 
 // Async + CPU work
-fn main() {
-    with multitasking, threads {
+func main() {
+    with multitasking, threading {
         spawn {
-            let data = fetch(url)?                              // I/O - pauses
-            let result = threads.spawn { analyze(data) }.join()?  // CPU on threads
+            const data = fetch(url)?                              // I/O - pauses
+            const result = threading.spawn { analyze(data) }.join()?  // CPU on threads
             save(result)?                                       // I/O - pauses
         }.join()?
     }
 }
 
 // Sync mode - CPU parallelism only
-fn main() {
-    with threads {
-        let handles = files.map { |f| threads.spawn { process(f) } }
+func main() {
+    with threading {
+        const handles = files.map { |f| threading.spawn { process(f) } }
         for h in handles { h.join()? }
     }
 }
 
 // Spawn and wait for result
-let h = spawn { compute() }
-let result = h.join()?
+const h = spawn { compute() }
+const result = h.join()?
 
 // Fire-and-forget (explicit)
 spawn { background_work() }.detach()
@@ -68,14 +69,14 @@ let (a, b) = join_all(
 )
 
 // Dynamic spawning
-let group = TaskGroup.new()
+const group = TaskGroup.new()
 for url in urls {
     group.spawn { fetch(url) }
 }
-let results = group.join_all()?
+const results = group.join_all()?
 
 // Raw OS thread (works anywhere)
-let h = raw_thread { needs_thread_affinity() }
+const h = raw_thread { needs_thread_affinity() }
 h.join()?
 ```
 
@@ -84,7 +85,7 @@ h.join()?
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
 | `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `threads.spawn { }` | Thread from pool | `with threads` | No |
+| `threading.spawn { }` | Thread from pool | `with threading` | No |
 | `raw_thread { }` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
@@ -95,7 +96,7 @@ h.join()?
 | Fire-and-forget | `spawn { }.detach()` |
 | Wait for all | `join_all(spawn{}, spawn{})` |
 | Dynamic spawning | `TaskGroup` |
-| CPU parallelism | `threads.spawn { }` |
+| CPU parallelism | `threading.spawn { }` |
 | Raw OS thread | `raw_thread { }` |
 | Unused handle | **Compile error** |
 
@@ -104,8 +105,8 @@ h.join()?
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
 | `with multitasking` | Yes | No | I/O-heavy servers |
-| `with threads` | No | Yes | CLI tools, batch processing |
-| `with multitasking, threads` | Yes | Yes | Full-featured applications |
+| `with threading` | No | Yes | CLI tools, batch processing |
+| `with multitasking, threading` | Yes | Yes | Full-featured applications |
 
 ## Validation Criteria
 
@@ -118,8 +119,8 @@ h.join()?
 ## Key Principles
 
 - `with multitasking { }` creates M:N scheduler for green tasks
-- `with threads { }` creates thread pool for CPU work
-- Configuration: `multitasking(N)`, `threads(N)` - just numbers
+- `with threading { }` creates thread pool for CPU work
+- Configuration: `multitasking(N)`, `threading(N)` - just numbers
 - Affine handles (must join or detach)
 - `.join()` pauses in async mode, blocks in sync mode
 - Tasks own their data (no shared mutable state)

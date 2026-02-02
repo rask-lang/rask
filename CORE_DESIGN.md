@@ -105,15 +105,17 @@ Information the compiler can infer should be displayed by tooling, not required 
 
 ### Parameter Passing
 
-Functions declare how they use parameters:
+Two parameter modes:
 
-**Read:** Temporarily borrow for inspection. Caller retains ownership. Cannot mutate.
+**Borrow (default):** `func process(data: Data)` — Temporary access. Caller keeps ownership. Mutability inferred from usage (read vs write).
 
-**Transfer:** Ownership moves to callee. Caller's binding becomes invalid.
+**Take:** `func consume(take data: Data)` — Ownership transfer. Caller's binding becomes invalid.
 
-**Mutate:** Caller retains ownership but value may be modified in place.
+**Default arguments:** `func connect(host: String, port: i32 = 8080)` — Optional parameters with compile-time constant defaults.
 
-The calling convention is declared in the signature. Call sites do not repeat this information—the compiler knows from the signature. (Per Principle 7, IDE shows the mode at each call site as ghost text.)
+**Projections:** `func heal(p: Player.{health})` — Borrow only specific fields, enabling disjoint field borrows across function calls.
+
+The calling convention is declared in the signature. Call sites do not repeat this information—the compiler knows from the signature. (Per Principle 7, IDE shows the mode at each call site as ghost text, including inferred mutability.)
 
 ### Ownership and Uniqueness
 
@@ -130,7 +132,8 @@ The compiler tracks ownership statically:
 - Types ≤16 bytes: implicit copy (if all fields are Copy)
 - Types >16 bytes: explicit `.clone()` or move semantics
 - Threshold is **NOT configurable** (semantic stability, portability)
-- `move struct` keyword allows opt-out for move-only semantics
+- `@unique` attribute: prevents copying (each instance is unique)
+- `@linear` attribute: must be consumed exactly once (files, connections)
 - Platform ABI differences handled at compiler level (semantics are portable)
 
 **Specifications:**
@@ -190,7 +193,7 @@ Expression-scoped allows mutation between accesses—borrow ends at semicolon, s
 
 **Handles** are configurable identifiers with runtime validation:
 
-```
+```rask
 Pool<T, PoolId=u32, Index=u32, Gen=u32>  // Defaults
 ```
 
@@ -222,7 +225,7 @@ Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generat
 | `if x?` | Check + smart unwrap in block |
 
 **Example:**
-```
+```rask
 let name = get_user(id)?.profile?.name ?? "Anonymous"
 
 if user? {
@@ -232,15 +235,15 @@ if user? {
 
 `Option<T>` is a standard enum underneath — pattern matching with `Some`/`None` still works.
 
-See [Optionals](specs/optionals.md) for full specification.
+See [Optionals](specs/types/optionals.md) for full specification.
 
 ### Pattern Matching
 
 One keyword: `match`. The compiler infers binding modes from how bindings are used:
 
-- Only `read` parameters → borrows, original valid after
-- Any `mutate` parameter → mutable borrow
-- Any `transfer` parameter → consumes original
+- Only reads → borrows (immutable), original valid after
+- Any mutation → borrows (mutable), original valid after
+- Any `take` → consumes original
 
 Highest mode wins across all arms. IDE displays inferred mode as ghost annotation.
 
@@ -287,7 +290,7 @@ See [Iterators and Loops](specs/stdlib/iteration.md) for full specification.
 
 Guarantees cleanup runs when a block exits, regardless of how (normal, early return, `try`).
 
-```
+```rask
 let file = try open("data.txt")
 ensure file.close()              // Runs at scope exit
 let data = try file.read()       // Safe: ensure registered
@@ -322,22 +325,22 @@ See [String Handling](specs/stdlib/strings.md) for full specification.
 
 Traits define compile-time contracts (interfaces). A type satisfies a trait if it has all required methods with matching signatures.
 
-**Structural matching (default):** No explicit `impl` declaration is required. If the shape matches, the type can be used where the trait is expected.
+**Structural matching (default):** No explicit `extend` declaration is required. If the shape matches, the type can be used where the trait is expected.
 
-**Explicit impl (optional):** An `impl` block can be provided to:
+**Explicit extend (optional):** An `extend` block can be provided to:
 - Document intent ("this type IS a Reader")
 - Override default method implementations
 - Satisfy `explicit trait` requirements
 
-**Default methods:** Traits can provide default implementations. Adding a defaulted method never breaks existing satisfying types. Types can override defaults via explicit impl.
+**Default methods:** Traits can provide default implementations. Adding a defaulted method never breaks existing satisfying types. Types can override defaults via explicit extend.
 
 **Explicit traits:** Trait authors can require explicit implementation for stability:
 - `trait Foo { ... }` — structural matching allowed
-- `explicit trait Foo { ... }` — requires `impl Foo for Type`
+- `explicit trait Foo { ... }` — requires `extend Foo for Type`
 
 This lets libraries protect their API contracts. Users can rely on structural matching for internal code.
 
-**Tooling contract:** The IDE should show "ghost implementations" - types that structurally satisfy traits without explicit impl. This enables discovery without requiring boilerplate.
+**Tooling contract:** The IDE should show "ghost implementations" - types that structurally satisfy traits without explicit extend. This enables discovery without requiring boilerplate.
 
 ### Generics and Bounds
 
@@ -348,8 +351,8 @@ Generic functions use trait bounds to constrain type parameters:
 
 **Monomorphization (default):** The compiler generates separate code for each concrete type.
 
-```
-fn print_all<T: Display>(items: []T)
+```rask
+func print_all<T: Display>(items: []T)
 
 print_all(integers)  // generates print_all_i32
 print_all(strings)   // generates print_all_String
@@ -360,7 +363,7 @@ Limitation: All items in a collection must be the same type.
 
 **Runtime polymorphism (`any Trait`):** Store different types together, dispatch at runtime.
 
-```
+```rask
 // Without any: impossible to mix types
 let widgets: []Button = [...]  // only Buttons allowed
 
@@ -379,37 +382,37 @@ See [Generics](specs/types/generics.md) and [Runtime Polymorphism](specs/types/t
 
 ### Concurrency
 
-**Explicit resources:** `with multitasking { }` and `with threads { }` create and scope concurrency resources. No hidden schedulers or thread pools.
+**Explicit resources:** `with multitasking { }` and `with threading { }` create and scope concurrency resources. No hidden schedulers or thread pools.
 
-```
-fn main() {
-    with multitasking, threads {
+```rask
+func main() {
+    with multitasking, threading {
         run_server()
     }
 }
 
 // With configuration (rare)
-with multitasking(4), threads(8) { ... }
+with multitasking(4), threading(8) { ... }
 ```
 
 **Concurrency vs Parallelism:**
 - **Concurrency** (green tasks): Many tasks interleaved on few threads. For I/O-bound work. Use `spawn { }`.
-- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work. Use `threads.spawn { }`.
+- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work. Use `threading.spawn { }`.
 
 **Three spawn constructs:**
 
 | Construct | Purpose | Requires |
 |-----------|---------|----------|
 | `spawn { }` | Green task | `with multitasking` |
-| `threads.spawn { }` | Thread from pool | `with threads` |
+| `threading.spawn { }` | Thread from pool | `with threading` |
 | `raw_thread { }` | Raw OS thread | Nothing |
 
 **No function coloring:** There is no `async`/`await`. Functions are just functions—I/O operations pause the task automatically. No ecosystem split.
 
 **Affine handles:** All spawn constructs return handles that must be consumed—either joined or explicitly detached. Compile error if forgotten.
 
-```
-fn fetch_user(id: u64) -> User {
+```rask
+func fetch_user(id: u64) -> User {
     let response = http_get(url)?  // Pauses task, not thread
     parse_user(response)
 }
@@ -428,8 +431,8 @@ let (a, b) = join_all(
 )
 
 // CPU-bound work on thread pool
-fn process_image(img: Image) -> Image {
-    threads.spawn { apply_filter(img) }.join()?
+func process_image(img: Image) -> Image {
+    threading.spawn { apply_filter(img) }.join()?
 }
 ```
 
@@ -454,9 +457,9 @@ The `comptime` keyword marks code that executes during compilation. A restricted
 - Type-level computation
 
 **Example:**
-```
-comptime fn build_table() -> [u8; 256] {
-    let mut table = [0u8; 256]
+```rask
+comptime func build_table() -> [u8; 256] {
+    let table = [0u8; 256]
     for i in 0..256 {
         table[i] = (i * 2) as u8
     }
@@ -477,7 +480,7 @@ See [Compile-Time Execution](specs/control/comptime.md) for full specification.
 - At boundaries: convert between safe Rask values and C pointers
 - Unsafe is quarantined; most code never touches pointers
 
-See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and safety boundaries. See [Module System](specs/structure/modules.md) for C import/export syntax.
+See [Unsafe Blocks](specs/memory/unsafe.md) for raw pointers, unsafe operations, and safety boundaries. See [Module System](specs/structure/modules.md) for C import/export syntax.
 
 ### Module System
 
@@ -485,7 +488,7 @@ See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and sa
 
 **Visibility:** Two levels only.
 - Default: visible within package (no keyword)
-- `pub`: visible to external packages
+- `public`: visible to external packages
 
 **Imports:** Qualified by default, selective unqualified with `using`.
 - `import http` → `http.Request`
@@ -495,7 +498,7 @@ See [Unsafe Blocks](specs/unsafe.md) for raw pointers, unsafe operations, and sa
 
 **Re-exports:** `export internal.Parser` exposes internal types through a clean public API.
 
-**Libraries vs Executables:** Package role determined by presence of `pub fn main()`. Libraries export `pub` API; executables have entry point. See [Libraries vs Executables](specs/structure/targets.md).
+**Libraries vs Executables:** Package role determined by presence of `public func main()`. Libraries export `public` API; executables have entry point. See [Libraries vs Executables](specs/structure/targets.md).
 
 **Dependencies:** Semantic versioning with minimal version selection (MVS), optional `rask.toml` manifest, generated lock file. See [Package Versioning and Dependencies](specs/structure/packages.md).
 

@@ -4,16 +4,17 @@
 How are structs (product types) defined, constructed, and used in Rask? Covers field definitions, methods, visibility, construction patterns, and memory layout.
 
 ## Decision
-Named product types with value semantics, structural Copy determination, in-block method definitions, and explicit visibility per field.
+Named product types with value semantics, structural Copy determination, `extend` block method definitions, and explicit visibility per field.
 
 ## Rationale
-Structs are the fundamental way to compose data. They follow value semantics (Principle 2): no implicit sharing, predictable memory layout. Field visibility is explicit—`pub` on each field—making API boundaries clear. Methods are defined inside the struct block (like enums) for locality. Construction uses struct literals when all fields are accessible, factory functions otherwise. Layout is compiler-controlled by default; `#[repr(C)]` available for C interop.
+Structs are the fundamental way to compose data. They follow value semantics (Principle 2): no implicit sharing, predictable memory layout. Field visibility is explicit—`pub` on each field—making API boundaries clear. Methods are defined in separate `extend` blocks, keeping data layout and behavior distinct. Construction uses struct literals when all fields are accessible, factory functions otherwise. Layout is compiler-controlled by default; `@layout(C)` available for C interop.
 
 ## Specification
 
 ### Struct Definition
 
-```
+<!-- test: parse -->
+```rask
 struct Name {
     field1: Type1
     field2: Type2
@@ -34,29 +35,29 @@ struct Name {
 | Declaration | Same Package | External |
 |-------------|--------------|----------|
 | `field: T` | Read + Write | Not visible |
-| `pub field: T` | Read + Write | Read + Write |
+| `public field: T` | Read + Write | Read + Write |
 
 **Construction implications:**
 
 | Struct Type | External Literal | External Pattern Match |
 |-------------|------------------|------------------------|
 | All fields `pub` | Allowed | All fields bindable |
-| Any non-pub field | Forbidden (factory required) | Only `pub` fields bindable |
+| Any non-public field | Forbidden (factory required) | Only `pub` fields bindable |
 
 **Example:**
-```
-pub struct Request {
-    pub method: String
-    pub path: String
+```rask
+public struct Request {
+    public method: String
+    public path: String
     id: u64              // package-only
 }
 
 // External code:
-let r = Request { method: "GET", path: "/" }  // ERROR: `id` not visible
-let r = new_request("GET", "/")               // OK: factory
+const r = Request { method: "GET", path: "/" }  // ERROR: `id` not visible
+const r = new_request("GET", "/")               // OK: factory
 
 match r {
-    Request { method, path, .. } => ...       // OK: pub fields only
+    Request { method, path, .. } => ...       // OK: public fields only
 }
 ```
 
@@ -66,35 +67,42 @@ Structs follow the same ownership rules as all Rask values.
 
 | Property | Rule |
 |----------|------|
-| Copy | Struct is Copy if: all fields Copy AND size ≤16 bytes AND not `move struct` |
+| Copy | Struct is Copy if: all fields Copy AND size ≤16 bytes AND not `@unique` |
 | Move | Non-Copy structs move on assignment; source invalidated |
 | Clone | Auto-derived if all fields implement Clone |
 
-**Move-only structs (opt-out):**
-```
-move struct UserId {
-    id: u64    // 8 bytes, would be Copy, but forced move
+**Unique structs (opt-out of copying):**
+<!-- test: parse -->
+```rask
+@unique
+struct UserId {
+    id: u64    // 8 bytes, would be Copy, but forced move-only
 }
 ```
+
+**Use case:** Prevent accidental copying of semantically unique values like IDs, tokens, or handles where duplicate values would be a logic error. Forces explicit `.clone()` when copying is intentional.
 
 See [Ownership](../memory/ownership.md) for complete Copy/move semantics.
 
 ### Methods
 
-Methods are defined inside the struct block.
+Methods are defined in `extend` blocks, separate from the struct definition.
 
-```
+<!-- test: parse -->
+```rask
 struct Point {
     x: i32
     y: i32
+}
 
-    fn distance(self, other: Point) -> f64 {
-        let dx = self.x - other.x
-        let dy = self.y - other.y
+extend Point {
+    func distance(self, other: Point) -> f64 {
+        const dx = self.x - other.x
+        const dy = self.y - other.y
         sqrt((dx*dx + dy*dy) as f64)
     }
 
-    fn origin() -> Point {
+    func origin() -> Point {
         Point { x: 0, y: 0 }
     }
 }
@@ -104,73 +112,79 @@ struct Point {
 
 | Declaration | Mode | Effect |
 |-------------|------|--------|
-| `self` | Read | Borrows, struct valid after |
-| `mutate self` | Mutate | Borrows mutably, may modify |
-| `transfer self` | Transfer | Consumes struct |
+| `self` | Borrow | Borrows, struct valid after (compiler infers read vs mutate) |
+| `take self` | Take | Consumes struct |
 | (no self) | Static | Associated function, no instance |
 
 **Rules:**
 
 | Rule | Description |
 |------|-------------|
-| **M1: Default read** | `self` without modifier means read-only borrow |
-| **M2: Visibility** | Methods follow same `pub`/package rules as fields |
-| **M3: No external methods** | Methods MUST be defined in struct block (no extension methods) |
-| **M4: Self type** | `self` always refers to enclosing struct type |
+| **M1: Default borrow** | `self` without modifier means borrow (mutability inferred from usage) |
+| **M2: Visibility** | Methods follow same `pub`/package rules as structs |
+| **M3: Same module** | `extend` blocks MUST be in the same module as the struct definition |
+| **M4: Self type** | `self` always refers to the extended struct type |
+| **M5: Multiple blocks** | Multiple `extend` blocks for the same type are allowed (for organization) |
 
 **Static methods (associated functions):**
-```
+<!-- test: parse -->
+```rask
 struct Config {
     values: Map<String, String>
+}
 
-    fn new() -> Config {                      // Static: no self
-        Config { values: Map::new() }
+extend Config {
+    func new() -> Config {                      // Static: no self
+        Config { values: Map.new() }
     }
 
-    fn from_file(path: String) -> Result<Config, Error> {
+    func from_file(path: String) -> Result<Config, Error> {
         // ...
     }
 }
 
-let c = Config::new()                         // Called on type
+const c = Config.new()                          // Called on type
 ```
 
 ### Construction Patterns
 
 **Literal construction (when visible):**
-```
-let p = Point { x: 10, y: 20 }
+```rask
+const p = Point { x: 10, y: 20 }
 ```
 
 **Factory functions (idiomatic for encapsulation):**
-```
-pub struct Connection {
+```rask
+public struct Connection {
     socket: Socket        // non-pub
-    pub state: State
+    public state: State
+}
 
-    pub fn new(addr: String) -> Result<Connection, Error> {
-        let socket = connect(addr)?
-        Ok(Connection { socket, state: State::Connected })
+extend Connection {
+    public func new(addr: String) -> Result<Connection, Error> {
+        const socket = connect(addr)?
+        Ok(Connection { socket, state: State.Connected })
     }
 }
 ```
 
 **Update syntax (functional update):**
-```
-let p2 = Point { x: 5, ..p1 }    // Copy p1, override x
+```rask
+const p2 = Point { x: 5, ..p1 }    // Copy p1, override x
 ```
 
 | Syntax | Requirement |
 |--------|-------------|
 | `{ x: v, ..source }` | Source must be same type; unspecified fields copied/moved |
-| All-pub struct | Works externally |
+| All-public struct | Works externally |
 | Mixed visibility | Works only within package |
 
 ### Generics
 
 Structs can be parameterized by types.
 
-```
+<!-- test: parse -->
+```rask
 struct Pair<T, U> {
     first: T
     second: U
@@ -180,11 +194,13 @@ let p: Pair<i32, String> = Pair { first: 1, second: "hello" }
 ```
 
 **Bounds:**
-```
+```rask
 struct SortedVec<T: Ord> {
     items: Vec<T>
+}
 
-    fn insert(mutate self, item: T) {
+extend SortedVec<T: Ord> {
+    func insert(self, item: T) {
         // ... maintain sorted order
     }
 }
@@ -196,7 +212,8 @@ Bounds checked at instantiation site. See [Generics](generics.md).
 
 Zero-sized structs (no fields) are valid.
 
-```
+<!-- test: parse -->
+```rask
 struct Marker {}
 ```
 
@@ -207,15 +224,16 @@ struct Marker {}
 
 ### Memory Layout
 
-**Default (`#[repr(Rask)]`):**
+**Default (`@layout(Rask)`):**
 - Compiler MAY reorder fields for optimal packing
 - Alignment: natural alignment of largest field
 - No guaranteed field offsets
 
-**C-compatible (`#[repr(C)]`):**
-```
-#[repr(C)]
-pub struct CPoint {
+**C-compatible (`@layout(C)`):**
+<!-- test: parse -->
+```rask
+@layout(C)
+public struct CPoint {
     x: i32
     y: i32
 }
@@ -223,11 +241,14 @@ pub struct CPoint {
 
 | Attribute | Behavior |
 |-----------|----------|
-| `#[repr(C)]` | C layout rules: declaration order, C alignment, no reordering |
-| `#[repr(packed)]` | Remove padding (may cause unaligned access) |
-| `#[repr(align(N))]` | Minimum alignment of N bytes |
+| `@layout(C)` | C layout rules: declaration order, C alignment, no reordering |
+| `@packed` | Remove padding (may cause unaligned access) |
+| `@align(N)` | Minimum alignment of N bytes |
+| `@binary` | Binary wire format (see [Binary Structs](binary.md)) |
 
-**C interop requirement:** Types used with `extern "C"` MUST use `#[repr(C)]`.
+**C interop requirement:** Types used with `extern "C"` MUST use `@layout(C)`.
+
+**Binary formats:** For parsing network protocols or file formats with bit-level layouts, use `@binary`. See [Binary Structs](binary.md).
 
 See [Modules](../structure/modules.md) for C interop details.
 
@@ -241,17 +262,20 @@ Rask does NOT support default field values in struct definitions.
 - Avoids hidden initialization order issues
 
 **Pattern for defaults:**
-```
+<!-- test: parse -->
+```rask
 struct Config {
     timeout: u32
     retries: u32
+}
 
-    fn default() -> Config {
+extend Config {
+    func default() -> Config {
         Config { timeout: 30, retries: 3 }
     }
 
-    fn with_timeout(timeout: u32) -> Config {
-        Config { timeout, ..Config::default() }
+    func with_timeout(timeout: u32) -> Config {
+        Config { timeout, ..Config.default() }
     }
 }
 ```
@@ -264,7 +288,7 @@ struct Config {
 |------|----------|
 | Empty struct | Valid (unit struct), size 0 |
 | Single field | Valid, no special treatment |
-| Recursive field | MUST use `Box<T>` or `Handle<T>` for indirection |
+| Recursive field | MUST use `Owned<T>` or `Handle<T>` for indirection |
 | Self-referential | Use `Handle<Self>` with Pool |
 | Large struct (>16 bytes) | Move semantics; explicit `.clone()` for copy |
 | Struct in Vec | Allowed if non-linear |
@@ -275,7 +299,7 @@ struct Config {
 
 Structs support destructuring in patterns.
 
-```
+```rask
 match point {
     Point { x: 0, y } => println("on y-axis at {y}"),
     Point { x, y: 0 } => println("on x-axis at {x}"),
@@ -284,62 +308,72 @@ match point {
 ```
 
 **Partial patterns:**
-```
+```rask
 let Point { x, .. } = point    // Ignore other fields
 ```
 
 **Visibility in patterns:**
 - Same package: all fields available
-- External: only `pub` fields; `..` MUST be used for non-pub fields
+- External: only `pub` fields; `..` MUST be used for non-public fields
 
 ## Examples
 
 ### Data Transfer Object
-```
-pub struct User {
-    pub id: u64
-    pub name: String
-    pub email: String
+<!-- test: parse -->
+```rask
+public struct User {
+    public id: u64
+    public name: String
+    public email: String
+}
 
-    fn validate(self) -> Result<(), Error> {
+extend User {
+    func validate(self) -> Result<(), Error> {
         if self.email.contains("@") { Ok(()) }
-        else { Err(Error::invalid("email")) }
+        else { Err(Error.invalid("email")) }
     }
 }
 ```
 
 ### Encapsulated State
-```
-pub struct Counter {
+<!-- test: parse -->
+```rask
+public struct Counter {
     value: i64    // non-pub: controlled access
+}
 
-    pub fn new() -> Counter {
+extend Counter {
+    public func new() -> Counter {
         Counter { value: 0 }
     }
 
-    pub fn increment(mutate self) {
+    public func increment(self) {
         self.value += 1
     }
 
-    pub fn get(self) -> i64 {
+    public func get(self) -> i64 {
         self.value
     }
 }
 ```
 
 ### Linear Resource Wrapper
-```
-move struct FileHandle {
+<!-- test: parse -->
+```rask
+@linear
+struct FileHandle {
     fd: i32
+}
 
-    fn open(path: String) -> Result<FileHandle, Error> {
-        let fd = unsafe { libc::open(path.cstr(), O_RDONLY) }
-        if fd < 0 { return Err(Error::io()) }
+extend FileHandle {
+    func open(path: String) -> Result<FileHandle, Error> {
+        const fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
+        if fd < 0 { return Err(Error.io()) }
         Ok(FileHandle { fd })
     }
 
-    fn close(transfer self) -> Result<(), Error> {
-        unsafe { libc::close(self.fd) }
+    func close(take self) -> Result<(), Error> {
+        unsafe { libc.close(self.fd) }
         Ok(())
     }
 }
@@ -348,10 +382,10 @@ move struct FileHandle {
 ## Integration Notes
 
 - **Memory Model:** Structs follow value semantics; Copy determined by size + fields + `move` keyword
-- **Type System:** Structural trait matching applies; `pub` types can satisfy `pub` traits across packages
-- **Generics:** Generic structs instantiated at use site; bounds propagate to methods
+- **Type System:** Structural trait matching applies; `public` types can satisfy `public` traits across packages
+- **Generics:** Generic structs instantiated at use site; constraints propagate to methods
 - **Concurrency:** Structs sent across channels transfer ownership; fields cannot be borrowed cross-task
-- **C Interop:** Use `#[repr(C)]` for stable layout; only C-compatible field types allowed
+- **C Interop:** Use `@layout(C)` for stable layout; only C-compatible field types allowed
 - **Pattern Matching:** Destructuring follows visibility rules; inferred binding modes like enums
 - **Tooling:** IDE SHOULD show: inferred Copy/Move, field layout, method modes as ghost annotations
 

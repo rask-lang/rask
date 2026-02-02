@@ -15,7 +15,7 @@ Most code benefits from monomorphization (zero overhead, full optimization). But
 
 With monomorphization only, all items in a collection must be the same type:
 
-```
+```rask
 trait Widget {
     draw(self)
 }
@@ -25,14 +25,14 @@ let buttons: []Button = [button1, button2, button3]
 for b in buttons { b.draw() }
 
 // This FAILS: different types
-let widgets = [button, textbox, slider]  // ERROR: types don't match
+const widgets = [button, textbox, slider]  // ERROR: types don't match
 ```
 
 ### The Solution: `any Trait`
 
 `any Trait` creates a type-erased value that can hold any type satisfying the trait:
 
-```
+```rask
 // Different types in the same collection
 let widgets: []any Widget = [button, textbox, slider]
 for w in widgets {
@@ -46,7 +46,7 @@ A `any Trait` value consists of two parts:
 1. **Data**: The actual value (or pointer to it)
 2. **Vtable**: A table of function pointers for the trait's methods
 
-```
+```rask
 ┌─────────────┐
 │ any Widget  │
 ├─────────────┤
@@ -83,24 +83,25 @@ This is called **dynamic dispatch** or **vtable dispatch**.
 ### Syntax
 
 **Creating `any` values:**
-```
+```rask
 let w: any Widget = button        // Implicit conversion
-let w = button as any Widget      // Explicit conversion
+const w = button as any Widget      // Explicit conversion
 ```
 
 **Collections of `any`:**
-```
+```rask
 let widgets: []any Widget = [button, textbox]
 let handlers: Map<String, any Handler> = ...
 ```
 
 **Function parameters:**
-```
-fn render(widget: any Widget) {
+<!-- test: parse -->
+```rask
+func render(widget: any Widget) {
     widget.draw()
 }
 
-fn render_all(widgets: []any Widget) {
+func render_all(widgets: []any Widget) {
     for w in widgets { w.draw() }
 }
 ```
@@ -113,9 +114,10 @@ Not all traits can be used with `any`. The trait must be **object-safe**:
 |---------|-------------|
 | Methods with `self` parameter | Methods returning `Self` |
 | Methods with concrete types | Generic methods |
-| Methods with trait bounds | Associated types (MVP) |
+| Methods with trait constraints | Associated types (MVP) |
 
-```
+<!-- test: parse -->
+```rask
 // Object-safe: can use with any
 trait Widget {
     draw(self)
@@ -154,7 +156,7 @@ Both `any Trait` and enums can hold different types. Choose based on:
 | Access fields | ❌ Only trait methods | ✅ Direct field access |
 | External types | ✅ Works with any type | ❌ Must be defined in enum |
 
-```
+```rask
 // Enum: closed set, full access
 enum Shape {
     Circle { radius: f32 }
@@ -174,7 +176,8 @@ for s in shapes { s.draw() }  // Only trait methods
 
 ### HTTP Router
 
-```
+<!-- test: parse -->
+```rask
 trait Handler {
     handle(self, req: Request) -> Response
 }
@@ -183,23 +186,26 @@ struct Router {
     routes: Map<String, any Handler>
 }
 
-fn Router.add(mut self, path: String, handler: any Handler) {
-    self.routes.insert(path, handler)
-}
+extend Router {
+    func add(self, path: String, handler: any Handler) {
+        self.routes.insert(path, handler)
+    }
 
-fn Router.dispatch(self, req: Request) -> Response {
-    match self.routes.get(req.path) {
-        Some(handler) => handler.handle(req)
-        None => Response.not_found()
+    func dispatch(self, req: Request) -> Response {
+        match self.routes.get(req.path) {
+            Some(handler) => handler.handle(req),
+            None => Response.not_found(),
+        }
     }
 }
 ```
 
 ### UI Widget Tree
 
-```
+<!-- test: parse -->
+```rask
 trait Widget {
-    draw(self, canvas: mut Canvas)
+    draw(self, canvas: Canvas)
     size(self) -> (i32, i32)
 }
 
@@ -207,29 +213,34 @@ struct Container {
     children: []any Widget
 }
 
-fn Container.draw(self, canvas: mut Canvas) {
-    for child in self.children {
-        child.draw(canvas)
+extend Container {
+    func draw(self, canvas: Canvas) {
+        for child in self.children {
+            child.draw(canvas)
+        }
     }
 }
 ```
 
 ### Plugin System
 
-```
+<!-- test: parse -->
+```rask
 trait Plugin {
     name(self) -> String
-    init(mut self)
-    run(mut self, ctx: Context)
+    init(self)
+    run(self, ctx: Context)
 }
 
 struct App {
     plugins: []any Plugin
 }
 
-fn App.load_plugin(mut self, plugin: any Plugin) {
-    plugin.init()
-    self.plugins.push(plugin)
+extend App {
+    func load_plugin(self, plugin: any Plugin) {
+        plugin.init()
+        self.plugins.push(plugin)
+    }
 }
 ```
 

@@ -35,11 +35,11 @@ Zig proves that a built-in C parser can handle most real-world C interop without
 - Calling C functions requires `unsafe` context
 
 **Example:**
-```
+```rask
 import c "stdio.h"
 import c "mylib.h" as mylib
 
-fn main() {
+func main() {
     unsafe {
         c.printf("Hello %s\n".ptr, name.ptr)
         mylib.process(data.ptr, data.len)
@@ -51,18 +51,18 @@ fn main() {
 
 **For manual declarations when automatic parsing isn't suitable:**
 
-```
+```rask
 // Single declaration
-extern "C" fn printf(format: *u8, ...) -> c_int
+extern "C" func printf(format: *u8, ...) -> c_int
 
 // Opaque type
 extern "C" struct sqlite3
 
 // Block syntax for multiple declarations
 extern "C" {
-    fn open(path: *u8, flags: c_int) -> c_int
-    fn close(fd: c_int) -> c_int
-    fn read(fd: c_int, buf: *mut void, count: c_size) -> c_ssize
+    func open(path: *u8, flags: c_int) -> c_int
+    func close(fd: c_int) -> c_int
+    func read(fd: c_int, buf: *mut void, count: c_size) -> c_ssize
 }
 ```
 
@@ -108,7 +108,7 @@ extern "C" {
 |--------|-----------|
 | `T*` / `const T*` | `*T` |
 | `void*` | `*void` |
-| `int (*f)(int, int)` | `*fn(c_int, c_int) -> c_int` |
+| `int (*f)(int, int)` | `*func(c_int, c_int) -> c_int` |
 
 **Composite types:**
 
@@ -117,8 +117,8 @@ extern "C" {
 | `struct S { ... }` | `extern "C" struct S { ... }` |
 | `union U { ... }` | `extern "C" union U { ... }` |
 | `enum E { A, B }` | `extern "C" enum E { A, B }` |
-| Bit fields | `#[bitfield]` annotation |
-| Packed struct | `#[packed]` annotation |
+| Bit fields | `@bitfield` annotation |
+| Packed struct | `@packed` annotation |
 
 ### Preprocessor Handling
 
@@ -126,13 +126,13 @@ extern "C" {
 |------------|-------------|
 | Integer constant (`#define FOO 42`) | `const FOO: c_int = 42` |
 | String constant (`#define V "1.0"`) | `const V: *u8 = c"1.0"` |
-| Simple alias (`#define HANDLE void*`) | `type HANDLE = *void` |
+| Simple alias (`#define HANDLE void*`) | `const HANDLE = *void` |
 | Function-like (simple) | Inline generic function |
 | Token pasting (`##`) | **Skip with warning** |
 | Stringification (`#`) | **Skip with warning** |
 
 **Warning for skipped macros:**
-```
+```rask
 warning: skipping macro `CONTAINER_OF` (uses token pasting)
   --> /usr/include/linux/kernel.h:42
    = hint: use explicit binding if needed
@@ -142,10 +142,10 @@ warning: skipping macro `CONTAINER_OF` (uses token pasting)
 
 | Feature | Mechanism |
 |---------|-----------|
-| Export function | `pub extern "C" fn name()` |
-| Export type | `pub extern "C" struct Name { ... }` |
+| Export function | `public extern "C" func name()` |
+| Export type | `public extern "C" struct Name { ... }` |
 | Header generation | `raskc --emit-header pkg` produces `pkg.h` |
-| ABI | `extern "C"` uses C ABI; `pub` alone uses Rask ABI |
+| ABI | `extern "C"` uses C ABI; `public` alone uses Rask ABI |
 
 **C-compatible types:**
 - Primitives: `i8`-`i64`, `u8`-`u64`, `f32`, `f64`, `bool`
@@ -160,7 +160,7 @@ warning: skipping macro `CONTAINER_OF` (uses token pasting)
 
 ### Build Integration
 
-```
+```rask
 // rask.build or CLI
 c_include_paths: ["/usr/include", "vendor/"]
 c_link_libs: ["ssl", "crypto"]
@@ -184,39 +184,39 @@ See [Build Scripts](build.md) for full build configuration.
 ## Examples
 
 ### SQLite Wrapper
-```
+```rask
 import c "sqlite3.h" as sql
 
-pub struct Database {
+public struct Database {
     handle: *sql.sqlite3
 }
 
-pub fn open(path: String) -> Result<Database, Error> {
+public func open(path: String) -> Result<Database, Error> {
     let db: *sql.sqlite3 = null
     unsafe {
         let rc = sql.sqlite3_open(path.cstr(), &db)
         if rc != sql.SQLITE_OK {
-            return Err(Error::new("sqlite open failed"))
+            return Err(Error.new("sqlite open failed"))
         }
     }
     Ok(Database { handle: db })
 }
 
-pub fn close(db: Database) {
+public func close(db: Database) {
     unsafe { sql.sqlite3_close(db.handle) }
 }
 ```
 
 ### Explicit Bindings for C++
-```
+```rask
 // Can't parse C++ headers, so use explicit bindings
 extern "C" {
-    fn cpp_library_init() -> c_int
-    fn cpp_library_process(data: *u8, len: c_size) -> c_int
-    fn cpp_library_shutdown()
+    func cpp_library_init() -> c_int
+    func cpp_library_process(data: *u8, len: c_size) -> c_int
+    func cpp_library_shutdown()
 }
 
-fn use_cpp_lib() {
+func use_cpp_lib() {
     unsafe {
         cpp_library_init()
         cpp_library_process(data.ptr, data.len)
@@ -226,9 +226,9 @@ fn use_cpp_lib() {
 ```
 
 ### Exporting to C
-```
+```rask
 // Rask function callable from C
-pub extern "C" fn rask_process(data: *u8, len: c_size) -> c_int {
+public extern "C" func rask_process(data: *u8, len: c_size) -> c_int {
     unsafe {
         let slice = slice_from_raw(data, len)
         match process(slice) {
@@ -239,11 +239,35 @@ pub extern "C" fn rask_process(data: *u8, len: c_size) -> c_int {
 }
 
 // C-compatible struct
-pub extern "C" struct RaskResult {
+public extern "C" struct RaskResult {
     success: bool,
     error_code: c_int,
 }
 ```
+
+## Linear Resources and FFI
+
+Linear resources (files, sockets, etc.) crossing FFI boundary require special handling:
+
+```rask
+@linear
+struct File { fd: c_int }
+
+func call_c_with_file(file: File) -> Result<(), Error> {
+    let fd = file.fd
+    ensure file.close()?     // Guarantee cleanup after C returns
+    unsafe {
+        c.process_file(fd)   // Pass raw fd to C
+    }
+    Ok(())
+}
+```
+
+**Rules:**
+- Convert linear resource to raw pointer/handle before calling C
+- The Rask side retains responsibility for cleanup
+- Use `ensure` to guarantee cleanup after C call returns
+- C functions cannot consume Rask linear types directly
 
 ## Integration Notes
 

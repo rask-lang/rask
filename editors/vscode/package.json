@@ -1,0 +1,71 @@
+{
+  "name": "rask",
+  "displayName": "Rask",
+  "description": "Language support for Rask",
+  "version": "0.1.0",
+  "publisher": "rask",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/user/rask"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:rask"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "rask",
+        "aliases": ["Rask", "rask"],
+        "extensions": [".rask"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "rask",
+        "scopeName": "source.rask",
+        "path": "./syntaxes/rask.tmLanguage.json"
+      },
+      {
+        "scopeName": "text.markdown.rask.codeblock",
+        "path": "./syntaxes/rask-markdown.tmLanguage.json",
+        "injectTo": ["text.html.markdown"],
+        "embeddedLanguages": {
+          "meta.embedded.block.rask": "rask"
+        }
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Rask",
+      "properties": {
+        "rask.serverPath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to rask-lsp binary. If empty, searches PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.75.0",
+    "typescript": "^5.0.0"
+  }
+}

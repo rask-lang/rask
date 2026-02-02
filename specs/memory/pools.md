@@ -18,17 +18,17 @@ Pools solve this by:
 
 ### Pool Basics
 
-```
-let pool: Pool<Entity> = Pool::new()
-let h: Handle<Entity> = pool.insert(entity)?
+```rask
+const pool: Pool<Entity> = Pool.new()
+const h: Handle<Entity> = pool.insert(entity)?
 pool[h].health -= 10
 pool.remove(h)
 ```
 
 | Operation | Returns | Description |
 |-----------|---------|-------------|
-| `Pool::new()` | `Pool<T>` | Create unbounded pool |
-| `Pool::with_capacity(n)` | `Pool<T>` | Create bounded pool |
+| `Pool.new()` | `Pool<T>` | Create unbounded pool |
+| `Pool.with_capacity(n)` | `Pool<T>` | Create bounded pool |
 | `pool.insert(v)` | `Result<Handle<T>, InsertError>` | Insert, get handle |
 | `pool[h]` | `&T` or `&mut T` | Access (panics if invalid) |
 | `pool.get(h)` | `Option<T>` | Safe access (T: Copy) |
@@ -38,7 +38,7 @@ pool.remove(h)
 
 Handles are opaque identifiers with configurable sizes:
 
-```
+```rask
 Pool<T, PoolId=u32, Index=u32, Gen=u32>  // Defaults
 
 Handle<T> = {
@@ -73,7 +73,7 @@ Every access validates the handle:
 | Index out of bounds | Panic: "invalid handle index" |
 
 **Safe access:**
-```
+```rask
 pool.get(h)   // Returns Option<T> (T: Copy), no panic
 pool.read(h, |v| ...)    // Returns Option<R>
 pool.modify(h, |v| ...)  // Returns Option<R>
@@ -88,11 +88,50 @@ Saturating semantics. When a slot's generation reaches max:
 
 For extreme high-churn scenarios (billions of remove/reinsert cycles per slot): `Pool<T, Gen=u64>` uses 64-bit generations (16-byte handles, still Copy).
 
+### Handle Identity and Aliasing
+
+Handles are copyable identifiers, not references. Multiple handles can point to the same entity:
+
+| Property | Handle | Rust Reference |
+|----------|--------|----------------|
+| Nature | Value (like i32, index) | Borrow (temporary access) |
+| Copying | Free, creates independent copy | Creates new borrow |
+| Aliasing | Allowed - multiple copies to same entity | Subject to borrow checker |
+| Access | Each `pool[h]` is independent volatile access | Borrow spans until release |
+
+**Aliased handles are safe:**
+
+```rask
+const h1 = pool.insert(entity)?
+const h2 = h1  // h2 is a copy - both point to same entity
+
+pool[h1].health -= 10    // Volatile access #1 (released at ;)
+pool[h2].health -= 10    // Volatile access #2 (released at ;)
+```
+
+This works because:
+1. **Handles are values:** `h2 = h1` copies 12 bytes, not creates a borrow
+2. **Each access is independent:** `pool[h1]` creates a fresh expression-scoped borrow
+3. **No overlapping borrows:** First borrow ends at semicolon, before second begins
+4. **Aliasing rule applies to borrows:** The rule is "aliasing XOR mutation of borrows", not "aliasing XOR mutation of handles"
+
+**Mental model:** Handles are like database primary keys or array indices. You can have many copies of the key `42` — using any copy accesses the same row. The keys themselves aren't borrowed; only the access is.
+
+**Within a single expression:**
+
+```rask
+pool[h1].x + pool[h2].y  // ✅ Two reads - OK (multiple immutable borrows)
+pool[h1].x = pool[h2].y  // ✅ Read + write to different entities - OK
+pool[h].x = pool[h].y    // ✅ Read + write to same entity - OK (compiler reorders)
+```
+
+The compiler ensures aliasing rules are satisfied for the borrows created within each expression, not for handle identity.
+
 ### Expression-Scoped Access
 
 Pool access is expression-scoped (borrow released at semicolon):
 
-```
+```rask
 pool[h].health -= damage     // Borrow released
 if pool[h].health <= 0 {     // New borrow
     pool.remove(h)           // No active borrow - OK
@@ -105,84 +144,270 @@ See [borrowing.md](borrowing.md) for full borrowing rules.
 
 For multi-statement operations, use closure-based access:
 
-```
+```rask
 pool.modify(h, |entity| {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
-        entity.status = Status::Dead
+        entity.status = Status.Dead
     }
 })?
 ```
 
 | Method | Signature | Use Case |
 |--------|-----------|----------|
-| `read(h, f)` | `fn(&T) -> R → Option<R>` | Multi-statement read |
-| `modify(h, f)` | `fn(&mut T) -> R → Option<R>` | Multi-statement mutation |
+| `read(h, f)` | `func(T) -> R → Option<R>` | Multi-statement read |
+| `modify(h, f)` | `func(T) -> R → Option<R>` | Multi-statement mutation |
 
----
+### Performance Escape Hatches
 
-## Ambient Pool Scoping
+For hot paths where generation check overhead matters, two mechanisms provide guaranteed check reduction:
 
-`with pool { }` blocks establish an ambient pool for a scope, allowing handles to auto-dereference.
+#### Safe: Validated Access (`with_valid`)
 
-### Basic Syntax
+Validates once at entry, then provides unchecked access inside the closure:
 
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `pool.with_valid(h, f)` | `func(Pool<T>, Handle<T>, func(T) -> R) -> Option<R>` | One check, then read |
+| `pool.with_valid_mut(h, f)` | `func(Pool<T>, Handle<T>, func(T) -> R) -> Option<R>` | One check, then write |
+
+```rask
+pool.with_valid_mut(h, |e| {
+    e.x = 1   // No check
+    e.y = 2   // No check
+    e.z = 3   // No check
+})?
 ```
-with players {
-    let h = players.insert(Entity{...})?
-    h.health -= 10              // Auto-deref through ambient 'players'
-    h.position.x += 1.0
-    if h.health <= 0 {
-        players.remove(h)       // Explicit pool access still works
+
+**When to use:** Hot loops where profiling shows generation checks are bottleneck; multi-field updates in performance-critical code; safe alternative to frozen pools when mutation is needed.
+
+#### Unsafe: Unchecked Access
+
+For maximum performance where caller has already validated:
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `pool.get_unchecked(h)` | `unsafe func(Pool<T>, Handle<T>) -> T` | Zero-check read |
+| `pool.get_mut_unchecked(h)` | `unsafe func(Pool<T>, Handle<T>) -> T` | Zero-check write |
+
+**Safety requirements (caller MUST ensure):**
+1. Handle was obtained from this pool
+2. Handle has not been removed since obtaining
+3. No concurrent mutation (standard borrow rules)
+
+```rask
+// Cursor guarantees validity during iteration
+for h in pool.cursor() {
+    unsafe {
+        const e = pool.get_mut_unchecked(h)
+        e.velocity += e.acceleration * dt
     }
 }
 ```
 
-### Semantics
+**When to use:** After explicit validation (cursor proves validity); FFI callbacks where C has validated; extreme hot paths where even one check matters.
+
+**When NOT to use:** General code (use `with_valid` or coalescing); when handle validity is uncertain; across await points.
+
+---
+
+## Handle Auto-Resolution
+
+Handles contain a `pool_id` that identifies their originating pool. This enables **automatic resolution** — handles can dereference without explicitly naming the pool.
+
+### How It Works
+
+Every pool registers itself in a thread-local registry on creation:
+
+```rask
+let players: Pool<Player> = Pool.new()  // Registers as pool_id=1
+const h = players.insert(Player { health: 100, ... })?
+
+// Later, anywhere in the same thread:
+h.health -= 10    // Auto-resolves via: REGISTRY[h.pool_id][h.index].health
+```
+
+The handle already knows which pool it belongs to. Auto-resolution uses that information.
+
+### Resolution Rules
 
 | Rule | Description |
 |------|-------------|
-| **W1: Scope binding** | `with pool { }` makes `pool` the ambient pool for its element type |
-| **W2: Handle resolution** | Inside block, `h.field` on `Handle<T>` resolves to `pool[h].field` |
-| **W3: Type matching** | Only handles matching the pool's element type auto-dereference |
-| **W4: Explicit still works** | `pool[h]` syntax remains valid inside `with` blocks |
-| **W5: Mutation requires explicit** | `pool.insert()`, `pool.remove()` still require naming the pool |
+| **R1: Auto-deref** | `h.field` on `Handle<T>` resolves to `REGISTRY[h.pool_id][h].field` |
+| **R2: Thread-local** | Registry is per-thread; handles resolve in the thread where their pool lives |
+| **R3: Pool lifetime** | When pool is dropped, registry entry is cleared |
+| **R4: Stale access** | Dereferencing after pool drop → panic with "pool not found" |
+
+### When You Need the Pool
+
+Pass the pool as a regular argument only for **structural operations**:
+
+| Operation | Needs Pool? | Example |
+|-----------|-------------|---------|
+| Field read/write | No | `h.health -= 10` |
+| Insert | Yes | `pool.insert(x)?` |
+| Remove | Yes | `pool.remove(h)` |
+| Iterate | Yes | `pool.cursor()` |
+| Freeze | Yes | `pool.freeze()` |
+
+```rask
+// No pool needed — field access auto-resolves
+func damage(h: Handle<Player>, amount: i32) {
+    h.health -= amount
+    h.last_hit = now()
+}
+
+// Pool needed — doing structural changes
+func kill(players: Pool<Player>, h: Handle<Player>) {
+    h.on_death()           // Auto-resolves
+    players.remove(h)      // Needs pool
+}
+
+func spawn_enemy(enemies: Pool<Enemy>, pos: Vec3) -> Handle<Enemy> {
+    enemies.insert(Enemy { position: pos, health: 100, ... })?
+}
+```
+
+### Function Signatures
+
+Most functions just take handles — no pool parameter needed:
+
+```rask
+func validate_email(user: Handle<User>) -> bool {
+    !user.email.is_empty()    // Auto-resolves
+}
+
+func apply_gravity(entity: Handle<Entity>, dt: f32) {
+    entity.velocity.y -= 9.8 * dt
+    entity.position += entity.velocity * dt
+}
+
+func damage_all(targets: Vec<Handle<Enemy>>, amount: i32) {
+    for h in targets {
+        h.health -= amount
+    }
+}
+```
+
+Only functions doing insert/remove/iterate need the pool:
+
+```rask
+func spawn_wave(enemies: Pool<Enemy>, count: i32) {
+    for i in 0..count {
+        enemies.insert(Enemy.new(random_pos()))?
+    }
+}
+
+func cleanup_dead(entities: Pool<Entity>) {
+    for h in entities.cursor() {
+        if h.health <= 0 {
+            entities.remove(h)
+        }
+    }
+}
+```
+
+### Optional `with` Blocks (Optimization)
+
+`with pool { }` blocks are an **optimization hint** that eliminates registry lookups:
+
+```rask
+// Without with: each h.field does registry lookup
+for h in handles {
+    h.x += h.vx * dt    // 4 lookups
+    h.y += h.vy * dt    // 4 lookups
+}
+
+// With with: compiler caches pool reference, zero lookups
+with players {
+    for h in players.cursor() {
+        h.x += h.vx * dt    // 0 lookups
+        h.y += h.vy * dt
+    }
+}
+```
+
+| Without `with` | With `with` |
+|----------------|-------------|
+| Registry lookup per access | Direct pool reference |
+| Works anywhere | Requires pool in scope |
+| Slight overhead (~1-2 ns) | Zero overhead |
+
+**When to use `with`:**
+- Hot loops with many field accesses
+- Performance-critical code
+- When you have the pool in scope anyway
+
+**When not needed:**
+- Occasional field access
+- Code clarity is more important than micro-optimization
+- Pool not conveniently in scope
 
 ### Multiple Pools
 
-```
-with (players, enemies) {
-    let p = players[h_player]
-    let e = enemies[p.target]       // Cross-pool access
-    e.health -= p.damage
+When working with multiple pools, each handle auto-resolves to its own pool:
+
+```rask
+func transfer_item(player: Handle<Player>, item: Handle<Item>) {
+    player.inventory.add(item.id)    // Via Player's pool
+    item.owner = Some(player)        // Via Item's pool
+}
+
+// With optimization hint for hot path:
+with (players, items) {
+    for p in players.cursor() {
+        for i in items.cursor() {
+            if collides(p.position, i.position) {
+                p.inventory.add(i.id)
+                items.remove(i)
+            }
+        }
+    }
 }
 ```
 
-**Rules:**
-- Each pool must have a different element type
-- Handle dispatch based on type: `Handle<Player>` → `players`, `Handle<Enemy>` → `enemies`
-- Two pools with same element type in one `with` = compile error
+### Thread Safety
 
-### Functions and `with`
+| Scenario | Behavior |
+|----------|----------|
+| Handle created in thread A, used in thread A | ✅ Works |
+| Handle sent to thread B, pool stays in A | ❌ Panic: "pool not found in registry" |
+| Pool moved to thread B, handle used in B | ✅ Works (pool re-registers) |
 
-**Caller provides ambient (recommended):**
-```
-fn damage_player(h: Handle<Player>, amount: i32) {
-    h.health -= amount      // Requires ambient pool
+Handles are `Send + Copy`, but they only resolve in the thread where their pool lives. For cross-thread access, use channels to send handles to the thread that owns the pool.
+
+### Registry Implementation
+
+```rask
+// Thread-local registry (conceptual - internal implementation)
+const REGISTRY: ThreadLocal<Map<PoolId, *mut PoolAccess>> = ...
+
+extend Pool<T> {
+    func new() -> Pool<T> {
+        const id = next_pool_id()
+        REGISTRY.with { |r| r.insert(id, self as *mut _) }
+        Pool { id, ... }
+    }
+
+    // Cleanup called automatically when Pool value is no longer accessible
+    // (internal mechanism, not user-facing syntax)
+    func cleanup(take self) {
+        REGISTRY.with { |r| r.remove(self.id) }
+    }
 }
-
-with players {
-    damage_player(player_handle, 10)
-}
 ```
 
-**Function takes pool explicitly (always works):**
-```
-fn damage_player(pool: mut Pool<Player>, h: Handle<Player>, amount: i32) {
-    pool[h].health -= amount
-}
-```
+### Performance Characteristics
+
+| Operation | Cost |
+|-----------|------|
+| Registry lookup | ~1-2 ns (thread-local HashMap) |
+| `with` block access | 0 ns (direct pointer) |
+| Pool registration | O(1) on creation |
+| Pool deregistration | O(1) on drop |
+
+The registry lookup is comparable to a bounds check — small enough to be implicit per the Transparency principle.
 
 ---
 
@@ -192,7 +417,7 @@ fn damage_player(pool: mut Pool<Player>, h: Handle<Player>, amount: i32) {
 
 ### Basic Usage
 
-```
+```rask
 for h in pool.cursor() {
     pool[h].update()
     if pool[h].expired {
@@ -201,17 +426,28 @@ for h in pool.cursor() {
 }
 ```
 
-### With Ambient Pools
+### With Auto-Resolution
 
+Handles auto-resolve, so cursor iteration is clean:
+
+```rask
+for h in players.cursor() {
+    h.velocity += gravity * dt      // Auto-resolves via pool_id
+    h.position += h.velocity * dt
+
+    if h.health <= 0 {
+        players.remove(h)           // Cursor handles this safely
+    }
+}
 ```
+
+For hot loops, add `with` as optimization hint:
+
+```rask
 with players {
     for h in players.cursor() {
-        h.velocity += gravity * dt
+        h.velocity += gravity * dt  // Zero registry lookups
         h.position += h.velocity * dt
-
-        if h.health <= 0 {
-            players.remove(h)   // Cursor handles this safely
-        }
     }
 }
 ```
@@ -237,7 +473,7 @@ with players {
 
 Remove and yield ownership of elements:
 
-```
+```rask
 for entity in pool.drain() {
     entity.cleanup()
 }
@@ -257,16 +493,16 @@ for entity in pool.drain_where(|e| e.expired) {
 
 ### Creation
 
-```
+```rask
 let h: Handle<Entity> = pool.insert(entity)?
 let weak: WeakHandle<Entity> = pool.weak(h)
 ```
 
 ### Checking Validity
 
-```
+```rask
 if weak.valid() {
-    if let Some(h) = weak.upgrade() {
+    if weak.upgrade() is Some(h) {
         pool[h].process()
     }
 }
@@ -284,8 +520,8 @@ Weak handles are automatically invalidated when:
 - `pool.clear()` removes all elements
 - Pool is dropped
 
-```
-let weak = pool.weak(h)
+```rask
+const weak = pool.weak(h)
 assert!(weak.valid())
 pool.remove(h)
 assert!(!weak.valid())     // Now invalid
@@ -303,15 +539,15 @@ assert!(!weak.valid())     // Now invalid
 
 ### Event System Pattern
 
-```
+```rask
 struct EventQueue<T> {
     events: Vec<(WeakHandle<Entity>, T)>,
 }
 
-impl EventQueue<T> {
-    fn process(&mut self, pool: &mut Pool<Entity>) {
+extend EventQueue<T> {
+    func process(self, pool: Pool<Entity>) {
         for (weak, event) in self.events.drain() {
-            if let Some(h) = weak.upgrade() {
+            if weak.upgrade() is Some(h) {
                 pool[h].handle_event(event)
             }
             // Invalid weak handles silently skipped
@@ -328,12 +564,12 @@ impl EventQueue<T> {
 
 ### Basic Usage
 
-```
-let frozen = pool.freeze()
+```rask
+const frozen = pool.freeze()
 for h in frozen.handles() {
     render(frozen[h])       // Zero generation checks!
 }
-let pool = frozen.thaw()
+const pool = frozen.thaw()
 ```
 
 ### Why Zero Checks?
@@ -353,7 +589,7 @@ When frozen:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `pool.freeze()` | `Pool<T> -> FrozenPool<T>` | Freeze, consume ownership |
-| `pool.freeze_ref()` | `&Pool<T> -> &FrozenPool<T>` | Freeze reference (scoped) |
+| `pool.freeze_ref()` | `Pool<T> -> FrozenPool<T>` | Freeze reference (scoped) |
 
 **Access (all skip generation checks):**
 
@@ -367,7 +603,7 @@ When frozen:
 
 ### Scoped Freezing
 
-```
+```rask
 pool.with_frozen(|frozen| {
     for h in frozen.handles() {
         render(frozen[h])
@@ -394,7 +630,7 @@ The compiler automatically eliminates redundant generation checks.
 
 ### Basic Coalescing
 
-```
+```rask
 // Source code
 pool[h].x = 1
 pool[h].y = 2
@@ -414,7 +650,7 @@ pool[h].z = 3
 
 ### What Breaks Coalescing
 
-```
+```rask
 // Coalesced (no mutation)
 pool[h].a = 1
 pool[h].b = 2    // Same check as above
@@ -429,7 +665,7 @@ pool[h].b = 2    // Fresh check required
 
 `with` blocks enable more aggressive coalescing:
 
-```
+```rask
 with pool {
     h.x = 1         // Check once at first access
     h.y = 2         // Coalesced
@@ -457,13 +693,13 @@ Linear types have special rules in pools:
 | `Pool<Linear>` | ✅ Yes | Explicit removal required anyway |
 
 **Pool pattern for linear resources:**
-```
-let files: Pool<File> = Pool::new()
-let h = files.insert(File::open(path)?)?
+```rask
+let files: Pool<File> = Pool.new()
+const h = files.insert(File.open(path)?)?
 
 // Later: explicit consumption required
-for h in files.handles().collect::<Vec<_>>() {
-    let file = files.remove(h).unwrap()
+for h in files.handles().collect<Vec<_>>() {
+    const file = files.remove(h).unwrap()
     file.close()?
 }
 ```
@@ -478,7 +714,7 @@ This ensures linear resources cannot be silently leaked through pool abandonment
 
 **Safe patterns:**
 
-```
+```rask
 // Pattern 1: Explicit take_all loop
 for file in files.take_all() {
     file.close()?
@@ -496,26 +732,26 @@ ensure files.take_all_with(|f| { f.close(); })
 
 **Anti-patterns (will panic):**
 
-```
+```rask
 // BAD: Dropping non-empty pool
-let files: Pool<File> = Pool::new()
-files.insert(File::open("a.txt")?)?
+let files: Pool<File> = Pool.new()
+files.insert(File.open("a.txt")?)?
 // scope exit: PANIC - files not taken
 
 // BAD: Forgetting to take_all in error path
-let files: Pool<File> = Pool::new()
-files.insert(File::open("a.txt")?)?
+let files: Pool<File> = Pool.new()
+files.insert(File.open("a.txt")?)?
 some_operation()?  // If this fails, files not taken - PANIC
 for file in files.take_all() { file.close()?; }
 ```
 
 **Correct pattern with ensure:**
 
-```
-let files: Pool<File> = Pool::new()
+```rask
+let files: Pool<File> = Pool.new()
 ensure files.take_all_with(|f| { f.close(); })
 
-files.insert(File::open("a.txt")?)?
+files.insert(File.open("a.txt")?)?
 some_operation()?  // If this fails, ensure runs, takes all from pool
 ```
 
@@ -541,7 +777,7 @@ some_operation()?  // If this fails, ensure runs, takes all from pool
 
 ### All Insertions are Fallible
 
-```
+```rask
 pool.insert(x)?   // Result<Handle<T>, InsertError<T>>
 
 enum InsertError<T> {
@@ -574,8 +810,8 @@ Unlike pointers (which become invalid when memory moves), handles store an index
 | 2. `insert()` triggers growth | New memory allocated, data copied |
 | 3. Handle used | `pool.data[handle.index]` finds data at new location |
 
-```
-let h = pool.insert(Entity { ... })?   // h = { index: 0, gen: 1 }
+```rask
+const h = pool.insert(Entity { ... })?   // h = { index: 0, gen: 1 }
 // ... pool grows internally ...
 pool[h].health -= 10                    // Still works - index 0 is still valid
 ```
@@ -586,8 +822,8 @@ pool[h].health -= 10                    // Still works - index 0 is still valid
 
 | Pool type | Growth | Use case |
 |-----------|--------|----------|
-| `Pool::new()` | Auto-grows (like Vec) | General purpose, prototyping |
-| `Pool::with_capacity(n)` | Never grows | Hot paths, real-time systems |
+| `Pool.new()` | Auto-grows (like Vec) | General purpose, prototyping |
+| `Pool.with_capacity(n)` | Never grows | Hot paths, real-time systems |
 
 **Unbounded pools:**
 - Ergonomic default - just insert, pool handles memory
@@ -599,12 +835,12 @@ pool[h].health -= 10                    // Still works - index 0 is still valid
 - `insert()` returns `Err(Full)` at capacity
 - Use for hot paths where allocation timing matters
 
-```
+```rask
 // Game entity pool - pre-allocate for expected count
-let entities = Pool::with_capacity(1000)
+const entities = Pool.with_capacity(1000)
 
 // Config objects - unbounded is fine, not hot path
-let configs = Pool::new()
+const configs = Pool.new()
 ```
 
 **Guidance:** Use bounded pools for performance-critical code where allocation predictability matters. Use unbounded pools when ergonomics trump predictability.
@@ -627,15 +863,15 @@ let configs = Pool::new()
 ### Memory Budgeting Patterns
 
 **Pre-allocation:** Know your counts, allocate upfront.
-```
-let players = Pool::with_capacity(64)     // Max 64 players
-let bullets = Pool::with_capacity(10000)  // Lots of bullets
-let configs = Pool::with_capacity(100)    // Modest config count
+```rask
+const players = Pool.with_capacity(64)     // Max 64 players
+const bullets = Pool.with_capacity(10000)  // Lots of bullets
+const configs = Pool.with_capacity(100)    // Modest config count
 ```
 
 **Pool reuse:** Clear and reuse instead of drop and recreate.
-```
-fn next_level(entities: mut Pool<Entity>) {
+```rask
+func next_level(entities: Pool<Entity>) {
     entities.clear()                    // Free all entities
     spawn_level_entities(entities)?     // Reuse same pool
 }
@@ -663,6 +899,9 @@ fn next_level(entities: mut Pool<Entity>) {
 | Drop Pool<Linear> while non-empty | Runtime panic |
 | take_all() on Pool<Linear> | Returns owned elements for consumption |
 | clear() on Pool<Linear> | Compile error (would abandon linear elements) |
+| `get_unchecked` with stale handle | **Undefined behavior** |
+| `get_unchecked` with wrong-pool handle | **Undefined behavior** |
+| `get_mut_unchecked` during active borrow | **Undefined behavior** |
 
 ---
 
@@ -670,8 +909,21 @@ fn next_level(entities: mut Pool<Entity>) {
 
 ### Game Entity System
 
-```
-fn update_game(mut entities: Pool<Entity>, dt: f32) {
+```rask
+func update_game(mut entities: Pool<Entity>, dt: f32) {
+    for h in entities.cursor() {
+        h.velocity += h.acceleration * dt   // Auto-resolves
+        h.position += h.velocity * dt
+
+        if h.health <= 0 {
+            h.on_death()
+            entities.remove(h)              // Needs pool for removal
+        }
+    }
+}
+
+// Optimized version (zero registry lookups in hot loop)
+func update_game_optimized(mut entities: Pool<Entity>, dt: f32) {
     with entities {
         for h in entities.cursor() {
             h.velocity += h.acceleration * dt
@@ -688,18 +940,18 @@ fn update_game(mut entities: Pool<Entity>, dt: f32) {
 
 ### Graph with Handles
 
-```
+```rask
 struct Node {
     data: String,
     edges: Vec<Handle<Node>>,
 }
 
-fn build_graph() -> Result<Pool<Node>, Error> {
-    let nodes = Pool::new()
+func build_graph() -> Result<Pool<Node>, Error> {
+    const nodes = Pool.new()
 
-    let a = nodes.insert(Node { data: "A", edges: Vec::new() })?
-    let b = nodes.insert(Node { data: "B", edges: Vec::new() })?
-    let c = nodes.insert(Node { data: "C", edges: Vec::new() })?
+    const a = nodes.insert(Node { data: "A", edges: Vec.new() })?
+    const b = nodes.insert(Node { data: "B", edges: Vec.new() })?
+    const c = nodes.insert(Node { data: "C", edges: Vec.new() })?
 
     nodes[a].edges.push(b)?
     nodes[a].edges.push(c)?
@@ -711,15 +963,15 @@ fn build_graph() -> Result<Pool<Node>, Error> {
 
 ### Rendering Pipeline
 
-```
-fn render_frame(world: &mut World) {
+```rask
+func render_frame(world: World) {
     // Physics update (needs mutation)
     for h in world.entities.cursor() {
         world.entities[h].update_physics()
     }
 
     // Render pass (read-only, zero-cost)
-    let frozen = world.entities.freeze()
+    const frozen = world.entities.freeze()
     for h in frozen.handles() {
         renderer.draw(frozen[h])
     }
@@ -729,19 +981,19 @@ fn render_frame(world: &mut World) {
 
 ### Observer Pattern with Weak Handles
 
-```
+```rask
 struct Observable<T> {
     value: T,
     observers: Vec<WeakHandle<Observer>>,
 }
 
-impl Observable<T> {
-    fn set(&mut self, value: T, pool: &mut Pool<Observer>) {
+extend Observable<T> {
+    func set(self, value: T, pool: Pool<Observer>) {
         self.value = value
 
         self.observers.retain(|weak| {
-            if let Some(h) = weak.upgrade() {
-                pool[h].notify(&self.value);
+            if weak.upgrade() is Some(h) {
+                pool[h].notify(self.value);
                 true
             } else {
                 false
@@ -766,7 +1018,7 @@ Handle-based structures have ~10% overhead vs raw pointers, fitting the RO ≤ 1
 
 Bidirectional traversal with safe removal.
 
-```
+```rask
 struct ListNode<T> {
     data: T,
     prev: Handle<ListNode<T>>?,
@@ -779,15 +1031,15 @@ struct LinkedList<T> {
     tail: Handle<ListNode<T>>?,
 }
 
-impl LinkedList<T> {
-    fn push_back(&mut self, data: T) -> Result<Handle<ListNode<T>>, Error> {
-        let h = self.nodes.insert(ListNode {
+extend LinkedList<T> {
+    func push_back(self, data: T) -> Result<Handle<ListNode<T>>, Error> {
+        const h = self.nodes.insert(ListNode {
             data,
             prev: self.tail,
             next: none,
         })?
 
-        if let Some(old_tail) = self.tail {
+        if self.tail is Some(old_tail) {
             self.nodes[old_tail].next = Some(h)
         } else {
             self.head = Some(h)
@@ -796,17 +1048,17 @@ impl LinkedList<T> {
         Ok(h)
     }
 
-    fn remove(&mut self, h: Handle<ListNode<T>>) -> Option<T> {
-        let node = self.nodes.remove(h)?
+    func remove(self, h: Handle<ListNode<T>>) -> Option<T> {
+        const node = self.nodes.remove(h)?
 
         // Update neighbors
-        if let Some(prev) = node.prev {
+        if node.prev is Some(prev) {
             self.nodes[prev].next = node.next
         } else {
             self.head = node.next
         }
 
-        if let Some(next) = node.next {
+        if node.next is Some(next) {
             self.nodes[next].prev = node.prev
         } else {
             self.tail = node.prev
@@ -816,11 +1068,11 @@ impl LinkedList<T> {
     }
 
     // Forward traversal - use frozen pool for read-only iteration
-    fn iter_forward(&self) -> impl Iterator<Handle<ListNode<T>>> {
-        let frozen = self.nodes.freeze_ref()
-        let mut current = self.head
-        std::iter::from_fn(move || {
-            let h = current?
+    func iter_forward(self) -> any Iterator<Handle<ListNode<T>>> {
+        const frozen = self.nodes.freeze_ref()
+        const current = self.head
+        std.iter.from_fn(move || {
+            const h = current?
             current = frozen[h].next  // Zero gen checks with frozen
             Some(h)
         })
@@ -834,7 +1086,7 @@ impl LinkedList<T> {
 
 Bidirectional tree traversal for ASTs, DOM trees, file systems.
 
-```
+```rask
 struct TreeNode<T> {
     data: T,
     parent: Handle<TreeNode<T>>?,
@@ -846,14 +1098,14 @@ struct Tree<T> {
     root: Handle<TreeNode<T>>?,
 }
 
-impl Tree<T> {
+extend Tree<T> {
     // Walk up to root
-    fn ancestors(&self, h: Handle<TreeNode<T>>) -> Vec<Handle<TreeNode<T>>> {
-        let frozen = self.nodes.freeze_ref()  // Zero-cost traversal
-        let mut path = Vec::new()
-        let mut current = Some(h)
+    func ancestors(self, h: Handle<TreeNode<T>>) -> Vec<Handle<TreeNode<T>>> {
+        const frozen = self.nodes.freeze_ref()  // Zero-cost traversal
+        const path = Vec.new()
+        const current = Some(h)
 
-        while let Some(node_h) = current {
+        while current is Some(node_h) {
             path.push(node_h)
             current = frozen[node_h].parent
         }
@@ -861,9 +1113,9 @@ impl Tree<T> {
     }
 
     // Reparent a subtree
-    fn reparent(&mut self, child: Handle<TreeNode<T>>, new_parent: Handle<TreeNode<T>>) {
+    func reparent(self, child: Handle<TreeNode<T>>, new_parent: Handle<TreeNode<T>>) {
         // Remove from old parent
-        if let Some(old_parent) = self.nodes[child].parent {
+        if self.nodes[child].parent is Some(old_parent) {
             self.nodes[old_parent].children.retain(|h| *h != child)
         }
 
@@ -873,25 +1125,25 @@ impl Tree<T> {
     }
 
     // Delete subtree using cursor for safe iteration
-    fn delete_subtree(&mut self, root: Handle<TreeNode<T>>) {
-        let mut to_delete = vec![root]
+    func delete_subtree(self, root: Handle<TreeNode<T>>) {
+        const to_delete = vec![root]
 
-        while let Some(h) = to_delete.pop() {
-            if let Some(node) = self.nodes.remove(h) {
+        while to_delete.pop() is Some(h) {
+            if self.nodes.remove(h) is Some(node) {
                 to_delete.extend(node.children)
             }
         }
     }
 
     // DFS traversal (frozen for performance)
-    fn dfs<F>(&self, start: Handle<TreeNode<T>>, mut visit: F)
-    where F: FnMut(Handle<TreeNode<T>>, &T)
+    func dfs<F>(self, start: Handle<TreeNode<T>>, visit: F)
+    where F: FnMut(Handle<TreeNode<T>>, T)
     {
-        let frozen = self.nodes.freeze_ref()
-        let mut stack = vec![start]
+        const frozen = self.nodes.freeze_ref()
+        const stack = vec![start]
 
-        while let Some(h) = stack.pop() {
-            visit(h, &frozen[h].data)
+        while stack.pop() is Some(h) {
+            visit(h, frozen[h].data)
             stack.extend(frozen[h].children.iter().rev())
         }
     }
@@ -904,7 +1156,7 @@ impl Tree<T> {
 
 Handling cycles requires careful consideration of dangling handles.
 
-```
+```rask
 struct GraphNode<T> {
     data: T,
     edges: Vec<Handle<GraphNode<T>>>,
@@ -914,25 +1166,25 @@ struct Graph<T> {
     nodes: Pool<GraphNode<T>>,
 }
 
-impl Graph<T> {
+extend Graph<T> {
     // Add edge (cycles allowed)
-    fn add_edge(&mut self, from: Handle<GraphNode<T>>, to: Handle<GraphNode<T>>) -> Result<(), Error> {
+    func add_edge(self, from: Handle<GraphNode<T>>, to: Handle<GraphNode<T>>) -> Result<(), Error> {
         self.nodes[from].edges.push(to)?
         Ok(())
     }
 
     // Cycle-aware traversal with visited set
-    fn reachable_from(&self, start: Handle<GraphNode<T>>) -> Vec<Handle<GraphNode<T>>> {
-        let frozen = self.nodes.freeze_ref()
-        let mut visited = Set::new()
-        let mut stack = vec![start]
-        let mut result = Vec::new()
+    func reachable_from(self, start: Handle<GraphNode<T>>) -> Vec<Handle<GraphNode<T>>> {
+        const frozen = self.nodes.freeze_ref()
+        const visited = Set.new()
+        const stack = vec![start]
+        const result = Vec.new()
 
-        while let Some(h) = stack.pop() {
+        while stack.pop() is Some(h) {
             if visited.insert(h) {
                 result.push(h)
-                for &neighbor in &frozen[h].edges {
-                    if !visited.contains(&neighbor) {
+                for neighbor in frozen[h].edges.iter() {
+                    if !visited.contains(neighbor) {
                         stack.push(neighbor)
                     }
                 }
@@ -942,15 +1194,15 @@ impl Graph<T> {
     }
 
     // Remove node - edges to it become stale (detected on access)
-    fn remove(&mut self, h: Handle<GraphNode<T>>) -> Option<T> {
-        let node = self.nodes.remove(h)?
+    func remove(self, h: Handle<GraphNode<T>>) -> Option<T> {
+        const node = self.nodes.remove(h)?
         Some(node.data)
         // Note: Other nodes may still have edges pointing to h
         // These become stale handles - pool.get() returns None
     }
 
     // Clean up stale edges after removals
-    fn gc_edges(&mut self) {
+    func gc_edges(self) {
         for h in self.nodes.cursor() {
             self.nodes[h].edges.retain(|edge| {
                 self.nodes.get(*edge).is_some()
@@ -975,7 +1227,7 @@ impl Graph<T> {
 
 Compiler pattern: allocate nodes in a pool, cross-reference freely, deallocate all at once.
 
-```
+```rask
 // Single pool for all expression types (enum approach)
 enum Expr {
     Literal(i64),
@@ -995,12 +1247,12 @@ struct Ast {
     root: Handle<ExprNode>?,
 }
 
-impl Ast {
-    fn new_binary(&mut self, op: BinOp, left: Handle<ExprNode>, right: Handle<ExprNode>, span: Span)
+extend Ast {
+    func new_binary(self, op: BinOp, left: Handle<ExprNode>, right: Handle<ExprNode>, span: Span)
         -> Result<Handle<ExprNode>, Error>
     {
-        let h = self.exprs.insert(ExprNode {
-            expr: Expr::Binary { op, left, right },
+        const h = self.exprs.insert(ExprNode {
+            expr: Expr.Binary { op, left, right },
             parent: none,
             span,
         })?
@@ -1012,12 +1264,12 @@ impl Ast {
     }
 
     // Error reporting: walk up to find context
-    fn error_context(&self, h: Handle<ExprNode>) -> String {
-        let frozen = self.exprs.freeze_ref()
-        let mut current = h
-        let mut context = Vec::new()
+    func error_context(self, h: Handle<ExprNode>) -> String {
+        const frozen = self.exprs.freeze_ref()
+        const current = h
+        const context = Vec.new()
 
-        while let Some(parent) = frozen[current].parent {
+        while frozen[current].parent is Some(parent) {
             context.push(frozen[parent].span)
             current = parent
         }
@@ -1025,19 +1277,19 @@ impl Ast {
     }
 
     // Type checking pass (read-only, zero overhead)
-    fn type_check(&self) -> Result<TypeMap, TypeError> {
-        let frozen = self.exprs.freeze_ref()
-        let mut types = Map::new()
+    func type_check(self) -> Result<TypeMap, TypeError> {
+        const frozen = self.exprs.freeze_ref()
+        const types = Map.new()
 
         for h in frozen.handles() {
-            let ty = infer_type(&frozen[h].expr, &types)?
+            const ty = infer_type(frozen[h].expr, types)?
             types.insert(h, ty)?
         }
         Ok(types)
     }
 
     // Compilation done - deallocate everything
-    fn finish(self) {
+    func finish(take self) {
         // Pool dropped, all memory freed
         // No need to visit each node
     }
@@ -1046,7 +1298,7 @@ impl Ast {
 
 **Alternative: Separate pools per node type**
 
-```
+```rask
 struct TypedAst {
     literals: Pool<LiteralNode>,
     binaries: Pool<BinaryNode>,
@@ -1079,7 +1331,7 @@ Parallel iteration over pools without locks. Two modes: **chunked frozen pools**
 
 Split a pool into chunks for parallel read-only processing. Uses scoped API for type-safe automatic reunification.
 
-```
+```rask
 let entities: Pool<Entity> = // ... 1000 entities
 
 // Partition into 4 chunks (scoped)
@@ -1097,7 +1349,7 @@ entities.with_partition(4, |chunks| {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_partition(n, f)` | `(&mut Pool<T>, usize, fn(&[FrozenChunk<T>]) -> R) -> R` | Scoped partition (read-only) |
+| `pool.with_partition(n, f)` | `(Pool<T>, usize, func([FrozenChunk<T>]) -> R) -> R` | Scoped partition (read-only) |
 | `chunk.handles()` | `Iterator<Handle<T>>` | Iterate handles in this chunk |
 | `chunk[h]` | `&T` | Access (zero generation checks) |
 | `chunk.len()` | `usize` | Number of elements in chunk |
@@ -1116,15 +1368,15 @@ entities.with_partition(4, |chunks| {
 - No explicit reunify needed
 
 **Example with analysis:**
-```
-fn parallel_physics(mut entities: Pool<Entity>, dt: f32) {
+```rask
+func parallel_physics(mut entities: Pool<Entity>, dt: f32) {
     // Phase 1: Parallel read (compute forces)
-    let forces = entities.with_partition(num_cpus(), |chunks| {
+    const forces = entities.with_partition(num_cpus(), |chunks| {
         parallel_map(chunks) { |chunk|
             chunk.handles().map(|h| {
-                let e = chunk[h]
+                const e = chunk[h]
                 (h, compute_forces(e.position, e.velocity))
-            }).collect::<Vec<_>>()
+            }).collect<Vec<_>>()
         }
     });
 
@@ -1140,7 +1392,7 @@ fn parallel_physics(mut entities: Pool<Entity>, dt: f32) {
 
 Split a pool into mutable chunks for parallel read-write processing. Each thread gets exclusive access to its chunk.
 
-```
+```rask
 entities.with_partition_mut(4, |chunks| {
     parallel_for(chunks) { |chunk|
         for h in chunk.cursor() {
@@ -1154,7 +1406,7 @@ entities.with_partition_mut(4, |chunks| {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_partition_mut(n, f)` | `(&mut Pool<T>, usize, fn(&mut [MutableChunk<T>]) -> R) -> R` | Scoped partition (read-write) |
+| `pool.with_partition_mut(n, f)` | `(Pool<T>, usize, func([MutableChunk<T>]) -> R) -> R` | Scoped partition (read-write) |
 | `chunk.cursor()` | `Cursor<T>` | Mutable iterator |
 | `chunk[h]` | `&T` | Immutable access |
 | `chunk[h] = value` | N/A | Mutable access (via cursor or methods) |
@@ -1167,8 +1419,8 @@ entities.with_partition_mut(4, |chunks| {
 - Safe removal during iteration via cursor
 
 **Example: Parallel velocity integration:**
-```
-fn integrate_velocities(mut entities: Pool<Entity>, dt: f32) {
+```rask
+func integrate_velocities(mut entities: Pool<Entity>, dt: f32) {
     entities.with_partition_mut(num_cpus(), |chunks| {
         parallel_for(chunks) { |chunk|
             for h in chunk.cursor() {
@@ -1186,7 +1438,7 @@ fn integrate_velocities(mut entities: Pool<Entity>, dt: f32) {
 
 Create a frozen snapshot for readers while writer continues mutating.
 
-```
+```rask
 let (snapshot, mut pool) = entities.snapshot()
 
 // Readers see frozen state
@@ -1231,7 +1483,7 @@ drop(snapshot)
 
 **Copy-on-Write Details:**
 
-```
+```rask
 // Before snapshot
 Pool: [A, B, C, D, E]
 
@@ -1257,7 +1509,7 @@ For conditional processing based on entity properties, use manual handle filteri
 
 **Pattern: Collect handles by type**
 
-```
+```rask
 struct Entity {
     kind: EntityKind,
     // ...
@@ -1265,17 +1517,17 @@ struct Entity {
 
 enum EntityKind { Player, Enemy, Projectile }
 
-fn process_by_type(mut entities: Pool<Entity>) {
+func process_by_type(mut entities: Pool<Entity>) {
     // Collect handles by kind
-    let mut player_handles = Vec::new()
-    let mut enemy_handles = Vec::new()
-    let mut projectile_handles = Vec::new()
+    letplayer_handles = Vec.new()
+    letenemy_handles = Vec.new()
+    letprojectile_handles = Vec.new()
 
     for h in entities.cursor() {
         match entities[h].kind {
-            EntityKind::Player => player_handles.push(h),
-            EntityKind::Enemy => enemy_handles.push(h),
-            EntityKind::Projectile => projectile_handles.push(h),
+            EntityKind.Player => player_handles.push(h),
+            EntityKind.Enemy => enemy_handles.push(h),
+            EntityKind.Projectile => projectile_handles.push(h),
         }
     }
 
@@ -1300,13 +1552,13 @@ fn process_by_type(mut entities: Pool<Entity>) {
 **Zero-copy alternative:** Keep pool intact, partition handles only.
 
 **With iterator-based partitioning:**
-```
+```rask
 // Partition handles (not entities)
 let (player_hs, rest): (Vec<_>, Vec<_>) = entities.cursor()
-    .partition(|&h| entities[h].kind == EntityKind::Player);
+    .partition(|&h| entities[h].kind == EntityKind.Player);
 
 let (enemy_hs, projectile_hs): (Vec<_>, Vec<_>) = rest.into_iter()
-    .partition(|&h| entities[h].kind == EntityKind::Enemy);
+    .partition(|&h| entities[h].kind == EntityKind.Enemy);
 ```
 
 **Note:** Pool cannot be split by predicate because accessing entities requires borrowing the pool, but splitting would consume it. Manual filtering is the correct pattern.
@@ -1382,15 +1634,15 @@ let (enemy_hs, projectile_hs): (Vec<_>, Vec<_>) = rest.into_iter()
 
 #### ECS Physics Pipeline
 
-```
-fn physics_tick(mut entities: Pool<Entity>, dt: f32) {
+```rask
+func physics_tick(mut entities: Pool<Entity>, dt: f32) {
     // Phase 1: Parallel read (compute forces)
-    let forces = entities.with_partition(num_cpus(), |chunks| {
+    const forces = entities.with_partition(num_cpus(), |chunks| {
         parallel_map(chunks) { |chunk|
             chunk.handles().map(|h| {
-                let e = chunk[h]
+                const e = chunk[h]
                 (h, compute_forces(e.position, e.mass))
-            }).collect::<Vec<_>>()
+            }).collect<Vec<_>>()
         }
     });
 
@@ -1403,14 +1655,14 @@ fn physics_tick(mut entities: Pool<Entity>, dt: f32) {
 ```
 
 **Alternative with mutable partitioning (fully parallel):**
-```
-fn physics_tick_parallel(mut entities: Pool<Entity>, dt: f32) {
+```rask
+func physics_tick_parallel(mut entities: Pool<Entity>, dt: f32) {
     // Parallel read-write: each thread mutates its chunk
     entities.with_partition_mut(num_cpus(), |chunks| {
         parallel_for(chunks) { |chunk|
             for h in chunk.cursor() {
                 chunk.modify(h, |e| {
-                    let force = compute_forces(e.position, e.mass)
+                    const force = compute_forces(e.position, e.mass)
                     e.velocity += force * dt
                     e.position += e.velocity * dt
                 })?
@@ -1422,8 +1674,8 @@ fn physics_tick_parallel(mut entities: Pool<Entity>, dt: f32) {
 
 #### Render While Simulating
 
-```
-fn game_loop(mut world: World) {
+```rask
+func game_loop(mut world: World) {
     loop {
         // Snapshot for rendering
         let (render_snapshot, mut sim_pool) = world.entities.snapshot()
@@ -1448,18 +1700,18 @@ fn game_loop(mut world: World) {
 
 #### Batch Processing by Type
 
-```
-fn process_entities(mut entities: Pool<Entity>) {
+```rask
+func process_entities(mut entities: Pool<Entity>) {
     // Collect handles by kind
-    let mut static_handles = Vec::new()
-    let mut player_handles = Vec::new()
-    let mut npc_handles = Vec::new()
+    letstatic_handles = Vec.new()
+    letplayer_handles = Vec.new()
+    letnpc_handles = Vec.new()
 
     for h in entities.cursor() {
         match entities[h].kind {
-            EntityKind::Static => static_handles.push(h),
-            EntityKind::Player => player_handles.push(h),
-            EntityKind::NPC => npc_handles.push(h),
+            EntityKind.Static => static_handles.push(h),
+            EntityKind.Player => player_handles.push(h),
+            EntityKind.NPC => npc_handles.push(h),
         }
     }
 
@@ -1503,32 +1755,32 @@ When multiple parts of a program need to access the same object, Rask's approach
 
 ### Pattern 1: Handles Through Channels (Cross-Task)
 
-Pass lightweight handles (16 bytes) instead of copying or sharing data.
+Pass lightweight handles (12 bytes) instead of copying or sharing data. The pool owner processes requests.
 
-```
+```rask
 struct User { name: String, email: String, ... }
-let users: Pool<User> = Pool::new()
-let user_h = users.insert(User { ... })?
+let users: Pool<User> = Pool.new()
+const user_h = users.insert(User { ... })?
 
-(tx, rx) = Channel<Handle<User>>.buffered(100)
-shared_tx = tx.share()
+// Send handles to worker, receive commands back
+(cmd_tx, cmd_rx) = Channel<UserCommand>.buffered(100)
 
 nursery { |n|
-    // Task 1: Validator
-    n.spawn(user_h, shared_tx.clone()) { |h, tx|
-        with users {
-            if h.email.is_empty() {
-                log("Invalid user")
-            } else {
-                tx.send(h)?  // Pass handle to next task
-            }
-        }
+    // Worker task: sends commands (doesn't access pool directly)
+    n.spawn(user_h, cmd_tx) { |h, tx|
+        tx.send(UserCommand.Validate(h))?
+        tx.send(UserCommand.Notify(h))?
     }
 
-    // Task 2: Notifier
-    n.spawn(rx) { |rx|
-        while let Ok(h) = rx.recv() {
-            with users {
+    // Main task: owns pool, processes commands
+    while cmd_rx.recv() is Ok(cmd) {
+        match cmd {
+            UserCommand.Validate(h) => {
+                if h.email.is_empty() {   // Auto-resolves (same thread as pool)
+                    log("Invalid user")
+                }
+            }
+            UserCommand.Notify(h) => {
                 send_email(h.email, "Welcome!")
             }
         }
@@ -1536,22 +1788,22 @@ nursery { |n|
 }
 ```
 
-**Key insight:** Handles are copyable values. The User object stays in the pool.
+**Key insight:** Handles are copyable values that can be sent anywhere. The pool stays in one thread; commands flow back to it.
 
-### Pattern 2: Ambient Pool Scoping (Local Functions)
+### Pattern 2: Handle Auto-Resolution (Local Functions)
 
-Multiple functions access the same pool without passing it explicitly.
+Multiple functions access the same pool without passing it — handles auto-resolve.
 
-```
-fn process_user(user_h: Handle<User>) -> Result<()> {
+```rask
+func process_user(user_h: Handle<User>) -> Result<()> {
     validate_user(user_h)?
     send_notification(user_h)?
     log_activity(user_h)?
     Ok(())
 }
 
-fn validate_user(h: Handle<User>) -> Result<()> {
-    // h.field auto-resolves through ambient pool
+func validate_user(h: Handle<User>) -> Result<()> {
+    // h.field auto-resolves via pool_id registry
     if h.email.is_empty() {
         Err(ValidationError)
     } else {
@@ -1559,39 +1811,42 @@ fn validate_user(h: Handle<User>) -> Result<()> {
     }
 }
 
-fn send_notification(h: Handle<User>) {
+func send_notification(h: Handle<User>) {
     send_email(h.email, "Welcome!")
 }
 
-// Caller establishes ambient pool
-with users {
-    process_user(user_h)?
-}
+// Just call it — no with block needed
+process_user(user_h)?
 ```
 
-**Key insight:** The `with users { }` block makes the pool ambient for all nested function calls.
+**Key insight:** Handles know which pool they came from. No explicit pool passing or `with` blocks required.
 
 ### Pattern 3: Multi-Pool Operations
 
-Access objects from multiple pools in coordinated operations.
+Access objects from multiple pools — each handle auto-resolves to its own pool.
 
-```
+```rask
 struct Player { team_id: Handle<Team>, score: i32, ... }
 struct Team { total_score: i32, ... }
 
-let players: Pool<Player> = Pool::new()
-let teams: Pool<Team> = Pool::new()
+let players: Pool<Player> = Pool.new()
+let teams: Pool<Team> = Pool.new()
 
+func award_points(player_h: Handle<Player>, points: i32) {
+    player_h.score += points                    // Via players pool
+    player_h.team_id.total_score += points      // Via teams pool (chained)
+}
+
+// For hot paths, use with as optimization:
 with (players, teams) {
-    let p = players[player_h]
-    let t = teams[p.team_id]   // Cross-pool reference
-
-    players[player_h].score += 10
-    teams[p.team_id].total_score += 10
+    for p in players.cursor() {
+        p.score += bonus
+        p.team_id.total_score += bonus
+    }
 }
 ```
 
-**Key insight:** Handles act as foreign keys between pools, enabling relational patterns.
+**Key insight:** Handles act as foreign keys between pools, enabling relational patterns. Each handle auto-resolves to its own pool.
 
 ### Comparison with Other Languages
 
@@ -1617,7 +1872,7 @@ with (players, teams) {
 
 ## See Also
 
-- [Borrowing](borrowing.md) — Expression-scoped vs block-scoped borrowing
+- [Borrowing](borrowing.md) — One rule: views last as long as the source is stable
 - [Linear Types](linear-types.md) — Resource consumption requirements
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state
 - [Collections](../stdlib/collections.md) — Vec and Map types

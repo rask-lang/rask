@@ -1,0 +1,9 @@
+[package]
+name = "rask-spec-test"
+version.workspace = true
+edition.workspace = true
+description = "Literate testing: extract and run code blocks from spec markdown files"
+
+[dependencies]
+rask-lexer = { path = "../rask-lexer" }
+rask-parser = { path = "../rask-parser" }

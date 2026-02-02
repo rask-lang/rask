@@ -1,0 +1,18 @@
+[package]
+name = "rask-cli"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rask"
+path = "src/main.rs"
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-lexer = { path = "../rask-lexer" }
+rask-parser = { path = "../rask-parser" }
+rask-resolve = { path = "../rask-resolve" }
+rask-desugar = { path = "../rask-desugar" }
+rask-types = { path = "../rask-types" }
+rask-interp = { path = "../rask-interp" }
+rask-spec-test = { path = "../rask-spec-test" }

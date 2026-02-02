@@ -16,7 +16,7 @@ Safety is Rask's core property—but some code inherently cannot be verified by 
 ### Unsafe Blocks
 
 **Syntax:**
-```
+```rask
 unsafe {
     // Operations that bypass safety checks
 }
@@ -75,19 +75,19 @@ unsafe {
 | Validity | Not tracked; may dangle |
 
 **Creating raw pointers (safe):**
-```
-let x = 42
+```rask
+const x = 42
 let ptr: *i32 = &x as *i32           // From reference
 let mut_ptr: *mut i32 = &mut x       // From mutable reference
 let null: *i32 = null                // Null pointer literal
 ```
 
 **Using raw pointers (unsafe):**
-```
+```rask
 unsafe {
-    let value = *ptr                  // Dereference
+    const value = *ptr                  // Dereference
     *mut_ptr = 100                    // Write through pointer
-    let next = ptr.add(1)             // Pointer arithmetic
+    const next = ptr.add(1)             // Pointer arithmetic
     let ref_back: &i32 = &*ptr        // Pointer to reference
 }
 ```
@@ -119,14 +119,14 @@ unsafe {
 
 Functions that require unsafe to call:
 
-```
-unsafe fn dangerous_operation(ptr: *mut i32) {
+```rask
+unsafe func dangerous_operation(ptr: *mut i32) {
     // Body is implicitly unsafe
     *ptr = 42
 }
 
-fn caller() {
-    let mut x = 0
+func caller() {
+    const x = 0
     unsafe {
         dangerous_operation(&mut x)    // Must be in unsafe block
     }
@@ -137,19 +137,19 @@ fn caller() {
 
 | Rule | Description |
 |------|-------------|
-| **UF1: Implicit unsafe body** | Inside unsafe fn, no nested unsafe block needed |
+| **UF1: Implicit unsafe body** | Inside unsafe func, no nested unsafe block needed |
 | **UF2: Caller responsibility** | Caller must verify preconditions hold |
 | **UF3: Document invariants** | Unsafe functions SHOULD document safety requirements |
 
 **Documentation convention:**
-```
+```rask
 /// Reads value from pointer.
 ///
 /// # Safety
 /// - `ptr` must be valid for reads
 /// - `ptr` must be properly aligned
 /// - The memory must be initialized
-unsafe fn read_ptr<T>(ptr: *T) -> T {
+unsafe func read_ptr<T>(ptr: *T) -> T {
     *ptr
 }
 ```
@@ -158,26 +158,26 @@ unsafe fn read_ptr<T>(ptr: *T) -> T {
 
 Traits where implementing requires manual verification:
 
-```
+```rask
 unsafe trait Send {}      // Safe to transfer across threads
 unsafe trait Sync {}      // Safe to share reference across threads
 ```
 
 **Implementing:**
-```
+```rask
 struct MyType { ptr: *mut i32 }
 
 // Implementer asserts: MyType can safely cross thread boundaries
-unsafe impl Send for MyType {}
+unsafe extend MyType with Send {}
 ```
 
 **Rules:**
 
 | Rule | Description |
 |------|-------------|
-| **UT1: Explicit unsafe impl** | Implementing unsafe trait requires `unsafe impl` |
+| **UT1: Explicit unsafe extend** | Implementing unsafe trait requires `unsafe extend` |
 | **UT2: Contract obligation** | Implementer guarantees trait's safety contract |
-| **UT3: Compiler trust** | Compiler trusts impl; soundness is implementer's responsibility |
+| **UT3: Compiler trust** | Compiler trusts extend; soundness is implementer's responsibility |
 
 **Built-in unsafe traits:**
 
@@ -202,21 +202,21 @@ unsafe impl Send for MyType {}
 | Owned values | Must be fully initialized |
 
 **Safe wrapper pattern:**
-```
-pub struct SafeBuffer {
+```rask
+public struct SafeBuffer {
     ptr: *mut u8,
     len: usize,
 }
 
-impl SafeBuffer {
-    pub fn new(size: usize) -> Result<SafeBuffer, AllocError> {
+extend SafeBuffer {
+    public func new(size: usize) -> Result<SafeBuffer, AllocError> {
         unsafe {
-            let ptr = alloc(size)?
+            const ptr = alloc(size)?
             Ok(SafeBuffer { ptr, len: size })
         }
     }
 
-    pub fn get(self, index: usize) -> Option<u8> {
+    public func get(self, index: usize) -> Option<u8> {
         if index >= self.len {
             return None
         }
@@ -225,7 +225,7 @@ impl SafeBuffer {
         }
     }
 
-    fn close(take self) {
+    func close(take self) {
         unsafe { dealloc(self.ptr, self.len) }
     }
 }
@@ -256,10 +256,10 @@ impl SafeBuffer {
 | Type size/layout | Fixed by type definition |
 
 **Uninitialized memory:**
-```
+```rask
 unsafe {
-    let mut buffer: [u8; 1024] = uninitialized()  // Explicit
-    fill_buffer(&mut buffer)                       // Initialize before use
+    let buffer: [u8; 1024] = uninitialized()  // Explicit
+    fill_buffer(buffer)                        // Initialize before use
     // Reading before fill_buffer = undefined behavior
 }
 ```
@@ -268,7 +268,7 @@ unsafe {
 
 Reinterprets the bits of one type as another:
 
-```
+```rask
 unsafe {
     let x: u32 = 0x41424344
     let bytes: [u8; 4] = transmute(x)  // [0x44, 0x43, 0x42, 0x41] on little-endian
@@ -302,10 +302,10 @@ unsafe {
 
 ### Inline Assembly
 
-Inline assembly allows embedding platform-specific machine code within Rask functions.
+Inline assembly embeds platform-specific machine code within Rask functions.
 
 **Syntax:**
-```
+```rask
 asm {
     "template with {placeholders}"
     out(constraint) name
@@ -357,9 +357,9 @@ asm {
 
 **Examples:**
 
-```
+```rask
 // Read timestamp counter
-fn rdtsc() -> u64 {
+func rdtsc() -> u64 {
     unsafe {
         let result: u64
         asm {
@@ -372,7 +372,7 @@ fn rdtsc() -> u64 {
 }
 
 // Memory fence
-fn mfence() {
+func mfence() {
     unsafe {
         asm {
             "mfence"
@@ -382,7 +382,7 @@ fn mfence() {
 }
 
 // Add with carry
-fn add_carry(a: u64, b: u64) -> (u64, bool) {
+func add_carry(a: u64, b: u64) -> (u64, bool) {
     unsafe {
         let sum: u64
         let carry: u8
@@ -402,7 +402,7 @@ fn add_carry(a: u64, b: u64) -> (u64, bool) {
 
 Assembly strings can be built at compile time:
 
-```
+```rask
 const ARCH_ADD = comptime {
     if target.arch == .x86_64 { "add {out}, {a}" }
     else if target.arch == .aarch64 { "add {out}, {a}, {b}" }
@@ -434,10 +434,10 @@ const CRYPTO_KERNEL = comptime @embed_file("sha256_x64.s")
 
 Global mutable state requires unsafe access:
 
-```
+```rask
 static mut COUNTER: u32 = 0
 
-fn increment() {
+func increment() {
     unsafe {
         COUNTER += 1    // Data race if called from multiple threads
     }
@@ -456,15 +456,15 @@ fn increment() {
 
 Tagged unions (enums) are safe. Untagged unions require unsafe for field access:
 
-```
+```rask
 union IntOrFloat {
     i: i32,
     f: f32,
 }
 
-let u = IntOrFloat { i: 42 }
+const u = IntOrFloat { i: 42 }
 unsafe {
-    let f = u.f    // Reinterprets bits as f32
+    const f = u.f    // Reinterprets bits as f32
 }
 ```
 
@@ -487,8 +487,8 @@ unsafe {
 | Double-free | Undefined behavior |
 | Use-after-free | Undefined behavior |
 | Data race | Undefined behavior |
-| Calling unsafe fn without unsafe block | Compile error |
-| Implementing safe trait unsafely | Compile error (use unsafe impl) |
+| Calling unsafe func without unsafe block | Compile error |
+| Implementing safe trait unsafely | Compile error (use unsafe extend) |
 | Nested unsafe blocks | Redundant but allowed |
 
 ### Debug-Mode Safety (Zig-inspired)
@@ -514,19 +514,19 @@ Unlike Rust where UB is UB regardless of build mode, Rask provides **debug-mode 
 | Unaligned access | Panic | Platform-dependent |
 
 **Implementation:**
-```
+```rask
 unsafe {
     // In debug: inserts `if ptr.is_null() { panic!(...) }`
     // In release: no check
-    let x = *ptr
+    const x = *ptr
 }
 ```
 
 **Explicit unchecked (skips even debug checks):**
-```
+```rask
 unsafe {
     // No checks even in debug mode - for when you've already validated
-    let x = ptr.read_unchecked()
+    const x = ptr.read_unchecked()
 }
 ```
 
@@ -537,16 +537,16 @@ unsafe {
 Every unsafe operation has an implicit **contract**—preconditions the caller must ensure.
 
 **Contract documentation syntax:**
-```
+```rask
 /// Reads value from pointer.
 ///
 /// # Safety
 /// - `ptr` MUST be non-null
-/// - `ptr` MUST be valid for reads of size `size_of::<T>()`
+/// - `ptr` MUST be valid for reads of size `size_of<T>()`
 /// - `ptr` MUST be properly aligned for `T`
 /// - The memory MUST be initialized as a valid `T`
 /// - No other thread may write to this memory during the read
-unsafe fn read<T>(ptr: *T) -> T
+unsafe func read<T>(ptr: *T) -> T
 ```
 
 **Contract categories:**
@@ -571,10 +571,10 @@ When exiting an unsafe block, these MUST hold:
 | **Linear resources** | Linear values must still be tracked (consumed or live) |
 
 **Example of broken exit invariant:**
-```
+```rask
 let v: Vec<i32> = unsafe {
     // BAD: Creates Vec with invalid internal state
-    Vec::from_raw_parts(null(), 0, 100)  // null ptr, claims 100 capacity
+    Vec.from_raw_parts(null(), 0, 100)  // null ptr, claims 100 capacity
 }
 // Safe code now has a "valid" Vec that will crash on use
 ```
@@ -583,9 +583,9 @@ let v: Vec<i32> = unsafe {
 
 For safety-critical code that needs low-level access but can afford overhead:
 
-```
-#[checked_unsafe]
-fn memory_copy(dst: *mut u8, src: *u8, len: usize) {
+```rask
+@checked_unsafe
+func memory_copy(dst: *mut u8, src: *u8, len: usize) {
     // All pointer operations have runtime checks, even in release
     for i in 0..len {
         *dst.add(i) = *src.add(i)  // Each add/deref is checked
@@ -598,8 +598,8 @@ fn memory_copy(dst: *mut u8, src: *u8, len: usize) {
 | Attribute | Debug | Release |
 |-----------|-------|---------|
 | (none) | Checked | Unchecked (UB) |
-| `#[checked_unsafe]` | Checked | Checked |
-| `#[unchecked_unsafe]` | Unchecked | Unchecked |
+| `@checked_unsafe` | Checked | Checked |
+| `@unchecked_unsafe` | Unchecked | Unchecked |
 
 **Use cases:**
 - Medical devices, aerospace (safety-critical)
@@ -618,14 +618,14 @@ See [Modules](../structure/modules.md) for C interop details. Summary:
 | Receive pointer from C | Validation is caller's responsibility |
 
 **Ownership across FFI:**
-```
+```rask
 // C allocates, Rask frees
-let ptr = unsafe { c.malloc(size) }
+const ptr = unsafe { c.malloc(size) }
 // ... use ptr ...
 unsafe { c.free(ptr) }
 
 // Rask allocates, C frees
-let ptr = unsafe { alloc(size) }
+const ptr = unsafe { alloc(size) }
 // ... C uses ptr ...
 // C must free with appropriate deallocator
 ```
@@ -633,48 +633,48 @@ let ptr = unsafe { alloc(size) }
 ## Examples
 
 ### Safe Wrapper for C String
-```
-pub struct CString {
+```rask
+public struct CString {
     ptr: *mut u8,
     len: usize,
 }
 
-impl CString {
-    pub fn new(s: string) -> CString {
+extend CString {
+    public func new(s: string) -> CString {
         unsafe {
-            let len = s.len() + 1
-            let ptr = alloc(len)?
+            const len = s.len() + 1
+            const ptr = alloc(len)?
             copy(s.as_ptr(), ptr, s.len())
             *ptr.add(s.len()) = 0  // Null terminator
             CString { ptr, len }
         }
     }
 
-    pub fn as_ptr(self) -> *u8 {
+    public func as_ptr(self) -> *u8 {
         self.ptr  // Safe: pointer creation, not use
     }
 
-    fn close(take self) {
+    func close(take self) {
         unsafe { dealloc(self.ptr, self.len) }
     }
 }
 ```
 
 ### Unchecked Array Access
-```
+```rask
 struct FastBuffer<T> {
     data: *mut T,
     len: usize,
 }
 
-impl<T> FastBuffer<T> {
+extend<T> FastBuffer<T> {
     /// # Safety
     /// `index` must be less than `self.len`
-    pub unsafe fn get_unchecked(self, index: usize) -> T {
+    public unsafe func get_unchecked(self, index: usize) -> T {
         *self.data.add(index)
     }
 
-    pub fn get(self, index: usize) -> Option<T> {
+    public func get(self, index: usize) -> Option<T> {
         if index < self.len {
             unsafe { Some(self.get_unchecked(index)) }
         } else {
@@ -685,18 +685,18 @@ impl<T> FastBuffer<T> {
 ```
 
 ### Atomic Counter
-```
-static COUNTER: AtomicU64 = AtomicU64::new(0)
+```rask
+static COUNTER: AtomicU64 = AtomicU64.new(0)
 
-fn increment() -> u64 {
-    COUNTER.fetch_add(1, Ordering::SeqCst)  // Safe: atomics handle sync
+func increment() -> u64 {
+    COUNTER.fetch_add(1, Ordering.SeqCst)  // Safe: atomics handle sync
 }
 ```
 
 ## Integration Notes
 
 - **Memory Model:** Unsafe breaks borrow checker assumptions; programmer ensures aliasing rules. Safe code relies on unsafe code maintaining invariants.
-- **Type System:** Raw pointers are types like any other; their use is restricted. `unsafe impl` extends type's capabilities.
+- **Type System:** Raw pointers are types like any other; their use is restricted. `unsafe extend` extends type's capabilities.
 - **Generics:** `T: Send` requires T to be sendable; raw pointers are not Send/Sync by default. Bounds propagate through generic code.
 - **Concurrency:** Data races are UB even in unsafe. Use atomics, mutexes, or ensure single-threaded access.
 - **C Interop:** All C calls are unsafe. Safe wrappers validate inputs, handle errors, manage ownership.

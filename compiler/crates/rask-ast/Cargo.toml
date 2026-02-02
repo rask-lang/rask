@@ -1,0 +1,6 @@
+[package]
+name = "rask-ast"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

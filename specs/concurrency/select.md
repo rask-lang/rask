@@ -8,12 +8,12 @@ Select allows waiting on multiple channel operations or timeouts.
 
 ## Syntax
 
-```
+```rask
 result = select {
-    case rx1.recv() -> |v| handle_v(v),
-    case rx2.recv() -> |v| handle_v(v),
-    case tx.send(msg) -> |()| sent(),
-    timeout 5.seconds -> timed_out(),
+    rx1 -> v: handle_v(v),
+    rx2 -> v: handle_v(v),
+    tx <- msg: sent(),
+    timeout 5.seconds: timed_out(),
 }
 ```
 
@@ -21,10 +21,10 @@ result = select {
 
 | Arm Type | Syntax | Semantics |
 |----------|--------|-----------|
-| Receive | `case rx.recv() -> \|v\| expr` | Wait for value, bind to `v` |
-| Send | `case tx.send(val) -> \|_\| expr` | Wait for send completion |
-| Timeout | `timeout duration -> expr` | Fire after duration |
-| Default | `default -> expr` | Non-blocking fallback |
+| Receive | `rx -> v: expr` | Wait for value, bind to `v` |
+| Send | `tx <- val: expr` | Wait for send completion |
+| Timeout | `timeout duration: expr` | Fire after duration |
+| Default | `_: expr` | Non-blocking fallback |
 
 ## Semantics
 
@@ -41,10 +41,10 @@ When multiple arms are ready simultaneously:
 
 The runtime selects **uniformly at random** among all ready arms. This prevents starvation—no arm can be indefinitely skipped if it's always ready.
 
-```
+```rask
 select {
-    case rx1.recv() -> |v| handle(v),  // 50% if both ready
-    case rx2.recv() -> |v| handle(v),  // 50% if both ready
+    rx1 -> v: handle(v),  // 50% if both ready
+    rx2 -> v: handle(v),  // 50% if both ready
 }
 ```
 
@@ -54,10 +54,10 @@ select {
 
 When priority or determinism is required:
 
-```
+```rask
 select_priority {
-    case shutdown.recv() -> |_| return,   // Always checked first
-    case work.recv() -> |w| process(w),   // Only if shutdown not ready
+    shutdown -> _: return,   // Always checked first
+    work -> w: process(w),   // Only if shutdown not ready
 }
 ```
 
@@ -72,10 +72,10 @@ select_priority {
 
 **Non-selected send arms:** Value returned to caller (not consumed).
 
-```
+```rask
 result = select {
-    case tx1.send(msg) -> |()| "sent to tx1",
-    case tx2.send(msg) -> |()| "sent to tx2",  // msg reused if tx1 selected
+    tx1 <- msg: "sent to tx1",
+    tx2 <- msg: "sent to tx2",  // msg reused if tx1 selected
 }
 // If tx1 selected, msg for tx2 arm is NOT consumed
 ```
@@ -94,31 +94,31 @@ result = select {
 
 ### Timeout Pattern
 
-```
+```rask
 result = select {
-    case rx.recv() -> |v| Ok(v),
-    timeout 5.seconds -> Err(Timeout),
+    rx -> v: Ok(v),
+    timeout 5.seconds: Err(Timeout),
 }
 ```
 
 ### Fan-in (Multiple Sources)
 
-```
+```rask
 loop {
     select {
-        case rx1.recv() -> |v| process(v),
-        case rx2.recv() -> |v| process(v),
-        case rx3.recv() -> |v| process(v),
+        rx1 -> v: process(v),
+        rx2 -> v: process(v),
+        rx3 -> v: process(v),
     }
 }
 ```
 
 ### Try-send with Fallback
 
-```
+```rask
 select {
-    case tx.send(msg) -> |()| log("sent"),
-    default -> log("channel full, dropping"),
+    tx <- msg: log("sent"),
+    _: log("channel full, dropping"),
 }
 ```
 

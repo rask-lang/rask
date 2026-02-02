@@ -1,0 +1,456 @@
+// Embedded Sensor Processor
+// Demonstrates: Lock-free atomics, unsafe hardware access, hard real-time deadlines,
+//               zero-allocation hot paths, interrupt handling, generics, SIMD
+
+import time
+
+// ============================================================================
+// Lock-free SPSC (Single Producer Single Consumer) Ring Buffer
+// Used for interrupt handler → main loop communication without locks
+// ============================================================================
+
+struct SpscRingBuffer<T, const N: usize> {
+    data: [T; N]
+    write_idx: Atomic<usize>  // Written by producer (interrupt)
+    read_idx: Atomic<usize>   // Written by consumer (main loop)
+}
+
+extend SpscRingBuffer<T, N> {
+    func new(default: T) -> SpscRingBuffer<T, N> {
+        SpscRingBuffer {
+            data: [default; N],
+            write_idx: Atomic.new(0),
+            read_idx: Atomic.new(0),
+        }
+    }
+
+    // Called from interrupt context - must be lock-free and allocation-free
+    @no_alloc
+    func try_push(self, value: T) -> bool {
+        const write = self.write_idx.load(Ordering.Relaxed)
+        const next_write = (write + 1) % N
+
+        // Check if full (would overwrite unread data)
+        if next_write == self.read_idx.load(Ordering.Acquire) {
+            return false  // Buffer full, drop sample
+        }
+
+        self.data[write] = value
+        self.write_idx.store(next_write, Ordering.Release)
+        true
+    }
+
+    // Called from main loop - allocation-free for real-time safety
+    @no_alloc
+    func try_pop(self) -> T? {
+        const read = self.read_idx.load(Ordering.Relaxed)
+        const write = self.write_idx.load(Ordering.Acquire)
+
+        if read == write {
+            return None  // Buffer empty
+        }
+
+        const value = self.data[read]
+        self.read_idx.store((read + 1) % N, Ordering.Release)
+        Some(value)
+    }
+
+    func len(self) -> usize {
+        const write = self.write_idx.load(Ordering.Acquire)
+        const read = self.read_idx.load(Ordering.Acquire)
+        if write >= read { write - read } else { N - read + write }
+    }
+}
+
+// ============================================================================
+// Sensor Reading with Timestamp (for latency measurement)
+// ============================================================================
+
+struct SensorReading {
+    sensor_id: u8
+    value: f32
+    timestamp_ns: u64  // Nanoseconds since start
+}
+
+// ============================================================================
+// Simulated Hardware Registers (demonstrates unsafe)
+// In real embedded, these would be memory-mapped I/O addresses
+// ============================================================================
+
+const SENSOR_BASE_ADDR: usize = 0x4000_0000
+
+struct HardwareRegisters {
+    temp_data: u32      // offset 0x00
+    pressure_data: u32  // offset 0x04
+    humidity_data: u32  // offset 0x08
+    status: u32         // offset 0x0C
+    control: u32        // offset 0x10
+}
+
+// Read from simulated hardware register
+func read_hardware_sensor(sensor_id: u8, tick: u64) -> f32 {
+    // In real embedded code, this would be:
+    // unsafe {
+    //     const regs = SENSOR_BASE_ADDR as *const HardwareRegisters
+    //     match sensor_id {
+    //         0 => (*regs).temp_data as f32 / 100.0,
+    //         1 => (*regs).pressure_data as f32 / 10.0,
+    //         2 => (*regs).humidity_data as f32 / 100.0,
+    //         _ => 0.0,
+    //     }
+    // }
+
+    // Simulated sensor values with realistic noise
+    const base = match sensor_id {
+        0 => 2200,   // Temperature: 22.00°C base
+        1 => 10130,  // Pressure: 1013.0 hPa base
+        2 => 4500,   // Humidity: 45.00% base
+        _ => 0,
+    }
+
+    // Deterministic "noise" based on tick (simulates ADC noise)
+    const noise = ((tick * 7 + sensor_id as u64 * 13) % 100) as i32 - 50
+    (base + noise) as f32 / 100.0
+}
+
+// ============================================================================
+// Timing Statistics with Jitter Analysis
+// ============================================================================
+
+struct TimingStats {
+    samples: [u64; 256]     // Fixed buffer for cycle times
+    sample_idx: usize
+    sample_count: usize
+    min_ns: u64
+    max_ns: u64
+    sum_ns: u64
+    sum_squared_ns: u128    // For variance calculation
+    deadline_misses: u64
+}
+
+extend TimingStats {
+    func new() -> TimingStats {
+        TimingStats {
+            samples: [0u64; 256],
+            sample_idx: 0,
+            sample_count: 0,
+            min_ns: u64.MAX,
+            max_ns: 0,
+            sum_ns: 0,
+            sum_squared_ns: 0,
+            deadline_misses: 0,
+        }
+    }
+
+    // Record a cycle time - O(1), no allocation
+    @no_alloc
+    func record(self, cycle_ns: u64, deadline_ns: u64) {
+        // Update rolling buffer
+        self.samples[self.sample_idx] = cycle_ns
+        self.sample_idx = (self.sample_idx + 1) % 256
+
+        // Update statistics
+        if self.sample_count < 256 {
+            self.sample_count += 1
+        }
+        if cycle_ns < self.min_ns: self.min_ns = cycle_ns
+        if cycle_ns > self.max_ns: self.max_ns = cycle_ns
+        self.sum_ns += cycle_ns
+        self.sum_squared_ns += (cycle_ns as u128) * (cycle_ns as u128)
+
+        if cycle_ns > deadline_ns {
+            self.deadline_misses += 1
+        }
+    }
+
+    func mean_ns(self) -> u64 {
+        if self.sample_count == 0: return 0
+        self.sum_ns / self.sample_count as u64
+    }
+
+    // Jitter = standard deviation of cycle times
+    func jitter_ns(self) -> u64 {
+        if self.sample_count < 2: return 0
+        const n = self.sample_count as u128
+        const mean = self.sum_ns as u128 / n
+        const variance = (self.sum_squared_ns / n) - (mean * mean)
+        // Integer sqrt approximation
+        isqrt(variance) as u64
+    }
+}
+
+// Integer square root (no floating point in hot path)
+@no_alloc
+func isqrt(n: u128) -> u128 {
+    if n == 0: return 0
+    let x = n
+    let y = (x + 1) / 2
+    while y < x {
+        x = y
+        y = (x + n / x) / 2
+    }
+    x
+}
+
+// ============================================================================
+// Interrupt Handler Simulation (runs on separate thread)
+// ============================================================================
+
+@no_alloc
+func interrupt_handler(
+    buffer: SpscRingBuffer<SensorReading, 256>,
+    start_time: time.Instant,
+    running: Atomic<bool>,
+    sample_rate_hz: u32
+) {
+    const period_ns = 1_000_000_000u64 / sample_rate_hz as u64
+    let next_sample_time = start_time
+    let sequence: u64 = 0
+
+    while running.load(Ordering.Relaxed) {
+        // Spin-wait until sample time (simulates hardware timer interrupt)
+        while time.Instant.now().duration_since(start_time).as_nanos() <
+              next_sample_time.duration_since(start_time).as_nanos() {
+            // Spin - in real embedded this would be WFI (wait for interrupt)
+            core.hint.spin_loop()
+        }
+
+        const now_ns = time.Instant.now().duration_since(start_time).as_nanos()
+
+        // Read all sensors and push to lock-free buffer
+        for sensor_id in 0u8..3u8 {
+            const reading = SensorReading {
+                sensor_id: sensor_id,
+                value: read_hardware_sensor(sensor_id, sequence),
+                timestamp_ns: now_ns,
+            }
+
+            if !buffer.try_push(reading) {
+                // Buffer overflow - in real system would set error flag
+                // Cannot print here (interrupt context)
+            }
+        }
+
+        sequence += 1
+        next_sample_time = start_time + time.Duration.from_nanos(period_ns * sequence)
+    }
+}
+
+// ============================================================================
+// Main Processing Loop
+// ============================================================================
+
+struct ProcessorState {
+    // Circular buffers for each sensor (no allocation after init)
+    temp_history: [f32; 64]
+    pressure_history: [f32; 64]
+    humidity_history: [f32; 64]
+    history_idx: usize
+    history_count: usize
+
+    // Processed outputs
+    temp_avg: f32
+    pressure_avg: f32
+    humidity_avg: f32
+
+    // Counters
+    samples_processed: u64
+    buffer_overflows: u64
+}
+
+extend ProcessorState {
+    func new() -> ProcessorState {
+        ProcessorState {
+            temp_history: [0.0f32; 64],
+            pressure_history: [0.0f32; 64],
+            humidity_history: [0.0f32; 64],
+            history_idx: 0,
+            history_count: 0,
+            temp_avg: 0.0,
+            pressure_avg: 0.0,
+            humidity_avg: 0.0,
+            samples_processed: 0,
+            buffer_overflows: 0,
+        }
+    }
+
+    // Process a single reading - must complete in bounded time
+    @inline @no_alloc
+    func process_reading(self, reading: SensorReading) {
+        // Store in appropriate history buffer
+        match reading.sensor_id {
+            0 => self.temp_history[self.history_idx] = reading.value,
+            1 => self.pressure_history[self.history_idx] = reading.value,
+            2 => self.humidity_history[self.history_idx] = reading.value,
+            _ => {}
+        }
+
+        // Update index only after all sensors for this tick
+        if reading.sensor_id == 2 {
+            self.history_idx = (self.history_idx + 1) % 64
+            if self.history_count < 64 {
+                self.history_count += 1
+            }
+        }
+
+        self.samples_processed += 1
+    }
+
+    // Compute averages using SIMD for vectorized summation
+    // 64-element arrays = 8 iterations of f32x8 (256-bit SIMD)
+    @no_alloc
+    func compute_averages(self) {
+        if self.history_count == 0: return
+
+        // Use SIMD to sum arrays in parallel
+        // Process 8 floats at a time using f32x8 (AVX on x86, NEON on ARM)
+        const temp_sum = simd_sum_f32(self.temp_history, self.history_count)
+        const pressure_sum = simd_sum_f32(self.pressure_history, self.history_count)
+        const humidity_sum = simd_sum_f32(self.humidity_history, self.history_count)
+
+        const n = self.history_count as f32
+        self.temp_avg = temp_sum / n
+        self.pressure_avg = pressure_sum / n
+        self.humidity_avg = humidity_sum / n
+    }
+}
+
+// SIMD-optimized array sum using 8-wide vectors
+// Processes 8 f32 values per iteration (AVX-256 / NEON)
+@no_alloc @inline
+func simd_sum_f32(data: [f32; 64], count: usize) -> f32 {
+    // Accumulator vector - 8 parallel sums
+    let acc: f32x8 = [0.0; 8]
+
+    // Process full 8-element chunks
+    const full_chunks = count / 8
+    for i in 0..full_chunks {
+        // Load 8 contiguous floats directly into SIMD register
+        // Compiles to single VMOVUPS (AVX) or VLD1 (NEON) instruction
+        const chunk = f32x8.load(data[i * 8..])
+        acc = acc + chunk
+    }
+
+    // Horizontal sum: reduce 8 lanes to single value
+    let sum = acc.sum()
+
+    // Handle remaining elements (count % 8)
+    const remainder_start = full_chunks * 8
+    for i in remainder_start..count {
+        sum += data[i]
+    }
+
+    sum
+}
+
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
+func main() -> Result<(), Error> {
+    println("=== Real-Time Sensor Processor ===")
+    println("")
+
+    // Configuration
+    const SAMPLE_RATE_HZ: u32 = 1000        // 1kHz sensor sampling
+    const PROCESS_RATE_HZ: u32 = 100        // 100Hz processing loop
+    const HARD_DEADLINE_US: u64 = 5000      // 5ms hard deadline (50% of period)
+    const DURATION_SECS: u64 = 2            // Run for 2 seconds
+
+    println("Sample rate: {SAMPLE_RATE_HZ} Hz (interrupt)")
+    println("Process rate: {PROCESS_RATE_HZ} Hz (main loop)")
+    println("Hard deadline: {HARD_DEADLINE_US} µs")
+    println("")
+
+    // Pre-allocate everything before real-time section
+    let buffer = SpscRingBuffer<SensorReading, 256>.new(SensorReading {
+        sensor_id: 0,
+        value: 0.0,
+        timestamp_ns: 0,
+    })
+    let state = ProcessorState.new()
+    let timing = TimingStats.new()
+    let running = Atomic.new(true)
+
+    const start_time = time.Instant.now()
+    const process_period_ns = 1_000_000_000u64 / PROCESS_RATE_HZ as u64
+    const deadline_ns = HARD_DEADLINE_US * 1000
+
+    // Start interrupt handler on raw thread (needs thread affinity)
+    let isr_handle = raw_thread {
+        interrupt_handler(buffer, start_time, running, SAMPLE_RATE_HZ)
+    }
+
+    println("Started. Processing for {DURATION_SECS} seconds...")
+    println("")
+
+    // === REAL-TIME SECTION - NO ALLOCATIONS BELOW THIS LINE ===
+
+    let cycle: u64 = 0
+    let next_process_time = start_time
+
+    while time.Instant.now().duration_since(start_time).as_secs() < DURATION_SECS {
+        const cycle_start = time.Instant.now()
+
+        // Drain all available samples from interrupt buffer
+        let drained: u32 = 0
+        while buffer.try_pop() is Some(reading) {
+            state.process_reading(reading)
+            drained += 1
+        }
+
+        // Compute derived values (less frequent)
+        if cycle % 10 == 0 {
+            state.compute_averages()
+        }
+
+        // Measure cycle time
+        const cycle_ns = cycle_start.elapsed().as_nanos()
+        timing.record(cycle_ns, deadline_ns)
+
+        // HARD DEADLINE CHECK - would panic in production
+        if cycle_ns > deadline_ns {
+            // In safety-critical system: trigger watchdog, enter safe mode
+            // Here we just count it
+        }
+
+        cycle += 1
+
+        // Spin-wait for next cycle (more precise than sleep)
+        next_process_time = start_time + time.Duration.from_nanos(process_period_ns * cycle)
+        while time.Instant.now() < next_process_time {
+            core.hint.spin_loop()
+        }
+    }
+
+    // === END REAL-TIME SECTION ===
+
+    // Signal interrupt handler to stop
+    running.store(false, Ordering.Release)
+    isr_handle.join()?
+
+    // Print results
+    println("=== Results ===")
+    println("")
+    println("Samples processed: {state.samples_processed}")
+    println("Processing cycles: {cycle}")
+    println("")
+    println("Timing Statistics:")
+    println("  Min cycle:  {timing.min_ns / 1000} µs")
+    println("  Max cycle:  {timing.max_ns / 1000} µs")
+    println("  Mean cycle: {timing.mean_ns() / 1000} µs")
+    println("  Jitter:     {timing.jitter_ns() / 1000} µs (std dev)")
+    println("  Deadline misses: {timing.deadline_misses}")
+    println("")
+    println("Final Averages (64-sample window):")
+    println("  Temperature: {state.temp_avg:.2} °C")
+    println("  Pressure:    {state.pressure_avg:.1} hPa")
+    println("  Humidity:    {state.humidity_avg:.1} %")
+
+    if timing.deadline_misses > 0 {
+        println("")
+        println("WARNING: {timing.deadline_misses} deadline misses detected!")
+    }
+
+    Ok(())
+}

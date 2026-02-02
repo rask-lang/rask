@@ -1,0 +1,9 @@
+[package]
+name = "rask-interp"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+thiserror.workspace = true

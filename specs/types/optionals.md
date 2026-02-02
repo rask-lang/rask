@@ -16,7 +16,7 @@ Optional handling is extremely common. Rask provides both uniformity (Option is 
 
 ### The Option Type
 
-```
+```rask
 enum Option<T> {
     Some(T),
     None,
@@ -40,9 +40,9 @@ enum Option<T> {
 
 `none` is a literal representing absence:
 
-```
+```rask
 let x: User? = none
-fn find(id: i64) -> User? { none }
+func find(id: i64) -> User? { none }
 ```
 
 Type is inferred from context. Equivalent to `Option.None`.
@@ -51,7 +51,7 @@ Type is inferred from context. Equivalent to `Option.None`.
 
 `T` coerces to `Option<T>` automatically:
 
-```
+```rask
 let user: User? = load_user()    // wraps to Some(user)
 ```
 
@@ -59,7 +59,7 @@ let user: User? = load_user()    // wraps to Some(user)
 
 ### Optional Chaining: `?.`
 
-```
+```rask
 user?.profile?.settings?.theme
 ```
 
@@ -70,8 +70,8 @@ user?.profile?.settings?.theme
 
 ### Nil-Coalescing: `??`
 
-```
-let name = user?.name ?? "Anonymous"
+```rask
+const name = user?.name ?? "Anonymous"
 ```
 
 | x is | `x ?? y` |
@@ -83,15 +83,15 @@ Short-circuits: `y` only evaluated if `x` is none.
 
 ### Force Unwrap: `!`
 
-```
-let user = get_user()!    // panics if none
+```rask
+const user = get_user()!    // panics if none
 ```
 
 Use sparingly. Prefer `??` or `if x?`.
 
 ### Conditional Check: `if x?`
 
-```
+```rask
 let user: User? = get_user(id)
 
 if user? {
@@ -102,7 +102,7 @@ if user? {
 ```
 
 **Combined conditions:**
-```
+```rask
 if user? && user.active {
     // user unwrapped, active checked
 }
@@ -126,7 +126,7 @@ if user? && user.active {
 
 Standard enum matching works:
 
-```
+```rask
 match user {
     Some(u) => process(u),
     None => handle_missing(),
@@ -139,7 +139,7 @@ Rarely needed — prefer `if x?` and `??`.
 
 If `T` is linear, `T?` is linear. Must handle both paths:
 
-```
+```rask
 let file: File? = open("data.txt")
 if file? {
     file.close()
@@ -148,7 +148,7 @@ if file? {
 
 ### Comparison
 
-```
+```rask
 x == none       // is absent
 x != none       // has value
 x == y          // compare inner values or both none
@@ -189,7 +189,6 @@ See [Error Types](error-types.md) for Result handling and [Union Types](union-ty
 
 ---
 
-## Remaining Issues
+## See Also
 
-### Low Priority
-1. **`if let` compatibility** — Should `if let Some(x) = opt` also work? (Yes, for uniformity)
+- [Control Flow - Pattern Matching with `is`](../control/control-flow.md#pattern-matching-in-conditions-is) — `if opt is Some(x)` works for Option (and all enums), though `if opt?` is preferred for Option.
