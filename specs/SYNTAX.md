@@ -104,7 +104,7 @@ let result = {
 1_000_000           // Underscores for readability
 
 // Strings
-"hello"             // String literal
+"hello"             // string literal
 "line 1\nline 2"    // Escape sequences
 """
 Multi-line
@@ -146,7 +146,7 @@ let x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 ### Functions
 
 ```rask
-func greet(name: String) {
+func greet(name: string) {
     println("Hello, {name}")
 }
 
@@ -169,7 +169,7 @@ func consume(take data: Data)      // Takes ownership
 
 **Named arguments (optional, order-fixed):**
 ```rask
-func create_user(name: String, email: String, admin: bool)
+func create_user(name: string, email: string, admin: bool)
 
 // Positional (IDE shows names as ghost text)
 create_user("Alice", "alice@x.com", false)
@@ -181,8 +181,8 @@ Named arguments improve readability but don't allow reordering. Per Principle 7,
 
 **Default arguments:**
 ```rask
-func connect(host: String, port: i32 = 8080, timeout: i32 = 30)
-func greet(name: String, greeting: String = "Hello")
+func connect(host: string, port: i32 = 8080, timeout: i32 = 30)
+func greet(name: string, greeting: string = "Hello")
 
 // Calls
 connect("localhost")                      // port=8080, timeout=30
@@ -223,9 +223,9 @@ Methods are always defined in `extend` blocks, separate from the data definition
 
 ```rask
 struct User {
-    public name: String          // public = visible outside package
-    public email: String
-    password_hash: String     // Package-private
+    public name: string          // public = visible outside package
+    public email: string
+    password_hash: string     // Package-private
 }
 
 // Construction
@@ -250,7 +250,7 @@ struct UserId {
 
 **Linear structs** (must be consumed exactly once):
 ```rask
-@linear
+@resource
 struct File {
     fd: i32
 }
@@ -267,7 +267,7 @@ extend File {
 |-----------|------|------|----------|
 | (none) | If ≤16 bytes | Yes | Normal values |
 | `@unique` | Never | Yes | Unique IDs, tokens |
-| `@linear` | Never | Never | Files, connections |
+| `@resource` | Never | Never | Files, connections |
 
 ### Enums (Sum Types)
 
@@ -276,7 +276,7 @@ enum Status {
     Pending
     Active
     Completed(timestamp: i64)
-    Failed(error: String)
+    Failed(error: string)
 }
 
 enum Option<T> {
@@ -318,7 +318,7 @@ extend Option<T> {
 
 ```rask
 trait Display {
-    func display(self) -> String
+    func display(self) -> string
 }
 
 trait Iterator<T> {
@@ -335,7 +335,7 @@ struct Point {
 }
 
 extend Point {
-    func display(self) -> String {
+    func display(self) -> string {
         "{self.x}, {self.y}"
     }
 }
@@ -345,7 +345,7 @@ extend Point {
 **Explicit trait implementation:** Use `extend Type with Trait` when you want to document intent or implement a trait explicitly:
 ```rask
 extend Point with Display {
-    func display(self) -> String {
+    func display(self) -> string {
         "({self.x}, {self.y})"
     }
 }
@@ -653,7 +653,7 @@ with pool {
 ### Ensure (Deferred Cleanup)
 
 ```rask
-func process(path: String) -> Result<Data, Error> {
+func process(path: string) -> Result<Data, Error> {
     const file = File.open(path)?
     ensure file.close()          // Runs on ANY exit (return, ?, panic)
 
@@ -662,16 +662,16 @@ func process(path: String) -> Result<Data, Error> {
 }
 ```
 
-### Linear Types
+### Linear Resource Types
 
 ```rask
-@linear
+@resource
 struct Connection {
     socket: Socket
 }
 
 extend Connection {
-    func open(addr: String) -> Result<Connection, Error> {
+    func open(addr: string) -> Result<Connection, Error> {
         // ...
     }
 
@@ -750,7 +750,7 @@ const must_exist = optional!
 const must_exist = optional! "custom panic message"
 
 // Result
-func read_file(path: String) -> Result<String, IoError> {
+func read_file(path: string) -> Result<string, IoError> {
     const file = File.open(path)?
     file.read_all()
 }
@@ -864,7 +864,7 @@ func hot_path() { ... }
 @no_alloc
 func interrupt_handler() {
     // Compile error if any allocation occurs
-    // Cannot: grow Vec, create String, use .clone() on heap types
+    // Cannot: grow Vec, create string, use .clone() on heap types
 }
 ```
 
@@ -881,7 +881,7 @@ func interrupt_handler() {
 | `@align(N)` | Struct | Minimum N-byte alignment |
 | `@binary` | Struct | Wire format with bit-level fields |
 | `@unique` | Struct | Disable implicit copy |
-| `@linear` | Struct | Must consume, cannot copy or drop |
+| `@resource` | Struct | Must consume, cannot copy or drop |
 
 ---
 
@@ -963,7 +963,7 @@ def process_file(path):
 
 **Rask:**
 ```rask
-func process_file(path: String) -> Result<Data, IoError> {
+func process_file(path: string) -> Result<Data, IoError> {
     const file = File.open(path)?
     ensure file.close()
     const content = file.read_all()?

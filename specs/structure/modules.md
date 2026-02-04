@@ -4,10 +4,10 @@
 How are programs organized? What are the visibility rules, import/export mechanism, and namespace management?
 
 ## Decision
-Package-visible default with explicit `public`, fixed built-in types, `import`/`using` for selective imports, `export` for library facades, transparent re-exports with origin-based identity.
+Package-visible default with explicit `public`, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
 
 ## Rationale
-Packages are compilation units—default package visibility keeps related code accessible without ceremony. Fixed built-in types eliminate noise for ubiquitous types while preserving predictability (you always know what's in scope). Qualified imports are the default (shows provenance); `using` keyword makes selective import a conscious choice with natural English flow. `export` clearly communicates re-export intent for library authors. Transparent re-exports (identity = origin) preserve composability.
+Packages are compilation units—default package visibility keeps related code accessible without ceremony. Fixed built-in types eliminate noise for ubiquitous types while preserving predictability (you always know what's in scope). Path-based imports (`import pkg` for qualified, `import pkg.Name` for unqualified) are intuitive—import a package for qualified access, import a symbol for direct access. `export` clearly communicates re-export intent for library authors. Transparent re-exports (identity = origin) preserve composability.
 
 ## Specification
 
@@ -28,7 +28,7 @@ Packages are compilation units—default package visibility keeps related code a
 
 **These types are available in every file without import:**
 - Primitives: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `char`
-- Core types: `String`, `Vec`, `Pool`, `Map`, `Result`, `Option`, `Error`
+- Core types: `string`, `Vec`, `Pool`, `Map`, `Result`, `Option`, `Error`
 - Variants: `Ok`, `Err`, `Some`, `None`
 
 **Rules:**
@@ -54,18 +54,23 @@ Packages are compilation units—default package visibility keeps related code a
 |--------|--------|
 | `import pkg` | Qualified access: `pkg.Name` |
 | `import pkg as p` | Aliased access: `p.Name` |
-| `import pkg using Name` | Unqualified: `Name` directly |
-| `import pkg using Name, Other` | Multiple unqualified |
-| `import pkg using Name as N` | Renamed unqualified: `N` |
+| `import pkg.Name` | Unqualified: `Name` directly |
+| `import pkg.Name, pkg.Other` | Multiple unqualified |
+| `import pkg.Name as N` | Renamed unqualified: `N` |
 | `import lazy pkg` | Lazy init: deferred until first use |
+| `import pkg.*` | Glob import (with warning) |
 
 **Design rationale:**
-- Qualified access is the default (shows provenance)
-- `using` makes selective import a conscious choice
-- No braces needed—reads as natural English: "import http using Request"
+- Path determines access: import package → qualified, import symbol → unqualified
+- `import http.Request` clearly indicates `Request` is available directly
+- Glob imports emit a compiler warning to discourage overuse
+
+**Disambiguation (package vs symbol):**
+- Convention: packages are lowercase, types are PascalCase
+- If ambiguous, symbols take precedence over subpackages
 
 **Constraint rules:**
-- NO wildcard imports (no `import pkg using *`)
+- Wildcard imports (`import pkg.*`) allowed but emit compiler warning
 - Unused imports: compile error
 - Shadowing imported name with local definition: compile error
 
@@ -82,7 +87,7 @@ func main() -> Result<(), Error> {
         return Ok(())  // Fast exit, database never initialized
     }
 
-    let conn = database.connect()?  // init() runs here, errors propagate via ?
+    const conn = database.connect()?  // init() runs here, errors propagate via ?
 }
 ```
 
@@ -156,12 +161,12 @@ mylib.Parser  // works, don't need to know about internal/parser
 **Factory-first pattern:**
 ```rask
 public struct Request {
-    public method: String
-    public path: String
+    public method: string
+    public path: string
     id: u64  // non-public → factory required
 }
 
-public func new_request(method: String, path: String) -> Request {
+public func new_request(method: string, path: string) -> Request {
     Request { method, path, id: next_id() }
 }
 ```
@@ -367,7 +372,8 @@ All C calls require `unsafe` context.
 | Lazy + eager import same pkg | Eager wins: package initializes before main() |
 | Lazy init failure | Error propagates to call site via `?` |
 | Circular lazy init | Runtime error: "circular lazy initialization: A → B → A" |
-| Lazy import with `using` | `import lazy pkg using Foo` — Foo() call triggers init |
+| Lazy import of symbol | `import lazy pkg.Foo` — Foo() call triggers init |
+| Glob import | Warning: "glob import imports N symbols, consider specific imports" |
 
 ## Examples
 
@@ -375,12 +381,12 @@ All C calls require `unsafe` context.
 ```rask
 // file: http/request.rask
 public struct Request {
-    public method: String
-    public path: String
+    public method: string
+    public path: string
     id: u64  // pkg-visible
 }
 
-public func new(method: String, path: String) -> Request {
+public func new(method: string, path: string) -> Request {
     Request { method, path, id: next_id() }
 }
 
@@ -398,13 +404,13 @@ func log(r: Request) {
 ```rask
 // file: main.rask
 import http
-import json using parse, stringify  // selective unqualified
+import json.parse, json.stringify  // selective unqualified
 
 func main() {
-    let req = http.new("GET", "/")     // qualified
-    let body = parse(read())           // unqualified
-    let s: String = ...                // built-in
-    let r: Result<i32, Error> = Ok(42) // built-in
+    const req = http.new("GET", "/")   // qualified
+    const body = parse(read())         // unqualified
+    const s: string = ...              // built-in
+    const r: Result<i32, Error> = Ok(42) // built-in
 }
 ```
 
@@ -442,14 +448,14 @@ struct Node {
 }
 
 func build_tree(pool: Pool<Node>) -> Handle<Node> {
-    let root = pool.insert(Node { value: 0, parent: None, children: [] })
-    let child = pool.insert(Node { value: 1, parent: Some(root), children: [] })
+    const root = pool.insert(Node { value: 0, parent: None, children: [] })
+    const child = pool.insert(Node { value: 1, parent: Some(root), children: [] })
     pool[root].children.push(child)
     root
 }
 
 func walk_up(pool: Pool<Node>, node: Handle<Node>) {
-    let current = node
+    let current = node  // let because reassigned in loop
     while pool[current].parent is Some(parent) {
         print(pool[parent].value)  // O(1) lookup, no vtable
         current = parent
@@ -465,4 +471,4 @@ func walk_up(pool: Pool<Node>, node: Handle<Node>) {
 - **Error Handling**: `Result` as built-in eliminates ceremony; propagation (`?`) works uniformly regardless of import style
 - **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; generic instantiations cached by semantic hash
 - **C Interop**: See [C Interop](c-interop.md) for full specification
-- **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names when selective imports used, and monomorphization (code generation) locations
+- **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names, and monomorphization (code generation) locations

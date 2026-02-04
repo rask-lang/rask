@@ -545,7 +545,7 @@ testing = "1.0"  # Only used in tests, not transitive
 ```rask
 import string_utils
 
-public func process(s: String) -> String {
+public func process(s: string) -> string {
     string_utils.normalize(s)
 }
 ```

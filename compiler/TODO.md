@@ -152,7 +152,7 @@ Tree-walk interpreter to validate the language design. Target: run the grep clon
 
 ### Required Features
 - [ ] Command-line argument parsing
-- [ ] File I/O with linear types
+- [ ] File I/O with linear resource types
 - [ ] String handling
 - [ ] Pattern matching (basic substring or regex)
 - [ ] Line iteration

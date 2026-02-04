@@ -108,7 +108,7 @@ extend Lexer {
     }
 
     func read_number(self) -> Result<Token, CalcError> {
-        let num_str = String.new()
+        let num_str = string.new()
         let has_dot = false
 
         while self.peek_char() is Some(c) {
@@ -340,86 +340,74 @@ func main() -> Result<(), Error> {
 }
 
 // ============================================================================
-// Tests - Demonstrates @test attribute
+// Tests - Demonstrates test blocks and assert statements
 // ============================================================================
 
-@test
-func test_addition() {
-    assert(calc("2 + 3") == Ok(5.0))
-    assert(calc("10 + 20 + 30") == Ok(60.0))
+test "addition" {
+    assert calc("2 + 3") == Ok(5.0)
+    assert calc("10 + 20 + 30") == Ok(60.0)
 }
 
-@test
-func test_subtraction() {
-    assert(calc("10 - 3") == Ok(7.0))
-    assert(calc("5 - 10") == Ok(-5.0))
+test "subtraction" {
+    assert calc("10 - 3") == Ok(7.0)
+    assert calc("5 - 10") == Ok(-5.0)
 }
 
-@test
-func test_multiplication() {
-    assert(calc("4 * 5") == Ok(20.0))
-    assert(calc("2 * 3 * 4") == Ok(24.0))
+test "multiplication" {
+    assert calc("4 * 5") == Ok(20.0)
+    assert calc("2 * 3 * 4") == Ok(24.0)
 }
 
-@test
-func test_division() {
-    assert(calc("20 / 4") == Ok(5.0))
-    assert(calc("7 / 2") == Ok(3.5))
+test "division" {
+    assert calc("20 / 4") == Ok(5.0)
+    assert calc("7 / 2") == Ok(3.5)
 }
 
-@test
-func test_precedence() {
+test "precedence" {
     // Multiplication before addition
-    assert(calc("2 + 3 * 4") == Ok(14.0))
-    assert(calc("2 * 3 + 4") == Ok(10.0))
+    assert calc("2 + 3 * 4") == Ok(14.0)
+    assert calc("2 * 3 + 4") == Ok(10.0)
 
     // Division before subtraction
-    assert(calc("10 - 6 / 2") == Ok(7.0))
+    assert calc("10 - 6 / 2") == Ok(7.0)
 }
 
-@test
-func test_parentheses() {
-    assert(calc("(2 + 3) * 4") == Ok(20.0))
-    assert(calc("2 * (3 + 4)") == Ok(14.0))
-    assert(calc("((1 + 2) * (3 + 4))") == Ok(21.0))
+test "parentheses" {
+    assert calc("(2 + 3) * 4") == Ok(20.0)
+    assert calc("2 * (3 + 4)") == Ok(14.0)
+    assert calc("((1 + 2) * (3 + 4))") == Ok(21.0)
 }
 
-@test
-func test_power_right_associative() {
+test "power right associative" {
     // 2^3^2 = 2^(3^2) = 2^9 = 512, not (2^3)^2 = 64
-    assert(calc("2 ^ 3 ^ 2") == Ok(512.0))
-    assert(calc("2 ^ 3") == Ok(8.0))
+    assert calc("2 ^ 3 ^ 2") == Ok(512.0)
+    assert calc("2 ^ 3") == Ok(8.0)
 }
 
-@test
-func test_unary_negation() {
-    assert(calc("-5") == Ok(-5.0))
-    assert(calc("-5 + 3") == Ok(-2.0))
-    assert(calc("--5") == Ok(5.0))  // Double negation
-    assert(calc("3 * -2") == Ok(-6.0))
+test "unary negation" {
+    assert calc("-5") == Ok(-5.0)
+    assert calc("-5 + 3") == Ok(-2.0)
+    assert calc("--5") == Ok(5.0)  // Double negation
+    assert calc("3 * -2") == Ok(-6.0)
 }
 
-@test
-func test_modulo() {
-    assert(calc("10 % 3") == Ok(1.0))
-    assert(calc("15 % 4") == Ok(3.0))
+test "modulo" {
+    assert calc("10 % 3") == Ok(1.0)
+    assert calc("15 % 4") == Ok(3.0)
 }
 
-@test
-func test_floating_point() {
-    assert(calc("3.14 * 2") == Ok(6.28))
-    assert(calc("1.5 + 2.5") == Ok(4.0))
+test "floating point" {
+    assert calc("3.14 * 2") == Ok(6.28)
+    assert calc("1.5 + 2.5") == Ok(4.0)
 }
 
-@test
-func test_division_by_zero() {
-    assert(calc("5 / 0") == Err(CalcError.DivisionByZero))
-    assert(calc("10 % 0") == Err(CalcError.DivisionByZero))
+test "division by zero" {
+    assert calc("5 / 0") == Err(CalcError.DivisionByZero)
+    assert calc("10 % 0") == Err(CalcError.DivisionByZero)
 }
 
-@test
-func test_invalid_input() {
-    assert(calc("2 +").is_err())
-    assert(calc("") == Err(CalcError.EmptyExpression))
-    assert(calc("@").is_err())
+test "invalid input" {
+    assert calc("2 +").is_err()
+    assert calc("") == Err(CalcError.EmptyExpression)
+    assert calc("@").is_err()
 }

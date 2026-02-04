@@ -194,12 +194,12 @@ public func add(a: i32, b: i32) -> i32 { a + b }
 
 ## Benchmarking
 
-### Bench Blocks
+### Benchmark Blocks
 
-Benchmarks use `bench` blocks, mirroring `test` blocks:
+Benchmarks use `benchmark` blocks, mirroring `test` blocks:
 
 ```rask
-bench "vec push" {
+benchmark "vec push" {
     const vec = Vec.new()
     for _ in 0..1000 {
         vec.push(42)
@@ -209,9 +209,9 @@ bench "vec push" {
 
 | Property | Value |
 |----------|-------|
-| Syntax | `bench "description" { body }` |
+| Syntax | `benchmark "description" { body }` |
 | Location | Same rules as `test` blocks |
-| Compilation | Stripped unless `rask bench` |
+| Compilation | Stripped unless `rask benchmark` |
 | Optimization | Release optimizations when run |
 
 ### Measurement
@@ -223,12 +223,12 @@ The runner handles iteration and statistics:
 
 Entire block is timed. For setup, use helper functions.
 
-### Bench CLI
+### Benchmark CLI
 
-```rask
-rask bench              # Run all benchmarks
-rask bench -f "vec"     # Filter by pattern
-rask bench --json       # Machine-readable output
+```
+rask benchmark              # Run all benchmarks
+rask benchmark -f "vec"     # Filter by pattern
+rask benchmark --json       # Machine-readable output
 ```
 
 ## Mocking

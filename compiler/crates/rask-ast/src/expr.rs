@@ -140,6 +140,20 @@ pub enum ExprKind {
     Unsafe {
         body: Vec<super::stmt::Stmt>,
     },
+    /// Comptime expression (computed at compile time)
+    Comptime {
+        body: Vec<super::stmt::Stmt>,
+    },
+    /// Assert expression (assert condition, "message")
+    Assert {
+        condition: Box<Expr>,
+        message: Option<Box<Expr>>,
+    },
+    /// Check expression (check condition, "message") - continues on failure
+    Check {
+        condition: Box<Expr>,
+        message: Option<Box<Expr>>,
+    },
 }
 
 /// A field initializer in a struct literal.

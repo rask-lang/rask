@@ -203,7 +203,7 @@ const user4 = user3              // Moves, user3 invalid
 | Unique identifiers | User IDs, entity handles where duplication is semantically wrong |
 | Capabilities/tokens | Security tokens, permissions where implicit copy would violate access control |
 | API contracts | Force callers to explicitly clone, making allocation visible |
-| Linear-like semantics | Small types that should behave like resources (even if not true linear types) |
+| Linear-like semantics | Small types that should behave like resources (even if not true linear resource types) |
 
 **Interaction with generics:**
 
@@ -227,14 +227,14 @@ Move-only types do NOT satisfy `T: Copy` constraints in generics (see Copy trait
 - **Clear intent:** Attribute signals "this type should not be casually duplicated"
 - **Backward compatible:** Removing `@unique` from a type is a non-breaking change (makes it more permissive)
 
-**Comparison with linear types:**
+**Comparison with resource types:**
 
-| Aspect | Unique types | Linear types |
-|--------|--------------|--------------|
+| Aspect | Unique types | Resource types |
+|--------|--------------|----------------|
 | Must consume | No (can drop) | Yes (compiler error if not consumed) |
 | Can clone | Yes (if fields are Clone) | No (unique ownership) |
 | Use case | Semantic safety | Resource safety |
-| Example | `@unique struct UserId` | `@linear struct File` |
+| Example | `@unique struct UserId` | `@resource struct File` |
 
 ### Copy Trait and Generics
 
@@ -268,7 +268,7 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | `(i32, i32)` | ✅ Yes | 8 bytes, all fields Copy |
 | `Point{x: i32, y: i32}` | ✅ Yes | 8 bytes, all fields Copy |
 | `@unique struct UserId{id: u64}` | ❌ No | Explicitly unique (no copy) |
-| `String` | ❌ No | >16 bytes, owns heap memory |
+| `string` | ❌ No | >16 bytes, owns heap memory |
 | `Vec<i32>` | ❌ No | Collection type, never Copy |
 
 **Monomorphization:**
@@ -282,8 +282,8 @@ let (p1, p2) = duplicate(point)  // ✅ OK: Point satisfies Copy
 const id = UserId{id: 42}
 let (id1, id2) = duplicate(id)   // ❌ ERROR: UserId is move-only (doesn't satisfy Copy)
 
-const name = String.from("Alice")
-let (n1, n2) = duplicate(name)   // ❌ ERROR: String doesn't satisfy Copy
+const name = string.from("Alice")
+let (n1, n2) = duplicate(name)   // ❌ ERROR: string doesn't satisfy Copy
 ```
 
 **Copy vs Clone:**
@@ -302,7 +302,7 @@ const p2 = p1             // Implicit copy
 const p3 = p1.clone()     // Explicit clone (same as copy)
 
 // Clone-only type (explicit):
-const s1 = String.from("hello")
+const s1 = string.from("hello")
 const s2 = s1             // Move (s1 invalid)
 const s3 = s2.clone()     // Explicit clone (allocates)
 ```
@@ -351,4 +351,4 @@ The compiler automatically derives Copy for generic types when instantiated with
 
 - [Ownership Rules](ownership.md) — Single-owner model and move semantics
 - [Borrowing](borrowing.md) — One rule: views last as long as the source is stable
-- [Linear Types](linear-types.md) — Must-consume resources
+- [Resource Types](resource-types.md) — Must-consume resources (linear resources)

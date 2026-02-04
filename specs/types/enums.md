@@ -159,7 +159,7 @@ match token {
 | `A \| B => ...` | ✅ | Simple alternatives |
 | `A(x) \| B(x) => use(x)` | ✅ | Both bind `x` with same type |
 | `A(x) \| B(y) => ...` | ❌ | Different binding names |
-| `A(x: i32) \| B(x: String) => ...` | ❌ | Incompatible types for `x` |
+| `A(x: i32) \| B(x: string) => ...` | ❌ | Incompatible types for `x` |
 | `(A \| B, C \| D) => ...` | ✅ | Nested or-patterns |
 
 **With Payloads:**

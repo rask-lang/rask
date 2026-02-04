@@ -46,6 +46,41 @@ impl ResolveError {
             span,
         }
     }
+
+    pub fn unknown_package(path: Vec<String>, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::UnknownPackage { path },
+            span,
+        }
+    }
+
+    pub fn not_visible(name: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::NotVisible { name },
+            span,
+        }
+    }
+
+    pub fn shadows_import(name: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::ShadowsImport { name },
+            span,
+        }
+    }
+
+    pub fn circular_dependency(path: Vec<String>, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::CircularDependency { path },
+            span,
+        }
+    }
+
+    pub fn shadows_builtin(name: String, span: Span) -> Self {
+        Self {
+            kind: ResolveErrorKind::ShadowsBuiltin { name },
+            span,
+        }
+    }
 }
 
 /// The kind of resolution error.
@@ -65,4 +100,19 @@ pub enum ResolveErrorKind {
 
     #[error("return outside of function")]
     InvalidReturn,
+
+    #[error("unknown package: {}", path.join("."))]
+    UnknownPackage { path: Vec<String> },
+
+    #[error("'{}' is not public", name)]
+    NotVisible { name: String },
+
+    #[error("cannot shadow imported name: {name}")]
+    ShadowsImport { name: String },
+
+    #[error("circular dependency: {}", path.join(" -> "))]
+    CircularDependency { path: Vec<String> },
+
+    #[error("cannot shadow built-in name: {name}")]
+    ShadowsBuiltin { name: String },
 }

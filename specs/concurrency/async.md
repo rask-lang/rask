@@ -18,25 +18,28 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
 | `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `threading.spawn { }` | Thread from pool | `with threading` | No |
-| `raw_thread { }` | Raw OS thread | Nothing | No |
+| `spawn_thread { }` | Thread from pool | `with threading` | No |
+| `spawn_raw { }` | Raw OS thread | Nothing | No |
 
 **All return affine handles** - must be joined or detached (compile error if forgotten).
 
 ### Naming Rationale
 
 - `multitasking` - describes the capability (cooperative green tasks, M:N scheduling)
-- `threading` - describes the capability (thread pool), consistent with `multitasking`, avoids collision with common variable name `threads`
-- `raw_thread` - single raw OS thread, distinct from pooled threads
+- `threading` - describes the capability (thread pool), consistent with `multitasking`
+- `spawn_*` - consistent family of spawn keywords:
+  - `spawn` - green task (requires `with multitasking`)
+  - `spawn_thread` - pooled thread (requires `with threading`)
+  - `spawn_raw` - raw OS thread (works anywhere)
 
 ## Concurrency vs Parallelism
 
 | Concept | What it means | Rask construct |
 |---------|--------------|----------------|
 | **Concurrency** | Interleaved execution | Green tasks via `spawn { }` |
-| **Parallelism** | Simultaneous execution | Thread pool via `threading.spawn { }` |
+| **Parallelism** | Simultaneous execution | Thread pool via `spawn_thread { }` |
 
-Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `threading.spawn { }`.
+Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `spawn_thread { }`.
 
 ## Basic Usage
 
@@ -195,7 +198,7 @@ with multitasking(4), threading(8) { }  // Both
 **Stdlib I/O automatically pauses the task:**
 
 ```rask
-func process_file(path: String) -> Result<Data> {
+func process_file(path: string) -> Result<Data> {
     const file = File.open(path)?      // Pauses while opening
     const contents = file.read_all()?  // Pauses while reading
     parse(contents)
@@ -228,7 +231,7 @@ func main() {
     with multitasking, threading {
         spawn {
             const data = fetch(url)?                              // I/O - pauses
-            const result = threading.spawn { analyze(data) }.join()?  // CPU on threads
+            const result = spawn_thread { analyze(data) }.join()?  // CPU on threads
             save(result)?                                       // I/O - pauses
         }.join()?
     }
@@ -249,7 +252,7 @@ With a thread pool:
 ```rask
 with multitasking, threading {
     spawn {
-        threading.spawn { cpu_intensive() }.join()?  // Runs on thread pool
+        spawn_thread { cpu_intensive() }.join()?  // Runs on thread pool
     }.detach()
     spawn { handle_io() }.detach()                  // Runs fine
 }
@@ -260,17 +263,17 @@ with multitasking, threading {
 ```rask
 with threading {
     // Spawn on thread pool, get handle
-    const h = threading.spawn { work() }
+    const h = spawn_thread { work() }
     const result = h.join()?
 
     // Fire-and-forget
-    threading.spawn { background() }.detach()
+    spawn_thread { background() }.detach()
 }
 ```
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `threading.spawn { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
+| `spawn_thread { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
 
 ### Thread Pool Without Multitasking
 
@@ -280,7 +283,7 @@ Thread pool works independently for pure CPU-parallelism (CLI tools, batch proce
 func main() {
     with threading {
         const handles = files.map { |f|
-            threading.spawn { process(f) }
+            spawn_thread { process(f) }
         }
         for h in handles {
             print(h.join()?)
@@ -300,7 +303,7 @@ func main() {
 For code requiring thread affinity (OpenGL, thread-local FFI):
 
 ```rask
-const h = raw_thread {
+const h = spawn_raw {
     init_graphics_context()  // Needs stable thread identity
     render_loop()
 }
@@ -320,7 +323,7 @@ func main() {
 
     // Thread pool still works
     with threading {
-        const handles = files.map { |f| threading.spawn { process(f) } }
+        const handles = files.map { |f| spawn_thread { process(f) } }
         for h in handles { h.join()? }
     }
 }
@@ -329,7 +332,7 @@ func main() {
 | Feature | With Multitasking | Without Multitasking (default) |
 |---------|-------------------|--------------------------------|
 | `spawn { }` | Green tasks | Compile error (no scheduler) |
-| `threading.spawn { }` | Thread pool | Thread pool (same) |
+| `spawn_thread { }` | Thread pool | Thread pool (same) |
 | Stdlib I/O | Pauses task | Blocks thread |
 
 **No special attribute needed.** The presence of `with multitasking { }` is the opt-in.
@@ -348,7 +351,7 @@ This is consistent with all wait operations (I/O, channels, etc.).
 ```rask
 with multitasking, threading {
     spawn {
-        const h = threading.spawn { cpu_work() }
+        const h = spawn_thread { cpu_work() }
         h.join()?  // YIELDS the green task, doesn't block scheduler
     }
 }
@@ -437,7 +440,7 @@ struct Sender<T> { ... }     // NOT linear - can be dropped
 struct Receiver<T> { ... }   // NOT linear - can be dropped
 ```
 
-**Channel handles are NOT linear types.** They can be dropped without explicit close.
+**Channel handles are NOT linear resource types.** They can be dropped without explicit close.
 
 **Rationale:**
 - Fire-and-forget patterns (`.detach()` tasks) would require close ceremony
@@ -586,7 +589,7 @@ loop {
 | Function coloring | None | async/await | No ecosystem split |
 | Green task keyword | `multitasking` | `runtime` | More intuitive |
 | Thread pool keyword | `threading` | `threads`, `pool` | Consistent with `multitasking`, avoids `threads` variable collision |
-| CPU work | Explicit `threading.spawn` | Implicit pool | Transparency (TC >= 0.90) |
+| CPU work | Explicit `spawn_thread` | Implicit pool | Transparency (TC >= 0.90) |
 
 ## Metrics Validation
 

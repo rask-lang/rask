@@ -105,15 +105,10 @@ impl ScopeTree {
     }
 
     /// Define a name in the current scope.
-    /// Returns an error if the name is already defined in the current scope.
-    pub fn define(&mut self, name: String, symbol: SymbolId, span: Span) -> Result<(), ResolveError> {
+    /// Shadowing is allowed - a new binding replaces the previous one.
+    pub fn define(&mut self, name: String, symbol: SymbolId, _span: Span) -> Result<(), ResolveError> {
         let scope = &mut self.scopes[self.current.0 as usize];
-        if let Some(&existing) = scope.bindings.get(&name) {
-            // Get the previous span for the error message
-            // We'll need the symbol table to look this up, so we pass a dummy span
-            // In a real implementation, we'd look up the symbol's span
-            return Err(ResolveError::duplicate(name, span, Span::new(0, 0)));
-        }
+        // Shadowing is allowed in Rask - just replace the existing binding
         scope.bindings.insert(name, symbol);
         Ok(())
     }

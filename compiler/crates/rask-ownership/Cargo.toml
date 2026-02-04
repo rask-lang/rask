@@ -1,0 +1,10 @@
+[package]
+name = "rask-ownership"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-resolve = { path = "../rask-resolve" }
+rask-types = { path = "../rask-types" }
+thiserror.workspace = true

@@ -51,8 +51,10 @@ enum RawToken {
     Deliver,
     #[token("spawn")]
     Spawn,
-    #[token("raw_thread")]
-    RawThread,
+    #[token("spawn_thread")]
+    SpawnThread,
+    #[token("spawn_raw")]
+    SpawnRaw,
     #[token("select")]
     Select,
     #[token("with")]
@@ -88,6 +90,8 @@ enum RawToken {
     Using,
     #[token("export")]
     Export,
+    #[token("lazy")]
+    Lazy,
     #[token("asm")]
     Asm,
     #[token("step")]
@@ -96,6 +100,14 @@ enum RawToken {
     Native,
     #[token("timeout")]
     Timeout,
+    #[token("test")]
+    Test,
+    #[token("benchmark")]
+    Benchmark,
+    #[token("assert")]
+    Assert,
+    #[token("check")]
+    Check,
 
     // === Operators (order matters - longer first) ===
     // Three-character operators
@@ -376,7 +388,8 @@ impl<'a> Lexer<'a> {
             RawToken::Continue => TokenKind::Continue,
             RawToken::Deliver => TokenKind::Deliver,
             RawToken::Spawn => TokenKind::Spawn,
-            RawToken::RawThread => TokenKind::RawThread,
+            RawToken::SpawnThread => TokenKind::SpawnThread,
+            RawToken::SpawnRaw => TokenKind::SpawnRaw,
             RawToken::Select => TokenKind::Select,
             RawToken::With => TokenKind::With,
             RawToken::Ensure => TokenKind::Ensure,
@@ -394,10 +407,15 @@ impl<'a> Lexer<'a> {
             RawToken::Null => TokenKind::Null,
             RawToken::Using => TokenKind::Using,
             RawToken::Export => TokenKind::Export,
+            RawToken::Lazy => TokenKind::Lazy,
             RawToken::Asm => TokenKind::Asm,
             RawToken::Step => TokenKind::Step,
             RawToken::Native => TokenKind::Native,
             RawToken::Timeout => TokenKind::Timeout,
+            RawToken::Test => TokenKind::Test,
+            RawToken::Benchmark => TokenKind::Benchmark,
+            RawToken::Assert => TokenKind::Assert,
+            RawToken::Check => TokenKind::Check,
 
             // Operators
             RawToken::Plus => TokenKind::Plus,

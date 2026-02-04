@@ -40,12 +40,12 @@ Maximum simplicity: the compiler determines package role from code structure. No
 
 ### CLI Arguments
 
-**Built-in type:** `Args` (always available, like `String`, `Vec`)
+**Built-in type:** `Args` (always available, like `string`, `Vec`)
 
 ```rask
 public func main(args: Args) {
     for arg in args {
-        print(arg)  // arg is String
+        print(arg)  // arg is string
     }
 }
 ```
@@ -56,12 +56,12 @@ struct Args { ... }  // opaque built-in
 
 extend Args {
     func len(self) -> usize
-    func get(self, i: usize) -> Option<String>
+    func get(self, i: usize) -> Option<string>
     func iter(self) -> ArgsIter
 }
 
 // Implements Iterate trait
-for arg in args { ... }  // yields String
+for arg in args { ... }  // yields string
 ```
 
 **Behavior:**
@@ -137,7 +137,7 @@ public func main() {
 // pkg: http
 // file: http/request.rask
 public struct Request { ... }
-public func new(method: String, path: String) -> Request { ... }
+public func new(method: string, path: string) -> Request { ... }
 
 // NO main() → this is a library
 ```
@@ -159,7 +159,7 @@ public func main() {
 ```rask
 // pkg: http
 // file: http/request.rask
-public func parse(input: String) -> Result<Request> { ... }
+public func parse(input: string) -> Result<Request> { ... }
 
 // file: http/request_test.rask
 import http  // Can import own package in tests
@@ -181,7 +181,7 @@ public func main() {
 **OR explicit test main:**
 ```rask
 public func main(args: Args) {
-    if args.len() > 1 && args[1] == "--bench" {
+    if args.len() > 1 && args[1] == "--benchmark" {
         run_benchmarks()
     } else {
         run_tests()

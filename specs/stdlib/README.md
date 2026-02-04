@@ -14,7 +14,7 @@ The Rask standard library provides foundational types and modules for systems pr
 
 **Mechanical, not opinionated:** Stdlib implements protocols and formats, not frameworks. `http.Server` handles requests; routing/middleware are packages.
 
-**Linear resources for I/O:** File handles, sockets, and system resources are linear types — must be consumed exactly once. This prevents resource leaks by construction.
+**Linear resources for I/O:** File handles, sockets, and system resources are linear resource types — must be consumed exactly once. This prevents resource leaks by construction.
 
 **Fallible operations:** Operations that can fail return `Result`. No hidden exceptions.
 
@@ -1037,7 +1037,7 @@ The following are **not** part of stdlib — use packages:
 - [iteration.md](iteration.md) — Collection iteration
 - [testing.md](testing.md) — Test framework
 - [memory/pools.md](../memory/pools.md) — Pool and Handle
-- [memory/linear-types.md](../memory/linear-types.md) — Linear resource semantics
+- [memory/resource-types.md](../memory/resource-types.md) — Resource type semantics (linear resources)
 - [control/ensure.md](../control/ensure.md) — Cleanup mechanism
 - [concurrency/README.md](../concurrency/README.md) — Concurrency primitives
 

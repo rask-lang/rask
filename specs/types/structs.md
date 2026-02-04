@@ -47,8 +47,8 @@ struct Name {
 **Example:**
 ```rask
 public struct Request {
-    public method: String
-    public path: String
+    public method: string
+    public path: string
     id: u64              // package-only
 }
 
@@ -130,7 +130,7 @@ extend Point {
 <!-- test: parse -->
 ```rask
 struct Config {
-    values: Map<String, String>
+    values: Map<string, string>
 }
 
 extend Config {
@@ -138,7 +138,7 @@ extend Config {
         Config { values: Map.new() }
     }
 
-    func from_file(path: String) -> Result<Config, Error> {
+    func from_file(path: string) -> Result<Config, Error> {
         // ...
     }
 }
@@ -161,7 +161,7 @@ public struct Connection {
 }
 
 extend Connection {
-    public func new(addr: String) -> Result<Connection, Error> {
+    public func new(addr: string) -> Result<Connection, Error> {
         const socket = connect(addr)?
         Ok(Connection { socket, state: State.Connected })
     }
@@ -190,7 +190,7 @@ struct Pair<T, U> {
     second: U
 }
 
-let p: Pair<i32, String> = Pair { first: 1, second: "hello" }
+let p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 ```
 
 **Bounds:**
@@ -323,8 +323,8 @@ let Point { x, .. } = point    // Ignore other fields
 ```rask
 public struct User {
     public id: u64
-    public name: String
-    public email: String
+    public name: string
+    public email: string
 }
 
 extend User {
@@ -360,13 +360,13 @@ extend Counter {
 ### Linear Resource Wrapper
 <!-- test: parse -->
 ```rask
-@linear
+@resource
 struct FileHandle {
     fd: i32
 }
 
 extend FileHandle {
-    func open(path: String) -> Result<FileHandle, Error> {
+    func open(path: string) -> Result<FileHandle, Error> {
         const fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
         if fd < 0 { return Err(Error.io()) }
         Ok(FileHandle { fd })

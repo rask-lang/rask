@@ -38,14 +38,14 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 ```rask
 struct BuildContext {
     // Package information
-    public package_name: String
-    public package_version: String
+    public package_name: string
+    public package_version: string
     public package_dir: Path
 
     // Build configuration
     public profile: Profile           // debug | release | custom
     public target: Target             // host or cross-compilation target
-    public features: Set<String>      // enabled feature flags
+    public features: Set<string>      // enabled feature flags
 
     // Output directories
     public gen_dir: Path              // .rask-gen/ for generated code
@@ -55,13 +55,13 @@ struct BuildContext {
 enum Profile {
     Debug,
     Release,
-    Custom(String),
+    Custom(string),
 }
 
 struct Target {
-    public arch: String       // x86_64, aarch64, etc.
-    public os: String         // linux, macos, windows, etc.
-    public env: String        // gnu, musl, msvc, etc.
+    public arch: string       // x86_64, aarch64, etc.
+    public os: string         // linux, macos, windows, etc.
+    public env: string        // gnu, musl, msvc, etc.
 }
 ```
 
@@ -88,8 +88,8 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 
 | Method | Description |
 |--------|-------------|
-| `write_source(name: String, code: String)` | Write `.rask` file to gen_dir |
-| `write_file(name: String, data: []u8)` | Write arbitrary file to out_dir |
+| `write_source(name: string, code: string)` | Write `.rask` file to gen_dir |
+| `write_file(name: string, data: []u8)` | Write arbitrary file to out_dir |
 | `declare_dependency(path: Path)` | Mark file as input (triggers rebuild on change) |
 
 **Generated file location:**
@@ -191,10 +191,10 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 
 ```rask
 struct CompileOptions {
-    sources: []String,           // C source files
-    include_dirs: []String,      // -I paths
-    flags: []String,             // Additional compiler flags
-    define: Map<String, String>, // -D macros
+    sources: []string,           // C source files
+    include_dirs: []string,      // -I paths
+    flags: []string,             // Additional compiler flags
+    define: Map<string, string>, // -D macros
 }
 ```
 
@@ -203,9 +203,9 @@ struct CompileOptions {
 | Method | Description |
 |--------|-------------|
 | `compile_c(opts: CompileOptions)` | Compile C sources to object files |
-| `link_library(name: String)` | Link with system library (-l) |
-| `link_search_path(path: String)` | Add library search path (-L) |
-| `pkg_config(name: String)` | Use pkg-config for flags |
+| `link_library(name: string)` | Link with system library (-l) |
+| `link_search_path(path: string)` | Add library search path (-L) |
+| `pkg_config(name: string)` | Use pkg-config for flags |
 
 ### Running External Tools
 
@@ -307,7 +307,7 @@ error: Build script failed
 ```rask
 // Comptime file embedding (specified in comptime.md)
 const SCHEMA: []u8 = comptime @embed_file("schema.json")
-const VERSION: String = comptime @embed_file("VERSION")
+const VERSION: string = comptime @embed_file("VERSION")
 ```
 
 **Constraints:**

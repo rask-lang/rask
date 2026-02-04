@@ -18,7 +18,7 @@ Most languages force a tradeoff: safe but slow (GC), safe but complex (borrow ch
 | **Single ownership** | Every value has one owner, deterministic cleanup |
 | **Scoped borrowing** | Temporary access that cannot escape scope |
 | **Handles** | Safe references into collections (key + generation) |
-| **Linear types** | Resources that must be explicitly consumed |
+| **Linear resource types** | Resources that must be explicitly consumed |
 | **Task isolation** | No shared mutable memory between tasks |
 | **Comptime** | Pure computation at compile time |
 

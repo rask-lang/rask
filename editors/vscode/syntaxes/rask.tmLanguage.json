@@ -121,11 +121,11 @@
       "patterns": [
         {
           "name": "keyword.control.rask",
-          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is)\\b"
+          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert)\\b"
         },
         {
           "name": "keyword.declaration.rask",
-          "match": "\\b(func|let|const|struct|enum|trait|extend|import|type)\\b"
+          "match": "\\b(func|let|const|struct|enum|trait|extend|import|type|test)\\b"
         },
         {
           "name": "keyword.modifier.rask",
@@ -133,7 +133,7 @@
         },
         {
           "name": "keyword.other.rask",
-          "match": "\\b(spawn|raw_thread|select|with|ensure|where|as|asm|step|timeout)\\b"
+          "match": "\\b(spawn|raw_thread|select|with|ensure|where|as|asm|step|timeout|benchmark)\\b"
         },
         {
           "name": "constant.language.rask",
@@ -149,7 +149,7 @@
       "patterns": [
         {
           "name": "storage.type.primitive.rask",
-          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char)\\b"
+          "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|string)\\b"
         },
         {
           "name": "entity.name.type.rask",

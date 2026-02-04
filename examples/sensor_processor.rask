@@ -79,6 +79,85 @@ struct SensorReading {
 
 const SENSOR_BASE_ADDR: usize = 0x4000_0000
 
+// ============================================================================
+// Compile-Time Lookup Tables (demonstrates comptime)
+// Generated at compile time, embedded in binary - zero runtime cost
+// ============================================================================
+
+// CRC-8 lookup table for packet validation (polynomial 0x07)
+comptime func build_crc8_table() -> [u8; 256] {
+    const table = [0u8; 256]
+    for i in 0..256 {
+        let crc = i as u8
+        for _ in 0..8 {
+            if crc & 0x80 != 0 {
+                crc = (crc << 1) ^ 0x07
+            } else {
+                crc = crc << 1
+            }
+        }
+        table[i] = crc
+    }
+    table
+}
+
+const CRC8_TABLE: [u8; 256] = comptime build_crc8_table()
+
+// ADC value to temperature conversion (10-bit ADC, -40°C to +125°C range)
+// Pre-computed to avoid floating point in interrupt context
+comptime func build_temp_calibration() -> [i16; 1024] {
+    const table = [0i16; 1024]
+    for adc in 0..1024 {
+        // Linear mapping: ADC 0 = -40.00°C, ADC 1023 = +125.00°C
+        // Stored as centidegrees (×100) for integer math
+        const temp_centidegrees = -4000 + (adc * 16500) / 1023
+        table[adc] = temp_centidegrees as i16
+    }
+    table
+}
+
+const TEMP_CALIBRATION: [i16; 1024] = comptime build_temp_calibration()
+
+// Sensor command opcodes - compile-time map for protocol parsing
+comptime func build_command_table() -> [u8; 256] {
+    // Maps ASCII command bytes to opcode constants
+    // 0 = invalid, 1 = read, 2 = write, 3 = reset, 4 = calibrate
+    const table = [0u8; 256]
+    table['R' as usize] = 1  // Read
+    table['r' as usize] = 1
+    table['W' as usize] = 2  // Write
+    table['w' as usize] = 2
+    table['X' as usize] = 3  // Reset
+    table['x' as usize] = 3
+    table['C' as usize] = 4  // Calibrate
+    table['c' as usize] = 4
+    table
+}
+
+const COMMAND_OPCODES: [u8; 256] = comptime build_command_table()
+
+// CRC-8 computation using pre-computed table - runs in interrupt context
+@inline @no_alloc
+func crc8(data: []u8) -> u8 {
+    let crc = 0u8
+    for byte in data {
+        crc = CRC8_TABLE[(crc ^ byte) as usize]
+    }
+    crc
+}
+
+// Convert raw ADC reading to temperature (centidegrees) - no FP, O(1)
+@inline @no_alloc
+func adc_to_temp(adc_value: u16) -> i16 {
+    TEMP_CALIBRATION[adc_value.min(1023) as usize]
+}
+
+// Parse command byte to opcode - O(1) lookup
+@inline @no_alloc
+func parse_command(cmd: u8) -> u8 {
+    COMMAND_OPCODES[cmd as usize]
+}
+
 struct HardwareRegisters {
     temp_data: u32      // offset 0x00
     pressure_data: u32  // offset 0x04
@@ -377,7 +456,7 @@ func main() -> Result<(), Error> {
     const deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on raw thread (needs thread affinity)
-    let isr_handle = raw_thread {
+    let isr_handle = spawn_raw {
         interrupt_handler(buffer, start_time, running, SAMPLE_RATE_HZ)
     }
 

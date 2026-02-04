@@ -142,7 +142,7 @@ Compiler MUST error if:
 
 ### Linear Types in Traits
 
-Linear types MAY be generic parameters.
+Linear resource types MAY be generic parameters.
 Pattern matching on `Option<Linear>` MUST bind the value (wildcards forbidden).
 
 | Pattern | Linear Content | Valid |

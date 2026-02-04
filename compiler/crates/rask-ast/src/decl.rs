@@ -27,8 +27,14 @@ pub enum DeclKind {
     Impl(ImplDecl),
     /// Import declaration
     Import(ImportDecl),
+    /// Export declaration (re-exports)
+    Export(ExportDecl),
     /// Top-level constant
     Const(ConstDecl),
+    /// Test block
+    Test(TestDecl),
+    /// Benchmark block
+    Benchmark(BenchmarkDecl),
 }
 
 /// A top-level constant declaration.
@@ -38,6 +44,21 @@ pub struct ConstDecl {
     pub ty: Option<String>,
     pub init: crate::expr::Expr,
     pub is_pub: bool,
+}
+
+/// A test block declaration.
+#[derive(Debug, Clone)]
+pub struct TestDecl {
+    pub name: String,
+    pub body: Vec<Stmt>,
+    pub is_comptime: bool,
+}
+
+/// A benchmark block declaration.
+#[derive(Debug, Clone)]
+pub struct BenchmarkDecl {
+    pub name: String,
+    pub body: Vec<Stmt>,
 }
 
 /// A function declaration.
@@ -112,9 +133,45 @@ pub struct ImplDecl {
 }
 
 /// An import declaration.
+///
+/// Syntax:
+/// - `import pkg` - qualified access: `pkg.Name`
+/// - `import pkg as p` - aliased: `p.Name`
+/// - `import pkg.Name` - unqualified: `Name` directly
+/// - `import pkg.Name as N` - renamed: `N`
+/// - `import lazy pkg` - lazy initialization
+/// - `import pkg.*` - glob import (with warning)
 #[derive(Debug, Clone)]
 pub struct ImportDecl {
+    /// The import path (e.g., ["http"] or ["http", "Request"])
+    /// If len == 1: package import (qualified access)
+    /// If len > 1: symbol import (unqualified access) unless is_glob
     pub path: Vec<String>,
+    /// Optional alias: `import pkg as p` or `import pkg.Name as N`
     pub alias: Option<String>,
+    /// Whether this is a glob import: `import pkg.*`
     pub is_glob: bool,
+    /// Whether this is a lazy import: `import lazy pkg`
+    pub is_lazy: bool,
+}
+
+/// An export declaration (re-exports for library facades).
+///
+/// Syntax:
+/// - `export internal.Name` - re-export as `mylib.Name`
+/// - `export internal.Name as Alias` - re-export with rename
+/// - `export internal.Name, other.Thing` - multiple re-exports
+#[derive(Debug, Clone)]
+pub struct ExportDecl {
+    /// Items to re-export
+    pub items: Vec<ExportItem>,
+}
+
+/// An individual re-export item.
+#[derive(Debug, Clone)]
+pub struct ExportItem {
+    /// Full path to the item: e.g., ["internal", "parser", "Parser"]
+    pub path: Vec<String>,
+    /// Optional rename: `export internal.Name as Alias`
+    pub alias: Option<String>,
 }

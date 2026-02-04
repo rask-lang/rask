@@ -6,4 +6,5 @@ edition.workspace = true
 [dependencies]
 rask-ast = { path = "../rask-ast" }
 rask-resolve = { path = "../rask-resolve" }
+rask-stdlib = { path = "../rask-stdlib" }
 thiserror.workspace = true

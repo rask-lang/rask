@@ -540,7 +540,7 @@ func run_server(server: Server) {
 - **Match:** Already specified in [enums.md](../types/enums.md); follows same expression semantics
 - **For loops:** Specified in [loops.md](loops.md); statement, not expression
 - **Ensure:** Cleanup runs on all control flow exits; see [ensure.md](ensure.md)
-- **Linear types:** Must be consumed on all branches; ensure enables `?`/`return` safety
+- **Linear resource types:** Must be consumed on all branches; ensure enables `?`/`return` safety
 - **Compiler:** Control flow analysis is local (no whole-program); divergence tracked per-block
 
 ## Summary

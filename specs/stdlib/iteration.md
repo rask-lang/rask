@@ -205,7 +205,7 @@ for (key, value) in config.iter() {
 |------|----------|
 | Empty collection | Loop body never executes |
 | `Vec<Linear>` index iteration | COMPILE ERROR: use `.take_all()` |
-| `Map<String, V>` key iteration | COMPILE ERROR: use `.iter()` or `.take_all()` |
+| `Map<string, V>` key iteration | COMPILE ERROR: use `.iter()` or `.take_all()` |
 | Out-of-bounds index | PANIC |
 | Invalid handle | PANIC (generation mismatch) |
 | `deliver value` for !Copy | Requires `.clone()` |

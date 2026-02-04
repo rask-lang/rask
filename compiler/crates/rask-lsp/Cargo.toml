@@ -17,3 +17,7 @@ serde_json = "1.0"
 rask-ast = { path = "../rask-ast" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
+rask-desugar = { path = "../rask-desugar" }
+rask-resolve = { path = "../rask-resolve" }
+rask-types = { path = "../rask-types" }
+rask-ownership = { path = "../rask-ownership" }

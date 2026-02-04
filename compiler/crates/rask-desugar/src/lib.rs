@@ -48,7 +48,18 @@ impl Desugarer {
             DeclKind::Const(c) => {
                 self.desugar_expr(&mut c.init);
             }
+            DeclKind::Test(t) => {
+                for stmt in &mut t.body {
+                    self.desugar_stmt(stmt);
+                }
+            }
+            DeclKind::Benchmark(b) => {
+                for stmt in &mut b.body {
+                    self.desugar_stmt(stmt);
+                }
+            }
             DeclKind::Import(_) => {}
+            DeclKind::Export(_) => {}
         }
     }
 
@@ -240,9 +251,15 @@ impl Desugarer {
             ExprKind::Cast { expr: inner, .. } => {
                 self.desugar_expr(inner);
             }
-            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. } => {
+            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::BlockCall { body, .. } | ExprKind::Comptime { body } => {
                 for s in body {
                     self.desugar_stmt(s);
+                }
+            }
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                self.desugar_expr(condition);
+                if let Some(msg) = message {
+                    self.desugar_expr(msg);
                 }
             }
             // Literals and identifiers don't need desugaring

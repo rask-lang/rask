@@ -42,9 +42,27 @@ fn main() {
             }
             cmd_typecheck(&args[2]);
         }
+        "ownership" => {
+            if args.len() < 3 {
+                eprintln!("Usage: rask ownership <file.rask>");
+                process::exit(1);
+            }
+            cmd_ownership(&args[2]);
+        }
+        "run" => {
+            if args.len() < 3 {
+                eprintln!("Usage: rask run <file.rask>");
+                process::exit(1);
+            }
+            cmd_run(&args[2]);
+        }
         "test-specs" => {
             let path = args.get(2).map(|s| s.as_str());
             cmd_test_specs(path);
+        }
+        "build" => {
+            let path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+            cmd_build(path);
         }
         "help" | "--help" | "-h" => {
             print_usage();
@@ -71,10 +89,13 @@ fn print_usage() {
     println!("Usage: rask <command> [args]");
     println!();
     println!("Commands:");
+    println!("  run <file>       Run a Rask program");
     println!("  lex <file>       Tokenize a file and print tokens");
     println!("  parse <file>     Parse a file and print AST");
     println!("  resolve <file>   Resolve names and print symbols");
     println!("  typecheck <file> Type check a file and show inferred types");
+    println!("  ownership <file> Check ownership and borrowing rules");
+    println!("  build [dir]      Build a package (all .rask files in directory)");
     println!("  test-specs [dir] Run spec documentation tests");
     println!("  help             Show this help");
     println!("  version          Show version");
@@ -339,6 +360,241 @@ fn cmd_typecheck(path: &str) {
                 show_error(&source, span.start, &error.to_string(), None);
             }
             eprintln!("\n=== Typecheck FAILED: {} error(s) ===", errors.len());
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_ownership(path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            process::exit(1);
+        }
+    };
+
+    // Lex
+    let mut lexer = rask_lexer::Lexer::new(&source);
+    let lex_result = lexer.tokenize();
+
+    if !lex_result.is_ok() {
+        for error in &lex_result.errors {
+            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        }
+        eprintln!("\n=== Lex FAILED ===");
+        process::exit(1);
+    }
+
+    // Parse
+    let mut parser = rask_parser::Parser::new(lex_result.tokens);
+    let mut parse_result = parser.parse();
+
+    if !parse_result.is_ok() {
+        for error in &parse_result.errors {
+            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        }
+        eprintln!("\n=== Parse FAILED ===");
+        process::exit(1);
+    }
+
+    // Desugar operators
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    // Resolve
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(errors) => {
+            for error in &errors {
+                show_error(&source, error.span.start, &format!("{}", error.kind), None);
+            }
+            eprintln!("\n=== Resolve FAILED: {} error(s) ===", errors.len());
+            process::exit(1);
+        }
+    };
+
+    // Type check
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(errors) => {
+            for error in &errors {
+                let span = match error {
+                    rask_types::TypeError::Mismatch { span, .. } => *span,
+                    rask_types::TypeError::ArityMismatch { span, .. } => *span,
+                    rask_types::TypeError::NotCallable { span, .. } => *span,
+                    rask_types::TypeError::NoSuchField { span, .. } => *span,
+                    rask_types::TypeError::NoSuchMethod { span, .. } => *span,
+                    rask_types::TypeError::InfiniteType { span, .. } => *span,
+                    rask_types::TypeError::CannotInfer { span } => *span,
+                    _ => rask_ast::Span::new(0, 0),
+                };
+                show_error(&source, span.start, &error.to_string(), None);
+            }
+            eprintln!("\n=== Typecheck FAILED: {} error(s) ===", errors.len());
+            process::exit(1);
+        }
+    };
+
+    // Ownership analysis
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+
+    if ownership_result.is_ok() {
+        println!("=== Ownership OK ===");
+        println!();
+        println!("All ownership and borrowing rules verified:");
+        println!("  - No use-after-move errors");
+        println!("  - Borrow scopes valid");
+        println!("  - Aliasing rules satisfied");
+    } else {
+        for error in &ownership_result.errors {
+            show_error(&source, error.span.start, &error.kind.to_string(), None);
+        }
+        eprintln!("\n=== Ownership FAILED: {} error(s) ===", ownership_result.errors.len());
+        process::exit(1);
+    }
+}
+
+fn cmd_run(path: &str) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("Error reading {}: {}", path, e);
+            process::exit(1);
+        }
+    };
+
+    // Lex
+    let mut lexer = rask_lexer::Lexer::new(&source);
+    let lex_result = lexer.tokenize();
+
+    if !lex_result.is_ok() {
+        for error in &lex_result.errors {
+            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        }
+        eprintln!("\n=== Lex FAILED ===");
+        process::exit(1);
+    }
+
+    // Parse
+    let mut parser = rask_parser::Parser::new(lex_result.tokens);
+    let mut parse_result = parser.parse();
+
+    if !parse_result.is_ok() {
+        for error in &parse_result.errors {
+            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        }
+        eprintln!("\n=== Parse FAILED ===");
+        process::exit(1);
+    }
+
+    // Desugar operators (a + b → a.add(b))
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    // Run the interpreter (skip type checking for now - interpreter is dynamically typed)
+    let mut interp = rask_interp::Interpreter::new();
+    match interp.run(&parse_result.decls) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("Runtime error: {}", e);
+            process::exit(1);
+        }
+    }
+}
+
+fn cmd_build(path: &str) {
+    use rask_resolve::PackageRegistry;
+
+    let root = Path::new(path);
+    if !root.exists() {
+        eprintln!("Error: directory not found: {}", path);
+        process::exit(1);
+    }
+
+    if !root.is_dir() {
+        eprintln!("Error: not a directory: {}", path);
+        eprintln!("Use 'rask typecheck <file>' for single files");
+        process::exit(1);
+    }
+
+    println!("=== Discovering packages in {} ===\n", path);
+
+    // Discover packages
+    let mut registry = PackageRegistry::new();
+    match registry.discover(root) {
+        Ok(_root_id) => {
+            println!("Discovered {} package(s):\n", registry.len());
+
+            for pkg in registry.packages() {
+                let file_count = pkg.files.len();
+                let decl_count: usize = pkg.files.iter().map(|f| f.decls.len()).sum();
+                println!(
+                    "  {} ({} file{}, {} declaration{})",
+                    pkg.path_string(),
+                    file_count,
+                    if file_count == 1 { "" } else { "s" },
+                    decl_count,
+                    if decl_count == 1 { "" } else { "s" }
+                );
+
+                for file in &pkg.files {
+                    println!("    - {}", file.path.display());
+                }
+            }
+            println!();
+
+            // Compile each package (for now, just run the full pipeline on each)
+            let mut total_errors = 0;
+            for pkg in registry.packages() {
+                println!("=== Compiling package: {} ===", pkg.path_string());
+
+                // Collect all decls from all files
+                let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
+
+                // Desugar
+                rask_desugar::desugar(&mut all_decls);
+
+                // Resolve
+                match rask_resolve::resolve(&all_decls) {
+                    Ok(resolved) => {
+                        // Type check
+                        match rask_types::typecheck(resolved, &all_decls) {
+                            Ok(typed) => {
+                                // Ownership check
+                                let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
+                                if !ownership_result.is_ok() {
+                                    for error in &ownership_result.errors {
+                                        eprintln!("error: {}", error.kind);
+                                    }
+                                    total_errors += ownership_result.errors.len();
+                                }
+                            }
+                            Err(errors) => {
+                                for error in &errors {
+                                    eprintln!("type error: {}", error);
+                                }
+                                total_errors += errors.len();
+                            }
+                        }
+                    }
+                    Err(errors) => {
+                        for error in &errors {
+                            eprintln!("resolve error: {}", error.kind);
+                        }
+                        total_errors += errors.len();
+                    }
+                }
+            }
+
+            println!();
+            if total_errors == 0 {
+                println!("=== Build OK: {} package(s) compiled ===", registry.len());
+            } else {
+                eprintln!("=== Build FAILED: {} error(s) ===", total_errors);
+                process::exit(1);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error discovering packages: {}", e);
             process::exit(1);
         }
     }

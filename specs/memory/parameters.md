@@ -66,6 +66,8 @@ func mutates(data: Data) {   // ghost: [mutates data]
 }
 ```
 
+**Connection to borrowing rules:** Parameter borrows are persistent for the function call duration. When accessing elements of a growable parameter (Vec, Pool, Map), those element views follow instant-view rules. See [borrowing.md](borrowing.md) for the "can it grow?" rule.
+
 ### Read Mode
 
 Explicit read-only guarantee. Compiler enforces no mutation.
@@ -176,12 +178,12 @@ For non-Copy types, the distinction matters:
 - Borrow: caller keeps value
 - Take: caller loses value
 
-### Interaction with Linear Types
+### Interaction with Linear Resource Types
 
-Linear types must be consumed exactly once. Only `take` parameters can consume them:
+Linear resource types must be consumed exactly once. Only `take` parameters can consume them:
 
 ```rask
-@linear
+@resource
 struct File { ... }
 
 func process(file: File) {        // Borrow
@@ -319,7 +321,7 @@ func finish(take file: File) -> Result<(), Error> {
 ```rask
 extend Builder {
     // Borrow self: can chain
-    func name(self, n: String) -> Self {
+    func name(self, n: string) -> Self {
         self.name = n
         self
     }
@@ -391,12 +393,12 @@ The compiler tracks which fields each projection borrows. Two calls with disjoin
 ## Integration Notes
 
 - **Value Semantics:** Borrow/take builds on copy/move rules (see [value-semantics.md](value-semantics.md))
-- **Linear Types:** Linear values require `take` for consumption (see [linear-types.md](linear-types.md))
+- **Resource Types:** Resource values require `take` for consumption (see [resource-types.md](resource-types.md))
 - **Borrowing:** Parameter borrows follow block-scoped rules (see [borrowing.md](borrowing.md))
 - **Closures:** Closure parameters use same modes (see [closures.md](closures.md))
 
 ## See Also
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior
-- [Linear Types](linear-types.md) — Must-consume resources
+- [Resource Types](resource-types.md) — Must-consume resources
 - [Borrowing](borrowing.md) — Borrow scope rules

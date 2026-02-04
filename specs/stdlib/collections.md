@@ -79,7 +79,7 @@ const x = vec[i]          // Copy out (T: Copy only)
 **Closure access (for multi-statement operations):**
 
 ```rask
-const name = vec.read(i, |v| v.name.clone())?  // Option<String>
+const name = vec.read(i, |v| v.name.clone())?  // Option<string>
 vec.modify(i, |v| v.count += 1)?             // Option<()>
 ```
 
@@ -178,7 +178,7 @@ Avoids constructing on stack then moving. Useful for large types.
 
 ### Linear Resources in Collections
 
-**Linear types CANNOT be stored in Vec or Map:**
+**Linear resource types CANNOT be stored in Vec or Map:**
 ```rask
 let files: Vec<File> = Vec.new()  // COMPILE ERROR
 ```
@@ -208,9 +208,9 @@ struct SliceDescriptor<T> {
 }
 ```
 
-**Usage with String or Vec:**
+**Usage with string or Vec:**
 ```rask
-const strings: Pool<String> = Pool.new()
+const strings: Pool<string> = Pool.new()
 const s = strings.insert("Hello World")?
 
 // Create storable slice descriptor
@@ -294,7 +294,7 @@ At compile time, collections use a **compiler-managed allocator** and must be **
 |------------|-------------------|-------------|
 | `Vec<T>` | `[T; N]` | Fixed-size array, size inferred from length |
 | `Map<K,V>` | Static map | Perfect hash or similar compile-time representation |
-| `String` | `str` | String literal |
+| `string` | `str` | string literal |
 
 **Example:**
 ```rask

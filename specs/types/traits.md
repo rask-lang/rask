@@ -91,7 +91,7 @@ const w = button as any Widget      // Explicit conversion
 **Collections of `any`:**
 ```rask
 let widgets: []any Widget = [button, textbox]
-let handlers: Map<String, any Handler> = ...
+let handlers: Map<string, any Handler> = ...
 ```
 
 **Function parameters:**
@@ -183,11 +183,11 @@ trait Handler {
 }
 
 struct Router {
-    routes: Map<String, any Handler>
+    routes: Map<string, any Handler>
 }
 
 extend Router {
-    func add(self, path: String, handler: any Handler) {
+    func add(self, path: string, handler: any Handler) {
         self.routes.insert(path, handler)
     }
 
@@ -227,7 +227,7 @@ extend Container {
 <!-- test: parse -->
 ```rask
 trait Plugin {
-    name(self) -> String
+    name(self) -> string
     init(self)
     run(self, ctx: Context)
 }

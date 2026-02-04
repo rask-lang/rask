@@ -1,6 +1,6 @@
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TraitDecl, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, Variant};
 use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -171,6 +171,21 @@ impl Parser {
             }
             _ => Err(ParseError::expected(
                 "a name",
+                self.current_kind(),
+                self.current().span,
+            )),
+        }
+    }
+
+    /// Get a string literal from the current token.
+    fn expect_string(&mut self) -> Result<String, ParseError> {
+        match self.current_kind().clone() {
+            TokenKind::String(s) => {
+                self.advance();
+                Ok(s)
+            }
+            _ => Err(ParseError::expected(
+                "a string",
                 self.current_kind(),
                 self.current().span,
             )),
@@ -377,10 +392,13 @@ impl Parser {
             TokenKind::Trait => self.parse_trait_decl(is_pub)?,
             TokenKind::Extend => self.parse_impl_decl()?,
             TokenKind::Import => self.parse_import_decl()?,
+            TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub)?,
+            TokenKind::Test => self.parse_test_decl(is_comptime)?,
+            TokenKind::Benchmark => self.parse_benchmark_decl()?,
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, trait, extend, import, const)",
+                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -391,7 +409,7 @@ impl Parser {
         Ok(Decl { id: self.next_id(), kind, span: Span::new(start, end) })
     }
 
-    /// Parse an attribute like `@linear` or `@deprecated("message")`.
+    /// Parse an attribute like `@resource` or `@deprecated("message")`.
     fn parse_attribute(&mut self) -> Result<String, ParseError> {
         self.expect(&TokenKind::At)?;
         let mut attr = self.expect_ident()?;
@@ -1001,14 +1019,27 @@ impl Parser {
     }
 
     /// Parse an import declaration.
+    ///
+    /// Syntax:
+    /// - `import pkg` - qualified access
+    /// - `import pkg as p` - aliased
+    /// - `import pkg.Name` - unqualified access to Name
+    /// - `import pkg.Name as N` - renamed
+    /// - `import lazy pkg` - lazy initialization
+    /// - `import pkg.*` - glob import (with warning)
+    /// - `import pkg.Name, pkg.Other` - multiple imports (returns first, rest are separate decls)
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Import)?;
+
+        // Check for lazy import
+        let is_lazy = self.match_token(&TokenKind::Lazy);
 
         let mut path = Vec::new();
         let mut is_glob = false;
 
         path.push(self.expect_ident()?);
 
+        // Parse dotted path: pkg.sub.Name or pkg.*
         while self.match_token(&TokenKind::Dot) {
             if self.match_token(&TokenKind::Star) {
                 is_glob = true;
@@ -1017,6 +1048,7 @@ impl Parser {
             path.push(self.expect_ident()?);
         }
 
+        // Parse optional alias
         let alias = if self.match_token(&TokenKind::As) {
             Some(self.expect_ident()?)
         } else {
@@ -1024,7 +1056,47 @@ impl Parser {
         };
 
         self.expect_terminator()?;
-        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob }))
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy }))
+    }
+
+    /// Parse an export declaration (re-exports).
+    ///
+    /// Syntax:
+    /// - `export internal.Name` - re-export as mylib.Name
+    /// - `export internal.Name as Alias` - re-export with rename
+    /// - `export internal.Name, other.Thing` - multiple re-exports
+    fn parse_export_decl(&mut self) -> Result<DeclKind, ParseError> {
+        use rask_ast::decl::{ExportDecl, ExportItem};
+
+        self.expect(&TokenKind::Export)?;
+
+        let mut items = Vec::new();
+
+        loop {
+            // Parse dotted path: internal.parser.Parser
+            let mut path = Vec::new();
+            path.push(self.expect_ident()?);
+            while self.match_token(&TokenKind::Dot) {
+                path.push(self.expect_ident()?);
+            }
+
+            // Parse optional alias
+            let alias = if self.match_token(&TokenKind::As) {
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
+
+            items.push(ExportItem { path, alias });
+
+            // Check for comma (multiple exports)
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        self.expect_terminator()?;
+        Ok(DeclKind::Export(ExportDecl { items }))
     }
 
     /// Parse a top-level const declaration.
@@ -1040,6 +1112,24 @@ impl Parser {
         let init = self.parse_expr()?;
         self.expect_terminator()?;
         Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub }))
+    }
+
+    /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
+    fn parse_test_decl(&mut self, is_comptime: bool) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Test)?;
+        let name = self.expect_string()?;
+        self.skip_newlines();
+        let body = self.parse_block_body()?;
+        Ok(DeclKind::Test(TestDecl { name, body, is_comptime }))
+    }
+
+    /// Parse a benchmark block: `benchmark "name" { body }`
+    fn parse_benchmark_decl(&mut self) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Benchmark)?;
+        let name = self.expect_string()?;
+        self.skip_newlines();
+        let body = self.parse_block_body()?;
+        Ok(DeclKind::Benchmark(BenchmarkDecl { name, body }))
     }
 
     // =========================================================================
@@ -1091,7 +1181,8 @@ impl Parser {
                 TokenKind::Let | TokenKind::Const | TokenKind::Return |
                 TokenKind::If | TokenKind::While | TokenKind::For |
                 TokenKind::Loop | TokenKind::Match | TokenKind::Break |
-                TokenKind::Continue | TokenKind::Ensure => return,
+                TokenKind::Continue | TokenKind::Ensure |
+                TokenKind::Assert | TokenKind::Check => return,
                 _ => { self.advance(); }
             }
         }
@@ -1638,13 +1729,22 @@ impl Parser {
             // Spawn expression: `spawn { body }`
             TokenKind::Spawn => self.parse_spawn_expr(),
 
-            // Raw thread: `raw_thread { body }`
-            TokenKind::RawThread => {
+            // Spawn thread: `spawn_thread { body }`
+            TokenKind::SpawnThread => {
                 self.advance();
                 self.skip_newlines();
                 let body = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::BlockCall { name: "raw_thread".to_string(), body }, span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::BlockCall { name: "spawn_thread".to_string(), body }, span: Span::new(start, end) })
+            }
+
+            // Spawn raw: `spawn_raw { body }`
+            TokenKind::SpawnRaw => {
+                self.advance();
+                self.skip_newlines();
+                let body = self.parse_block_body()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::BlockCall { name: "spawn_raw".to_string(), body }, span: Span::new(start, end) })
             }
 
             // Unsafe block: `unsafe { body }`
@@ -1655,6 +1755,27 @@ impl Parser {
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unsafe { body }, span: Span::new(start, end) })
             }
+
+            // Comptime expression: `comptime { body }` or `comptime expr`
+            TokenKind::Comptime => {
+                self.advance();
+                self.skip_newlines();
+                let body = if self.check(&TokenKind::LBrace) {
+                    self.parse_block_body()?
+                } else {
+                    // Single expression form: wrap as expression statement
+                    let expr = self.parse_expr()?;
+                    vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr.clone()), span: expr.span }]
+                };
+                let end = body.last().map(|s| s.span.end).unwrap_or(start);
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Comptime { body }, span: Span::new(start, end) })
+            }
+
+            // Assert expression: `assert condition` or `assert condition, "message"`
+            TokenKind::Assert => self.parse_assert_expr(),
+
+            // Check expression: `check condition` or `check condition, "message"`
+            TokenKind::Check => self.parse_check_expr(),
 
             _ => Err(ParseError::expected(
                 "expression",
@@ -1708,6 +1829,42 @@ impl Parser {
         Ok(Expr {
             id: self.next_id(),
             kind: ExprKind::StructLit { name, fields, spread },
+            span: Span::new(start, end),
+        })
+    }
+
+    /// Parse assert expression: `assert condition` or `assert condition, "message"`
+    fn parse_assert_expr(&mut self) -> Result<Expr, ParseError> {
+        let start = self.current().span.start;
+        self.expect(&TokenKind::Assert)?;
+        let condition = Box::new(self.parse_expr()?);
+        let message = if self.match_token(&TokenKind::Comma) {
+            Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Assert { condition, message },
+            span: Span::new(start, end),
+        })
+    }
+
+    /// Parse check expression: `check condition` or `check condition, "message"`
+    fn parse_check_expr(&mut self) -> Result<Expr, ParseError> {
+        let start = self.current().span.start;
+        self.expect(&TokenKind::Check)?;
+        let condition = Box::new(self.parse_expr()?);
+        let message = if self.match_token(&TokenKind::Comma) {
+            Some(Box::new(self.parse_expr()?))
+        } else {
+            None
+        };
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Check { condition, message },
             span: Span::new(start, end),
         })
     }

@@ -302,7 +302,7 @@ extend ConfigService {
 ```rask
 static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
 
-func init_config(path: String) -> Result<()> {
+func init_config(path: string) -> Result<()> {
     let loaded = load_config_file(path)?
     CONFIG.write(|c| *c = loaded)
     Ok(())
@@ -383,15 +383,15 @@ extend ConnectionPool {
 
 ```rask
 struct FeatureFlags {
-    flags: Shared<Map<String, bool>>,
+    flags: Shared<Map<string, bool>>,
 }
 
 extend FeatureFlags {
-    func is_enabled(self, flag: String) -> bool {
+    func is_enabled(self, flag: string) -> bool {
         self.flags.read(|f| f.get(flag).unwrap_or(false))
     }
 
-    func set(self, flag: String, enabled: bool) {
+    func set(self, flag: string, enabled: bool) {
         self.flags.write(|f| f.insert(flag, enabled))
     }
 

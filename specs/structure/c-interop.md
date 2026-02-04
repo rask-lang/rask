@@ -154,7 +154,7 @@ warning: skipping macro `CONTAINER_OF` (uses token pasting)
 - `extern "C" struct` with only C-compatible fields
 
 **NOT C-compatible:**
-- `String`, `Vec`, `Pool` (internal layout not stable)
+- `string`, `Vec`, `Pool` (internal layout not stable)
 - Handles (generational references have no C equivalent)
 - Closures, trait objects
 
@@ -191,7 +191,7 @@ public struct Database {
     handle: *sql.sqlite3
 }
 
-public func open(path: String) -> Result<Database, Error> {
+public func open(path: string) -> Result<Database, Error> {
     let db: *sql.sqlite3 = null
     unsafe {
         let rc = sql.sqlite3_open(path.cstr(), &db)
@@ -250,7 +250,7 @@ public extern "C" struct RaskResult {
 Linear resources (files, sockets, etc.) crossing FFI boundary require special handling:
 
 ```rask
-@linear
+@resource
 struct File { fd: c_int }
 
 func call_c_with_file(file: File) -> Result<(), Error> {
@@ -267,7 +267,7 @@ func call_c_with_file(file: File) -> Result<(), Error> {
 - Convert linear resource to raw pointer/handle before calling C
 - The Rask side retains responsibility for cleanup
 - Use `ensure` to guarantee cleanup after C call returns
-- C functions cannot consume Rask linear types directly
+- C functions cannot consume Rask linear resource types directly
 
 ## Integration Notes
 

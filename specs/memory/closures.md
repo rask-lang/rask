@@ -83,7 +83,7 @@ Capture by value (copy or move), never by reference. Can be stored in variables,
 <!-- test: parse -->
 ```rask
 const name = "Alice"
-const greet = || print("Hello, {name}")  // Copies name (String is small)
+const greet = || print("Hello, {name}")  // Copies name (string is small)
 greet()  // "Hello, Alice"
 // name still valid
 

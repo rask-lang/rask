@@ -685,7 +685,7 @@ with pool {
 
 ## Linear Types in Pools
 
-Linear types have special rules in pools:
+Linear resource types have special rules in pools:
 
 | Collection | Linear allowed? | Reason |
 |------------|-----------------|--------|
@@ -942,7 +942,7 @@ func update_game_optimized(mut entities: Pool<Entity>, dt: f32) {
 
 ```rask
 struct Node {
-    data: String,
+    data: string,
     edges: Vec<Handle<Node>>,
 }
 
@@ -1233,7 +1233,7 @@ enum Expr {
     Literal(i64),
     Binary { op: BinOp, left: Handle<Expr>, right: Handle<Expr> },
     Call { func: Handle<Expr>, args: Vec<Handle<Expr>> },
-    Var(String),
+    Var(string),
 }
 
 struct ExprNode {
@@ -1264,7 +1264,7 @@ extend Ast {
     }
 
     // Error reporting: walk up to find context
-    func error_context(self, h: Handle<ExprNode>) -> String {
+    func error_context(self, h: Handle<ExprNode>) -> string {
         const frozen = self.exprs.freeze_ref()
         const current = h
         const context = Vec.new()
@@ -1758,7 +1758,7 @@ When multiple parts of a program need to access the same object, Rask's approach
 Pass lightweight handles (12 bytes) instead of copying or sharing data. The pool owner processes requests.
 
 ```rask
-struct User { name: String, email: String, ... }
+struct User { name: string, email: string, ... }
 let users: Pool<User> = Pool.new()
 const user_h = users.insert(User { ... })?
 
@@ -1873,6 +1873,6 @@ with (players, teams) {
 ## See Also
 
 - [Borrowing](borrowing.md) — One rule: views last as long as the source is stable
-- [Linear Types](linear-types.md) — Resource consumption requirements
+- [Resource Types](resource-types.md) — Resource consumption requirements
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state
 - [Collections](../stdlib/collections.md) — Vec and Map types

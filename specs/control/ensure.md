@@ -233,7 +233,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> Resu
 Cleaning up pools of linear resources:
 
 ```rask
-func process_many_files(paths: Vec<String>) -> Result<(), Error> {
+func process_many_files(paths: Vec<string>) -> Result<(), Error> {
     let files: Pool<File> = Pool.new()
     ensure files.take_all_with(|f| { f.close(); })
 
@@ -251,7 +251,7 @@ func process_many_files(paths: Vec<String>) -> Result<(), Error> {
 **Note:** Errors during cleanup (e.g., close() fails) are ignored in the ensure block. If cleanup errors matter, don't use ensure - explicitly take_all before returning:
 
 ```rask
-func process_many_files_careful(paths: Vec<String>) -> Result<(), Error> {
+func process_many_files_careful(paths: Vec<string>) -> Result<(), Error> {
     let files: Pool<File> = Pool.new()
 
     for path in paths {
@@ -306,7 +306,7 @@ This is the "transaction pattern"—ensure the unhappy path, explicitly handle t
 
 ## Integration Notes
 
-- **Linear types:** `ensure` counts as consumption commitment; enables `?` after ensure
+- **Linear resource types:** `ensure` counts as consumption commitment; enables `?` after ensure
 - **Error handling:** Errors ignored by default; use `catch` clause for opt-in handling
 - **Concurrency:** `ensure` runs on the task that owns the resource
 - **Compiler:** Local analysis only—ensure tracked within function scope

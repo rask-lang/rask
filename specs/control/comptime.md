@@ -37,7 +37,7 @@ Explicit marking (`comptime`) makes it clear when code runs at compile time vs r
 ```rask
 const LOOKUP_TABLE: [u8; 256] = comptime build_table()
 const MAX_SIZE: usize = comptime calculate_max()
-const VERSION_STRING: String = comptime format_version(MAJOR, MINOR, PATCH)
+const VERSION_STRING: string = comptime format_version(MAJOR, MINOR, PATCH)
 ```
 
 **Rules:**
@@ -167,7 +167,7 @@ func example() {
 
 ### Comptime Collections with Freeze
 
-Comptime supports standard collections (`Vec`, `Map`, `String`) with a **compiler-managed allocator**. Collections must be **frozen** to escape comptime as const data.
+Comptime supports standard collections (`Vec`, `Map`, `string`) with a **compiler-managed allocator**. Collections must be **frozen** to escape comptime as const data.
 
 **How it works:**
 
@@ -178,7 +178,7 @@ Comptime supports standard collections (`Vec`, `Map`, `String`) with a **compile
 2. **Freeze to escape** — Collections must call `.freeze()` to become const
    - `Vec<T>.freeze()` → `[T; N]` (size inferred from length)
    - `Map<K,V>.freeze()` → static map (perfect hash or similar)
-   - `String.freeze()` → `str` (string literal)
+   - `string.freeze()` → `str` (string literal)
 
 3. **Cannot escape unfrozen** — Compile error if comptime returns unfrozen collection
 
@@ -203,9 +203,9 @@ const KEYWORDS: Map<str, TokenKind> = comptime {
     m.freeze()  // → perfect hash or static map
 }
 
-// String building
+// string building
 const GREETING: str = comptime {
-    const s = String.new()
+    const s = string.new()
     s.push_str("Hello, ")
     s.push_str(USERNAME)
     s.push_str("!")
@@ -283,13 +283,13 @@ const BAD = comptime {
 
 | Feature | Restriction |
 |---------|-------------|
-| **Vec, Map, String** | Must call `.freeze()` to escape comptime (see Comptime Collections with Freeze) |
+| **Vec, Map, string** | Must call `.freeze()` to escape comptime (see Comptime Collections with Freeze) |
 
-### String Handling at Comptime
+### string Handling at Comptime
 
 **Allowed:**
 ```rask
-comptime func make_greeting(name: String) -> String {
+comptime func make_greeting(name: string) -> string {
     // String literals are comptime-known
     const prefix = "Hello, "
 
@@ -303,7 +303,7 @@ const GREETING = comptime make_greeting("World")  // "Hello, World!"
 
 **Not allowed:**
 ```rask
-comptime func read_file(path: String) -> String {
+comptime func read_file(path: string) -> string {
     // ❌ ERROR: I/O not allowed at comptime
     file.read(path)
 }
@@ -323,7 +323,7 @@ comptime func read_file(path: String) -> String {
 const SCHEMA: []u8 = comptime @embed_file("schema.json")
 
 // Embed as string (file must be valid UTF-8)
-const VERSION: String = comptime @embed_file("VERSION")
+const VERSION: string = comptime @embed_file("VERSION")
 
 // Use in comptime computation
 const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
@@ -347,7 +347,7 @@ const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
 | File not readable | Compile error with OS error |
 | Path is runtime value | Compile error: "Path must be string literal" |
 | File too large | Compile error: "File exceeds embed limit" |
-| Invalid UTF-8 (for String) | Compile error: "File is not valid UTF-8" |
+| Invalid UTF-8 (for string) | Compile error: "File is not valid UTF-8" |
 
 **Why this is safe:**
 - No arbitrary I/O—only reads files at known paths
@@ -367,7 +367,7 @@ For complex codegen (parsing schemas, calling external tools), use build scripts
 
 **Comptime functions can use Result:**
 ```rask
-comptime func safe_divide(a: i32, b: i32) -> Result<i32, String> {
+comptime func safe_divide(a: i32, b: i32) -> Result<i32, string> {
     if b == 0 {
         return Err("Division by zero")
     }
@@ -707,7 +707,7 @@ Need to transform/process files (not just embed)?
 
 **Preferred: Use Collections with Freeze**
 
-For unknown-size results, use `Vec`, `Map`, or `String` with `.freeze()`:
+For unknown-size results, use `Vec`, `Map`, or `string` with `.freeze()`:
 
 ```rask
 const PRIMES: [u32; _] = comptime {
@@ -924,4 +924,4 @@ None identified.
 5. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
 
 ### Resolved
-6. ~~**Comptime heap allocation**~~ — Resolved via "Collections with Freeze" pattern. `Vec`, `Map`, `String` work at comptime with compiler-managed allocator; `.freeze()` materializes to const data.
+6. ~~**Comptime heap allocation**~~ — Resolved via "Collections with Freeze" pattern. `Vec`, `Map`, `string` work at comptime with compiler-managed allocator; `.freeze()` materializes to const data.

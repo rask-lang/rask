@@ -41,7 +41,7 @@ Gaps and incomplete areas identified in the design documents.
 - [x] ~~Assertion functions~~ (`assert`/`check`, specs/testing.md)
 - [x] ~~Test runner behavior~~ (specs/testing.md)
 - [x] ~~Mocking/dependency injection patterns~~ (trait-based, specs/testing.md)
-- [x] ~~Benchmark support~~ (`bench` blocks, specs/stdlib/testing.md)
+- [x] ~~Benchmark support~~ (`benchmark` blocks, specs/stdlib/testing.md)
 - [ ] Fuzzing / property-based testing
 - [ ] Code coverage tooling
 
@@ -132,7 +132,7 @@ Walk through the 7 litmus test programs from CLAUDE.md:
 - [x] ~~Nursery model replaced with affine handles~~ (spawn/join/detach)
 - [x] ~~Runtime vs Workers confusion~~ (now `multitasking` + `threading`)
 - [x] ~~Function coloring~~ (no async/await, I/O pauses implicitly)
-- [x] ~~Linear types + channels: close error handling on drop~~ (channels are non-linear, explicit close() for errors, implicit drop ignores errors)
+- [x] ~~Linear resource types + channels: close error handling on drop~~ (channels are non-linear, explicit close() for errors, implicit drop ignores errors)
 - [x] ~~Channel drop with buffered items~~ (sender drop: items remain for receivers; receiver drop: items lost)
 - [ ] Task-local storage syntax and semantics
 - [x] ~~Select arm evaluation order~~ (`select` = random, `select_priority` = first-listed, specs/concurrency/select.md)

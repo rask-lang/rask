@@ -1,6 +1,7 @@
 //! Rask Language Server
 //!
-//! Provides diagnostics for lexer and parser errors.
+//! Provides diagnostics for all compilation errors:
+//! lexer, parser, resolve, type check, and ownership.
 
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -9,8 +10,12 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
+use rask_ast::Span;
 use rask_lexer::{LexError, Lexer};
+use rask_ownership::{OwnershipError, OwnershipErrorKind};
 use rask_parser::{ParseError, Parser};
+use rask_resolve::ResolveError;
+use rask_types::TypeError;
 
 #[derive(Debug)]
 struct Backend {
@@ -27,13 +32,13 @@ impl Backend {
     }
 
     async fn publish_diagnostics(&self, uri: Url, text: &str) {
-        let diagnostics = self.analyze(text);
+        let diagnostics = self.analyze(text, &uri);
         self.client
             .publish_diagnostics(uri, diagnostics, None)
             .await;
     }
 
-    fn analyze(&self, source: &str) -> Vec<Diagnostic> {
+    fn analyze(&self, source: &str, uri: &Url) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
 
         // Run lexer - collect all errors
@@ -53,7 +58,7 @@ impl Backend {
 
         // Run parser even if lexer had errors - it may still produce useful results
         let mut parser = Parser::new(lex_result.tokens);
-        let parse_result = parser.parse();
+        let mut parse_result = parser.parse();
 
         // Deduplicate parse errors - only first error per line
         let mut last_parse_line: Option<u32> = None;
@@ -63,6 +68,42 @@ impl Backend {
                 diagnostics.push(parse_error_to_diagnostic(source, error));
                 last_parse_line = Some(line);
             }
+        }
+
+        // Only continue with semantic analysis if parsing succeeded
+        if !parse_result.is_ok() {
+            return diagnostics;
+        }
+
+        // Desugar operators (a + b → a.add(b))
+        rask_desugar::desugar(&mut parse_result.decls);
+
+        // Run name resolution
+        let resolved = match rask_resolve::resolve(&parse_result.decls) {
+            Ok(r) => r,
+            Err(errors) => {
+                for error in &errors {
+                    diagnostics.push(resolve_error_to_diagnostic(source, uri, error));
+                }
+                return diagnostics;
+            }
+        };
+
+        // Run type checking
+        let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+            Ok(t) => t,
+            Err(errors) => {
+                for error in &errors {
+                    diagnostics.push(type_error_to_diagnostic(source, error));
+                }
+                return diagnostics;
+            }
+        };
+
+        // Run ownership analysis
+        let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+        for error in &ownership_result.errors {
+            diagnostics.push(ownership_error_to_diagnostic(source, uri, error));
         }
 
         diagnostics
@@ -108,6 +149,125 @@ fn parse_error_to_diagnostic(source: &str, error: &ParseError) -> Diagnostic {
         source: Some("rask".to_string()),
         message,
         related_information: None,
+        tags: None,
+        data: None,
+    }
+}
+
+fn resolve_error_to_diagnostic(source: &str, uri: &Url, error: &ResolveError) -> Diagnostic {
+    let start = byte_offset_to_position(source, error.span.start);
+    let end = byte_offset_to_position(source, error.span.end);
+
+    // Check for related location (duplicate definition has previous span)
+    let related_information = match &error.kind {
+        rask_resolve::ResolveErrorKind::DuplicateDefinition { previous, .. } => {
+            let prev_start = byte_offset_to_position(source, previous.start);
+            let prev_end = byte_offset_to_position(source, previous.end);
+            Some(vec![DiagnosticRelatedInformation {
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range::new(prev_start, prev_end),
+                },
+                message: "previously defined here".to_string(),
+            }])
+        }
+        _ => None,
+    };
+
+    Diagnostic {
+        range: Range::new(start, end),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: None,
+        code_description: None,
+        source: Some("rask".to_string()),
+        message: error.kind.to_string(),
+        related_information,
+        tags: None,
+        data: None,
+    }
+}
+
+fn type_error_to_diagnostic(source: &str, error: &TypeError) -> Diagnostic {
+    let span = get_type_error_span(error);
+    let start = byte_offset_to_position(source, span.start);
+    let end = byte_offset_to_position(source, span.end);
+
+    Diagnostic {
+        range: Range::new(start, end),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: None,
+        code_description: None,
+        source: Some("rask".to_string()),
+        message: error.to_string(),
+        related_information: None,
+        tags: None,
+        data: None,
+    }
+}
+
+fn get_type_error_span(error: &TypeError) -> Span {
+    match error {
+        TypeError::Mismatch { span, .. } => *span,
+        TypeError::ArityMismatch { span, .. } => *span,
+        TypeError::NotCallable { span, .. } => *span,
+        TypeError::NoSuchField { span, .. } => *span,
+        TypeError::NoSuchMethod { span, .. } => *span,
+        TypeError::InfiniteType { span, .. } => *span,
+        TypeError::CannotInfer { span } => *span,
+        _ => Span::new(0, 0),
+    }
+}
+
+fn ownership_error_to_diagnostic(source: &str, uri: &Url, error: &OwnershipError) -> Diagnostic {
+    let start = byte_offset_to_position(source, error.span.start);
+    let end = byte_offset_to_position(source, error.span.end);
+
+    // Build related information for errors with secondary locations
+    let related_information = match &error.kind {
+        OwnershipErrorKind::UseAfterMove { moved_at, .. } => {
+            let mov_start = byte_offset_to_position(source, moved_at.start);
+            let mov_end = byte_offset_to_position(source, moved_at.end);
+            Some(vec![DiagnosticRelatedInformation {
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range::new(mov_start, mov_end),
+                },
+                message: "value was moved here".to_string(),
+            }])
+        }
+        OwnershipErrorKind::BorrowConflict { existing_span, .. } => {
+            let ex_start = byte_offset_to_position(source, existing_span.start);
+            let ex_end = byte_offset_to_position(source, existing_span.end);
+            Some(vec![DiagnosticRelatedInformation {
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range::new(ex_start, ex_end),
+                },
+                message: "conflicting access here".to_string(),
+            }])
+        }
+        OwnershipErrorKind::MutateWhileBorrowed { borrow_span, .. } => {
+            let br_start = byte_offset_to_position(source, borrow_span.start);
+            let br_end = byte_offset_to_position(source, borrow_span.end);
+            Some(vec![DiagnosticRelatedInformation {
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range::new(br_start, br_end),
+                },
+                message: "borrowed here".to_string(),
+            }])
+        }
+        _ => None,
+    };
+
+    Diagnostic {
+        range: Range::new(start, end),
+        severity: Some(DiagnosticSeverity::ERROR),
+        code: None,
+        code_description: None,
+        source: Some("rask".to_string()),
+        message: error.kind.to_string(),
+        related_information,
         tags: None,
         data: None,
     }

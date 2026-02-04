@@ -129,8 +129,8 @@ pub enum BorrowScope {
    - Collection types (Vec, Map, Pool) → `Instant` scope
    - Fixed types (String, struct fields) → `Persistent` scope
 
-3. **Linear types:**
-   - `@linear` values must be consumed on all paths
+3. **Linear resource types:**
+   - `@resource` values must be consumed on all paths
    - Consumption via: `take` params, `consume()` methods, `ensure` registration
 
 4. **Pool handles:**

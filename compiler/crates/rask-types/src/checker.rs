@@ -89,7 +89,7 @@ impl TypeTable {
         self.builtins.insert("f64".to_string(), Type::F64);
         self.builtins.insert("bool".to_string(), Type::Bool);
         self.builtins.insert("char".to_string(), Type::Char);
-        self.builtins.insert("String".to_string(), Type::String);
+        self.builtins.insert("string".to_string(), Type::String);
         self.builtins.insert("()".to_string(), Type::Unit);
         // Integer type aliases
         self.builtins.insert("int".to_string(), Type::I64);
@@ -712,6 +712,16 @@ impl TypeChecker {
                     }
                 }
             }
+            DeclKind::Test(t) => {
+                for stmt in &t.body {
+                    self.check_stmt(stmt);
+                }
+            }
+            DeclKind::Benchmark(b) => {
+                for stmt in &b.body {
+                    self.check_stmt(stmt);
+                }
+            }
             _ => {}
         }
     }
@@ -1104,6 +1114,20 @@ impl TypeChecker {
                 Type::Unit
             }
 
+            // Comptime block
+            ExprKind::Comptime { body } => {
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                // Comptime block type is unit unless last statement is an expression
+                if let Some(last) = body.last() {
+                    if let StmtKind::Expr(e) = &last.kind {
+                        return self.infer_expr(e);
+                    }
+                }
+                Type::Unit
+            }
+
             // Spawn block
             ExprKind::Spawn { body } => {
                 for stmt in body {
@@ -1167,6 +1191,25 @@ impl TypeChecker {
                     span: expr.span,
                 });
                 Type::Option(Box::new(field_ty))
+            }
+
+            // Assert/Check expressions
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                let cond_ty = self.infer_expr(condition);
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    cond_ty,
+                    Type::Bool,
+                    condition.span,
+                ));
+                if let Some(msg) = message {
+                    let msg_ty = self.infer_expr(msg);
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        msg_ty,
+                        Type::String,
+                        msg.span,
+                    ));
+                }
+                Type::Unit
             }
         };
 
@@ -1738,6 +1781,29 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
+        // Check rask-stdlib for method definition
+        if let Some(method_def) = rask_stdlib::lookup_method("string", method) {
+            // Method exists in stdlib - validate arity (excluding self)
+            let expected_params = method_def.params.len();
+            if args.len() != expected_params {
+                return Err(TypeError::ArityMismatch {
+                    expected: expected_params,
+                    found: args.len(),
+                    span,
+                });
+            }
+            // Map common return types
+            return match method_def.ret_ty {
+                "usize" => self.unify(ret, &Type::U64, span),
+                "bool" => self.unify(ret, &Type::Bool, span),
+                "()" => self.unify(ret, &Type::Unit, span),
+                "string" => self.unify(ret, &Type::String, span),
+                "char" => self.unify(ret, &Type::Char, span),
+                _ => Ok(false), // Complex return type - defer
+            };
+        }
+
+        // Fallback for unlisted methods
         match method {
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
@@ -1761,6 +1827,27 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
+        // Check rask-stdlib for Vec method definition
+        if let Some(method_def) = rask_stdlib::lookup_method("Vec", method) {
+            // Method exists in stdlib - validate arity (excluding self)
+            let expected_params = method_def.params.len();
+            if args.len() != expected_params {
+                return Err(TypeError::ArityMismatch {
+                    expected: expected_params,
+                    found: args.len(),
+                    span,
+                });
+            }
+            // Map common return types
+            return match method_def.ret_ty {
+                "usize" => self.unify(ret, &Type::U64, span),
+                "bool" => self.unify(ret, &Type::Bool, span),
+                "()" => self.unify(ret, &Type::Unit, span),
+                _ => Ok(false), // Complex return type (Option<T>, Result, etc.) - defer
+            };
+        }
+
+        // Fallback for specific methods with complex types
         match method {
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),

@@ -1,0 +1,8 @@
+[package]
+name = "rask-comptime"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+thiserror.workspace = true

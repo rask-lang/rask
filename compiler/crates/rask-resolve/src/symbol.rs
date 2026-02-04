@@ -51,6 +51,44 @@ pub enum SymbolKind {
         /// The struct this field belongs to.
         parent: SymbolId,
     },
+    /// A built-in type (Vec, Map, string, etc.).
+    BuiltinType {
+        /// The built-in type kind.
+        builtin: BuiltinTypeKind,
+    },
+    /// A built-in function (println, panic, etc.).
+    BuiltinFunction {
+        /// The built-in function kind.
+        builtin: BuiltinFunctionKind,
+    },
+}
+
+/// Built-in type kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinTypeKind {
+    /// Vec<T> - dynamic array
+    Vec,
+    /// Map<K, V> - hash map
+    Map,
+    /// Set<T> - hash set
+    Set,
+    /// string - UTF-8 string
+    String,
+    /// Error - error type
+    Error,
+    /// Channel<T> - message channel
+    Channel,
+}
+
+/// Built-in function kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinFunctionKind {
+    /// println - print with newline
+    Println,
+    /// print - print without newline
+    Print,
+    /// panic - abort with message
+    Panic,
 }
 
 /// A declared symbol.

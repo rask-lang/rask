@@ -72,7 +72,7 @@ The memory model is split across focused specifications:
 |-------|---------------|
 | Copy vs move semantics | [value-semantics.md](value-semantics.md) |
 | Borrowing (one rule: "can it grow?") | [borrowing.md](borrowing.md) |
-| Must-consume resources | [linear-types.md](linear-types.md) |
+| Must-consume resources | [resource-types.md](resource-types.md) |
 | Closure capture rules | [closures.md](closures.md) |
 | Handle-based indirection | [pools.md](pools.md) |
 
@@ -89,6 +89,6 @@ The memory model is split across focused specifications:
 
 - [Value Semantics](value-semantics.md) — Copy threshold, move-only types
 - [Borrowing](borrowing.md) — Scoped borrowing rules
-- [Linear Types](linear-types.md) — Resource consumption
+- [Resource Types](resource-types.md) — Resource consumption
 - [Closures](closures.md) — Capture semantics
 - [Pools](pools.md) — Handle-based indirection

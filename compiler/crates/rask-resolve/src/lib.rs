@@ -7,11 +7,13 @@ mod error;
 mod scope;
 mod symbol;
 mod resolver;
+pub mod package;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};
 pub use symbol::{Symbol, SymbolId, SymbolKind, SymbolTable};
 pub use resolver::Resolver;
+pub use package::{Package, PackageId, PackageRegistry, PackageError, SourceFile};
 
 use rask_ast::decl::Decl;
 use rask_ast::NodeId;

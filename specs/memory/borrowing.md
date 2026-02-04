@@ -20,7 +20,7 @@ The result: one mental model, predictable behavior, no wrestling.
 | Answer | What happens | Why |
 |--------|--------------|-----|
 | **Yes** (Vec, Pool, Map) | View is instant — released at semicolon | Growing/shrinking could invalidate the view |
-| **No** (String, struct fields) | View persists — valid until block ends | Source can't change, so view stays valid |
+| **No** (string, struct fields) | View persists — valid until block ends | Source can't change, so view stays valid |
 
 That's the entire model. One question, one rule.
 
@@ -39,7 +39,7 @@ The error is immediate. The fix is obvious: use inline or copy out. No "but I st
 
 > **Can it grow?**
 > - Vec, Pool, Map → Yes → View is instant
-> - String, struct field, array → No → View persists
+> - string, struct field, array → No → View persists
 
 ### Why Collections Have Instant Views
 
@@ -78,6 +78,35 @@ pool.modify(h, |entity| {
 Both patterns are clear and predictable. No wrestling.
 
 ## Specification
+
+### Parameter and Receiver Borrows
+
+Function parameters and method receivers create **persistent borrows** for the call duration. The "can it grow?" rule applies to views *into* the borrowed value, not to the parameter itself.
+
+| Context | Borrow Duration | Why Persistent |
+|---------|-----------------|----------------|
+| `func foo(x: T)` | Until function returns | Parameter cannot grow/shrink |
+| `x.method()` | Until method returns | Receiver cannot grow/shrink during call |
+
+**Key insight:** A borrowed `Vec<T>` parameter is a persistent borrow of the container. Access to *elements* (`vec[i]`) within the function follows instant-view rules because the Vec can grow inside the function.
+
+```rask
+func process(items: Vec<Item>) {
+    // items: persistent borrow (valid for entire function)
+    // items[0]: instant view (Vec can grow inside process)
+
+    const first = items[0].name   // Copy out - instant view released
+    items.push(new_item)          // OK: no view held
+}
+```
+
+**Borrow mode inference:**
+
+| Annotation | Borrow Mode | Determined By |
+|------------|-------------|---------------|
+| (none) | Inferred | Shared if read-only, exclusive if mutates |
+| `read` | Shared | Enforced - compile error on mutation |
+| `take` | N/A | Ownership transfer, not a borrow |
 
 ### Persistent Views (Strings, Struct Fields)
 
@@ -153,7 +182,7 @@ Temporaries in inner blocks are NOT extended to outer blocks. Extension only wor
 
 **Mutation blocked (B5):**
 ```rask
-const s = String.new()
+const s = string.new()
 const slice = s[0..3]      // Read borrow active
 s.push('!')              // ❌ ERROR: cannot mutate while borrowed
 process(slice)
@@ -446,9 +475,11 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> Result<(), Error> {
 
 | Aspect | Fixed Sources | Growable Sources |
 |--------|---------------|------------------|
-| Types | String, struct fields, arrays | Pool, Vec, Map |
+| Types | string, struct fields, arrays | Pool, Vec, Map |
 | View duration | Until block ends | Until semicolon |
-| Can store in `let`? | Yes | No (use inline or copy out) |
+| **Parameter borrows** | Persistent (call duration) | Persistent (call duration) |
+| **Indexing into param** | Persistent (fixed source) | Instant (growable source) |
+| Can store in `const`? | Yes | No (use inline or copy out) |
 | Multi-statement use? | Direct | Closure (`read`/`modify`) or copy out |
 | The test | Can't grow or shrink | Can grow or shrink |
 
@@ -499,9 +530,9 @@ When hovering over a string slice:
 
 ```rask
 const key = line[0..eq]
-    ^^^ Persistent view from String
+    ^^^ Persistent view from string
 
-String can't grow/shrink, so this view is valid until block end (line 15).
+string can't grow/shrink, so this view is valid until block end (line 15).
 The source cannot be mutated while this view exists.
 ```
 

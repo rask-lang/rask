@@ -204,7 +204,7 @@ When `Owned<T>` is consumed via `drop()` or scope exit (after `ensure`):
 2. Deallocate memory via the allocator that allocated it
 
 ```rask
-@linear
+@resource
 struct File { handle: RawHandle }
 
 const file_ptr = own File.open("data.txt")?

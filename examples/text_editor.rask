@@ -1,5 +1,5 @@
 // Text Editor with Undo
-// Demonstrates: Pool/Handle pattern, linear types, ensure cleanup, command pattern
+// Demonstrates: Pool/Handle pattern, linear resource types, ensure cleanup, command pattern
 
 import fs
 

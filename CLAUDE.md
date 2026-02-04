@@ -30,7 +30,7 @@ Start with [CORE_DESIGN.md](CORE_DESIGN.md). For specs: [specs/README.md](specs/
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
 | Borrowing | Block-scoped (values) vs expression-scoped (collections) | [borrowing.md](specs/memory/borrowing.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
-| Linear types | Must-consume, `ensure` cleanup | [linear-types.md](specs/memory/linear-types.md) |
+| Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |
 | Errors | Result, `?` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
 | Concurrency | spawn/join/detach, channels, no function coloring | [concurrency/](specs/concurrency/) |

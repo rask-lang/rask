@@ -27,7 +27,7 @@ Quick navigation by task or concept:
 | Build graphs/trees with cycles | [memory/pools.md](memory/pools.md) (handles) |
 | Pass data to functions | [memory/parameters.md](memory/parameters.md) (borrow vs take) |
 | Ensure resources are cleaned up | [control/ensure.md](control/ensure.md) (deferred cleanup) |
-| Work with files/connections | [memory/linear-types.md](memory/linear-types.md) (must-consume) |
+| Work with files/connections | [memory/resource-types.md](memory/resource-types.md) (must-consume) |
 
 ### Error Handling
 | "How do I..." | See |
@@ -69,7 +69,7 @@ Quick navigation by task or concept:
 | Handle | [memory/pools.md](memory/pools.md) — opaque identifier into a Pool |
 | Borrow | [memory/borrowing.md](memory/borrowing.md) — temporary read/write access |
 | Take | [memory/parameters.md](memory/parameters.md) — ownership transfer |
-| Linear type | [memory/linear-types.md](memory/linear-types.md) — must be consumed exactly once |
+| Resource type | [memory/resource-types.md](memory/resource-types.md) — must be consumed exactly once (linear resource) |
 | Instant view | [memory/borrowing.md](memory/borrowing.md) — view released at semicolon (growable sources) |
 | Persistent view | [memory/borrowing.md](memory/borrowing.md) — view held until block ends (fixed sources) |
 | ensure | [control/ensure.md](control/ensure.md) — deferred cleanup at scope exit |
@@ -101,7 +101,7 @@ Quick navigation by task or concept:
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
 | [borrowing.md](memory/borrowing.md) | One rule: views last as long as the source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default) vs `take` |
-| [linear-types.md](memory/linear-types.md) | Must-consume resources, `ensure` integration |
+| [resource-types.md](memory/resource-types.md) | Must-consume resources (linear resources), `ensure` integration |
 | [closures.md](memory/closures.md) | Capture rules, scope constraints, Pool+Handle pattern |
 | [pools.md](memory/pools.md) | Handle-based indirection, weak handles, cursors, freezing |
 | [unsafe.md](memory/unsafe.md) | Unsafe blocks, raw pointers, FFI |

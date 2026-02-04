@@ -1,28 +1,28 @@
-# Solution: Linear Types
+# Solution: Resource Types
 
 ## The Question
 How do we ensure resources like files, connections, and locks are properly consumed (closed, released) before going out of scope?
 
 ## Decision
-The `linear` keyword marks types that must be consumed exactly once. The compiler enforces consumption before scope exit. The `ensure` statement provides deferred consumption that satisfies the linear requirement.
+The `@resource` attribute marks types that must be consumed exactly once. The compiler enforces consumption before scope exit. The `ensure` statement provides deferred consumption that satisfies the resource requirement.
 
 ## Rationale
-Linear types prevent resource leaks by construction. Unlike RAII (which runs destructors automatically), linear types require explicit consumption—making cleanup visible (TC ≥ 0.90) while guaranteeing it happens (MC ≥ 0.90).
+Resource types (based on linear resource types from type theory) prevent resource leaks by construction. Unlike RAII (which runs destructors automatically), resource types require explicit consumption—making cleanup visible (TC ≥ 0.90) while guaranteeing it happens (MC ≥ 0.90).
 
-The `ensure` statement bridges linear types with error handling: you can commit to consuming a resource early, then use `?` freely knowing cleanup will happen.
+The `ensure` statement bridges resource types with error handling: you can commit to consuming a resource early, then use `?` freely knowing cleanup will happen.
 
 ## Specification
 
-### Linear Type Declaration
+### Resource Type Declaration
 
 ```rask
-@linear
+@resource
 struct File {
     handle: RawHandle,
-    path: String,
+    path: string,
 }
 
-@linear
+@resource
 struct Connection {
     socket: RawSocket,
     state: ConnectionState,
@@ -33,20 +33,20 @@ struct Connection {
 
 | Rule | Description |
 |------|-------------|
-| **L1: Must consume** | Linear value must be consumed before scope exit |
-| **L2: Consume once** | Cannot consume same linear value twice |
-| **L3: Read allowed** | Can borrow for reading without consuming |
-| **L4: `ensure` satisfies** | Registering with `ensure` counts as consumption commitment |
+| **R1: Must consume** | Resource value must be consumed before scope exit |
+| **R2: Consume once** | Cannot consume same resource value twice |
+| **R3: Read allowed** | Can borrow for reading without consuming |
+| **R4: `ensure` satisfies** | Registering with `ensure` counts as consumption commitment |
 
 ### Consuming Operations
 
-A linear value is consumed by:
+A resource value is consumed by:
 - Calling a method with `take self` (takes ownership)
 - Passing to a function with `take` parameter mode
 - Explicit consumption function (e.g., `file.close()`)
 
 ```rask
-@linear
+@resource
 struct File { ... }
 
 extend File {
@@ -66,7 +66,7 @@ extend File {
 
 ```rask
 func process() -> Result<(), Error> {
-    const file = File.open("data.txt")?    // file is linear
+    const file = File.open("data.txt")?    // file is a resource
 
     const data = file.read_all()?           // Borrow: file still valid
     process_data(data)?
@@ -98,7 +98,7 @@ func also_bad() -> Result<(), Error> {
 
 ### The `ensure` Statement
 
-`ensure` commits to consuming a linear resource at scope exit, satisfying L1 immediately.
+`ensure` commits to consuming a resource at scope exit, satisfying R1 immediately.
 
 ```rask
 func process() -> Result<(), Error> {
@@ -144,12 +144,12 @@ func risky() -> Result<(), Error> {
 // If file.close() fails: that error is returned
 ```
 
-### Linear + Error Paths
+### Resource Types + Error Paths
 
-Linear types integrate with `?` through `ensure`:
+Resource types integrate with `?` through `ensure`:
 
 ```rask
-func process(path: String) -> Result<Data, Error> {
+func process(path: string) -> Result<Data, Error> {
     const file = File.open(path)?
     ensure file.close()        // Guarantees consumption on any exit
 
@@ -165,7 +165,7 @@ func process(path: String) -> Result<Data, Error> {
 
 **Without `ensure`, error handling is verbose:**
 ```rask
-func process_verbose(path: String) -> Result<Data, Error> {
+func process_verbose(path: string) -> Result<Data, Error> {
     const file = File.open(path)?
 
     const header = match file.read_header() {
@@ -183,18 +183,18 @@ func process_verbose(path: String) -> Result<Data, Error> {
 }
 ```
 
-### Linear in Collections
+### Resources in Collections
 
-Linear types have restrictions in collections:
+Resource types have restrictions in collections:
 
-| Collection | Linear allowed? | Reason |
-|------------|-----------------|--------|
-| `Vec<Linear>` | ❌ No | Vec drop would need to consume each element |
-| `Pool<Linear>` | ✅ Yes | Explicit removal required anyway |
-| `Map<K, Linear>` | ❌ No | Map drop same problem as Vec |
-| `Option<Linear>` | ✅ Yes | Must match and consume |
+| Collection | Resource allowed? | Reason |
+|------------|-------------------|--------|
+| `Vec<Resource>` | ❌ No | Vec drop would need to consume each element |
+| `Pool<Resource>` | ✅ Yes | Explicit removal required anyway |
+| `Map<K, Resource>` | ❌ No | Map drop same problem as Vec |
+| `Option<Resource>` | ✅ Yes | Must match and consume |
 
-**Pool pattern for linear resources:**
+**Pool pattern for resources:**
 ```rask
 const connections: Pool<Connection> = Pool.new()
 const h = connections.insert(Connection.open(addr)?)?
@@ -213,23 +213,23 @@ for h in connections.handles() {
 // connections can now be dropped (empty)
 ```
 
-### Pool<Linear> Drop Behavior
+### Pool<Resource> Drop Behavior
 
-A `Pool<Linear>` MUST enforce consumption of all linear elements before the pool can be safely dropped.
+A `Pool<Resource>` MUST enforce consumption of all resource elements before the pool can be safely dropped.
 
-**Rule L5: Pool Drop Enforcement**
+**Rule R5: Pool Drop Enforcement**
 
 | Scenario | Behavior |
 |----------|----------|
 | Pool is empty at drop | Normal drop, no action |
-| Pool contains linear elements at drop | Runtime panic |
+| Pool contains resource elements at drop | Runtime panic |
 
 **Rationale:** The compiler cannot statically track the dynamic contents of a pool. Runtime enforcement is necessary to prevent silent resource leaks. A panic is preferable to a silent leak because:
 - The program fails loudly rather than silently leaking resources
-- Linear types' purpose (resource safety) is maintained
+- Resource types' purpose (resource safety) is maintained
 - The developer is immediately alerted to the bug
 
-**The take_all pattern (REQUIRED for Pool<Linear>):**
+**The take_all pattern (REQUIRED for Pool<Resource>):**
 
 ```rask
 const files: Pool<File> = Pool.new()
@@ -264,9 +264,9 @@ ensure for file in files.take_all() {
 } catch |e| log("Cleanup error: {}", e)
 ```
 
-### Pool Helper Methods for Linear Types
+### Pool Helper Methods for Resource Types
 
-When `T` is linear, `Pool<T>` provides additional convenience methods:
+When `T` is a resource type, `Pool<T>` provides additional convenience methods:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
@@ -283,7 +283,7 @@ files.take_all_with(|f| { f.close(); })
 files.take_all_with_result(|f| f.close())?
 ```
 
-### Why Runtime Panic for Pool<Linear> Drop?
+### Why Runtime Panic for Pool<Resource> Drop?
 
 **Q: Why not a compile error?**
 
@@ -296,11 +296,11 @@ This violates Rask's "local analysis only" principle (CS metric: no whole-progra
 
 **Q: Why not just leak the resources?**
 
-This defeats the purpose of linear types. Linear types exist to guarantee resources are properly cleaned up. Silent leaks make the entire feature pointless.
+This defeats the purpose of resource types. Resource types exist to guarantee resources are properly cleaned up. Silent leaks make the entire feature pointless.
 
 **Q: Is a runtime panic "mechanical correctness"?**
 
-The MC metric requires bugs be "impossible by construction." A runtime panic on `Pool<Linear>` drop is analogous to bounds checking:
+The MC metric requires bugs be "impossible by construction." A runtime panic on `Pool<Resource>` drop is analogous to bounds checking:
 - The bug (resource leak) is impossible - program terminates rather than leaking
 - The mechanism is runtime, not compile-time
 - This is acceptable per METRICS.md which lists bounds checks as "implicit OK"
@@ -308,14 +308,14 @@ The MC metric requires bugs be "impossible by construction." A runtime panic on 
 ### Panic Message
 
 The panic message MUST clearly indicate:
-1. That a Pool with linear elements was dropped while non-empty
+1. That a Pool with resource elements was dropped while non-empty
 2. The number of unconsumed elements
 3. The element type
 
 Example:
 ```rask
-panic: Pool<File> dropped with 3 unconsumed linear elements.
-Linear resources must be explicitly consumed (use take_all() before drop).
+panic: Pool<File> dropped with 3 unconsumed resource elements.
+Resources must be explicitly consumed (use take_all() before drop).
 ```
 
 ### Comparison with Other Mechanisms
@@ -325,13 +325,13 @@ Linear resources must be explicitly consumed (use take_all() before drop).
 | RAII (Rust/C++) | Automatic in drop | ❌ Hidden | ✅ Yes |
 | Manual (C) | Explicit call | ✅ Yes | ❌ No |
 | GC finalizers | Eventual | ❌ Hidden | ❌ No |
-| Linear types | Explicit + compiler | ✅ Yes | ✅ Yes |
+| Resource types | Explicit + compiler | ✅ Yes | ✅ Yes |
 
-Linear types are "visible RAII"—you see the cleanup, and the compiler guarantees it happens.
+Resource types are "visible RAII"—you see the cleanup, and the compiler guarantees it happens.
 
-### Unique vs Linear
+### Unique vs Resource
 
-| Aspect | Unique (`@unique`) | Linear (`@linear`) |
+| Aspect | Unique (`@unique`) | Resource (`@resource`) |
 |--------|--------------------|--------------------|
 | Implicit copy | ❌ Disabled | ❌ Disabled |
 | Can drop | ✅ Yes | ❌ No (must consume) |
@@ -339,18 +339,18 @@ Linear types are "visible RAII"—you see the cleanup, and the compiler guarante
 | Use case | Semantic safety | Resource safety |
 | Example | Unique ID | File handle |
 
-Unique is "don't duplicate"; linear is "must properly close."
+Unique is "don't duplicate"; resource is "must properly close."
 
-## Linear Resources in Error Types
+## Resources in Error Types
 
-When an operation fails, the linear resource must still be accounted for. The standard pattern is to return the resource in the error type.
+When an operation fails, the resource must still be accounted for. The standard pattern is to return the resource in the error type.
 
 ### Basic Pattern
 
 ```rask
 enum FileError {
-    ReadFailed { file: File, reason: String },
-    WriteFailed { file: File, reason: String },
+    ReadFailed { file: File, reason: string },
+    WriteFailed { file: File, reason: string },
 }
 
 func read_config(file: File) -> Result<Config, FileError> {
@@ -367,7 +367,7 @@ func read_config(file: File) -> Result<Config, FileError> {
 
 **Caller must handle the file in error paths:**
 ```rask
-func load_config(path: String) -> Result<Config, Error> {
+func load_config(path: string) -> Result<Config, Error> {
     const file = File.open(path)?
 
     match read_config(file) {
@@ -384,21 +384,21 @@ func load_config(path: String) -> Result<Config, Error> {
 }
 ```
 
-### Multiple Linear Resources
+### Multiple Resources
 
-When errors contain multiple linear resources, all must be consumed:
+When errors contain multiple resources, all must be consumed:
 
 ```rask
 enum TransferError {
     SourceReadFailed {
         source: File,
         dest: File,
-        reason: String
+        reason: string
     },
     DestWriteFailed {
         source: File,
         dest: File,
-        reason: String
+        reason: string
     },
 }
 
@@ -423,7 +423,7 @@ func handle_transfer_error(err: TransferError) -> Result<(), Error> {
 The `ensure` pattern reduces verbosity when the cleanup is the same:
 
 ```rask
-func transfer(source_path: String, dest_path: String) -> Result<(), Error> {
+func transfer(source_path: string, dest_path: string) -> Result<(), Error> {
     const source = File.open(source_path)?
     ensure source.close()
 
@@ -451,7 +451,7 @@ func transfer(source_path: String, dest_path: String) -> Result<(), Error> {
 For multiple resources with uniform cleanup, `ensure` handles everything:
 
 ```rask
-func process_files(paths: Vec<String>) -> Result<(), Error> {
+func process_files(paths: Vec<string>) -> Result<(), Error> {
     const files = Vec.new()
 
     for path in paths {
@@ -504,13 +504,13 @@ read_config(file).map_err(|e| e.close_and_convert())?
 
 | Case | Handling |
 |------|----------|
-| Linear in error path | Must consume or register with `ensure` |
-| Linear in error type | Caller must extract and consume from error |
-| Linear across match arms | Each arm must consume (or share `ensure`) |
-| Nested linear values | Each level must be consumed |
-| Linear + panic | `ensure` runs during unwind |
+| Resource in error path | Must consume or register with `ensure` |
+| Resource in error type | Caller must extract and consume from error |
+| Resource across match arms | Each arm must consume (or share `ensure`) |
+| Nested resource values | Each level must be consumed |
+| Resource + panic | `ensure` runs during unwind |
 | Conditional consumption | Both branches must consume |
-| Loop with linear | Can't create linear in loop without consuming each iteration |
+| Loop with resource | Can't create resource in loop without consuming each iteration |
 
 **Conditional consumption:**
 ```rask
@@ -529,7 +529,7 @@ func conditional(file: File, keep_open: bool) -> Result<(), Error> {
 
 ### File Processing
 ```rask
-func process_file(path: String) -> Result<Data, Error> {
+func process_file(path: string) -> Result<Data, Error> {
     const file = File.open(path)?
     ensure file.close()
 
@@ -583,15 +583,15 @@ func handle_connections(pool: Pool<Connection>) -> Result<(), Error> {
 
 ## Integration Notes
 
-- **Value Semantics:** Linear types are move-only (never Copy) (see [value-semantics.md](value-semantics.md))
-- **Ownership:** Linear adds consumption requirement on top of single ownership (see [ownership.md](ownership.md))
+- **Value Semantics:** Resource types are move-only (never Copy) (see [value-semantics.md](value-semantics.md))
+- **Ownership:** Resource adds consumption requirement on top of single ownership (see [ownership.md](ownership.md))
 - **Error Handling:** `ensure` integrates with Result and `?` (see [ensure.md](../control/ensure.md))
-- **Pools:** Pool<Linear> requires explicit removal (see [pools.md](pools.md))
-- **Tooling:** IDE tracks linear value state, warns on missing consumption
+- **Pools:** Pool<Resource> requires explicit removal (see [pools.md](pools.md))
+- **Tooling:** IDE tracks resource value state, warns on missing consumption
 
 ## See Also
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior
 - [Ownership Rules](ownership.md) — Single-owner model
 - [Ensure](../control/ensure.md) — Deferred execution
-- [Pools](pools.md) — Handle-based storage for linear types
+- [Pools](pools.md) — Handle-based storage for resource types

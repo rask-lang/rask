@@ -58,16 +58,16 @@ All compiler analysis is function-local. No whole-program inference, no cross-fu
 - Incremental compilation is straightforward
 - Compilation speed scales linearly with code size
 
-### 6. Linear Resources
+### 6. Resource Types
 
-I/O handles and system resources are linear types: they must be consumed exactly once. You cannot forget to close a file or leak a socket.
+I/O handles and system resources are resource types (linear resources): they must be consumed exactly once. You cannot forget to close a file or leak a socket.
 
 **What this means:**
-- Linear values can be read (borrowed) for inspection
-- Linear values must eventually be consumed (closed, transferred, etc.)
-- Forgetting to consume a linear value is a compile error
+- Resource values can be read (borrowed) for inspection
+- Resource values must eventually be consumed (closed, transferred, etc.)
+- Forgetting to consume a resource value is a compile error
 
-See [Linear Types](specs/memory/linear-types.md) for full specification.
+See [Resource Types](specs/memory/resource-types.md) for full specification.
 
 ### 7. Compiler Knowledge is Visible
 
@@ -133,7 +133,7 @@ The compiler tracks ownership statically:
 - Types >16 bytes: explicit `.clone()` or move semantics
 - Threshold is **NOT configurable** (semantic stability, portability)
 - `@unique` attribute: prevents copying (each instance is unique)
-- `@linear` attribute: must be consumed exactly once (files, connections)
+- `@resource` attribute: must be consumed exactly once (files, connections)
 - Platform ABI differences handled at compiler level (semantics are portable)
 
 **Specifications:**
@@ -205,7 +205,7 @@ Override any parameter for different tradeoffs:
 
 Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generation mismatch), invalid index (out of bounds).
 
-**Linear resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for linear types.
+**Resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for resource types.
 
 **Specifications:**
 - [Collections (Vec, Map)](specs/stdlib/collections.md) - Indexed and keyed collections
@@ -303,7 +303,7 @@ let data = try file.read()       // Safe: ensure registered
 
 **Specifications:**
 - [Ensure Cleanup](specs/control/ensure.md) - Deferred cleanup mechanism
-- [Linear Types](specs/memory/linear-types.md) - Linear resource consumption requirements
+- [Resource Types](specs/memory/resource-types.md) - Resource consumption requirements
 
 ### Strings
 

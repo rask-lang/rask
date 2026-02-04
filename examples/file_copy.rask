@@ -1,5 +1,5 @@
 // File Copy Utility
-// Demonstrates: File I/O, linear types, ensure for cleanup, error propagation
+// Demonstrates: File I/O, linear resource types, ensure for cleanup, error propagation
 
 import fs
 import cli
