@@ -60,4 +60,25 @@ impl Environment {
         }
         false
     }
+
+    /// Get a mutable reference to a variable (for in-place field assignment).
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Value> {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(value) = scope.bindings.get_mut(name) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    /// Capture all visible variables (for closures).
+    pub fn capture(&self) -> HashMap<String, Value> {
+        let mut captured = HashMap::new();
+        for scope in &self.scopes {
+            for (name, value) in &scope.bindings {
+                captured.insert(name.clone(), value.clone());
+            }
+        }
+        captured
+    }
 }

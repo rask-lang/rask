@@ -6,4 +6,4 @@ mod value;
 mod env;
 mod interp;
 
-pub use interp::Interpreter;
+pub use interp::{Interpreter, RuntimeError};

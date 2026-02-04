@@ -102,7 +102,7 @@ Tests use `ensure` for cleanup (same semantics as regular code):
 
 ```rask
 test "file processing" {
-    const file = open("test.txt")?
+    const file = try open("test.txt")
     ensure file.close()
     assert file.read() == "expected"
 }

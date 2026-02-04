@@ -325,7 +325,7 @@ mod tests {
         let pkg_dir = tmp.path().join("mypackage");
 
         create_test_package(&pkg_dir, &[
-            ("main.rask", "func main() { }"),
+            ("main.rask", "@entry\n func main() { }"),
             ("util.rask", "func helper() { }"),
         ]);
 
@@ -344,7 +344,7 @@ mod tests {
         let sub = root.join("sub");
 
         create_test_package(&root, &[
-            ("main.rask", "func main() { }"),
+            ("main.rask", "@entry\n func main() { }"),
         ]);
         create_test_package(&sub, &[
             ("helper.rask", "func help() { }"),

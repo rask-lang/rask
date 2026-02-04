@@ -208,7 +208,7 @@ When `Owned<T>` is consumed via `drop()` or scope exit (after `ensure`):
 @resource
 struct File { handle: RawHandle }
 
-const file_ptr = own File.open("data.txt")?
+const file_ptr = own (try File.open("data.txt"))
 // ... use file ...
 drop(file_ptr)  // Runs File destructor, then frees memory
 ```

@@ -627,6 +627,8 @@ dependencies = [
 name = "rask-spec-test"
 version = "0.1.0"
 dependencies = [
+ "rask-desugar",
+ "rask-interp",
  "rask-lexer",
  "rask-parser",
 ]

@@ -30,6 +30,7 @@ The `take` keyword marks the exceptional case of ownership transfer.
 
 The default. Function temporarily accesses the value; caller keeps ownership.
 
+<!-- test: skip -->
 ```rask
 func process(data: Data) -> Report {
     // Can read data.field
@@ -45,6 +46,7 @@ print(d.name)   // ✅ OK: d still valid
 
 **Mutability is inferred:**
 
+<!-- test: parse -->
 ```rask
 func read_only(data: Data) {
     print(data.name)       // Only reads → inferred immutable
@@ -60,6 +62,7 @@ The compiler analyzes the function body and infers:
 - **Mutable borrow** if parameter is mutated
 
 IDE shows inferred mutability as ghost annotation:
+<!-- test: skip -->
 ```rask
 func mutates(data: Data) {   // ghost: [mutates data]
     data.count += 1
@@ -72,6 +75,7 @@ func mutates(data: Data) {   // ghost: [mutates data]
 
 Explicit read-only guarantee. Compiler enforces no mutation.
 
+<!-- test: skip -->
 ```rask
 func validate(read user: User) -> bool {
     user.email.contains("@")  // ✅ OK: reading
@@ -85,6 +89,7 @@ func validate(read user: User) -> bool {
 2. **Compiler enforcement** — Cannot accidentally add mutation
 3. **Concurrent access** — Multiple `read` borrows can coexist
 
+<!-- test: skip -->
 ```rask
 func process(data: Data) {
     // Both calls can happen concurrently because they only read
@@ -105,6 +110,7 @@ func checksum(read data: Data) -> u32 { ... }
 
 Explicit ownership transfer. Caller gives up the value.
 
+<!-- test: skip -->
 ```rask
 func consume(take data: Data) {
     // Can do anything with data
@@ -134,6 +140,7 @@ Same rules apply to `self`:
 | `read self` | Read-only self (enforced) |
 | `take self` | Take ownership (consuming method) |
 
+<!-- test: skip -->
 ```rask
 extend File {
     // Read-only: guarantees no mutation
@@ -152,17 +159,18 @@ extend File {
     }
 }
 
-const file = File.open("data.txt")?
-file.read(buf)?    // borrows file
-file.read(buf)?    // ✅ OK: can borrow again
-file.close()?      // takes file
-file.read(buf)?    // ❌ ERROR: file was taken
+const file = try File.open("data.txt")
+try file.read(buf)    // borrows file
+try file.read(buf)    // ✅ OK: can borrow again
+try file.close()      // takes file
+try file.read(buf)    // ❌ ERROR: file was taken
 ```
 
 ### Interaction with Copy Types
 
 For Copy types (≤16 bytes, all fields Copy), the distinction is less visible because values are copied:
 
+<!-- test: parse -->
 ```rask
 func process(x: i32) {
     // x is copied in, caller keeps original
@@ -182,20 +190,21 @@ For non-Copy types, the distinction matters:
 
 Linear resource types must be consumed exactly once. Only `take` parameters can consume them:
 
+<!-- test: skip -->
 ```rask
 @resource
 struct File { ... }
 
 func process(file: File) {        // Borrow
-    file.read()?                // ✅ OK: reading
+    try file.read()             // ✅ OK: reading
     // file must NOT be consumed here
 }   // file returned to caller
 
 func finish(take file: File) {    // Take
-    file.close()?               // ✅ OK: consuming
+    try file.close()            // ✅ OK: consuming
 }   // file consumed
 
-const f = File.open(path)?
+const f = try File.open(path)
 process(f)     // borrows f
 finish(f)      // takes f, f now invalid
 ```
@@ -216,6 +225,7 @@ For `read` parameters, the compiler enforces read-only access regardless of what
 
 **Inference is local:** The compiler only looks at the function body, not transitive calls.
 
+<!-- test: parse -->
 ```rask
 func example(data: Data) {
     data.x = 5              // Assignment → mutable
@@ -289,6 +299,7 @@ Caller's value remains valid after call.
 
 ### Common Patterns
 
+<!-- test: skip -->
 ```rask
 // Explicit read-only (guaranteed, visible in API)
 func validate(read user: User) -> bool {
@@ -318,6 +329,7 @@ func finish(take file: File) -> Result<(), Error> {
 
 ### Method Chains
 
+<!-- test: skip -->
 ```rask
 extend Builder {
     // Borrow self: can chain
@@ -343,6 +355,7 @@ Builder.new()
 Projections allow borrowing only specific fields of a struct, enabling disjoint borrows across function calls.
 
 **Syntax:**
+<!-- test: skip -->
 ```rask
 func heal(p: Player.{health}) {
     p.health += 10       // ✅ OK: health is projected
@@ -355,6 +368,7 @@ func loot(p: Player.{inventory}) {
 ```
 
 **Disjoint borrows:**
+<!-- test: parse -->
 ```rask
 func update(player: Player) {
     heal(player)         // Borrows player.health
@@ -363,6 +377,7 @@ func update(player: Player) {
 ```
 
 **Multiple fields:**
+<!-- test: skip -->
 ```rask
 func combat(p: Player.{health, mana}) {
     p.health -= damage

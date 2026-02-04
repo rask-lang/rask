@@ -147,7 +147,7 @@ import net
 import time
 import io
 
-const file = fs.open("data.txt")?
+const file = try fs.open("data.txt")
 ```
 
 ---
@@ -238,7 +238,7 @@ The `fs` module provides file system operations.
 
 ```rask
 // File is linear — must be closed
-const file = fs.open("data.txt")?
+const file = try fs.open("data.txt")
 ensure file.close()
 
 const data = file.read_all()?

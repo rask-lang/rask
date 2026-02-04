@@ -7,3 +7,4 @@
 
 # Keep the history log tracked
 !.refinement/history.jsonl
+.claude

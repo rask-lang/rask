@@ -5,14 +5,7 @@
 //!
 //! # Annotation Format
 //!
-//! Add HTML comments before code blocks to mark them as tests:
-//!
-//! ```markdown
-//! <!-- test: compile -->
-//! ```rask
-//! func add(a: i32, b: i32) -> i32 { a + b }
-//! ```
-//! ```
+//! Add HTML comments before code blocks to mark them as tests.
 //!
 //! ## Available annotations:
 //!
@@ -21,6 +14,7 @@
 //! - `<!-- test: parse -->` - Must parse (skip type checking)
 //! - `<!-- test: parse-fail -->` - Must fail to parse
 //! - `<!-- test: skip -->` - Don't test this block
+//! - `<!-- test: run\n...\n-->` - Run and verify output matches
 //! - (no annotation) - Skipped by default
 
 pub mod extract;

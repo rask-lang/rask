@@ -20,7 +20,7 @@ Pools solve this by:
 
 ```rask
 const pool: Pool<Entity> = Pool.new()
-const h: Handle<Entity> = pool.insert(entity)?
+const h: Handle<Entity> = try pool.insert(entity)
 pool[h].health -= 10
 pool.remove(h)
 ```
@@ -102,7 +102,7 @@ Handles are copyable identifiers, not references. Multiple handles can point to 
 **Aliased handles are safe:**
 
 ```rask
-const h1 = pool.insert(entity)?
+const h1 = try pool.insert(entity)
 const h2 = h1  // h2 is a copy - both point to same entity
 
 pool[h1].health -= 10    // Volatile access #1 (released at ;)
@@ -145,13 +145,13 @@ See [borrowing.md](borrowing.md) for full borrowing rules.
 For multi-statement operations, use closure-based access:
 
 ```rask
-pool.modify(h, |entity| {
+try pool.modify(h, |entity| {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
         entity.status = Status.Dead
     }
-})?
+})
 ```
 
 | Method | Signature | Use Case |
@@ -173,11 +173,11 @@ Validates once at entry, then provides unchecked access inside the closure:
 | `pool.with_valid_mut(h, f)` | `func(Pool<T>, Handle<T>, func(T) -> R) -> Option<R>` | One check, then write |
 
 ```rask
-pool.with_valid_mut(h, |e| {
+try pool.with_valid_mut(h, |e| {
     e.x = 1   // No check
     e.y = 2   // No check
     e.z = 3   // No check
-})?
+})
 ```
 
 **When to use:** Hot loops where profiling shows generation checks are bottleneck; multi-field updates in performance-critical code; safe alternative to frozen pools when mutation is needed.
@@ -222,7 +222,7 @@ Every pool registers itself in a thread-local registry on creation:
 
 ```rask
 let players: Pool<Player> = Pool.new()  // Registers as pool_id=1
-const h = players.insert(Player { health: 100, ... })?
+const h = try players.insert(Player { health: 100, ... })
 
 // Later, anywhere in the same thread:
 h.health -= 10    // Auto-resolves via: REGISTRY[h.pool_id][h.index].health
@@ -246,7 +246,7 @@ Pass the pool as a regular argument only for **structural operations**:
 | Operation | Needs Pool? | Example |
 |-----------|-------------|---------|
 | Field read/write | No | `h.health -= 10` |
-| Insert | Yes | `pool.insert(x)?` |
+| Insert | Yes | `try pool.insert(x)` |
 | Remove | Yes | `pool.remove(h)` |
 | Iterate | Yes | `pool.cursor()` |
 | Freeze | Yes | `pool.freeze()` |
@@ -265,7 +265,7 @@ func kill(players: Pool<Player>, h: Handle<Player>) {
 }
 
 func spawn_enemy(enemies: Pool<Enemy>, pos: Vec3) -> Handle<Enemy> {
-    enemies.insert(Enemy { position: pos, health: 100, ... })?
+    try enemies.insert(Enemy { position: pos, health: 100, ... })
 }
 ```
 
@@ -295,7 +295,7 @@ Only functions doing insert/remove/iterate need the pool:
 ```rask
 func spawn_wave(enemies: Pool<Enemy>, count: i32) {
     for i in 0..count {
-        enemies.insert(Enemy.new(random_pos()))?
+        try enemies.insert(Enemy.new(random_pos()))
     }
 }
 
@@ -494,7 +494,7 @@ for entity in pool.drain_where(|e| e.expired) {
 ### Creation
 
 ```rask
-let h: Handle<Entity> = pool.insert(entity)?
+let h: Handle<Entity> = try pool.insert(entity)
 let weak: WeakHandle<Entity> = pool.weak(h)
 ```
 
@@ -695,12 +695,12 @@ Linear resource types have special rules in pools:
 **Pool pattern for linear resources:**
 ```rask
 let files: Pool<File> = Pool.new()
-const h = files.insert(File.open(path)?)?
+const h = try files.insert(try File.open(path))
 
 // Later: explicit consumption required
 for h in files.handles().collect<Vec<_>>() {
     const file = files.remove(h).unwrap()
-    file.close()?
+    try file.close()
 }
 ```
 
@@ -717,14 +717,14 @@ This ensures linear resources cannot be silently leaked through pool abandonment
 ```rask
 // Pattern 1: Explicit take_all loop
 for file in files.take_all() {
-    file.close()?
+    try file.close()
 }
 
 // Pattern 2: take_all_with (ignore errors)
 files.take_all_with(|f| { f.close(); })
 
 // Pattern 3: take_all_with_result (propagate errors)
-files.take_all_with_result(|f| f.close())?
+try files.take_all_with_result(|f| f.close())
 
 // Pattern 4: ensure block (cleanup on any exit)
 ensure files.take_all_with(|f| { f.close(); })
@@ -735,14 +735,14 @@ ensure files.take_all_with(|f| { f.close(); })
 ```rask
 // BAD: Dropping non-empty pool
 let files: Pool<File> = Pool.new()
-files.insert(File.open("a.txt")?)?
+try files.insert(try File.open("a.txt"))
 // scope exit: PANIC - files not taken
 
 // BAD: Forgetting to take_all in error path
 let files: Pool<File> = Pool.new()
-files.insert(File.open("a.txt")?)?
-some_operation()?  // If this fails, files not taken - PANIC
-for file in files.take_all() { file.close()?; }
+try files.insert(try File.open("a.txt"))
+try some_operation()  // If this fails, files not taken - PANIC
+for file in files.take_all() { try file.close(); }
 ```
 
 **Correct pattern with ensure:**
@@ -751,8 +751,8 @@ for file in files.take_all() { file.close()?; }
 let files: Pool<File> = Pool.new()
 ensure files.take_all_with(|f| { f.close(); })
 
-files.insert(File.open("a.txt")?)?
-some_operation()?  // If this fails, ensure runs, takes all from pool
+try files.insert(try File.open("a.txt"))
+try some_operation()  // If this fails, ensure runs, takes all from pool
 ```
 
 ---
@@ -778,7 +778,7 @@ some_operation()?  // If this fails, ensure runs, takes all from pool
 ### All Insertions are Fallible
 
 ```rask
-pool.insert(x)?   // Result<Handle<T>, InsertError<T>>
+try pool.insert(x)   // Result<Handle<T>, InsertError<T>>
 
 enum InsertError<T> {
     Full(T),   // Bounded pool at capacity
@@ -811,7 +811,7 @@ Unlike pointers (which become invalid when memory moves), handles store an index
 | 3. Handle used | `pool.data[handle.index]` finds data at new location |
 
 ```rask
-const h = pool.insert(Entity { ... })?   // h = { index: 0, gen: 1 }
+const h = try pool.insert(Entity { ... })   // h = { index: 0, gen: 1 }
 // ... pool grows internally ...
 pool[h].health -= 10                    // Still works - index 0 is still valid
 ```
@@ -873,7 +873,7 @@ const configs = Pool.with_capacity(100)    // Modest config count
 ```rask
 func next_level(entities: Pool<Entity>) {
     entities.clear()                    // Free all entities
-    spawn_level_entities(entities)?     // Reuse same pool
+    try spawn_level_entities(entities)     // Reuse same pool
 }
 ```
 
@@ -949,13 +949,13 @@ struct Node {
 func build_graph() -> Result<Pool<Node>, Error> {
     const nodes = Pool.new()
 
-    const a = nodes.insert(Node { data: "A", edges: Vec.new() })?
-    const b = nodes.insert(Node { data: "B", edges: Vec.new() })?
-    const c = nodes.insert(Node { data: "C", edges: Vec.new() })?
+    const a = try nodes.insert(Node { data: "A", edges: Vec.new() })
+    const b = try nodes.insert(Node { data: "B", edges: Vec.new() })
+    const c = try nodes.insert(Node { data: "C", edges: Vec.new() })
 
-    nodes[a].edges.push(b)?
-    nodes[a].edges.push(c)?
-    nodes[b].edges.push(c)?
+    try nodes[a].edges.push(b)
+    try nodes[a].edges.push(c)
+    try nodes[b].edges.push(c)
 
     Ok(nodes)
 }
@@ -1033,11 +1033,11 @@ struct LinkedList<T> {
 
 extend LinkedList<T> {
     func push_back(self, data: T) -> Result<Handle<ListNode<T>>, Error> {
-        const h = self.nodes.insert(ListNode {
+        const h = try self.nodes.insert(ListNode {
             data,
             prev: self.tail,
             next: none,
-        })?
+        })
 
         if self.tail is Some(old_tail) {
             self.nodes[old_tail].next = Some(h)
@@ -1049,7 +1049,7 @@ extend LinkedList<T> {
     }
 
     func remove(self, h: Handle<ListNode<T>>) -> Option<T> {
-        const node = self.nodes.remove(h)?
+        const node = try self.nodes.remove(h)
 
         // Update neighbors
         if node.prev is Some(prev) {
@@ -1072,7 +1072,7 @@ extend LinkedList<T> {
         const frozen = self.nodes.freeze_ref()
         const current = self.head
         std.iter.from_fn(move || {
-            const h = current?
+            const h = try current
             current = frozen[h].next  // Zero gen checks with frozen
             Some(h)
         })
@@ -1120,7 +1120,7 @@ extend Tree<T> {
         }
 
         // Add to new parent
-        self.nodes[new_parent].children.push(child)?
+        try self.nodes[new_parent].children.push(child)
         self.nodes[child].parent = Some(new_parent)
     }
 
@@ -1169,7 +1169,7 @@ struct Graph<T> {
 extend Graph<T> {
     // Add edge (cycles allowed)
     func add_edge(self, from: Handle<GraphNode<T>>, to: Handle<GraphNode<T>>) -> Result<(), Error> {
-        self.nodes[from].edges.push(to)?
+        try self.nodes[from].edges.push(to)
         Ok(())
     }
 
@@ -1195,7 +1195,7 @@ extend Graph<T> {
 
     // Remove node - edges to it become stale (detected on access)
     func remove(self, h: Handle<GraphNode<T>>) -> Option<T> {
-        const node = self.nodes.remove(h)?
+        const node = try self.nodes.remove(h)
         Some(node.data)
         // Note: Other nodes may still have edges pointing to h
         // These become stale handles - pool.get() returns None
@@ -1251,11 +1251,11 @@ extend Ast {
     func new_binary(self, op: BinOp, left: Handle<ExprNode>, right: Handle<ExprNode>, span: Span)
         -> Result<Handle<ExprNode>, Error>
     {
-        const h = self.exprs.insert(ExprNode {
+        const h = try self.exprs.insert(ExprNode {
             expr: Expr.Binary { op, left, right },
             parent: none,
             span,
-        })?
+        })
 
         // Set parent pointers
         self.exprs[left].parent = Some(h)
@@ -1282,8 +1282,8 @@ extend Ast {
         const types = Map.new()
 
         for h in frozen.handles() {
-            const ty = infer_type(frozen[h].expr, types)?
-            types.insert(h, ty)?
+            const ty = try infer_type(frozen[h].expr, types)
+            try types.insert(h, ty)
         }
         Ok(types)
     }
@@ -1424,10 +1424,10 @@ func integrate_velocities(mut entities: Pool<Entity>, dt: f32) {
     entities.with_partition_mut(num_cpus(), |chunks| {
         parallel_for(chunks) { |chunk|
             for h in chunk.cursor() {
-                chunk.modify(h, |e| {
+                try chunk.modify(h, |e| {
                     e.velocity += e.acceleration * dt
                     e.position += e.velocity * dt
-                })?
+                })
             }
         }
     })
@@ -1457,7 +1457,7 @@ parallel {
 }
 
 // Writer can mutate concurrently
-pool.insert(new_entity)?
+try pool.insert(new_entity)
 pool.remove(dead_entity)
 
 // Snapshot dropped when readers done
@@ -1661,11 +1661,11 @@ func physics_tick_parallel(mut entities: Pool<Entity>, dt: f32) {
     entities.with_partition_mut(num_cpus(), |chunks| {
         parallel_for(chunks) { |chunk|
             for h in chunk.cursor() {
-                chunk.modify(h, |e| {
+                try chunk.modify(h, |e| {
                     const force = compute_forces(e.position, e.mass)
                     e.velocity += force * dt
                     e.position += e.velocity * dt
-                })?
+                })
             }
         }
     })
@@ -1760,7 +1760,7 @@ Pass lightweight handles (12 bytes) instead of copying or sharing data. The pool
 ```rask
 struct User { name: string, email: string, ... }
 let users: Pool<User> = Pool.new()
-const user_h = users.insert(User { ... })?
+const user_h = try users.insert(User { ... })
 
 // Send handles to worker, receive commands back
 (cmd_tx, cmd_rx) = Channel<UserCommand>.buffered(100)
@@ -1768,8 +1768,8 @@ const user_h = users.insert(User { ... })?
 nursery { |n|
     // Worker task: sends commands (doesn't access pool directly)
     n.spawn(user_h, cmd_tx) { |h, tx|
-        tx.send(UserCommand.Validate(h))?
-        tx.send(UserCommand.Notify(h))?
+        try tx.send(UserCommand.Validate(h))
+        try tx.send(UserCommand.Notify(h))
     }
 
     // Main task: owns pool, processes commands
@@ -1796,9 +1796,9 @@ Multiple functions access the same pool without passing it — handles auto-reso
 
 ```rask
 func process_user(user_h: Handle<User>) -> Result<()> {
-    validate_user(user_h)?
-    send_notification(user_h)?
-    log_activity(user_h)?
+    try validate_user(user_h)
+    try send_notification(user_h)
+    try log_activity(user_h)
     Ok(())
 }
 
@@ -1816,7 +1816,7 @@ func send_notification(h: Handle<User>) {
 }
 
 // Just call it — no with block needed
-process_user(user_h)?
+try process_user(user_h)
 ```
 
 **Key insight:** Handles know which pool they came from. No explicit pool passing or `with` blocks required.
@@ -1857,6 +1857,68 @@ with (players, teams) {
 | Cross-task access | Channels (GC overhead) | `Arc<User>` (RC cost) | Channels with handles (zero-copy) |
 
 **Mental model:** The pool is a parking lot. Handles are parking tickets. You can copy a ticket (16 bytes) and hand it to anyone. The car (User) stays parked.
+
+---
+
+## Emergent Capabilities
+
+Because handles are plain integers (not memory addresses), the pool/handle model enables capabilities that pointer-based languages cannot easily replicate.
+
+### Serialization
+
+Handles survive serialization. A `Handle<T>` is `{pool_id, index, generation}` — three integers with no address-space dependency. An entire pool graph can be written to disk and reconstructed with all cross-references intact.
+
+```rask
+// Save game state: just serialize the pools
+func save_game(world: World, path: string) -> Result<(), Error> {
+    const file = try File.create(path)
+    ensure file.close()
+    try serialize(file, world.entities)    // Handles inside entities are just integers
+    try serialize(file, world.items)
+    Ok(())
+}
+
+// Load game state: handles still point to the right slots
+func load_game(path: string) -> Result<World, Error> {
+    const file = try File.open(path)
+    ensure file.close()
+    const entities: Pool<Entity> = try deserialize(file)
+    const items: Pool<Item> = try deserialize(file)
+    Ok(World { entities, items })
+}
+```
+
+No pointer fixup pass needed. No address relocation. Handles that pointed to entity #42 before saving still point to entity #42 after loading.
+
+**Cross-references between pools** also survive, as long as all referenced pools are serialized and deserialized together with the same pool IDs. The serialization format must preserve pool IDs to maintain handle validity.
+
+### Plugin Isolation
+
+Dropping a pool clears its registry entry, instantly invalidating all handles to it. This provides a natural sandboxing boundary:
+
+```rask
+func run_plugin(plugin: Plugin) -> Result<(), Error> {
+    // Plugin gets its own pools
+    const plugin_entities = Pool.new()
+    const plugin_state = Pool.new()
+
+    try plugin.run(plugin_entities, plugin_state)
+
+    // Unload: drop pools, all plugin handles become invalid
+    // Any stale handles in event queues safely fail on access
+    drop(plugin_entities)
+    drop(plugin_state)
+    Ok(())
+}
+```
+
+| Property | Pointer-based | Handle-based |
+|----------|---------------|--------------|
+| Unload plugin memory | Must trace all references | Drop the pool |
+| Dangling references after unload | Use-after-free (UB) | Panic or `None` (safe) |
+| Memory reclamation | GC or manual | Instant (pool owns all data) |
+
+This pattern works because handle validity is checked at access time, not at creation time. A handle to a dropped pool fails safely — no undefined behavior.
 
 ---
 

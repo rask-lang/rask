@@ -1,6 +1,10 @@
-// Simple grep - Pattern search using current interpreter features
+// Simple grep - Pattern search using module syntax
 // Usage: rask run simple_grep.rask <pattern> <file>
-// Demonstrates: cli_args, fs_read_lines, string methods, match, Vec, loops
+// Demonstrates: cli.args, fs.read_lines, string methods, match, Vec, loops
+
+import fs
+import cli
+import std
 
 enum GrepResult {
     Ok(i32)
@@ -8,7 +12,7 @@ enum GrepResult {
 }
 
 func grep_file(pattern: string, path: string) -> GrepResult {
-    const lines_result = fs_read_lines(path)
+    const lines_result = fs.read_lines(path)
 
     match lines_result {
         Ok(lines) => {
@@ -31,12 +35,12 @@ func grep_file(pattern: string, path: string) -> GrepResult {
 
 @entry
 func main() {
-    const args = cli_args()
+    const args = cli.args()
     const argc = args.len()
 
     if argc < 3 {
         println("Usage: rask run simple_grep.rask <pattern> <file>")
-        std_exit(1)
+        std.exit(1)
     }
 
     const pattern = args.get(1)
@@ -51,12 +55,12 @@ func main() {
             println("")
             println("Found {count} matching lines")
             if count == 0 {
-                std_exit(1)
+                std.exit(1)
             }
         }
         Err(e) => {
             println("Error: {e}")
-            std_exit(2)
+            std.exit(2)
         }
     }
 }

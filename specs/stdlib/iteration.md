@@ -72,6 +72,7 @@ Ref mode (`for (h, item) in collection.iter()`) provides ergonomic read-only acc
 
 Yields owned values, consuming the collection:
 
+<!-- test: skip -->
 ```rask
 for item in vec.take_all() {
     process(item)  // item is owned T
@@ -93,12 +94,13 @@ for item in vec.take_all() {
 
 **Early Exit:**
 
+<!-- test: skip -->
 ```rask
 for file in files.take_all() {
     if file.is_locked() {
         break  // Remaining files DROPPED (LIFO order)
     }
-    file.close()?
+    try file.close()
 }
 ```
 
@@ -111,12 +113,13 @@ for file in files.take_all() {
 | Pattern | Safety | Notes |
 |---------|--------|-------|
 | `for i in vec { vec[i].field = x }` | Safe | In-place mutation doesn't invalidate index |
-| `for i in vec { vec.push(x)? }` | Unsafe | New elements not visited; length captured at start |
+| `for i in vec { try vec.push(x) }` | Unsafe | New elements not visited; length captured at start |
 | `for i in vec { vec.swap_remove(i) }` | Unsafe | Later indices refer to wrong elements |
 
 **Safe Patterns:**
 
 1. **Reverse iteration for removal:**
+   <!-- test: skip -->
    ```rask
    for i in (0..vec.len()).rev() {
        if vec[i].expired { vec.swap_remove(i) }
@@ -124,6 +127,7 @@ for file in files.take_all() {
    ```
 
 2. **Collect indices, then mutate:**
+   <!-- test: skip -->
    ```rask
    const to_remove = Vec.new()
    for i in vec { if vec[i].expired { to_remove.push(i) } }
@@ -131,15 +135,16 @@ for file in files.take_all() {
    ```
 
 3. **Filter via take_all:**
+   <!-- test: skip -->
    ```rask
    const vec = vec.take_all().filter(|item| !item.expired).collect()
    ```
 
 ---
 
-## Error Propagation (`?`)
+## Error Propagation (`try`)
 
-When `?` exits a loop:
+When `try` exits a loop:
 
 | Loop Type | Original Collection | Remaining Items |
 |-----------|---------------------|-----------------|
@@ -149,10 +154,11 @@ When `?` exits a loop:
 | Take all mode | Already taken | Dropped (LIFO) |
 
 **Take all + ensure:**
+<!-- test: skip -->
 ```rask
 for file in files.take_all() {
-    ensure file.close()   // Runs if ? exits
-    file.write(data)?
+    ensure file.close()   // Runs if try exits
+    try file.write(data)
 }
 ```
 
@@ -162,18 +168,21 @@ for file in files.take_all() {
 
 **Index iteration forbidden for `Vec<Linear>`:**
 
+<!-- test: skip -->
 ```rask
 // COMPILE ERROR:
-for i in files { files[i].close()? }
+for i in files { try files[i].close() }
 
 // Required:
-for file in files.take_all() { file.close()? }
+for file in files.take_all() { try file.close() }
 ```
 
 **Pool iteration works** (handles are Copy):
+<!-- test: skip -->
 ```rask
 for h in pool {
-    pool.remove(h)?.close()?
+    const removed = try pool.remove(h)
+    try removed.close()
 }
 ```
 
@@ -182,6 +191,7 @@ for h in pool {
 ## Map Iteration
 
 **Key mode requires Copy keys:**
+<!-- test: skip -->
 ```rask
 // OK: u64 is Copy
 for id in counts { print(counts[id]) }
@@ -191,6 +201,7 @@ for key in config { ... }  // Use .iter() or .take_all()
 ```
 
 **Ref mode for all key types:**
+<!-- test: skip -->
 ```rask
 for (key, value) in config.iter() {
     print(key, value)

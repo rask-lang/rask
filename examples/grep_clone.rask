@@ -3,11 +3,11 @@
 
 import fs
 import cli
-import regex
+import std
 
 struct Options {
-    pattern: String
-    files: Vec<String>
+    pattern: string
+    files: Vec<string>
     ignore_case: bool
     line_numbers: bool
     count_only: bool
@@ -17,22 +17,20 @@ struct Options {
 enum GrepError {
     NoPattern,
     NoFiles,
-    InvalidRegex(String),
-    FileError(String, fs.IoError),
+    FileError(string),
 }
 
 extend GrepError {
-    func message(self) -> String {
+    func message(self) -> string {
         match self {
             NoPattern => "missing pattern argument",
             NoFiles => "no files specified",
-            InvalidRegex(msg) => "invalid regex: {msg}",
-            FileError(path, err) => "{path}: {err.message()}",
+            FileError(msg) => "{msg}",
         }
     }
 }
 
-func parse_args(args: Vec<String>) -> Result<Options, GrepError> {
+func parse_args(args: Vec<string>) -> Result<Options, GrepError> {
     let opts = Options {
         pattern: "",
         files: Vec.new(),
@@ -54,20 +52,20 @@ func parse_args(args: Vec<String>) -> Result<Options, GrepError> {
                 print_usage()
                 std.exit(0)
             }
-            _ if arg.starts_with("-") => {
-                println("unknown option: {arg}")
-                print_usage()
-                std.exit(1)
-            }
-            _ => positional.push(arg.clone())?,
+            _ => positional.push(arg.clone()),
         }
     }
 
     if positional.len() == 0: return Err(GrepError.NoPattern)
     opts.pattern = positional[0].clone()
 
+    // Collect remaining positional args as files
     if positional.len() == 1: return Err(GrepError.NoFiles)
-    opts.files = positional[1..].to_vec()
+    let i = 1
+    while i < positional.len() {
+        opts.files.push(positional[i].clone())
+        i = i + 1
+    }
 
     Ok(opts)
 }
@@ -83,63 +81,76 @@ func print_usage() {
     println("  -h    Show this help")
 }
 
-func grep_file(path: String, pattern: regex.Regex, opts: Options) -> Result<i32, GrepError> {
-    const file = fs.File.open(path.clone()).map_err(|e| GrepError.FileError(path.clone(), e))?
-    ensure file.close()
+func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
+    if ignore_case {
+        const lower_line = line.to_lowercase()
+        const lower_pattern = pattern.to_lowercase()
+        lower_line.contains(lower_pattern)
+    } else {
+        line.contains(pattern)
+    }
+}
 
+func grep_file(path: string, opts: Options) -> Result<i64, GrepError> {
+    const content = fs.read_file(path.clone())
+        .map_err(|e| GrepError.FileError(e))?
+
+    const lines = content.lines()
     let match_count = 0
     let line_num = 0
 
-    for line in file.lines() {
-        line_num += 1
-        const line = line.map_err(|e| GrepError.FileError(path.clone(), e))?
-
-        const matches = pattern.is_match(line)
+    for line in lines {
+        line_num = line_num + 1
+        const matches = line_matches(line.clone(), opts.pattern.clone(), opts.ignore_case)
         const show = if opts.invert_match: !matches else: matches
 
         if show {
-            match_count += 1
+            match_count = match_count + 1
 
             if !opts.count_only {
-                const prefix = if opts.line_numbers: "{line_num}:" else: ""
-                println("{prefix}{line}")
+                if opts.line_numbers {
+                    println("{line_num}:{line}")
+                } else {
+                    println("{line}")
+                }
             }
         }
     }
 
-    if opts.count_only: println("{match_count}")
+    if opts.count_only {
+        println("{match_count}")
+    }
 
     Ok(match_count)
 }
 
 @entry
-func main() -> Result<(), GrepError> {
+func main() {
     const args = cli.args()
-    const opts = parse_args(args)?
-
-    // Compile the regex pattern
-    const pattern = if opts.ignore_case {
-        regex.Regex.new_case_insensitive(opts.pattern.clone())
-    } else {
-        regex.Regex.new(opts.pattern.clone())
-    }.map_err(|e| GrepError.InvalidRegex(e.message()))?
+    const opts = match parse_args(args) {
+        Ok(o) => o,
+        Err(e) => {
+            const msg = e.message()
+            println("rgrep: {msg}")
+            print_usage()
+            std.exit(1)
+        }
+    }
 
     let total_matches = 0
     let had_errors = false
-    const show_filename = opts.files.len() > 1
 
-    for file_path in opts.files.iter() {
-        match grep_file(file_path.clone(), pattern.clone(), opts) {
-            Ok(count) => total_matches += count,
+    for file_path in opts.files.clone() {
+        match grep_file(file_path, opts.clone()) {
+            Ok(count) => total_matches = total_matches + count,
             Err(e) => {
-                println("rgrep: {e.message()}")
+                const msg = e.message()
+                println("rgrep: {msg}")
                 had_errors = true
             }
         }
     }
 
-    // Exit with appropriate status
     if had_errors: std.exit(2)
     if total_matches == 0: std.exit(1)
-    Ok(())
 }

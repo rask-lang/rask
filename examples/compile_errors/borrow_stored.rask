@@ -1,0 +1,58 @@
+// Compile Error: Cannot store a reference in a struct
+// ERROR: borrow cannot escape scope
+
+// This file demonstrates that Rask prevents storing references in structs.
+// References are block-scoped only - they cannot outlive their lexical scope.
+
+struct Parser {
+    // COMPILE ERROR: Cannot store a reference type in a struct
+    input: string    // This would need to be a reference to work like Rust's &str
+    position: usize
+}
+
+// Why this is an error:
+// If we could store a reference, this would be possible:
+//
+//   func make_parser() -> Parser {
+//       const s = "hello"
+//       Parser { input: s[..], position: 0 }  // s dies when function returns!
+//   }
+//   const p = make_parser()
+//   p.input  // Use-after-free: s is gone
+//
+// Rask prevents this entire class of bugs by not allowing storable references.
+
+// THE FIX: Use owned data or handles
+
+// Option 1: Own the string
+struct ParserOwned {
+    input: string    // Owned string, not a reference
+    position: usize
+}
+
+extend ParserOwned {
+    func new(input: string) -> ParserOwned {
+        ParserOwned { input: input, position: 0 }
+    }
+}
+
+// Option 2: Store indices instead of slices
+struct ParserIndices {
+    start: usize
+    end: usize
+    position: usize
+}
+
+// Option 3: Use StringPool for validated references
+// struct ParserPooled {
+//     input: StringSlice  // Handle into a StringPool
+//     position: usize
+// }
+
+// The pattern that DOES work: block-scoped borrows for parsing
+func parse_header(line: string) -> Option<(string, string)> {
+    const colon = line.find(':')?
+    const key = line[0..colon].trim()      // Block-scoped borrow - OK
+    const value = line[colon+1..].trim()   // Another block-scoped borrow - OK
+    Some((key.to_string(), value.to_string()))  // Convert to owned before returning
+}

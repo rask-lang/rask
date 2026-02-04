@@ -8,31 +8,31 @@ import time
 // User data stored in memory
 struct User {
     public id: i64
-    public name: String
-    public email: String
+    public name: string
+    public email: string
 }
 
 // API request/response types
 struct CreateUserRequest {
-    name: String
-    email: String
+    name: string
+    email: string
 }
 
 struct UserResponse {
     id: i64
-    name: String
-    email: String
+    name: string
+    email: string
 }
 
 struct ErrorResponse {
-    error: String
+    error: string
 }
 
 // Log entry for request logging via channel
 struct LogEntry {
     timestamp: time.Instant
-    method: String
-    path: String
+    method: string
+    path: string
     status: i32
     duration_ms: f64
 }
@@ -113,7 +113,7 @@ func get_user(db: Shared<Database>, id: i64) -> HttpResponse {
     }
 }
 
-func create_user(db: Shared<Database>, body: String) -> HttpResponse {
+func create_user(db: Shared<Database>, body: string) -> HttpResponse {
     const req = match json.decode<CreateUserRequest>(body) {
         Ok(r) => r,
         Err(e) => return http_response(400, json.encode(ErrorResponse {
@@ -141,7 +141,7 @@ func delete_user(db: Shared<Database>, id: i64) -> HttpResponse {
     }
 }
 
-func http_response(status: i32, body: String) -> HttpResponse {
+func http_response(status: i32, body: string) -> HttpResponse {
     HttpResponse {
         status: status,
         headers: Map.from([("Content-Type", "application/json")]),

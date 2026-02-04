@@ -42,13 +42,21 @@ if x > 0 {
 **Rationale:** Python-style colon is cleaner for simple cases. Braces are explicit for complex blocks.
 
 ### 3. Minimal Type Annotations
-Types inferred where possible. Annotate only at function boundaries and when inference needs help.
+Types inferred within function bodies. Public function signatures require explicit types; private functions may omit them entirely.
 
 ```rask
-let x = 42              // i32 inferred
+let x = 42              // i32 inferred (within body, unchanged)
 let y: u64 = 42         // Explicit when needed
-func add(a: i32, b: i32) -> i32 { a + b }  // Function signatures explicit
+
+// Public: full signature required
+public func add(a: i32, b: i32) -> i32 { a + b }
+
+// Private: types optional (compiler infers from body)
+func add(a, b) { a + b }
+// Compiler infers: func add<T: Numeric>(a: T, b: T) -> T
 ```
+
+See [Gradual Constraints](types/gradual-constraints.md) for full rules on omitted types, bounds, and return types.
 
 ### 4. Keywords Are English Words
 Use readable keywords, not symbols or abbreviations.
@@ -158,6 +166,21 @@ func divide(a: f64, b: f64) -> Result<f64, Error> {
     if b == 0.0: return Err(Error.DivByZero)
     a / b                     // Auto-wrapped in Ok
 }
+```
+
+**Private functions — types optional (gradual constraints):**
+```rask
+func double(x) { x * 2 }           // Inferred: func double<T: Numeric>(x: T) -> T
+func greet(name) { println("Hi, {name}") }  // Inferred: func greet(name: string)
+
+// Partial annotation — mix explicit and inferred
+func process(data: Vec<Record>, handler) -> Result<(), Error> {
+    try handler(data)
+}
+// handler type inferred from usage
+
+// Public: MUST have full types
+public func serve(port: i32) -> Result<(), Error> { ... }
 ```
 
 **Parameter modes:**
@@ -380,6 +403,16 @@ struct Pair {
 func swap(a: T, b: T) -> (T, T) {
     (b, a)  // Both T must be the same type
 }
+```
+
+**Omitted types entirely (gradual constraints):**
+```rask
+func identity(x) { x }             // Inferred generic: func identity<T>(x: T) -> T
+func sum(items) { items.sum() }    // Inferred: func sum<T: Numeric>(items: Vec<T>) -> T
+
+// Mix: explicit type + inferred bounds
+func sort(items: Vec<T>) { items.sort() }
+// T is auto-generic (PascalCase), bound inferred as T: Comparable
 ```
 
 **Constraints with `where`:**
@@ -626,7 +659,7 @@ const result = search: loop {
 
 ```rask
 let pool: Pool<Entity> = Pool.new()
-const h = pool.insert(Entity { health: 100, x: 0, y: 0 })?
+const h = try pool.insert(Entity { health: 100, x: 0, y: 0 })
 
 // Access
 pool[h].health -= 10
@@ -654,10 +687,10 @@ with pool {
 
 ```rask
 func process(path: string) -> Result<Data, Error> {
-    const file = File.open(path)?
-    ensure file.close()          // Runs on ANY exit (return, ?, panic)
+    const file = try File.open(path)
+    ensure file.close()          // Runs on ANY exit (return, try, panic)
 
-    const data = file.read_all()?  // May fail, ensure still runs
+    const data = try file.read_all()  // May fail, ensure still runs
     transform(data)
 }
 ```
@@ -676,14 +709,14 @@ extend Connection {
     }
 
     func close(take self) -> Result<(), Error> {
-        self.socket.shutdown()?
+        try self.socket.shutdown()
     }
 }
 
 // Must consume
-let conn = Connection.open(addr)?
+const conn = try Connection.open(addr)
 // ... use conn ...
-conn.close()?    // MUST call (compiler error if not)
+try conn.close()    // MUST call (compiler error if not)
 ```
 
 ### Projections (Partial Borrows)
@@ -751,15 +784,15 @@ const must_exist = optional! "custom panic message"
 
 // Result
 func read_file(path: string) -> Result<string, IoError> {
-    const file = File.open(path)?
+    const file = try File.open(path)
     file.read_all()
 }
 
-// Error propagation with ?
+// Error propagation with try
 func load_config() -> Result<Config, IoError | ParseError> {
-    const content = read_file("config.json")?    // IoError
-    const config = parse_json(content)?          // ParseError
-    config                                       // Auto-wrapped in Ok
+    const content = try read_file("config.json")    // IoError
+    const config = try parse_json(content)          // ParseError
+    config                                          // Auto-wrapped in Ok
 }
 ```
 
@@ -784,7 +817,7 @@ match load_config() {
 ```rask
 // Basic spawn (must handle the handle!)
 const handle = spawn { compute() }
-const result = handle.join()?
+const result = try handle.join()
 
 // Fire-and-forget (explicit detach)
 spawn { background_work() }.detach()
@@ -797,7 +830,7 @@ const group = TaskGroup.new()
 for url in urls {
     group.spawn { fetch(url) }
 }
-const results = group.join_all()?
+const results = try group.join_all()
 ```
 
 ### Channels
@@ -806,10 +839,10 @@ const results = group.join_all()?
 const (tx, rx) = Channel<Message>.buffered(100)
 
 // Send
-tx.send(msg)?
+try tx.send(msg)
 
 // Receive
-const msg = rx.recv()?
+const msg = try rx.recv()
 
 // Select (see select.md for semantics)
 select {
@@ -946,16 +979,16 @@ func handler(w http.ResponseWriter, r *http.Request) {
 **Rask:**
 ```rask
 func handler(w: ResponseWriter, r: Request) -> Result<(), HttpError> {
-    const body = r.body.read_all()?
-    const req = json.parse<Request>(body)?
-    const result = process(req)?
+    const body = try r.body.read_all()
+    const req = try json.parse<Request>(body)
+    const result = try process(req)
     w.write_json(result)
 }
 ```
 
 **Noise comparison:**
 - Go: 20 lines, ~40% error handling
-- Rask: 5 lines, error handling is `?`
+- Rask: 5 lines, error handling is `try`
 
 ### File Processing
 
@@ -970,9 +1003,9 @@ def process_file(path):
 **Rask:**
 ```rask
 func process_file(path: string) -> Result<Data, IoError> {
-    const file = File.open(path)?
+    const file = try File.open(path)
     ensure file.close()
-    const content = file.read_all()?
+    const content = try file.read_all()
     transform(content)
 }
 ```
@@ -995,6 +1028,62 @@ const names = active_users.iter().map(|u| u.name).collect()
 
 ---
 
+## Verified Examples
+
+<!-- test: run | Hello, World -->
+```rask
+func greet(name: string) {
+    println("Hello, {name}")
+}
+
+@entry
+func main() {
+    greet("World")
+}
+```
+
+<!-- test: run | positive -->
+```rask
+const x = 5
+if x > 0 {
+    println("positive")
+} else {
+    println("non-positive")
+}
+```
+
+<!-- test: run | 0\n1\n2 -->
+```rask
+for i in 0..3 {
+    println("{i}")
+}
+```
+
+<!-- test: run | two -->
+```rask
+const n = 2
+match n {
+    1 => println("one"),
+    2 => println("two"),
+    _ => println("other"),
+}
+```
+
+<!-- test: run | 6 -->
+```rask
+const v = Vec.new()
+v.push(1)
+v.push(2)
+v.push(3)
+let sum = 0
+for i in 0..v.len() {
+    sum += v[i]
+}
+println("{sum}")
+```
+
+---
+
 ## Summary
 
 | Feature | Rask Syntax | Notes |
@@ -1009,13 +1098,14 @@ const names = active_users.iter().map(|u| u.name).collect()
 | Read-only | `read param` | Explicit read-only borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
-| Error prop | `?` | Postfix, concise |
+| Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern(v)` | Non-exhaustive, binds `v` |
 | Guard extraction | `let v = x is P else { }` | Binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `deliver expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |
+| Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
 | Generics | Implicit PascalCase | `where` for constraints |
 | Closures | `\|x\| expr` | Rust-style pipes |
 | Named args | `name: value` | Order-fixed, optional (IDE ghosts) |

@@ -208,7 +208,7 @@ const weak = pool.weak(h)           // Weak handle, can be invalidated
 pool.remove(h)                    // Invalidates all weak handles to h
 
 if weak.valid() {
-    pool[weak.upgrade()?]         // Safe access
+    pool[try weak.upgrade()]      // Safe access
 }
 ```
 
@@ -241,7 +241,7 @@ pool.with_view(h, |entity| {
 })
 
 // Or with explicit view binding:
-const view = pool.view(h)?          // View locks the slot
+const view = try pool.view(h)       // View locks the slot
 view.health -= damage
 view.position.x += 1
 drop(view)                        // Explicit unlock

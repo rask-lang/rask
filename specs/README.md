@@ -49,6 +49,7 @@ Quick navigation by task or concept:
 |---------------|-----|
 | Define custom types | [types/structs.md](types/structs.md), [types/enums.md](types/enums.md) |
 | Write generic functions | [types/generics.md](types/generics.md) |
+| Omit types in private functions | [types/gradual-constraints.md](types/gradual-constraints.md) |
 | Define interfaces/contracts | [types/traits.md](types/traits.md) |
 | Work with iterators | [types/iterator-protocol.md](types/iterator-protocol.md) |
 
@@ -74,6 +75,7 @@ Quick navigation by task or concept:
 | Persistent view | [memory/borrowing.md](memory/borrowing.md) — view held until block ends (fixed sources) |
 | ensure | [control/ensure.md](control/ensure.md) — deferred cleanup at scope exit |
 | comptime | [control/comptime.md](control/comptime.md) — compile-time execution |
+| Gradual constraints | [types/gradual-constraints.md](types/gradual-constraints.md) — omitting types/bounds in non-public functions |
 
 ---
 
@@ -88,6 +90,7 @@ Quick navigation by task or concept:
 | [optionals.md](types/optionals.md) | Option<T>, T? syntax |
 | [error-types.md](types/error-types.md) | Error trait, Result, union composition |
 | [generics.md](types/generics.md) | Parametric polymorphism, constraints |
+| [gradual-constraints.md](types/gradual-constraints.md) | Type/bound inference for private functions |
 | [traits.md](types/traits.md) | Trait objects, dynamic dispatch |
 | [iterator-protocol.md](types/iterator-protocol.md) | Iterator trait, adapters |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |

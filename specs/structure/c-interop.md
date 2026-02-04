@@ -256,7 +256,7 @@ struct File { fd: c_int }
 
 func call_c_with_file(file: File) -> Result<(), Error> {
     let fd = file.fd
-    ensure file.close()?     // Guarantee cleanup after C returns
+    ensure try file.close()  // Guarantee cleanup after C returns
     unsafe {
         c.process_file(fd)   // Pass raw fd to C
     }

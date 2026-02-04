@@ -1,0 +1,91 @@
+// Compile Error: Comptime iteration limit exceeded
+// ERROR: comptime execution exceeded iteration limit (1000 backwards branches)
+
+// This file demonstrates that compile-time execution has safety limits.
+// The compiler won't hang on infinite loops or excessive computation.
+
+// Infinite loop at comptime - compiler catches this
+comptime func infinite() -> i32 {
+    let x = 0
+    loop {
+        x += 1
+        // COMPILE ERROR: exceeded 1000 backwards branches
+        // This would loop forever, but the compiler stops it
+    }
+}
+
+// Why this is an error:
+// Comptime code runs in the compiler. Without limits:
+// - Infinite loops would hang compilation
+// - Excessive computation would make builds unpredictable
+// - Malicious code could DoS the build system
+//
+// Rask enforces these limits (configurable per-project):
+// - Backwards branches: 1,000 (default)
+// - Execution time: 10 seconds
+// - Memory: 256 MB
+// - String size: 1 MB
+// - Array size: 16 MB
+
+// THE FIX: Use bounded iteration
+
+// This is fine - bounded loop
+comptime func build_table() -> [u8; 256] {
+    let table = [0u8; 256]
+    for i in 0..256 {  // 256 iterations, well under limit
+        table[i] = (i * i) as u8
+    }
+    table
+}
+
+// This is also fine - reasonable recursion
+comptime func factorial(n: u64) -> u64 {
+    if n <= 1 { 1 }
+    else { n * factorial(n - 1) }
+}
+
+const FACT_10 = comptime factorial(10)  // OK: 10 recursive calls
+
+// This would fail - too many iterations
+comptime func too_many_iterations() -> i32 {
+    let sum = 0
+    for i in 0..1_000_000 {  // COMPILE ERROR: exceeds iteration limit
+        sum += i
+    }
+    sum
+}
+
+// This would also fail - recursion depth
+comptime func deep_recursion(n: u64) -> u64 {
+    if n == 0 { 0 }
+    else { 1 + deep_recursion(n - 1) }
+}
+
+// const DEEP = comptime deep_recursion(10_000)  // ERROR: stack overflow
+
+// THE FIX for large computations: use build scripts
+//
+// Build scripts run as separate programs before compilation.
+// They have no limits and can do I/O.
+//
+// In rask.build:
+//   func generate_large_table() {
+//       // Full language available, no limits
+//       // Write output to generated file
+//   }
+
+// Another error: comptime with I/O
+comptime func try_io() -> string {
+    // COMPILE ERROR: I/O not allowed at comptime
+    // const data = fs.read("file.txt")
+
+    // Only @embed_file works:
+    const data = @embed_file("data.txt")  // OK: resolved at compile time
+    data
+}
+
+// Another error: comptime with allocation beyond limits
+comptime func huge_array() -> [u8; 100_000_000] {
+    // COMPILE ERROR: array size exceeds comptime limit (16 MB)
+    [0u8; 100_000_000]
+}

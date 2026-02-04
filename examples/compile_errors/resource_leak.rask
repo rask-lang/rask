@@ -1,0 +1,97 @@
+// Compile Error: Resource type not consumed
+// ERROR: resource 'file' must be consumed before scope ends
+
+// This file demonstrates that @resource types must be consumed exactly once.
+// You cannot forget to close a file or drop a connection.
+
+import fs
+
+func process_data() -> Result<(), Error> {
+    // Open a file - this returns a @resource type
+    const file = fs.open("data.txt")?
+
+    // Read some data
+    const data = file.read_all()?
+
+    // Process data...
+    process(data)
+
+    // COMPILE ERROR: 'file' is a resource that must be consumed
+    // We forgot to close it!
+
+    Ok(())
+}
+
+// Why this is an error:
+// @resource types have linear semantics - they must be used exactly once.
+// This ensures:
+// - Files are always closed
+// - Connections are always terminated
+// - Locks are always released
+// - Transactions are always committed or rolled back
+
+// THE FIX: Consume the resource
+
+// Option 1: Explicit close
+func process_data_v1() -> Result<(), Error> {
+    const file = fs.open("data.txt")?
+    const data = file.read_all()?
+    process(data)
+    file.close()?  // Consumes the resource
+    Ok(())
+}
+
+// Option 2: Use 'ensure' for automatic cleanup
+func process_data_v2() -> Result<(), Error> {
+    const file = fs.open("data.txt")?
+    ensure file.close()  // Runs at scope exit, even on early return
+
+    const data = file.read_all()?
+    process(data)
+
+    if data.is_empty() {
+        return Err(Error.new("empty file"))  // ensure still runs!
+    }
+
+    Ok(())
+}
+
+// Option 3: Scoped resource pattern
+func process_data_v3() -> Result<(), Error> {
+    fs.open("data.txt")?.use(|file| {
+        const data = file.read_all()?
+        process(data)
+        Ok(())
+    })
+}
+
+// Another error case: resource in a branch that doesn't consume
+func conditional_leak(flag: bool) -> Result<(), Error> {
+    const file = fs.open("data.txt")?
+
+    if flag {
+        file.close()?
+    }
+    // COMPILE ERROR: 'file' may not be consumed (false branch doesn't close)
+
+    Ok(())
+}
+
+// THE FIX: All branches must consume
+func conditional_fixed(flag: bool) -> Result<(), Error> {
+    const file = fs.open("data.txt")?
+
+    if flag {
+        const data = file.read_all()?
+        process(data)
+        file.close()?
+    } else {
+        file.close()?  // Must close in both branches
+    }
+
+    Ok(())
+}
+
+func process(data: string) {
+    // ...
+}

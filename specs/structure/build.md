@@ -72,13 +72,13 @@ struct Target {
 ```rask
 public func build(ctx: BuildContext) -> Result<(), Error> {
     // Read schema file
-    const schema = fs.read_file("schema.json")?
+    const schema = try fs.read_file("schema.json")
 
     // Generate code
     const code = generate_types(schema)
 
     // Write to gen_dir (automatically included in compilation)
-    ctx.write_source("generated_types.rask", code)?
+    try ctx.write_source("generated_types.rask", code)
 
     Ok(())
 }
@@ -152,10 +152,10 @@ codegen-utils = "0.5"
 ```rask
 public func build(ctx: BuildContext) -> Result<(), Error> {
     // Declare input files (rebuild if these change)
-    ctx.declare_dependency("schema.json")?
-    ctx.declare_dependency("templates/*.tmpl")?  // glob supported
+    try ctx.declare_dependency("schema.json")
+    try ctx.declare_dependency("templates/*.tmpl")  // glob supported
 
-    const schema = fs.read_file("schema.json")?
+    const schema = try fs.read_file("schema.json")
     // ... generate code
 
     Ok(())
@@ -174,14 +174,14 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 ```rask
 public func build(ctx: BuildContext) -> Result<(), Error> {
     // Compile C sources
-    ctx.compile_c(CompileOptions {
+    try ctx.compile_c(CompileOptions {
         sources: ["vendor/sqlite3.c"],
         include_dirs: ["vendor/"],
         flags: ["-O2", "-DSQLITE_OMIT_LOAD_EXTENSION"],
-    })?
+    })
 
     // Link with system library
-    ctx.link_library("pthread")?
+    try ctx.link_library("pthread")
 
     Ok(())
 }
@@ -212,11 +212,11 @@ struct CompileOptions {
 ```rask
 public func build(ctx: BuildContext) -> Result<(), Error> {
     // Run protoc
-    const result = ctx.run(Command {
+    const result = try ctx.run(Command {
         program: "protoc",
         args: ["--rask_out=.rask-gen/", "schema.proto"],
         env: [],
-    })?
+    })
 
     if result.status != 0 {
         return Err(Error.new("protoc failed: {}", result.stderr))
@@ -232,13 +232,13 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 ```rask
 public func build(ctx: BuildContext) -> Result<(), Error> {
     if ctx.features.contains("ssl") {
-        ctx.link_library("ssl")?
-        ctx.link_library("crypto")?
+        try ctx.link_library("ssl")
+        try ctx.link_library("crypto")
 
         // Generate feature flag for main code
-        ctx.write_source("features.rask", "public const SSL_ENABLED: bool = true")?
+        try ctx.write_source("features.rask", "public const SSL_ENABLED: bool = true")
     } else {
-        ctx.write_source("features.rask", "public const SSL_ENABLED: bool = false")?
+        try ctx.write_source("features.rask", "public const SSL_ENABLED: bool = false")
     }
 
 }
@@ -270,7 +270,7 @@ full = ["ssl", "json"]
 error: Build script failed
   --> rask.build:15:5
    |
-15 |     ctx.write_source("bad.rask", invalid_code)?
+15 |     try ctx.write_source("bad.rask", invalid_code)
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: Generated file has syntax errors

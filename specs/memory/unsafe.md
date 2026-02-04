@@ -211,7 +211,7 @@ public struct SafeBuffer {
 extend SafeBuffer {
     public func new(size: usize) -> Result<SafeBuffer, AllocError> {
         unsafe {
-            const ptr = alloc(size)?
+            const ptr = try alloc(size)
             Ok(SafeBuffer { ptr, len: size })
         }
     }
@@ -643,7 +643,7 @@ extend CString {
     public func new(s: string) -> CString {
         unsafe {
             const len = s.len() + 1
-            const ptr = alloc(len)?
+            const ptr = try alloc(len)
             copy(s.as_ptr(), ptr, s.len())
             *ptr.add(s.len()) = 0  // Null terminator
             CString { ptr, len }

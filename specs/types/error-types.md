@@ -41,21 +41,23 @@ Force unwrap uses operators, not methods:
 - `x!` — panic with auto message (includes error info)
 - `x! "msg"` — panic with custom message
 
-## Error Propagation: `?`
+## Error Propagation: `try`
 
-Extracts `Ok` or returns early with `Err`. Postfix operator, same as Rust.
+Extracts `Ok` or returns early with `Err`. Prefix keyword.
 
 ```rask
 func process() -> Result<Data, IoError> {
-    let file = open(path)?
-    let data = file.read_all()?
+    const file = try open(path)
+    const data = try file.read_all()
     data  // auto-wrapped to Ok(data)
 }
 ```
 
-**Why `?` for both Option and Result:** The `?` operator uniformly means "propagate failure". Type-specific optional syntax (`T?` type, `x?.field` chaining) doesn't conflict—context is clear.
+`try` works on both `Result` and `Option` — it uniformly means "propagate failure." The `?` character is reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default, `if x?` smart unwrap).
 
-**IDE support:** Per Principle 7, the IDE shows `→ returns Err` as ghost text after `?` to make control flow visible.
+**Binding:** `try` binds to the full following expression including method chains. Use parens or line-splitting when chaining after: `(try file.read()).trim()`.
+
+**IDE support:** Per Principle 7, the IDE shows `→ returns Err` as ghost text after `try` expressions to make control flow visible.
 
 ### Auto-Ok Wrapping
 
@@ -63,8 +65,8 @@ If a function returns `Result<T, E>` and the final expression is of type `T`, it
 
 ```rask
 func load() -> Result<Config, IoError> {
-    let content = read_file(path)?
-    parse(content)?   // Returns Config, auto-wrapped to Ok(Config)
+    const content = try read_file(path)
+    try parse(content)   // Returns Config, auto-wrapped to Ok(Config)
 }
 
 func might_fail() -> Result<i32, Error> {
@@ -81,35 +83,35 @@ When a function returns `Result<(), E>`, reaching the end of the function withou
 
 ```rask
 func save(data: Data) -> Result<(), IoError> {
-    let file = File.create(path)?
-    file.write(data)?
+    const file = try File.create(path)
+    try file.write(data)
     // implicit Ok(()) — no need to write it
 }
 
 @entry
 func main() -> Result<(), Error> {
     println("Starting...")
-    run_app()?
+    try run_app()
     println("Done!")
     // implicit Ok(())
 }
 ```
 
-**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `?`. Reaching the end of a `Result<(), E>` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
+**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `try`. Reaching the end of a `Result<(), E>` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
 
 ### Error Type Widening
 
-When return type is a union, `?` auto-widens:
+When return type is a union, `try` auto-widens:
 
 ```rask
 func load() -> Result<Config, IoError | ParseError> {
-    let content = read_file(path)?   // IoError widens to union
-    let config = parse(content)?     // ParseError widens to union
+    const content = try read_file(path)   // IoError widens to union
+    const config = try parse(content)     // ParseError widens to union
     config
 }
 ```
 
-**Rule:** `?` succeeds if expression error type ⊆ return error union.
+**Rule:** `try` succeeds if expression error type ⊆ return error union.
 
 See [Union Types](union-types.md) for union type semantics.
 
@@ -158,8 +160,8 @@ extend IoError {
 
 ```rask
 func read_both() -> Result<Data, IoError> {
-    let a = read_file(x)?   // IoError
-    let b = read_file(y)?   // IoError
+    const a = try read_file(x)   // IoError
+    const b = try read_file(y)   // IoError
     combine(a, b)
 }
 ```
@@ -168,8 +170,8 @@ func read_both() -> Result<Data, IoError> {
 
 ```rask
 func load() -> Result<Config, IoError | ParseError> {
-    let content = read_file(path)?   // IoError ⊆ union
-    let config = parse(content)?     // ParseError ⊆ union
+    const content = try read_file(path)   // IoError ⊆ union
+    const config = try parse(content)     // ParseError ⊆ union
     config
 }
 ```
@@ -178,8 +180,8 @@ func load() -> Result<Config, IoError | ParseError> {
 
 ```rask
 func process() -> Result<Output, IoError | ParseError | ValidationError> {
-    let config = load()?           // IoError | ParseError ⊆ union
-    let valid = validate(config)?  // ValidationError ⊆ union
+    const config = try load()           // IoError | ParseError ⊆ union
+    const valid = try validate(config)  // ValidationError ⊆ union
     transform(valid)
 }
 ```
@@ -208,7 +210,7 @@ enum FileError {
 match result {
     Ok(data) => process(data),
     Err(FileError.ReadFailed(file, msg)) => {
-        file.close()?   // MUST consume
+        try file.close()   // MUST consume
         log(msg)
     }
 }
@@ -220,23 +222,23 @@ match result {
 |---------|-----------|
 | Error trait | `func message(self) -> string` |
 | Result/Option | Built-in enums |
-| Propagation | `?` operator (works on both) |
+| Propagation | `try` keyword (works on both) |
 | Composition | Union types (`A | B`) |
 | Custom errors | Enums with `message()` |
 | Auto-Ok | Final expression auto-wrapped |
 
-### The `?` Family
+### The Operator Family
 
 | Syntax | Option | Result |
 |--------|--------|--------|
-| `x?` | Propagate None | Propagate Err |
+| `try x` | Propagate None | Propagate Err |
 | `x ?? y` | Value or default | — |
 | `x!` | Force (panic) | Force (panic with error info) |
 | `x! "msg"` | Force (panic with message) | Force (panic with message) |
 
 **Why `??` doesn't work on Result:** Silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
 
-Type-specific optional syntax (`T?`, `x?.field`, `if x?`) doesn't conflict with `?` propagation—context disambiguates.
+**Optional sugar** (`T?`, `x?.field`, `x ?? y`, `if x?`) is distinct from `try` propagation — `?` is never used for propagation.
 
 ---
 

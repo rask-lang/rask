@@ -2,6 +2,10 @@
 
 Keep docs short. In chat, explain things to me—I'm not a language architect expert.
 
+**Tool usage:**
+- Use `Write` tool for creating test files, not `Bash` with cat/heredocs
+- Avoid pipes (`|`) and redirects (`2>&1`) in Bash commands - they break permission matching
+
 ## Goal
 
 Systems language where **safety is invisible**. Eliminate abstraction tax, cover 80%+ of real use cases.
@@ -32,7 +36,7 @@ Start with [CORE_DESIGN.md](CORE_DESIGN.md). For specs: [specs/README.md](specs/
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |
-| Errors | Result, `?` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
+| Errors | Result, `try` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
 | Concurrency | spawn/join/detach, channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
@@ -68,6 +72,7 @@ Test programs that must work naturally:
 
 | Concept | Rask ✓ | Rust ✗ |
 |---------|--------|--------|
+| String type | `string` (lowercase) | `String` |
 | Immutable | `const x = 1` | `let x = 1` |
 | Mutable | `let x = 1` | `let mut x = 1` |
 | Function | `func foo()` | `fn foo()` |
@@ -80,6 +85,7 @@ Test programs that must work naturally:
 | Inline block | `if x > 0: return x` | N/A |
 | Pattern match | `if x is Some(v)` | `if let Some(v) = x` |
 | Guard pattern | `let v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
+| Error propagation | `try expr` | `expr?` |
 | Loop with value | `deliver value` | `break value` |
 | Statement end | Newline | `;` |
 
@@ -87,6 +93,7 @@ Test programs that must work naturally:
 ```rask
 const x = 42                              // immutable
 let y = 0; y = 1                          // mutable + reassign
+const s = string.new()                    // string is lowercase (primitive)
 
 func add(a: i32, b: i32) -> i32 { a + b }
 

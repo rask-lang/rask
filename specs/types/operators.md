@@ -18,7 +18,7 @@ Higher precedence binds tighter. Left-to-right associativity unless noted.
 | 5 | `&&` | Logical AND | Left |
 | 4 | `||` | Logical OR | Left |
 | 3 | `..` `..=` | Range | None |
-| 2 | `?` `??` `!` (postfix) | Optional ops | Left |
+| 2 | `try` (prefix) `??` `!` (postfix) | Propagation, optional ops | Left |
 | 1 | `=` `+=` `-=` `*=` `/=` `%=` `&=` `|=` `^=` `<<=` `>>=` | Assignment | Right |
 
 ## Bitwise Operators

@@ -3,19 +3,17 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs::File as StdFile;
 use std::rc::Rc;
 
-/// Built-in function kinds.
+use rask_ast::expr::Expr;
+
+/// Built-in function kinds (global functions without module prefix).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinKind {
     Print,
     Println,
     Panic,
-    CliArgs,
-    StdExit,
-    FsReadFile,
-    FsReadLines,
-    ReadLine,
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).
@@ -23,6 +21,17 @@ pub enum BuiltinKind {
 pub enum TypeConstructorKind {
     Vec,
     Map,
+    String,
+}
+
+/// Module kinds for stdlib modules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleKind {
+    Fs,   // fs.read_file, fs.write_file, etc.
+    Io,   // io.read_line, io.print, etc.
+    Cli,  // cli.args
+    Std,  // std.exit
+    Env,  // env.var, env.vars
 }
 
 /// A runtime value in the interpreter.
@@ -38,8 +47,8 @@ pub enum Value {
     Float(f64),
     /// Character
     Char(char),
-    /// String
-    String(String),
+    /// String (mutable, like Vec)
+    String(Rc<RefCell<String>>),
     /// Struct instance
     Struct {
         name: String,
@@ -73,6 +82,16 @@ pub enum Value {
         variant_name: String,
         field_count: usize,
     },
+    /// Module (fs, io, cli, std, env)
+    Module(ModuleKind),
+    /// Open file handle (Option allows close to invalidate)
+    File(Rc<RefCell<Option<StdFile>>>),
+    /// Closure (captured environment + params + body)
+    Closure {
+        params: Vec<String>,
+        body: Expr,
+        captured_env: HashMap<String, Value>,
+    },
 }
 
 impl Value {
@@ -93,6 +112,9 @@ impl Value {
             Value::Vec(_) => "Vec",
             Value::TypeConstructor(_) => "type",
             Value::EnumConstructor { .. } => "enum constructor",
+            Value::Module(_) => "module",
+            Value::File(_) => "File",
+            Value::Closure { .. } => "closure",
         }
     }
 }
@@ -105,7 +127,7 @@ impl fmt::Display for Value {
             Value::Int(n) => write!(f, "{}", n),
             Value::Float(n) => write!(f, "{}", n),
             Value::Char(c) => write!(f, "{}", c),
-            Value::String(s) => write!(f, "{}", s),
+            Value::String(s) => write!(f, "{}", s.borrow()),
             Value::Struct { name, fields } => {
                 write!(f, "{} {{ ", name)?;
                 for (i, (k, v)) in fields.iter().enumerate() {
@@ -153,6 +175,7 @@ impl fmt::Display for Value {
             Value::TypeConstructor(kind) => match kind {
                 TypeConstructorKind::Vec => write!(f, "Vec"),
                 TypeConstructorKind::Map => write!(f, "Map"),
+                TypeConstructorKind::String => write!(f, "string"),
             },
             Value::EnumConstructor {
                 enum_name,
@@ -160,6 +183,23 @@ impl fmt::Display for Value {
                 ..
             } => {
                 write!(f, "{}.{}", enum_name, variant_name)
+            }
+            Value::Module(kind) => match kind {
+                ModuleKind::Fs => write!(f, "<module fs>"),
+                ModuleKind::Io => write!(f, "<module io>"),
+                ModuleKind::Cli => write!(f, "<module cli>"),
+                ModuleKind::Std => write!(f, "<module std>"),
+                ModuleKind::Env => write!(f, "<module env>"),
+            },
+            Value::File(file) => {
+                if file.borrow().is_some() {
+                    write!(f, "<file>")
+                } else {
+                    write!(f, "<closed file>")
+                }
+            }
+            Value::Closure { params, .. } => {
+                write!(f, "<closure |{}|>", params.join(", "))
             }
         }
     }

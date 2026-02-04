@@ -194,7 +194,7 @@ Enums may contain linear payloads (File, Socket, etc.).
 ```rask
 // ✅ VALID: linear value consumed in each arm
 match file_result {                 // IDE ghost: [consumes]
-    Ok(file) => file.close()?,      // file transferred to close()
+    Ok(file) => try file.close(),    // file transferred to close()
     Err(e) => return Err(e)
 }
 
@@ -364,24 +364,24 @@ const value = infallible().unwrap()  // Cannot panic (compiler knows)
 
 ### Error Propagation and Linear Resources
 
-The `?` operator extracts Ok or returns early with Err.
+The `try` keyword extracts Ok or returns early with Err.
 
-**Rule:** All linear resources in scope MUST be resolved before `?`.
+**Rule:** All linear resources in scope MUST be resolved before `try`.
 
 ```rask
 // ❌ INVALID: file2 may leak on early return
 func process(file1: File, file2: File) -> Result<(), Error> {
-    const data = file1.read()?  // file2 not consumed!
-    file2.close()?
+    const data = try file1.read()  // file2 not consumed!
+    try file2.close()
 }
-// Error: "linear resource `file2` may leak on early return at `?`"
+// Error: "linear resource `file2` may leak on early return at `try`"
 
 // ✅ VALID: all linear resources resolved before `?`
 func process(file1: File, file2: File) -> Result<(), Error> {
     const result1 = file1.read()
     const result2 = file2.close()
-    const data = result1?
-    result2?
+    const data = try result1
+    try result2
     Ok(())
 }
 ```
@@ -391,7 +391,7 @@ Alternative: use `ensure` for guaranteed cleanup:
 func process(file1: File, file2: File) -> Result<(), Error> {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
-    const data = file1.read()?  // ✅ Safe: ensure registered
+    const data = try file1.read()  // ✅ Safe: ensure registered
     Ok(())
 }
 ```
@@ -456,6 +456,15 @@ if opt.is_some() {          // ✅ opt still valid (borrows self)
 }
 ```
 
+## Verified Examples
+
+<!-- test: run | 0\n1\n2 -->
+```rask
+for i in 0..3 {
+    println("{i}")
+}
+```
+
 ## Integration Notes
 
 - **Type system:** Enum variants participate in structural trait matching; explicit `extend` optional
@@ -464,5 +473,5 @@ if opt.is_some() {          // ✅ opt still valid (borrows self)
 - **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked
 - **C interop:** `@layout(C)` disables optimizations; discriminant size stable
 - **Compiler:** Exhaustiveness checking and binding mode inference are local analysis only (no whole-program tracing)
-- **Error handling:** `?` operator requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
+- **Error handling:** `try` keyword requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
 - **Tooling:** IDE displays inferred match modes, binding modes, discriminant values, enum sizes, and move/copy decisions as ghost annotations

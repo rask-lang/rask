@@ -17,6 +17,7 @@ Explicit trait constraints catch errors early without whole-program analysis. St
 |-----------|------|
 | Traits are structural | Type satisfies trait if it has all required methods with matching signatures |
 | Verification is local | Compiler checks satisfaction at each monomorphization (code generation) site only |
+| Inference is body-local | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 | Operators desugar | `a + b` becomes `a.add(b)` before trait checking |
 | Clone is verified | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
 | Monomorphization is full | Each `<T>` instantiation produces specialized code |
@@ -56,13 +57,16 @@ public func max<T: Comparable>(a: T, b: T) -> T {
 }
 ```
 
-ALL generic functions MUST declare trait constraints (public AND private).
-This preserves local analysis—no call-graph tracing required.
+ALL **public** generic functions MUST declare trait constraints explicitly.
+Non-public generic functions MAY omit trait constraints; the compiler infers them from the function body. See [Gradual Constraints](gradual-constraints.md) for full rules.
 
 ```rask
-// Both must have explicit constraints
+// Public: bounds MUST be explicit
 public func process<T: Hashable>(items: []T) { ... }
-func helper<T: Hashable>(item: T) { ... }  // Also needs constraints
+
+// Private: bounds inferred from body
+func helper(item) { item.hash() }
+// Compiler infers: func helper<T: Hashable>(item: T)
 ```
 
 ### Structural Satisfaction
@@ -196,26 +200,31 @@ Compiler MUST NOT perform whole-program analysis.
 | Negative constraints | NOT in MVP; workaround via naming convention or separate functions |
 | Associated types | NOT in MVP; deferred |
 | More than 2 type params | NOT in MVP; traits limited to 1-2 parameters |
+| Omitted bounds (private) | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |
 
 ### Bounds Requirements
 
-All generic functions must declare their constraints explicitly:
-
 | Function | Requirement |
 |----------|-------------|
-| Public generic | MUST declare trait constraints |
-| Private generic | MUST declare trait constraints |
-| Calling a constrained function | Caller must have same or stronger constraints |
+| Public generic | MUST declare trait constraints explicitly |
+| Private generic | MAY omit trait constraints (compiler infers from body) |
+| Calling a constrained function | Caller must have same or stronger constraints (explicit or inferred) |
+
+See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
 
 ```rask
-func helper<T: Hashable>(item: T) { item.hash() }
+// Private: bounds inferred from body
+func helper(item) { item.hash() }
+// Compiler infers: func helper<T: Hashable>(item: T)
 
+// Public: bounds MUST be explicit
 public func process<T: Hashable>(items: []T) {
-    for item in items { helper(item) }  // OK: same bound
+    for item in items { helper(item) }  // OK: T: Hashable satisfies inferred bound
 }
 
+// Still an error in public context:
 public func bad<T>(items: []T) {
-    for item in items { helper(item) }  // ERROR: T not bounded
+    for item in items { helper(item) }  // ERROR: T not bounded (public requires explicit)
 }
 ```
 

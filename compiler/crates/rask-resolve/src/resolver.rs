@@ -8,7 +8,7 @@ use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
 use crate::scope::{ScopeTree, ScopeKind};
-use crate::symbol::{SymbolTable, SymbolId, SymbolKind};
+use crate::symbol::{BuiltinModuleKind, SymbolTable, SymbolId, SymbolKind};
 use crate::package::PackageId;
 use crate::ResolvedProgram;
 
@@ -134,7 +134,7 @@ impl Resolver {
         }
     }
 
-    /// Check if a name is a built-in (function, type, or prelude enum).
+    /// Check if a name is a built-in (function, type, module, or prelude enum).
     fn is_builtin_name(&self, name: &str) -> bool {
         // Check if the name is already defined and is a built-in
         if let Some(sym_id) = self.scopes.lookup(name) {
@@ -143,6 +143,7 @@ impl Resolver {
                     sym.kind,
                     SymbolKind::BuiltinType { .. }
                         | SymbolKind::BuiltinFunction { .. }
+                        | SymbolKind::BuiltinModule { .. }
                 ) || (matches!(sym.kind, SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. })
                     && sym.span == Span::new(0, 0)); // Built-in enums have span (0, 0)
             }
@@ -407,8 +408,31 @@ impl Resolver {
             let pkg_name = &path[0];
             let binding_name = import_decl.alias.as_ref().unwrap_or(pkg_name).clone();
 
-            // For now, we don't have a package registry in single-file mode
-            // Just record that this name is an imported package binding
+            // Check if this is a known stdlib module
+            let stdlib_module = match pkg_name.as_str() {
+                "io" => Some(BuiltinModuleKind::Io),
+                "fs" => Some(BuiltinModuleKind::Fs),
+                "env" => Some(BuiltinModuleKind::Env),
+                "cli" => Some(BuiltinModuleKind::Cli),
+                "std" => Some(BuiltinModuleKind::Std),
+                _ => None,
+            };
+
+            if let Some(module_kind) = stdlib_module {
+                // Register stdlib module as a symbol in scope
+                let sym_id = self.symbols.insert(
+                    binding_name.clone(),
+                    SymbolKind::BuiltinModule { module: module_kind },
+                    None,
+                    span,
+                    false,
+                );
+                if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                    self.errors.push(e);
+                }
+            }
+
+            // Record that this name is an imported package binding
             // This will be used later when resolving `pkg.Symbol` expressions
             self.imported_symbols.insert(binding_name.clone());
 

@@ -13,7 +13,7 @@ use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::env::Environment;
-use crate::value::{BuiltinKind, TypeConstructorKind, Value};
+use crate::value::{BuiltinKind, ModuleKind, TypeConstructorKind, Value};
 
 /// The tree-walk interpreter.
 pub struct Interpreter {
@@ -94,10 +94,13 @@ impl Interpreter {
     /// This:
     /// 1. Registers all function declarations
     /// 2. Registers built-in functions (println, print, panic)
-    /// 3. Finds and calls the @entry function
+    /// 3. Registers imported modules
+    /// 4. Finds and calls the @entry function
     pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeError> {
-        // Pass 1: Register all function and enum declarations, find @entry
+        // Pass 1: Register all function, enum declarations, and collect imports
         let mut entry_fn: Option<FnDecl> = None;
+        let mut imports: Vec<(String, ModuleKind)> = Vec::new();
+
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
@@ -120,27 +123,148 @@ impl Interpreter {
                         type_methods.insert(method.name.clone(), method.clone());
                     }
                 }
+                DeclKind::Import(import) => {
+                    // Handle module imports: import fs, import io as input, etc.
+                    if let Some(module_name) = import.path.first() {
+                        let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
+                        let module_kind = match module_name.as_str() {
+                            "fs" => Some(ModuleKind::Fs),
+                            "io" => Some(ModuleKind::Io),
+                            "cli" => Some(ModuleKind::Cli),
+                            "std" => Some(ModuleKind::Std),
+                            "env" => Some(ModuleKind::Env),
+                            _ => None, // Unknown module, ignore for now
+                        };
+                        if let Some(kind) = module_kind {
+                            imports.push((alias, kind));
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         // Register built-in functions in the global scope
+        // Global functions (no module prefix)
         self.env
             .define("print".to_string(), Value::Builtin(BuiltinKind::Print));
         self.env
             .define("println".to_string(), Value::Builtin(BuiltinKind::Println));
         self.env
             .define("panic".to_string(), Value::Builtin(BuiltinKind::Panic));
-        self.env
-            .define("cli_args".to_string(), Value::Builtin(BuiltinKind::CliArgs));
-        self.env
-            .define("std_exit".to_string(), Value::Builtin(BuiltinKind::StdExit));
-        self.env
-            .define("fs_read_file".to_string(), Value::Builtin(BuiltinKind::FsReadFile));
-        self.env
-            .define("fs_read_lines".to_string(), Value::Builtin(BuiltinKind::FsReadLines));
-        self.env
-            .define("read_line".to_string(), Value::Builtin(BuiltinKind::ReadLine));
+
+        // Register shorthand constructors for Option and Result
+        // Some(x), None, Ok(x), Err(x)
+        self.env.define(
+            "Some".to_string(),
+            Value::EnumConstructor {
+                enum_name: "Option".to_string(),
+                variant_name: "Some".to_string(),
+                field_count: 1,
+            },
+        );
+        self.env.define(
+            "None".to_string(),
+            Value::Enum {
+                name: "Option".to_string(),
+                variant: "None".to_string(),
+                fields: vec![],
+            },
+        );
+        self.env.define(
+            "Ok".to_string(),
+            Value::EnumConstructor {
+                enum_name: "Result".to_string(),
+                variant_name: "Ok".to_string(),
+                field_count: 1,
+            },
+        );
+        self.env.define(
+            "Err".to_string(),
+            Value::EnumConstructor {
+                enum_name: "Result".to_string(),
+                variant_name: "Err".to_string(),
+                field_count: 1,
+            },
+        );
+
+        // Register built-in enums (Option, Result, Ordering)
+        use rask_ast::decl::{EnumDecl, Field, Variant};
+        self.enums.insert(
+            "Option".to_string(),
+            EnumDecl {
+                name: "Option".to_string(),
+                variants: vec![
+                    Variant {
+                        name: "Some".to_string(),
+                        fields: vec![Field {
+                            name: "value".to_string(),
+                            ty: "T".to_string(),
+                            is_pub: false,
+                        }],
+                    },
+                    Variant {
+                        name: "None".to_string(),
+                        fields: vec![],
+                    },
+                ],
+                methods: vec![],
+                is_pub: true,
+            },
+        );
+        self.enums.insert(
+            "Result".to_string(),
+            EnumDecl {
+                name: "Result".to_string(),
+                variants: vec![
+                    Variant {
+                        name: "Ok".to_string(),
+                        fields: vec![Field {
+                            name: "value".to_string(),
+                            ty: "T".to_string(),
+                            is_pub: false,
+                        }],
+                    },
+                    Variant {
+                        name: "Err".to_string(),
+                        fields: vec![Field {
+                            name: "error".to_string(),
+                            ty: "E".to_string(),
+                            is_pub: false,
+                        }],
+                    },
+                ],
+                methods: vec![],
+                is_pub: true,
+            },
+        );
+        self.enums.insert(
+            "Ordering".to_string(),
+            EnumDecl {
+                name: "Ordering".to_string(),
+                variants: vec![
+                    Variant {
+                        name: "Less".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "Equal".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "Greater".to_string(),
+                        fields: vec![],
+                    },
+                ],
+                methods: vec![],
+                is_pub: true,
+            },
+        );
+
+        // Register only imported modules
+        for (name, kind) in imports {
+            self.env.define(name, Value::Module(kind));
+        }
 
         // Pass 2: Call the @entry function
         if let Some(entry) = entry_fn {
@@ -264,6 +388,46 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
+            // While-let pattern matching loop (while expr is Pattern)
+            StmtKind::WhileLet {
+                pattern,
+                expr,
+                body,
+            } => {
+                loop {
+                    let value = self.eval_expr(expr)?;
+
+                    // Try to match the pattern
+                    if let Some(bindings) = self.match_pattern(pattern, &value) {
+                        self.env.push_scope();
+                        // Bind pattern variables
+                        for (name, val) in bindings {
+                            self.env.define(name, val);
+                        }
+                        match self.exec_stmts(body) {
+                            Ok(_) => {}
+                            Err(RuntimeError::Break) => {
+                                self.env.pop_scope();
+                                break;
+                            }
+                            Err(RuntimeError::Continue) => {
+                                self.env.pop_scope();
+                                continue;
+                            }
+                            Err(e) => {
+                                self.env.pop_scope();
+                                return Err(e);
+                            }
+                        }
+                        self.env.pop_scope();
+                    } else {
+                        // Pattern didn't match, exit loop
+                        break;
+                    }
+                }
+                Ok(Value::Unit)
+            }
+
             // Infinite loop
             StmtKind::Loop { body, .. } => loop {
                 self.env.push_scope();
@@ -363,6 +527,10 @@ impl Interpreter {
                 }
             }
 
+            // Ensure block (deferred cleanup - in interpreter, resources are cleaned up
+            // automatically via Rc drop, so this is a no-op)
+            StmtKind::Ensure(_stmts) => Ok(Value::Unit),
+
             // Other statements not yet implemented
             _ => Ok(Value::Unit),
         }
@@ -377,7 +545,70 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            // TODO: Field assignment, index assignment
+            // Field assignment: obj.field = value
+            ExprKind::Field { object, field } => {
+                if let ExprKind::Ident(var_name) = &object.kind {
+                    if let Some(obj) = self.env.get_mut(var_name) {
+                        match obj {
+                            Value::Struct { fields, .. } => {
+                                fields.insert(field.clone(), value);
+                                Ok(())
+                            }
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "cannot assign field on {}",
+                                obj.type_name()
+                            ))),
+                        }
+                    } else {
+                        Err(RuntimeError::UndefinedVariable(var_name.clone()))
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "nested field assignment not yet supported".to_string(),
+                    ))
+                }
+            }
+            // Index assignment: vec[i] = value
+            ExprKind::Index { object, index } => {
+                let idx = self.eval_expr(index)?;
+                if let ExprKind::Ident(var_name) = &object.kind {
+                    // Get the value - for Vec (Rc<RefCell>), we can modify through the shared reference
+                    if let Some(obj) = self.env.get(var_name).cloned() {
+                        match obj {
+                            Value::Vec(v) => {
+                                if let Value::Int(i) = idx {
+                                    let i = i as usize;
+                                    let mut vec = v.borrow_mut();
+                                    if i < vec.len() {
+                                        vec[i] = value;
+                                        Ok(())
+                                    } else {
+                                        Err(RuntimeError::TypeError(format!(
+                                            "index {} out of bounds (len {})",
+                                            i,
+                                            vec.len()
+                                        )))
+                                    }
+                                } else {
+                                    Err(RuntimeError::TypeError(
+                                        "index must be integer".to_string(),
+                                    ))
+                                }
+                            }
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "cannot index-assign on {}",
+                                obj.type_name()
+                            ))),
+                        }
+                    } else {
+                        Err(RuntimeError::UndefinedVariable(var_name.clone()))
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "complex index assignment not yet supported".to_string(),
+                    ))
+                }
+            }
             _ => Err(RuntimeError::TypeError(
                 "invalid assignment target".to_string(),
             )),
@@ -390,7 +621,15 @@ impl Interpreter {
             // Literals - just wrap in Value
             ExprKind::Int(n) => Ok(Value::Int(*n)),
             ExprKind::Float(n) => Ok(Value::Float(*n)),
-            ExprKind::String(s) => Ok(Value::String(s.clone())),
+            ExprKind::String(s) => {
+                // String interpolation: replace {name} with variable values
+                if s.contains('{') {
+                    let interpolated = self.interpolate_string(s)?;
+                    Ok(Value::String(Rc::new(RefCell::new(interpolated))))
+                } else {
+                    Ok(Value::String(Rc::new(RefCell::new(s.clone()))))
+                }
+            }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
 
@@ -404,10 +643,11 @@ impl Interpreter {
                 if self.functions.contains_key(name) {
                     return Ok(Value::Function { name: name.clone() });
                 }
-                // Check type constructors (Vec, Map, etc.)
+                // Check type constructors (Vec, Map, string, etc.)
                 match name.as_str() {
                     "Vec" => return Ok(Value::TypeConstructor(TypeConstructorKind::Vec)),
                     "Map" => return Ok(Value::TypeConstructor(TypeConstructorKind::Map)),
+                    "string" => return Ok(Value::TypeConstructor(TypeConstructorKind::String)),
                     _ => {}
                 }
                 Err(RuntimeError::UndefinedVariable(name.clone()))
@@ -415,6 +655,63 @@ impl Interpreter {
 
             // Function call
             ExprKind::Call { func, args } => {
+                // Special case: OptionalField used as function (e.g., foo()?.bar())
+                // This happens when `?.` is lexed as a single token, creating
+                // Call { func: OptionalField { object, field }, args }
+                // We treat this as: try on object, then method call on unwrapped value
+                if let ExprKind::OptionalField { object, field } = &func.kind {
+                    let obj_val = self.eval_expr(object)?;
+                    let arg_vals: Vec<Value> = args
+                        .iter()
+                        .map(|a| self.eval_expr(a))
+                        .collect::<Result<_, _>>()?;
+
+                    // Handle Result: unwrap Ok or propagate Err
+                    if let Value::Enum {
+                        name,
+                        variant,
+                        fields,
+                    } = &obj_val
+                    {
+                        if name == "Result" {
+                            match variant.as_str() {
+                                "Ok" => {
+                                    let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                                    return self.call_method(inner, field, arg_vals);
+                                }
+                                "Err" => {
+                                    return Err(RuntimeError::TryError(obj_val));
+                                }
+                                _ => {}
+                            }
+                        } else if name == "Option" {
+                            match variant.as_str() {
+                                "Some" => {
+                                    let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                                    let result = self.call_method(inner, field, arg_vals)?;
+                                    // Wrap result in Some for optional chaining
+                                    return Ok(Value::Enum {
+                                        name: "Option".to_string(),
+                                        variant: "Some".to_string(),
+                                        fields: vec![result],
+                                    });
+                                }
+                                "None" => {
+                                    return Ok(Value::Enum {
+                                        name: "Option".to_string(),
+                                        variant: "None".to_string(),
+                                        fields: vec![],
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Fallback: try to call the field as a method
+                    return self.call_method(obj_val, field, arg_vals);
+                }
+
                 let func_val = self.eval_expr(func)?;
                 let arg_vals: Vec<Value> = args
                     .iter()
@@ -451,6 +748,26 @@ impl Interpreter {
                                 variant: method.clone(),
                                 fields: arg_vals,
                             });
+                        }
+                    }
+
+                    // Check for static method on type (e.g., Parser.new(), Lexer.new())
+                    // These are methods in extend blocks that don't take self
+                    if let Some(type_methods) = self.methods.get(name).cloned() {
+                        if let Some(method_fn) = type_methods.get(method) {
+                            // Check if it's a static method (first param is not "self")
+                            let is_static = method_fn
+                                .params
+                                .first()
+                                .map(|p| p.name != "self")
+                                .unwrap_or(true);
+                            if is_static {
+                                let arg_vals: Vec<Value> = args
+                                    .iter()
+                                    .map(|a| self.eval_expr(a))
+                                    .collect::<Result<_, _>>()?;
+                                return self.call_function(method_fn, arg_vals);
+                            }
                         }
                     }
                 }
@@ -664,6 +981,7 @@ impl Interpreter {
                         Ok(vec.get(*i as usize).cloned().unwrap_or(Value::Unit))
                     }
                     (Value::String(s), Value::Int(i)) => Ok(s
+                        .borrow()
                         .chars()
                         .nth(*i as usize)
                         .map(Value::Char)
@@ -762,6 +1080,63 @@ impl Interpreter {
                         "? operator requires Result or Option, got {}",
                         val.type_name()
                     ))),
+                }
+            }
+
+            // Closure expression (|x, y| body)
+            ExprKind::Closure { params, body } => {
+                let captured = self.env.capture();
+                Ok(Value::Closure {
+                    params: params.iter().map(|p| p.name.clone()).collect(),
+                    body: (**body).clone(),
+                    captured_env: captured,
+                })
+            }
+
+            // Type cast (x as i32)
+            ExprKind::Cast { expr, ty } => {
+                let val = self.eval_expr(expr)?;
+                match (val, ty.as_str()) {
+                    (Value::Int(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Float(n), "i64" | "i32" | "int" | "i16" | "i8") => {
+                        Ok(Value::Int(n as i64))
+                    }
+                    (Value::Float(n), "u64" | "u32" | "u16" | "u8" | "usize") => {
+                        Ok(Value::Int(n as i64))
+                    }
+                    (Value::Int(n), "i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
+                        | "u16" | "u8" | "usize") => Ok(Value::Int(n)),
+                    (Value::Int(n), "string") => {
+                        Ok(Value::String(Rc::new(RefCell::new(n.to_string()))))
+                    }
+                    (Value::Float(n), "string") => {
+                        Ok(Value::String(Rc::new(RefCell::new(n.to_string()))))
+                    }
+                    (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8") => {
+                        Ok(Value::Int(c as i64))
+                    }
+                    (Value::Int(n), "char") => {
+                        Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
+                    }
+                    (v, _) => Ok(v), // no-op for unrecognized casts
+                }
+            }
+
+            // Null coalescing (a ?? b)
+            ExprKind::NullCoalesce { value, default } => {
+                let val = self.eval_expr(value)?;
+                match &val {
+                    Value::Enum { name, variant, fields, .. }
+                        if name == "Option" && variant == "Some" =>
+                    {
+                        Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Enum { name, variant, .. }
+                        if name == "Option" && variant == "None" =>
+                    {
+                        self.eval_expr(default)
+                    }
+                    _ => Ok(val),
                 }
             }
 
@@ -898,7 +1273,20 @@ impl Interpreter {
             (Value::Float(a), ExprKind::Float(b)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
             (Value::Char(a), ExprKind::Char(b)) => *a == *b,
-            (Value::String(a), ExprKind::String(b)) => a == b,
+            (Value::String(a), ExprKind::String(b)) => *a.borrow() == *b,
+            _ => false,
+        }
+    }
+
+    /// Compare two runtime values for equality.
+    fn value_eq(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Unit, Value::Unit) => true,
+            (Value::Bool(a), Value::Bool(b)) => a == b,
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => a == b,
+            (Value::Char(a), Value::Char(b)) => a == b,
+            (Value::String(a), Value::String(b)) => *a.borrow() == *b.borrow(),
             _ => false,
         }
     }
@@ -931,6 +1319,28 @@ impl Interpreter {
                     fields: args,
                 })
             }
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                self.env.push_scope();
+                // Restore captured environment
+                for (name, val) in captured_env {
+                    self.env.define(name, val);
+                }
+                // Bind parameters
+                for (param, arg) in params.iter().zip(args.into_iter()) {
+                    self.env.define(param.clone(), arg);
+                }
+                let result = self.eval_expr(&body);
+                self.env.pop_scope();
+                match result {
+                    Ok(v) => Ok(v),
+                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Err(e) => Err(e),
+                }
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "{} is not callable",
                 func.type_name()
@@ -949,7 +1359,7 @@ impl Interpreter {
                     match arg {
                         Value::String(s) => {
                             // Handle string interpolation
-                            let output = self.interpolate_string(s)?;
+                            let output = self.interpolate_string(&s.borrow())?;
                             self.write_output(&output);
                         }
                         _ => self.write_output(&format!("{}", arg)),
@@ -965,7 +1375,7 @@ impl Interpreter {
                     }
                     match arg {
                         Value::String(s) => {
-                            let output = self.interpolate_string(s)?;
+                            let output = self.interpolate_string(&s.borrow())?;
                             self.write_output(&output);
                         }
                         _ => self.write_output(&format!("{}", arg)),
@@ -980,109 +1390,46 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
-            BuiltinKind::CliArgs => {
-                let args_vec: Vec<Value> = self
-                    .cli_args
-                    .iter()
-                    .map(|s| Value::String(s.clone()))
-                    .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(args_vec))))
-            }
-            BuiltinKind::StdExit => {
-                let code = args
-                    .first()
-                    .map(|v| match v {
-                        Value::Int(n) => *n as i32,
-                        _ => 1,
-                    })
-                    .unwrap_or(0);
-                Err(RuntimeError::Exit(code))
-            }
-            BuiltinKind::FsReadFile => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(content)],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(e.to_string())],
-                    }),
-                }
-            }
-            BuiltinKind::FsReadLines => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        let lines: Vec<Value> = content
-                            .lines()
-                            .map(|l| Value::String(l.to_string()))
-                            .collect();
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Rc::new(RefCell::new(lines)))],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(e.to_string())],
-                    }),
-                }
-            }
-            BuiltinKind::ReadLine => {
-                use std::io::{self, BufRead};
-                let mut line = String::new();
-                match io::stdin().lock().read_line(&mut line) {
-                    Ok(_) => {
-                        // Remove trailing newline
-                        if line.ends_with('\n') {
-                            line.pop();
-                            if line.ends_with('\r') {
-                                line.pop();
-                            }
-                        }
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::String(line)],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(e.to_string())],
-                    }),
-                }
-            }
         }
     }
 
-    /// Interpolate a string, replacing {name} with variable values.
+    /// Interpolate a string, replacing {name} or {obj.field} with variable values.
     fn interpolate_string(&self, s: &str) -> Result<String, RuntimeError> {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
 
         while let Some(c) = chars.next() {
             if c == '{' {
-                // Collect identifier until '}'
-                let mut ident = String::new();
+                // Collect expression until '}'
+                let mut expr_str = String::new();
                 while let Some(&next) = chars.peek() {
                     if next == '}' {
                         chars.next(); // consume '}'
                         break;
                     }
-                    ident.push(chars.next().unwrap());
+                    expr_str.push(chars.next().unwrap());
                 }
-                // Look up variable
-                if let Some(val) = self.env.get(&ident) {
-                    result.push_str(&format!("{}", val));
+                // Handle dotted field access (e.g., "opts.verbose")
+                let parts: Vec<&str> = expr_str.split('.').collect();
+                if let Some(val) = self.env.get(parts[0]) {
+                    let mut current = val.clone();
+                    for &part in &parts[1..] {
+                        match current {
+                            Value::Struct { fields, .. } => {
+                                current = fields.get(part).cloned().unwrap_or(Value::Unit);
+                            }
+                            _ => {
+                                return Err(RuntimeError::TypeError(format!(
+                                    "cannot access field '{}' on {}",
+                                    part,
+                                    current.type_name()
+                                )));
+                            }
+                        }
+                    }
+                    result.push_str(&format!("{}", current));
                 } else {
-                    return Err(RuntimeError::UndefinedVariable(ident));
+                    return Err(RuntimeError::UndefinedVariable(parts[0].to_string()));
                 }
             } else {
                 result.push(c);
@@ -1173,6 +1520,19 @@ impl Interpreter {
                 Ok(Value::Int(a >> b))
             }
             (Value::Int(a), "bit_not") => Ok(Value::Int(!a)),
+            (Value::Int(a), "abs") => Ok(Value::Int(a.abs())),
+            (Value::Int(a), "min") => {
+                let b = self.expect_int(&args, 0)?;
+                Ok(Value::Int((*a).min(b)))
+            }
+            (Value::Int(a), "max") => {
+                let b = self.expect_int(&args, 0)?;
+                Ok(Value::Int((*a).max(b)))
+            }
+            (Value::Int(a), "to_string") => {
+                Ok(Value::String(Rc::new(RefCell::new(a.to_string()))))
+            }
+            (Value::Int(a), "to_float") => Ok(Value::Float(*a as f64)),
 
             // Float arithmetic methods
             (Value::Float(a), "add") => {
@@ -1214,6 +1574,27 @@ impl Interpreter {
                 let b = self.expect_float(&args, 0)?;
                 Ok(Value::Bool(*a >= b))
             }
+            (Value::Float(a), "abs") => Ok(Value::Float(a.abs())),
+            (Value::Float(a), "floor") => Ok(Value::Float(a.floor())),
+            (Value::Float(a), "ceil") => Ok(Value::Float(a.ceil())),
+            (Value::Float(a), "round") => Ok(Value::Float(a.round())),
+            (Value::Float(a), "sqrt") => Ok(Value::Float(a.sqrt())),
+            (Value::Float(a), "min") => {
+                let b = self.expect_float(&args, 0)?;
+                Ok(Value::Float(a.min(b)))
+            }
+            (Value::Float(a), "max") => {
+                let b = self.expect_float(&args, 0)?;
+                Ok(Value::Float(a.max(b)))
+            }
+            (Value::Float(a), "to_string") => {
+                Ok(Value::String(Rc::new(RefCell::new(a.to_string()))))
+            }
+            (Value::Float(a), "to_int") => Ok(Value::Int(*a as i64)),
+            (Value::Float(a), "pow") => {
+                let b = self.expect_float(&args, 0)?;
+                Ok(Value::Float(a.powf(b)))
+            }
 
             // Bool comparison
             (Value::Bool(a), "eq") => {
@@ -1240,62 +1621,77 @@ impl Interpreter {
             }
 
             // String methods
-            (Value::String(s), "len") => Ok(Value::Int(s.len() as i64)),
-            (Value::String(s), "is_empty") => Ok(Value::Bool(s.is_empty())),
-            (Value::String(s), "clone") => Ok(Value::String(s.clone())),
+            (Value::String(s), "len") => Ok(Value::Int(s.borrow().len() as i64)),
+            (Value::String(s), "is_empty") => Ok(Value::Bool(s.borrow().is_empty())),
+            (Value::String(s), "clone") => Ok(Value::String(Rc::clone(s))),
             (Value::String(s), "starts_with") => {
                 let prefix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.starts_with(&prefix)))
+                Ok(Value::Bool(s.borrow().starts_with(&prefix)))
             }
             (Value::String(s), "ends_with") => {
                 let suffix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.ends_with(&suffix)))
+                Ok(Value::Bool(s.borrow().ends_with(&suffix)))
             }
             (Value::String(s), "contains") => {
                 let pattern = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.contains(&pattern)))
+                Ok(Value::Bool(s.borrow().contains(&pattern)))
             }
-            (Value::String(s), "trim") => Ok(Value::String(s.trim().to_string())),
-            (Value::String(s), "to_uppercase") => Ok(Value::String(s.to_uppercase())),
-            (Value::String(s), "to_lowercase") => Ok(Value::String(s.to_lowercase())),
+            (Value::String(s), "push") => {
+                let c = self.expect_char(&args, 0)?;
+                s.borrow_mut().push(c);
+                Ok(Value::Unit)
+            }
+            (Value::String(s), "trim") => {
+                Ok(Value::String(Rc::new(RefCell::new(s.borrow().trim().to_string()))))
+            }
+            (Value::String(s), "to_string") => Ok(Value::String(Rc::clone(s))),
+            (Value::String(s), "to_uppercase") => {
+                Ok(Value::String(Rc::new(RefCell::new(s.borrow().to_uppercase()))))
+            }
+            (Value::String(s), "to_lowercase") => {
+                Ok(Value::String(Rc::new(RefCell::new(s.borrow().to_lowercase()))))
+            }
             (Value::String(s), "split") => {
                 let delimiter = self.expect_string(&args, 0)?;
                 let parts: Vec<Value> = s
+                    .borrow()
                     .split(&delimiter)
-                    .map(|p| Value::String(p.to_string()))
+                    .map(|p| Value::String(Rc::new(RefCell::new(p.to_string()))))
                     .collect();
                 Ok(Value::Vec(Rc::new(RefCell::new(parts))))
             }
             (Value::String(s), "chars") => {
-                let chars: Vec<Value> = s.chars().map(Value::Char).collect();
+                let chars: Vec<Value> = s.borrow().chars().map(Value::Char).collect();
                 Ok(Value::Vec(Rc::new(RefCell::new(chars))))
             }
             (Value::String(s), "lines") => {
                 let lines: Vec<Value> = s
+                    .borrow()
                     .lines()
-                    .map(|l| Value::String(l.to_string()))
+                    .map(|l| Value::String(Rc::new(RefCell::new(l.to_string()))))
                     .collect();
                 Ok(Value::Vec(Rc::new(RefCell::new(lines))))
             }
             (Value::String(s), "replace") => {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
-                Ok(Value::String(s.replace(&from, &to)))
+                Ok(Value::String(Rc::new(RefCell::new(s.borrow().replace(&from, &to)))))
             }
             (Value::String(s), "substring") => {
+                let sb = s.borrow();
                 let start = self.expect_int(&args, 0)? as usize;
                 let end = args
                     .get(1)
                     .map(|v| match v {
                         Value::Int(i) => *i as usize,
-                        _ => s.len(),
+                        _ => sb.len(),
                     })
-                    .unwrap_or(s.len());
-                let substring: String = s.chars().skip(start).take(end - start).collect();
-                Ok(Value::String(substring))
+                    .unwrap_or(sb.len());
+                let substring: String = sb.chars().skip(start).take(end - start).collect();
+                Ok(Value::String(Rc::new(RefCell::new(substring))))
             }
             (Value::String(s), "parse_int") => {
-                match s.trim().parse::<i64>() {
+                match s.borrow().trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
@@ -1304,13 +1700,15 @@ impl Interpreter {
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String("invalid integer".to_string())],
+                        fields: vec![Value::String(Rc::new(RefCell::new(
+                            "invalid integer".to_string(),
+                        )))],
                     }),
                 }
             }
             (Value::String(s), "char_at") => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match s.chars().nth(idx) {
+                match s.borrow().chars().nth(idx) {
                     Some(c) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1325,7 +1723,7 @@ impl Interpreter {
             }
             (Value::String(s), "byte_at") => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match s.as_bytes().get(idx) {
+                match s.borrow().as_bytes().get(idx) {
                     Some(&b) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1338,14 +1736,57 @@ impl Interpreter {
                     }),
                 }
             }
+            (Value::String(s), "parse_float") => {
+                match s.borrow().trim().parse::<f64>() {
+                    Ok(n) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Float(n)],
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(
+                            "invalid float".to_string(),
+                        )))],
+                    }),
+                }
+            }
+            (Value::String(s), "index_of") => {
+                let pattern = self.expect_string(&args, 0)?;
+                match s.borrow().find(&pattern) {
+                    Some(idx) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![Value::Int(idx as i64)],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            (Value::String(s), "repeat") => {
+                let n = self.expect_int(&args, 0)? as usize;
+                Ok(Value::String(Rc::new(RefCell::new(s.borrow().repeat(n)))))
+            }
+            (Value::String(s), "reverse") => {
+                Ok(Value::String(Rc::new(RefCell::new(
+                    s.borrow().chars().rev().collect(),
+                ))))
+            }
 
-            // Type constructor static methods (Vec.new(), etc.)
+            // Type constructor static methods (Vec.new(), string.new(), etc.)
             (Value::TypeConstructor(TypeConstructorKind::Vec), "new") => {
                 Ok(Value::Vec(Rc::new(RefCell::new(Vec::new()))))
             }
             (Value::TypeConstructor(TypeConstructorKind::Vec), "with_capacity") => {
                 let cap = self.expect_int(&args, 0)? as usize;
                 Ok(Value::Vec(Rc::new(RefCell::new(Vec::with_capacity(cap)))))
+            }
+            (Value::TypeConstructor(TypeConstructorKind::String), "new") => {
+                Ok(Value::String(Rc::new(RefCell::new(String::new()))))
             }
 
             // Vec instance methods
@@ -1370,6 +1811,630 @@ impl Interpreter {
             (Value::Vec(v), "clear") => {
                 v.borrow_mut().clear();
                 Ok(Value::Unit)
+            }
+            (Value::Vec(v), "iter") => {
+                // Return a copy of the Vec for iteration
+                // TODO: Implement proper iterator type with skip(), take(), etc.
+                Ok(Value::Vec(Rc::clone(v)))
+            }
+            (Value::Vec(v), "skip") => {
+                let n = self.expect_int(&args, 0)? as usize;
+                let skipped: Vec<Value> = v.borrow().iter().skip(n).cloned().collect();
+                Ok(Value::Vec(Rc::new(RefCell::new(skipped))))
+            }
+            (Value::Vec(v), "first") => {
+                match v.borrow().first().cloned() {
+                    Some(val) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![val],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            (Value::Vec(v), "last") => {
+                match v.borrow().last().cloned() {
+                    Some(val) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![val],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            (Value::Vec(v), "contains") => {
+                if let Some(needle) = args.first() {
+                    let found = v.borrow().iter().any(|item| Self::value_eq(item, needle));
+                    Ok(Value::Bool(found))
+                } else {
+                    Err(RuntimeError::ArityMismatch { expected: 1, got: 0 })
+                }
+            }
+            (Value::Vec(v), "reverse") => {
+                v.borrow_mut().reverse();
+                Ok(Value::Unit)
+            }
+            (Value::Vec(v), "join") => {
+                let sep = self.expect_string(&args, 0)?;
+                let joined: String = v
+                    .borrow()
+                    .iter()
+                    .map(|item| format!("{}", item))
+                    .collect::<Vec<_>>()
+                    .join(&sep);
+                Ok(Value::String(Rc::new(RefCell::new(joined))))
+            }
+
+            // Module methods (fs.read_file, io.read_line, etc.)
+            (Value::Module(ModuleKind::Fs), "read_file") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(content)))],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "read_lines") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let lines: Vec<Value> = content
+                            .lines()
+                            .map(|l| Value::String(Rc::new(RefCell::new(l.to_string()))))
+                            .collect();
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Vec(Rc::new(RefCell::new(lines)))],
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "write_file") => {
+                let path = self.expect_string(&args, 0)?;
+                let content = self.expect_string(&args, 1)?;
+                match std::fs::write(&path, &content) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "append_file") => {
+                use std::io::Write;
+                let path = self.expect_string(&args, 0)?;
+                let content = self.expect_string(&args, 1)?;
+                let result = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .and_then(|mut f| f.write_all(content.as_bytes()));
+                match result {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "exists") => {
+                let path = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(std::path::Path::new(&path).exists()))
+            }
+            (Value::Module(ModuleKind::Fs), "open") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::File::open(&path) {
+                    Ok(file) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::File(Rc::new(RefCell::new(Some(file))))],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "create") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::File::create(&path) {
+                    Ok(file) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::File(Rc::new(RefCell::new(Some(file))))],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "canonicalize") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::canonicalize(&path) {
+                    Ok(p) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(
+                            p.to_string_lossy().to_string(),
+                        )))],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "metadata") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::metadata(&path) {
+                    Ok(meta) => {
+                        let mut fields = HashMap::new();
+                        fields.insert("size".to_string(), Value::Int(meta.len() as i64));
+                        // Add timestamps as unix seconds (i64)
+                        if let Ok(accessed) = meta.accessed() {
+                            if let Ok(dur) = accessed.duration_since(std::time::UNIX_EPOCH) {
+                                fields.insert("accessed".to_string(), Value::Int(dur.as_secs() as i64));
+                            }
+                        }
+                        if let Ok(modified) = meta.modified() {
+                            if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                                fields.insert("modified".to_string(), Value::Int(dur.as_secs() as i64));
+                            }
+                        }
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Struct {
+                                name: "Metadata".to_string(),
+                                fields,
+                            }],
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "remove") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::remove_file(&path) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "remove_dir") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::remove_dir(&path) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "create_dir") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::create_dir(&path) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "create_dir_all") => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::create_dir_all(&path) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "rename") => {
+                let from = self.expect_string(&args, 0)?;
+                let to = self.expect_string(&args, 1)?;
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Fs), "copy") => {
+                let from = self.expect_string(&args, 0)?;
+                let to = self.expect_string(&args, 1)?;
+                match std::fs::copy(&from, &to) {
+                    Ok(bytes) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Int(bytes as i64)],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Io), "read_line") => {
+                use std::io::{self, BufRead};
+                let mut line = String::new();
+                match io::stdin().lock().read_line(&mut line) {
+                    Ok(_) => {
+                        if line.ends_with('\n') {
+                            line.pop();
+                            if line.ends_with('\r') {
+                                line.pop();
+                            }
+                        }
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::String(Rc::new(RefCell::new(line)))],
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Cli), "args") => {
+                let args_vec: Vec<Value> = self
+                    .cli_args
+                    .iter()
+                    .map(|s| Value::String(Rc::new(RefCell::new(s.clone()))))
+                    .collect();
+                Ok(Value::Vec(Rc::new(RefCell::new(args_vec))))
+            }
+            (Value::Module(ModuleKind::Std), "exit") => {
+                let code = args
+                    .first()
+                    .map(|v| match v {
+                        Value::Int(n) => *n as i32,
+                        _ => 1,
+                    })
+                    .unwrap_or(0);
+                Err(RuntimeError::Exit(code))
+            }
+            (Value::Module(ModuleKind::Env), "var") => {
+                let name = self.expect_string(&args, 0)?;
+                match std::env::var(&name) {
+                    Ok(val) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(val)))],
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            (Value::Module(ModuleKind::Env), "vars") => {
+                let vars: Vec<Value> = std::env::vars()
+                    .map(|(k, v)| {
+                        Value::Vec(Rc::new(RefCell::new(vec![
+                            Value::String(Rc::new(RefCell::new(k))),
+                            Value::String(Rc::new(RefCell::new(v))),
+                        ])))
+                    })
+                    .collect();
+                Ok(Value::Vec(Rc::new(RefCell::new(vars))))
+            }
+
+            // File instance methods
+            (Value::File(f), "close") => {
+                let _ = f.borrow_mut().take();
+                Ok(Value::Unit)
+            }
+            (Value::File(f), "read_all") => {
+                use std::io::Read;
+                let mut file_opt = f.borrow_mut();
+                let file = file_opt.as_mut().ok_or_else(|| {
+                    RuntimeError::TypeError("file is closed".to_string())
+                })?;
+                let mut content = String::new();
+                match file.read_to_string(&mut content) {
+                    Ok(_) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(content)))],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::File(f), "write") => {
+                use std::io::Write;
+                let mut file_opt = f.borrow_mut();
+                let file = file_opt.as_mut().ok_or_else(|| {
+                    RuntimeError::TypeError("file is closed".to_string())
+                })?;
+                let content = self.expect_string(&args, 0)?;
+                match file.write_all(content.as_bytes()) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                    }),
+                }
+            }
+            (Value::File(f), "lines") => {
+                use std::io::{BufRead, BufReader};
+                let file_opt = f.borrow();
+                let file = file_opt.as_ref().ok_or_else(|| {
+                    RuntimeError::TypeError("file is closed".to_string())
+                })?;
+                // Read all lines eagerly (file handle is borrowed, can't return iterator)
+                let reader = BufReader::new(file);
+                let lines: Vec<Value> = reader
+                    .lines()
+                    .filter_map(|r| r.ok())
+                    .map(|l| Value::String(Rc::new(RefCell::new(l))))
+                    .collect();
+                Ok(Value::Vec(Rc::new(RefCell::new(lines))))
+            }
+
+            // Metadata methods
+            (Value::Struct { name, fields }, "size") if name == "Metadata" => {
+                Ok(fields.get("size").cloned().unwrap_or(Value::Int(0)))
+            }
+            (Value::Struct { name, fields }, "accessed") if name == "Metadata" => {
+                Ok(fields.get("accessed").cloned().unwrap_or(Value::Int(0)))
+            }
+            (Value::Struct { name, fields }, "modified") if name == "Metadata" => {
+                Ok(fields.get("modified").cloned().unwrap_or(Value::Int(0)))
+            }
+
+            // Struct clone
+            (Value::Struct { .. }, "clone") => Ok(receiver.clone()),
+
+            // Result methods
+            (Value::Enum { name, variant, fields }, "map_err")
+                if name == "Result" =>
+            {
+                match variant.as_str() {
+                    "Ok" => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: fields.clone(),
+                    }),
+                    "Err" => {
+                        let closure = args.into_iter().next().ok_or_else(|| {
+                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
+                        })?;
+                        let err_val = fields.first().cloned().unwrap_or(Value::Unit);
+                        let mapped = self.call_value(closure, vec![err_val])?;
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![mapped],
+                        })
+                    }
+                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, fields }, "map")
+                if name == "Result" =>
+            {
+                match variant.as_str() {
+                    "Ok" => {
+                        let closure = args.into_iter().next().ok_or_else(|| {
+                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
+                        })?;
+                        let ok_val = fields.first().cloned().unwrap_or(Value::Unit);
+                        let mapped = self.call_value(closure, vec![ok_val])?;
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![mapped],
+                        })
+                    }
+                    "Err" => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: fields.clone(),
+                    }),
+                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, fields }, "ok")
+                if name == "Result" =>
+            {
+                match variant.as_str() {
+                    "Ok" => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: fields.clone(),
+                    }),
+                    "Err" => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, fields }, "unwrap_or")
+                if name == "Result" =>
+            {
+                match variant.as_str() {
+                    "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                    "Err" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
+                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, .. }, "is_ok")
+                if name == "Result" =>
+            {
+                Ok(Value::Bool(variant == "Ok"))
+            }
+            (Value::Enum { name, variant, .. }, "is_err")
+                if name == "Result" =>
+            {
+                Ok(Value::Bool(variant == "Err"))
+            }
+            (Value::Enum { name, variant, fields }, "unwrap")
+                if name == "Result" =>
+            {
+                match variant.as_str() {
+                    "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                    "Err" => Err(RuntimeError::Panic(format!(
+                        "called unwrap on Err: {}",
+                        fields.first().map(|v| format!("{}", v)).unwrap_or_default()
+                    ))),
+                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                }
+            }
+
+            // Option methods
+            (Value::Enum { name, variant, fields }, "unwrap_or")
+                if name == "Option" =>
+            {
+                match variant.as_str() {
+                    "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                    "None" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
+                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, .. }, "is_some")
+                if name == "Option" =>
+            {
+                Ok(Value::Bool(variant == "Some"))
+            }
+            (Value::Enum { name, variant, .. }, "is_none")
+                if name == "Option" =>
+            {
+                Ok(Value::Bool(variant == "None"))
+            }
+            (Value::Enum { name, variant, fields }, "map")
+                if name == "Option" =>
+            {
+                match variant.as_str() {
+                    "Some" => {
+                        let closure = args.into_iter().next().ok_or_else(|| {
+                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
+                        })?;
+                        let inner = fields.first().cloned().unwrap_or(Value::Unit);
+                        let mapped = self.call_value(closure, vec![inner])?;
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![mapped],
+                        })
+                    }
+                    "None" => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                }
+            }
+            (Value::Enum { name, variant, fields }, "unwrap")
+                if name == "Option" =>
+            {
+                match variant.as_str() {
+                    "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                    "None" => Err(RuntimeError::Panic("called unwrap on None".to_string())),
+                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                }
+            }
+
+            // Vec clone
+            (Value::Vec(v), "clone") => {
+                let cloned = v.borrow().clone();
+                Ok(Value::Vec(Rc::new(RefCell::new(cloned))))
+            }
+
+            // String ne (not-equal)
+            (Value::String(a), "ne") => {
+                let b = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(*a.borrow() != b))
+            }
+
+            // Generic to_string
+            (_, "to_string") => {
+                Ok(Value::String(Rc::new(RefCell::new(format!("{}", receiver)))))
             }
 
             // Check user-defined methods from extend blocks
@@ -1447,7 +2512,7 @@ impl Interpreter {
     /// Helper to extract a string from args.
     fn expect_string(&self, args: &[Value], idx: usize) -> Result<String, RuntimeError> {
         match args.get(idx) {
-            Some(Value::String(s)) => Ok(s.clone()),
+            Some(Value::String(s)) => Ok(s.borrow().clone()),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected string, got {}",
                 v.type_name()

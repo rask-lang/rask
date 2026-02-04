@@ -98,7 +98,7 @@ const view = string_view(0, 5)
 
 // Access via source string
 process(source[view])           // equivalent to source[view.start..view.end]
-const sub = source.substr(view)?  // bounds-checked, returns Option
+const sub = try source.substr(view)  // bounds-checked, returns Option
 ```
 
 | Operation | Return | Notes |
@@ -120,10 +120,10 @@ For validated stored references (parsers, tokenizers, ASTs). Follows the `Pool<T
 const pool = StringPool.new()
 
 // Insert strings, get handles
-const h = pool.insert("hello world")?  // Handle<string>
+const h = try pool.insert("hello world")  // Handle<string>
 
 // Create slices (handle + indices)
-const slice = pool.slice(h, 0, 5)?  // StringSlice
+const slice = try pool.slice(h, 0, 5)  // StringSlice
 
 // Access - validates handle, then expression-scoped
 pool[slice]                      // panics if invalid handle
@@ -288,7 +288,7 @@ const iter = s.chars()  // Compile error
 **Example:**
 ```rask
 unsafe {
-    const c_path = path.to_cstring()?
+    const c_path = try path.to_cstring()
     const fd = c_open(cstring.as_ptr(c_path), O_RDONLY)
 }
 ```
@@ -346,7 +346,7 @@ const line = "field1,field2,field3"
 const fields: Vec<string_view> = Vec.new()
 
 for (start, end) in find_field_boundaries(line) {
-    fields.push(string_view(start, end))?
+    try fields.push(string_view(start, end))
 }
 
 // Later: access via original string (user ensures line unchanged)
@@ -361,12 +361,12 @@ for view in fields.iter() {
 ```rask
 func tokenize(source: string) -> Result<(StringPool, Vec<Token>), Error> {
     const pool = StringPool.new()
-    const source_handle = pool.insert(source)?
+    const source_handle = try pool.insert(source)
     const tokens: Vec<Token> = Vec.new()
 
     for (start, end, kind) in scan(pool[source_handle]) {
-        const slice = pool.slice(source_handle, start, end)?
-        tokens.push(Token { text: slice, kind })?
+        const slice = try pool.slice(source_handle, start, end)
+        try tokens.push(Token { text: slice, kind })
     }
 
     Ok((pool, tokens))

@@ -159,20 +159,20 @@ x == y          // compare inner values or both none
 - **Result:** Use `opt.ok_or(err)` to convert Option to Result when error context is needed.
 - **Control Flow:** `if x?` integrates with expression-oriented design.
 
-### The `?` Family
+### The Operator Family
 
-The `?` operators work on `Option<T>` and `Result<T, E>`:
+`try` propagates failure for both `Option<T>` and `Result<T, E>`. The `?` character is used only for Option sugar (types, chaining, smart unwrap) — never for propagation.
 
 | Syntax | Option | Result |
 |--------|--------|--------|
-| `x?` | Propagate None | Propagate Err (with union widening) |
+| `try x` | Propagate None | Propagate Err (with union widening) |
 | `x ?? y` | Value or default | — |
 | `x!` | Force (panic: "None") | Force (panic: "Err: ...") |
 | `x! "msg"` | Force (panic with message) | Force (panic with message) |
 
 **Why `??` doesn't work on Result:** Silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
 
-**Type-specific syntax:**
+**Option sugar (uses `?`):**
 
 | Syntax | Works On | Meaning |
 |--------|----------|---------|
@@ -181,8 +181,8 @@ The `?` operators work on `Option<T>` and `Result<T, E>`:
 | `if x?` | Option | Smart unwrap in block |
 
 **Propagation rules:**
-- `x?` on Option only valid in function returning `Option<U>`
-- `x?` on Result only valid in function returning `Result<U, E>` where error types are compatible
+- `try x` on Option only valid in function returning `Option<U>`
+- `try x` on Result only valid in function returning `Result<U, E>` where error types are compatible
 - Mixing requires explicit conversion: `.ok_or(err)` or `.ok()`
 
 See [Error Types](error-types.md) for Result handling and [Union Types](union-types.md) for error composition.

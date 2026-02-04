@@ -45,6 +45,7 @@ struct Name {
 | Any non-public field | Forbidden (factory required) | Only `pub` fields bindable |
 
 **Example:**
+<!-- test: skip -->
 ```rask
 public struct Request {
     public method: string
@@ -149,11 +150,13 @@ const c = Config.new()                          // Called on type
 ### Construction Patterns
 
 **Literal construction (when visible):**
+<!-- test: skip -->
 ```rask
 const p = Point { x: 10, y: 20 }
 ```
 
 **Factory functions (idiomatic for encapsulation):**
+<!-- test: parse -->
 ```rask
 public struct Connection {
     socket: Socket        // non-pub
@@ -169,6 +172,7 @@ extend Connection {
 ```
 
 **Update syntax (functional update):**
+<!-- test: skip -->
 ```rask
 const p2 = Point { x: 5, ..p1 }    // Copy p1, override x
 ```
@@ -190,10 +194,11 @@ struct Pair<T, U> {
     second: U
 }
 
-let p: Pair<i32, string> = Pair { first: 1, second: "hello" }
+const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 ```
 
 **Bounds:**
+<!-- test: skip -->
 ```rask
 struct SortedVec<T: Ord> {
     items: Vec<T>
@@ -299,6 +304,7 @@ extend Config {
 
 Structs support destructuring in patterns.
 
+<!-- test: skip -->
 ```rask
 match point {
     Point { x: 0, y } => println("on y-axis at {y}"),
@@ -308,6 +314,7 @@ match point {
 ```
 
 **Partial patterns:**
+<!-- test: skip -->
 ```rask
 let Point { x, .. } = point    // Ignore other fields
 ```
@@ -315,6 +322,61 @@ let Point { x, .. } = point    // Ignore other fields
 **Visibility in patterns:**
 - Same package: all fields available
 - External: only `pub` fields; `..` MUST be used for non-public fields
+
+### Field Projection Types
+
+Projection types allow functions to accept only specific fields of a struct, enabling partial borrowing without lifetime annotations.
+
+**Syntax:**
+<!-- test: skip -->
+```rask
+func system(state: MyStruct.{field1, field2}) {
+    // Can only access field1 and field2
+}
+```
+
+**Rules:**
+
+| Rule | Description |
+|------|-------------|
+| **P1: Field subset** | Projection type `T.{a, b}` accepts only the named fields from `T` |
+| **P2: Borrow scope** | Each projected field follows normal borrowing rules independently |
+| **P3: No overlap** | Multiple projections of the same struct can be borrowed simultaneously if fields don't overlap |
+| **P4: Nested access** | Projected fields can be accessed and mutated normally |
+
+**Example from game_loop.rask:**
+<!-- test: skip -->
+```rask
+struct GameState {
+    entities: Pool<Entity>
+    player: Handle<Entity>?
+    score: i32
+    game_over: bool
+}
+
+// Only borrows the `entities` field, leaving other fields available
+func movement_system(entities: GameState.{entities}, dt: f32) {
+    for h in entities {
+        entities[h].position.x += entities[h].velocity.dx * dt
+    }
+}
+
+// Can call multiple systems that use different projections
+func update(state: GameState, dt: f32) {
+    movement_system(state.{entities}, dt)     // Borrows entities
+    update_score(state.{score}, 10)           // Borrows score (no conflict)
+}
+```
+
+**Use cases:**
+
+| Pattern | Benefit |
+|---------|---------|
+| ECS systems | Each system borrows only the components it needs |
+| Parallel access | Non-overlapping projections can be used across threads |
+| API clarity | Function signature shows exactly which fields are accessed |
+
+See [Borrowing](../memory/borrowing.md) for how projections enable parallelism without lifetime annotations.
 
 ## Examples
 

@@ -51,7 +51,7 @@ enum PushError<T> {
 
 **Convenience methods:**
 ```rask
-vec.push(x)?                // Propagate error
+try vec.push(x)             // Propagate error
 vec.push(x).unwrap()        // Panic on error
 vec.push_or_panic(x)        // Explicit panic variant
 ```
@@ -79,15 +79,15 @@ const x = vec[i]          // Copy out (T: Copy only)
 **Closure access (for multi-statement operations):**
 
 ```rask
-const name = vec.read(i, |v| v.name.clone())?  // Option<string>
-vec.modify(i, |v| v.count += 1)?             // Option<()>
+const name = try vec.read(i, |v| v.name.clone())  // Option<string>
+try vec.modify(i, |v| v.count += 1)               // Option<()>
 ```
 
 **Pattern selection guide:**
 - 1 statement → `vec[i].field = x`
 - Method chain → `vec[i].value.method().chain()`
-- 2+ statements → `vec.modify(i, |v| { ... })?`
-- Error propagation → `vec.modify(i, |v| -> Result { ... })?`
+- 2+ statements → `try vec.modify(i, |v| { ... })`
+- Error propagation → `try vec.modify(i, |v| -> Result { ... })`
 
 ### Map - Key-Based Access
 
@@ -110,14 +110,14 @@ vec.modify(i, |v| v.count += 1)?             // Option<()>
 
 ```rask
 // Ensure user exists, then update
-map.ensure(user_id, || User.new(user_id))?
-map.modify(user_id, |u| u.last_seen = now())?
+try map.ensure(user_id, || User.new(user_id))
+try map.modify(user_id, |u| u.last_seen = now())
 
 // Or combined
-map.ensure_modify(user_id, || User.new(user_id), |u| {
+try map.ensure_modify(user_id, || User.new(user_id), |u| {
     u.last_seen = now()
     u.visit_count += 1
-})?
+})
 ```
 
 ### Multi-Element Mutation
@@ -168,10 +168,10 @@ Shrinking never fails — if the allocator can't provide a smaller block, the co
 
 **Construct directly in collection storage:**
 ```rask
-const idx = vec.push_with(|slot| {
+const idx = try vec.push_with(|slot| {
     slot.field1 = compute_expensive()
     slot.field2 = [0; 1000]
-})?
+})
 ```
 
 Avoids constructing on stack then moving. Useful for large types.
@@ -211,7 +211,7 @@ struct SliceDescriptor<T> {
 **Usage with string or Vec:**
 ```rask
 const strings: Pool<string> = Pool.new()
-const s = strings.insert("Hello World")?
+const s = try strings.insert("Hello World")
 
 // Create storable slice descriptor
 const slice_desc = s.slice(0..5)   // SliceDescriptor { handle: s, range: 0..5 }
@@ -332,14 +332,14 @@ const KEYWORDS: Map<str, TokenKind> = comptime {
 ```rask
 func handle_requests(buffer: Vec<Request>) -> Result<(), Error> {
     loop {
-        const req = receive_request()?
+        const req = try receive_request()
 
         match buffer.push(req) {
             Ok(()) => {}
             Err(PushError.Full(rejected)) => {
-                process_batch(buffer)?
+                try process_batch(buffer)
                 buffer.clear()
-                buffer.push(rejected)?
+                try buffer.push(rejected)
             }
             Err(PushError.Alloc(rejected)) => return Err(Error.OutOfMemory)
         }
@@ -350,13 +350,13 @@ func handle_requests(buffer: Vec<Request>) -> Result<(), Error> {
 ### Session Cache with Ensure
 ```rask
 func track_session(cache: Map<SessionId, Session>, id: SessionId) -> Result<(), Error> {
-    cache.ensure_modify(id,
+    try cache.ensure_modify(id,
         || Session.new(id),
         |s| {
             s.last_seen = now()
             s.request_count += 1
         }
-    )?
+    )
     Ok(())
 }
 ```
@@ -365,7 +365,7 @@ func track_session(cache: Map<SessionId, Session>, id: SessionId) -> Result<(), 
 
 - **Memory Model:** Collections own their data (value semantics). No lifetime parameters required.
 - **Type System:** Generic code works uniformly: `func process<T>(v: Vec<T>)` handles bounded and unbounded transparently.
-- **Error Handling:** All allocations return `Result`, composable with `?` operator. Rejected values are returned for retry/logging.
+- **Error Handling:** All allocations return `Result`, composable with `try`. Rejected values are returned for retry/logging.
 - **Concurrency:** Collections are not `Sync` by default. Send ownership via channels. Use `Arc<Mutex<Vec<T>>>` for shared mutable access.
 - **Compiler:** No whole-program analysis needed. Expression-scoped borrows determined by syntax. Closure borrow checking is local.
 - **C Interop:** Use `Vec` for sequential data (FFI-friendly layout).

@@ -112,7 +112,7 @@ func main() -> Result<(), Error> {
         return Ok(())  // Fast exit, database never initialized
     }
 
-    const conn = database.connect()?  // init() runs here, errors propagate via ?
+    const conn = try database.connect()  // init() runs here, errors propagate via try
 }
 ```
 
@@ -497,7 +497,7 @@ func walk_up(pool: Pool<Node>, node: Handle<Node>) {
 - **Memory Model**: Package boundaries do NOT affect ownership—values passed across packages transfer ownership identically to intra-package calls
 - **Type System**: Trait structural matching works across packages; extend visibility inferred from trait+type (public+public=public)
 - **Concurrency**: Channels can send types across package boundaries; type identity preserved (origin-based)
-- **Error Handling**: `Result` as built-in eliminates ceremony; propagation (`?`) works uniformly regardless of import style
+- **Error Handling**: `Result` as built-in eliminates ceremony; propagation (`try`) works uniformly regardless of import style
 - **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; generic instantiations cached by semantic hash
 - **C Interop**: See [C Interop](c-interop.md) for full specification
 - **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names, and monomorphization (code generation) locations

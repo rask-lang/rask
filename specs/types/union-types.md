@@ -56,7 +56,7 @@ Two union types are equal if their canonical forms are equal.
 
 ### Subtyping
 
-For `?` propagation, error types widen automatically:
+For `try` propagation, error types widen automatically:
 
 | Expression Error | Return Error | Valid? |
 |------------------|--------------|--------|
@@ -64,18 +64,18 @@ For `?` propagation, error types widen automatically:
 | `IoError \| ParseError` | `IoError \| ParseError \| ValidationError` | Yes |
 | `IoError \| ParseError` | `IoError` | No (ParseError not in target) |
 
-**Rule:** `?` succeeds if expression error type ⊆ return error union.
+**Rule:** `try` succeeds if expression error type ⊆ return error union.
 
 ```rask
 func load() -> Result<Config, IoError | ParseError> {
-    const content = read_file(path)?   // IoError ⊆ union: OK
-    const config = parse(content)?     // ParseError ⊆ union: OK
+    const content = try read_file(path)   // IoError ⊆ union: OK
+    const config = try parse(content)     // ParseError ⊆ union: OK
     config
 }
 
 func process() -> Result<Output, IoError | ParseError | ValidationError> {
-    const config = load()?             // IoError | ParseError ⊆ union: OK
-    validate(config)?
+    const config = try load()             // IoError | ParseError ⊆ union: OK
+    try validate(config)
 }
 ```
 
@@ -141,14 +141,14 @@ func read_file(path: string) -> Result<string, IoError>
 
 // Mid-level
 func parse_config(path: string) -> Result<Config, IoError | ParseError> {
-    const content = read_file(path)?
-    parse(content)?
+    const content = try read_file(path)
+    try parse(content)
 }
 
 // High-level
 func load_app() -> Result<App, IoError | ParseError | ValidationError> {
-    const config = parse_config("app.toml")?
-    const valid = validate(config)?
+    const config = try parse_config("app.toml")
+    const valid = try validate(config)
     App.new(valid)
 }
 ```
@@ -172,7 +172,7 @@ match load_app() {
 
 ## Integration
 
-- **Error propagation:** `?` auto-widens to return union
+- **Error propagation:** `try` auto-widens to return union
 - **Pattern matching:** Match by type name, exhaustiveness checked
 - **Enums:** Union members are typically enums with `message()` method
 - **Result methods:** `.map_err()` can transform union errors

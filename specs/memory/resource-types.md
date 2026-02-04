@@ -9,23 +9,24 @@ The `@resource` attribute marks types that must be consumed exactly once. The co
 ## Rationale
 Resource types (based on linear resource types from type theory) prevent resource leaks by construction. Unlike RAII (which runs destructors automatically), resource types require explicit consumption—making cleanup visible (TC ≥ 0.90) while guaranteeing it happens (MC ≥ 0.90).
 
-The `ensure` statement bridges resource types with error handling: you can commit to consuming a resource early, then use `?` freely knowing cleanup will happen.
+The `ensure` statement bridges resource types with error handling: you can commit to consuming a resource early, then use `try` freely knowing cleanup will happen.
 
 ## Specification
 
 ### Resource Type Declaration
 
+<!-- test: parse -->
 ```rask
 @resource
 struct File {
-    handle: RawHandle,
-    path: string,
+    handle: RawHandle
+    path: string
 }
 
 @resource
 struct Connection {
-    socket: RawSocket,
-    state: ConnectionState,
+    socket: RawSocket
+    state: ConnectionState
 }
 ```
 
@@ -45,6 +46,7 @@ A resource value is consumed by:
 - Passing to a function with `take` parameter mode
 - Explicit consumption function (e.g., `file.close()`)
 
+<!-- test: skip -->
 ```rask
 @resource
 struct File { ... }
@@ -64,34 +66,37 @@ extend File {
 
 ### Basic Usage
 
+<!-- test: parse -->
 ```rask
 func process() -> Result<(), Error> {
-    const file = File.open("data.txt")?    // file is a resource
+    const file = try File.open("data.txt")    // file is a resource
 
-    const data = file.read_all()?           // Borrow: file still valid
-    process_data(data)?
+    const data = try file.read_all()           // Borrow: file still valid
+    try process_data(data)
 
-    file.close()?                          // Consumed: file no longer valid
+    try file.close()                          // Consumed: file no longer valid
     Ok(())
 }
 ```
 
 **Forgetting to consume:**
+<!-- test: compile-fail -->
 ```rask
 func bad() -> Result<(), Error> {
-    const file = File.open("data.txt")?
-    const data = file.read_all()?
+    const file = try File.open("data.txt")
+    const data = try file.read_all()
     Ok(())
     // ❌ ERROR: file not consumed before scope exit
 }
 ```
 
 **Double consumption:**
+<!-- test: compile-fail -->
 ```rask
 func also_bad() -> Result<(), Error> {
-    const file = File.open("data.txt")?
-    file.close()?
-    file.close()?    // ❌ ERROR: file already consumed
+    const file = try File.open("data.txt")
+    try file.close()
+    try file.close()    // ❌ ERROR: file already consumed
     Ok(())
 }
 ```
@@ -100,16 +105,17 @@ func also_bad() -> Result<(), Error> {
 
 `ensure` commits to consuming a resource at scope exit, satisfying R1 immediately.
 
+<!-- test: parse -->
 ```rask
 func process() -> Result<(), Error> {
-    const file = File.open("data.txt")?
+    const file = try File.open("data.txt")
     ensure file.close()        // Consumption committed
 
-    const header = file.read_header()?    // ✅ OK: can still read
-    validate(header)?                    // Can use ? freely
+    const header = try file.read_header()    // ✅ OK: can still read
+    try validate(header)                    // Can use try freely
 
-    const body = file.read_body()?
-    transform(body)?
+    const body = try file.read_body()
+    try transform(body)
 
     Ok(())
     // ensure runs: file.close() called
@@ -131,54 +137,57 @@ If the ensured operation returns `Result`, errors are:
 2. Accumulated if multiple ensures fail
 3. Returned as the scope's error if no explicit return
 
+<!-- test: parse -->
 ```rask
 func risky() -> Result<(), Error> {
-    const file = File.open("data.txt")?
+    const file = try File.open("data.txt")
     ensure file.close()        // May fail
 
-    risky_operation()?         // If this fails, ensure still runs
+    try risky_operation()         // If this fails, ensure still runs
 
     Ok(())
 }
-// If risky_operation() fails: file.close() runs, then ? propagates
+// If risky_operation() fails: file.close() runs, then try propagates
 // If file.close() fails: that error is returned
 ```
 
 ### Resource Types + Error Paths
 
-Resource types integrate with `?` through `ensure`:
+Resource types integrate with `try` through `ensure`:
 
+<!-- test: parse -->
 ```rask
 func process(path: string) -> Result<Data, Error> {
-    const file = File.open(path)?
+    const file = try File.open(path)
     ensure file.close()        // Guarantees consumption on any exit
 
-    const header = file.read_header()?  // Early return? ensure runs
+    const header = try file.read_header()  // Early return? ensure runs
     if !header.valid {
         return Err(InvalidHeader)      // ensure runs, file closed
     }
 
-    const data = file.read_body()?      // Early return? ensure runs
+    const data = try file.read_body()      // Early return? ensure runs
     Ok(data)                           // Normal exit: ensure runs
 }
 ```
 
 **Without `ensure`, error handling is verbose:**
+<!-- test: parse -->
 ```rask
 func process_verbose(path: string) -> Result<Data, Error> {
-    const file = File.open(path)?
+    const file = try File.open(path)
 
     const header = match file.read_header() {
         Ok(h) => h,
         Err(e) => {
-            file.close()?     // Must close before returning
+            try file.close()     // Must close before returning
             return Err(e)
         }
     }
 
-    // ... repeat for every ? ...
+    // ... repeat for every try ...
 
-    file.close()?
+    try file.close()
     Ok(data)
 }
 ```
@@ -195,20 +204,22 @@ Resource types have restrictions in collections:
 | `Option<Resource>` | ✅ Yes | Must match and consume |
 
 **Pool pattern for resources:**
+<!-- test: skip -->
 ```rask
 const connections: Pool<Connection> = Pool.new()
-const h = connections.insert(Connection.open(addr)?)?
+const h = try connections.insert(try Connection.open(addr))
 
 // Later: explicit consumption required
 const conn = connections.remove(h).unwrap()
-conn.close()?
+try conn.close()
 ```
 
 **All connections must be consumed before pool drops:**
+<!-- test: skip -->
 ```rask
 for h in connections.handles() {
     const conn = connections.remove(h).unwrap()
-    conn.close()?
+    try conn.close()
 }
 // connections can now be dropped (empty)
 ```
@@ -231,24 +242,26 @@ A `Pool<Resource>` MUST enforce consumption of all resource elements before the 
 
 **The take_all pattern (REQUIRED for Pool<Resource>):**
 
+<!-- test: skip -->
 ```rask
 const files: Pool<File> = Pool.new()
-const h1 = files.insert(File.open("a.txt")?)?
-const h2 = files.insert(File.open("b.txt")?)?
+const h1 = try files.insert(try File.open("a.txt"))
+const h2 = try files.insert(try File.open("b.txt"))
 
 // Before allowing pool to drop, consume all elements:
 for file in files.take_all() {
-    file.close()?
+    try file.close()
 }
 // Pool is now empty, safe to drop
 ```
 
 **With ensure (errors ignored):**
 
+<!-- test: skip -->
 ```rask
 const files: Pool<File> = Pool.new()
 ensure for file in files.take_all() {
-    file.close()  // Result ignored - cannot use ? in ensure
+    file.close()  // Result ignored - cannot use try in ensure
 }
 
 // ... use files ...
@@ -257,6 +270,7 @@ ensure for file in files.take_all() {
 
 **With ensure and error handling:**
 
+<!-- test: skip -->
 ```rask
 const files: Pool<File> = Pool.new()
 ensure for file in files.take_all() {
@@ -275,12 +289,13 @@ When `T` is a resource type, `Pool<T>` provides additional convenience methods:
 
 **Usage:**
 
+<!-- test: skip -->
 ```rask
 // Ignore close errors
 files.take_all_with(|f| { f.close(); })
 
 // Propagate close errors
-files.take_all_with_result(|f| f.close())?
+try files.take_all_with_result(|f| f.close())
 ```
 
 ### Why Runtime Panic for Pool<Resource> Drop?
@@ -313,6 +328,7 @@ The panic message MUST clearly indicate:
 3. The element type
 
 Example:
+<!-- test: skip -->
 ```rask
 panic: Pool<File> dropped with 3 unconsumed resource elements.
 Resources must be explicitly consumed (use take_all() before drop).
@@ -347,6 +363,7 @@ When an operation fails, the resource must still be accounted for. The standard 
 
 ### Basic Pattern
 
+<!-- test: skip -->
 ```rask
 enum FileError {
     ReadFailed { file: File, reason: string },
@@ -359,25 +376,26 @@ func read_config(file: File) -> Result<Config, FileError> {
         Err(reason) => return Err(FileError.ReadFailed { file, reason }),
     }
 
-    const config = parse(data)?
-    file.close()?
+    const config = try parse(data)
+    try file.close()
     Ok(config)
 }
 ```
 
 **Caller must handle the file in error paths:**
+<!-- test: skip -->
 ```rask
 func load_config(path: string) -> Result<Config, Error> {
-    const file = File.open(path)?
+    const file = try File.open(path)
 
     match read_config(file) {
         Ok(config) => Ok(config),
         Err(FileError.ReadFailed { file, reason }) => {
-            file.close()?  // Must still consume the file
+            try file.close()  // Must still consume the file
             Err(Error.ConfigRead(reason))
         }
         Err(FileError.WriteFailed { file, reason }) => {
-            file.close()?
+            try file.close()
             Err(Error.ConfigWrite(reason))
         }
     }
@@ -388,6 +406,7 @@ func load_config(path: string) -> Result<Config, Error> {
 
 When errors contain multiple resources, all must be consumed:
 
+<!-- test: skip -->
 ```rask
 enum TransferError {
     SourceReadFailed {
@@ -405,13 +424,13 @@ enum TransferError {
 func handle_transfer_error(err: TransferError) -> Result<(), Error> {
     match err {
         TransferError.SourceReadFailed { source, dest, reason } => {
-            source.close()?
-            dest.close()?
+            try source.close()
+            try dest.close()
             Err(Error.Transfer(reason))
         }
         TransferError.DestWriteFailed { source, dest, reason } => {
-            source.close()?
-            dest.close()?
+            try source.close()
+            try dest.close()
             Err(Error.Transfer(reason))
         }
     }
@@ -422,17 +441,18 @@ func handle_transfer_error(err: TransferError) -> Result<(), Error> {
 
 The `ensure` pattern reduces verbosity when the cleanup is the same:
 
+<!-- test: parse -->
 ```rask
 func transfer(source_path: string, dest_path: string) -> Result<(), Error> {
-    const source = File.open(source_path)?
+    const source = try File.open(source_path)
     ensure source.close()
 
-    const dest = File.create(dest_path)?
+    const dest = try File.create(dest_path)
     ensure dest.close()
 
-    // Now ? works naturally - both files cleaned up on any error
-    const data = source.read_all()?
-    dest.write_all(data)?
+    // Now try works naturally - both files cleaned up on any error
+    const data = try source.read_all()
+    try dest.write_all(data)
 
     Ok(())
 }
@@ -450,19 +470,20 @@ func transfer(source_path: string, dest_path: string) -> Result<(), Error> {
 
 For multiple resources with uniform cleanup, `ensure` handles everything:
 
+<!-- test: parse -->
 ```rask
 func process_files(paths: Vec<string>) -> Result<(), Error> {
     const files = Vec.new()
 
     for path in paths {
-        const file = File.open(path)?
+        const file = try File.open(path)
         ensure file.close()  // Each file gets its own ensure
         files.push(file)
     }
 
     // Process all files...
     for file in files.iter() {
-        process(file)?
+        try process(file)
     }
 
     Ok(())
@@ -480,16 +501,17 @@ func process_files(paths: Vec<string>) -> Result<(), Error> {
 | Consider a `close_and_convert` helper | Reduces repetitive patterns |
 
 **Helper pattern:**
+<!-- test: skip -->
 ```rask
 extend FileError {
     func close_and_convert(take self) -> Result<Error, Error> {
         match self {
             FileError.ReadFailed { file, reason } => {
-                file.close()?
+                try file.close()
                 Ok(Error.Read(reason))
             }
             FileError.WriteFailed { file, reason } => {
-                file.close()?
+                try file.close()
                 Ok(Error.Write(reason))
             }
         }
@@ -497,7 +519,7 @@ extend FileError {
 }
 
 // Usage:
-read_config(file).map_err(|e| e.close_and_convert())?
+try read_config(file).map_err(|e| e.close_and_convert())
 ```
 
 ## Edge Cases
@@ -513,12 +535,13 @@ read_config(file).map_err(|e| e.close_and_convert())?
 | Loop with resource | Can't create resource in loop without consuming each iteration |
 
 **Conditional consumption:**
+<!-- test: parse -->
 ```rask
 func conditional(file: File, keep_open: bool) -> Result<(), Error> {
     if keep_open {
         GLOBAL_FILES.store(file)  // Consumes by transfer
     } else {
-        file.close()?             // Consumes by close
+        try file.close()             // Consumes by close
     }
     // ✅ Both branches consume
     Ok(())
@@ -528,53 +551,56 @@ func conditional(file: File, keep_open: bool) -> Result<(), Error> {
 ## Examples
 
 ### File Processing
+<!-- test: parse -->
 ```rask
 func process_file(path: string) -> Result<Data, Error> {
-    const file = File.open(path)?
+    const file = try File.open(path)
     ensure file.close()
 
-    const header = file.read_header()?
-    const data = file.read_body()?
+    const header = try file.read_header()
+    const data = try file.read_body()
 
     Ok(data)
 }
 ```
 
 ### Database Transaction
+<!-- test: parse -->
 ```rask
 func update_user(db: Database, user_id: u64) -> Result<(), Error> {
-    const txn = db.begin_transaction()?
+    const txn = try db.begin_transaction()
     ensure txn.rollback()     // Default: rollback on error
 
-    const user = txn.query_user(user_id)?
+    const user = try txn.query_user(user_id)
     user.last_login = now()
-    txn.update_user(user)?
+    try txn.update_user(user)
 
-    txn.commit()?             // Explicit commit consumes txn
+    try txn.commit()             // Explicit commit consumes txn
                               // ensure no longer needed (already consumed)
     Ok(())
 }
 ```
 
 ### Connection Pool
+<!-- test: parse -->
 ```rask
 func handle_connections(pool: Pool<Connection>) -> Result<(), Error> {
     // Process all connections
     for h in pool.cursor() {
-        pool.modify(h, |conn| {
+        try pool.modify(h, |conn| {
             if conn.should_close() {
                 // Remove and consume
                 const removed = pool.remove(h).unwrap()
-                removed.close()?
+                try removed.close()
             }
             Ok(())
-        })?
+        })
     }
 
     // Clean up remaining
     for h in pool.handles().collect<Vec<_>>() {
         const conn = pool.remove(h).unwrap()
-        conn.close()?
+        try conn.close()
     }
 
     Ok(())
@@ -585,7 +611,7 @@ func handle_connections(pool: Pool<Connection>) -> Result<(), Error> {
 
 - **Value Semantics:** Resource types are move-only (never Copy) (see [value-semantics.md](value-semantics.md))
 - **Ownership:** Resource adds consumption requirement on top of single ownership (see [ownership.md](ownership.md))
-- **Error Handling:** `ensure` integrates with Result and `?` (see [ensure.md](../control/ensure.md))
+- **Error Handling:** `ensure` integrates with Result and `try` (see [ensure.md](../control/ensure.md))
 - **Pools:** Pool<Resource> requires explicit removal (see [pools.md](pools.md))
 - **Tooling:** IDE tracks resource value state, warns on missing consumption
 

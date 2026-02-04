@@ -30,7 +30,7 @@ for i in 0.. {
 
 **Semantics:**
 - Iterator yields values indefinitely (0, 1, 2, ...)
-- Loop never terminates unless `break`, `return`, or `?` exits
+- Loop never terminates unless `break`, `return`, or `try` exits
 - Valid use case: event loops, generators, polling
 
 **Desugaring:**

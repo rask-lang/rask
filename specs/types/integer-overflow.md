@@ -116,9 +116,9 @@ For explicit handling of overflow conditions:
 
 ```rask
 func parse_quantity(s: string) -> Result<u32, Error> {
-    const base = parse_u32(s)?
-    const total = base.checked_mul(unit_size)
-        .ok_or(Error.Overflow)?
+    const base = try parse_u32(s)
+    const total = try base.checked_mul(unit_size)
+        .ok_or(Error.Overflow)
     Ok(total)
 }
 ```
@@ -196,7 +196,7 @@ Cast to wider type to prove no overflow:
 const sum = (a as u16) + (b as u16)   // Can't overflow
 
 // Narrow back if needed:
-let result: u8 = sum.try_into()?    // Or .truncate() for wrapping
+let result: u8 = try sum.try_into()    // Or .truncate() for wrapping
 ```
 
 ### Loop Analysis
@@ -212,7 +212,7 @@ for item in buffer {   // buffer: []u8, len <= 1000
 
 ### When Checks Remain
 
-- Unbounded input: `sum += parse_int(input)?`
+- Unbounded input: `sum += try parse_int(input)`
 - Unknown loop bounds: `for i in 0..n { ... }` where `n` is runtime
 - Potential overflow despite analysis: large multiplications
 

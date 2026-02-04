@@ -130,7 +130,7 @@ struct IpHeader {
 // SIZE = 20 bytes (160 bits)
 
 func handle_packet(data: []u8) -> Result<(), Error> {
-    let (header, payload) = IpHeader.parse(data)?
+    let (header, payload) = try IpHeader.parse(data)
 
     match header.version {
         4: handle_ipv4(header, payload)
@@ -277,7 +277,7 @@ The nested struct is inlined (no indirection).
 For one-off parsing without defining a struct, use `unpack`:
 
 ```rask
-let (magic, version, length, rest) = data.unpack(u32be, u8, u16be)?
+let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 ```
 
 See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functions.

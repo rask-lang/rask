@@ -41,11 +41,12 @@ func main() {
 @entry
 func main() {
     with multitasking, threading {
-        spawn {
-            const data = fetch(url)?                              // I/O - pauses
-            const result = spawn_thread { analyze(data) }.join()?  // CPU on threads
-            save(result)?                                       // I/O - pauses
-        }.join()?
+        const h = spawn {
+            const data = try fetch(url)                              // I/O - pauses
+            const result = try spawn_thread { analyze(data) }.join()  // CPU on threads
+            try save(result)                                       // I/O - pauses
+        }
+        try h.join()
     }
 }
 
@@ -54,13 +55,13 @@ func main() {
 func main() {
     with threading {
         const handles = files.map { |f| spawn_thread { process(f) } }
-        for h in handles { h.join()? }
+        for h in handles { try h.join() }
     }
 }
 
 // Spawn and wait for result
 const h = spawn { compute() }
-const result = h.join()?
+const result = try h.join()
 
 // Fire-and-forget (explicit)
 spawn { background_work() }.detach()
@@ -76,11 +77,11 @@ const group = TaskGroup.new()
 for url in urls {
     group.spawn { fetch(url) }
 }
-const results = group.join_all()?
+const results = try group.join_all()
 
 // Raw OS thread (works anywhere)
 const h = spawn_raw { needs_thread_affinity() }
-h.join()?
+try h.join()
 ```
 
 ## Three Spawn Constructs
@@ -95,7 +96,7 @@ h.join()?
 
 | Pattern | Syntax |
 |---------|--------|
-| Spawn and wait | `spawn { }.join()?` |
+| Spawn and wait | `try spawn { }.join()` |
 | Fire-and-forget | `spawn { }.detach()` |
 | Wait for all | `join_all(spawn{}, spawn{})` |
 | Dynamic spawning | `TaskGroup` |

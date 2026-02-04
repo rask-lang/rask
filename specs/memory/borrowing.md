@@ -247,7 +247,7 @@ if pool[h].health <= 0 {     // New view
 
 Use handles (which persist) and copy values out when needed:
 ```rask
-const h = pool.find(pred)?     // Handle persists
+const h = try pool.find(pred)   // Handle persists
 const health = pool[h].health  // Copy out value
 if health <= 0 {
     pool.remove(h)           // OK
@@ -267,22 +267,22 @@ if health <= 0 {
 
 **Basic usage:**
 ```rask
-pool.modify(h, |entity| {
+try pool.modify(h, |entity| {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
         entity.status = Status.Dead
     }
-})?
+})
 ```
 
 **Error propagation:**
 ```rask
-users.modify(id, |user| -> Result<(), Error> {
-    user.email = validate_email(input)?
+try users.modify(id, |user| -> Result<(), Error> {
+    user.email = try validate_email(input)
     user.updated_at = now()
     Ok(())
-})?
+})
 ```
 
 **Pattern selection:**
@@ -292,7 +292,7 @@ users.modify(id, |user| -> Result<(), Error> {
 | 1 statement | Direct `collection[key]` | `pool[h].field = value` |
 | Method chain | Direct `collection[key]` | `pool[h].pos.normalize().scale(2)` |
 | 2+ statements | Closure `modify()` | See above |
-| Needs `?` inside | Closure with Result | See above |
+| Needs `try` inside | Closure with Result | See above |
 
 **Closure borrows collection exclusively:**
 ```rask
@@ -306,9 +306,78 @@ pool.modify(h, |e| {
 ```rask
 const handles = pool.handles().collect()
 for h in handles {
-    pool.modify(h, |e| e.update())?
+    try pool.modify(h, |e| e.update())
 }
 ```
+
+### Field Projections for Partial Borrowing
+
+**Problem:** Borrowing a struct borrows all of it. If two functions need different fields, they can't run in parallel—even though they don't conflict.
+
+**Solution:** Field projection types (`Type.{field1, field2}`) allow borrowing only specific fields.
+
+```rask
+struct GameState {
+    entities: Pool<Entity>
+    score: i32
+    player: Handle<Entity>?
+}
+
+// Only borrows `entities` - other fields remain available
+func movement_system(state: GameState.{entities}, dt: f32) {
+    for h in state.entities {
+        state.entities[h].position.x += state.entities[h].velocity.dx * dt
+    }
+}
+
+// Only borrows `score` - can run alongside movement_system
+func update_score(state: GameState.{score}, points: i32) {
+    state.score += points
+}
+```
+
+**Calling with projections:**
+```rask
+func game_tick(state: GameState, dt: f32) {
+    // These borrow non-overlapping fields - could run in parallel
+    movement_system(state.{entities}, dt)
+    update_score(state.{score}, 10)
+}
+```
+
+**Rules:**
+
+| Rule | Description |
+|------|-------------|
+| **P1: Syntax** | `value.{field1, field2}` creates a projection of the named fields |
+| **P2: Type syntax** | `Type.{field1}` in function params accepts a projection |
+| **P3: Non-overlapping** | Projections with disjoint fields can be borrowed simultaneously |
+| **P4: Parallel safe** | Non-overlapping mutable projections can be sent to different threads |
+
+**Why this matters:**
+
+Without projections, ECS-style systems would conflict:
+```rask
+// ❌ Without projections - movement and collision both borrow GameState
+func movement_system(state: GameState, dt: f32) { ... }
+func collision_system(state: GameState) { ... }
+
+// Can't parallelize even though they use different data!
+```
+
+With projections:
+```rask
+// ✅ With projections - explicit non-overlapping borrows
+func movement_system(entities: GameState.{entities}, dt: f32) { ... }
+func collision_system(entities: GameState.{entities}) { ... }  // Conflict! Same field
+func render_system(entities: GameState.{entities, score}) { ... }  // Different sig, but entities overlaps
+
+// Can parallelize systems that don't overlap
+spawn { ai_system(state.{ai_state}) }
+spawn { physics_system(state.{entities}) }  // OK if ai_state ≠ entities
+```
+
+See [Structs](../types/structs.md#field-projection-types) for projection type syntax.
 
 ### Aliasing Rules
 
@@ -435,7 +504,7 @@ FIX: Collect handles first, then mutate:
 <!-- test: parse -->
 ```rask
 func parse_header(line: string) -> Option<(string, string)> {
-    const colon = line.find(':')?
+    const colon = try line.find(':')
     const key = line[0..colon].trim()      // Stable borrow
     const value = line[colon+1..].trim()   // Another stable borrow
     Some((key.to_string(), value.to_string()))
@@ -461,13 +530,13 @@ func update_combat(pool: Pool<Entity>) {
 <!-- test: parse -->
 ```rask
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> Result<(), Error> {
-    pool.modify(h, |entity| {
+    try pool.modify(h, |entity| {
         entity.strength += 10
         entity.defense += 5
         entity.buff_expiry = now() + Duration.seconds(30)
-        log_buff_applied(entity.id)?
+        try log_buff_applied(entity.id)
         Ok(())
-    })?
+    })
 }
 ```
 

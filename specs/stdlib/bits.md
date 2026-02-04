@@ -84,7 +84,7 @@ Parse multiple values from a byte slice:
 func unpack<T...>(data: []u8, types: T...) -> Result<(T..., []u8), ParseError>
 
 // Usage
-let (magic, version, length, rest) = data.unpack(u32be, u8, u16be)?
+let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 
 // With match
 match data.unpack(u32be, u8, u16be) {
@@ -119,9 +119,9 @@ Methods on `[]u8` for binary parsing:
 All read methods return `Result<(T, []u8), ParseError>`.
 
 ```rask
-let (magic, rest) = data.read_u32be()?
-let (length, rest) = rest.read_u16be()?
-let (payload, rest) = rest.take(length as usize)?
+let (magic, rest) = try data.read_u32be()
+let (length, rest) = try rest.read_u16be()
+let (payload, rest) = try rest.take(length as usize)
 ```
 
 ## Binary Building
@@ -187,11 +187,11 @@ The `bits` module complements `@binary` structs:
 struct TcpHeader { ... }
 
 // Inline for quick one-off
-let (type, len, rest) = data.unpack(u8, u16be)?
+let (type, len, rest) = try data.unpack(u8, u16be)
 
 // Streaming for variable data
-let (header, rest) = TcpHeader.parse(data)?
-let (options, rest) = rest.take(header.data_offset * 4 - 20)?
+let (header, rest) = try TcpHeader.parse(data)
+let (options, rest) = try rest.take(header.data_offset * 4 - 20)
 ```
 
 ## Performance Notes

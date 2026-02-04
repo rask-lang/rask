@@ -374,8 +374,8 @@ comptime func safe_divide(a: i32, b: i32) -> Result<i32, string> {
     Ok(a / b)
 }
 
-const X = comptime safe_divide(10, 2)?  // OK: unwraps to 5
-const Y = comptime safe_divide(10, 0)?  // ❌ Compile error: "Division by zero"
+const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
+const Y = try comptime safe_divide(10, 0)  // ❌ Compile error: "Division by zero"
 ```
 
 **Panic at comptime:**
@@ -392,7 +392,7 @@ const B = comptime get_value(5)  // ❌ Compile error: "Index out of bounds: 5 >
 **Rules:**
 - Comptime panics become compile errors
 - Error messages include comptime call stack
-- `Result` and `?` work at comptime
+- `Result` and `try` work at comptime
 - Errors propagate to compile error with context
 
 ### Debugging Comptime Code
@@ -760,9 +760,9 @@ For codegen requiring external tools or extensive I/O:
 // rask.build
 @entry
 func main() -> Result<(), Error> {
-    const schema = fs.read_file("schema.json")?
+    const schema = try fs.read_file("schema.json")
     const code = generate_types_from_schema(schema)
-    fs.write_file("generated/types.rask", code)?
+    try fs.write_file("generated/types.rask", code)
     Ok(())
 }
 ```
@@ -804,7 +804,7 @@ func crc8(data: []u8) -> u8 {
 ```rask
 func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> Result<[u8; MAX_SIZE], Error> {
     const buffer = [0u8; MAX_SIZE]
-    const n = socket.read(buffer[..])?
+    const n = try socket.read(buffer[..])
     if n > MAX_SIZE {
         return Err(Error.new("Packet too large"))
     }
@@ -812,8 +812,8 @@ func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> Result<[u8; MAX_SI
 }
 
 // Usage with different sizes
-const small = read_packet<64>(socket1)?
-const large = read_packet<4096>(socket2)?
+const small = try read_packet<64>(socket1)
+const large = try read_packet<4096>(socket2)
 ```
 
 #### Conditional Compilation
@@ -835,7 +835,7 @@ func process(data: []u8) -> Result<(), Error> {
             }
         }
 
-        handle(byte)?
+        try handle(byte)
     }
 
     Ok(())
@@ -903,7 +903,7 @@ const reg32 = Register<32> { value: 0u32 }
 
 - **Type System:** Comptime enables type-level computation (selecting types, computing sizes). Generic parameters can be `comptime` to require compile-time-known values.
 - **Memory Model:** Comptime has no runtime heap, no pools, no handles. All data lives in compiler memory. Move/copy semantics still apply (comptime functions consume/borrow their inputs).
-- **Error Handling:** `Result` and `?` work at comptime. Errors become compile errors with full context. Panics also become compile errors.
+- **Error Handling:** `Result` and `try` work at comptime. Errors become compile errors with full context. Panics also become compile errors.
 - **Generics:** `comptime` parameters enable array sizes, algorithm selection, conditional feature inclusion. Monomorphization sees comptime-known values as constants.
 - **Compilation Model:** Comptime evaluation happens during type checking, before codegen. Results are constants embedded in the final binary. Comptime limits ensure bounded compilation time.
 - **Build System:** Comptime is orthogonal to build scripts. Comptime runs in-compiler (limited); build scripts run as separate programs (unlimited). Dependencies in `rask.toml` are resolved before comptime execution.

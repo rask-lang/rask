@@ -53,10 +53,14 @@ Major costs are visible in code. Small safety checks can be implicit.
 All compiler analysis is function-local. No whole-program inference, no cross-function lifetime tracking, no escape analysis.
 
 **What this means:**
-- Function signatures fully describe their interface
-- Changing a function's implementation cannot break callers
+- Public function signatures fully describe their interface (explicit types required)
+- Private function signatures may omit types; the compiler infers them from the function body only — never from callers
+- Changing a public function's implementation cannot break external callers
+- Changing a private function's body may change its inferred signature, breaking internal callers (compiler reports this clearly with smart diagnostics showing what changed, which line caused it, and which callers break)
 - Incremental compilation is straightforward
 - Compilation speed scales linearly with code size
+
+**Clarification:** Body-local inference for private functions IS local analysis. The compiler examines one function body at a time, solving constraints within that scope. It does not trace through call graphs or analyze callers. See [Gradual Constraints](specs/types/gradual-constraints.md).
 
 ### 6. Resource Types
 
@@ -111,7 +115,7 @@ Two parameter modes:
 
 **Take:** `func consume(take data: Data)` — Ownership transfer. Caller's binding becomes invalid.
 
-**Default arguments:** `func connect(host: String, port: i32 = 8080)` — Optional parameters with compile-time constant defaults.
+**Default arguments:** `func connect(host: string, port: i32 = 8080)` — Optional parameters with compile-time constant defaults.
 
 **Projections:** `func heal(p: Player.{health})` — Borrow only specific fields, enabling disjoint field borrows across function calls.
 
@@ -345,8 +349,8 @@ This lets libraries protect their API contracts. Users can rely on structural ma
 ### Generics and Bounds
 
 Generic functions use trait bounds to constrain type parameters:
-- All generic functions (public AND private) must declare explicit bounds
-- This preserves local analysis—no call-graph tracing required
+- Public generic functions must declare explicit bounds
+- Private generic functions may omit bounds (inferred from body; see [Gradual Constraints](specs/types/gradual-constraints.md))
 - Bounds checked at monomorphization site
 
 **Monomorphization (default):** The compiler generates separate code for each concrete type.
@@ -385,6 +389,7 @@ See [Generics](specs/types/generics.md) and [Runtime Polymorphism](specs/types/t
 **Explicit resources:** `with multitasking { }` and `with threading { }` create and scope concurrency resources. No hidden schedulers or thread pools.
 
 ```rask
+@entry
 func main() {
     with multitasking, threading {
         run_server()
@@ -397,14 +402,14 @@ with multitasking(4), threading(8) { ... }
 
 **Concurrency vs Parallelism:**
 - **Concurrency** (green tasks): Many tasks interleaved on few threads. For I/O-bound work. Use `spawn { }`.
-- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work. Use `threading.spawn { }`.
+- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work. Use `spawn_thread { }`.
 
 **Three spawn constructs:**
 
 | Construct | Purpose | Requires |
 |-----------|---------|----------|
 | `spawn { }` | Green task | `with multitasking` |
-| `threading.spawn { }` | Thread from pool | `with threading` |
+| `spawn_thread { }` | Thread from pool | `with threading` |
 | `raw_thread { }` | Raw OS thread | Nothing |
 
 **No function coloring:** There is no `async`/`await`. Functions are just functions—I/O operations pause the task automatically. No ecosystem split.
@@ -413,13 +418,13 @@ with multitasking(4), threading(8) { ... }
 
 ```rask
 func fetch_user(id: u64) -> User {
-    let response = http_get(url)?  // Pauses task, not thread
+    const response = try http_get(url)  // Pauses task, not thread
     parse_user(response)
 }
 
 // Spawn and wait
-let h = spawn { fetch_user(1) }
-let user = h.join()?
+const h = spawn { fetch_user(1) }
+const user = try h.join()
 
 // Fire-and-forget (explicit)
 spawn { fetch_user(2) }.detach()
@@ -432,7 +437,8 @@ let (a, b) = join_all(
 
 // CPU-bound work on thread pool
 func process_image(img: Image) -> Image {
-    threading.spawn { apply_filter(img) }.join()?
+    const handle = spawn_thread { apply_filter(img) }
+    try handle.join()
 }
 ```
 
@@ -494,7 +500,7 @@ See [Unsafe Blocks](specs/memory/unsafe.md) for raw pointers, unsafe operations,
 - `import http` → `http.Request`
 - `import http using Request` → `Request`
 
-**Built-in types:** `String`, `Vec`, `Result`, `Option`, etc. are always available without import. Fixed set—cannot be extended.
+**Built-in types:** `string`, `Vec`, `Result`, `Option`, etc. are always available without import. Fixed set—cannot be extended.
 
 **Re-exports:** `export internal.Parser` exposes internal types through a clean public API.
 
@@ -535,6 +541,96 @@ When a linear resource operation fails:
 This ensures linear values cannot be forgotten even in error paths.
 
 **Using `ensure` for cleanup:** Register cleanup with `ensure` to enable `try` propagation without manual cleanup on every path. See [Ensure Cleanup](specs/control/ensure.md).
+
+---
+
+## Design Tradeoffs
+
+This section documents the costs of Rask's design decisions honestly. Every design has tradeoffs—ours are intentional.
+
+### Clone Ergonomics
+
+**Decision:** No storable references. References are block-scoped only.
+
+**Cost:** Code that passes strings/data through multiple layers needs explicit `.clone()` calls. In string-heavy code (CLI parsing, HTTP routing), expect ~5% of lines to have a clone. Computation-heavy code (game loops, data processing) typically has 0% clones.
+
+**Benefit:** No lifetime annotations, no borrow checker complexity, no "fighting the borrow checker" experience. The mental model is simple: values are owned, borrows are temporary.
+
+**Comparison:**
+- **Go:** Copies strings freely (implicit, hidden cost)
+- **Rust:** Requires lifetime annotations to avoid copies
+- **Rask:** Explicit `.clone()` when copies are needed (visible cost, no annotations)
+
+**When this hurts:** Error handlers that capture context (`path.clone()` in map_err), shared configuration passed to multiple subsystems.
+
+**When this is fine:** Most code. The clone calls are localized to API boundaries, not scattered through core logic.
+
+### Pool Handle Overhead
+
+**Decision:** Graph structures use `Pool<T>` + `Handle<T>` instead of references.
+
+**Cost:** Each handle access involves:
+1. Pool ID check (is this the right pool?)
+2. Generation check (is this handle stale?)
+3. Index lookup
+
+Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses, this adds up.
+
+**Benefit:** Use-after-free impossible. No dangling pointers. Iterator invalidation caught at runtime. Self-referential structures work without unsafe code.
+
+**When to use pools:** Graph structures, ECS entities, caches with stable identity, anything with cycles or parent pointers.
+
+**When to avoid pools:** Tight inner loops where every nanosecond matters. For these cases, copy data out, process in batch, write back.
+
+### No Storable References
+
+**Decision:** References cannot be stored in structs or returned from functions.
+
+**Cost:** Some patterns require restructuring:
+- Parent pointers → store `Handle<Parent>` instead
+- String slices in structs → store indices or use `StringPool`
+- Caches holding references → use `Pool<T>` with handles
+
+**Benefit:** Eliminates entire categories of bugs:
+- Use-after-free (impossible by construction)
+- Dangling pointers (references can't escape scope)
+- Iterator invalidation (iteration uses handles/indices)
+
+No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
+
+**The fundamental choice:** We trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection.
+
+### Comptime Limitations
+
+**Decision:** Compile-time execution runs a restricted subset of Rask.
+
+**Cost:** At comptime, you cannot:
+- Do I/O (except `@embed_file`)
+- Use pools or handles
+- Use concurrency
+- Call unsafe code
+- Exceed iteration/memory limits
+
+**Benefit:** Comptime is predictable—it always terminates, never has side effects, produces the same result on every compilation.
+
+**When this hurts:** Complex code generation that would benefit from full language features. Use build scripts (`rask.build`) for those cases.
+
+### When to Use Rask
+
+**Good fit:**
+- Web services and APIs
+- CLI tools and utilities
+- Game logic (not engine internals)
+- Data processing pipelines
+- Embedded systems with known memory patterns
+
+**Consider alternatives:**
+- OS kernels, drivers → Need unsafe pointer manipulation (Rust, C)
+- Soft real-time with nanosecond budgets → Handle overhead may matter (C++, Rust)
+- Scripting/prototyping → GC languages are faster to write (Python, Go)
+- Maximum raw performance → Manual memory control needed (C++, Rust, Zig)
+
+Rask targets the "90% of code" that doesn't need pointer-level control but benefits from memory safety and low ceremony.
 
 ---
 

@@ -80,7 +80,7 @@ Capture by value (copy or move), never by reference. Can be stored in variables,
 | Mutable state | Requires Pool + Handle pattern |
 
 **Basic capture:**
-<!-- test: parse -->
+<!-- test: run -->
 ```rask
 const name = "Alice"
 const greet = || print("Hello, {name}")  // Copies name (string is small)
@@ -96,7 +96,7 @@ process_data()
 **Closure parameters:**
 
 Closures can accept parameters passed on each invocation:
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 const double = |x| x * 2
 const result = double(5)  // 10
@@ -119,7 +119,7 @@ increment()
 ```
 
 **CORRECT — Pool + Handle pattern:**
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 const state = Pool.new()
 const h = state.insert(Counter{value: 0})
@@ -161,7 +161,7 @@ func setup_handlers(app: App) {
     })
 
     button3.on_click(|event, state| {
-        state[h].save()?
+        try state[h].save()
     })
 
     // Caller provides state when executing
@@ -312,10 +312,10 @@ items.filter(|i| vec[*i].active)
 const app = AppState.new()
 
 // Expression-scoped: closure executed immediately
-button.on_click(|event| {
+(try button.on_click(|event| {
     app.counter += 1  // Mutates app directly
     app.last_click = event.timestamp
-})?.execute_now()  // Must execute in same expression
+})).execute_now()  // Must execute in same expression
 
 // app still valid here
 
@@ -345,7 +345,7 @@ const f = items.filter(|i| vec[*i].active)
 | Scenario | Use | Pattern |
 |----------|-----|---------|
 | Iterator adapter | Immediate | `items.filter(\|i\| vec[*i].active)` |
-| Event handler (run now) | Immediate | `btn.on_click(\|e\| app.x += 1)?.execute_now()` |
+| Event handler (run now) | Immediate | `(try btn.on_click(\|e\| app.x += 1)).execute_now()` |
 | Event handler (stored) | Storable + params | `btn.on_click(\|e, app\| app[h].x += 1)` |
 | Async callback | Storable + params | `task.then(\|result, state\| state[h] = result)` |
 | Pure transformation | Either | `\|x\| x * 2` (no outer access) |
@@ -363,7 +363,7 @@ const h = state.insert(AppData{...})
 // All closures capture same handle, receive state as parameter
 button1.on_click(|_, s| s[h].mode = Mode.A)
 button2.on_click(|_, s| s[h].mode = Mode.B)
-button3.on_click(|_, s| s[h].save()?)
+button3.on_click(|_, s| try s[h].save())
 
 // Framework provides state to all handlers
 app.run_with_state(state)

@@ -39,13 +39,13 @@ enum UnaryOp {
 
 enum CalcError {
     UnexpectedChar(char),
-    UnexpectedToken(String),
+    UnexpectedToken(string),
     DivisionByZero,
     EmptyExpression,
 }
 
 extend CalcError {
-    func message(self) -> String {
+    func message(self) -> string {
         match self {
             UnexpectedChar(c) => "unexpected character: '{c}'",
             UnexpectedToken(s) => "unexpected token: {s}",
@@ -57,22 +57,22 @@ extend CalcError {
 
 // Lexer
 struct Lexer {
-    input: String
+    input: string
     pos: usize
 }
 
 extend Lexer {
-    func new(input: String) -> Lexer {
+    func new(input: string) -> Lexer {
         Lexer { input: input, pos: 0 }
     }
 
     func peek_char(self) -> char? {
         if self.pos >= self.input.len(): return None
-        Some(self.input.char_at(self.pos))
+        self.input.char_at(self.pos)
     }
 
     func advance(self) -> char? {
-        const c = self.peek_char()?
+        const c = try self.peek_char()
         self.pos += 1
         Some(c)
     }
@@ -102,7 +102,7 @@ extend Lexer {
             '^' => { self.advance(); Token.Caret }
             '(' => { self.advance(); Token.LParen }
             ')' => { self.advance(); Token.RParen }
-            _ if c.is_digit() || c == '.' => self.read_number()?,
+            _ if c.is_digit() || c == '.' => try self.read_number(),
             _ => return Err(CalcError.UnexpectedChar(c)),
         }
 
@@ -110,7 +110,7 @@ extend Lexer {
     }
 
     func read_number(self) -> Result<Token, CalcError> {
-        let num_str = string.new()
+        const num_str = string.new()
         let has_dot = false
 
         while self.peek_char() is Some(c) {
@@ -138,19 +138,19 @@ struct Parser {
 }
 
 extend Parser {
-    func new(input: String) -> Result<Parser, CalcError> {
-        let lexer = Lexer.new(input)
-        const current = lexer.next_token()?
+    func new(input: string) -> Result<Parser, CalcError> {
+        const lexer = Lexer.new(input)
+        const current = try lexer.next_token()
         Ok(Parser { lexer: lexer, current: current })
     }
 
     func advance(self) -> Result<(), CalcError> {
-        self.current = self.lexer.next_token()?
+        self.current = try self.lexer.next_token()
     }
 
     func parse(self) -> Result<Expr, CalcError> {
-        const expr = self.parse_expression()?
-        
+        const expr = try self.parse_expression()
+
         match self.current {
             Eof => Ok(expr),
             _ => Err(CalcError.UnexpectedToken(self.token_string())),
@@ -158,7 +158,7 @@ extend Parser {
     }
     
 
-    func token_string(self) -> String {
+    func token_string(self) -> string {
         match self.current {
             Number(n) => "{n}",
             Plus => "+",
@@ -175,7 +175,7 @@ extend Parser {
 
     // expression = term (('+' | '-') term)*
     func parse_expression(self) -> Result<Expr, CalcError> {
-        let left = self.parse_term()?
+        let left = try self.parse_term()
 
         loop {
             const op = match self.current {
@@ -183,8 +183,8 @@ extend Parser {
                 Minus => BinaryOp.Sub,
                 _ => break,
             }
-            self.advance()?
-            const right = self.parse_term()?
+            try self.advance()
+            const right = try self.parse_term()
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
@@ -193,7 +193,7 @@ extend Parser {
 
     // term = power (('*' | '/' | '%') power)*
     func parse_term(self) -> Result<Expr, CalcError> {
-        let left = self.parse_power()?
+        let left = try self.parse_power()
 
         loop {
             const op = match self.current {
@@ -202,8 +202,8 @@ extend Parser {
                 Percent => BinaryOp.Mod,
                 _ => break,
             }
-            self.advance()?
-            const right = self.parse_power()?
+            try self.advance()
+            const right = try self.parse_power()
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
@@ -212,11 +212,11 @@ extend Parser {
 
     // power = unary ('^' power)?  (right associative)
     func parse_power(self) -> Result<Expr, CalcError> {
-        const base = self.parse_unary()?
+        const base = try self.parse_unary()
 
         if self.current is Caret {
-            self.advance()?
-            const exp = self.parse_power()?  // Right associative
+            try self.advance()
+            const exp = try self.parse_power()  // Right associative
             Ok(Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp))
         } else {
             Ok(base)
@@ -226,8 +226,8 @@ extend Parser {
     // unary = '-' unary | primary
     func parse_unary(self) -> Result<Expr, CalcError> {
         if self.current is Minus {
-            self.advance()?
-            const expr = self.parse_unary()?
+            try self.advance()
+            const expr = try self.parse_unary()
             Ok(Expr.Unary(op: UnaryOp.Neg, expr: own expr))
         } else {
             self.parse_primary()
@@ -238,15 +238,15 @@ extend Parser {
     func parse_primary(self) -> Result<Expr, CalcError> {
         match self.current {
             Number(n) => {
-                self.advance()?
+                try self.advance()
                 Ok(Expr.Number(n))
             }
             LParen => {
-                self.advance()?
-                const expr = self.parse_expression()?
+                try self.advance()
+                const expr = try self.parse_expression()
                 match self.current {
                     RParen => {
-                        self.advance()?
+                        try self.advance()
                         Ok(expr)
                     }
                     _ => Err(CalcError.UnexpectedToken("expected ')'".to_string())),
@@ -263,14 +263,14 @@ func evaluate(expr: Expr) -> Result<f64, CalcError> {
     match expr {
         Number(n) => Ok(n),
         Unary(op, inner) => {
-            const val = evaluate(inner)?
+            const val = try evaluate(inner)
             match op {
                 Neg => Ok(-val),
             }
         }
         Binary(left, op, right) => {
-            const l = evaluate(left)?
-            const r = evaluate(right)?
+            const l = try evaluate(left)
+            const r = try evaluate(right)
             match op {
                 Add => Ok(l + r),
                 Sub => Ok(l - r),
@@ -289,9 +289,9 @@ func evaluate(expr: Expr) -> Result<f64, CalcError> {
     }
 }
 
-func calc(input: String) -> Result<f64, CalcError> {
-    const parser = Parser.new(input)?
-    const expr = parser.parse()?
+func calc(input: string) -> Result<f64, CalcError> {
+    const parser = try Parser.new(input)
+    const expr = try parser.parse()
     evaluate(expr)
 }
 
@@ -323,7 +323,7 @@ func main() -> Result<(), Error> {
 
     loop {
         print("> ")
-        const input = io.read_line()?.trim()
+        const input = (try io.read_line()).trim()
 
         if input.is_empty(): continue
 

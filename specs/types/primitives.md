@@ -167,7 +167,7 @@ struct NetworkHeader {
     addr: u32be
 }
 
-const header = NetworkHeader.parse(bytes)?
+const header = try NetworkHeader.parse(bytes)
 let port: u16 = header.port   // Native u16
 ```
 

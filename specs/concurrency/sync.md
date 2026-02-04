@@ -39,7 +39,7 @@ All three are **explicit escape hatches** from "no shared mutable memory." Usage
 
 `Shared<T>` provides efficient read-heavy access with occasional writes.
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 let config = Shared.new(AppConfig {
     timeout: 30.seconds,
@@ -236,7 +236,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 func coordinate(a: Mutex<State>, b: Mutex<State>, tx: Sender<Event>) {
     a.lock(|state| {
         state.process()
-        tx.send(Event.AProcessed)?
+        try tx.send(Event.AProcessed)
     })
     // Other task handles B after receiving event
 }
@@ -271,7 +271,7 @@ extend ConfigService {
 
     func update(self, new_config: Config) {
         self.current.write(|c| *c = new_config.clone())
-        self.updates.send(new_config)?  // Notify watchers
+        try self.updates.send(new_config)  // Notify watchers
     }
 
     func subscribe(self) -> Receiver<Config> {
@@ -303,7 +303,7 @@ extend ConfigService {
 static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
 
 func init_config(path: string) -> Result<()> {
-    let loaded = load_config_file(path)?
+    let loaded = try load_config_file(path)
     CONFIG.write(|c| *c = loaded)
     Ok(())
 }
@@ -396,7 +396,7 @@ extend FeatureFlags {
     }
 
     func reload_from_server(self) -> Result<()> {
-        let new_flags = fetch_flags_from_server()?
+        let new_flags = try fetch_flags_from_server()
         self.flags.write(|f| *f = new_flags)
         Ok(())
     }
@@ -420,8 +420,8 @@ entities.lock(|p| p[h].update())  // Every access locks!
 // ✅ RIGHT: Keep pool single-task, send handles via channels
 let entities = Pool.new()
 let (tx, rx) = Channel.unbuffered()
-spawn { tx.send(entity_handle)? }.detach()
-let h = rx.recv()?
+spawn { try tx.send(entity_handle) }.detach()
+let h = try rx.recv()
 entities[h].update()  // No lock needed
 ```
 

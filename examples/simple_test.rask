@@ -4,7 +4,7 @@ func add(a: i32, b: i32) -> i32 {
     a + b
 }
 
-func greet(name: String) {
+func greet(name: string) {
     println("Hello, {name}")
 }
 
@@ -16,7 +16,7 @@ struct Point {
 @entry
 func main() {
     const x = 10
-    let y = 20
+    const y = 20
     const result = add(x, y)
     println("Result: {result}")
 }

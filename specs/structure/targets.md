@@ -86,9 +86,9 @@ for arg in args { ... }  // yields string
 ```rask
 @entry
 public func main() {
-    stdin.read_line()?  // stdin: linear resource, can be consumed
-    stdout.write("hello\n")?
-    stderr.write("error\n")?
+    try stdin.read_line()  // stdin: linear resource, can be consumed
+    try stdout.write("hello\n")
+    try stderr.write("error\n")
 }
 ```
 
@@ -179,7 +179,7 @@ public func parse(input: string) -> Result<Request> { ... }
 import http  // Can import own package in tests
 
 public func test_parse() {
-    const req = http.parse("GET / HTTP/1.1")?
+    const req = try http.parse("GET / HTTP/1.1")
     assert(req.method == "GET")
 }
 ```
@@ -325,7 +325,7 @@ path = "examples/advanced.rask"
 - **Memory Model**: `Args`, `stdin`, `stdout`, `stderr` are linear resources in `@entry` scope; must be consumed or explicitly leaked
 - **Type System**: `@entry` signatures are checked for exact match (no inference of return type)
 - **Module System**: Importing a package with `@entry` imports its library API, not its entry point (entry is special, never exported)
-- **Error Handling**: `?` propagation works in `@entry func -> Result<()>`; error returned becomes process exit status
+- **Error Handling**: `try` propagation works in `@entry func -> Result<()>`; error returned becomes process exit status
 - **Concurrency**: `@entry async func` initializes async runtime for main thread; sync threads can be spawned from async entry
 - **Compiler Architecture**: Entry point detection happens during package parsing; multiple `@entry` error caught early
 - **C Interop**: `extern "C"` functions can be entry points for embedding Rask in C programs, but that's separate from `@entry`

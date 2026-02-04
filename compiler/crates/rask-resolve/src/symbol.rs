@@ -61,6 +61,11 @@ pub enum SymbolKind {
         /// The built-in function kind.
         builtin: BuiltinFunctionKind,
     },
+    /// A built-in module (io, fs, env, etc.).
+    BuiltinModule {
+        /// The built-in module kind.
+        module: BuiltinModuleKind,
+    },
 }
 
 /// Built-in type kinds.
@@ -89,6 +94,21 @@ pub enum BuiltinFunctionKind {
     Print,
     /// panic - abort with message
     Panic,
+}
+
+/// Built-in module kinds (stdlib modules).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinModuleKind {
+    /// io - standard input/output
+    Io,
+    /// fs - filesystem operations
+    Fs,
+    /// env - environment variables
+    Env,
+    /// cli - command line arguments
+    Cli,
+    /// std - standard library utilities
+    Std,
 }
 
 /// A declared symbol.

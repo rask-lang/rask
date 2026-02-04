@@ -133,7 +133,7 @@
         },
         {
           "name": "keyword.other.rask",
-          "match": "\\b(spawn|raw_thread|select|with|ensure|where|as|asm|step|timeout|benchmark)\\b"
+          "match": "\\b(spawn|spawn_thread|spawn_raw|select|with|ensure|where|as|asm|step|benchmark)\\b"
         },
         {
           "name": "constant.language.rask",
