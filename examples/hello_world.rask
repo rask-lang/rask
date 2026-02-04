@@ -1,0 +1,4 @@
+@entry
+func main() {
+    println("Hello, World!")
+}

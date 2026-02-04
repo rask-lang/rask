@@ -49,6 +49,7 @@ func fetch_user(id: u64) -> Result<User, Error> {
     parse_user(response)
 }
 
+@entry
 func main() -> Result<()> {
     with multitasking {
         const listener = TcpListener.bind("0.0.0.0:8080")?
@@ -147,6 +148,7 @@ extend TaskHandle<T> {
 ### Setup
 
 ```rask
+@entry
 func main() {
     with multitasking {
         run_server()
@@ -227,6 +229,7 @@ No code ceremony required. Transparency achieved through tooling.
 For CPU-bound work that needs true parallelism, use an explicit thread pool:
 
 ```rask
+@entry
 func main() {
     with multitasking, threading {
         spawn {
@@ -280,6 +283,7 @@ with threading {
 Thread pool works independently for pure CPU-parallelism (CLI tools, batch processing):
 
 ```rask
+@entry
 func main() {
     with threading {
         const handles = files.map { |f|
@@ -317,6 +321,7 @@ Same affine handle rules apply. Works anywhere (no multitasking or threading req
 Without Multitasking, I/O operations block the thread:
 
 ```rask
+@entry
 func main() {
     // No Multitasking = sync mode (default)
     const data = file.read()?  // Blocks thread
@@ -573,7 +578,7 @@ loop {
     select {
         rx1 -> msg: handle_a(msg),
         rx2 -> msg: handle_b(msg),
-        timeout 5.seconds: handle_timeout(),
+        Timer.after(5.seconds) -> _: handle_timeout(),
     }
 }
 ```

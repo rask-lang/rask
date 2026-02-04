@@ -17,3 +17,4 @@ rask-types = { path = "../rask-types" }
 rask-ownership = { path = "../rask-ownership" }
 rask-interp = { path = "../rask-interp" }
 rask-spec-test = { path = "../rask-spec-test" }
+colored = "3"

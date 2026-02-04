@@ -4,7 +4,7 @@ Waiting on multiple sources simultaneously.
 
 ## Overview
 
-Select allows waiting on multiple channel operations or timeouts.
+Select allows waiting on multiple channel operations simultaneously.
 
 ## Syntax
 
@@ -13,7 +13,7 @@ result = select {
     rx1 -> v: handle_v(v),
     rx2 -> v: handle_v(v),
     tx <- msg: sent(),
-    timeout 5.seconds: timed_out(),
+    Timer.after(5.seconds) -> _: timed_out(),
 }
 ```
 
@@ -23,8 +23,9 @@ result = select {
 |----------|--------|-----------|
 | Receive | `rx -> v: expr` | Wait for value, bind to `v` |
 | Send | `tx <- val: expr` | Wait for send completion |
-| Timeout | `timeout duration: expr` | Fire after duration |
 | Default | `_: expr` | Non-blocking fallback |
+
+Timeouts use `Timer.after(duration)` which returns a receiver that fires once after the duration elapses. This is just a regular receive arm—no special syntax needed.
 
 ## Semantics
 
@@ -97,7 +98,7 @@ result = select {
 ```rask
 result = select {
     rx -> v: Ok(v),
-    timeout 5.seconds: Err(Timeout),
+    Timer.after(5.seconds) -> _: Err(Timeout),
 }
 ```
 
@@ -128,8 +129,27 @@ select {
 |------|----------|
 | Select with 0 arms | Compile error |
 | All channels closed | Returns immediately |
-| Timeout of 0 | Equivalent to default |
-| Multiple timeouts | First to expire fires |
+
+## Timer
+
+`Timer.after(duration)` returns a `Receiver<()>` that delivers a single value after the duration:
+
+```rask
+// Standalone usage
+const rx = Timer.after(5.seconds)
+rx.recv()  // Blocks for 5 seconds, then returns ()
+
+// In select (most common)
+select {
+    work -> w: process(w),
+    Timer.after(1.seconds) -> _: check_health(),
+}
+```
+
+**Properties:**
+- Returns `Receiver<()>` — integrates naturally with select
+- Single-shot: fires once, then closes
+- Cancellable: drop the receiver to cancel
 
 ---
 

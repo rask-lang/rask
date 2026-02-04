@@ -54,7 +54,7 @@ extend Database {
 
 // Handle a single HTTP request with logging
 func handle_request(
-    conn: net.TcpConnection,
+    conn: TcpConnection,
     db: Shared<Database>,
     log_tx: Sender<LogEntry>
 ) -> Result<(), Error> {
@@ -149,6 +149,7 @@ func http_response(status: i32, body: String) -> HttpResponse {
     }
 }
 
+@entry
 func main() -> Result<(), Error> {
     const db = Shared.new(Database.new())
 

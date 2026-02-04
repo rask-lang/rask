@@ -131,7 +131,7 @@ pub enum ExprKind {
     Spawn {
         body: Vec<super::stmt::Stmt>,
     },
-    /// Block call expression (identifier { body }) like raw_thread { ... }
+    /// Block call expression (identifier { body }) like spawn_raw { ... }
     BlockCall {
         name: String,
         body: Vec<super::stmt::Stmt>,

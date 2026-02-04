@@ -1,3 +1,5 @@
+import io
+
 // CLI Calculator - Expression Evaluator
 // Demonstrates: Parsing, enums, match expressions, error handling, REPL pattern
 
@@ -313,6 +315,7 @@ func print_help() {
     println("  quit     Exit calculator")
 }
 
+@entry
 func main() -> Result<(), Error> {
     println("Rask Calculator")
     println("Type 'help' for usage, 'quit' to exit")
@@ -320,7 +323,7 @@ func main() -> Result<(), Error> {
 
     loop {
         print("> ")
-        const input = std.read_line()?.trim()
+        const input = io.read_line()?.trim()
 
         if input.is_empty(): continue
 

@@ -265,6 +265,24 @@ impl PackageRegistry {
         self.packages.is_empty()
     }
 
+    /// Add a package manually (for testing).
+    #[cfg(test)]
+    pub fn add_package(&mut self, name: String, path: Vec<String>, root_dir: std::path::PathBuf) -> PackageId {
+        let id = PackageId(self.packages.len() as u32);
+        let package = Package {
+            id,
+            name: name.clone(),
+            path: path.clone(),
+            root_dir,
+            files: Vec::new(),
+            imports: Vec::new(),
+        };
+        self.packages.push(package);
+        self.path_to_id.insert(path, id);
+        self.name_to_id.insert(name, id);
+        id
+    }
+
     /// Get all declarations from a package (flattened from all files).
     pub fn all_decls(&self, id: PackageId) -> Vec<&Decl> {
         self.get(id)

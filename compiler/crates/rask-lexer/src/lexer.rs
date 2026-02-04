@@ -98,8 +98,6 @@ enum RawToken {
     Step,
     #[token("native")]
     Native,
-    #[token("timeout")]
-    Timeout,
     #[token("test")]
     Test,
     #[token("benchmark")]
@@ -411,7 +409,6 @@ impl<'a> Lexer<'a> {
             RawToken::Asm => TokenKind::Asm,
             RawToken::Step => TokenKind::Step,
             RawToken::Native => TokenKind::Native,
-            RawToken::Timeout => TokenKind::Timeout,
             RawToken::Test => TokenKind::Test,
             RawToken::Benchmark => TokenKind::Benchmark,
             RawToken::Assert => TokenKind::Assert,

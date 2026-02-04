@@ -215,13 +215,13 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
     let thread_handles = Vec.new()
     for chunk in handles.chunks(chunk_size) {
         let chunk = chunk.to_vec()
-        let task = threading.spawn(|| {
+        let task = spawn_thread {
             for h in chunk {
                 if !entities[h].active: continue
                 entities[h].position.x += entities[h].velocity.dx * dt
                 entities[h].position.y += entities[h].velocity.dy * dt
             }
-        })
+        }
         thread_handles.push(task)?
     }
 
@@ -232,6 +232,7 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
 }
 
 // Main game loop with fixed timestep and threading
+@entry
 func main() -> Result<(), Error> {
     // Thread pool for CPU-bound physics work
     with threading(4) {

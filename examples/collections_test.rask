@@ -1,0 +1,53 @@
+// Collections test - Vec, struct literals, match expressions
+// Step 9 validation
+
+struct Point {
+    x: i32
+    y: i32
+}
+
+@entry
+func main() {
+    // Vec basics
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+    const vlen = v.len()
+    println("Vec length: {vlen}")
+    const v0 = v.get(0)
+    const v1 = v.get(1)
+    const v2 = v.get(2)
+    println("v[0] = {v0}")
+    println("v[1] = {v1}")
+    println("v[2] = {v2}")
+
+    // Vec iteration
+    println("Iterating:")
+    for item in v {
+        println("  item: {item}")
+    }
+
+    // Array literal
+    const arr = [1, 2, 3, 4, 5]
+    const arrlen = arr.len()
+    println("Array length: {arrlen}")
+
+    // Struct instantiation
+    const p = Point { x: 100, y: 200 }
+    const px = p.x
+    const py = p.y
+    println("Point: x={px}, y={py}")
+
+    // Match on integers
+    const num = 2
+    const result = match num {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "other",
+    }
+    println("match result: {result}")
+
+    println("Collections test passed!")
+}

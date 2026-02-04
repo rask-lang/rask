@@ -170,6 +170,39 @@ impl Resolver {
         }
     }
 
+    /// Resolve all names in a package with access to other packages.
+    pub fn resolve_package(
+        decls: &[Decl],
+        registry: &crate::PackageRegistry,
+        current_package: crate::PackageId,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        let mut resolver = Resolver::new();
+
+        // Set package context
+        resolver.current_package = Some(current_package);
+
+        // Pre-populate package bindings from registry
+        for pkg in registry.packages() {
+            let pkg_name = pkg.name.clone();
+            resolver.package_bindings.insert(pkg_name, pkg.id);
+        }
+
+        // Pass 1: Collect all top-level declarations
+        resolver.collect_declarations(decls);
+
+        // Pass 2: Resolve all bodies
+        resolver.resolve_bodies(decls);
+
+        if resolver.errors.is_empty() {
+            Ok(ResolvedProgram {
+                symbols: resolver.symbols,
+                resolutions: resolver.resolutions,
+            })
+        } else {
+            Err(resolver.errors)
+        }
+    }
+
     // =========================================================================
     // Pass 1: Declaration Collection
     // =========================================================================
@@ -1129,5 +1162,54 @@ mod tests {
         }];
         let result = Resolver::resolve(&decls);
         assert!(result.is_err(), "Shadowing prelude enum should fail");
+    }
+
+    #[test]
+    fn test_resolve_package_with_registry() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        // Create a minimal package registry
+        let mut registry = PackageRegistry::new();
+
+        // Create a mock package (normally this comes from discovery)
+        let pkg_id = registry.add_package(
+            "test_pkg".to_string(),
+            vec!["test_pkg".to_string()],
+            PathBuf::from("/test"),
+        );
+
+        // Test resolution with package context
+        let decls = vec![make_fn_decl("main")];
+        let result = Resolver::resolve_package(&decls, &registry, pkg_id);
+        assert!(result.is_ok(), "Package resolution should succeed");
+    }
+
+    #[test]
+    fn test_resolve_package_bindings() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        // Create registry with two packages
+        let mut registry = PackageRegistry::new();
+        let _http_pkg = registry.add_package(
+            "http".to_string(),
+            vec!["http".to_string()],
+            PathBuf::from("/http"),
+        );
+        let main_pkg = registry.add_package(
+            "main".to_string(),
+            vec!["main".to_string()],
+            PathBuf::from("/main"),
+        );
+
+        // Import http package and use it
+        let decls = vec![
+            make_import_decl(vec!["http"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, main_pkg);
+        assert!(result.is_ok(), "Package with import should resolve");
     }
 }

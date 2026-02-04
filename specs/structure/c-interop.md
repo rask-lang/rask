@@ -39,6 +39,7 @@ Zig proves that a built-in C parser can handle most real-world C interop without
 import c "stdio.h"
 import c "mylib.h" as mylib
 
+@entry
 func main() {
     unsafe {
         c.printf("Hello %s\n".ptr, name.ptr)

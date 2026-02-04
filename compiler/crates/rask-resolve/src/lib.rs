@@ -28,7 +28,16 @@ pub struct ResolvedProgram {
     pub resolutions: HashMap<NodeId, SymbolId>,
 }
 
-/// Resolve all names in a list of declarations.
+/// Resolve all names in a list of declarations (single-file mode).
 pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)
+}
+
+/// Resolve all names in a package with access to other packages (multi-file mode).
+pub fn resolve_package(
+    decls: &[Decl],
+    registry: &PackageRegistry,
+    current_package: PackageId,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_package(decls, registry, current_package)
 }

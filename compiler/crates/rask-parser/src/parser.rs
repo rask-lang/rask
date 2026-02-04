@@ -21,12 +21,14 @@ pub struct Parser {
     errors: Vec<ParseError>,
     /// Counter for generating unique NodeIds
     next_node_id: u32,
+    /// Pending declarations from expanded grouped imports
+    pending_decls: Vec<Decl>,
 }
 
 impl Parser {
     /// Create a new parser for the given tokens.
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: 0 }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: 0, pending_decls: Vec::new() }
     }
 
     /// Generate a new unique NodeId.
@@ -213,7 +215,6 @@ impl Parser {
             TokenKind::As => "as".to_string(),
             TokenKind::Is => "is".to_string(),
             TokenKind::Step => "step".to_string(),
-            TokenKind::Timeout => "timeout".to_string(),
             _ => return Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -348,7 +349,8 @@ impl Parser {
         let mut decls = Vec::new();
         self.skip_newlines();
 
-        while !self.at_end() {
+        // Continue while there are tokens OR pending decls (from grouped imports)
+        while !self.at_end() || !self.pending_decls.is_empty() {
             match self.parse_decl() {
                 Ok(decl) => decls.push(decl),
                 Err(e) => {
@@ -369,6 +371,11 @@ impl Parser {
 
     /// Parse a declaration.
     fn parse_decl(&mut self) -> Result<Decl, ParseError> {
+        // Return pending decl if any (from expanded grouped imports)
+        if let Some(decl) = self.pending_decls.pop() {
+            return Ok(decl);
+        }
+
         let start = self.current().span.start;
 
         // Check for attributes
@@ -386,7 +393,7 @@ impl Parser {
         let is_unsafe = if !is_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
 
         let kind = match self.current_kind() {
-            TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe)?,
+            TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs)?,
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub)?,
             TokenKind::Trait => self.parse_trait_decl(is_pub)?,
@@ -440,7 +447,7 @@ impl Parser {
     // =========================================================================
 
     /// Parse a function declaration.
-    fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool) -> Result<DeclKind, ParseError> {
+    fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Func)?;
         let mut name = self.expect_ident()?;
 
@@ -520,7 +527,7 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, params, ret_ty, body, is_pub, is_comptime, is_unsafe }))
+        Ok(DeclKind::Fn(FnDecl { name, params, ret_ty, body, is_pub, is_comptime, is_unsafe, attrs }))
     }
 
     /// Parse function parameters.
@@ -788,7 +795,7 @@ impl Parser {
             let field_pub = self.match_token(&TokenKind::Public);
 
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![])? {
                     methods.push(fn_decl);
                 }
             } else {
@@ -827,7 +834,7 @@ impl Parser {
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             if self.check(&TokenKind::Func) || (self.check(&TokenKind::Public) && matches!(self.peek(1), TokenKind::Func)) {
                 let m_pub = self.match_token(&TokenKind::Public);
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, vec![])? {
                     methods.push(fn_decl);
                 }
             } else {
@@ -895,7 +902,7 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, vec![])? {
                     methods.push(fn_decl);
                 }
             } else if let TokenKind::Ident(_) = self.current_kind() {
@@ -982,6 +989,7 @@ impl Parser {
             is_pub: false,
             is_comptime: false,
             is_unsafe: false,
+            attrs: vec![],
         })
     }
 
@@ -1003,12 +1011,13 @@ impl Parser {
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             // Skip attributes on methods for now
+            let mut method_attrs = Vec::new();
             while self.check(&TokenKind::At) {
-                self.parse_attribute()?;
+                method_attrs.push(self.parse_attribute()?);
                 self.skip_newlines();
             }
             let m_pub = self.match_token(&TokenKind::Public);
-            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false)? {
+            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, method_attrs)? {
                 methods.push(fn_decl);
             }
             self.skip_newlines();
@@ -1027,7 +1036,7 @@ impl Parser {
     /// - `import pkg.Name as N` - renamed
     /// - `import lazy pkg` - lazy initialization
     /// - `import pkg.*` - glob import (with warning)
-    /// - `import pkg.Name, pkg.Other` - multiple imports (returns first, rest are separate decls)
+    /// - `import pkg.{A, B}` - grouped imports (expands to multiple ImportDecl)
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Import)?;
 
@@ -1039,11 +1048,15 @@ impl Parser {
 
         path.push(self.expect_ident()?);
 
-        // Parse dotted path: pkg.sub.Name or pkg.*
+        // Parse dotted path: pkg.sub.Name, pkg.*, or pkg.{A, B}
         while self.match_token(&TokenKind::Dot) {
             if self.match_token(&TokenKind::Star) {
                 is_glob = true;
                 break;
+            }
+            // Check for grouped import syntax: import pkg.{A, B}
+            if self.check(&TokenKind::LBrace) {
+                return self.parse_grouped_imports(path, is_lazy);
             }
             path.push(self.expect_ident()?);
         }
@@ -1057,6 +1070,75 @@ impl Parser {
 
         self.expect_terminator()?;
         Ok(DeclKind::Import(ImportDecl { path, alias, is_glob, is_lazy }))
+    }
+
+    /// Parse grouped imports: `import pkg.{A, B as C, D}`
+    ///
+    /// Called after consuming `import pkg.` when `{` is detected.
+    /// Returns the first import and pushes the rest to pending_decls.
+    fn parse_grouped_imports(&mut self, base_path: Vec<String>, is_lazy: bool) -> Result<DeclKind, ParseError> {
+        let start = self.tokens.get(self.pos.saturating_sub(base_path.len() + 2))
+            .map(|t| t.span.start)
+            .unwrap_or(0);
+
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut items: Vec<(String, Option<String>)> = Vec::new();
+
+        // Parse comma-separated list of identifiers with optional aliases
+        loop {
+            // Check for empty braces
+            if self.check(&TokenKind::RBrace) {
+                if items.is_empty() {
+                    return Err(ParseError::expected("identifier", self.current_kind(), self.current().span));
+                }
+                break; // Trailing comma case
+            }
+
+            let name = self.expect_ident()?;
+            let alias = if self.match_token(&TokenKind::As) {
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
+            items.push((name, alias));
+
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+            self.skip_newlines(); // Allow newlines after comma
+        }
+
+        self.skip_newlines();
+        self.expect(&TokenKind::RBrace)?;
+        self.expect_terminator()?;
+
+        let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+
+        // Push all items except first to pending (reversed so first pending is second item)
+        for i in (1..items.len()).rev() {
+            let (ref name, ref alias) = items[i];
+            let mut path = base_path.clone();
+            path.push(name.clone());
+            let decl = Decl {
+                id: self.next_id(),
+                kind: DeclKind::Import(ImportDecl {
+                    path,
+                    alias: alias.clone(),
+                    is_glob: false,
+                    is_lazy,
+                }),
+                span: Span::new(start, end),
+            };
+            self.pending_decls.push(decl);
+        }
+
+        // Return first import
+        let (name, alias) = items.into_iter().next().unwrap();
+        let mut path = base_path;
+        path.push(name);
+        Ok(DeclKind::Import(ImportDecl { path, alias, is_glob: false, is_lazy }))
     }
 
     /// Parse an export declaration (re-exports).

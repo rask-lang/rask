@@ -86,6 +86,7 @@ func save(data: Data) -> Result<(), IoError> {
     // implicit Ok(()) — no need to write it
 }
 
+@entry
 func main() -> Result<(), Error> {
     println("Starting...")
     run_app()?

@@ -28,14 +28,14 @@ Packages are compilation units—default package visibility keeps related code a
 
 **These types are available in every file without import:**
 - Primitives: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`, `bool`, `char`
-- Core types: `string`, `Vec`, `Pool`, `Map`, `Result`, `Option`, `Error`
+- Core types: `string`, `Vec`, `Map`, `Set`, `Result`, `Option`, `Error`, `Channel`
 - Variants: `Ok`, `Err`, `Some`, `None`
 
 **Rules:**
 - **Fixed set:** Cannot be extended by users or projects
 - Defining local type with built-in name: **compile error** (prevents silent breakage)
 - Qualified access always works: `core.Result` even if local `Result` exists
-- NOT built-in: `File`, `Socket`, `Channel`, `Task`, `Set`, `Queue` (must import explicitly)
+- NOT built-in: `File`, `Socket`, `Task`, `Pool`, `Queue` (must import explicitly)
 
 **Why fixed?** Predictability (PI ≥ 0.85). Reading any Rask file, you always know what's in scope. Go has no extension mechanism either—IDE auto-import handles repetition.
 
@@ -53,12 +53,36 @@ Packages are compilation units—default package visibility keeps related code a
 | Syntax | Effect |
 |--------|--------|
 | `import pkg` | Qualified access: `pkg.Name` |
+| `import std.io` | Qualified via last segment: `io.print()` |
 | `import pkg as p` | Aliased access: `p.Name` |
 | `import pkg.Name` | Unqualified: `Name` directly |
 | `import pkg.Name, pkg.Other` | Multiple unqualified |
+| `import pkg.{Name, Other}` | Grouped unqualified (equivalent to above) |
 | `import pkg.Name as N` | Renamed unqualified: `N` |
 | `import lazy pkg` | Lazy init: deferred until first use |
 | `import pkg.*` | Glob import (with warning) |
+
+**Last-segment qualifier rule:**
+For nested package imports, the **last path segment** becomes the qualifier (like Go):
+```rask
+import std.io          // use as: io.print()
+import std.net.http    // use as: http.get()
+import myapp.utils     // use as: utils.helper()
+import std.io as sio   // explicit alias overrides: sio.print()
+```
+
+**Grouped imports (brace syntax):**
+For importing multiple items from nested modules, use braces to avoid path repetition:
+```rask
+import std.collections.{
+    HashMap,
+    HashSet,
+    Entry,
+}
+
+import std.{io, fs, net}  // multiple submodules, qualified
+```
+Rules: items in braces follow same rules as individual imports. Trailing comma allowed.
 
 **Design rationale:**
 - Path determines access: import package → qualified, import symbol → unqualified
@@ -81,6 +105,7 @@ Packages are compilation units—default package visibility keeps related code a
 ```rask
 import lazy database  // init() deferred until first function call
 
+@entry
 func main() -> Result<(), Error> {
     if args.has("--help") {
         print_help()
@@ -374,6 +399,8 @@ All C calls require `unsafe` context.
 | Circular lazy init | Runtime error: "circular lazy initialization: A → B → A" |
 | Lazy import of symbol | `import lazy pkg.Foo` — Foo() call triggers init |
 | Glob import | Warning: "glob import imports N symbols, consider specific imports" |
+| Nested braces in import | Compile error: `import a.{b.{C}}` not allowed (use separate imports) |
+| Empty brace group | Compile error: `import pkg.{}` is invalid |
 
 ## Examples
 
@@ -404,11 +431,13 @@ func log(r: Request) {
 ```rask
 // file: main.rask
 import http
-import json.parse, json.stringify  // selective unqualified
+import std.net.http as nethttp        // alias for disambiguation
+import json.{parse, stringify}        // grouped unqualified
 
+@entry
 func main() {
-    const req = http.new("GET", "/")   // qualified
-    const body = parse(read())         // unqualified
+    const req = http.new("GET", "/")   // qualified via last segment
+    const body = parse(read())         // unqualified from grouped import
     const s: string = ...              // built-in
     const r: Result<i32, Error> = Ok(42) // built-in
 }
@@ -472,3 +501,19 @@ func walk_up(pool: Pool<Node>, node: Handle<Node>) {
 - **Compiler Architecture**: Import graph construction precedes type checking; cycle detection happens once per incremental build; generic instantiations cached by semantic hash
 - **C Interop**: See [C Interop](c-interop.md) for full specification
 - **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names, and monomorphization (code generation) locations
+
+## Implementation Status
+
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Import syntax parsing | ✅ Implemented | All forms: qualified, symbol, alias, glob, lazy |
+| Export syntax parsing | ✅ Implemented | Re-export declarations |
+| Package discovery | ✅ Implemented | Recursive directory scanning |
+| Built-in type tracking | ✅ Implemented | Vec, Map, Set, string, Error, Channel |
+| Built-in shadowing detection | ✅ Implemented | Compile error on shadowing |
+| Import resolution | ✅ Implemented | Records imports for later phases |
+| Lazy import tracking | ✅ Implemented | Tracked for deferred loading |
+| Multi-package builds | ✅ Implemented | `rask build` command |
+| Cross-package symbol lookup | 🔲 Planned | Requires full registry integration |
+| Visibility checking | 🔲 Planned | public vs pkg enforcement |
+| Circular dependency detection | 🔲 Planned | Import graph analysis |

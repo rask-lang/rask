@@ -816,8 +816,8 @@ select {
     rx1 -> msg: process1(msg),
     rx2 -> msg: process2(msg),
     tx <- response: sent(),
-    timeout 5.seconds: handle_timeout(),
-    default: handle_idle(),
+    Timer.after(5.seconds) -> _: handle_timeout(),
+    _: handle_idle(),
 }
 ```
 
@@ -850,11 +850,6 @@ struct CPoint {
     y: i32
 }
 
-@test
-func test_addition() {
-    assert(1 + 1 == 2)
-}
-
 @deprecated("use new_function instead")
 func old_function() { ... }
 
@@ -866,13 +861,24 @@ func interrupt_handler() {
     // Compile error if any allocation occurs
     // Cannot: grow Vec, create string, use .clone() on heap types
 }
+
+@entry
+func main() {
+    // Program entry point — exactly one @entry per program
+    // Convention: name it "main", but any name works
+}
+
+test "addition" {
+    assert(1 + 1 == 2)
+}
+
 ```
 
 ### Attribute Summary
 
 | Attribute | Target | Effect |
 |-----------|--------|--------|
-| `@test` | Function | Mark as test function |
+| `@entry` | Function | Program entry point (exactly one per program) |
 | `@inline` | Function | Hint to inline |
 | `@no_alloc` | Function | Compile error on heap allocation |
 | `@deprecated(msg)` | Any | Warn on use |

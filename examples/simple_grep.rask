@@ -1,0 +1,62 @@
+// Simple grep - Pattern search using current interpreter features
+// Usage: rask run simple_grep.rask <pattern> <file>
+// Demonstrates: cli_args, fs_read_lines, string methods, match, Vec, loops
+
+enum GrepResult {
+    Ok(i32)
+    Err(string)
+}
+
+func grep_file(pattern: string, path: string) -> GrepResult {
+    const lines_result = fs_read_lines(path)
+
+    match lines_result {
+        Ok(lines) => {
+            let match_count = 0
+            let line_num = 0
+
+            for line in lines {
+                line_num = line_num + 1
+                if line.contains(pattern) {
+                    match_count = match_count + 1
+                    println("{line_num}: {line}")
+                }
+            }
+
+            GrepResult.Ok(match_count)
+        }
+        Err(e) => GrepResult.Err(e)
+    }
+}
+
+@entry
+func main() {
+    const args = cli_args()
+    const argc = args.len()
+
+    if argc < 3 {
+        println("Usage: rask run simple_grep.rask <pattern> <file>")
+        std_exit(1)
+    }
+
+    const pattern = args.get(1)
+    const file_path = args.get(2)
+
+    println("Searching for '{pattern}' in {file_path}...")
+
+    const result = grep_file(pattern, file_path)
+
+    match result {
+        Ok(count) => {
+            println("")
+            println("Found {count} matching lines")
+            if count == 0 {
+                std_exit(1)
+            }
+        }
+        Err(e) => {
+            println("Error: {e}")
+            std_exit(2)
+        }
+    }
+}

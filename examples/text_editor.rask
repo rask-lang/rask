@@ -230,6 +230,7 @@ func print_help() {
     println("  h/help                  - Show this help")
 }
 
+@entry
 func main() -> Result<(), Error> {
     let doc = Document.new()
 

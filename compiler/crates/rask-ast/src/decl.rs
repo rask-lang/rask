@@ -71,6 +71,8 @@ pub struct FnDecl {
     pub is_pub: bool,
     pub is_comptime: bool,
     pub is_unsafe: bool,
+    /// Attributes like `@entry`, `@inline`, etc.
+    pub attrs: Vec<String>,
 }
 
 /// A function parameter.

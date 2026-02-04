@@ -502,6 +502,7 @@ json = "1.3"
 import http
 import json
 
+@entry
 func main() {
     const req = http.get("https://api.example.com/data")
     const data = json.parse(req.body)

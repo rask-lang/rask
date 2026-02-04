@@ -4,10 +4,12 @@
 How do libraries differ from executables? What constitutes an entry point, can a package be both, and how is this configured?
 
 ## Decision
-**Package role is determined by presence of `main()` function.** No manifest, no configuration flags, no dual-purpose packages. Libraries export public API; executables contain `main()`. Testing allows both patterns.
+**Package role is determined by presence of `@entry` function.** No manifest, no configuration flags, no dual-purpose packages. Libraries export public API; executables contain an `@entry` function. Testing allows both patterns. Convention is to name the entry function `main`, but any name works.
 
 ## Rationale
 Maximum simplicity: the compiler determines package role from code structure. No build files needed for basic usage. Follows "package = directory" principle—structure determines behavior. Separates "library with CLI example" from "application" clearly. Testing gets special handling because tests need to import the package they're testing while providing their own entry points.
+
+The `@entry` attribute makes entry points explicit rather than relying on a magic function name. Developers unfamiliar with C conventions can see `@entry` and understand immediately that this is where the program starts.
 
 ## Specification
 
@@ -15,34 +17,41 @@ Maximum simplicity: the compiler determines package role from code structure. No
 
 | Pattern | Classification | Build Output |
 |---------|---------------|--------------|
-| Package with `main()` | Executable | Binary |
-| Package without `main()` | Library | No output (imported only) |
+| Package with `@entry` function | Executable | Binary |
+| Package without `@entry` | Library | No output (imported only) |
 | Package with `*_test.rask` | Library + tests | Test binary (when testing) |
 
 **Rules:**
-- Presence of ANY `public func main()` → executable
-- `main()` MUST be `public` (external tools need to find entry point)
-- `main()` MUST be in root package directory (not nested packages)
-- Multiple files can each have `main()`; compiler error if more than one is built
-- Nested packages (`pkg/sub/`) are ALWAYS libraries (cannot have `main()`)
+- Presence of ANY `@entry` function → executable
+- `@entry` function MUST be `public` (external tools need to find entry point)
+- `@entry` function MUST be in root package directory (not nested packages)
+- **Exactly one `@entry` per program** — multiple `@entry` functions is a compile error
+- Nested packages (`pkg/sub/`) are ALWAYS libraries (cannot have `@entry`)
 
 ### Entry Point Signatures
 
 | Signature | When to Use |
 |-----------|-------------|
-| `public func main()` | Sync program, infallible |
-| `public func main() -> Result<()>` | Sync program, can fail |
+| `@entry public func main()` | Sync program, infallible |
+| `@entry public func main() -> Result<()>` | Sync program, can fail |
+
+The function name `main` is convention, not required. Any name works:
+```rask
+@entry
+public func run() { ... }  // Valid entry point
+```
 
 **Error handling:**
-- Returning `Err(e)` from `main()`: process exits with non-zero status, error printed to stderr
-- Panic in `main()`: process exits with non-zero status, panic message printed
-- Linear resources in `main()`: must be consumed before return (same as any function)
+- Returning `Err(e)` from `@entry`: process exits with non-zero status, error printed to stderr
+- Panic in `@entry`: process exits with non-zero status, panic message printed
+- Linear resources in `@entry`: must be consumed before return (same as any function)
 
 ### CLI Arguments
 
 **Built-in type:** `Args` (always available, like `string`, `Vec`)
 
 ```rask
+@entry
 public func main(args: Args) {
     for arg in args {
         print(arg)  // arg is string
@@ -75,6 +84,7 @@ for arg in args { ... }  // yields string
 **Built-in handles:** `stdin`, `stdout`, `stderr` (always available)
 
 ```rask
+@entry
 public func main() {
     stdin.read_line()?  // stdin: linear resource, can be consumed
     stdout.write("hello\n")?
@@ -92,11 +102,13 @@ public func main() {
 
 **Implicit exit:**
 ```rask
+@entry
 public func main() {
     print("done")
     // Exits with status 0 when main returns
 }
 
+@entry
 public func main() -> Result<()> {
     if error { return Err(e) }  // Exits with status 1
     Ok(())  // Exits with status 0
@@ -107,22 +119,23 @@ public func main() -> Result<()> {
 ```rask
 import sys
 
+@entry
 public func main() {
     sys.exit(42)  // Immediate exit with status 42
 }
 ```
 
 **Exit behavior:**
-- `main()` returning → status 0
-- `main()` returning `Ok(())` → status 0
-- `main()` returning `Err(e)` → status 1, error printed to stderr
+- `@entry` returning → status 0
+- `@entry` returning `Ok(())` → status 0
+- `@entry` returning `Err(e)` → status 1, error printed to stderr
 - `sys.exit(n)` → status n, immediate (no cleanup)
 - Panic → status 101, panic message to stderr
 
 **Cleanup on exit:**
 - `ensure` blocks run before exit (unless `sys.exit()` used)
-- Linear resources must be consumed before `main()` returns
-- Init errors: if package init fails, main never runs
+- Linear resources must be consumed before `@entry` returns
+- Init errors: if package init fails, entry function never runs
 
 ### Libraries (No main())
 
@@ -139,7 +152,7 @@ public func main() {
 public struct Request { ... }
 public func new(method: string, path: string) -> Request { ... }
 
-// NO main() → this is a library
+// NO @entry → this is a library
 ```
 
 **Usage:**
@@ -147,6 +160,7 @@ public func new(method: string, path: string) -> Request { ... }
 // pkg: myapp
 import http
 
+@entry
 public func main() {
     const req = http.new("GET", "/")
 }
@@ -172,6 +186,7 @@ public func test_parse() {
 
 **Test entry point:**
 ```rask
+@entry
 public func main() {
     // Auto-generated test runner (by test framework)
     run_all_tests()
@@ -180,6 +195,7 @@ public func main() {
 
 **OR explicit test main:**
 ```rask
+@entry
 public func main(args: Args) {
     if args.len() > 1 && args[1] == "--benchmark" {
         run_benchmarks()
@@ -190,7 +206,7 @@ public func main(args: Args) {
 ```
 
 **Rules:**
-- Test files (`*_test.rask`) can have their own `main()` for custom test runners
+- Test files (`*_test.rask`) can have their own `@entry` for custom test runners
 - Tests access all package items (public and non-public)
 - Test binaries are separate from package binary
 
@@ -251,7 +267,7 @@ path = "server.rask"
 ```
 
 **Rules:**
-- Each binary file has its own `main()`
+- Each binary file has its own `@entry` function
 - Files NOT in `[[bin]]` list are library code (importable by binaries)
 - Without rask.toml: compile one file at a time explicitly
 
@@ -264,8 +280,8 @@ mylib/
   core.rask         # Library code, public API
   internal.rask     # Library code, pkg-visible
   examples/
-    basic.rask      # Example program with main()
-    advanced.rask   # Another example with main()
+    basic.rask      # Example program with @entry
+    advanced.rask   # Another example with @entry
 ```
 
 **Without rask.toml:**
@@ -293,42 +309,43 @@ path = "examples/advanced.rask"
 
 | Case | Handling |
 |------|----------|
-| `main()` not `public` | Compile error: entry point must be public |
-| Multiple `main()` in same package | Compile error (unless using rask.toml `[[bin]]`) |
-| `main()` in nested package | Compile error: only root package can have main |
-| `async func main()` without async runtime | Runtime initialized automatically for main thread |
-| Linear resource leak in `main()` | Compile error: must consume before return |
+| `@entry` function not `public` | Compile error: entry point must be public |
+| Multiple `@entry` in same package | Compile error: exactly one entry point allowed |
+| `@entry` in nested package | Compile error: only root package can have entry point |
+| `@entry async func` without async runtime | Runtime initialized automatically for main thread |
+| Linear resource leak in `@entry` | Compile error: must consume before return |
 | `sys.exit()` with unconsumed linear resource | Resource leaked (exit is unsafe operation) |
-| Package has both library code and `main()` | Legal: can `import myapp` OR `raskc myapp` (but confusing, discouraged) |
-| Test with multiple `test_*.rask` files | Each file can have tests, one `main()` total (framework-generated) |
-| `init()` failure before `main()` | `main()` never runs, process exits with init error |
-| Args not used in `main()` | Legal: `public func main()` or `public func main(_: Args)` both fine |
+| Package has both library code and `@entry` | Legal: can `import myapp` OR `raskc myapp` (but confusing, discouraged) |
+| Test with multiple `test_*.rask` files | Each file can have tests, one `@entry` total (framework-generated) |
+| `init()` failure before `@entry` | Entry function never runs, process exits with init error |
+| Args not used in `@entry` | Legal: `@entry func main()` or `@entry func main(_: Args)` both fine |
 
 ## Integration Notes
 
-- **Memory Model**: `Args`, `stdin`, `stdout`, `stderr` are linear resources in `main()` scope; must be consumed or explicitly leaked
-- **Type System**: `main()` signatures are checked for exact match (no inference of return type)
-- **Module System**: Importing a package with `main()` imports its library API, not its entry point (main is special, never exported)
-- **Error Handling**: `?` propagation works in `main() -> Result<()>`; error returned becomes process exit status
-- **Concurrency**: `async func main()` initializes async runtime for main thread; sync threads can be spawned from async main
-- **Compiler Architecture**: Entry point detection happens during package parsing; multiple `main()` error caught early
-- **C Interop**: `extern "C"` functions can be entry points for embedding Rask in C programs, but that's separate from `main()`
+- **Memory Model**: `Args`, `stdin`, `stdout`, `stderr` are linear resources in `@entry` scope; must be consumed or explicitly leaked
+- **Type System**: `@entry` signatures are checked for exact match (no inference of return type)
+- **Module System**: Importing a package with `@entry` imports its library API, not its entry point (entry is special, never exported)
+- **Error Handling**: `?` propagation works in `@entry func -> Result<()>`; error returned becomes process exit status
+- **Concurrency**: `@entry async func` initializes async runtime for main thread; sync threads can be spawned from async entry
+- **Compiler Architecture**: Entry point detection happens during package parsing; multiple `@entry` error caught early
+- **C Interop**: `extern "C"` functions can be entry points for embedding Rask in C programs, but that's separate from `@entry`
 
 ## Comparison to Other Languages
 
 | Language | Library/Executable Distinction | Entry Point |
 |----------|-------------------------------|-------------|
-| **Rask** | Presence of `main()` | `public func main()` |
-| Rust | `Cargo.toml` `[lib]` vs `[[bin]]` | `func main()` |
+| **Rask** | Presence of `@entry` | `@entry public func main()` |
+| Rust | `Cargo.toml` `[lib]` vs `[[bin]]` | `fn main()` |
 | Go | No distinction (package main) | `func main()` in package main |
-| Zig | Build script `exe()` vs `lib()` | `public func main()` |
+| Zig | Build script `exe()` vs `lib()` | `pub fn main()` |
 | Odin | Implicit (package main) | `main :: proc()` |
 | C | Linker (main.o vs lib.a) | `int main()` |
 
 **Rask approach:**
 - No build script needed (simpler than Zig)
 - No special package name needed (simpler than Go)
-- Structure determines role (like Odin, but with explicit public)
+- Explicit attribute makes entry point self-documenting (no magic name knowledge required)
+- Structure determines role (like Odin, but with explicit attribute)
 - Optional manifest only for complex cases (like Cargo, but not required)
 
 ## Migration Path

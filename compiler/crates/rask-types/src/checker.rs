@@ -1148,7 +1148,7 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Block call (e.g., raw_thread { ... })
+            // Block call (e.g., spawn_raw { ... })
             ExprKind::BlockCall { body, .. } => {
                 for stmt in body {
                     self.check_stmt(stmt);

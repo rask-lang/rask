@@ -1,7 +1,9 @@
 //! Runtime values.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
+use std::rc::Rc;
 
 /// Built-in function kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,6 +11,18 @@ pub enum BuiltinKind {
     Print,
     Println,
     Panic,
+    CliArgs,
+    StdExit,
+    FsReadFile,
+    FsReadLines,
+    ReadLine,
+}
+
+/// Type constructor kinds (for static method calls like Vec.new()).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeConstructorKind {
+    Vec,
+    Map,
 }
 
 /// A runtime value in the interpreter.
@@ -49,6 +63,16 @@ pub enum Value {
         end: i64,
         inclusive: bool,
     },
+    /// Vec (growable array) with interior mutability
+    Vec(Rc<RefCell<Vec<Value>>>),
+    /// Type constructor (for static method calls like Vec.new())
+    TypeConstructor(TypeConstructorKind),
+    /// Enum variant constructor (e.g., Option.Some before calling with args)
+    EnumConstructor {
+        enum_name: String,
+        variant_name: String,
+        field_count: usize,
+    },
 }
 
 impl Value {
@@ -66,6 +90,9 @@ impl Value {
             Value::Function { .. } => "func",
             Value::Builtin(_) => "builtin",
             Value::Range { .. } => "range",
+            Value::Vec(_) => "Vec",
+            Value::TypeConstructor(_) => "type",
+            Value::EnumConstructor { .. } => "enum constructor",
         }
     }
 }
@@ -111,6 +138,28 @@ impl fmt::Display for Value {
                 } else {
                     write!(f, "{}..{}", start, end)
                 }
+            }
+            Value::Vec(v) => {
+                let vec = v.borrow();
+                write!(f, "[")?;
+                for (i, item) in vec.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", item)?;
+                }
+                write!(f, "]")
+            }
+            Value::TypeConstructor(kind) => match kind {
+                TypeConstructorKind::Vec => write!(f, "Vec"),
+                TypeConstructorKind::Map => write!(f, "Map"),
+            },
+            Value::EnumConstructor {
+                enum_name,
+                variant_name,
+                ..
+            } => {
+                write!(f, "{}.{}", enum_name, variant_name)
             }
         }
     }

@@ -101,18 +101,18 @@ pub enum ResolveErrorKind {
     #[error("return outside of function")]
     InvalidReturn,
 
-    #[error("unknown package: {}", path.join("."))]
+    #[error("unknown package: `{}`", if path.is_empty() { "<empty>".to_string() } else { path.join(".") })]
     UnknownPackage { path: Vec<String> },
 
-    #[error("'{}' is not public", name)]
+    #[error("`{name}` is not public and cannot be accessed from this package")]
     NotVisible { name: String },
 
-    #[error("cannot shadow imported name: {name}")]
+    #[error("cannot define `{name}` because it shadows an imported name; consider using a different name or aliasing the import")]
     ShadowsImport { name: String },
 
-    #[error("circular dependency: {}", path.join(" -> "))]
+    #[error("circular import dependency detected: {}", path.join(" -> "))]
     CircularDependency { path: Vec<String> },
 
-    #[error("cannot shadow built-in name: {name}")]
+    #[error("cannot define `{name}` because it shadows a built-in; built-in types and functions cannot be redefined")]
     ShadowsBuiltin { name: String },
 }

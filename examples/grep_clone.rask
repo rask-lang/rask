@@ -112,6 +112,7 @@ func grep_file(path: String, pattern: regex.Regex, opts: Options) -> Result<i32,
     Ok(match_count)
 }
 
+@entry
 func main() -> Result<(), GrepError> {
     const args = cli.args()
     const opts = parse_args(args)?
