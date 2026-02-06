@@ -1,0 +1,55 @@
+// ERROR: Attempting structural operations with unnamed context
+//
+// This demonstrates the compile error when trying to use structural pool
+// operations (insert/remove/cursor) in a function with an unnamed context.
+
+struct Entity {
+    health: i32,
+    active: bool,
+}
+
+// ERROR: Can't do structural operations with unnamed context
+func cleanup(h: Handle<Entity>) with Pool<Entity> {
+    h.active = false       // ✅ Field access works
+
+    if h.health <= 0 {
+        pool.remove(h)     // ERROR: 'pool' not in scope
+    }
+}
+
+// Expected error message:
+//
+// error[E0425]: cannot find value `pool` in this scope
+//   --> context_unnamed_structural.rask:15
+//    |
+// 15 |         pool.remove(h)
+//    |         ^^^^ not found in this scope
+//    |
+// 11 | func cleanup(h: Handle<Entity>) with Pool<Entity> {
+//    |                                      ------------ unnamed context provides auto-resolution only
+//    |
+//    help: use a named context to access the pool:
+//          func cleanup(h: Handle<Entity>) with entities: Pool<Entity>
+//
+//    note: unnamed contexts (`with Pool<T>`) enable auto-resolution for handle
+//          field access (h.field), but do not provide a binding for structural
+//          operations (insert/remove/cursor). Use a named context if you need
+//          both.
+
+// FIX: Use named context
+func cleanup_fixed(h: Handle<Entity>) with entities: Pool<Entity> {
+    h.active = false       // ✅ Field access via auto-resolution
+
+    if h.health <= 0 {
+        entities.remove(h) // ✅ Structural operation via named binding
+    }
+}
+
+// Alternative: Use explicit pool parameter
+func cleanup_explicit(entities: Pool<Entity>, h: Handle<Entity>) {
+    entities[h].active = false
+
+    if entities[h].health <= 0 {
+        entities.remove(h)
+    }
+}

@@ -23,6 +23,25 @@ enum Result<T, E> {
 }
 ```
 
+### Result Shorthand: `T or E`
+
+`T or E` is `Result<T, E>` — same type, shorter notation. Consistent with how `T?` is `Option<T>`.
+
+| Shorthand | Full type | Meaning |
+|-----------|-----------|---------|
+| `T?` | `Option<T>` | might be absent |
+| `T or E` | `Result<T, E>` | might fail with E |
+
+```rask
+func read_file(path: string) -> string or IoError        // Result<string, IoError>
+func load() -> Config or (IoError | ParseError)           // Result<Config, IoError | ParseError>
+func save(data: Data) -> () or IoError                    // Result<(), IoError>
+```
+
+**Precedence:** `?` (tightest) > `|` (error union) > `or` (loosest). So `string? or IoError | ParseError` = `Result<Option<string>, IoError | ParseError>`.
+
+Both notations are interchangeable — `Result<T, E>` remains valid everywhere. `or` works in return types, variable types, fields, and generic parameters.
+
 For `Option<T>`, see [Optionals](optionals.md).
 
 ### Result Methods
@@ -46,7 +65,7 @@ Force unwrap uses operators, not methods:
 Extracts `Ok` or returns early with `Err`. Prefix keyword.
 
 ```rask
-func process() -> Result<Data, IoError> {
+func process() -> Data or IoError {
     const file = try open(path)
     const data = try file.read_all()
     data  // auto-wrapped to Ok(data)
@@ -61,35 +80,35 @@ func process() -> Result<Data, IoError> {
 
 ### Auto-Ok Wrapping
 
-If a function returns `Result<T, E>` and the final expression is of type `T`, it's automatically wrapped in `Ok`:
+When a function signature is `T or E`, returning a value of type `T` is automatically wrapped in `Ok`:
 
 ```rask
-func load() -> Result<Config, IoError> {
+func load() -> Config or IoError {
     const content = try read_file(path)
-    try parse(content)   // Returns Config, auto-wrapped to Ok(Config)
+    return parse(content)   // Returns Config, auto-wrapped to Ok(Config)
 }
 
-func might_fail() -> Result<i32, Error> {
+func might_fail() -> i32 or Error {
     if bad_condition {
         return Err(Error.Bad)  // Explicit Err still works
     }
-    42  // Auto-wrapped to Ok(42)
+    return 42  // Auto-wrapped to Ok(42)
 }
 ```
 
 ### Implicit Ok(()) for Unit Results
 
-When a function returns `Result<(), E>`, reaching the end of the function without an explicit return automatically returns `Ok(())`:
+When a function returns `() or E` and reaches the end without an explicit return, it automatically returns `Ok(())`:
 
 ```rask
-func save(data: Data) -> Result<(), IoError> {
+func save(data: Data) -> () or IoError {
     const file = try File.create(path)
     try file.write(data)
-    // implicit Ok(()) — no need to write it
+    // No explicit return needed - implicit Ok(())
 }
 
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     println("Starting...")
     try run_app()
     println("Done!")
@@ -97,14 +116,14 @@ func main() -> Result<(), Error> {
 }
 ```
 
-**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `try`. Reaching the end of a `Result<(), E>` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
+**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `try`. Reaching the end of a `() or E` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
 
 ### Error Type Widening
 
 When return type is a union, `try` auto-widens:
 
 ```rask
-func load() -> Result<Config, IoError | ParseError> {
+func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError widens to union
     const config = try parse(content)     // ParseError widens to union
     config
@@ -159,7 +178,7 @@ extend IoError {
 ### Same error type — direct propagation
 
 ```rask
-func read_both() -> Result<Data, IoError> {
+func read_both() -> Data or IoError {
     const a = try read_file(x)   // IoError
     const b = try read_file(y)   // IoError
     combine(a, b)
@@ -169,7 +188,7 @@ func read_both() -> Result<Data, IoError> {
 ### Different error types — union
 
 ```rask
-func load() -> Result<Config, IoError | ParseError> {
+func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError ⊆ union
     const config = try parse(content)     // ParseError ⊆ union
     config
@@ -179,7 +198,7 @@ func load() -> Result<Config, IoError | ParseError> {
 ### Composing unions
 
 ```rask
-func process() -> Result<Output, IoError | ParseError | ValidationError> {
+func process() -> Output or (IoError | ParseError | ValidationError) {
     const config = try load()           // IoError | ParseError ⊆ union
     const valid = try validate(config)  // ValidationError ⊆ union
     transform(valid)

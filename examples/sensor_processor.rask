@@ -426,7 +426,7 @@ func simd_sum_f32(data: [f32; 64], count: usize) -> f32 {
 // Main Entry Point
 // ============================================================================
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     println("=== Real-Time Sensor Processor ===")
     println("")
 
@@ -506,7 +506,7 @@ func main() -> Result<(), Error> {
 
     // Signal interrupt handler to stop
     running.store(false, Ordering.Release)
-    isr_handle.join()?
+    try isr_handle.join()
 
     // Print results
     println("=== Results ===")

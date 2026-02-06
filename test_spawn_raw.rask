@@ -1,0 +1,33 @@
+// Test spawn_raw: spawn an OS thread and join to get result
+
+func compute(n: i32) -> i32 {
+    return n * 2
+}
+
+@entry
+func main() {
+    // Basic spawn and join
+    const handle = spawn_raw {
+        compute(21)
+    }
+    const result = try handle.join()
+    println(result)  // Should print 42
+
+    // Multiple threads
+    const h1 = spawn_raw { 10 + 20 }
+    const h2 = spawn_raw { 30 + 40 }
+    const r1 = try h1.join()
+    const r2 = try h2.join()
+    println(r1)  // 30
+    println(r2)  // 70
+
+    // Thread with captured variable
+    const x = 100
+    const h3 = spawn_raw {
+        x + 50
+    }
+    const r3 = try h3.join()
+    println(r3)  // 150
+
+    println("spawn_raw: all tests passed")
+}

@@ -367,7 +367,7 @@ For complex codegen (parsing schemas, calling external tools), use build scripts
 
 **Comptime functions can use Result:**
 ```rask
-comptime func safe_divide(a: i32, b: i32) -> Result<i32, string> {
+comptime func safe_divide(a: i32, b: i32) -> i32 or string {
     if b == 0 {
         return Err("Division by zero")
     }
@@ -759,7 +759,7 @@ For codegen requiring external tools or extensive I/O:
 ```rask
 // rask.build
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     const schema = try fs.read_file("schema.json")
     const code = generate_types_from_schema(schema)
     try fs.write_file("generated/types.rask", code)
@@ -802,7 +802,7 @@ func crc8(data: []u8) -> u8 {
 #### Generic Buffer Size
 
 ```rask
-func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> Result<[u8; MAX_SIZE], Error> {
+func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or Error {
     const buffer = [0u8; MAX_SIZE]
     const n = try socket.read(buffer[..])
     if n > MAX_SIZE {
@@ -822,7 +822,7 @@ const large = try read_packet<4096>(socket2)
 const DEBUG_MODE: bool = comptime cfg.debug
 const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
 
-func process(data: []u8) -> Result<(), Error> {
+func process(data: []u8) -> () or Error {
     comptime if LOGGING_ENABLED {
         log.debug("Processing {} bytes", data.len)
     }

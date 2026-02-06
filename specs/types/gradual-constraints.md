@@ -115,7 +115,7 @@ When inferring types from a function body, the compiler prefers **the most gener
 
 If uses produce a single concrete type, that is the inferred type. If uses produce only trait constraints, the parameter becomes generic with those bounds.
 
-**GC2: Return type inference.** The compiler examines all `return` expressions and the final expression. The return type is the unified type of all exit points. If exit points produce incompatible types, this is a compile error.
+**GC2: Return type inference.** The compiler examines all `return` expressions. The return type is the unified type of all return statements. If return statements produce incompatible types, this is a compile error.
 
 ```rask
 // OK: both branches return the same type
@@ -321,7 +321,7 @@ func load(dest, records) {
 }
 
 // Later: solidify the public interface
-public func run_pipeline(source: FileReader, dest: FileWriter) -> Result<(), IoError> {
+public func run_pipeline(source: FileReader, dest: FileWriter) -> () or IoError {
     const raw = try extract(source)
     const records = transform(raw)
     load(dest, records)
@@ -381,7 +381,7 @@ func parse(input: string) {
 }
 
 // Step 3: Ready for public API
-public func parse(input: string) -> Result<Record, ParseError> {
+public func parse(input: string) -> Record or ParseError {
     const parts = input.split(",")
     Record.new(parts[0], try parts[1].parse_i32())
 }

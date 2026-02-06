@@ -162,7 +162,7 @@ func add(a: i32, b: i32) -> i32 {
     a + b                     // Implicit return
 }
 
-func divide(a: f64, b: f64) -> Result<f64, Error> {
+func divide(a: f64, b: f64) -> f64 or Error {
     if b == 0.0: return Err(Error.DivByZero)
     a / b                     // Auto-wrapped in Ok
 }
@@ -174,13 +174,13 @@ func double(x) { x * 2 }           // Inferred: func double<T: Numeric>(x: T) ->
 func greet(name) { println("Hi, {name}") }  // Inferred: func greet(name: string)
 
 // Partial annotation — mix explicit and inferred
-func process(data: Vec<Record>, handler) -> Result<(), Error> {
+func process(data: Vec<Record>, handler) -> () or Error {
     try handler(data)
 }
 // handler type inferred from usage
 
 // Public: MUST have full types
-public func serve(port: i32) -> Result<(), Error> { ... }
+public func serve(port: i32) -> () or Error { ... }
 ```
 
 **Parameter modes:**
@@ -279,7 +279,7 @@ struct File {
 }
 
 extend File {
-    func close(take self) -> Result<(), Error> {
+    func close(take self) -> () or Error {
         // ...
     }
 }
@@ -415,6 +415,32 @@ func sort(items: Vec<T>) { items.sort() }
 // T is auto-generic (PascalCase), bound inferred as T: Comparable
 ```
 
+**Context clauses with `with`:**
+```rask
+// Unnamed context (auto-resolution only)
+func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+    h.health -= amount
+}
+
+// Named context (auto-resolution + structural operations)
+func spawn(count: i32) with enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
+    let handles = Vec.new()
+    for i in 0..count {
+        handles.push(try enemies.insert(Enemy.new()))
+    }
+    handles
+}
+
+// Multiple contexts
+func transfer(from: Handle<Player>, to: Handle<Player>, item: Handle<Item>)
+    with players: Pool<Player>, items: Pool<Item>
+{
+    from.inventory.remove(item)
+    to.inventory.add(item)
+    items[item].owner = Some(to)
+}
+```
+
 **Constraints with `where`:**
 ```rask
 func sort(items: Vec<T>) -> Vec<T> where T: Ord {
@@ -428,6 +454,27 @@ func process(data: T) -> U where T: Input, U: Output {
 // Multiple constraints on same type
 func debug_sort(items: Vec<T>) where T: Ord + Debug {
     // ...
+}
+```
+
+**Combined `with` and `where`:**
+```rask
+func process_all(handles: Vec<Handle<T>>)
+    with Pool<T>
+    where T: Processable
+{
+    for h in handles {
+        h.process()
+    }
+}
+
+// Full signature order: generics → params → return → with → where
+public func complex<K, V>(map: Map<K, V>, key: K) -> V or NotFound
+    with values: Pool<V>
+    where K: HashKey, V: Clone
+{
+    const v_handle = try map.get(key)
+    v_handle.clone()
 }
 ```
 
@@ -686,7 +733,7 @@ with pool {
 ### Ensure (Deferred Cleanup)
 
 ```rask
-func process(path: string) -> Result<Data, Error> {
+func process(path: string) -> Data or Error {
     const file = try File.open(path)
     ensure file.close()          // Runs on ANY exit (return, try, panic)
 
@@ -704,11 +751,11 @@ struct Connection {
 }
 
 extend Connection {
-    func open(addr: string) -> Result<Connection, Error> {
+    func open(addr: string) -> Connection or Error {
         // ...
     }
 
-    func close(take self) -> Result<(), Error> {
+    func close(take self) -> () or Error {
         try self.socket.shutdown()
     }
 }
@@ -783,13 +830,13 @@ const must_exist = optional!
 const must_exist = optional! "custom panic message"
 
 // Result
-func read_file(path: string) -> Result<string, IoError> {
+func read_file(path: string) -> string or IoError {
     const file = try File.open(path)
     file.read_all()
 }
 
 // Error propagation with try
-func load_config() -> Result<Config, IoError | ParseError> {
+func load_config() -> Config or (IoError | ParseError) {
     const content = try read_file("config.json")    // IoError
     const config = try parse_json(content)          // ParseError
     config                                          // Auto-wrapped in Ok
@@ -978,7 +1025,7 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 **Rask:**
 ```rask
-func handler(w: ResponseWriter, r: Request) -> Result<(), HttpError> {
+func handler(w: ResponseWriter, r: Request) -> () or HttpError {
     const body = try r.body.read_all()
     const req = try json.parse<Request>(body)
     const result = try process(req)
@@ -1002,7 +1049,7 @@ def process_file(path):
 
 **Rask:**
 ```rask
-func process_file(path: string) -> Result<Data, IoError> {
+func process_file(path: string) -> Data or IoError {
     const file = try File.open(path)
     ensure file.close()
     const content = try file.read_all()
@@ -1098,6 +1145,7 @@ println("{sum}")
 | Read-only | `read param` | Explicit read-only borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
+| Result | `T or E` | Same as `Result<T, E>` |
 | Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |
 | Pattern condition | `if x is Pattern(v)` | Non-exhaustive, binds `v` |

@@ -4,6 +4,7 @@
 
 mod value;
 mod env;
+mod resource;
 mod interp;
 
 pub use interp::{Interpreter, RuntimeError};

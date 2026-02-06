@@ -44,27 +44,27 @@ Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but t
 ## Basic Usage
 
 ```rask
-func fetch_user(id: u64) -> Result<User, Error> {
-    const response = http_get(format("/users/{id}"))?  // Pauses task, not thread
+func fetch_user(id: u64) -> User or Error {
+    const response = try http_get(format("/users/{id}"))  // Pauses task, not thread
     parse_user(response)
 }
 
 @entry
-func main() -> Result<()> {
+func main() -> () or Error {
     with multitasking {
-        const listener = TcpListener.bind("0.0.0.0:8080")?
+        const listener = try TcpListener.bind("0.0.0.0:8080")
 
         loop {
-            const conn = listener.accept()?
+            const conn = try listener.accept()
             spawn { handle_connection(conn) }.detach()  // Fire-and-forget
         }
     }
 }
 
-func handle_connection(conn: TcpConnection) -> Result<()> {
-    const request = conn.read()?
-    const user = fetch_user(request.id)?
-    conn.write(user.to_json())?
+func handle_connection(conn: TcpConnection) -> () or Error {
+    const request = try conn.read()
+    const user = try fetch_user(request.id)
+    try conn.write(user.to_json())
 }
 ```
 
@@ -84,7 +84,7 @@ func handle_connection(conn: TcpConnection) -> Result<()> {
 ```rask
 // Get result - must join
 const h = spawn { compute() }
-const result = h.join()?
+const result = try h.join()
 
 // Fire and forget - explicit detach
 spawn { background_work() }.detach()
@@ -95,7 +95,7 @@ spawn { work() }  // ERROR: unused TaskHandle
 
 | Pattern | Syntax | Handle consumed? |
 |---------|--------|------------------|
-| Wait for result | `spawn { }.join()?` | Yes |
+| Wait for result | `try spawn { }.join()` | Yes |
 | Fire-and-forget | `spawn { }.detach()` | Yes |
 | Unused | `spawn { }` | **Compile error** |
 
@@ -126,7 +126,7 @@ for url in urls {
     group.spawn { fetch(url) }
 }
 
-const results = group.join_all()?  // Vec<Result<T>>
+const results = try group.join_all()  // Vec<Result<T>>
 ```
 
 ### Handle API
@@ -137,9 +137,9 @@ struct TaskHandle<T> {
 }
 
 extend TaskHandle<T> {
-    func join(take self) -> Result<T, TaskError>    // Wait and get result
+    func join(take self) -> T or TaskError    // Wait and get result
     func detach(take self)                           // Fire-and-forget
-    func cancel(take self) -> Result<T, TaskError>  // Request cancel, wait
+    func cancel(take self) -> T or TaskError  // Request cancel, wait
 }
 ```
 
@@ -200,9 +200,9 @@ with multitasking(4), threading(8) { }  // Both
 **Stdlib I/O automatically pauses the task:**
 
 ```rask
-func process_file(path: string) -> Result<Data> {
-    const file = File.open(path)?      // Pauses while opening
-    const contents = file.read_all()?  // Pauses while reading
+func process_file(path: string) -> Data or Error {
+    const file = try File.open(path)      // Pauses while opening
+    const contents = try file.read_all()  // Pauses while reading
     parse(contents)
 }
 ```
@@ -219,7 +219,7 @@ The programmer doesn't write `.await`. The stdlib handles pausing internally:
 **IDE shows pause points as ghost annotations** (per Principle 7: "Compiler Knowledge is Visible"):
 
 ```rask
-const data = file.read()?  // IDE shows: ⟨pauses⟩
+const data = try file.read()  // IDE shows: ⟨pauses⟩
 ```
 
 No code ceremony required. Transparency achieved through tooling.
@@ -232,11 +232,11 @@ For CPU-bound work that needs true parallelism, use an explicit thread pool:
 @entry
 func main() {
     with multitasking, threading {
-        spawn {
-            const data = fetch(url)?                              // I/O - pauses
-            const result = spawn_thread { analyze(data) }.join()?  // CPU on threads
-            save(result)?                                       // I/O - pauses
-        }.join()?
+        try spawn {
+            const data = try fetch(url)                              // I/O - pauses
+            const result = try spawn_thread { analyze(data) }.join()  // CPU on threads
+            try save(result)                                       // I/O - pauses
+        }.join()
     }
 }
 ```
@@ -255,7 +255,7 @@ With a thread pool:
 ```rask
 with multitasking, threading {
     spawn {
-        spawn_thread { cpu_intensive() }.join()?  // Runs on thread pool
+        try spawn_thread { cpu_intensive() }.join()  // Runs on thread pool
     }.detach()
     spawn { handle_io() }.detach()                  // Runs fine
 }
@@ -267,7 +267,7 @@ with multitasking, threading {
 with threading {
     // Spawn on thread pool, get handle
     const h = spawn_thread { work() }
-    const result = h.join()?
+    const result = try h.join()
 
     // Fire-and-forget
     spawn_thread { background() }.detach()
@@ -290,7 +290,7 @@ func main() {
             spawn_thread { process(f) }
         }
         for h in handles {
-            print(h.join()?)
+            print(try h.join())
         }
     }
 }
@@ -311,7 +311,7 @@ const h = spawn_raw {
     init_graphics_context()  // Needs stable thread identity
     render_loop()
 }
-h.join()?
+try h.join()
 ```
 
 Same affine handle rules apply. Works anywhere (no multitasking or threading required).
@@ -324,12 +324,12 @@ Without Multitasking, I/O operations block the thread:
 @entry
 func main() {
     // No Multitasking = sync mode (default)
-    const data = file.read()?  // Blocks thread
+    const data = try file.read()  // Blocks thread
 
     // Thread pool still works
     with threading {
         const handles = files.map { |f| spawn_thread { process(f) } }
-        for h in handles { h.join()? }
+        for h in handles { try h.join() }
     }
 }
 ```
@@ -357,7 +357,7 @@ This is consistent with all wait operations (I/O, channels, etc.).
 with multitasking, threading {
     spawn {
         const h = spawn_thread { cpu_work() }
-        h.join()?  // YIELDS the green task, doesn't block scheduler
+        try h.join()  // YIELDS the green task, doesn't block scheduler
     }
 }
 ```
@@ -389,7 +389,7 @@ Cooperative model with cleanup guarantees:
 
 ```rask
 const h = spawn {
-    const file = File.open("data.txt")?
+    const file = try File.open("data.txt")
     ensure file.close()       // ALWAYS runs, even on cancel
 
     loop {
@@ -399,7 +399,7 @@ const h = spawn {
 }  // ensure runs here
 
 sleep(5.seconds)
-h.cancel()?  // Request cancellation, wait for exit
+try h.cancel()  // Request cancellation, wait for exit
 ```
 
 **Rules:**
@@ -423,7 +423,7 @@ let (tx, rx) = Channel<Message>.buffered(100)
 
 const producer = spawn {
     for msg in generate_messages() {
-        tx.send(msg)?  // Pauses if buffer full
+        try tx.send(msg)  // Pauses if buffer full
     }
 }
 
@@ -433,7 +433,7 @@ const consumer = spawn {
     }
 }
 
-join_all(producer, consumer)?
+try join_all(producer, consumer)
 ```
 
 Channels are useful for inter-thread communication even without green tasks.
@@ -485,11 +485,11 @@ This matches `ensure` semantics: explicit handling when needed, simple implicit 
 
 **Example - explicit close when errors matter:**
 ```rask
-func reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
+func reliable_producer(tx: Sender<Data>) -> () or Error {
     for item in items {
-        tx.send(item)?
+        try tx.send(item)
     }
-    tx.close()?  // Explicit: propagate close errors
+    try tx.close()  // Explicit: propagate close errors
     Ok(())
 }
 ```
@@ -498,7 +498,7 @@ func reliable_producer(tx: Sender<Data>) -> Result<(), Error> {
 ```rask
 spawn {
     for item in items {
-        tx.send(item)?
+        try tx.send(item)
     }
     // tx drops here - close errors ignored
 }.detach()
@@ -519,12 +519,12 @@ spawn {
 ```rask
 let (tx, rx) = Channel<i32>.buffered(10)
 
-spawn {
+try spawn {
     for i in 0..5 {
-        tx.send(i)?
+        try tx.send(i)
     }
     // tx drops, channel closed for writing
-}.join()?
+}.join()
 
 // Can still drain remaining items
 while rx.recv() is Ok(item) {

@@ -149,12 +149,12 @@ extend File {
     }
 
     // Inferred: may or may not mutate
-    func read(self, buf: [u8]) -> Result<usize, Error> {
+    func read(self, buf: [u8]) -> usize or Error {
         // reads from self (mutates internal position)
     }
 
     // Consuming: can only call once
-    func close(take self) -> Result<(), Error> {
+    func close(take self) -> () or Error {
         // closes and invalidates self
     }
 }
@@ -322,7 +322,7 @@ func register(take user: User) {
 }
 
 // Consuming linear (take required)
-func finish(take file: File) -> Result<(), Error> {
+func finish(take file: File) -> () or Error {
     file.close()
 }
 ```

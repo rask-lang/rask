@@ -83,7 +83,7 @@ pub enum ExprKind {
         scrutinee: Box<Expr>,
         arms: Vec<MatchArm>,
     },
-    /// Try expression (postfix ?)
+    /// Try expression (try prefix or postfix ?)
     Try(Box<Expr>),
     /// Null coalescing (a ?? b)
     NullCoalesce {

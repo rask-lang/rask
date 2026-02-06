@@ -212,94 +212,122 @@ for h in pool.cursor() {
 
 ---
 
-## Handle Auto-Resolution
+## Handle Auto-Resolution via Context Clauses
 
-Handles contain a `pool_id` that identifies their originating pool. This enables **automatic resolution** — handles can dereference without explicitly naming the pool.
+Handles can dereference their fields without explicitly naming the pool. This is enabled by **context clauses** — compile-time requirements that thread pools as hidden parameters.
 
 ### How It Works
 
-Every pool registers itself in a thread-local registry on creation:
+Functions declare pool requirements using `with` clauses:
 
 ```rask
-let players: Pool<Player> = Pool.new()  // Registers as pool_id=1
+func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+    h.health -= amount    // Auto-resolves via Pool<Player> context
+}
+
+const players = Pool.new()
 const h = try players.insert(Player { health: 100, ... })
 
-// Later, anywhere in the same thread:
-h.health -= 10    // Auto-resolves via: REGISTRY[h.pool_id][h.index].health
+damage(h, 10)    // Compiler passes players as hidden parameter
 ```
 
-The handle already knows which pool it belongs to. Auto-resolution uses that information.
+The compiler:
+1. Sees `damage` requires `Pool<Player>`
+2. Finds `players: Pool<Player>` in caller's scope
+3. Passes `players` as a hidden argument
+4. `h.health` resolves to `players[h].health`
 
-### Resolution Rules
+**Zero overhead:** Context passing is identical to passing a reference parameter. No registry, no runtime lookups.
 
-| Rule | Description |
-|------|-------------|
-| **R1: Auto-deref** | `h.field` on `Handle<T>` resolves to `REGISTRY[h.pool_id][h].field` |
-| **R2: Thread-local** | Registry is per-thread; handles resolve in the thread where their pool lives |
-| **R3: Pool lifetime** | When pool is dropped, registry entry is cleared |
-| **R4: Stale access** | Dereferencing after pool drop → panic with "pool not found" |
+### Context Clause Syntax
 
-### When You Need the Pool
+**Unnamed context** (auto-resolution only):
+```rask
+func update(h: Handle<Entity>) with Pool<Entity> {
+    h.velocity += h.acceleration    // Can access fields
+    // pool.remove(h)                // ERROR: pool not in scope
+}
+```
 
-Pass the pool as a regular argument only for **structural operations**:
+**Named context** (auto-resolution + structural operations):
+```rask
+func cleanup(h: Handle<Entity>) with entities: Pool<Entity> {
+    h.active = false              // Can access fields
+    if h.health <= 0 {
+        entities.remove(h)        // Can use pool directly
+    }
+}
+```
 
-| Operation | Needs Pool? | Example |
-|-----------|-------------|---------|
-| Field read/write | No | `h.health -= 10` |
-| Insert | Yes | `try pool.insert(x)` |
-| Remove | Yes | `pool.remove(h)` |
-| Iterate | Yes | `pool.cursor()` |
-| Freeze | Yes | `pool.freeze()` |
+See [Context Clauses](context-clauses.md) for full specification.
+
+### When You Need Context Clauses
+
+Pass contexts for **any handle usage**:
+
+| Operation | Context Type | Example |
+|-----------|--------------|---------|
+| Field read/write | Unnamed or Named | `h.health -= 10` |
+| Insert | Named | `try pool.insert(x)` |
+| Remove | Named | `pool.remove(h)` |
+| Iterate | Named | `pool.cursor()` |
+| Freeze | Named | `pool.freeze()` |
 
 ```rask
-// No pool needed — field access auto-resolves
-func damage(h: Handle<Player>, amount: i32) {
+// Unnamed context — field access only
+func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
     h.health -= amount
     h.last_hit = now()
 }
 
-// Pool needed — doing structural changes
-func kill(players: Pool<Player>, h: Handle<Player>) {
+// Named context — field access + structural operations
+func kill(h: Handle<Player>) with players: Pool<Player> {
     h.on_death()           // Auto-resolves
-    players.remove(h)      // Needs pool
+    players.remove(h)      // Named pool for structural op
 }
 
-func spawn_enemy(enemies: Pool<Enemy>, pos: Vec3) -> Handle<Enemy> {
+func spawn_enemy(pos: Vec3) with enemies: Pool<Enemy> -> Handle<Enemy> {
     try enemies.insert(Enemy { position: pos, health: 100, ... })
 }
 ```
 
-### Function Signatures
+### Function Signature Patterns
 
-Most functions just take handles — no pool parameter needed:
+**Field access only — unnamed context:**
 
 ```rask
-func validate_email(user: Handle<User>) -> bool {
-    !user.email.is_empty()    // Auto-resolves
+func validate_email(user: Handle<User>) with Pool<User> -> bool {
+    !user.email.is_empty()
 }
 
-func apply_gravity(entity: Handle<Entity>, dt: f32) {
+func apply_gravity(entity: Handle<Entity>, dt: f32) with Pool<Entity> {
     entity.velocity.y -= 9.8 * dt
     entity.position += entity.velocity * dt
 }
 
-func damage_all(targets: Vec<Handle<Enemy>>, amount: i32) {
+func damage_all(targets: Vec<Handle<Enemy>>, amount: i32) with Pool<Enemy> {
     for h in targets {
         h.health -= amount
     }
 }
 ```
 
-Only functions doing insert/remove/iterate need the pool:
+**Structural operations — named context:**
 
 ```rask
-func spawn_wave(enemies: Pool<Enemy>, count: i32) {
+func spawn_wave(count: i32, pos: Vec3)
+    with enemies: Pool<Enemy>
+    -> Vec<Handle<Enemy>> or PoolFull
+{
+    let handles = Vec.new()
     for i in 0..count {
-        try enemies.insert(Enemy.new(random_pos()))
+        const h = try enemies.insert(Enemy.new(pos))
+        handles.push(h)
     }
+    handles
 }
 
-func cleanup_dead(entities: Pool<Entity>) {
+func cleanup_dead() with entities: Pool<Entity> {
     for h in entities.cursor() {
         if h.health <= 0 {
             entities.remove(h)
@@ -308,95 +336,76 @@ func cleanup_dead(entities: Pool<Entity>) {
 }
 ```
 
-### Optional `with` Blocks (Optimization)
+### Multiple Pool Contexts
 
-`with pool { }` blocks are an **optimization hint** that eliminates registry lookups:
+Functions can require multiple pools:
 
 ```rask
-// Without with: each h.field does registry lookup
-for h in handles {
-    h.x += h.vx * dt    // 4 lookups
-    h.y += h.vy * dt    // 4 lookups
-}
+func transfer_item(player_h: Handle<Player>, item_h: Handle<Item>)
+    with players: Pool<Player>, items: Pool<Item>
+{
+    player_h.inventory.add(item_h)    // Auto-resolves via players
+    item_h.owner = Some(player_h)     // Auto-resolves via items
 
-// With with: compiler caches pool reference, zero lookups
-with players {
-    for h in players.cursor() {
-        h.x += h.vx * dt    // 0 lookups
-        h.y += h.vy * dt
+    if players.len() > 100 {
+        players.compact()              // Named pool for structural op
     }
 }
 ```
 
-| Without `with` | With `with` |
-|----------------|-------------|
-| Registry lookup per access | Direct pool reference |
-| Works anywhere | Requires pool in scope |
-| Slight overhead (~1-2 ns) | Zero overhead |
+### Context Resolution at Call Sites
 
-**When to use `with`:**
-- Hot loops with many field accesses
-- Performance-critical code
-- When you have the pool in scope anyway
-
-**When not needed:**
-- Occasional field access
-- Code clarity is more important than micro-optimization
-- Pool not conveniently in scope
-
-### Multiple Pools
-
-When working with multiple pools, each handle auto-resolves to its own pool:
+The compiler finds pools in scope and passes them automatically:
 
 ```rask
-func transfer_item(player: Handle<Player>, item: Handle<Item>) {
-    player.inventory.add(item.id)    // Via Player's pool
-    item.owner = Some(player)        // Via Item's pool
+// From local variables
+func game_loop() {
+    const players = Pool.new()
+    const h = try players.insert(Player.new())
+
+    damage(h, 10)    // ✅ Compiler passes players implicitly
 }
 
-// With optimization hint for hot path:
-with (players, items) {
-    for p in players.cursor() {
-        for i in items.cursor() {
-            if collides(p.position, i.position) {
-                p.inventory.add(i.id)
-                items.remove(i)
-            }
+// From struct fields
+struct Game {
+    players: Pool<Player>,
+    enemies: Pool<Enemy>,
+}
+
+extend Game {
+    func tick(self, dt: f32) {
+        for h in self.players.cursor() {
+            update_player(h, dt)    // ✅ self.players provides context
+        }
+
+        for h in self.enemies.cursor() {
+            update_enemy(h, dt)     // ✅ self.enemies provides context
         }
     }
 }
-```
 
-### Thread Safety
-
-| Scenario | Behavior |
-|----------|----------|
-| Handle created in thread A, used in thread A | ✅ Works |
-| Handle sent to thread B, pool stays in A | ❌ Panic: "pool not found in registry" |
-| Pool moved to thread B, handle used in B | ✅ Works (pool re-registers) |
-
-Handles are `Send + Copy`, but they only resolve in the thread where their pool lives. For cross-thread access, use channels to send handles to the thread that owns the pool.
-
-### Registry Implementation
-
-```rask
-// Thread-local registry (conceptual - internal implementation)
-const REGISTRY: ThreadLocal<Map<PoolId, *mut PoolAccess>> = ...
-
-extend Pool<T> {
-    func new() -> Pool<T> {
-        const id = next_pool_id()
-        REGISTRY.with { |r| r.insert(id, self as *mut _) }
-        Pool { id, ... }
-    }
-
-    // Cleanup called automatically when Pool value is no longer accessible
-    // (internal mechanism, not user-facing syntax)
-    func cleanup(take self) {
-        REGISTRY.with { |r| r.remove(self.id) }
-    }
+func update_player(h: Handle<Player>, dt: f32) with Pool<Player> {
+    h.position += h.velocity * dt
 }
 ```
+
+### Cross-Thread Contexts
+
+Contexts are thread-scoped. Handles sent across threads require their pool to be accessible:
+
+```rask
+func worker_thread() with Pool<Player> {
+    const h = receive_handle_from_channel()
+
+    // ✅ Works if pool was moved/passed to this thread
+    h.health -= 10
+
+    // ❌ Compile error if pool not in scope
+    // (runtime panic if pool was moved away after context established)
+}
+```
+
+For thread communication, prefer sending complete data instead of handles, or architect so pools are owned by dedicated threads.
 
 ### Performance Characteristics
 
@@ -946,7 +955,7 @@ struct Node {
     edges: Vec<Handle<Node>>,
 }
 
-func build_graph() -> Result<Pool<Node>, Error> {
+func build_graph() -> Pool<Node> or Error {
     const nodes = Pool.new()
 
     const a = try nodes.insert(Node { data: "A", edges: Vec.new() })
@@ -1032,7 +1041,7 @@ struct LinkedList<T> {
 }
 
 extend LinkedList<T> {
-    func push_back(self, data: T) -> Result<Handle<ListNode<T>>, Error> {
+    func push_back(self, data: T) -> Handle<ListNode<T>> or Error {
         const h = try self.nodes.insert(ListNode {
             data,
             prev: self.tail,
@@ -1168,7 +1177,7 @@ struct Graph<T> {
 
 extend Graph<T> {
     // Add edge (cycles allowed)
-    func add_edge(self, from: Handle<GraphNode<T>>, to: Handle<GraphNode<T>>) -> Result<(), Error> {
+    func add_edge(self, from: Handle<GraphNode<T>>, to: Handle<GraphNode<T>>) -> () or Error {
         try self.nodes[from].edges.push(to)
         Ok(())
     }
@@ -1249,7 +1258,7 @@ struct Ast {
 
 extend Ast {
     func new_binary(self, op: BinOp, left: Handle<ExprNode>, right: Handle<ExprNode>, span: Span)
-        -> Result<Handle<ExprNode>, Error>
+        -> Handle<ExprNode> or Error
     {
         const h = try self.exprs.insert(ExprNode {
             expr: Expr.Binary { op, left, right },
@@ -1277,7 +1286,7 @@ extend Ast {
     }
 
     // Type checking pass (read-only, zero overhead)
-    func type_check(self) -> Result<TypeMap, TypeError> {
+    func type_check(self) -> TypeMap or TypeError {
         const frozen = self.exprs.freeze_ref()
         const types = Map.new()
 
@@ -1795,14 +1804,14 @@ nursery { |n|
 Multiple functions access the same pool without passing it — handles auto-resolve.
 
 ```rask
-func process_user(user_h: Handle<User>) -> Result<()> {
+func process_user(user_h: Handle<User>) -> () or Error {
     try validate_user(user_h)
     try send_notification(user_h)
     try log_activity(user_h)
     Ok(())
 }
 
-func validate_user(h: Handle<User>) -> Result<()> {
+func validate_user(h: Handle<User>) -> () or Error {
     // h.field auto-resolves via pool_id registry
     if h.email.is_empty() {
         Err(ValidationError)
@@ -1870,7 +1879,7 @@ Handles survive serialization. A `Handle<T>` is `{pool_id, index, generation}` �
 
 ```rask
 // Save game state: just serialize the pools
-func save_game(world: World, path: string) -> Result<(), Error> {
+func save_game(world: World, path: string) -> () or Error {
     const file = try File.create(path)
     ensure file.close()
     try serialize(file, world.entities)    // Handles inside entities are just integers
@@ -1879,7 +1888,7 @@ func save_game(world: World, path: string) -> Result<(), Error> {
 }
 
 // Load game state: handles still point to the right slots
-func load_game(path: string) -> Result<World, Error> {
+func load_game(path: string) -> World or Error {
     const file = try File.open(path)
     ensure file.close()
     const entities: Pool<Entity> = try deserialize(file)
@@ -1897,7 +1906,7 @@ No pointer fixup pass needed. No address relocation. Handles that pointed to ent
 Dropping a pool clears its registry entry, instantly invalidating all handles to it. This provides a natural sandboxing boundary:
 
 ```rask
-func run_plugin(plugin: Plugin) -> Result<(), Error> {
+func run_plugin(plugin: Plugin) -> () or Error {
     // Plugin gets its own pools
     const plugin_entities = Pool.new()
     const plugin_state = Pool.new()

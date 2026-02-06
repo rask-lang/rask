@@ -731,7 +731,7 @@ impl ComptimeInterpreter {
                 self.eval_block(body)
             }
 
-            StmtKind::Ensure(_) => {
+            StmtKind::Ensure { .. } => {
                 // Ensure blocks are runtime-only
                 Err(ComptimeError::NotSupported("ensure blocks at comptime".to_string()))
             }

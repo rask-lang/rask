@@ -156,7 +156,7 @@ Strings MUST contain valid UTF-8. Validation occurs at construction.
 | Operation | Return Type | Validation Cost |
 |-----------|-------------|-----------------|
 | `"literal"` | `string` | Compile-time |
-| `string.from_utf8(bytes)` | `result<string, utf8_error>` | Runtime O(n), one-time |
+| `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Runtime O(n), one-time |
 | `string.from_utf8_unchecked(bytes)` | `string` | None (unsafe block only) |
 
 ### Byte Slicing and UTF-8 Boundaries
@@ -190,7 +190,8 @@ const iter = s.chars()  // Compile error
 | `s.bytes()` | `u8` | Raw byte iterator |
 | `s.char_indices()` | `(usize, char)` | Index + char pairs |
 | `s.lines()` | Expression-scoped slices | Split on newlines |
-| `s.split(pat)` | Expression-scoped slices | Split on pattern |
+| `s.split(pat)` | Expression-scoped slices | Split on pattern (string literal) |
+| `s.split_whitespace()` | Expression-scoped slices | Split on any Unicode whitespace, skip empty |
 
 ### String Length and Properties
 
@@ -206,9 +207,10 @@ const iter = s.chars()  // Compile error
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
 | `"literal"` | `string` | Static storage, compile-time validated |
-| `string.from_utf8(bytes)` | `result<string, utf8_error>` | Validates bytes |
+| `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
 | `string.from_char(c)` | `string` | Allocates single-char string |
 | `string.repeat(s, n)` | `string` | Allocates `s` repeated `n` times |
+| `slice.to_owned()` | `string` | Convert expression slice to owned string (allocates) |
 
 ### String Builder
 
@@ -246,8 +248,8 @@ const iter = s.chars()  // Compile error
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.find(pat)` | `option<usize>` | Byte index of first match |
-| `s.rfind(pat)` | `option<usize>` | Byte index of last match |
+| `s.find(pat)` | `Option<usize>` | Byte index of first match |
+| `s.rfind(pat)` | `Option<usize>` | Byte index of last match |
 | `s.contains(pat)` | `bool` | Substring check |
 | `s.starts_with(pat)` | `bool` | Prefix check |
 | `s.ends_with(pat)` | `bool` | Suffix check |
@@ -256,6 +258,9 @@ const iter = s.chars()  // Compile error
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
+| `s.trim()` | Expression-scoped slice | Zero-copy, removes leading and trailing whitespace |
+| `s.trim_start()` | Expression-scoped slice | Zero-copy, removes leading whitespace only |
+| `s.trim_end()` | Expression-scoped slice | Zero-copy, removes trailing whitespace only |
 | `s.trim_bounds()` | `(usize, usize)` | Returns (start, end) indices, O(n) |
 | Use with slicing | `s[bounds.0..bounds.1]` | Zero-copy trim via expression slice |
 
@@ -280,10 +285,10 @@ const iter = s.chars()  // Compile error
 |----------------|-------------|
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
-| `s.to_cstring()` | `result<cstring, null_byte_error>` (fails if string contains `\0`) |
+| `s.to_cstring()` | `Result<cstring, null_byte_error>` (fails if string contains `\0`) |
 | `cstring.as_ptr()` | `*const u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
-| `cstring.to_string()` | `result<string, utf8_error>` |
+| `cstring.to_string()` | `Result<string, utf8_error>` |
 
 **Example:**
 ```rask
@@ -359,7 +364,7 @@ for view in fields.iter() {
 
 ### Parsing with StringPool (Validated Access)
 ```rask
-func tokenize(source: string) -> Result<(StringPool, Vec<Token>), Error> {
+func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
     const pool = StringPool.new()
     const source_handle = try pool.insert(source)
     const tokens: Vec<Token> = Vec.new()
@@ -388,6 +393,20 @@ for (i, c) in text.char_indices() {
     // i is guaranteed safe boundary
     process(text[i..i+c.len_utf8()])
 }
+```
+
+### Command Parsing with Whitespace Splitting
+```rask
+// Parse command line input
+const input = "  insert  5  hello world  "
+const parts: Vec<string> = Vec.new()
+
+// Split on whitespace, automatically skips empty strings
+for part in input.trim().split_whitespace() {
+    try parts.push(part.to_owned())  // Allocate owned copy of expression slice
+}
+
+// Result: ["insert", "5", "hello", "world"]
 ```
 
 ## Integration Notes

@@ -61,6 +61,8 @@ enum RawToken {
     With,
     #[token("ensure")]
     Ensure,
+    #[token("catch")]
+    Catch,
     #[token("take")]
     Take,
     #[token("own")]
@@ -106,6 +108,10 @@ enum RawToken {
     Assert,
     #[token("check")]
     Check,
+    #[token("try")]
+    Try,
+    #[token("or")]
+    Or,
 
     // === Operators (order matters - longer first) ===
     // Three-character operators
@@ -391,6 +397,7 @@ impl<'a> Lexer<'a> {
             RawToken::Select => TokenKind::Select,
             RawToken::With => TokenKind::With,
             RawToken::Ensure => TokenKind::Ensure,
+            RawToken::Catch => TokenKind::Catch,
             RawToken::Take => TokenKind::Take,
             RawToken::Own => TokenKind::Own,
             RawToken::Where => TokenKind::Where,
@@ -413,6 +420,8 @@ impl<'a> Lexer<'a> {
             RawToken::Benchmark => TokenKind::Benchmark,
             RawToken::Assert => TokenKind::Assert,
             RawToken::Check => TokenKind::Check,
+            RawToken::Try => TokenKind::Try,
+            RawToken::Or => TokenKind::Or,
 
             // Operators
             RawToken::Plus => TokenKind::Plus,

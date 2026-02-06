@@ -89,3 +89,8 @@ comptime func huge_array() -> [u8; 100_000_000] {
     // COMPILE ERROR: array size exceeds comptime limit (16 MB)
     [0u8; 100_000_000]
 }
+
+@entry
+func main() {
+    println("Factorial of 10 is {FACT_10}")
+}

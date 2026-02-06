@@ -81,7 +81,7 @@ Parse multiple values from a byte slice:
 
 ```rask
 // Signature (variadic generic)
-func unpack<T...>(data: []u8, types: T...) -> Result<(T..., []u8), ParseError>
+func unpack<T...>(data: []u8, types: T...) -> (T..., []u8) or ParseError
 
 // Usage
 let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)

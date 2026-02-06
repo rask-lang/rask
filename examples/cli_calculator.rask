@@ -47,10 +47,10 @@ enum CalcError {
 extend CalcError {
     func message(self) -> string {
         match self {
-            UnexpectedChar(c) => "unexpected character: '{c}'",
-            UnexpectedToken(s) => "unexpected token: {s}",
-            DivisionByZero => "division by zero",
-            EmptyExpression => "empty expression",
+            UnexpectedChar(c) => return "unexpected character: '{c}'",
+            UnexpectedToken(s) => return "unexpected token: {s}",
+            DivisionByZero => return "division by zero",
+            EmptyExpression => return "empty expression",
         }
     }
 }
@@ -63,7 +63,7 @@ struct Lexer {
 
 extend Lexer {
     func new(input: string) -> Lexer {
-        Lexer { input: input, pos: 0 }
+        return Lexer { input: input, pos: 0 as usize }
     }
 
     func peek_char(self) -> char? {
@@ -84,7 +84,7 @@ extend Lexer {
         }
     }
 
-    func next_token(self) -> Result<Token, CalcError> {
+    func next_token(self) -> Token or CalcError {
         self.skip_whitespace()
 
         const c = match self.peek_char() {
@@ -109,7 +109,7 @@ extend Lexer {
         Ok(token)
     }
 
-    func read_number(self) -> Result<Token, CalcError> {
+    func read_number(self) -> Token or CalcError {
         const num_str = string.new()
         let has_dot = false
 
@@ -138,43 +138,43 @@ struct Parser {
 }
 
 extend Parser {
-    func new(input: string) -> Result<Parser, CalcError> {
+    func new(input: string) -> Parser or CalcError {
         const lexer = Lexer.new(input)
         const current = try lexer.next_token()
         Ok(Parser { lexer: lexer, current: current })
     }
 
-    func advance(self) -> Result<(), CalcError> {
+    func advance(self) -> () or CalcError {
         self.current = try self.lexer.next_token()
     }
 
-    func parse(self) -> Result<Expr, CalcError> {
+    func parse(self) -> Expr or CalcError {
         const expr = try self.parse_expression()
 
         match self.current {
-            Eof => Ok(expr),
-            _ => Err(CalcError.UnexpectedToken(self.token_string())),
+            Eof => return Ok(expr),
+            _ => return Err(CalcError.UnexpectedToken(self.token_string())),
         }
     }
     
 
     func token_string(self) -> string {
         match self.current {
-            Number(n) => "{n}",
-            Plus => "+",
-            Minus => "-",
-            Star => "*",
-            Slash => "/",
-            Percent => "%",
-            Caret => "^",
-            LParen => "(",
-            RParen => ")",
-            Eof => "end of input",
+            Number(n) => return "{n}",
+            Plus => return "+",
+            Minus => return "-",
+            Star => return "*",
+            Slash => return "/",
+            Percent => return "%",
+            Caret => return "^",
+            LParen => return "(",
+            RParen => return ")",
+            Eof => return "end of input",
         }
     }
 
     // expression = term (('+' | '-') term)*
-    func parse_expression(self) -> Result<Expr, CalcError> {
+    func parse_expression(self) -> Expr or CalcError {
         let left = try self.parse_term()
 
         loop {
@@ -192,7 +192,7 @@ extend Parser {
     }
 
     // term = power (('*' | '/' | '%') power)*
-    func parse_term(self) -> Result<Expr, CalcError> {
+    func parse_term(self) -> Expr or CalcError {
         let left = try self.parse_power()
 
         loop {
@@ -211,35 +211,35 @@ extend Parser {
     }
 
     // power = unary ('^' power)?  (right associative)
-    func parse_power(self) -> Result<Expr, CalcError> {
+    func parse_power(self) -> Expr or CalcError {
         const base = try self.parse_unary()
 
         if self.current is Caret {
             try self.advance()
             const exp = try self.parse_power()  // Right associative
-            Ok(Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp))
+            return Ok(Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp))
         } else {
-            Ok(base)
+            return Ok(base)
         }
     }
 
     // unary = '-' unary | primary
-    func parse_unary(self) -> Result<Expr, CalcError> {
+    func parse_unary(self) -> Expr or CalcError {
         if self.current is Minus {
             try self.advance()
             const expr = try self.parse_unary()
-            Ok(Expr.Unary(op: UnaryOp.Neg, expr: own expr))
+            return Ok(Expr.Unary(op: UnaryOp.Neg, expr: own expr))
         } else {
-            self.parse_primary()
+            return self.parse_primary()
         }
     }
 
     // primary = NUMBER | '(' expression ')'
-    func parse_primary(self) -> Result<Expr, CalcError> {
+    func parse_primary(self) -> Expr or CalcError {
         match self.current {
             Number(n) => {
                 try self.advance()
-                Ok(Expr.Number(n))
+                return Ok(Expr.Number(n))
             }
             LParen => {
                 try self.advance()
@@ -247,49 +247,49 @@ extend Parser {
                 match self.current {
                     RParen => {
                         try self.advance()
-                        Ok(expr)
+                        return Ok(expr)
                     }
-                    _ => Err(CalcError.UnexpectedToken("expected ')'".to_string())),
+                    _ => return Err(CalcError.UnexpectedToken("expected ')'".to_string())),
                 }
             }
-            Eof => Err(CalcError.EmptyExpression),
-            _ => Err(CalcError.UnexpectedToken(self.token_string())),
+            Eof => return Err(CalcError.EmptyExpression),
+            _ => return Err(CalcError.UnexpectedToken(self.token_string())),
         }
     }
 }
 
 // Evaluator
-func evaluate(expr: Expr) -> Result<f64, CalcError> {
+func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
-        Number(n) => Ok(n),
+        Number(n) => return Ok(n),
         Unary(op, inner) => {
             const val = try evaluate(inner)
             match op {
-                Neg => Ok(-val),
+                Neg => return Ok(-val),
             }
         }
         Binary(left, op, right) => {
             const l = try evaluate(left)
             const r = try evaluate(right)
             match op {
-                Add => Ok(l + r),
-                Sub => Ok(l - r),
-                Mul => Ok(l * r),
+                Add => return Ok(l + r),
+                Sub => return Ok(l - r),
+                Mul => return Ok(l * r),
                 Div => {
                     if r == 0.0: return Err(CalcError.DivisionByZero)
-                    Ok(l / r)
+                    return Ok(l / r)
                 }
                 Mod => {
                     if r == 0.0: return Err(CalcError.DivisionByZero)
-                    Ok(l % r)
+                    return Ok(l % r)
                 }
-                Pow => Ok(l.powf(r)),
+                Pow => return Ok(l.powf(r)),
             }
         }
     }
 }
 
-func calc(input: string) -> Result<f64, CalcError> {
+func calc(input: string) -> f64 or CalcError {
     const parser = try Parser.new(input)
     const expr = try parser.parse()
     evaluate(expr)
@@ -316,7 +316,7 @@ func print_help() {
 }
 
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     println("Rask Calculator")
     println("Type 'help' for usage, 'quit' to exit")
     println("")

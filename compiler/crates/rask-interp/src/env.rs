@@ -71,6 +71,11 @@ impl Environment {
         None
     }
 
+    /// Get the current scope depth.
+    pub fn scope_depth(&self) -> usize {
+        self.scopes.len()
+    }
+
     /// Capture all visible variables (for closures).
     pub fn capture(&self) -> HashMap<String, Value> {
         let mut captured = HashMap::new();

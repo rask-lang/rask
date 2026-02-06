@@ -218,8 +218,11 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Deliver { label: _, value } => {
                 self.check_expr(value);
             }
-            StmtKind::Ensure(body) => {
+            StmtKind::Ensure { body, catch } => {
                 self.check_block(body);
+                if let Some((_name, handler)) = catch {
+                    self.check_block(handler);
+                }
             }
             StmtKind::Comptime(body) => {
                 self.check_block(body);

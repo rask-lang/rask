@@ -192,7 +192,7 @@ public struct Database {
     handle: *sql.sqlite3
 }
 
-public func open(path: string) -> Result<Database, Error> {
+public func open(path: string) -> Database or Error {
     let db: *sql.sqlite3 = null
     unsafe {
         let rc = sql.sqlite3_open(path.cstr(), &db)
@@ -254,7 +254,7 @@ Linear resources (files, sockets, etc.) crossing FFI boundary require special ha
 @resource
 struct File { fd: c_int }
 
-func call_c_with_file(file: File) -> Result<(), Error> {
+func call_c_with_file(file: File) -> () or Error {
     let fd = file.fd
     ensure try file.close()  // Guarantee cleanup after C returns
     unsafe {

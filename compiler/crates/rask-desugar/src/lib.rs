@@ -131,7 +131,17 @@ impl Desugarer {
                     self.desugar_stmt(s);
                 }
             }
-            StmtKind::Ensure(body) | StmtKind::Comptime(body) => {
+            StmtKind::Ensure { body, catch } => {
+                for s in body {
+                    self.desugar_stmt(s);
+                }
+                if let Some((_name, handler)) = catch {
+                    for s in handler {
+                        self.desugar_stmt(s);
+                    }
+                }
+            }
+            StmtKind::Comptime(body) => {
                 for s in body {
                     self.desugar_stmt(s);
                 }

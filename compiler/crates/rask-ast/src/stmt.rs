@@ -78,7 +78,11 @@ pub enum StmtKind {
         body: Vec<Stmt>,
     },
     /// Ensure block (deferred cleanup)
-    Ensure(Vec<Stmt>),
+    Ensure {
+        body: Vec<Stmt>,
+        /// Optional catch clause: (param_name, handler_body)
+        catch: Option<(String, Vec<Stmt>)>,
+    },
     /// Comptime block (compile-time evaluated)
     Comptime(Vec<Stmt>),
 }

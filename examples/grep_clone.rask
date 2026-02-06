@@ -23,14 +23,14 @@ enum GrepError {
 extend GrepError {
     func message(self) -> string {
         match self {
-            NoPattern => "missing pattern argument",
-            NoFiles => "no files specified",
-            FileError(msg) => "{msg}",
+            NoPattern => return "missing pattern argument",
+            NoFiles => return "no files specified",
+            FileError(msg) => return "{msg}",
         }
     }
 }
 
-func parse_args(args: Vec<string>) -> Result<Options, GrepError> {
+func parse_args(args: Vec<string>) -> Options or GrepError {
     let opts = Options {
         pattern: "",
         files: Vec.new(),
@@ -85,15 +85,15 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     if ignore_case {
         const lower_line = line.to_lowercase()
         const lower_pattern = pattern.to_lowercase()
-        lower_line.contains(lower_pattern)
+        return lower_line.contains(lower_pattern)
     } else {
-        line.contains(pattern)
+        return line.contains(pattern)
     }
 }
 
-func grep_file(path: string, opts: Options) -> Result<i64, GrepError> {
-    const content = fs.read_file(path.clone())
-        .map_err(|e| GrepError.FileError(e))?
+func grep_file(path: string, opts: Options) -> i64 or GrepError {
+    const content = try fs.read_file(path.clone())
+        .map_err(|e| GrepError.FileError(e))
 
     const lines = content.lines()
     let match_count = 0

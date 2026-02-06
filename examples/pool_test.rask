@@ -1,0 +1,97 @@
+struct Entity {
+    name: string
+    health: i32
+    active: bool
+}
+
+@entry
+func main() -> () or string {
+    // Basic pool operations
+    const pool = Pool.new()
+
+    const h1 = try pool.insert(Entity { name: "Alice", health: 100, active: true })
+    const h2 = try pool.insert(Entity { name: "Bob", health: 80, active: true })
+    const h3 = try pool.insert(Entity { name: "Charlie", health: 60, active: true })
+
+    const len = pool.len()
+    println("Pool length: {len}")
+    const is_empty = pool.is_empty()
+    println("Is empty: {is_empty}")
+
+    // Index access - read whole value
+    const e1 = pool[h1]
+    println("Entity 1: {e1.name}")
+
+    // Index access - read field
+    const name2 = pool[h2].name
+    const health2 = pool[h2].health
+    println("Entity 2: {name2}, health={health2}")
+
+    // Field assignment via index
+    pool[h1].health = 90
+    const h1_health = pool[h1].health
+    println("After assignment: h1 health={h1_health}")
+
+    // Compound assignment (pool[h].field -= value)
+    pool[h2].health -= 20
+    const h2_health = pool[h2].health
+    println("After compound assign: h2 health={h2_health}")
+
+    // Contains check
+    const c1 = pool.contains(h1)
+    const c3 = pool.contains(h3)
+    println("Contains h1: {c1}")
+    println("Contains h3: {c3}")
+
+    // Remove
+    pool.remove(h3)
+    const len2 = pool.len()
+    println("Pool length after remove: {len2}")
+    const c3_after = pool.contains(h3)
+    println("Contains h3 after remove: {c3_after}")
+
+    // Safe get on valid handle
+    const maybe = pool.get(h1)
+    if maybe is Some(entity) {
+        println("Got h1: {entity.name}")
+    }
+
+    // Safe get on stale handle (should be None)
+    const stale = pool.get(h3)
+    if stale is None {
+        println("Correctly got None for stale handle")
+    }
+
+    // Iteration via cursor
+    println("All entities via cursor:")
+    for h in pool.cursor() {
+        const e = pool[h]
+        println("  {e.name}: health={e.health}")
+    }
+
+    // Insert more entities to test slot reuse
+    const h4 = try pool.insert(Entity { name: "Diana", health: 70, active: true })
+    const len3 = pool.len()
+    println("After inserting Diana, pool length: {len3}")
+
+    // Safe removal during iteration
+    pool[h4].health = 30
+    for h in pool.cursor() {
+        const e = pool[h]
+        if e.health < 50 {
+            pool.remove(h)
+        }
+    }
+    const len4 = pool.len()
+    println("Pool length after cleanup: {len4}")
+
+    // Verify remaining entities
+    println("Remaining entities:")
+    for h in pool.cursor() {
+        const e = pool[h]
+        println("  {e.name}: health={e.health}")
+    }
+
+    println("Pool test passed!")
+    Ok(())
+}

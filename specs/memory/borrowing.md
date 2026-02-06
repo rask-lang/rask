@@ -278,7 +278,7 @@ try pool.modify(h, |entity| {
 
 **Error propagation:**
 ```rask
-try users.modify(id, |user| -> Result<(), Error> {
+try users.modify(id, |user| -> () or Error {
     user.email = try validate_email(input)
     user.updated_at = now()
     Ok(())
@@ -529,7 +529,7 @@ func update_combat(pool: Pool<Entity>) {
 ### Multi-Statement Mutation
 <!-- test: parse -->
 ```rask
-func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> Result<(), Error> {
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
     try pool.modify(h, |entity| {
         entity.strength += 10
         entity.defense += 5

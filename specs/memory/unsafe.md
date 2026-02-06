@@ -209,7 +209,7 @@ public struct SafeBuffer {
 }
 
 extend SafeBuffer {
-    public func new(size: usize) -> Result<SafeBuffer, AllocError> {
+    public func new(size: usize) -> SafeBuffer or AllocError {
         unsafe {
             const ptr = try alloc(size)
             Ok(SafeBuffer { ptr, len: size })

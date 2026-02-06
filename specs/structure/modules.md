@@ -106,7 +106,7 @@ Rules: items in braces follow same rules as individual imports. Trailing comma a
 import lazy database  // init() deferred until first function call
 
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     if args.has("--help") {
         print_help()
         return Ok(())  // Fast exit, database never initialized
@@ -292,7 +292,7 @@ let counter: i32 = 0  // ✗ Compile error: no mutable globals (use Atomic or Sh
 
 **Syntax:**
 ```rask
-init() -> Result<(), Error> {
+init() -> () or Error {
     // Runs once per package before main
 }
 ```

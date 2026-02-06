@@ -51,8 +51,22 @@ struct ParserIndices {
 
 // The pattern that DOES work: block-scoped borrows for parsing
 func parse_header(line: string) -> Option<(string, string)> {
-    const colon = line.find(':')?
+    const colon = try line.find(':')
     const key = line[0..colon].trim()      // Block-scoped borrow - OK
     const value = line[colon+1..].trim()   // Another block-scoped borrow - OK
     Some((key.to_string(), value.to_string()))  // Convert to owned before returning
+}
+
+
+@entry
+func main() -> () or Error {
+    const line = "Content-Type: text/plain"
+    match parse_header(line) {
+        Some((key, value)) => {
+            println("Key: {key}, Value: {value}")
+        }
+        None => {
+            println("Invalid header line")
+        }
+    }
 }

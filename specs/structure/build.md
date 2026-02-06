@@ -19,7 +19,7 @@ Full Rask in build scripts (unlike comptime's restricted subset) enables I/O-hea
 ```rask
 import build using BuildContext
 
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     // Build logic here
     Ok(())
 }
@@ -70,7 +70,7 @@ struct Target {
 **Writing generated Rask code:**
 
 ```rask
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     // Read schema file
     const schema = try fs.read_file("schema.json")
 
@@ -150,7 +150,7 @@ codegen-utils = "0.5"
 **For incremental builds:**
 
 ```rask
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     // Declare input files (rebuild if these change)
     try ctx.declare_dependency("schema.json")
     try ctx.declare_dependency("templates/*.tmpl")  // glob supported
@@ -172,7 +172,7 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 **Compiling C code:**
 
 ```rask
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     // Compile C sources
     try ctx.compile_c(CompileOptions {
         sources: ["vendor/sqlite3.c"],
@@ -210,7 +210,7 @@ struct CompileOptions {
 ### Running External Tools
 
 ```rask
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     // Run protoc
     const result = try ctx.run(Command {
         program: "protoc",
@@ -230,7 +230,7 @@ public func build(ctx: BuildContext) -> Result<(), Error> {
 **Using features:**
 
 ```rask
-public func build(ctx: BuildContext) -> Result<(), Error> {
+public func build(ctx: BuildContext) -> () or Error {
     if ctx.features.contains("ssl") {
         try ctx.link_library("ssl")
         try ctx.link_library("crypto")

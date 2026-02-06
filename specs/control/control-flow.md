@@ -4,43 +4,100 @@
 How do conditionals, loops, and control transfer work in Rask? What is the distinction between expressions and statements?
 
 ## Decision
-Expression-oriented design. `if`, `match`, `loop`, and blocks are expressions that produce values. `while` and `for` are statements (produce unit). Semicolons distinguish expression position from statement position. Labels use `label:` syntax.
+Context-dependent expressions. The assignment context determines whether a construct produces a value or executes for side effects. Functions require explicit `return`. Labels use `label:` syntax.
 
 ## Rationale
-Expression-oriented design reduces ceremony for common patterns (assigning from conditionals, returning from loops). The `loop` keyword with `deliver` provides clear, intuitive syntax for value-returning infinite loops: `deliver` means "deliver this result" — clearer than Rust's `break value`. The `label:` syntax is universal across languages.
+Most control flow is for side effects (logging, validation, mutation), not value production. The assignment context (`const x = match/if ...`) naturally signals value production, while standalone constructs are side effects. This eliminates the need for trailing semicolons without introducing ambiguity. `return` always means "exit the function" — no overloading. The `loop` keyword with `deliver` provides clear syntax for value-returning loops.
 
 ## Specification
 
-### Expressions vs Statements
+### Expression Context vs Statement Context
 
-**Expressions** produce values; **statements** do not.
+**The assignment context determines whether a construct produces a value or executes for side effects.**
 
-| Construct | Kind | Produces |
-|-----------|------|----------|
-| `if`/`else` | Expression | Value of chosen branch |
-| `match` | Expression | Value of matched arm |
-| `loop` | Expression | Value from `deliver` |
-| `{ ... }` (block) | Expression | Value of final expression |
-| `while` | Statement | Unit `()` |
-| `for` | Statement | Unit `()` |
-| `return` | Statement | Never (exits function) |
-| `break`/`continue` | Statement | Never (exits loop) |
-| `deliver` | Statement | Never (exits loop with value) |
+**Expression context** — assigned to a variable, arms/branches produce values:
+```rask
+// Match expression — arms are values
+const color = match status {
+    Active => "green",
+    Failed => "red",
+}
+
+// Inline if expression — branches are values
+const sign = if x > 0: "+" else: "-"
+```
+
+**Statement context** — standalone, arms/branches are side effects:
+```rask
+// Match statement — arms are side effects
+match event {
+    Click(pos) => handle_click(pos),
+    Key(k) => handle_key(k),
+}
+
+// If statement — branches are side effects
+if error {
+    log("failed")
+    retry()
+}
+```
+
+**Blocks in expression context** — last expression is the value:
+```rask
+const token = match c {
+    '+' => { self.advance(); Token.Plus }   // Token.Plus is the value
+    '-' => { self.advance(); Token.Minus }
+    _ => Token.Unknown,
+}
+```
+
+**Blocks in statement context** — produce `()`, no accidental value leakage:
+```rask
+while self.peek_char() is Some(c) {
+    if c.is_digit() {
+        num_str.push(c)
+        self.advance()   // return value discarded — block produces ()
+    } else {
+        break
+    }
+}
+```
+
+**Functions** — require explicit `return` to produce values:
+```rask
+func format_size(bytes: i64) -> string {
+    if bytes < 1024 {
+        return "{bytes} B"
+    }
+    return "{bytes / 1024} KB"
+}
+```
+
+| Context | Behavior |
+|---------|----------|
+| `const x = match/if ...` | Expression — arms/branches produce values |
+| Standalone `match/if ...` | Statement — side effects, produces `()` |
+| `return value` | Always exits the function |
+| `deliver value` | Always exits the loop |
+| Block `{ }` in expression | Last expression is the value |
+| Block `{ }` in statement | Produces `()` |
 
 ### Semicolons
 
-**Rule:** Trailing semicolon converts an expression to a statement (discards value).
+**Semicolons separate statements on the same line.** Newlines also separate statements.
 
 ```rask
-const x = if cond { 1 } else { 2 }   // Expression position: no semicolon, value used
-if cond { do_thing() };            // Statement position: semicolon discards unit
-```
+// These are equivalent
+do_thing()
+do_other()
 
-| Syntax | Meaning |
-|--------|---------|
-| `expr` at block end | Block evaluates to `expr` |
-| `expr;` at block end | Block evaluates to `()` |
-| `expr;` mid-block | Statement, value discarded |
+do_thing(); do_other()
+
+// Semicolons also separate statements within expression-context blocks
+const token = match c {
+    '+' => { self.advance(); Token.Plus }
+}
+```
 
 ### Conditional: `if`/`else`
 
@@ -53,16 +110,16 @@ if condition { consequent }  // else branch implicitly ()
 **Rules:**
 - Condition MUST be type `bool` (no implicit conversion)
 - Parentheses around condition: allowed but not required
-- Braces MUST be present (no single-statement form)
-- When used as expression: both branches MUST have same type
-- When `else` omitted: consequent MUST be `()` (unless used as statement)
+- Braces MUST be present (no single-statement form), except inline syntax
+- In expression context: both branches MUST have same type
+- When `else` omitted: statement context only (produces `()`)
 
-| Pattern | Type | Notes |
-|---------|------|-------|
-| `if c { T } else { T }` | `T` | Both branches same type |
-| `if c { T } else { Never }` | `T` | Divergent branch (return/panic) |
-| `if c { () }` | `()` | No else needed for unit |
-| `if c { T }` (no else, T != ()) | Error | Missing else branch |
+| Pattern | Context | Type | Notes |
+|---------|---------|------|-------|
+| `const x = if c: a else: b` | Expression | `T` | Inline, both branches same type |
+| `const x = if c { a } else { b }` | Expression | `T` | Block, last expression is value |
+| `if c { side_effects() }` | Statement | `()` | No else needed |
+| `if c { f() } else { g() }` | Statement | `()` | Both branches side effects |
 
 **Ownership:**
 - Condition is evaluated (read or consume per expression)
@@ -361,7 +418,7 @@ return value     // Returns value from function
 - See [Sum Types - Error Propagation](../types/enums.md#error-propagation-and-linear-resources)
 
 ```rask
-func process(file: File) -> Result<Data, Error> {
+func process(file: File) -> Data or Error {
     ensure file.close()
 
     const data = try file.read()   // try may return early; ensure handles cleanup
@@ -369,35 +426,61 @@ func process(file: File) -> Result<Data, Error> {
 }
 ```
 
-### Implicit Return
+### Function Returns
 
-The final expression in a function (without semicolon) is the return value.
+**Functions require explicit `return` to produce values. `return` always exits the function.**
 
 ```rask
 func double(x: i32) -> i32 {
-    x * 2           // Implicit return (no semicolon)
+    return x * 2
 }
 
 func greet(name: string) {
-    println("Hello, " + name);  // Semicolon: returns ()
+    println("Hello, " + name)  // No return: function produces ()
+}
+
+func format_size(bytes: i64) -> string {
+    if bytes < 1024 {
+        return "{bytes} B"
+    }
+    return "{bytes / 1024} KB"
 }
 ```
 
-| Function End | Return Value |
-|--------------|--------------|
-| `expr` | Returns `expr` |
-| `expr;` | Returns `()` |
-| Empty block | Returns `()` |
-| `return value` | Returns `value` (explicit) |
+| Function Body | Return Value |
+|---------------|--------------|
+| `return value` | Exits function, returns `value` |
+| No `return` statement | Returns `()` |
+| Empty block `{}` | Returns `()` |
+
+**Note:** `return` inside a match or if block exits the **function**, not just the match/if:
+
+```rask
+func token_string(self) -> string {
+    // return in match arms exits the function
+    match self.current {
+        Number(n) => return "{n}",
+        Plus => return "+",
+        Minus => return "-",
+    }
+}
+```
 
 ### Block Expressions
 
-Blocks are expressions; they evaluate to their final expression.
+**Blocks in statement context produce `()`.** Blocks in expression context produce their last expression's value.
 
 ```rask
+// Statement context — block produces ()
+{
+    const temp = compute()
+    process(temp)   // return value discarded
+}
+
+// Expression context — last expression is the value
 const result = {
     const temp = compute()
-    transform(temp)    // Block value (no semicolon)
+    transform(temp)   // this IS the block's value
 }
 ```
 
@@ -459,16 +542,25 @@ See [Ensure Cleanup](../ecosystem/ensure.md) for full specification.
 
 ## Examples
 
-### Expression-Oriented If
+### Value-Producing Match and If
 ```rask
-const status = if count > 0 { "active" } else { "empty" }
+// Match expression — arms produce values
+const color = match status {
+    Active => "green",
+    Inactive => "gray",
+    Failed => "red",
+}
 
-const message = if user.is_admin() {
-    format!("Welcome, {}", user.name)
-} else if user.is_guest() {
-    "Welcome, guest"
-} else {
-    format!("Hello, {}", user.name)
+// Inline if expression
+const sign = if x > 0: "+" else: "-"
+
+// Match with block arms — last expression is value
+const opts = match parse_args(args) {
+    Ok(o) => o,
+    Err(e) => {
+        println("error: {e}")
+        std.exit(1)
+    }
 }
 ```
 
@@ -476,7 +568,9 @@ const message = if user.is_admin() {
 ```rask
 const input = loop {
     const x = read_input()
-    if x.is_valid() { deliver x }
+    if x.is_valid() {
+        deliver x
+    }
     println("Invalid, try again")
 }
 ```
@@ -487,8 +581,12 @@ const input = loop {
 func find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
     let i = 0
     loop {
-        if i >= items.len() { deliver None }
-        if items[i] == target { deliver Some(i) }
+        if i >= items.len() {
+            deliver None
+        }
+        if items[i] == target {
+            deliver Some(i)
+        }
         i += 1
     }
 }

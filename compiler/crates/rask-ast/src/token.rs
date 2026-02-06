@@ -49,6 +49,7 @@ pub enum TokenKind {
     Select,
     With,
     Ensure,
+    Catch,
     Take,
     Own,
     Where,
@@ -69,6 +70,8 @@ pub enum TokenKind {
     Benchmark,
     Assert,
     Check,
+    Try,
+    Or,
 
     // Operators
     Plus,
@@ -170,6 +173,7 @@ impl TokenKind {
             TokenKind::Select => "'select'",
             TokenKind::With => "'with'",
             TokenKind::Ensure => "'ensure'",
+            TokenKind::Catch => "'catch'",
             TokenKind::Take => "'take'",
             TokenKind::Own => "'own'",
             TokenKind::Where => "'where'",
@@ -190,6 +194,8 @@ impl TokenKind {
             TokenKind::Benchmark => "'benchmark'",
             TokenKind::Assert => "'assert'",
             TokenKind::Check => "'check'",
+            TokenKind::Try => "'try'",
+            TokenKind::Or => "'or'",
 
             // Operators
             TokenKind::Plus => "'+'",

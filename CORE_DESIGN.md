@@ -190,10 +190,10 @@ Three collection types cover most use cases:
 
 **Access patterns:**
 - `vec[i]` — copy out (T: Copy), panics on out-of-bounds
-- `pool[h].field` — expression-scoped borrow (released at semicolon), panics on invalid handle
+- `h.field` — expression-scoped borrow via context (released at semicolon), panics on invalid handle
 - `pool.get(h)` — returns Option<T> (T: Copy), safe for untrusted handles
 
-Expression-scoped allows mutation between accesses—borrow ends at semicolon, so `pool.remove(h)` works after `pool[h].field = x`.
+Expression-scoped allows mutation between accesses—borrow ends at semicolon, so `pool.remove(h)` works after `h.field = x`.
 
 **Handles** are configurable identifiers with runtime validation:
 
@@ -211,7 +211,32 @@ Runtime validation catches: wrong pool (pool_id mismatch), stale handle (generat
 
 **Resources:** Cannot be stored in Vec<T> (drop cannot propagate errors). Use Pool<T> with explicit `remove()` and consumption for resource types.
 
+### Context Clauses
+
+Functions using handles declare pool requirements with `with` clauses:
+
+```rask
+// Unnamed context: field access only
+func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+    h.health -= amount
+}
+
+// Named context: field access + structural operations
+func spawn_wave(count: i32) with enemies: Pool<Enemy> {
+    for i in 0..count {
+        try enemies.insert(Enemy.new(random_pos()))
+    }
+}
+```
+
+The compiler threads pools as hidden parameters — no runtime registry, no lookups. Context requirements are part of the function signature and checked at every call site.
+
+**Resolution:** Compiler finds pools in scope (local variables, parameters, `self` fields) and passes them automatically.
+
+**Inference:** Private functions can omit `with` clauses (inferred from body). Public functions must declare them explicitly.
+
 **Specifications:**
+- [Context Clauses](specs/memory/context-clauses.md) - Pool requirement declarations, resolution rules, inference
 - [Collections (Vec, Map)](specs/stdlib/collections.md) - Indexed and keyed collections
 - [Pools and Handles](specs/memory/pools.md) - Handle-based sparse storage, weak handles, cursors, freezing
 

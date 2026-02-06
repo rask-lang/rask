@@ -4,16 +4,16 @@
 //! After desugaring, arithmetic operators become method calls (a + b → a.add(b)),
 //! so the interpreter implements these methods on primitive types.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::{Arc, Mutex, mpsc};
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl};
+use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, StructDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::env::Environment;
-use crate::value::{BuiltinKind, ModuleKind, TypeConstructorKind, Value};
+use crate::resource::ResourceTracker;
+use crate::value::{BuiltinKind, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
 /// The tree-walk interpreter.
 pub struct Interpreter {
@@ -23,10 +23,14 @@ pub struct Interpreter {
     functions: HashMap<String, FnDecl>,
     /// Enum declarations by name.
     enums: HashMap<String, EnumDecl>,
+    /// Struct declarations by name (for @resource checking).
+    struct_decls: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
     methods: HashMap<String, HashMap<String, FnDecl>>,
+    /// Linear resource tracker.
+    resource_tracker: ResourceTracker,
     /// Optional output buffer for capturing stdout (used in tests).
-    output_buffer: Option<Rc<RefCell<String>>>,
+    output_buffer: Option<Arc<Mutex<String>>>,
     /// Command-line arguments passed to the program.
     cli_args: Vec<String>,
 }
@@ -38,7 +42,9 @@ impl Interpreter {
             env: Environment::new(),
             functions: HashMap::new(),
             enums: HashMap::new(),
+            struct_decls: HashMap::new(),
             methods: HashMap::new(),
+            resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
         }
@@ -50,7 +56,9 @@ impl Interpreter {
             env: Environment::new(),
             functions: HashMap::new(),
             enums: HashMap::new(),
+            struct_decls: HashMap::new(),
             methods: HashMap::new(),
+            resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
         }
@@ -58,23 +66,39 @@ impl Interpreter {
 
     /// Create an interpreter with output capture enabled.
     /// Returns the interpreter and a reference to the output buffer.
-    pub fn with_captured_output() -> (Self, Rc<RefCell<String>>) {
-        let buffer = Rc::new(RefCell::new(String::new()));
+    pub fn with_captured_output() -> (Self, Arc<Mutex<String>>) {
+        let buffer = Arc::new(Mutex::new(String::new()));
         let interp = Self {
             env: Environment::new(),
             functions: HashMap::new(),
             enums: HashMap::new(),
+            struct_decls: HashMap::new(),
             methods: HashMap::new(),
+            resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
         };
         (interp, buffer)
     }
 
+    /// Create a child interpreter for running in a spawned thread.
+    /// Clones function/enum/method tables and captured environment variables.
+    fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
+        let mut child = Interpreter::new();
+        child.functions = self.functions.clone();
+        child.enums = self.enums.clone();
+        child.struct_decls = self.struct_decls.clone();
+        child.methods = self.methods.clone();
+        for (name, value) in captured_vars {
+            child.env.define(name, value);
+        }
+        child
+    }
+
     /// Write to output (buffer or stdout).
     fn write_output(&self, s: &str) {
         if let Some(buf) = &self.output_buffer {
-            buf.borrow_mut().push_str(s);
+            buf.lock().unwrap().push_str(s);
         } else {
             print!("{}", s);
         }
@@ -83,9 +107,54 @@ impl Interpreter {
     /// Write a newline to output (buffer or stdout).
     fn write_output_ln(&self) {
         if let Some(buf) = &self.output_buffer {
-            buf.borrow_mut().push('\n');
+            buf.lock().unwrap().push('\n');
         } else {
             println!();
+        }
+    }
+
+    /// Check if a type name is a resource type (@resource attribute or built-in File).
+    fn is_resource_type(&self, name: &str) -> bool {
+        if name == "File" {
+            return true;
+        }
+        self.struct_decls
+            .get(name)
+            .map(|s| s.attrs.iter().any(|a| a == "resource"))
+            .unwrap_or(false)
+    }
+
+    /// Get the resource ID from a Value, checking both struct resource_id and File Arc pointer.
+    fn get_resource_id(&self, value: &Value) -> Option<u64> {
+        match value {
+            Value::Struct { resource_id, .. } => *resource_id,
+            Value::File(rc) => {
+                let ptr = Arc::as_ptr(rc) as usize;
+                self.resource_tracker.lookup_file_id(ptr)
+            }
+            _ => None,
+        }
+    }
+
+    /// Transfer a resource (if present in the value) to a different scope depth.
+    /// Handles nested values like Result.Ok(file) or Result.Err(FileError{file}).
+    fn transfer_resource_to_scope(&mut self, value: &Value, new_depth: usize) {
+        match value {
+            Value::File(rc) => {
+                let ptr = Arc::as_ptr(rc) as usize;
+                if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
+                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                }
+            }
+            Value::Struct { resource_id: Some(id), .. } => {
+                self.resource_tracker.transfer_to_scope(*id, new_depth);
+            }
+            Value::Enum { fields, .. } => {
+                for field in fields {
+                    self.transfer_resource_to_scope(field, new_depth);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -133,10 +202,22 @@ impl Interpreter {
                             "cli" => Some(ModuleKind::Cli),
                             "std" => Some(ModuleKind::Std),
                             "env" => Some(ModuleKind::Env),
+                            "time" => Some(ModuleKind::Time),
+                            "random" => Some(ModuleKind::Random),
                             _ => None, // Unknown module, ignore for now
                         };
                         if let Some(kind) = module_kind {
                             imports.push((alias, kind));
+                        }
+                    }
+                }
+                DeclKind::Struct(s) => {
+                    self.struct_decls.insert(s.name.clone(), s.clone());
+                    // Register methods from struct's inline methods
+                    if !s.methods.is_empty() {
+                        let type_methods = self.methods.entry(s.name.clone()).or_default();
+                        for method in &s.methods {
+                            type_methods.insert(method.name.clone(), method.clone());
                         }
                     }
                 }
@@ -243,6 +324,7 @@ impl Interpreter {
             EnumDecl {
                 name: "Ordering".to_string(),
                 variants: vec![
+                    // Comparison ordering (cmp)
                     Variant {
                         name: "Less".to_string(),
                         fields: vec![],
@@ -253,6 +335,27 @@ impl Interpreter {
                     },
                     Variant {
                         name: "Greater".to_string(),
+                        fields: vec![],
+                    },
+                    // Memory ordering (atomics)
+                    Variant {
+                        name: "Relaxed".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "Acquire".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "Release".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "AcqRel".to_string(),
+                        fields: vec![],
+                    },
+                    Variant {
+                        name: "SeqCst".to_string(),
                         fields: vec![],
                     },
                 ],
@@ -293,34 +396,152 @@ impl Interpreter {
             self.env.define(param.name.clone(), arg);
         }
 
-        // Execute function body
+        // Execute function body (ensures run inside here via exec_stmts)
         let result = self.exec_stmts(&func.body);
+
+        // Before popping scope, transfer any resources in the return value to caller scope
+        let scope_depth = self.env.scope_depth();
+        let caller_depth = scope_depth.saturating_sub(1);
+        match &result {
+            Err(RuntimeError::Return(v)) | Ok(v) => {
+                self.transfer_resource_to_scope(v, caller_depth);
+            }
+            Err(RuntimeError::TryError(v)) => {
+                // Error propagation — the Err value may contain a resource
+                self.transfer_resource_to_scope(v, caller_depth);
+            }
+            _ => {}
+        }
+
+        // Check for unconsumed resources at this scope depth
+        if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
+            self.env.pop_scope();
+            return Err(RuntimeError::Panic(msg));
+        }
 
         // Pop function scope
         self.env.pop_scope();
 
         // Handle return value:
-        // - Ok(()) means function completed normally → return Unit
+        // - Ok(_) means function completed without explicit return → return Unit
+        //   (Rask requires explicit `return` to produce values from functions)
         // - Err(Return(v)) means explicit return → return v
-        // - Err(TryError(v)) means ? propagated error → return Err value
+        // - Err(TryError(v)) means `try` propagated error → return Err value
         // - Err(other) means actual error → propagate
-        match result {
-            Ok(value) => Ok(value),
-            Err(RuntimeError::Return(v)) => Ok(v),
-            Err(RuntimeError::TryError(v)) => Ok(v), // Return the Err value
-            Err(e) => Err(e),
+        let value = match result {
+            Ok(_) => Value::Unit,
+            Err(RuntimeError::Return(v)) => v,
+            Err(RuntimeError::TryError(v)) => v, // Return the Err value
+            Err(e) => return Err(e),
+        };
+
+        // Auto-Ok wrapping: if return type is Result<T, E> (from `T or E`)
+        // and the value isn't already a Result, wrap it in Ok
+        let returns_result = func.ret_ty.as_ref()
+            .map(|t| t.starts_with("Result<"))
+            .unwrap_or(false);
+        if returns_result {
+            match &value {
+                Value::Enum { name, .. } if name == "Result" => Ok(value),
+                _ => Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![value],
+                }),
+            }
+        } else {
+            Ok(value)
         }
     }
 
     /// Execute a list of statements, returning the value of the last expression.
+    ///
+    /// Collects `ensure` blocks encountered during execution and runs them in
+    /// LIFO order when the block exits (normal completion or any error).
+    /// This implements block-scoped deferred cleanup per the ensure spec.
     fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeError> {
         let mut last_value = Value::Unit;
+        let mut ensures: Vec<&Stmt> = Vec::new();
+        let mut exit_error: Option<RuntimeError> = None;
 
         for stmt in stmts {
-            last_value = self.exec_stmt(stmt)?;
+            if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
+                ensures.push(stmt);
+            } else {
+                match self.exec_stmt(stmt) {
+                    Ok(v) => last_value = v,
+                    Err(e) => {
+                        exit_error = Some(e);
+                        break;
+                    }
+                }
+            }
         }
 
+        // Run ensures in LIFO order before returning
+        let ensure_fatal = self.run_ensures(&ensures);
+
+        // Original exit reason takes priority; ensure panics only matter on normal exit
+        if let Some(e) = exit_error {
+            Err(e)
+        } else if let Some(fatal) = ensure_fatal {
+            Err(fatal)
+        } else {
+            Ok(last_value)
+        }
+    }
+
+    /// Run ensure blocks in LIFO order. Returns a fatal error (Panic/Exit) if one occurs.
+    /// Non-fatal errors from ensure bodies are silently ignored or passed to catch handlers.
+    fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeError> {
+        for ensure_stmt in ensures.iter().rev() {
+            if let StmtKind::Ensure { body, catch } = &ensure_stmt.kind {
+                // Execute the ensure body (simple sequential execution, no ensure collection)
+                let result = self.exec_ensure_body(body);
+
+                match result {
+                    Ok(value) => {
+                        // Check if value is a Result::Err (Rask-level error from cleanup)
+                        if let Value::Enum { name, variant, fields } = &value {
+                            if name == "Result" && variant == "Err" {
+                                let err_val = fields.first().cloned().unwrap_or(Value::Unit);
+                                self.handle_ensure_error(err_val, catch);
+                            }
+                        }
+                    }
+                    Err(RuntimeError::Panic(msg)) => return Some(RuntimeError::Panic(msg)),
+                    Err(RuntimeError::Exit(code)) => return Some(RuntimeError::Exit(code)),
+                    Err(RuntimeError::TryError(val)) => {
+                        // try used inside ensure (spec forbids this, handle gracefully)
+                        self.handle_ensure_error(val, catch);
+                    }
+                    Err(_) => {
+                        // Other runtime errors in ensure body: silently ignore
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Execute statements in an ensure body (no ensure collection — simple sequential execution).
+    fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
+        let mut last_value = Value::Unit;
+        for stmt in body {
+            last_value = self.exec_stmt(stmt)?;
+        }
         Ok(last_value)
+    }
+
+    /// Handle an error from an ensure body: pass to catch handler or silently ignore.
+    fn handle_ensure_error(&mut self, error_value: Value, catch: &Option<(String, Vec<Stmt>)>) {
+        if let Some((name, handler)) = catch {
+            self.env.push_scope();
+            self.env.define(name.clone(), error_value);
+            let _ = self.exec_ensure_body(handler);
+            self.env.pop_scope();
+        }
+        // Without catch: error is silently ignored per spec
     }
 
     /// Execute a single statement.
@@ -332,6 +553,9 @@ impl Interpreter {
             // Const binding (immutable) - evaluate init and bind
             StmtKind::Const { name, init, .. } => {
                 let value = self.eval_expr(init)?;
+                if let Some(id) = self.get_resource_id(&value) {
+                    self.resource_tracker.set_var_name(id, name.clone());
+                }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -339,6 +563,9 @@ impl Interpreter {
             // Let binding (mutable) - same as const for now (mutability checked earlier)
             StmtKind::Let { name, init, .. } => {
                 let value = self.eval_expr(init)?;
+                if let Some(id) = self.get_resource_id(&value) {
+                    self.resource_tracker.set_var_name(id, name.clone());
+                }
                 self.env.define(name.clone(), value);
                 Ok(Value::Unit)
             }
@@ -497,7 +724,7 @@ impl Interpreter {
                     }
                     Value::Vec(v) => {
                         // Clone vec items to avoid borrow issues during iteration
-                        let items: Vec<Value> = v.borrow().clone();
+                        let items: Vec<Value> = v.lock().unwrap().clone();
                         for item in items {
                             self.env.push_scope();
                             self.env.define(binding.clone(), item);
@@ -527,9 +754,8 @@ impl Interpreter {
                 }
             }
 
-            // Ensure block (deferred cleanup - in interpreter, resources are cleaned up
-            // automatically via Rc drop, so this is a no-op)
-            StmtKind::Ensure(_stmts) => Ok(Value::Unit),
+            // Ensure block - collected by exec_stmts, not executed here directly
+            StmtKind::Ensure { .. } => Ok(Value::Unit),
 
             // Other statements not yet implemented
             _ => Ok(Value::Unit),
@@ -562,23 +788,102 @@ impl Interpreter {
                     } else {
                         Err(RuntimeError::UndefinedVariable(var_name.clone()))
                     }
+                } else if let ExprKind::Index {
+                    object: idx_obj,
+                    index: idx_expr,
+                } = &object.kind
+                {
+                    // Nested field assignment: collection[idx].field = value
+                    // Handles: pool[h].field = value, vec[i].field = value
+                    let idx_val = self.eval_expr(idx_expr)?;
+                    if let ExprKind::Ident(var_name) = &idx_obj.kind {
+                        if let Some(container) = self.env.get(var_name).cloned() {
+                            match container {
+                                Value::Pool(p) => {
+                                    if let Value::Handle {
+                                        pool_id,
+                                        index,
+                                        generation,
+                                    } = idx_val
+                                    {
+                                        let mut pool = p.lock().unwrap();
+                                        let slot_idx = pool
+                                            .validate(pool_id, index, generation)
+                                            .map_err(|e| RuntimeError::Panic(e))?;
+                                        if let Some(Value::Struct {
+                                            ref mut fields, ..
+                                        }) = pool.slots[slot_idx].1
+                                        {
+                                            fields.insert(field.clone(), value);
+                                            Ok(())
+                                        } else {
+                                            Err(RuntimeError::TypeError(
+                                                "pool element is not a struct".to_string(),
+                                            ))
+                                        }
+                                    } else {
+                                        Err(RuntimeError::TypeError(
+                                            "Pool index must be a Handle".to_string(),
+                                        ))
+                                    }
+                                }
+                                Value::Vec(v) => {
+                                    if let Value::Int(i) = idx_val {
+                                        let i = i as usize;
+                                        let mut vec = v.lock().unwrap();
+                                        if i < vec.len() {
+                                            if let Value::Struct {
+                                                ref mut fields, ..
+                                            } = vec[i]
+                                            {
+                                                fields.insert(field.clone(), value);
+                                                Ok(())
+                                            } else {
+                                                Err(RuntimeError::TypeError(
+                                                    "vec element is not a struct".to_string(),
+                                                ))
+                                            }
+                                        } else {
+                                            Err(RuntimeError::TypeError(format!(
+                                                "index {} out of bounds",
+                                                i
+                                            )))
+                                        }
+                                    } else {
+                                        Err(RuntimeError::TypeError(
+                                            "Vec index must be integer".to_string(),
+                                        ))
+                                    }
+                                }
+                                _ => Err(RuntimeError::TypeError(format!(
+                                    "cannot field-assign on indexed {}",
+                                    container.type_name()
+                                ))),
+                            }
+                        } else {
+                            Err(RuntimeError::UndefinedVariable(var_name.clone()))
+                        }
+                    } else {
+                        Err(RuntimeError::TypeError(
+                            "nested field assignment not yet supported".to_string(),
+                        ))
+                    }
                 } else {
                     Err(RuntimeError::TypeError(
                         "nested field assignment not yet supported".to_string(),
                     ))
                 }
             }
-            // Index assignment: vec[i] = value
+            // Index assignment: collection[idx] = value
             ExprKind::Index { object, index } => {
                 let idx = self.eval_expr(index)?;
                 if let ExprKind::Ident(var_name) = &object.kind {
-                    // Get the value - for Vec (Rc<RefCell>), we can modify through the shared reference
                     if let Some(obj) = self.env.get(var_name).cloned() {
                         match obj {
                             Value::Vec(v) => {
                                 if let Value::Int(i) = idx {
                                     let i = i as usize;
-                                    let mut vec = v.borrow_mut();
+                                    let mut vec = v.lock().unwrap();
                                     if i < vec.len() {
                                         vec[i] = value;
                                         Ok(())
@@ -592,6 +897,25 @@ impl Interpreter {
                                 } else {
                                     Err(RuntimeError::TypeError(
                                         "index must be integer".to_string(),
+                                    ))
+                                }
+                            }
+                            Value::Pool(p) => {
+                                if let Value::Handle {
+                                    pool_id,
+                                    index,
+                                    generation,
+                                } = idx
+                                {
+                                    let mut pool = p.lock().unwrap();
+                                    let slot_idx = pool
+                                        .validate(pool_id, index, generation)
+                                        .map_err(|e| RuntimeError::Panic(e))?;
+                                    pool.slots[slot_idx].1 = Some(value);
+                                    Ok(())
+                                } else {
+                                    Err(RuntimeError::TypeError(
+                                        "Pool index must be a Handle".to_string(),
                                     ))
                                 }
                             }
@@ -625,9 +949,9 @@ impl Interpreter {
                 // String interpolation: replace {name} with variable values
                 if s.contains('{') {
                     let interpolated = self.interpolate_string(s)?;
-                    Ok(Value::String(Rc::new(RefCell::new(interpolated))))
+                    Ok(Value::String(Arc::new(Mutex::new(interpolated))))
                 } else {
-                    Ok(Value::String(Rc::new(RefCell::new(s.clone()))))
+                    Ok(Value::String(Arc::new(Mutex::new(s.clone()))))
                 }
             }
             ExprKind::Char(c) => Ok(Value::Char(*c)),
@@ -648,6 +972,8 @@ impl Interpreter {
                     "Vec" => return Ok(Value::TypeConstructor(TypeConstructorKind::Vec)),
                     "Map" => return Ok(Value::TypeConstructor(TypeConstructorKind::Map)),
                     "string" => return Ok(Value::TypeConstructor(TypeConstructorKind::String)),
+                    "Pool" => return Ok(Value::TypeConstructor(TypeConstructorKind::Pool)),
+                    "Channel" => return Ok(Value::TypeConstructor(TypeConstructorKind::Channel)),
                     _ => {}
                 }
                 Err(RuntimeError::UndefinedVariable(name.clone()))
@@ -778,6 +1104,12 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval_expr(a))
                     .collect::<Result<_, _>>()?;
+
+                // Handle type static methods (e.g., Instant.now(), Duration.seconds(5))
+                if let Value::Type(type_name) = &receiver {
+                    return self.call_type_method(type_name, method, arg_vals);
+                }
+
                 self.call_method(receiver, method, arg_vals)
             }
 
@@ -922,9 +1254,16 @@ impl Interpreter {
                     field_values.insert(field.name.clone(), value);
                 }
 
+                let resource_id = if self.is_resource_type(name) {
+                    Some(self.resource_tracker.register(name, self.env.scope_depth()))
+                } else {
+                    None
+                };
+
                 Ok(Value::Struct {
                     name: name.clone(),
                     fields: field_values,
+                    resource_id,
                 })
             }
 
@@ -957,11 +1296,22 @@ impl Interpreter {
                     }
                 }
 
-                // Fall through to struct field access
+                // Fall through to struct field access or module field access
                 let obj = self.eval_expr(object)?;
                 match obj {
                     Value::Struct { fields, .. } => {
                         Ok(fields.get(field).cloned().unwrap_or(Value::Unit))
+                    }
+                    Value::Module(ModuleKind::Time) => {
+                        // time.Instant, time.Duration → return type values
+                        match field.as_str() {
+                            "Instant" => Ok(Value::Type("Instant".to_string())),
+                            "Duration" => Ok(Value::Type("Duration".to_string())),
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "time module has no member '{}'",
+                                field
+                            ))),
+                        }
                     }
                     _ => Err(RuntimeError::TypeError(format!(
                         "cannot access field on {}",
@@ -977,15 +1327,42 @@ impl Interpreter {
 
                 match (&obj, &idx) {
                     (Value::Vec(v), Value::Int(i)) => {
-                        let vec = v.borrow();
+                        let vec = v.lock().unwrap();
                         Ok(vec.get(*i as usize).cloned().unwrap_or(Value::Unit))
                     }
+                    (Value::Vec(v), Value::Range { start, end, inclusive }) => {
+                        let vec = v.lock().unwrap();
+                        let len = vec.len() as i64;
+                        let start_idx = (*start).max(0).min(len) as usize;
+                        let end_idx = if *end == i64::MAX {
+                            vec.len()
+                        } else {
+                            let e = if *inclusive { *end + 1 } else { *end };
+                            e.max(0).min(len) as usize
+                        };
+                        let slice: Vec<Value> = vec[start_idx..end_idx].to_vec();
+                        Ok(Value::Vec(Arc::new(Mutex::new(slice))))
+                    }
                     (Value::String(s), Value::Int(i)) => Ok(s
-                        .borrow()
+                        .lock().unwrap()
                         .chars()
                         .nth(*i as usize)
                         .map(Value::Char)
                         .unwrap_or(Value::Unit)),
+                    (
+                        Value::Pool(p),
+                        Value::Handle {
+                            pool_id,
+                            index,
+                            generation,
+                        },
+                    ) => {
+                        let pool = p.lock().unwrap();
+                        let idx = pool
+                            .validate(*pool_id, *index, *generation)
+                            .map_err(|e| RuntimeError::Panic(e))?;
+                        Ok(pool.slots[idx].1.as_ref().unwrap().clone())
+                    }
                     _ => Err(RuntimeError::TypeError(format!(
                         "cannot index {} with {}",
                         obj.type_name(),
@@ -1000,7 +1377,7 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
-                Ok(Value::Vec(Rc::new(RefCell::new(values))))
+                Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
 
             // Match expression
@@ -1107,10 +1484,10 @@ impl Interpreter {
                     (Value::Int(n), "i64" | "i32" | "int" | "i16" | "i8" | "u64" | "u32"
                         | "u16" | "u8" | "usize") => Ok(Value::Int(n)),
                     (Value::Int(n), "string") => {
-                        Ok(Value::String(Rc::new(RefCell::new(n.to_string()))))
+                        Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     (Value::Float(n), "string") => {
-                        Ok(Value::String(Rc::new(RefCell::new(n.to_string()))))
+                        Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
                     (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8") => {
                         Ok(Value::Int(c as i64))
@@ -1138,6 +1515,180 @@ impl Interpreter {
                     }
                     _ => Ok(val),
                 }
+            }
+
+            // spawn_raw { body } - raw OS thread
+            ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
+                let body = body.clone();
+                let captured = self.env.capture();
+                let child = self.spawn_child(captured);
+
+                let join_handle = std::thread::spawn(move || {
+                    let mut interp = child;
+                    let mut result = Value::Unit;
+                    for stmt in &body {
+                        match interp.exec_stmt(stmt) {
+                            Ok(val) => result = val,
+                            Err(e) => return Err(format!("{}", e)),
+                        }
+                    }
+                    Ok(result)
+                });
+
+                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
+            }
+
+            // spawn_thread { body } - thread from pool
+            ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
+                let pool = self.env.get("__thread_pool").cloned();
+                let pool = match pool {
+                    Some(Value::ThreadPool(p)) => p,
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "spawn_thread requires `with threading { }` context".to_string(),
+                        ))
+                    }
+                };
+
+                let body = body.clone();
+                let captured = self.env.capture();
+                let child = self.spawn_child(captured);
+
+                // Create a oneshot channel for the result
+                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
+
+                let task = PoolTask {
+                    work: Box::new(move || {
+                        let mut interp = child;
+                        let mut result = Value::Unit;
+                        for stmt in &body {
+                            match interp.exec_stmt(stmt) {
+                                Ok(val) => result = val,
+                                Err(e) => {
+                                    let _ = result_tx.send(Err(format!("{}", e)));
+                                    return;
+                                }
+                            }
+                        }
+                        let _ = result_tx.send(Ok(result));
+                    }),
+                };
+
+                // Send work to pool
+                let sender = pool.sender.lock().unwrap();
+                if let Some(ref tx) = *sender {
+                    tx.send(task).map_err(|_| {
+                        RuntimeError::TypeError("thread pool is shut down".to_string())
+                    })?;
+                } else {
+                    return Err(RuntimeError::TypeError(
+                        "thread pool is shut down".to_string(),
+                    ));
+                }
+
+                // Wrap the result receiver as a thread handle
+                let join_handle = std::thread::spawn(move || {
+                    result_rx
+                        .recv()
+                        .unwrap_or(Err("thread pool task dropped".to_string()))
+                });
+
+                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
+            }
+
+            // with threading(n) { body }
+            ExprKind::WithBlock { name, args, body } if name == "threading" => {
+                let num_threads = if args.is_empty() {
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                } else {
+                    self.eval_expr(&args[0])?.as_int()
+                        .map_err(|e| RuntimeError::TypeError(e))? as usize
+                };
+
+                // Create thread pool
+                let (tx, rx) = mpsc::channel::<PoolTask>();
+                let rx = Arc::new(Mutex::new(rx));
+                let mut workers = Vec::with_capacity(num_threads);
+
+                for _ in 0..num_threads {
+                    let rx = Arc::clone(&rx);
+                    workers.push(std::thread::spawn(move || {
+                        loop {
+                            let task = {
+                                let rx = rx.lock().unwrap();
+                                rx.recv()
+                            };
+                            match task {
+                                Ok(task) => (task.work)(),
+                                Err(_) => break, // Channel closed, exit
+                            }
+                        }
+                    }));
+                }
+
+                let pool = Arc::new(ThreadPoolInner {
+                    sender: Mutex::new(Some(tx)),
+                    workers: Mutex::new(Vec::new()),
+                    size: num_threads,
+                });
+
+                // Store pool in environment and execute body
+                self.env.push_scope();
+                self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
+
+                let mut result = Value::Unit;
+                for stmt in body {
+                    match self.exec_stmt(stmt) {
+                        Ok(val) => result = val,
+                        Err(e) => {
+                            // Shut down pool on error
+                            *pool.sender.lock().unwrap() = None;
+                            for w in workers {
+                                let _ = w.join();
+                            }
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                }
+
+                // Shut down pool: drop sender so workers exit
+                *pool.sender.lock().unwrap() = None;
+                for w in workers {
+                    let _ = w.join();
+                }
+                self.env.pop_scope();
+                Ok(result)
+            }
+
+            // Spawn (green task) - not yet implemented, needs M:N scheduler
+            ExprKind::Spawn { body } => {
+                // For now, treat like spawn_raw (OS thread)
+                let body = body.clone();
+                let captured = self.env.capture();
+                let child = self.spawn_child(captured);
+
+                let join_handle = std::thread::spawn(move || {
+                    let mut interp = child;
+                    let mut result = Value::Unit;
+                    for stmt in &body {
+                        match interp.exec_stmt(stmt) {
+                            Ok(val) => result = val,
+                            Err(e) => return Err(format!("{}", e)),
+                        }
+                    }
+                    Ok(result)
+                });
+
+                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
             }
 
             // Other expressions not yet implemented
@@ -1214,7 +1765,7 @@ impl Interpreter {
                 fields: pat_fields,
                 rest: _,
             } => {
-                if let Value::Struct { name, fields } = value {
+                if let Value::Struct { name, fields, .. } = value {
                     if name == pat_name {
                         let mut bindings = HashMap::new();
                         for (field_name, field_pattern) in pat_fields {
@@ -1239,7 +1790,7 @@ impl Interpreter {
             Pattern::Tuple(patterns) => {
                 // For now, treat tuple as an array/vec
                 if let Value::Vec(v) = value {
-                    let vec = v.borrow();
+                    let vec = v.lock().unwrap();
                     if patterns.len() == vec.len() {
                         let mut bindings = HashMap::new();
                         for (pat, val) in patterns.iter().zip(vec.iter()) {
@@ -1273,7 +1824,7 @@ impl Interpreter {
             (Value::Float(a), ExprKind::Float(b)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
             (Value::Char(a), ExprKind::Char(b)) => *a == *b,
-            (Value::String(a), ExprKind::String(b)) => *a.borrow() == *b,
+            (Value::String(a), ExprKind::String(b)) => *a.lock().unwrap() == *b,
             _ => false,
         }
     }
@@ -1286,7 +1837,7 @@ impl Interpreter {
             (Value::Int(a), Value::Int(b)) => a == b,
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
-            (Value::String(a), Value::String(b)) => *a.borrow() == *b.borrow(),
+            (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
             _ => false,
         }
     }
@@ -1359,7 +1910,7 @@ impl Interpreter {
                     match arg {
                         Value::String(s) => {
                             // Handle string interpolation
-                            let output = self.interpolate_string(&s.borrow())?;
+                            let output = self.interpolate_string(&s.lock().unwrap())?;
                             self.write_output(&output);
                         }
                         _ => self.write_output(&format!("{}", arg)),
@@ -1375,7 +1926,7 @@ impl Interpreter {
                     }
                     match arg {
                         Value::String(s) => {
-                            let output = self.interpolate_string(&s.borrow())?;
+                            let output = self.interpolate_string(&s.lock().unwrap())?;
                             self.write_output(&output);
                         }
                         _ => self.write_output(&format!("{}", arg)),
@@ -1530,7 +2081,7 @@ impl Interpreter {
                 Ok(Value::Int((*a).max(b)))
             }
             (Value::Int(a), "to_string") => {
-                Ok(Value::String(Rc::new(RefCell::new(a.to_string()))))
+                Ok(Value::String(Arc::new(Mutex::new(a.to_string()))))
             }
             (Value::Int(a), "to_float") => Ok(Value::Float(*a as f64)),
 
@@ -1588,7 +2139,7 @@ impl Interpreter {
                 Ok(Value::Float(a.max(b)))
             }
             (Value::Float(a), "to_string") => {
-                Ok(Value::String(Rc::new(RefCell::new(a.to_string()))))
+                Ok(Value::String(Arc::new(Mutex::new(a.to_string()))))
             }
             (Value::Float(a), "to_int") => Ok(Value::Int(*a as i64)),
             (Value::Float(a), "pow") => {
@@ -1621,64 +2172,83 @@ impl Interpreter {
             }
 
             // String methods
-            (Value::String(s), "len") => Ok(Value::Int(s.borrow().len() as i64)),
-            (Value::String(s), "is_empty") => Ok(Value::Bool(s.borrow().is_empty())),
-            (Value::String(s), "clone") => Ok(Value::String(Rc::clone(s))),
+            (Value::String(s), "len") => Ok(Value::Int(s.lock().unwrap().len() as i64)),
+            (Value::String(s), "is_empty") => Ok(Value::Bool(s.lock().unwrap().is_empty())),
+            (Value::String(s), "clone") => Ok(Value::String(Arc::clone(s))),
             (Value::String(s), "starts_with") => {
                 let prefix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.borrow().starts_with(&prefix)))
+                Ok(Value::Bool(s.lock().unwrap().starts_with(&prefix)))
             }
             (Value::String(s), "ends_with") => {
                 let suffix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.borrow().ends_with(&suffix)))
+                Ok(Value::Bool(s.lock().unwrap().ends_with(&suffix)))
             }
             (Value::String(s), "contains") => {
                 let pattern = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.borrow().contains(&pattern)))
+                Ok(Value::Bool(s.lock().unwrap().contains(&pattern)))
             }
             (Value::String(s), "push") => {
                 let c = self.expect_char(&args, 0)?;
-                s.borrow_mut().push(c);
+                s.lock().unwrap().push(c);
                 Ok(Value::Unit)
             }
             (Value::String(s), "trim") => {
-                Ok(Value::String(Rc::new(RefCell::new(s.borrow().trim().to_string()))))
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim().to_string()))))
             }
-            (Value::String(s), "to_string") => Ok(Value::String(Rc::clone(s))),
+            (Value::String(s), "trim_start") => {
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_start().to_string()))))
+            }
+            (Value::String(s), "trim_end") => {
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
+            }
+            (Value::String(s), "to_string") => Ok(Value::String(Arc::clone(s))),
+            (Value::String(s), "to_owned") => {
+                // Clone the string to create an owned copy
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))))
+            }
             (Value::String(s), "to_uppercase") => {
-                Ok(Value::String(Rc::new(RefCell::new(s.borrow().to_uppercase()))))
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_uppercase()))))
             }
             (Value::String(s), "to_lowercase") => {
-                Ok(Value::String(Rc::new(RefCell::new(s.borrow().to_lowercase()))))
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_lowercase()))))
             }
             (Value::String(s), "split") => {
                 let delimiter = self.expect_string(&args, 0)?;
                 let parts: Vec<Value> = s
-                    .borrow()
+                    .lock().unwrap()
                     .split(&delimiter)
-                    .map(|p| Value::String(Rc::new(RefCell::new(p.to_string()))))
+                    .map(|p| Value::String(Arc::new(Mutex::new(p.to_string()))))
                     .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(parts))))
+                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
+            }
+            (Value::String(s), "split_whitespace") => {
+                // Split on any Unicode whitespace, skip empty
+                let parts: Vec<Value> = s
+                    .lock().unwrap()
+                    .split_whitespace()
+                    .map(|part| Value::String(Arc::new(Mutex::new(part.to_string()))))
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
             }
             (Value::String(s), "chars") => {
-                let chars: Vec<Value> = s.borrow().chars().map(Value::Char).collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(chars))))
+                let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(chars))))
             }
             (Value::String(s), "lines") => {
                 let lines: Vec<Value> = s
-                    .borrow()
+                    .lock().unwrap()
                     .lines()
-                    .map(|l| Value::String(Rc::new(RefCell::new(l.to_string()))))
+                    .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
                     .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(lines))))
+                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
             }
             (Value::String(s), "replace") => {
                 let from = self.expect_string(&args, 0)?;
                 let to = self.expect_string(&args, 1)?;
-                Ok(Value::String(Rc::new(RefCell::new(s.borrow().replace(&from, &to)))))
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().replace(&from, &to)))))
             }
             (Value::String(s), "substring") => {
-                let sb = s.borrow();
+                let sb = s.lock().unwrap();
                 let start = self.expect_int(&args, 0)? as usize;
                 let end = args
                     .get(1)
@@ -1688,10 +2258,11 @@ impl Interpreter {
                     })
                     .unwrap_or(sb.len());
                 let substring: String = sb.chars().skip(start).take(end - start).collect();
-                Ok(Value::String(Rc::new(RefCell::new(substring))))
+                Ok(Value::String(Arc::new(Mutex::new(substring))))
             }
-            (Value::String(s), "parse_int") => {
-                match s.borrow().trim().parse::<i64>() {
+            (Value::String(s), "parse_int") | (Value::String(s), "parse") => {
+                // parse<i32>() and parse_int() both parse as integer
+                match s.lock().unwrap().trim().parse::<i64>() {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
@@ -1700,7 +2271,7 @@ impl Interpreter {
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(
+                        fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid integer".to_string(),
                         )))],
                     }),
@@ -1708,7 +2279,7 @@ impl Interpreter {
             }
             (Value::String(s), "char_at") => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match s.borrow().chars().nth(idx) {
+                match s.lock().unwrap().chars().nth(idx) {
                     Some(c) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1723,7 +2294,7 @@ impl Interpreter {
             }
             (Value::String(s), "byte_at") => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                match s.borrow().as_bytes().get(idx) {
+                match s.lock().unwrap().as_bytes().get(idx) {
                     Some(&b) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1737,7 +2308,7 @@ impl Interpreter {
                 }
             }
             (Value::String(s), "parse_float") => {
-                match s.borrow().trim().parse::<f64>() {
+                match s.lock().unwrap().trim().parse::<f64>() {
                     Ok(n) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
@@ -1746,7 +2317,7 @@ impl Interpreter {
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(
+                        fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid float".to_string(),
                         )))],
                     }),
@@ -1754,7 +2325,7 @@ impl Interpreter {
             }
             (Value::String(s), "index_of") => {
                 let pattern = self.expect_string(&args, 0)?;
-                match s.borrow().find(&pattern) {
+                match s.lock().unwrap().find(&pattern) {
                     Some(idx) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1769,61 +2340,228 @@ impl Interpreter {
             }
             (Value::String(s), "repeat") => {
                 let n = self.expect_int(&args, 0)? as usize;
-                Ok(Value::String(Rc::new(RefCell::new(s.borrow().repeat(n)))))
+                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().repeat(n)))))
             }
             (Value::String(s), "reverse") => {
-                Ok(Value::String(Rc::new(RefCell::new(
-                    s.borrow().chars().rev().collect(),
+                Ok(Value::String(Arc::new(Mutex::new(
+                    s.lock().unwrap().chars().rev().collect(),
                 ))))
             }
 
             // Type constructor static methods (Vec.new(), string.new(), etc.)
             (Value::TypeConstructor(TypeConstructorKind::Vec), "new") => {
-                Ok(Value::Vec(Rc::new(RefCell::new(Vec::new()))))
+                Ok(Value::Vec(Arc::new(Mutex::new(Vec::new()))))
             }
             (Value::TypeConstructor(TypeConstructorKind::Vec), "with_capacity") => {
                 let cap = self.expect_int(&args, 0)? as usize;
-                Ok(Value::Vec(Rc::new(RefCell::new(Vec::with_capacity(cap)))))
+                Ok(Value::Vec(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
             }
             (Value::TypeConstructor(TypeConstructorKind::String), "new") => {
-                Ok(Value::String(Rc::new(RefCell::new(String::new()))))
+                Ok(Value::String(Arc::new(Mutex::new(String::new()))))
+            }
+
+            // Pool constructor static methods
+            (Value::TypeConstructor(TypeConstructorKind::Pool), "new") => {
+                use crate::value::PoolData;
+                Ok(Value::Pool(Arc::new(Mutex::new(PoolData::new()))))
+            }
+            (Value::TypeConstructor(TypeConstructorKind::Pool), "with_capacity") => {
+                use crate::value::PoolData;
+                let cap = self.expect_int(&args, 0)? as usize;
+                let mut pool = PoolData::new();
+                pool.slots.reserve(cap);
+                Ok(Value::Pool(Arc::new(Mutex::new(pool))))
+            }
+
+            // Pool instance methods
+            (Value::Pool(p), "insert") => {
+                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut pool = p.lock().unwrap();
+                let pool_id = pool.pool_id;
+                let (index, generation) = pool.insert(item);
+                let handle = Value::Handle {
+                    pool_id,
+                    index,
+                    generation,
+                };
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![handle],
+                })
+            }
+            (Value::Pool(p), "get") => {
+                if let Some(Value::Handle {
+                    pool_id,
+                    index,
+                    generation,
+                }) = args.first()
+                {
+                    let pool = p.lock().unwrap();
+                    match pool.validate(*pool_id, *index, *generation) {
+                        Ok(idx) => {
+                            let val = pool.slots[idx].1.as_ref().unwrap().clone();
+                            Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![val],
+                            })
+                        }
+                        Err(_) => Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                        }),
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.get() requires a Handle argument".to_string(),
+                    ))
+                }
+            }
+            (Value::Pool(p), "remove") => {
+                if let Some(Value::Handle {
+                    pool_id,
+                    index,
+                    generation,
+                }) = args.first()
+                {
+                    let mut pool = p.lock().unwrap();
+                    match pool.validate(*pool_id, *index, *generation) {
+                        Ok(idx) => {
+                            let val = pool.remove_at(idx).unwrap();
+                            Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![val],
+                            })
+                        }
+                        Err(_) => Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                        }),
+                    }
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.remove() requires a Handle argument".to_string(),
+                    ))
+                }
+            }
+            (Value::Pool(p), "len") => Ok(Value::Int(p.lock().unwrap().len as i64)),
+            (Value::Pool(p), "is_empty") => Ok(Value::Bool(p.lock().unwrap().len == 0)),
+            (Value::Pool(p), "contains") => {
+                if let Some(Value::Handle {
+                    pool_id,
+                    index,
+                    generation,
+                }) = args.first()
+                {
+                    let pool = p.lock().unwrap();
+                    Ok(Value::Bool(
+                        pool.validate(*pool_id, *index, *generation).is_ok(),
+                    ))
+                } else {
+                    Err(RuntimeError::TypeError(
+                        "pool.contains() requires a Handle argument".to_string(),
+                    ))
+                }
+            }
+            (Value::Pool(p), "clear") => {
+                let mut pool = p.lock().unwrap();
+                let slot_count = pool.slots.len();
+                for (_i, (gen, slot)) in pool.slots.iter_mut().enumerate() {
+                    if slot.is_some() {
+                        *slot = None;
+                        *gen = gen.saturating_add(1);
+                    }
+                }
+                pool.free_list.clear();
+                for i in 0..slot_count {
+                    pool.free_list.push(i as u32);
+                }
+                pool.len = 0;
+                Ok(Value::Unit)
+            }
+            (Value::Pool(p), "handles") | (Value::Pool(p), "cursor") => {
+                let pool = p.lock().unwrap();
+                let pool_id = pool.pool_id;
+                let handles: Vec<Value> = pool
+                    .valid_handles()
+                    .iter()
+                    .map(|(idx, gen)| Value::Handle {
+                        pool_id,
+                        index: *idx,
+                        generation: *gen,
+                    })
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(handles))))
+            }
+
+            // Handle methods
+            (Value::Handle { pool_id, index, generation, .. }, "eq") => {
+                if let Some(Value::Handle {
+                    pool_id: p2,
+                    index: i2,
+                    generation: g2,
+                }) = args.first()
+                {
+                    Ok(Value::Bool(
+                        *pool_id == *p2 && *index == *i2 && *generation == *g2,
+                    ))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            (Value::Handle { .. }, "ne") => {
+                let eq_result = self.call_method(receiver.clone(), "eq", args)?;
+                if let Value::Bool(b) = eq_result {
+                    Ok(Value::Bool(!b))
+                } else {
+                    Ok(Value::Bool(true))
+                }
             }
 
             // Vec instance methods
             (Value::Vec(v), "push") => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit);
-                v.borrow_mut().push(item);
-                Ok(Value::Unit)
+                v.lock().unwrap().push(item);
+                // Return Ok(()) wrapped as Result enum
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                })
             }
             (Value::Vec(v), "pop") => {
-                Ok(v.borrow_mut().pop().unwrap_or(Value::Unit))
+                Ok(v.lock().unwrap().pop().unwrap_or(Value::Unit))
             }
             (Value::Vec(v), "len") => {
-                Ok(Value::Int(v.borrow().len() as i64))
+                Ok(Value::Int(v.lock().unwrap().len() as i64))
             }
             (Value::Vec(v), "get") => {
                 let idx = self.expect_int(&args, 0)? as usize;
-                Ok(v.borrow().get(idx).cloned().unwrap_or(Value::Unit))
+                Ok(v.lock().unwrap().get(idx).cloned().unwrap_or(Value::Unit))
             }
             (Value::Vec(v), "is_empty") => {
-                Ok(Value::Bool(v.borrow().is_empty()))
+                Ok(Value::Bool(v.lock().unwrap().is_empty()))
             }
             (Value::Vec(v), "clear") => {
-                v.borrow_mut().clear();
+                v.lock().unwrap().clear();
                 Ok(Value::Unit)
             }
             (Value::Vec(v), "iter") => {
                 // Return a copy of the Vec for iteration
                 // TODO: Implement proper iterator type with skip(), take(), etc.
-                Ok(Value::Vec(Rc::clone(v)))
+                Ok(Value::Vec(Arc::clone(v)))
             }
             (Value::Vec(v), "skip") => {
                 let n = self.expect_int(&args, 0)? as usize;
-                let skipped: Vec<Value> = v.borrow().iter().skip(n).cloned().collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(skipped))))
+                let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(skipped))))
             }
             (Value::Vec(v), "first") => {
-                match v.borrow().first().cloned() {
+                match v.lock().unwrap().first().cloned() {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1837,7 +2575,7 @@ impl Interpreter {
                 }
             }
             (Value::Vec(v), "last") => {
-                match v.borrow().last().cloned() {
+                match v.lock().unwrap().last().cloned() {
                     Some(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
@@ -1852,25 +2590,25 @@ impl Interpreter {
             }
             (Value::Vec(v), "contains") => {
                 if let Some(needle) = args.first() {
-                    let found = v.borrow().iter().any(|item| Self::value_eq(item, needle));
+                    let found = v.lock().unwrap().iter().any(|item| Self::value_eq(item, needle));
                     Ok(Value::Bool(found))
                 } else {
                     Err(RuntimeError::ArityMismatch { expected: 1, got: 0 })
                 }
             }
             (Value::Vec(v), "reverse") => {
-                v.borrow_mut().reverse();
+                v.lock().unwrap().reverse();
                 Ok(Value::Unit)
             }
             (Value::Vec(v), "join") => {
                 let sep = self.expect_string(&args, 0)?;
                 let joined: String = v
-                    .borrow()
+                    .lock().unwrap()
                     .iter()
                     .map(|item| format!("{}", item))
                     .collect::<Vec<_>>()
                     .join(&sep);
-                Ok(Value::String(Rc::new(RefCell::new(joined))))
+                Ok(Value::String(Arc::new(Mutex::new(joined))))
             }
 
             // Module methods (fs.read_file, io.read_line, etc.)
@@ -1880,12 +2618,12 @@ impl Interpreter {
                     Ok(content) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(content)))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -1895,18 +2633,18 @@ impl Interpreter {
                     Ok(content) => {
                         let lines: Vec<Value> = content
                             .lines()
-                            .map(|l| Value::String(Rc::new(RefCell::new(l.to_string()))))
+                            .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
                             .collect();
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Rc::new(RefCell::new(lines)))],
+                            fields: vec![Value::Vec(Arc::new(Mutex::new(lines)))],
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -1922,7 +2660,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -1944,7 +2682,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -1955,30 +2693,40 @@ impl Interpreter {
             (Value::Module(ModuleKind::Fs), "open") => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::File::open(&path) {
-                    Ok(file) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::File(Rc::new(RefCell::new(Some(file))))],
-                    }),
+                    Ok(file) => {
+                        let arc = Arc::new(Mutex::new(Some(file)));
+                        let ptr = Arc::as_ptr(&arc) as usize;
+                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::File(arc)],
+                        })
+                    }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
             (Value::Module(ModuleKind::Fs), "create") => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::File::create(&path) {
-                    Ok(file) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::File(Rc::new(RefCell::new(Some(file))))],
-                    }),
+                    Ok(file) => {
+                        let arc = Arc::new(Mutex::new(Some(file)));
+                        let ptr = Arc::as_ptr(&arc) as usize;
+                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::File(arc)],
+                        })
+                    }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -1988,14 +2736,14 @@ impl Interpreter {
                     Ok(p) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(
+                        fields: vec![Value::String(Arc::new(Mutex::new(
                             p.to_string_lossy().to_string(),
                         )))],
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2022,13 +2770,14 @@ impl Interpreter {
                             fields: vec![Value::Struct {
                                 name: "Metadata".to_string(),
                                 fields,
+                                resource_id: None,
                             }],
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2043,7 +2792,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2058,7 +2807,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2073,7 +2822,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2088,7 +2837,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2104,7 +2853,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2120,7 +2869,7 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2138,13 +2887,13 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::String(Rc::new(RefCell::new(line)))],
+                            fields: vec![Value::String(Arc::new(Mutex::new(line)))],
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
@@ -2152,9 +2901,9 @@ impl Interpreter {
                 let args_vec: Vec<Value> = self
                     .cli_args
                     .iter()
-                    .map(|s| Value::String(Rc::new(RefCell::new(s.clone()))))
+                    .map(|s| Value::String(Arc::new(Mutex::new(s.clone()))))
                     .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(args_vec))))
+                Ok(Value::Vec(Arc::new(Mutex::new(args_vec))))
             }
             (Value::Module(ModuleKind::Std), "exit") => {
                 let code = args
@@ -2172,7 +2921,7 @@ impl Interpreter {
                     Ok(val) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(val)))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(val)))],
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Option".to_string(),
@@ -2184,23 +2933,160 @@ impl Interpreter {
             (Value::Module(ModuleKind::Env), "vars") => {
                 let vars: Vec<Value> = std::env::vars()
                     .map(|(k, v)| {
-                        Value::Vec(Rc::new(RefCell::new(vec![
-                            Value::String(Rc::new(RefCell::new(k))),
-                            Value::String(Rc::new(RefCell::new(v))),
+                        Value::Vec(Arc::new(Mutex::new(vec![
+                            Value::String(Arc::new(Mutex::new(k))),
+                            Value::String(Arc::new(Mutex::new(v))),
                         ])))
                     })
                     .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(vars))))
+                Ok(Value::Vec(Arc::new(Mutex::new(vars))))
+            }
+
+            // random.f32() -> f32 in [0.0, 1.0)
+            (Value::Module(ModuleKind::Random), "f32") => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let hash = hasher.finish();
+                // xorshift64 step for better distribution
+                let mut x = hash;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let f = (x as f64) / (u64::MAX as f64);
+                Ok(Value::Float(f))
+            }
+
+            // random.f64() -> f64 in [0.0, 1.0)
+            (Value::Module(ModuleKind::Random), "f64") => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let hash = hasher.finish();
+                let mut x = hash;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let f = (x as f64) / (u64::MAX as f64);
+                Ok(Value::Float(f))
+            }
+
+            // random.i64() -> random i64
+            (Value::Module(ModuleKind::Random), "i64") => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let hash = hasher.finish();
+                let mut x = hash;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                Ok(Value::Int(x as i64))
+            }
+
+            // random.bool() -> bool
+            (Value::Module(ModuleKind::Random), "bool") => {
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let hash = hasher.finish();
+                Ok(Value::Bool(hash & 1 == 1))
+            }
+
+            // random.range(low, high) -> i64 in [low, high)
+            (Value::Module(ModuleKind::Random), "range") => {
+                if args.len() != 2 {
+                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
+                }
+                let low = args[0].as_int().map_err(|e| RuntimeError::TypeError(e))?;
+                let high = args[1].as_int().map_err(|e| RuntimeError::TypeError(e))?;
+                if low >= high {
+                    return Err(RuntimeError::TypeError(
+                        format!("random.range: low ({}) must be less than high ({})", low, high)
+                    ));
+                }
+                use std::collections::hash_map::DefaultHasher;
+                use std::hash::{Hash, Hasher};
+                let mut hasher = DefaultHasher::new();
+                std::time::SystemTime::now().hash(&mut hasher);
+                std::thread::current().id().hash(&mut hasher);
+                let hash = hasher.finish();
+                let mut x = hash;
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                let range = (high - low) as u64;
+                let value = low + (x % range) as i64;
+                Ok(Value::Int(value))
+            }
+
+            // time.sleep(duration)
+            (Value::Module(ModuleKind::Time), "sleep") => {
+                let duration_nanos = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                let duration = std::time::Duration::from_nanos(duration_nanos);
+                std::thread::sleep(duration);
+                // Return Ok(())
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                })
+            }
+
+            // Duration instance methods
+            (Value::Duration(nanos), "as_secs") => Ok(Value::Int((nanos / 1_000_000_000) as i64)),
+            (Value::Duration(nanos), "as_millis") => Ok(Value::Int((nanos / 1_000_000) as i64)),
+            (Value::Duration(nanos), "as_micros") => Ok(Value::Int((nanos / 1_000) as i64)),
+            (Value::Duration(nanos), "as_nanos") => Ok(Value::Int(*nanos as i64)),
+            (Value::Duration(nanos), "as_secs_f32") => {
+                Ok(Value::Float(*nanos as f64 / 1_000_000_000.0))
+            }
+            (Value::Duration(nanos), "as_secs_f64") => {
+                Ok(Value::Float(*nanos as f64 / 1_000_000_000.0))
+            }
+
+            // Instant instance methods
+            (Value::Instant(instant), "duration_since") => {
+                let other_instant = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                let duration = instant.duration_since(other_instant);
+                Ok(Value::Duration(duration.as_nanos() as u64))
+            }
+            (Value::Instant(instant), "elapsed") => {
+                let duration = instant.elapsed();
+                Ok(Value::Duration(duration.as_nanos() as u64))
             }
 
             // File instance methods
             (Value::File(f), "close") => {
-                let _ = f.borrow_mut().take();
+                // If already closed, return silently (e.g., ensure after explicit close)
+                if f.lock().unwrap().is_none() {
+                    return Ok(Value::Unit);
+                }
+                let ptr = Arc::as_ptr(&f) as usize;
+                if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
+                    self.resource_tracker.mark_consumed(id)
+                        .map_err(|msg| RuntimeError::Panic(msg))?;
+                }
+                let _ = f.lock().unwrap().take();
                 Ok(Value::Unit)
             }
             (Value::File(f), "read_all") => {
                 use std::io::Read;
-                let mut file_opt = f.borrow_mut();
+                let mut file_opt = f.lock().unwrap();
                 let file = file_opt.as_mut().ok_or_else(|| {
                     RuntimeError::TypeError("file is closed".to_string())
                 })?;
@@ -2209,18 +3095,18 @@ impl Interpreter {
                     Ok(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(content)))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
                     }),
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
             (Value::File(f), "write") => {
                 use std::io::Write;
-                let mut file_opt = f.borrow_mut();
+                let mut file_opt = f.lock().unwrap();
                 let file = file_opt.as_mut().ok_or_else(|| {
                     RuntimeError::TypeError("file is closed".to_string())
                 })?;
@@ -2234,13 +3120,13 @@ impl Interpreter {
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Rc::new(RefCell::new(e.to_string())))],
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
                     }),
                 }
             }
             (Value::File(f), "lines") => {
                 use std::io::{BufRead, BufReader};
-                let file_opt = f.borrow();
+                let file_opt = f.lock().unwrap();
                 let file = file_opt.as_ref().ok_or_else(|| {
                     RuntimeError::TypeError("file is closed".to_string())
                 })?;
@@ -2249,19 +3135,19 @@ impl Interpreter {
                 let lines: Vec<Value> = reader
                     .lines()
                     .filter_map(|r| r.ok())
-                    .map(|l| Value::String(Rc::new(RefCell::new(l))))
+                    .map(|l| Value::String(Arc::new(Mutex::new(l))))
                     .collect();
-                Ok(Value::Vec(Rc::new(RefCell::new(lines))))
+                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
             }
 
             // Metadata methods
-            (Value::Struct { name, fields }, "size") if name == "Metadata" => {
+            (Value::Struct { name, fields, .. }, "size") if name == "Metadata" => {
                 Ok(fields.get("size").cloned().unwrap_or(Value::Int(0)))
             }
-            (Value::Struct { name, fields }, "accessed") if name == "Metadata" => {
+            (Value::Struct { name, fields, .. }, "accessed") if name == "Metadata" => {
                 Ok(fields.get("accessed").cloned().unwrap_or(Value::Int(0)))
             }
-            (Value::Struct { name, fields }, "modified") if name == "Metadata" => {
+            (Value::Struct { name, fields, .. }, "modified") if name == "Metadata" => {
                 Ok(fields.get("modified").cloned().unwrap_or(Value::Int(0)))
             }
 
@@ -2422,19 +3308,142 @@ impl Interpreter {
 
             // Vec clone
             (Value::Vec(v), "clone") => {
-                let cloned = v.borrow().clone();
-                Ok(Value::Vec(Rc::new(RefCell::new(cloned))))
+                let cloned = v.lock().unwrap().clone();
+                Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
 
             // String ne (not-equal)
             (Value::String(a), "ne") => {
                 let b = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(*a.borrow() != b))
+                Ok(Value::Bool(*a.lock().unwrap() != b))
+            }
+
+            // ThreadHandle methods
+            (Value::ThreadHandle(handle), "join") => {
+                let jh = handle.handle.lock().unwrap().take();
+                match jh {
+                    Some(jh) => match jh.join() {
+                        Ok(Ok(val)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![val],
+                        }),
+                        Ok(Err(msg)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                        }),
+                        Err(_) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "thread panicked".to_string(),
+                            )))],
+                        }),
+                    },
+                    None => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "handle already joined".to_string(),
+                        )))],
+                    }),
+                }
+            }
+            (Value::ThreadHandle(handle), "detach") => {
+                let _ = handle.handle.lock().unwrap().take();
+                Ok(Value::Unit)
+            }
+
+            // Sender methods
+            (Value::Sender(tx), "send") => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                let tx = tx.lock().unwrap();
+                match tx.send(val) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel closed".to_string(),
+                        )))],
+                    }),
+                }
+            }
+
+            // Receiver methods
+            (Value::Receiver(rx), "recv") => {
+                let rx = rx.lock().unwrap();
+                match rx.recv() {
+                    Ok(val) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![val],
+                    }),
+                    Err(_) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel closed".to_string(),
+                        )))],
+                    }),
+                }
+            }
+            (Value::Receiver(rx), "try_recv") => {
+                let rx = rx.lock().unwrap();
+                match rx.try_recv() {
+                    Ok(val) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![val],
+                    }),
+                    Err(mpsc::TryRecvError::Empty) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new("empty".to_string())))],
+                    }),
+                    Err(mpsc::TryRecvError::Disconnected) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel closed".to_string(),
+                        )))],
+                    }),
+                }
+            }
+
+            // Channel constructor methods
+            (Value::TypeConstructor(TypeConstructorKind::Channel), "buffered") => {
+                let cap = self.expect_int(&args, 0)? as usize;
+                let (tx, rx) = mpsc::sync_channel::<Value>(cap);
+                let mut fields = HashMap::new();
+                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
+                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
+                Ok(Value::Struct {
+                    name: "ChannelPair".to_string(),
+                    fields,
+                    resource_id: None,
+                })
+            }
+            (Value::TypeConstructor(TypeConstructorKind::Channel), "unbuffered") => {
+                let (tx, rx) = mpsc::sync_channel::<Value>(0);
+                let mut fields = HashMap::new();
+                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
+                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
+                Ok(Value::Struct {
+                    name: "ChannelPair".to_string(),
+                    fields,
+                    resource_id: None,
+                })
             }
 
             // Generic to_string
             (_, "to_string") => {
-                Ok(Value::String(Rc::new(RefCell::new(format!("{}", receiver)))))
+                Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))))
             }
 
             // Check user-defined methods from extend blocks
@@ -2449,6 +3458,17 @@ impl Interpreter {
                 // Look up method in extend blocks
                 if let Some(type_methods) = self.methods.get(&type_name) {
                     if let Some(method_fn) = type_methods.get(method).cloned() {
+                        // Check if this method consumes self (take self)
+                        let consumes_self = method_fn.params.first()
+                            .map(|p| p.name == "self" && p.is_take)
+                            .unwrap_or(false);
+                        if consumes_self {
+                            if let Some(id) = self.get_resource_id(&receiver) {
+                                self.resource_tracker.mark_consumed(id)
+                                    .map_err(|msg| RuntimeError::Panic(msg))?;
+                            }
+                        }
+
                         // Call user-defined method with self as first argument
                         let mut all_args = vec![receiver];
                         all_args.extend(args);
@@ -2461,6 +3481,87 @@ impl Interpreter {
                     method: method.to_string(),
                 })
             }
+        }
+    }
+
+    /// Call a static method on a type (e.g., Instant.now(), Duration.seconds(5)).
+    fn call_type_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match (type_name, method) {
+            // Instant.now() -> Instant
+            ("Instant", "now") => {
+                if !args.is_empty() {
+                    return Err(RuntimeError::ArityMismatch {
+                        expected: 0,
+                        got: args.len(),
+                    });
+                }
+                Ok(Value::Instant(std::time::Instant::now()))
+            }
+
+            // Duration.seconds(n: u64) -> Duration
+            ("Duration", "seconds") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n * 1_000_000_000))
+            }
+
+            // Duration.millis(n: u64) -> Duration
+            ("Duration", "millis") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n * 1_000_000))
+            }
+
+            // Duration.micros(n: u64) -> Duration
+            ("Duration", "micros") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n * 1_000))
+            }
+
+            // Duration.nanos(n: u64) -> Duration
+            ("Duration", "nanos") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n))
+            }
+
+            // Duration.from_secs_f64(secs: f64) -> Duration
+            ("Duration", "from_secs_f64") => {
+                let secs = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_f64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                let nanos = (secs * 1_000_000_000.0) as u64;
+                Ok(Value::Duration(nanos))
+            }
+
+            // Duration.from_millis(n: u64) -> Duration (alias for millis)
+            ("Duration", "from_millis") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n * 1_000_000))
+            }
+
+            _ => Err(RuntimeError::TypeError(format!(
+                "type {} has no method '{}'",
+                type_name, method
+            ))),
         }
     }
 
@@ -2512,7 +3613,7 @@ impl Interpreter {
     /// Helper to extract a string from args.
     fn expect_string(&self, args: &[Value], idx: usize) -> Result<String, RuntimeError> {
         match args.get(idx) {
-            Some(Value::String(s)) => Ok(s.borrow().clone()),
+            Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
             Some(v) => Err(RuntimeError::TypeError(format!(
                 "expected string, got {}",
                 v.type_name()

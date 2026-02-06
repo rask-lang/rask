@@ -2,6 +2,7 @@
 // Demonstrates: Pool/Handle pattern, linear resource types, ensure cleanup, command pattern
 
 import fs
+import io
 
 // A line in the document
 struct Line {
@@ -46,7 +47,7 @@ extend Document {
         }
     }
 
-    func from_file(path: string) -> Result<Document, fs.IoError> {
+    func from_file(path: string) -> Document or fs.IoError {
         const file = try fs.open(path)
         ensure file.close()
 
@@ -70,7 +71,7 @@ extend Document {
     }
 
     // Insert a new line after the given index (-1 for beginning)
-    func insert_line(self, after: i32, text: string) -> Result<(), Error> {
+    func insert_line(self, after: i32, text: string) -> () or Error {
         const h = try self.lines.insert(Line { text: text.clone() })
         const insert_pos = (after + 1) as usize
         try self.line_order.insert(insert_pos, h)
@@ -82,7 +83,7 @@ extend Document {
     }
 
     // Delete a line at the given index
-    func delete_line(self, at: i32) -> Result<(), Error> {
+    func delete_line(self, at: i32) -> () or Error {
         if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
 
         const h = self.line_order.remove(at as usize)
@@ -95,7 +96,7 @@ extend Document {
     }
 
     // Modify text at the given line
-    func modify_line(self, at: i32, new_text: string) -> Result<(), Error> {
+    func modify_line(self, at: i32, new_text: string) -> () or Error {
         if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
 
         const h = self.line_order[at as usize]
@@ -109,7 +110,7 @@ extend Document {
     }
 
     // Undo the last edit
-    func undo(self) -> Result<bool, Error> {
+    func undo(self) -> bool or Error {
         const cmd = match self.undo_stack.pop() {
             Some(c) => c,
             None => return Ok(false),
@@ -122,7 +123,7 @@ extend Document {
     }
 
     // Redo the last undone edit
-    func redo(self) -> Result<bool, Error> {
+    func redo(self) -> bool or Error {
         const cmd = match self.redo_stack.pop() {
             Some(c) => c,
             None => return Ok(false),
@@ -135,7 +136,7 @@ extend Document {
     }
 
     // Apply a command without recording it
-    func apply_command_silent(self, cmd: EditCommand) -> Result<(), Error> {
+    func apply_command_silent(self, cmd: EditCommand) -> () or Error {
         match cmd {
             InsertLine(after, text) => {
                 const h = try self.lines.insert(Line { text: text })
@@ -154,7 +155,7 @@ extend Document {
     }
 
     // Save document to file
-    func save(self, path: string) -> Result<(), fs.IoError> {
+    func save(self, path: string) -> () or fs.IoError {
         const file = try fs.create(path)
         ensure file.close()
 
@@ -189,21 +190,24 @@ enum EditorCommand {
 }
 
 func parse_command(input: string) -> Option<EditorCommand> {
-    const parts = input.trim().split_whitespace().collect<Vec<string>>()
+    const parts: Vec<string> = Vec.new()
+    for part in input.trim().split_whitespace() {
+        try parts.push(part.to_owned())
+    }
     if parts.is_empty(): return None
 
     match parts[0] {
         "i" | "insert" if parts.len() >= 3 => {
-            const after = parts[1].parse<i32>().ok()?
+            const after = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
             Some(EditorCommand.Insert(after: after, text: text))
         }
         "d" | "delete" if parts.len() >= 2 => {
-            const line = parts[1].parse<i32>().ok()?
+            const line = try parts[1].parse<i32>().ok()
             Some(EditorCommand.Delete(line: line))
         }
         "e" | "edit" if parts.len() >= 3 => {
-            const line = parts[1].parse<i32>().ok()?
+            const line = try parts[1].parse<i32>().ok()
             const text = parts[2..].join(" ")
             Some(EditorCommand.Edit(line: line, text: text))
         }
@@ -231,14 +235,14 @@ func print_help() {
 }
 
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     let doc = Document.new()
 
     println("Simple Text Editor - type 'help' for commands")
 
     loop {
         print("> ")
-        const input = std.read_line()?
+        const input = try io.read_line()
 
         const cmd = match parse_command(input) {
             Some(c) => c,
@@ -250,25 +254,25 @@ func main() -> Result<(), Error> {
 
         match cmd {
             Insert(after, text) => {
-                doc.insert_line(after, text)?
+                try doc.insert_line(after, text)
                 println("Inserted line")
             }
             Delete(line) => {
-                doc.delete_line(line - 1)?  // 1-indexed to 0-indexed
+                try doc.delete_line(line - 1)  // 1-indexed to 0-indexed
                 println("Deleted line {line}")
             }
             Edit(line, text) => {
-                doc.modify_line(line - 1, text)?
+                try doc.modify_line(line - 1, text)
                 println("Modified line {line}")
             }
             Undo => {
-                if doc.undo()?: println("Undone") else: println("Nothing to undo")
+                if try doc.undo(): println("Undone") else: println("Nothing to undo")
             }
             Redo => {
-                if doc.redo()?: println("Redone") else: println("Nothing to redo")
+                if try doc.redo(): println("Redone") else: println("Nothing to redo")
             }
             Save(path) => {
-                doc.save(path.clone())?
+                try doc.save(path.clone())
                 println("Saved to {path}")
             }
             Print => doc.display(),

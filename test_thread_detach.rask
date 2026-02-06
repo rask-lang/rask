@@ -1,0 +1,19 @@
+// Test thread detach (fire-and-forget)
+
+@entry
+func main() {
+    // Detach a thread — fire and forget
+    const ch = Channel.buffered(1)
+    const tx = ch.sender
+    const rx = ch.receiver
+
+    spawn_raw {
+        try tx.send(99)
+    }.detach()
+
+    // We can still receive the result via channel
+    const val = try rx.recv()
+    println(val)  // 99
+
+    println("detach: all tests passed")
+}

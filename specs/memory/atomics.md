@@ -192,7 +192,7 @@ const old = counter.swap(new_value, AcqRel)
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> Result<T, T>` | If value == current, set to new. Returns Ok(old) on success, Err(actual) on failure. |
+| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or T` | If value == current, set to new. Returns Ok(old) on success, Err(actual) on failure. |
 | `compare_exchange_weak(current, new, success, fail)` | Same | MAY spuriously fail. Use in loops. |
 
 **Compare-exchange ordering constraint:** `failure_order` MUST be no stronger than `success_order`, and MUST NOT be `Release` or `AcqRel`.

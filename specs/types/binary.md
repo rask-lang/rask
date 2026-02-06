@@ -84,13 +84,13 @@ For any `@binary struct T`:
 ```rask
 extend T {
     /// Parse from byte slice, return (value, remaining_bytes)
-    func parse(data: []u8) -> Result<(T, []u8), ParseError>
+    func parse(data: []u8) -> (T, []u8) or ParseError
 
     /// Build into new byte vector
     func build(self) -> Vec<u8>
 
     /// Build into existing buffer, return bytes written
-    func build_into(self, buffer: []u8) -> Result<usize, BuildError>
+    func build_into(self, buffer: []u8) -> usize or BuildError
 
     /// Total size in bytes (rounded up)
     const SIZE: usize
@@ -129,7 +129,7 @@ struct IpHeader {
 
 // SIZE = 20 bytes (160 bits)
 
-func handle_packet(data: []u8) -> Result<(), Error> {
+func handle_packet(data: []u8) -> () or Error {
     let (header, payload) = try IpHeader.parse(data)
 
     match header.version {

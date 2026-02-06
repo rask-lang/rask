@@ -121,7 +121,7 @@
       "patterns": [
         {
           "name": "keyword.control.rask",
-          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert)\\b"
+          "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try)\\b"
         },
         {
           "name": "keyword.declaration.rask",
@@ -129,15 +129,15 @@
         },
         {
           "name": "keyword.modifier.rask",
-          "match": "\\b(public|take|own|unsafe|comptime|native|export|using)\\b"
+          "match": "\\b(public|take|own|unsafe|comptime|native|export|using|lazy)\\b"
         },
         {
           "name": "keyword.other.rask",
-          "match": "\\b(spawn|spawn_thread|spawn_raw|select|with|ensure|where|as|asm|step|benchmark)\\b"
+          "match": "\\b(spawn|spawn_thread|spawn_raw|select|with|ensure|where|as|or|asm|step|benchmark)\\b"
         },
         {
           "name": "constant.language.rask",
-          "match": "\\b(true|false|none|null)\\b"
+          "match": "\\b(true|false|None|null)\\b"
         },
         {
           "name": "variable.language.self.rask",
@@ -196,12 +196,8 @@
           "match": "(\\?\\?|\\?\\.)"
         },
         {
-          "name": "keyword.operator.try.rask",
+          "name": "keyword.operator.optional.rask",
           "match": "\\?"
-        },
-        {
-          "name": "keyword.operator.namespace.rask",
-          "match": "::"
         }
       ]
     },

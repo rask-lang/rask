@@ -1,7 +1,7 @@
-// Compile Error: Incompatible error types with `?`
+// Compile Error: Incompatible error types with `try`
 // ERROR: cannot propagate 'ParseError' where 'IoError' is expected
 
-// This file demonstrates that error propagation with `?` requires
+// This file demonstrates that error propagation with `try` requires
 // compatible error types. You can't mix unrelated errors without conversion.
 
 import fs
@@ -20,29 +20,29 @@ enum IoError {
 }
 
 // This function returns IoError
-func read_file(path: string) -> Result<string, IoError> {
-    fs.open(path)?.read_all()
+func read_file(path: string) -> string or IoError {
+    try fs.open(path).read_all()
 }
 
 // This function returns ParseError
-func parse_config(content: string) -> Result<Config, ParseError> {
+func parse_config(content: string) -> Config or ParseError {
     // ... parsing logic
     Ok(Config { value: 0 })
 }
 
 // COMPILE ERROR: Incompatible error types
-func load_config(path: string) -> Result<Config, IoError> {
-    const content = read_file(path)?  // OK: IoError matches return type
+func load_config(path: string) -> Config or IoError {
+    const content = try read_file(path)  // OK: IoError matches return type
 
     // ERROR: parse_config returns ParseError, but function returns IoError
-    // The `?` operator cannot automatically convert between them
-    const config = parse_config(content)?
+    // The `try` operator cannot automatically convert between them
+    const config = try parse_config(content)
 
     Ok(config)
 }
 
 // Why this is an error:
-// The `?` operator extracts Ok or returns Err early.
+// The `try` operator extracts Ok or returns Err early.
 // But it can only return errors compatible with the function's return type.
 // ParseError and IoError are unrelated - no automatic conversion exists.
 
@@ -54,9 +54,9 @@ enum ConfigError {
     Parse(ParseError),
 }
 
-func load_config_v1(path: string) -> Result<Config, ConfigError> {
-    const content = read_file(path).map_err(ConfigError.Io)?
-    const config = parse_config(content).map_err(ConfigError.Parse)?
+func load_config_v1(path: string) -> Config or ConfigError {
+    const content = try read_file(path).map_err(ConfigError.Io)
+    const config = try parse_config(content).map_err(ConfigError.Parse)
     Ok(config)
 }
 
@@ -71,23 +71,23 @@ extend ConfigError {
     }
 }
 
-// Now `?` can auto-convert (if From is in scope)
-func load_config_v2(path: string) -> Result<Config, ConfigError> {
-    const content = read_file(path)?     // IoError -> ConfigError via From
-    const config = parse_config(content)?  // ParseError -> ConfigError via From
+// Now `try` can auto-convert (if From is in scope)
+func load_config_v2(path: string) -> Config or ConfigError {
+    const content = try read_file(path)     // IoError -> ConfigError via From
+    const config = try parse_config(content)  // ParseError -> ConfigError via From
     Ok(config)
 }
 
 // Option 3: Use a generic error type
-func load_config_v3(path: string) -> Result<Config, Error> {
-    const content = read_file(path)?     // IoError -> Error (widening)
-    const config = parse_config(content)?  // ParseError -> Error (widening)
+func load_config_v3(path: string) -> Config or Error {
+    const content = try read_file(path)     // IoError -> Error (widening)
+    const config = try parse_config(content)  // ParseError -> Error (widening)
     Ok(config)
 }
 
 // Another error case: error type can't widen
-func narrow_error() -> Result<i32, ParseError> {
-    const x = might_fail()?  // Returns Result<i32, IoError>
+func narrow_error() -> i32 or ParseError {
+    const x = try might_fail()  // Returns i32 or IoError
 
     // ERROR: IoError cannot convert to ParseError
     // Widening works (specific -> general), narrowing doesn't
@@ -95,7 +95,7 @@ func narrow_error() -> Result<i32, ParseError> {
     Ok(x)
 }
 
-func might_fail() -> Result<i32, IoError> {
+func might_fail() -> i32 or IoError {
     Ok(42)
 }
 

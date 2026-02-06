@@ -61,7 +61,7 @@ This matches acquisition order—resources acquired last are released first.
 
 <!-- test: parse -->
 ```rask
-func process() -> Result<(), Error> {
+func process() -> () or Error {
     const file = try open("data.txt")   // file is linear
     ensure file.close()              // Compiler: file WILL be consumed
 
@@ -115,7 +115,7 @@ ensure file.close() catch |e| { try fallible() }   // ❌ Error: catch handler c
 <!-- test: parse -->
 ```rask
 // When cleanup errors actually matter (rare), don't use ensure:
-func write_important(data: Data) -> Result<(), Error> {
+func write_important(data: Data) -> () or Error {
     const file = try create("important.txt")
     try file.write(data)
     try file.close()                 // Explicit: propagate close error
@@ -133,7 +133,7 @@ func write_important(data: Data) -> Result<(), Error> {
 
 <!-- test: skip -->
 ```rask
-func process(a: File, b: File) -> Result<(), Error> {
+func process(a: File, b: File) -> () or Error {
     ensure a.close()
 
     const data = try some_op()     // ✅ Safe: a is ensured
@@ -147,7 +147,7 @@ func process(a: File, b: File) -> Result<(), Error> {
 
 <!-- test: parse -->
 ```rask
-func process() -> Result<(), Error> {
+func process() -> () or Error {
     const config = try load_config()
 
     {
@@ -203,7 +203,7 @@ const x = ensure foo()    // ❌ Invalid: ensure doesn't return
 ### File Processing
 <!-- test: parse -->
 ```rask
-func copy_file(src: string, dst: string) -> Result<(), Error> {
+func copy_file(src: string, dst: string) -> () or Error {
     const input = try open(src)
     ensure input.close()
 
@@ -219,7 +219,7 @@ func copy_file(src: string, dst: string) -> Result<(), Error> {
 ### Database Transaction
 <!-- test: parse -->
 ```rask
-func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> Result<(), Error> {
+func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> () or Error {
     const tx = try db.begin()
     ensure tx.rollback()      // Rollback if we don't commit
 
@@ -242,7 +242,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> Resu
 Cleaning up pools of linear resources:
 
 ```rask
-func process_many_files(paths: Vec<string>) -> Result<(), Error> {
+func process_many_files(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
     ensure files.take_all_with(|f| { f.close(); })
 
@@ -261,7 +261,7 @@ func process_many_files(paths: Vec<string>) -> Result<(), Error> {
 **Note:** Errors during cleanup (e.g., close() fails) are ignored in the ensure block. If cleanup errors matter, don't use ensure - explicitly take_all before returning:
 
 ```rask
-func process_many_files_careful(paths: Vec<string>) -> Result<(), Error> {
+func process_many_files_careful(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
 
     for path in paths {

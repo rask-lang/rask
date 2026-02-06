@@ -1,0 +1,81 @@
+// ERROR: Multiple pools of the same type in scope
+//
+// This demonstrates the compile error when the compiler cannot uniquely
+// determine which pool should satisfy a context requirement.
+
+struct Player {
+    health: i32,
+    team_id: i32,
+}
+
+public func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+    h.health -= amount
+}
+
+// ERROR: Ambiguous context — two Pool<Player> in scope
+func process_teams() {
+    const team_a = Pool::<Player>.new()
+    const team_b = Pool::<Player>.new()
+
+    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+
+    damage(h, 10)    // ERROR: which pool should satisfy Pool<Player>?
+}
+
+// Expected error message:
+//
+// error: ambiguous context requirement Pool<Player>
+//   --> context_ambiguous.rask:21
+//    |
+// 15 |     const team_a = Pool::<Player>.new()
+//    |           ------ candidate Pool<Player>
+// 16 |     const team_b = Pool::<Player>.new()
+//    |           ------ candidate Pool<Player>
+//    |
+// 21 |     damage(h, 10)
+//    |     ^^^^^^ multiple pools of type Pool<Player> in scope
+//    |
+//    help: use explicit pool access instead:
+//          team_a[h].health -= 10
+//
+//    help: or pass pool as explicit parameter:
+//          func damage(pool: Pool<Player>, h: Handle<Player>, amount: i32)
+
+// FIX 1: Use explicit pool access (skip auto-resolution)
+func process_teams_fixed() {
+    const team_a = Pool::<Player>.new()
+    const team_b = Pool::<Player>.new()
+
+    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+
+    team_a[h].health -= 10    // ✅ Explicit pool, no ambiguity
+}
+
+// FIX 2: Separate into scopes
+func process_teams_scoped() {
+    {
+        const team_a = Pool::<Player>.new()
+        const h = try team_a.insert(Player { health: 100, team_id: 1 })
+        damage(h, 10)    // ✅ Only one Pool<Player> in scope
+    }
+
+    {
+        const team_b = Pool::<Player>.new()
+        const h = try team_b.insert(Player { health: 100, team_id: 2 })
+        damage(h, 10)    // ✅ Only one Pool<Player> in scope
+    }
+}
+
+// FIX 3: Use explicit parameter for multi-pool functions
+func damage_explicit(pool: Pool<Player>, h: Handle<Player>, amount: i32) {
+    pool[h].health -= amount
+}
+
+func process_teams_explicit() {
+    const team_a = Pool::<Player>.new()
+    const team_b = Pool::<Player>.new()
+
+    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+
+    damage_explicit(team_a, h, 10)    // ✅ Explicitly specify pool
+}

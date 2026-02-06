@@ -33,7 +33,7 @@ The `@entry` attribute makes entry points explicit rather than relying on a magi
 | Signature | When to Use |
 |-----------|-------------|
 | `@entry public func main()` | Sync program, infallible |
-| `@entry public func main() -> Result<()>` | Sync program, can fail |
+| `@entry public func main() -> () or Error` | Sync program, can fail |
 
 The function name `main` is convention, not required. Any name works:
 ```rask
@@ -109,7 +109,7 @@ public func main() {
 }
 
 @entry
-public func main() -> Result<()> {
+public func main() -> () or Error {
     if error { return Err(e) }  // Exits with status 1
     Ok(())  // Exits with status 0
 }
@@ -173,7 +173,7 @@ public func main() {
 ```rask
 // pkg: http
 // file: http/request.rask
-public func parse(input: string) -> Result<Request> { ... }
+public func parse(input: string) -> Request or Error { ... }
 
 // file: http/request_test.rask
 import http  // Can import own package in tests
@@ -325,7 +325,7 @@ path = "examples/advanced.rask"
 - **Memory Model**: `Args`, `stdin`, `stdout`, `stderr` are linear resources in `@entry` scope; must be consumed or explicitly leaked
 - **Type System**: `@entry` signatures are checked for exact match (no inference of return type)
 - **Module System**: Importing a package with `@entry` imports its library API, not its entry point (entry is special, never exported)
-- **Error Handling**: `try` propagation works in `@entry func -> Result<()>`; error returned becomes process exit status
+- **Error Handling**: `try` propagation works in `@entry func -> () or Error`; error returned becomes process exit status
 - **Concurrency**: `@entry async func` initializes async runtime for main thread; sync threads can be spawned from async entry
 - **Compiler Architecture**: Entry point detection happens during package parsing; multiple `@entry` error caught early
 - **C Interop**: `extern "C"` functions can be entry points for embedding Rask in C programs, but that's separate from `@entry`

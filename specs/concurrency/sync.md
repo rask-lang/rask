@@ -302,7 +302,7 @@ extend ConfigService {
 ```rask
 static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
 
-func init_config(path: string) -> Result<()> {
+func init_config(path: string) -> () or Error {
     let loaded = try load_config_file(path)
     CONFIG.write(|c| *c = loaded)
     Ok(())
@@ -362,7 +362,7 @@ struct ConnectionPool {
 }
 
 extend ConnectionPool {
-    func checkout(self) -> Result<Connection, PoolError> {
+    func checkout(self) -> Connection or PoolError {
         self.connections.lock(|conns| {
             conns.pop().ok_or(PoolError.Empty)
         })
@@ -395,7 +395,7 @@ extend FeatureFlags {
         self.flags.write(|f| f.insert(flag, enabled))
     }
 
-    func reload_from_server(self) -> Result<()> {
+    func reload_from_server(self) -> () or Error {
         let new_flags = try fetch_flags_from_server()
         self.flags.write(|f| *f = new_flags)
         Ok(())

@@ -215,6 +215,8 @@ impl Parser {
             TokenKind::As => "as".to_string(),
             TokenKind::Is => "is".to_string(),
             TokenKind::Step => "step".to_string(),
+            TokenKind::Or => "or".to_string(),
+            TokenKind::Try => "try".to_string(),
             _ => return Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -573,8 +575,22 @@ impl Parser {
         Ok(params)
     }
 
-    /// Parse a type name.
+    /// Parse a type name (including `T or E` shorthand for `Result<T, E>`).
     fn parse_type_name(&mut self) -> Result<String, ParseError> {
+        let base = self.parse_base_type()?;
+
+        // Handle Result shorthand: T or E → Result<T, E>
+        if self.check(&TokenKind::Or) {
+            self.advance();
+            let error_ty = self.parse_type_name()?;
+            return Ok(format!("Result<{}, {}>", base, error_ty));
+        }
+
+        Ok(base)
+    }
+
+    /// Parse a base type without the `or` shorthand.
+    fn parse_base_type(&mut self) -> Result<String, ParseError> {
         // Handle unit type () and tuple types (T1, T2, ...)
         if self.check(&TokenKind::LParen) {
             self.advance();
@@ -1492,7 +1508,7 @@ impl Parser {
             TokenKind::Int(_) | TokenKind::Float(_) | TokenKind::String(_) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With | TokenKind::Spawn
-                | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe
+                | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
         )
     }
 
@@ -1552,9 +1568,32 @@ impl Parser {
         let body = if self.check(&TokenKind::LBrace) {
             self.parse_block_body()?
         } else {
-            vec![self.parse_stmt()?]
+            // Parse expression (not full stmt) so we can check for catch before terminator
+            let expr = self.parse_expr()?;
+            let span = expr.span.clone();
+            vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr), span }]
         };
-        Ok(StmtKind::Ensure(body))
+
+        // Parse optional catch clause: catch |param| handler
+        let catch = if self.check(&TokenKind::Catch) {
+            self.advance(); // consume 'catch'
+            self.expect(&TokenKind::Pipe)?;
+            let name = self.expect_ident()?;
+            self.expect(&TokenKind::Pipe)?;
+            let handler = if self.check(&TokenKind::LBrace) {
+                self.parse_block_body()?
+            } else {
+                let expr = self.parse_expr()?;
+                let span = expr.span.clone();
+                vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr), span }]
+            };
+            Some((name, handler))
+        } else {
+            None
+        };
+
+        self.expect_terminator()?;
+        Ok(StmtKind::Ensure { body, catch })
     }
 
     fn parse_comptime_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -1858,6 +1897,18 @@ impl Parser {
 
             // Check expression: `check condition` or `check condition, "message"`
             TokenKind::Check => self.parse_check_expr(),
+
+            // Try expression (prefix): `try expr`
+            TokenKind::Try => {
+                self.advance();
+                let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
+                let end = inner.span.end;
+                Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Try(Box::new(inner)),
+                    span: Span::new(start, end),
+                })
+            }
 
             _ => Err(ParseError::expected(
                 "expression",

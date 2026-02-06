@@ -90,26 +90,6 @@ Based on critical review of examples and specs (2026-02-05)
 
 ---
 
-## 5. Fix Syntax Inconsistencies in Examples — Partially Done
-
-**Priority: MEDIUM**
-
-- [x] `String` → `string` (lowercase) in all examples
-  - [x] cli_calculator.rask, simple_test.rask, http_api_server.rask, text_editor.rask, file_copy.rask, grep_clone.rask
-  - [x] CORE_DESIGN.md built-in types list updated
-- [x] `let` → `const` where bindings are not reassigned
-
-- [ ] Document `GameState.{entities}` projection syntax
-  - [ ] game_loop.rask:110 uses this, but spec doesn't define it
-  - [ ] Either: add to spec, or remove from example
-
-- [ ] Clarify `f32x8` type
-  - [ ] sensor_processor.rask:402 shows `let acc: f32x8 = [0.0; 8]`
-  - [ ] Is this array syntax or SIMD type?
-
-- [ ] Run syntax checker on ALL examples for remaining inconsistencies
-
----
 
 ## 6. Implement and Validate Concurrency Claims
 

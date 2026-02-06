@@ -58,7 +58,7 @@ The Rask standard library provides foundational types and modules for systems pr
 | Module | Purpose | Status |
 |--------|---------|--------|
 | [cli](#cli) | Command-line argument parsing | Planned |
-| [time](#time) | Duration, Instant, timestamps | Planned |
+| [time](#time) | Duration, Instant, timestamps | Specified |
 | [os](#os) | Platform-specific operations | Planned |
 | [fmt](#fmt) | String formatting | Planned |
 | [math](#math) | Mathematical functions | Planned |
@@ -183,8 +183,8 @@ The `io` module provides traits for reading and writing byte streams.
 
 ```rask
 trait Reader {
-    func read(self, buf: []u8) -> Result<usize, IoError>
-    func read_all(self) -> Result<[]u8, IoError>
+    func read(self, buf: []u8) -> usize or IoError
+    func read_all(self) -> []u8 or IoError
 }
 ```
 
@@ -192,9 +192,9 @@ trait Reader {
 
 ```rask
 trait Writer {
-    func write(self, data: []u8) -> Result<usize, IoError>
-    func write_all(self, data: []u8) -> Result<(), IoError>
-    func flush(self) -> Result<(), IoError>
+    func write(self, data: []u8) -> usize or IoError
+    func write_all(self, data: []u8) -> () or IoError
+    func flush(self) -> () or IoError
 }
 ```
 
@@ -230,9 +230,9 @@ The `fs` module provides file system operations.
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fs.open(path)` | `(read string) -> Result<File, IoError>` | Open for reading |
-| `fs.create(path)` | `(read string) -> Result<File, IoError>` | Create/truncate |
-| `fs.open_with(path, opts)` | `(...) -> Result<File, IoError>` | Open with options |
+| `fs.open(path)` | `(read string) -> File or IoError` | Open for reading |
+| `fs.create(path)` | `(read string) -> File or IoError` | Create/truncate |
+| `fs.open_with(path, opts)` | `(...) -> File or IoError` | Open with options |
 
 ### File Handle (Linear)
 
@@ -241,17 +241,17 @@ The `fs` module provides file system operations.
 const file = try fs.open("data.txt")
 ensure file.close()
 
-const data = file.read_all()?
-process(data)?
+const data = try file.read_all()
+try process(data)
 ```
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `.read(buf)` | `([]u8) -> Result<usize, IoError>` | Read bytes |
-| `.read_all()` | `() -> Result<[]u8, IoError>` | Read entire file |
-| `.write(data)` | `(read []u8) -> Result<usize, IoError>` | Write bytes |
-| `.close()` | `() -> Result<(), IoError>` | Close handle (consumes) |
-| `.metadata()` | `() -> Result<Metadata, IoError>` | Get file info |
+| `.read(buf)` | `([]u8) -> usize or IoError` | Read bytes |
+| `.read_all()` | `() -> []u8 or IoError` | Read entire file |
+| `.write(data)` | `(read []u8) -> usize or IoError` | Write bytes |
+| `.close()` | `() -> () or IoError` | Close handle (consumes) |
+| `.metadata()` | `() -> Metadata or IoError` | Get file info |
 
 ### Directory Operations
 
@@ -291,14 +291,14 @@ The `net` module provides networking primitives.
 ```rask
 import net
 
-const listener = net.tcp_listen("0.0.0.0:8080")?
+const listener = try net.tcp_listen("0.0.0.0:8080")
 ensure listener.close()
 
 loop {
-    const (stream, addr) = listener.accept()?
+    const (stream, addr) = try listener.accept()
     spawn {
         ensure stream.close()
-        handle_connection(stream)?
+        try handle_connection(stream)
     }.detach()
 }
 ```
@@ -306,11 +306,11 @@ loop {
 ### TCP Client
 
 ```rask
-const stream = net.tcp_connect("example.com:80")?
+const stream = try net.tcp_connect("example.com:80")
 ensure stream.close()
 
-stream.write_all(request)?
-const response = stream.read_all()?
+try stream.write_all(request)
+const response = try stream.read_all()
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -359,7 +359,7 @@ if elapsed > Duration.seconds(1) {
 time.sleep(Duration.millis(100))
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [time.md](time.md) for full specification.
 
 ---
 
@@ -516,7 +516,7 @@ The `json` module provides JSON parsing and serialization (RFC 8259).
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `json.parse(s)` | `(read string) -> Result<JsonValue, JsonError>` | Parse JSON string |
+| `json.parse(s)` | `(read string) -> JsonValue or JsonError` | Parse JSON string |
 | `json.stringify(v)` | `(read JsonValue) -> string` | Serialize to JSON |
 | `json.stringify_pretty(v)` | `(read JsonValue) -> string` | Serialize with indentation |
 
@@ -538,10 +538,10 @@ enum JsonValue {
 ```rask
 import json
 
-const data = json.parse(input)?
+const data = try json.parse(input)
 match data {
     JsonValue.Object(obj) => {
-        const name = obj["name"]?
+        const name = try obj["name"]
     }
     _ => return Err(InvalidFormat)
 }
@@ -553,7 +553,7 @@ const output = json.stringify(data)
 
 ```rask
 // Types implementing Serialize/Deserialize traits
-const user: User = json.decode(input)?
+const user: User = try json.decode(input)
 const output = json.encode(user)
 ```
 
@@ -580,16 +580,16 @@ The `http` module provides HTTP client and server (RFC 7230-7235).
 ```rask
 import http
 
-const server = http.Server.listen(":8080")?
+const server = try http.Server.listen(":8080")
 ensure server.close()
 
 loop {
-    const (req, resp) = server.accept()?
+    const (req, resp) = try server.accept()
 
     if req.method == "GET" && req.path == "/health" {
-        resp.status(200).body("OK").send()?
+        try resp.status(200).body("OK").send()
     } else {
-        resp.status(404).send()?
+        try resp.status(404).send()
     }
 }
 ```
@@ -601,14 +601,14 @@ import http
 
 const client = http.Client.new()
 
-const resp = client.get("https://api.example.com/data")?
-const body = resp.body_string()?
+const resp = try client.get("https://api.example.com/data")
+const body = try resp.body_string()
 
 // With headers
-const resp = client.post("https://api.example.com/submit")
+const resp = try client.post("https://api.example.com/submit")
     .header("Content-Type", "application/json")
     .body(json_data)
-    .send()?
+    .send()
 ```
 
 ### Request/Response
@@ -643,11 +643,11 @@ The `tls` module provides TLS/SSL connections (wraps system TLS library).
 ```rask
 import tls
 
-const stream = tls.connect("example.com:443")?
+const stream = try tls.connect("example.com:443")
 ensure stream.close()
 
-stream.write_all(request)?
-const response = stream.read_all()?
+try stream.write_all(request)
+const response = try stream.read_all()
 ```
 
 ### Server
@@ -656,14 +656,14 @@ const response = stream.read_all()?
 import tls
 
 const config = tls.Config.new()
-    .cert_file("server.crt")?
-    .key_file("server.key")?
+const config = try config.cert_file("server.crt")
+const config = try config.key_file("server.key")
 
-const listener = tls.listen(":443", config)?
+const listener = try tls.listen(":443", config)
 ensure listener.close()
 
 loop {
-    const stream = listener.accept()?
+    const stream = try listener.accept()
     // handle encrypted connection
 }
 ```
@@ -684,7 +684,7 @@ import cli
 const args = cli.parse()
 
 const verbose = args.flag("verbose", "v")      // --verbose or -v
-const output = args.option("output", "o")?     // --output=file or -o file
+const output = try args.option("output", "o")     // --output=file or -o file
 const files = args.positional()                // remaining args
 ```
 
@@ -699,7 +699,7 @@ struct Args {
     files: Vec<string>,
 }
 
-let args: Args = cli.parse_into()?
+let args: Args = try cli.parse_into()
 ```
 
 ### Help Generation
@@ -712,7 +712,7 @@ const parser = cli.Parser.new("myapp")
     .option("output", "o", "Output file")
     .positional("files", "Input files")
 
-const args = parser.parse()?
+const args = try parser.parse()
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -729,7 +729,7 @@ The `encoding` module provides common encodings (RFC 4648).
 import encoding
 
 const encoded = encoding.base64.encode(data)      // -> string
-const decoded = encoding.base64.decode(encoded)?  // -> []u8
+const decoded = try encoding.base64.decode(encoded)  // -> []u8
 
 // URL-safe variant
 const encoded = encoding.base64url.encode(data)
@@ -739,14 +739,14 @@ const encoded = encoding.base64url.encode(data)
 
 ```rask
 const hex = encoding.hex.encode(data)      // -> string "48656c6c6f"
-const data = encoding.hex.decode(hex)?     // -> []u8
+const data = try encoding.hex.decode(hex)     // -> []u8
 ```
 
 ### URL Encoding
 
 ```rask
 const encoded = encoding.url.encode("hello world")  // "hello%20world"
-const decoded = encoding.url.decode(encoded)?       // "hello world"
+const decoded = try encoding.url.decode(encoded)       // "hello world"
 ```
 
 **Status:** Planned — detailed specification TODO.
@@ -809,7 +809,7 @@ struct Url {
 ```rask
 import url
 
-const u = url.parse("https://example.com:8080/path?query=1")?
+const u = try url.parse("https://example.com:8080/path?query=1")
 
 u.scheme    // "https"
 u.host      // "example.com"
@@ -821,7 +821,7 @@ u.query     // Some("query=1")
 ### Query Parameters
 
 ```rask
-const params = url.parse_query("name=Alice&age=30")?
+const params = try url.parse_query("name=Alice&age=30")
 params["name"]  // Some("Alice")
 
 const query = url.encode_query([("name", "Alice"), ("age", "30")])
@@ -955,8 +955,8 @@ for row in reader {
 // With headers
 const reader = csv.Reader.from_string(data).with_headers()
 for row in reader {
-    const name = row["name"]?
-    const age = row["age"]?
+    const name = try row["name"]
+    const age = try row["age"]
 }
 ```
 
@@ -964,8 +964,8 @@ for row in reader {
 
 ```rask
 const writer = csv.Writer.new()
-writer.write_row(["name", "age"])?
-writer.write_row(["Alice", "30"])?
+try writer.write_row(["name", "age"])
+try writer.write_row(["Alice", "30"])
 const output = writer.finish()
 ```
 
@@ -1001,7 +1001,7 @@ Methods for endianness: `to_be_bytes()`, `to_le_bytes()`, `from_be_bytes()`, `fr
 For one-off parsing without `@binary` structs:
 
 ```rask
-let (magic, version, length, rest) = data.unpack(u32be, u8, u16be)?
+let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 ```
 
 See also [Binary Structs](../types/binary.md) for declarative binary layouts.

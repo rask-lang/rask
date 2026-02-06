@@ -27,9 +27,9 @@ func grep_file(pattern: string, path: string) -> GrepResult {
                 }
             }
 
-            GrepResult.Ok(match_count)
+            return GrepResult.Ok(match_count)
         }
-        Err(e) => GrepResult.Err(e)
+        Err(e) => return GrepResult.Err(e)
     }
 }
 

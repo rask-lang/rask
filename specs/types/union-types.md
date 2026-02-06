@@ -20,8 +20,8 @@ Union types are only valid in error position of `Result<T, E>`:
 
 ```rask
 // Valid: error unions
-func load() -> Result<Config, IoError | ParseError>
-func process() -> Result<Output, IoError | ParseError | ValidationError>
+func load() -> Config or (IoError | ParseError)
+func process() -> Output or (IoError | ParseError | ValidationError)
 
 // Invalid: general unions not allowed
 let x: int | string = ...              // Compile error
@@ -67,13 +67,13 @@ For `try` propagation, error types widen automatically:
 **Rule:** `try` succeeds if expression error type ⊆ return error union.
 
 ```rask
-func load() -> Result<Config, IoError | ParseError> {
+func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError ⊆ union: OK
     const config = try parse(content)     // ParseError ⊆ union: OK
     config
 }
 
-func process() -> Result<Output, IoError | ParseError | ValidationError> {
+func process() -> Output or (IoError | ParseError | ValidationError) {
     const config = try load()             // IoError | ParseError ⊆ union: OK
     try validate(config)
 }
@@ -110,7 +110,7 @@ Exhaustiveness checking works because all variants are known from the union defi
 Unions can extend generic error types:
 
 ```rask
-func transform<T, E>(result: Result<T, E>) -> Result<U, E | TransformError>
+func transform<T, E>(result: Result<T, E>) -> U or (E | TransformError)
 ```
 
 The union extends E with additional variants.
@@ -137,16 +137,16 @@ Explicit enums are:
 
 ```rask
 // Low-level
-func read_file(path: string) -> Result<string, IoError>
+func read_file(path: string) -> string or IoError
 
 // Mid-level
-func parse_config(path: string) -> Result<Config, IoError | ParseError> {
+func parse_config(path: string) -> Config or (IoError | ParseError) {
     const content = try read_file(path)
     try parse(content)
 }
 
 // High-level
-func load_app() -> Result<App, IoError | ParseError | ValidationError> {
+func load_app() -> App or (IoError | ParseError | ValidationError) {
     const config = try parse_config("app.toml")
     const valid = try validate(config)
     App.new(valid)

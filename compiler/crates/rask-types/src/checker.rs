@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, StructDecl, TraitDecl};
+use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
@@ -62,6 +62,10 @@ pub struct TypeTable {
     type_names: HashMap<String, TypeId>,
     /// Built-in type names mapped to Type.
     builtins: HashMap<String, Type>,
+    /// TypeId for the builtin Option<T> enum.
+    option_type_id: Option<TypeId>,
+    /// TypeId for the builtin Result<T, E> enum.
+    result_type_id: Option<TypeId>,
 }
 
 impl TypeTable {
@@ -70,6 +74,8 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             builtins: HashMap::new(),
+            option_type_id: None,
+            result_type_id: None,
         };
         table.register_builtins();
         table
@@ -96,6 +102,31 @@ impl TypeTable {
         self.builtins.insert("uint".to_string(), Type::U64);
         self.builtins.insert("isize".to_string(), Type::I64);
         self.builtins.insert("usize".to_string(), Type::U64);
+
+        // Register builtin generic enums: Option<T> and Result<T, E>
+        // Use TypeVar placeholders for generic parameters
+
+        // Option<T> with variants: Some(T), None
+        let option_id = self.register_type(TypeDef::Enum {
+            name: "Option".to_string(),
+            variants: vec![
+                ("Some".to_string(), vec![Type::Var(TypeVarId(0))]),
+                ("None".to_string(), vec![]),
+            ],
+            methods: vec![],
+        });
+        self.option_type_id = Some(option_id);
+
+        // Result<T, E> with variants: Ok(T), Err(E)
+        let result_id = self.register_type(TypeDef::Enum {
+            name: "Result".to_string(),
+            variants: vec![
+                ("Ok".to_string(), vec![Type::Var(TypeVarId(0))]),
+                ("Err".to_string(), vec![Type::Var(TypeVarId(1))]),
+            ],
+            methods: vec![],
+        });
+        self.result_type_id = Some(result_id);
     }
 
     /// Register a user-defined type.
@@ -124,6 +155,11 @@ impl TypeTable {
         self.types.get(id.0 as usize)
     }
 
+    /// Get a mutable type definition by ID.
+    pub fn get_mut(&mut self, id: TypeId) -> Option<&mut TypeDef> {
+        self.types.get_mut(id.0 as usize)
+    }
+
     /// Check if a name is registered.
     pub fn contains(&self, name: &str) -> bool {
         self.builtins.contains_key(name) || self.type_names.contains_key(name)
@@ -134,9 +170,82 @@ impl TypeTable {
         self.type_names.get(name).copied()
     }
 
+    /// Get TypeId for the builtin Option<T> enum.
+    pub fn get_option_type_id(&self) -> Option<TypeId> {
+        self.option_type_id
+    }
+
+    /// Get TypeId for the builtin Result<T, E> enum.
+    pub fn get_result_type_id(&self) -> Option<TypeId> {
+        self.result_type_id
+    }
+
     /// Iterate over all type definitions.
     pub fn iter(&self) -> impl Iterator<Item = &TypeDef> {
         self.types.iter()
+    }
+
+    /// Get the display name for a TypeId.
+    pub fn type_name(&self, id: TypeId) -> String {
+        match self.get(id) {
+            Some(TypeDef::Struct { name, .. }) => name.clone(),
+            Some(TypeDef::Enum { name, .. }) => name.clone(),
+            Some(TypeDef::Trait { name, .. }) => name.clone(),
+            None => format!("<type#{}>", id.0),
+        }
+    }
+
+    /// Resolve Named(TypeId) types in a type to readable names.
+    fn resolve_type_names(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
+            Type::Option(inner) => Type::Option(Box::new(self.resolve_type_names(inner))),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.resolve_type_names(ok)),
+                err: Box::new(self.resolve_type_names(err)),
+            },
+            Type::Generic { base, args } => Type::UnresolvedGeneric {
+                name: self.type_name(*base),
+                args: args.iter().map(|a| self.resolve_type_names(a)).collect(),
+            },
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| self.resolve_type_names(p)).collect(),
+                ret: Box::new(self.resolve_type_names(ret)),
+            },
+            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|e| self.resolve_type_names(e)).collect()),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(self.resolve_type_names(elem)),
+                len: *len,
+            },
+            Type::Slice(elem) => Type::Slice(Box::new(self.resolve_type_names(elem))),
+            other => other.clone(),
+        }
+    }
+
+    /// Resolve Named types to readable names in error messages.
+    pub fn resolve_error_types(&self, error: TypeError) -> TypeError {
+        match error {
+            TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
+                expected: self.resolve_type_names(&expected),
+                found: self.resolve_type_names(&found),
+                span,
+            },
+            TypeError::NotCallable { ty, span } => TypeError::NotCallable {
+                ty: self.resolve_type_names(&ty),
+                span,
+            },
+            TypeError::NoSuchField { ty, field, span } => TypeError::NoSuchField {
+                ty: self.resolve_type_names(&ty),
+                field,
+                span,
+            },
+            TypeError::NoSuchMethod { ty, method, span } => TypeError::NoSuchMethod {
+                ty: self.resolve_type_names(&ty),
+                method,
+                span,
+            },
+            other => other,
+        }
     }
 }
 
@@ -269,7 +378,7 @@ impl InferenceContext {
 /// A type error.
 #[derive(Debug, thiserror::Error)]
 pub enum TypeError {
-    #[error("type mismatch: expected {expected:?}, found {found:?}")]
+    #[error("type mismatch: expected {expected}, found {found}")]
     Mismatch {
         expected: Type,
         found: Type,
@@ -283,11 +392,11 @@ pub enum TypeError {
         found: usize,
         span: Span,
     },
-    #[error("type {ty:?} is not callable")]
+    #[error("type {ty} is not callable")]
     NotCallable { ty: Type, span: Span },
-    #[error("no such field '{field}' on type {ty:?}")]
+    #[error("no such field '{field}' on type {ty}")]
     NoSuchField { ty: Type, field: String, span: Span },
-    #[error("no such method '{method}' on type {ty:?}")]
+    #[error("no such method '{method}' on type {ty}")]
     NoSuchMethod {
         ty: Type,
         method: String,
@@ -299,6 +408,10 @@ pub enum TypeError {
     CannotInfer { span: Span },
     #[error("invalid type string: {0}")]
     InvalidTypeString(String),
+    #[error("try can only be used in functions returning Option or Result, found {return_ty}")]
+    TryInNonPropagatingContext { return_ty: Type, span: Span },
+    #[error("try can only be used within a function")]
+    TryOutsideFunction { span: Span },
 }
 
 // ============================================================================
@@ -535,6 +648,8 @@ pub struct TypeChecker {
     errors: Vec<TypeError>,
     /// Current function's return type (for checking return statements).
     current_return_type: Option<Type>,
+    /// Current Self type (inside extend blocks).
+    current_self_type: Option<Type>,
 }
 
 impl TypeChecker {
@@ -548,6 +663,7 @@ impl TypeChecker {
             symbol_types: HashMap::new(),
             errors: Vec::new(),
             current_return_type: None,
+            current_self_type: None,
         }
     }
 
@@ -579,7 +695,9 @@ impl TypeChecker {
                 node_types,
             })
         } else {
-            Err(self.errors)
+            // Resolve Named(TypeId) to readable names in error messages
+            let errors = self.errors.into_iter().map(|e| self.types.resolve_error_types(e)).collect();
+            Err(errors)
         }
     }
 
@@ -588,11 +706,34 @@ impl TypeChecker {
     // ------------------------------------------------------------------------
 
     fn collect_type_declarations(&mut self, decls: &[Decl]) {
+        // First pass: register struct/enum/trait types
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => self.register_struct(s),
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
+                _ => {}
+            }
+        }
+        // Second pass: register methods from extend blocks
+        for decl in decls {
+            if let DeclKind::Impl(i) = &decl.kind {
+                self.register_impl_methods(i);
+            }
+        }
+    }
+
+    fn register_impl_methods(&mut self, i: &ImplDecl) {
+        let type_id = match self.types.get_type_id(&i.target_ty) {
+            Some(id) => id,
+            None => return,
+        };
+        let new_methods: Vec<_> = i.methods.iter().map(|m| self.method_signature(m)).collect();
+        if let Some(def) = self.types.get_mut(type_id) {
+            match def {
+                TypeDef::Struct { methods, .. } | TypeDef::Enum { methods, .. } => {
+                    methods.extend(new_methods);
+                }
                 _ => {}
             }
         }
@@ -686,19 +827,25 @@ impl TypeChecker {
         match &decl.kind {
             DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
+                self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
                 for method in &s.methods {
                     self.check_fn(method);
                 }
+                self.current_self_type = None;
             }
             DeclKind::Enum(e) => {
+                self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
                     self.check_fn(method);
                 }
+                self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
+                self.current_self_type = self.types.get_type_id(&i.target_ty).map(Type::Named);
                 for method in &i.methods {
                     self.check_fn(method);
                 }
+                self.current_self_type = None;
             }
             DeclKind::Const(c) => {
                 let init_ty = self.infer_expr(&c.init);
@@ -819,9 +966,14 @@ impl TypeChecker {
                 }
             }
             StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {}
-            StmtKind::Ensure(body) => {
+            StmtKind::Ensure { body, catch } => {
                 for s in body {
                     self.check_stmt(s);
+                }
+                if let Some((_name, handler)) = catch {
+                    for s in handler {
+                        self.check_stmt(s);
+                    }
                 }
             }
             StmtKind::Comptime(body) => {
@@ -895,13 +1047,7 @@ impl TypeChecker {
             // Index access
             ExprKind::Index { object, index } => {
                 let obj_ty = self.infer_expr(object);
-                let idx_ty = self.infer_expr(index);
-                // Index should be integer
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    Type::U64, // usize
-                    idx_ty,
-                    expr.span,
-                ));
+                let _idx_ty = self.infer_expr(index);
                 // Result type depends on collection type
                 match &obj_ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
@@ -961,11 +1107,15 @@ impl TypeChecker {
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
                     let arm_ty = self.infer_expr(&arm.body);
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        result_ty.clone(),
-                        arm_ty,
-                        expr.span,
-                    ));
+                    let resolved_arm_ty = self.ctx.apply(&arm_ty);
+                    // Skip Never arms - they diverge and don't constrain the result type
+                    if !matches!(resolved_arm_ty, Type::Never) {
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            result_ty.clone(),
+                            arm_ty,
+                            expr.span,
+                        ));
+                    }
                 }
                 result_ty
             }
@@ -975,10 +1125,15 @@ impl TypeChecker {
                 for stmt in stmts {
                     self.check_stmt(stmt);
                 }
-                // Block type is unit unless last statement is an expression
+                // Block type is unit unless last statement is an expression or diverges
                 if let Some(last) = stmts.last() {
-                    if let StmtKind::Expr(e) = &last.kind {
-                        return self.infer_expr(e);
+                    match &last.kind {
+                        StmtKind::Expr(e) => return self.infer_expr(e),
+                        // Diverging statements - block never returns normally
+                        StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {
+                            return Type::Never
+                        }
+                        _ => {}
                     }
                 }
                 Type::Unit
@@ -1059,17 +1214,64 @@ impl TypeChecker {
                 Type::UnresolvedNamed("Range".to_string())
             }
 
-            // Try (?)
+            // Try (try prefix or postfix ?)
             ExprKind::Try(inner) => {
                 let inner_ty = self.infer_expr(inner);
+                let resolved = self.ctx.apply(&inner_ty);
                 // Result/Option unwrapping
-                match &inner_ty {
+                match &resolved {
                     Type::Option(inner) => *inner.clone(),
                     Type::Result { ok, .. } => *ok.clone(),
+                    Type::Var(_) => {
+                        // Unresolved type - check function return type to determine if Option or Result
+                        if let Some(return_ty) = &self.current_return_type {
+                            let resolved_ret = self.ctx.apply(return_ty);
+                            match &resolved_ret {
+                                Type::Option(_) => {
+                                    // Function returns Option, so inner should be Option<T>
+                                    let inner_opt_ty = self.ctx.fresh_var();
+                                    let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
+                                    let _ = self.unify(&inner_ty, &option_ty, expr.span);
+                                    inner_opt_ty
+                                }
+                                Type::Result { .. } => {
+                                    // Function returns Result, so inner should be Result<T, E>
+                                    let ok_ty = self.ctx.fresh_var();
+                                    let err_ty = self.ctx.fresh_var();
+                                    let result_ty = Type::Result {
+                                        ok: Box::new(ok_ty.clone()),
+                                        err: Box::new(err_ty),
+                                    };
+                                    let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                                    ok_ty
+                                }
+                                Type::Var(_) => {
+                                    // Return type also unresolved - can't determine yet
+                                    // Return fresh var and let later constraints resolve
+                                    self.ctx.fresh_var()
+                                }
+                                _ => {
+                                    // Error: try in function that doesn't return Option or Result
+                                    self.errors.push(TypeError::TryInNonPropagatingContext {
+                                        return_ty: resolved_ret.clone(),
+                                        span: expr.span,
+                                    });
+                                    Type::Error
+                                }
+                            }
+                        } else {
+                            // No return type context - error
+                            self.errors.push(TypeError::TryOutsideFunction { span: expr.span });
+                            Type::Error
+                        }
+                    }
                     _ => {
                         self.errors.push(TypeError::Mismatch {
-                            expected: Type::Option(Box::new(self.ctx.fresh_var())),
-                            found: inner_ty,
+                            expected: Type::Result {
+                                ok: Box::new(self.ctx.fresh_var()),
+                                err: Box::new(self.ctx.fresh_var()),
+                            },
+                            found: resolved,
                             span: expr.span,
                         });
                         Type::Error
@@ -1327,7 +1529,8 @@ impl TypeChecker {
         args: &[Expr],
         span: Span,
     ) -> Type {
-        let obj_ty = self.infer_expr(object);
+        let obj_ty_raw = self.infer_expr(object);
+        let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         let ret_ty = self.ctx.fresh_var();
@@ -1344,7 +1547,8 @@ impl TypeChecker {
     }
 
     fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
-        let obj_ty = self.infer_expr(object);
+        let obj_ty_raw = self.infer_expr(object);
+        let obj_ty = self.resolve_named(&obj_ty_raw);
         let field_ty = self.ctx.fresh_var();
 
         self.ctx.add_constraint(TypeConstraint::HasField {
@@ -1405,8 +1609,76 @@ impl TypeChecker {
                 }
                 SymbolKind::EnumVariant { enum_id } => {
                     if let Some(enum_sym) = self.resolved.symbols.get(*enum_id) {
-                        if let Some(type_id) = self.types.get_type_id(&enum_sym.name) {
-                            return Type::Named(type_id);
+                        // Determine the type_id for this enum
+                        let type_id = if enum_sym.span == Span::new(0, 0) {
+                            // Builtin enum
+                            match enum_sym.name.as_str() {
+                                "Result" => self.types.get_result_type_id(),
+                                "Option" => self.types.get_option_type_id(),
+                                _ => None,
+                            }
+                        } else {
+                            // User-defined enum
+                            self.types.get_type_id(&enum_sym.name)
+                        };
+
+                        if let Some(id) = type_id {
+                            // Get variant fields to determine if this is a constructor function
+                            let variant_fields = self.types.get(id).and_then(|def| {
+                                if let TypeDef::Enum { variants, .. } = def {
+                                    variants.iter()
+                                        .find(|(n, _)| n == &sym.name)
+                                        .map(|(_, fields)| fields.clone())
+                                } else {
+                                    None
+                                }
+                            });
+
+                            if let Some(fields) = variant_fields {
+                                if fields.is_empty() {
+                                    // Unit variant: just the enum type
+                                    return Type::Named(id);
+                                } else {
+                                    // Variant with fields: function type
+                                    // For builtin enums, create fresh type variables instead of using hardcoded TypeVar(0), TypeVar(1)
+                                    let (param_types, ret_type) = if Some(id) == self.types.get_result_type_id() {
+                                        // Result<T, E>: create fresh type vars
+                                        let t_var = self.ctx.fresh_var();
+                                        let e_var = self.ctx.fresh_var();
+                                        let params = match sym.name.as_str() {
+                                            "Ok" => vec![t_var.clone()],
+                                            "Err" => vec![e_var.clone()],
+                                            _ => fields.clone(),
+                                        };
+                                        let ret = Type::Result {
+                                            ok: Box::new(t_var),
+                                            err: Box::new(e_var),
+                                        };
+                                        (params, ret)
+                                    } else if Some(id) == self.types.get_option_type_id() {
+                                        // Option<T>: create fresh type var
+                                        let t_var = self.ctx.fresh_var();
+                                        let params = if sym.name == "Some" {
+                                            vec![t_var.clone()]
+                                        } else {
+                                            vec![]
+                                        };
+                                        let ret = Type::Option(Box::new(t_var));
+                                        (params, ret)
+                                    } else {
+                                        // User-defined enum: use fields as-is
+                                        (fields, Type::Named(id))
+                                    };
+
+                                    return Type::Fn {
+                                        params: param_types,
+                                        ret: Box::new(ret_type),
+                                    };
+                                }
+                            } else {
+                                // Variant not found in TypeDef, return enum type as fallback
+                                return Type::Named(id);
+                            }
                         }
                     }
                 }
@@ -1607,6 +1879,36 @@ impl TypeChecker {
             (Type::Never, _) => Ok(false),
             (_, Type::Never) => Ok(false),
 
+            // Dual representation: Type::Result with Type::Named(result_type_id)
+            (Type::Result { ok, err }, Type::Named(id)) | (Type::Named(id), Type::Result { ok, err }) => {
+                if Some(*id) == self.types.get_result_type_id() {
+                    // These are compatible - Result<T,E> is the same as the Result TypeDef
+                    // We need to bind any TypeVars in the Named type based on the Result type args
+                    // For now, just accept them as compatible
+                    Ok(false)
+                } else {
+                    Err(TypeError::Mismatch {
+                        expected: t1,
+                        found: t2,
+                        span,
+                    })
+                }
+            }
+
+            // Dual representation: Type::Option with Type::Named(option_type_id)
+            (Type::Option(inner), Type::Named(id)) | (Type::Named(id), Type::Option(inner)) => {
+                if Some(*id) == self.types.get_option_type_id() {
+                    // These are compatible - Option<T> is the same as the Option TypeDef
+                    Ok(false)
+                } else {
+                    Err(TypeError::Mismatch {
+                        expected: t1,
+                        found: t2,
+                        span,
+                    })
+                }
+            }
+
             // Unresolved types - defer
             (Type::UnresolvedNamed(_), _) | (_, Type::UnresolvedNamed(_)) => {
                 // Re-add constraint for later
@@ -1624,6 +1926,24 @@ impl TypeChecker {
         }
     }
 
+    /// Resolve UnresolvedNamed types (e.g. "Self") to their Named type.
+    fn resolve_named(&self, ty: &Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(name) => {
+                if name == "Self" {
+                    if let Some(self_ty) = &self.current_self_type {
+                        return self_ty.clone();
+                    }
+                }
+                if let Some(type_id) = self.types.get_type_id(name) {
+                    return Type::Named(type_id);
+                }
+                ty.clone()
+            }
+            _ => ty.clone(),
+        }
+    }
+
     fn resolve_field(
         &mut self,
         ty: Type,
@@ -1631,7 +1951,7 @@ impl TypeChecker {
         expected: Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let ty = self.ctx.apply(&ty);
+        let ty = self.resolve_named(&self.ctx.apply(&ty));
 
         match &ty {
             Type::Var(_) => {
@@ -1645,15 +1965,30 @@ impl TypeChecker {
                 Ok(false)
             }
             Type::Named(type_id) => {
-                let field_ty_opt = self.types.get(*type_id).and_then(|def| {
-                    if let TypeDef::Struct { fields, .. } = def {
-                        fields.iter().find(|(n, _)| n == &field).map(|(_, t)| t.clone())
-                    } else {
-                        None
+                let result = self.types.get(*type_id).and_then(|def| {
+                    match def {
+                        TypeDef::Struct { fields, .. } => {
+                            fields.iter().find(|(n, _)| n == &field).map(|(_, t)| t.clone())
+                        }
+                        TypeDef::Enum { variants, .. } => {
+                            variants.iter().find(|(n, _)| n == &field).map(|(_, fields)| {
+                                if fields.is_empty() {
+                                    // Unit variant: GrepError.NoPattern -> GrepError
+                                    ty.clone()
+                                } else {
+                                    // Variant with fields: GrepError.FileError -> fn(string) -> GrepError
+                                    Type::Fn {
+                                        params: fields.clone(),
+                                        ret: Box::new(ty.clone()),
+                                    }
+                                }
+                            })
+                        }
+                        _ => None,
                     }
                 });
 
-                if let Some(field_ty) = field_ty_opt {
+                if let Some(field_ty) = result {
                     self.unify(&expected, &field_ty, span)
                 } else {
                     Err(TypeError::NoSuchField {
@@ -1699,7 +2034,7 @@ impl TypeChecker {
         ret: Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        let ty = self.ctx.apply(&ty);
+        let ty = self.resolve_named(&self.ctx.apply(&ty));
 
         match &ty {
             Type::Var(_) => {
@@ -1748,11 +2083,48 @@ impl TypeChecker {
 
                     Ok(progress)
                 } else {
-                    Err(TypeError::NoSuchMethod {
-                        ty,
-                        method,
-                        span,
-                    })
+                    // Check if it's an enum variant constructor
+                    let variant = self.types.get(*type_id).and_then(|def| {
+                        if let TypeDef::Enum { variants, .. } = def {
+                            variants.iter().find(|(n, _)| n == &method).map(|(_, fields)| fields.clone())
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(mut fields) = variant {
+                        // For builtin enums (Result, Option), instantiate generic type parameters
+                        if Some(*type_id) == self.types.get_result_type_id()
+                            || Some(*type_id) == self.types.get_option_type_id()
+                        {
+                            fields = self.instantiate_builtin_enum_variant(*type_id, &method, &fields);
+                        }
+
+                        if fields.len() != args.len() {
+                            return Err(TypeError::ArityMismatch {
+                                expected: fields.len(),
+                                found: args.len(),
+                                span,
+                            });
+                        }
+                        let mut progress = false;
+                        for (field_ty, arg) in fields.iter().zip(args.iter()) {
+                            if self.unify(field_ty, arg, span)? {
+                                progress = true;
+                            }
+                        }
+                        // Variant constructor returns the enum type
+                        if self.unify(&ty, &ret, span)? {
+                            progress = true;
+                        }
+                        Ok(progress)
+                    } else {
+                        Err(TypeError::NoSuchMethod {
+                            ty,
+                            method,
+                            span,
+                        })
+                    }
                 }
             }
             // Built-in type methods
@@ -1771,6 +2143,94 @@ impl TypeChecker {
                 });
                 Ok(false)
             }
+        }
+    }
+
+    /// Instantiate generic type parameters for builtin enum variants.
+    /// For Result<T, E>: TypeVar(0) -> T, TypeVar(1) -> E
+    /// For Option<T>: TypeVar(0) -> T
+    fn instantiate_builtin_enum_variant(
+        &self,
+        type_id: TypeId,
+        _variant_name: &str,
+        variant_fields: &[Type],
+    ) -> Vec<Type> {
+        // Build substitution map from current return type
+        let substitution = if Some(type_id) == self.types.get_result_type_id() {
+            // For Result: extract Ok and Err types from return type
+            if let Some(Type::Result { ok, err }) = &self.current_return_type {
+                let mut subst = HashMap::new();
+                subst.insert(TypeVarId(0), *ok.clone());
+                subst.insert(TypeVarId(1), *err.clone());
+                subst
+            } else {
+                // Return type not yet resolved, leave as TypeVars
+                HashMap::new()
+            }
+        } else if Some(type_id) == self.types.get_option_type_id() {
+            // For Option: extract inner type from return type
+            if let Some(Type::Option(inner)) = &self.current_return_type {
+                let mut subst = HashMap::new();
+                subst.insert(TypeVarId(0), *inner.clone());
+                subst
+            } else {
+                HashMap::new()
+            }
+        } else {
+            HashMap::new()
+        };
+
+        // Apply substitution to variant field types
+        variant_fields
+            .iter()
+            .map(|ty| self.apply_type_var_substitution(ty, &substitution))
+            .collect()
+    }
+
+    /// Apply type variable substitution to a type.
+    fn apply_type_var_substitution(
+        &self,
+        ty: &Type,
+        substitution: &HashMap<TypeVarId, Type>,
+    ) -> Type {
+        match ty {
+            Type::Var(id) => substitution.get(id).cloned().unwrap_or_else(|| ty.clone()),
+            Type::Tuple(elems) => Type::Tuple(
+                elems
+                    .iter()
+                    .map(|e| self.apply_type_var_substitution(e, substitution))
+                    .collect(),
+            ),
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(self.apply_type_var_substitution(elem, substitution)),
+                len: *len,
+            },
+            Type::Slice(elem) => {
+                Type::Slice(Box::new(self.apply_type_var_substitution(elem, substitution)))
+            }
+            Type::Option(inner) => {
+                Type::Option(Box::new(self.apply_type_var_substitution(inner, substitution)))
+            }
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.apply_type_var_substitution(ok, substitution)),
+                err: Box::new(self.apply_type_var_substitution(err, substitution)),
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args
+                    .iter()
+                    .map(|a| self.apply_type_var_substitution(a, substitution))
+                    .collect(),
+            },
+            Type::Fn { params, ret } => Type::Fn {
+                params: params
+                    .iter()
+                    .map(|p| self.apply_type_var_substitution(p, substitution))
+                    .collect(),
+                ret: Box::new(self.apply_type_var_substitution(ret, substitution)),
+            },
+            // For other types, return as-is
+            _ => ty.clone(),
         }
     }
 

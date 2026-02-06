@@ -1,0 +1,54 @@
+// ERROR: Calling a function that requires a context without providing it
+//
+// This demonstrates the compile error when calling a context-requiring function
+// from a scope where the required pool is not available.
+
+struct Enemy {
+    health: i32,
+    position: Vec3,
+}
+
+// This function requires Pool<Enemy> context
+public func damage(h: Handle<Enemy>, amount: i32) with Pool<Enemy> {
+    h.health -= amount
+}
+
+// ERROR: No Pool<Enemy> in scope
+func process_damage(h: Handle<Enemy>) {
+    damage(h, 10)    // ERROR: cannot satisfy Pool<Enemy> requirement
+}
+
+// Expected error message:
+//
+// error: cannot satisfy context requirement Pool<Enemy>
+//   --> context_unavailable.rask:17
+//    |
+// 17 |     damage(h, 10)
+//    |     ^^^^^^ function requires Pool<Enemy>
+//    |
+// 16 | func process_damage(h: Handle<Enemy>) {
+//    |      -------------- no Pool<Enemy> in scope
+//    |
+//    help: add Pool<Enemy> to process_damage's signature:
+//          func process_damage(h: Handle<Enemy>) with Pool<Enemy>
+//
+//    help: or pass pool explicitly:
+//          func process_damage(enemies: Pool<Enemy>, h: Handle<Enemy>)
+
+// FIX 1: Propagate context requirement
+func process_damage_fixed(h: Handle<Enemy>) with Pool<Enemy> {
+    damage(h, 10)    // ✅ Context propagates
+}
+
+// FIX 2: Take pool as explicit parameter
+func process_damage_explicit(enemies: Pool<Enemy>, h: Handle<Enemy>) {
+    enemies[h].health -= 10
+}
+
+// FIX 3: Have pool in scope via local variable
+func game_loop() {
+    const enemies = Pool.new()
+    const h = try enemies.insert(Enemy { health: 100, position: Vec3.zero() })
+
+    damage(h, 10)    // ✅ Compiler passes enemies implicitly
+}

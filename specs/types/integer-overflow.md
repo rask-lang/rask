@@ -115,7 +115,7 @@ For explicit handling of overflow conditions:
 **Use cases:** Parsing user input, validating calculations.
 
 ```rask
-func parse_quantity(s: string) -> Result<u32, Error> {
+func parse_quantity(s: string) -> u32 or Error {
     const base = try parse_u32(s)
     const total = try base.checked_mul(unit_size)
         .ok_or(Error.Overflow)

@@ -765,12 +765,29 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            StmtKind::Ensure(body) => {
+            StmtKind::Ensure { body, catch } => {
                 self.scopes.push(ScopeKind::Block);
                 for s in body {
                     self.resolve_stmt(s);
                 }
                 self.scopes.pop();
+                if let Some((name, handler)) = catch {
+                    self.scopes.push(ScopeKind::Block);
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        stmt.span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
+                        self.errors.push(e);
+                    }
+                    for s in handler {
+                        self.resolve_stmt(s);
+                    }
+                    self.scopes.pop();
+                }
             }
             StmtKind::Comptime(body) => {
                 self.scopes.push(ScopeKind::Block);
@@ -1138,6 +1155,7 @@ mod tests {
                 is_pub: false,
                 is_comptime: false,
                 is_unsafe: false,
+                attrs: vec![],
             }),
             span: Span::new(0, 10),
         }

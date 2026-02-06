@@ -1,0 +1,25 @@
+// Test spawn_thread with thread pool
+
+func double(n: i32) -> i32 {
+    return n * 2
+}
+
+@entry
+func main() {
+    // Thread pool with 4 threads
+    with threading(4) {
+        const h1 = spawn_thread { double(10) }
+        const h2 = spawn_thread { double(20) }
+        const h3 = spawn_thread { double(30) }
+
+        const r1 = try h1.join()
+        const r2 = try h2.join()
+        const r3 = try h3.join()
+
+        println(r1)  // 20
+        println(r2)  // 40
+        println(r3)  // 60
+    }
+
+    println("spawn_thread: all tests passed")
+}

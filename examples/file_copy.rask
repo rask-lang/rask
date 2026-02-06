@@ -17,11 +17,11 @@ enum CopyError {
 extend CopyError {
     func message(self) -> string {
         match self {
-            SourceNotFound(path) => "source file not found: {path}",
-            DestinationExists(path) => "destination already exists: {path} (use -f to overwrite)",
-            ReadError(msg) => "read error: {msg}",
-            WriteError(msg) => "write error: {msg}",
-            SameFile => "source and destination are the same file",
+            SourceNotFound(path) => return "source file not found: {path}",
+            DestinationExists(path) => return "destination already exists: {path} (use -f to overwrite)",
+            ReadError(msg) => return "read error: {msg}",
+            WriteError(msg) => return "write error: {msg}",
+            SameFile => return "source and destination are the same file",
         }
     }
 }
@@ -33,7 +33,7 @@ struct CopyOptions {
     verbose: bool
 }
 
-func parse_args(args: Vec<string>) -> Result<CopyOptions, string> {
+func parse_args(args: Vec<string>) -> CopyOptions or string {
     let opts = CopyOptions {
         source: "",
         dest: "",
@@ -76,7 +76,7 @@ func print_usage() {
     println("  -h, --help      Show this help")
 }
 
-func copy_file(opts: CopyOptions) -> Result<i64, CopyError> {
+func copy_file(opts: CopyOptions) -> i64 or CopyError {
     // Check source exists
     if !fs.exists(opts.source.clone()) {
         return Err(CopyError.SourceNotFound(opts.source))
@@ -90,8 +90,8 @@ func copy_file(opts: CopyOptions) -> Result<i64, CopyError> {
     }
 
     // Check not same file (using canonical paths)
-    const src_canonical = fs.canonicalize(opts.source.clone())
-        .map_err(|e| CopyError.ReadError(e))?
+    const src_canonical = try fs.canonicalize(opts.source.clone())
+        .map_err(|e| CopyError.ReadError(e))
     const dst_canonical = fs.canonicalize(opts.dest.clone()).ok()
 
     if dst_canonical is Some(dst) {
@@ -101,21 +101,21 @@ func copy_file(opts: CopyOptions) -> Result<i64, CopyError> {
     }
 
     // Copy the file
-    const bytes = fs.copy(opts.source.clone(), opts.dest.clone())
-        .map_err(|e| CopyError.WriteError(e))?
+    const bytes = try fs.copy(opts.source.clone(), opts.dest.clone())
+        .map_err(|e| CopyError.WriteError(e))
 
     Ok(bytes)
 }
 
 func format_size(bytes: i64) -> string {
     if bytes < 1024 {
-        "{bytes} B"
+        return "{bytes} B"
     } else if bytes < 1048576 {
         const kb = bytes / 1024
-        "{kb} KB"
+        return "{kb} KB"
     } else {
         const mb = bytes / 1048576
-        "{mb} MB"
+        return "{mb} MB"
     }
 }
 

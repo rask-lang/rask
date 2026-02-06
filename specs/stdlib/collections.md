@@ -330,7 +330,7 @@ const KEYWORDS: Map<str, TokenKind> = comptime {
 ### Web Server Request Buffer
 <!-- test: skip -->
 ```rask
-func handle_requests(buffer: Vec<Request>) -> Result<(), Error> {
+func handle_requests(buffer: Vec<Request>) -> () or Error {
     loop {
         const req = try receive_request()
 
@@ -349,7 +349,7 @@ func handle_requests(buffer: Vec<Request>) -> Result<(), Error> {
 
 ### Session Cache with Ensure
 ```rask
-func track_session(cache: Map<SessionId, Session>, id: SessionId) -> Result<(), Error> {
+func track_session(cache: Map<SessionId, Session>, id: SessionId) -> () or Error {
     try cache.ensure_modify(id,
         || Session.new(id),
         |s| {

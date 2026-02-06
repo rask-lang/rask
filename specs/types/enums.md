@@ -221,7 +221,7 @@ When using pattern guards on variants containing linear resources, the catch-all
 // ✅ VALID: guard with linear resource — both arms consume
 match file_result {
     Ok(file) if file.size() > 1000: process(file),  // Large files: process
-    Ok(file) => file.close()?,                       // Small files: still must close
+    Ok(file) => try file.close(),                     // Small files: still must close
     Err(e) => log(e)
 }
 
@@ -357,7 +357,7 @@ enum Never {}  // Cannot be constructed
 | `Result<T, Never>` | Err arm unreachable, compiler optimizes |
 
 ```rask
-func infallible() -> Result<i32, Never> { Ok(42) }
+func infallible() -> i32 or Never { Ok(42) }
 
 const value = infallible().unwrap()  // Cannot panic (compiler knows)
 ```
@@ -370,14 +370,14 @@ The `try` keyword extracts Ok or returns early with Err.
 
 ```rask
 // ❌ INVALID: file2 may leak on early return
-func process(file1: File, file2: File) -> Result<(), Error> {
+func process(file1: File, file2: File) -> () or Error {
     const data = try file1.read()  // file2 not consumed!
     try file2.close()
 }
 // Error: "linear resource `file2` may leak on early return at `try`"
 
 // ✅ VALID: all linear resources resolved before `?`
-func process(file1: File, file2: File) -> Result<(), Error> {
+func process(file1: File, file2: File) -> () or Error {
     const result1 = file1.read()
     const result2 = file2.close()
     const data = try result1
@@ -388,7 +388,7 @@ func process(file1: File, file2: File) -> Result<(), Error> {
 
 Alternative: use `ensure` for guaranteed cleanup:
 ```rask
-func process(file1: File, file2: File) -> Result<(), Error> {
+func process(file1: File, file2: File) -> () or Error {
     ensure file1.close()  // Guaranteed at scope exit
     ensure file2.close()  // Runs on any exit
     const data = try file1.read()  // ✅ Safe: ensure registered

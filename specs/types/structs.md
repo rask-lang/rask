@@ -139,7 +139,7 @@ extend Config {
         Config { values: Map.new() }
     }
 
-    func from_file(path: string) -> Result<Config, Error> {
+    func from_file(path: string) -> Config or Error {
         // ...
     }
 }
@@ -164,8 +164,8 @@ public struct Connection {
 }
 
 extend Connection {
-    public func new(addr: string) -> Result<Connection, Error> {
-        const socket = connect(addr)?
+    public func new(addr: string) -> Connection or Error {
+        const socket = try connect(addr)
         Ok(Connection { socket, state: State.Connected })
     }
 }
@@ -390,7 +390,7 @@ public struct User {
 }
 
 extend User {
-    func validate(self) -> Result<(), Error> {
+    func validate(self) -> () or Error {
         if self.email.contains("@") { Ok(()) }
         else { Err(Error.invalid("email")) }
     }
@@ -428,13 +428,13 @@ struct FileHandle {
 }
 
 extend FileHandle {
-    func open(path: string) -> Result<FileHandle, Error> {
+    func open(path: string) -> FileHandle or Error {
         const fd = unsafe { libc.open(path.cstr(), O_RDONLY) }
         if fd < 0 { return Err(Error.io()) }
         Ok(FileHandle { fd })
     }
 
-    func close(take self) -> Result<(), Error> {
+    func close(take self) -> () or Error {
         unsafe { libc.close(self.fd) }
         Ok(())
     }

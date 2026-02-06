@@ -1,0 +1,43 @@
+// ERROR: Function uses handle but has no pool context
+//
+// This demonstrates the compile error when a function accesses handle fields
+// without declaring the required context clause.
+
+struct Player {
+    health: i32,
+    score: i32,
+}
+
+// ERROR: Missing context clause
+// The function accesses h.health, which requires Pool<Player> to be available
+func damage(h: Handle<Player>, amount: i32) {
+    h.health -= amount
+}
+
+// Expected error message:
+//
+// error: function 'damage' requires Pool<Player> context
+//   --> context_missing.rask:13
+//    |
+// 13 | func damage(h: Handle<Player>, amount: i32) {
+//    |      ^^^^^^ add `with Pool<Player>` to signature
+// 14 |     h.health -= amount
+//    |     -------- requires access to Pool<Player>
+//    |
+//    hint: add context clause:
+//          func damage(h: Handle<Player>, amount: i32) with Pool<Player>
+//
+// Note: This error only occurs for public functions or when called across
+// module boundaries. Private functions in the same module have contexts
+// inferred automatically.
+
+// FIX 1: Add unnamed context (field access only)
+func damage_fixed(h: Handle<Player>, amount: i32) with Pool<Player> {
+    h.health -= amount
+}
+
+// FIX 2: Add named context (if structural operations needed)
+func kill_fixed(h: Handle<Player>) with players: Pool<Player> {
+    h.health = 0
+    players.remove(h)
+}

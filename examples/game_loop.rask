@@ -60,18 +60,18 @@ struct GameState {
 }
 
 extend GameState {
-    func new() -> Result<GameState, Error> {
+    func new() -> GameState or Error {
         let entities = Pool.new()
 
         // Spawn player at center
-        const player_handle = entities.insert(Entity {
+        const player_handle = try entities.insert(Entity {
             position: Position { x: 400.0, y: 300.0 },
             velocity: Velocity { dx: 0.0, dy: 0.0 },
             health: Health { current: 100, max: 100 },
             collider: Collider { radius: 16.0 },
             active: true,
             entity_type: EntityType.Player,
-        })?
+        })
 
         Ok(GameState {
             entities: entities,
@@ -81,7 +81,7 @@ extend GameState {
         })
     }
 
-    func spawn_enemy(self, x: f32, y: f32) -> Result<Handle<Entity>, Error> {
+    func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {
         self.entities.insert(Entity {
             position: Position { x: x, y: y },
             velocity: Velocity { dx: -50.0, dy: 0.0 },
@@ -92,7 +92,7 @@ extend GameState {
         })
     }
 
-    func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Result<Handle<Entity>, Error> {
+    func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Handle<Entity> or Error {
         self.entities.insert(Entity {
             position: Position { x: x, y: y },
             velocity: Velocity { dx: dx, dy: dy },
@@ -183,7 +183,7 @@ func cleanup_system(state: GameState) {
 
     for h in state.entities {
         if !state.entities[h].active {
-            to_remove.push(h)?
+            try to_remove.push(h)
         }
     }
 
@@ -222,21 +222,21 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
                 entities[h].position.y += entities[h].velocity.dy * dt
             }
         }
-        thread_handles.push(task)?
+        try thread_handles.push(task)
     }
 
     // Wait for all chunks to complete
     for h in thread_handles {
-        h.join()?
+        try h.join()
     }
 }
 
 // Main game loop with fixed timestep and threading
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     // Thread pool for CPU-bound physics work
     with threading(4) {
-        let state = GameState.new()?
+        let state = try GameState.new()
 
         const target_fps = 60.0
         const dt = 1.0 / target_fps
@@ -265,7 +265,7 @@ func main() -> Result<(), Error> {
                     if state.player is Some(player_h) {
                         const px = state.entities[player_h].position.x
                         const py = state.entities[player_h].position.y
-                        state.spawn_projectile(px + 20.0, py, 300.0, 0.0)?
+                        try state.spawn_projectile(px + 20.0, py, 300.0, 0.0)
                     }
                 }
 

@@ -53,12 +53,12 @@ struct File { ... }
 
 extend File {
     // Consuming method - takes ownership
-    func close(take self) -> Result<(), Error> {
+    func close(take self) -> () or Error {
         // ... close logic ...
     }
 
     // Non-consuming - borrows (default)
-    func read(self, buf: [u8]) -> Result<usize, Error> {
+    func read(self, buf: [u8]) -> usize or Error {
         // ... read logic ...
     }
 }
@@ -68,7 +68,7 @@ extend File {
 
 <!-- test: parse -->
 ```rask
-func process() -> Result<(), Error> {
+func process() -> () or Error {
     const file = try File.open("data.txt")    // file is a resource
 
     const data = try file.read_all()           // Borrow: file still valid
@@ -82,7 +82,7 @@ func process() -> Result<(), Error> {
 **Forgetting to consume:**
 <!-- test: compile-fail -->
 ```rask
-func bad() -> Result<(), Error> {
+func bad() -> () or Error {
     const file = try File.open("data.txt")
     const data = try file.read_all()
     Ok(())
@@ -93,7 +93,7 @@ func bad() -> Result<(), Error> {
 **Double consumption:**
 <!-- test: compile-fail -->
 ```rask
-func also_bad() -> Result<(), Error> {
+func also_bad() -> () or Error {
     const file = try File.open("data.txt")
     try file.close()
     try file.close()    // ❌ ERROR: file already consumed
@@ -107,7 +107,7 @@ func also_bad() -> Result<(), Error> {
 
 <!-- test: parse -->
 ```rask
-func process() -> Result<(), Error> {
+func process() -> () or Error {
     const file = try File.open("data.txt")
     ensure file.close()        // Consumption committed
 
@@ -139,7 +139,7 @@ If the ensured operation returns `Result`, errors are:
 
 <!-- test: parse -->
 ```rask
-func risky() -> Result<(), Error> {
+func risky() -> () or Error {
     const file = try File.open("data.txt")
     ensure file.close()        // May fail
 
@@ -157,7 +157,7 @@ Resource types integrate with `try` through `ensure`:
 
 <!-- test: parse -->
 ```rask
-func process(path: string) -> Result<Data, Error> {
+func process(path: string) -> Data or Error {
     const file = try File.open(path)
     ensure file.close()        // Guarantees consumption on any exit
 
@@ -174,7 +174,7 @@ func process(path: string) -> Result<Data, Error> {
 **Without `ensure`, error handling is verbose:**
 <!-- test: parse -->
 ```rask
-func process_verbose(path: string) -> Result<Data, Error> {
+func process_verbose(path: string) -> Data or Error {
     const file = try File.open(path)
 
     const header = match file.read_header() {
@@ -285,7 +285,7 @@ When `T` is a resource type, `Pool<T>` provides additional convenience methods:
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `take_all_with(f)` | `func(T) -> ()` | Take all and apply consuming function to each element |
-| `take_all_with_result(f)` | `func(T) -> Result<(), E> -> Result<(), E>` | Take all with fallible consumer, stops on first error |
+| `take_all_with_result(f)` | `func(T) -> () or E -> () or E` | Take all with fallible consumer, stops on first error |
 
 **Usage:**
 
@@ -370,7 +370,7 @@ enum FileError {
     WriteFailed { file: File, reason: string },
 }
 
-func read_config(file: File) -> Result<Config, FileError> {
+func read_config(file: File) -> Config or FileError {
     const data = match file.read_all() {
         Ok(d) => d,
         Err(reason) => return Err(FileError.ReadFailed { file, reason }),
@@ -385,7 +385,7 @@ func read_config(file: File) -> Result<Config, FileError> {
 **Caller must handle the file in error paths:**
 <!-- test: skip -->
 ```rask
-func load_config(path: string) -> Result<Config, Error> {
+func load_config(path: string) -> Config or Error {
     const file = try File.open(path)
 
     match read_config(file) {
@@ -421,7 +421,7 @@ enum TransferError {
     },
 }
 
-func handle_transfer_error(err: TransferError) -> Result<(), Error> {
+func handle_transfer_error(err: TransferError) -> () or Error {
     match err {
         TransferError.SourceReadFailed { source, dest, reason } => {
             try source.close()
@@ -443,7 +443,7 @@ The `ensure` pattern reduces verbosity when the cleanup is the same:
 
 <!-- test: parse -->
 ```rask
-func transfer(source_path: string, dest_path: string) -> Result<(), Error> {
+func transfer(source_path: string, dest_path: string) -> () or Error {
     const source = try File.open(source_path)
     ensure source.close()
 
@@ -472,7 +472,7 @@ For multiple resources with uniform cleanup, `ensure` handles everything:
 
 <!-- test: parse -->
 ```rask
-func process_files(paths: Vec<string>) -> Result<(), Error> {
+func process_files(paths: Vec<string>) -> () or Error {
     const files = Vec.new()
 
     for path in paths {
@@ -504,7 +504,7 @@ func process_files(paths: Vec<string>) -> Result<(), Error> {
 <!-- test: skip -->
 ```rask
 extend FileError {
-    func close_and_convert(take self) -> Result<Error, Error> {
+    func close_and_convert(take self) -> Error or Error {
         match self {
             FileError.ReadFailed { file, reason } => {
                 try file.close()
@@ -537,7 +537,7 @@ try read_config(file).map_err(|e| e.close_and_convert())
 **Conditional consumption:**
 <!-- test: parse -->
 ```rask
-func conditional(file: File, keep_open: bool) -> Result<(), Error> {
+func conditional(file: File, keep_open: bool) -> () or Error {
     if keep_open {
         GLOBAL_FILES.store(file)  // Consumes by transfer
     } else {
@@ -553,7 +553,7 @@ func conditional(file: File, keep_open: bool) -> Result<(), Error> {
 ### File Processing
 <!-- test: parse -->
 ```rask
-func process_file(path: string) -> Result<Data, Error> {
+func process_file(path: string) -> Data or Error {
     const file = try File.open(path)
     ensure file.close()
 
@@ -567,7 +567,7 @@ func process_file(path: string) -> Result<Data, Error> {
 ### Database Transaction
 <!-- test: parse -->
 ```rask
-func update_user(db: Database, user_id: u64) -> Result<(), Error> {
+func update_user(db: Database, user_id: u64) -> () or Error {
     const txn = try db.begin_transaction()
     ensure txn.rollback()     // Default: rollback on error
 
@@ -584,7 +584,7 @@ func update_user(db: Database, user_id: u64) -> Result<(), Error> {
 ### Connection Pool
 <!-- test: parse -->
 ```rask
-func handle_connections(pool: Pool<Connection>) -> Result<(), Error> {
+func handle_connections(pool: Pool<Connection>) -> () or Error {
     // Process all connections
     for h in pool.cursor() {
         try pool.modify(h, |conn| {

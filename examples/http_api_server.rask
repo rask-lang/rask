@@ -57,34 +57,34 @@ func handle_request(
     conn: TcpConnection,
     db: Shared<Database>,
     log_tx: Sender<LogEntry>
-) -> Result<(), Error> {
+) -> () or Error {
     const start = time.Instant.now()
-    const request = conn.read_http_request()?
+    const request = try conn.read_http_request()
 
     const response = match (request.method, request.path) {
         ("GET", "/users") => list_users(db),
         ("GET", path) if path.starts_with("/users/") => {
-            const id = path[7..].parse<i64>()?
+            const id = try path[7..].parse<i64>()
             get_user(db, id)
         }
         ("POST", "/users") => create_user(db, request.body),
         ("DELETE", path) if path.starts_with("/users/") => {
-            const id = path[7..].parse<i64>()?
+            const id = try path[7..].parse<i64>()
             delete_user(db, id)
         }
         _ => http_response(404, json.encode(ErrorResponse { error: "Not found" })),
     }
 
-    conn.write_http_response(response)?
+    try conn.write_http_response(response)
 
     // Send log entry through channel (non-blocking with buffered channel)
-    log_tx.send(LogEntry {
+    try log_tx.send(LogEntry {
         timestamp: start,
         method: request.method,
         path: request.path,
         status: response.status,
         duration_ms: start.elapsed().as_secs_f64() * 1000.0,
-    })?
+    })
 
     Ok(())
 }
@@ -125,7 +125,7 @@ func create_user(db: Shared<Database>, body: string) -> HttpResponse {
         const id = d.next_id
         d.next_id += 1
         const user = User { id: id, name: req.name, email: req.email }
-        d.users.insert(id, user.clone())?
+        try d.users.insert(id, user.clone())
         UserResponse { id: user.id, name: user.name, email: user.email }
     })
 
@@ -150,7 +150,7 @@ func http_response(status: i32, body: string) -> HttpResponse {
 }
 
 @entry
-func main() -> Result<(), Error> {
+func main() -> () or Error {
     const db = Shared.new(Database.new())
 
     // Create buffered channel for request logging
@@ -165,11 +165,11 @@ func main() -> Result<(), Error> {
             }
         }.detach()
 
-        const listener = net.tcp_listen("0.0.0.0:8080")?
+        const listener = try net.tcp_listen("0.0.0.0:8080")
         println("Server listening on :8080")
 
         loop {
-            const conn = listener.accept()?
+            const conn = try listener.accept()
             const db_ref = db.clone()
             const log_tx_ref = log_tx.clone()
 
