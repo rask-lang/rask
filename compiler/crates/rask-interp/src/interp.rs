@@ -18,7 +18,7 @@ use crate::value::{BuiltinKind, ModuleKind, PoolTask, ThreadHandleInner, ThreadP
 /// The tree-walk interpreter.
 pub struct Interpreter {
     /// Variable bindings (scoped).
-    env: Environment,
+    pub(crate) env: Environment,
     /// Function declarations by name.
     functions: HashMap<String, FnDecl>,
     /// Enum declarations by name.
@@ -26,13 +26,13 @@ pub struct Interpreter {
     /// Struct declarations by name (for @resource checking).
     struct_decls: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
-    methods: HashMap<String, HashMap<String, FnDecl>>,
+    pub(crate) methods: HashMap<String, HashMap<String, FnDecl>>,
     /// Linear resource tracker.
-    resource_tracker: ResourceTracker,
+    pub(crate) resource_tracker: ResourceTracker,
     /// Optional output buffer for capturing stdout (used in tests).
     output_buffer: Option<Arc<Mutex<String>>>,
     /// Command-line arguments passed to the program.
-    cli_args: Vec<String>,
+    pub(crate) cli_args: Vec<String>,
 }
 
 impl Interpreter {
@@ -125,7 +125,7 @@ impl Interpreter {
     }
 
     /// Get the resource ID from a Value, checking both struct resource_id and File Arc pointer.
-    fn get_resource_id(&self, value: &Value) -> Option<u64> {
+    pub(crate) fn get_resource_id(&self, value: &Value) -> Option<u64> {
         match value {
             Value::Struct { resource_id, .. } => *resource_id,
             Value::File(rc) => {
@@ -204,6 +204,10 @@ impl Interpreter {
                             "env" => Some(ModuleKind::Env),
                             "time" => Some(ModuleKind::Time),
                             "random" => Some(ModuleKind::Random),
+                            "math" => Some(ModuleKind::Math),
+                            "os" => Some(ModuleKind::Os),
+                            "json" => Some(ModuleKind::Json),
+                            "path" => Some(ModuleKind::Path),
                             _ => None, // Unknown module, ignore for now
                         };
                         if let Some(kind) = module_kind {
@@ -233,6 +237,8 @@ impl Interpreter {
             .define("println".to_string(), Value::Builtin(BuiltinKind::Println));
         self.env
             .define("panic".to_string(), Value::Builtin(BuiltinKind::Panic));
+        self.env
+            .define("format".to_string(), Value::Builtin(BuiltinKind::Format));
 
         // Register shorthand constructors for Option and Result
         // Some(x), None, Ok(x), Err(x)
@@ -379,7 +385,7 @@ impl Interpreter {
     }
 
     /// Call a user-defined function with arguments.
-    fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // Check arity
         if args.len() != func.params.len() {
             return Err(RuntimeError::ArityMismatch {
@@ -392,8 +398,33 @@ impl Interpreter {
         self.env.push_scope();
 
         // Bind parameters to arguments
+        // Handle projection types: if param type is "Type.{field}", extract field from struct arg
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
-            self.env.define(param.name.clone(), arg);
+            if let Some(proj_start) = param.ty.find(".{") {
+                // Projection parameter — extract named field from struct
+                let proj_fields_str = &param.ty[proj_start + 2..param.ty.len() - 1];
+                let proj_fields: Vec<&str> = proj_fields_str.split(',').map(|s| s.trim()).collect();
+                if proj_fields.len() == 1 && param.name == proj_fields[0] {
+                    // Single field projection: bind the field value directly
+                    if let Value::Struct { fields, .. } = &arg {
+                        if let Some(field_val) = fields.get(proj_fields[0]) {
+                            self.env.define(param.name.clone(), field_val.clone());
+                        } else {
+                            return Err(RuntimeError::TypeError(format!(
+                                "struct has no field '{}' for projection", proj_fields[0]
+                            )));
+                        }
+                    } else {
+                        return Err(RuntimeError::TypeError(format!(
+                            "projection parameter expects struct, got {}", arg.type_name()
+                        )));
+                    }
+                } else {
+                    self.env.define(param.name.clone(), arg);
+                }
+            } else {
+                self.env.define(param.name.clone(), arg);
+            }
         }
 
         // Execute function body (ensures run inside here via exec_stmts)
@@ -567,6 +598,20 @@ impl Interpreter {
                     self.resource_tracker.set_var_name(id, name.clone());
                 }
                 self.env.define(name.clone(), value);
+                Ok(Value::Unit)
+            }
+
+            // Let tuple destructuring: let (a, b) = expr
+            StmtKind::LetTuple { names, init } => {
+                let value = self.eval_expr(init)?;
+                self.destructure_tuple(names, value)?;
+                Ok(Value::Unit)
+            }
+
+            // Const tuple destructuring: const (a, b) = expr
+            StmtKind::ConstTuple { names, init } => {
+                let value = self.eval_expr(init)?;
+                self.destructure_tuple(names, value)?;
                 Ok(Value::Unit)
             }
 
@@ -763,6 +808,74 @@ impl Interpreter {
     }
 
     /// Assign a value to a target expression.
+    /// Destructure a tuple/vec/struct into named bindings.
+    fn destructure_tuple(&mut self, names: &[String], value: Value) -> Result<(), RuntimeError> {
+        match value {
+            Value::Vec(v) => {
+                let vec = v.lock().unwrap();
+                if vec.len() != names.len() {
+                    return Err(RuntimeError::TypeError(format!(
+                        "tuple destructuring: expected {} elements, got {}",
+                        names.len(), vec.len()
+                    )));
+                }
+                for (name, val) in names.iter().zip(vec.iter()) {
+                    self.env.define(name.clone(), val.clone());
+                }
+            }
+            Value::Struct { fields, .. } => {
+                // Destructure struct by field names
+                for name in names {
+                    let val = fields.get(name).cloned().unwrap_or(Value::Unit);
+                    self.env.define(name.clone(), val);
+                }
+            }
+            _ => {
+                return Err(RuntimeError::TypeError(format!(
+                    "cannot destructure {} into tuple", value.type_name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Assign a value through a chain of field accesses.
+    /// field_chain is [field1, field2, ..., fieldN] for target.field1.field2...fieldN = value.
+    fn assign_nested_field(obj: &mut Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
+        if field_chain.is_empty() {
+            *obj = value;
+            return Ok(());
+        }
+        let mut current = obj;
+        for (i, field) in field_chain.iter().enumerate() {
+            if i == field_chain.len() - 1 {
+                // Last field — assign the value
+                match current {
+                    Value::Struct { fields, .. } => {
+                        fields.insert(field.clone(), value);
+                        return Ok(());
+                    }
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "cannot assign field '{}' on {}", field, current.type_name()
+                    ))),
+                }
+            } else {
+                // Intermediate field — navigate deeper
+                current = match current {
+                    Value::Struct { fields, .. } => {
+                        fields.get_mut(field).ok_or_else(|| {
+                            RuntimeError::TypeError(format!("no field '{}' on struct", field))
+                        })?
+                    }
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "cannot access field '{}' on {}", field, current.type_name()
+                    ))),
+                };
+            }
+        }
+        unreachable!()
+    }
+
     fn assign_target(&mut self, target: &Expr, value: Value) -> Result<(), RuntimeError> {
         match &target.kind {
             ExprKind::Ident(name) => {
@@ -771,107 +884,72 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            // Field assignment: obj.field = value
-            ExprKind::Field { object, field } => {
-                if let ExprKind::Ident(var_name) = &object.kind {
-                    if let Some(obj) = self.env.get_mut(var_name) {
-                        match obj {
-                            Value::Struct { fields, .. } => {
-                                fields.insert(field.clone(), value);
-                                Ok(())
-                            }
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "cannot assign field on {}",
-                                obj.type_name()
-                            ))),
-                        }
-                    } else {
-                        Err(RuntimeError::UndefinedVariable(var_name.clone()))
-                    }
-                } else if let ExprKind::Index {
-                    object: idx_obj,
-                    index: idx_expr,
-                } = &object.kind
-                {
-                    // Nested field assignment: collection[idx].field = value
-                    // Handles: pool[h].field = value, vec[i].field = value
-                    let idx_val = self.eval_expr(idx_expr)?;
-                    if let ExprKind::Ident(var_name) = &idx_obj.kind {
-                        if let Some(container) = self.env.get(var_name).cloned() {
-                            match container {
-                                Value::Pool(p) => {
-                                    if let Value::Handle {
-                                        pool_id,
-                                        index,
-                                        generation,
-                                    } = idx_val
-                                    {
-                                        let mut pool = p.lock().unwrap();
-                                        let slot_idx = pool
-                                            .validate(pool_id, index, generation)
-                                            .map_err(|e| RuntimeError::Panic(e))?;
-                                        if let Some(Value::Struct {
-                                            ref mut fields, ..
-                                        }) = pool.slots[slot_idx].1
-                                        {
-                                            fields.insert(field.clone(), value);
-                                            Ok(())
-                                        } else {
-                                            Err(RuntimeError::TypeError(
-                                                "pool element is not a struct".to_string(),
-                                            ))
-                                        }
-                                    } else {
-                                        Err(RuntimeError::TypeError(
-                                            "Pool index must be a Handle".to_string(),
-                                        ))
-                                    }
-                                }
-                                Value::Vec(v) => {
-                                    if let Value::Int(i) = idx_val {
-                                        let i = i as usize;
-                                        let mut vec = v.lock().unwrap();
-                                        if i < vec.len() {
-                                            if let Value::Struct {
-                                                ref mut fields, ..
-                                            } = vec[i]
-                                            {
-                                                fields.insert(field.clone(), value);
-                                                Ok(())
-                                            } else {
-                                                Err(RuntimeError::TypeError(
-                                                    "vec element is not a struct".to_string(),
-                                                ))
-                                            }
-                                        } else {
-                                            Err(RuntimeError::TypeError(format!(
-                                                "index {} out of bounds",
-                                                i
-                                            )))
-                                        }
-                                    } else {
-                                        Err(RuntimeError::TypeError(
-                                            "Vec index must be integer".to_string(),
-                                        ))
-                                    }
-                                }
-                                _ => Err(RuntimeError::TypeError(format!(
-                                    "cannot field-assign on indexed {}",
-                                    container.type_name()
-                                ))),
-                            }
+            // Field assignment: obj.field = value (supports arbitrary nesting)
+            ExprKind::Field { .. } => {
+                // Collect the chain of field accesses from outermost to base
+                let mut field_chain = Vec::new();
+                let mut current = target;
+                while let ExprKind::Field { object, field: f } = &current.kind {
+                    field_chain.push(f.clone());
+                    current = object;
+                }
+                field_chain.reverse(); // Now: [outer_field, ..., inner_field]
+
+                match &current.kind {
+                    // Simple: var.field1.field2...fieldN = value
+                    ExprKind::Ident(var_name) => {
+                        if let Some(obj) = self.env.get_mut(var_name) {
+                            Self::assign_nested_field(obj, &field_chain, value)
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }
-                    } else {
-                        Err(RuntimeError::TypeError(
-                            "nested field assignment not yet supported".to_string(),
-                        ))
                     }
-                } else {
-                    Err(RuntimeError::TypeError(
-                        "nested field assignment not yet supported".to_string(),
-                    ))
+                    // Indexed: container[idx].field1.field2...fieldN = value
+                    ExprKind::Index { object: idx_obj, index: idx_expr } => {
+                        let idx_val = self.eval_expr(idx_expr)?;
+                        if let ExprKind::Ident(var_name) = &idx_obj.kind {
+                            if let Some(container) = self.env.get(var_name).cloned() {
+                                match container {
+                                    Value::Pool(p) => {
+                                        if let Value::Handle { pool_id, index, generation } = idx_val {
+                                            let mut pool = p.lock().unwrap();
+                                            let slot_idx = pool.validate(pool_id, index, generation)
+                                                .map_err(|e| RuntimeError::Panic(e))?;
+                                            if let Some(ref mut elem) = pool.slots[slot_idx].1 {
+                                                Self::assign_nested_field(elem, &field_chain, value)
+                                            } else {
+                                                Err(RuntimeError::TypeError("pool slot is empty".to_string()))
+                                            }
+                                        } else {
+                                            Err(RuntimeError::TypeError("Pool index must be a Handle".to_string()))
+                                        }
+                                    }
+                                    Value::Vec(v) => {
+                                        if let Value::Int(i) = idx_val {
+                                            let i = i as usize;
+                                            let mut vec = v.lock().unwrap();
+                                            if i < vec.len() {
+                                                Self::assign_nested_field(&mut vec[i], &field_chain, value)
+                                            } else {
+                                                Err(RuntimeError::TypeError(format!("index {} out of bounds", i)))
+                                            }
+                                        } else {
+                                            Err(RuntimeError::TypeError("Vec index must be integer".to_string()))
+                                        }
+                                    }
+                                    _ => Err(RuntimeError::TypeError(format!(
+                                        "cannot field-assign on indexed {}", container.type_name()
+                                    ))),
+                                }
+                            } else {
+                                Err(RuntimeError::UndefinedVariable(var_name.clone()))
+                            }
+                        } else {
+                            // Nested indexing on non-ident (e.g., complex expressions)
+                            Err(RuntimeError::TypeError("complex nested assignment not yet supported".to_string()))
+                        }
+                    }
+                    _ => Err(RuntimeError::TypeError("unsupported assignment target".to_string())),
                 }
             }
             // Index assignment: collection[idx] = value
@@ -1313,6 +1391,50 @@ impl Interpreter {
                             ))),
                         }
                     }
+                    Value::Module(ModuleKind::Math) => {
+                        // math.PI, math.E, etc. → return constant values
+                        self.get_math_field(field)
+                    }
+                    Value::Module(ModuleKind::Path) => {
+                        // path.Path → return type value for Path.new() etc.
+                        match field.as_str() {
+                            "Path" => Ok(Value::Type("Path".to_string())),
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "path module has no member '{}'",
+                                field
+                            ))),
+                        }
+                    }
+                    Value::Module(ModuleKind::Random) => {
+                        // random.Rng → return type value for Rng.new() etc.
+                        match field.as_str() {
+                            "Rng" => Ok(Value::Type("Rng".to_string())),
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "random module has no member '{}'",
+                                field
+                            ))),
+                        }
+                    }
+                    Value::Module(ModuleKind::Json) => {
+                        // json.JsonValue → return type for constructors
+                        match field.as_str() {
+                            "JsonValue" => Ok(Value::Type("JsonValue".to_string())),
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "json module has no member '{}'",
+                                field
+                            ))),
+                        }
+                    }
+                    Value::Module(ModuleKind::Cli) => {
+                        // cli.Parser → return type for builder
+                        match field.as_str() {
+                            "Parser" => Ok(Value::Type("Parser".to_string())),
+                            _ => Err(RuntimeError::TypeError(format!(
+                                "cli module has no member '{}'",
+                                field
+                            ))),
+                        }
+                    }
                     _ => Err(RuntimeError::TypeError(format!(
                         "cannot access field on {}",
                         obj.type_name()
@@ -1373,6 +1495,15 @@ impl Interpreter {
 
             // Array literal
             ExprKind::Array(elements) => {
+                let values: Vec<Value> = elements
+                    .iter()
+                    .map(|e| self.eval_expr(e))
+                    .collect::<Result<_, _>>()?;
+                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+            }
+
+            // Tuple literal — evaluated as Vec for pattern matching
+            ExprKind::Tuple(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
                     .map(|e| self.eval_expr(e))
@@ -1830,7 +1961,7 @@ impl Interpreter {
     }
 
     /// Compare two runtime values for equality.
-    fn value_eq(a: &Value, b: &Value) -> bool {
+    pub(crate) fn value_eq(a: &Value, b: &Value) -> bool {
         match (a, b) {
             (Value::Unit, Value::Unit) => true,
             (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -1838,12 +1969,21 @@ impl Interpreter {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
+            (Value::Enum { name: n1, variant: v1, fields: f1 },
+             Value::Enum { name: n2, variant: v2, fields: f2 }) => {
+                n1 == n2 && v1 == v2 && f1.len() == f2.len()
+                    && f1.iter().zip(f2.iter()).all(|(a, b)| Self::value_eq(a, b))
+            }
+            (Value::Handle { pool_id: p1, index: i1, generation: g1 },
+             Value::Handle { pool_id: p2, index: i2, generation: g2 }) => {
+                p1 == p2 && i1 == i2 && g1 == g2
+            }
             _ => false,
         }
     }
 
     /// Call a value (function or builtin).
-    fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub(crate) fn call_value(&mut self, func: Value, args: Vec<Value>) -> Result<Value, RuntimeError> {
         match func {
             Value::Function { name } => {
                 if let Some(decl) = self.functions.get(&name).cloned() {
@@ -1907,14 +2047,7 @@ impl Interpreter {
                     if i > 0 {
                         self.write_output(" ");
                     }
-                    match arg {
-                        Value::String(s) => {
-                            // Handle string interpolation
-                            let output = self.interpolate_string(&s.lock().unwrap())?;
-                            self.write_output(&output);
-                        }
-                        _ => self.write_output(&format!("{}", arg)),
-                    }
+                    self.write_output(&format!("{}", arg));
                 }
                 self.write_output_ln();
                 Ok(Value::Unit)
@@ -1924,13 +2057,7 @@ impl Interpreter {
                     if i > 0 {
                         self.write_output(" ");
                     }
-                    match arg {
-                        Value::String(s) => {
-                            let output = self.interpolate_string(&s.lock().unwrap())?;
-                            self.write_output(&output);
-                        }
-                        _ => self.write_output(&format!("{}", arg)),
-                    }
+                    self.write_output(&format!("{}", arg));
                 }
                 Ok(Value::Unit)
             }
@@ -1941,6 +2068,310 @@ impl Interpreter {
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
             }
+            BuiltinKind::Format => {
+                if args.is_empty() {
+                    return Err(RuntimeError::TypeError(
+                        "format() requires at least one argument (template string)".into(),
+                    ));
+                }
+                match &args[0] {
+                    Value::String(s) => {
+                        let template = s.lock().unwrap().clone();
+                        let result = self.format_string(&template, &args[1..])?;
+                        Ok(Value::String(Arc::new(Mutex::new(result))))
+                    }
+                    _ => Err(RuntimeError::TypeError(
+                        "format() first argument must be a string".into(),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// Format a string with positional/named placeholders and format specifiers.
+    fn format_string(&self, template: &str, args: &[Value]) -> Result<String, RuntimeError> {
+        let mut result = String::new();
+        let mut chars = template.chars().peekable();
+        let mut arg_index = 0usize;
+
+        while let Some(c) = chars.next() {
+            if c == '{' {
+                // Check for escaped brace {{
+                if chars.peek() == Some(&'{') {
+                    chars.next();
+                    result.push('{');
+                    continue;
+                }
+                // Collect everything until '}'
+                let mut spec_str = String::new();
+                while let Some(&next) = chars.peek() {
+                    if next == '}' {
+                        chars.next();
+                        break;
+                    }
+                    spec_str.push(chars.next().unwrap());
+                }
+                // Parse: [arg_id][:format_spec]
+                let (arg_id, fmt_spec) = if let Some(colon_pos) = spec_str.find(':') {
+                    let id_part = &spec_str[..colon_pos];
+                    let spec_part = &spec_str[colon_pos + 1..];
+                    (id_part.to_string(), Some(spec_part.to_string()))
+                } else {
+                    (spec_str, None)
+                };
+
+                // Resolve the value
+                let value = if arg_id.is_empty() {
+                    // Positional: next arg
+                    if arg_index < args.len() {
+                        let v = args[arg_index].clone();
+                        arg_index += 1;
+                        v
+                    } else {
+                        // Fall back to environment lookup (empty name — just use next arg)
+                        return Err(RuntimeError::TypeError(format!(
+                            "format() not enough arguments (expected at least {})",
+                            arg_index + 1
+                        )));
+                    }
+                } else if let Ok(idx) = arg_id.parse::<usize>() {
+                    // Explicit positional: {0}, {1}, etc.
+                    if idx < args.len() {
+                        args[idx].clone()
+                    } else {
+                        return Err(RuntimeError::TypeError(format!(
+                            "format() argument index {} out of range (have {} args)",
+                            idx,
+                            args.len()
+                        )));
+                    }
+                } else {
+                    // Named: look up variable in environment, supporting dotted access
+                    self.resolve_named_placeholder(&arg_id)?
+                };
+
+                // Apply format spec
+                match fmt_spec {
+                    Some(spec) => {
+                        let formatted = self.apply_format_spec(&value, &spec)?;
+                        result.push_str(&formatted);
+                    }
+                    None => {
+                        result.push_str(&format!("{}", value));
+                    }
+                }
+            } else if c == '}' {
+                // Check for escaped brace }}
+                if chars.peek() == Some(&'}') {
+                    chars.next();
+                    result.push('}');
+                } else {
+                    result.push('}');
+                }
+            } else {
+                result.push(c);
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Resolve a named placeholder like "name" or "obj.field" from the environment.
+    fn resolve_named_placeholder(&self, name: &str) -> Result<Value, RuntimeError> {
+        let parts: Vec<&str> = name.split('.').collect();
+        if let Some(val) = self.env.get(parts[0]) {
+            let mut current = val.clone();
+            for &part in &parts[1..] {
+                match current {
+                    Value::Struct { fields, .. } => {
+                        current = fields.get(part).cloned().unwrap_or(Value::Unit);
+                    }
+                    _ => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "cannot access field '{}' on {}",
+                            part,
+                            current.type_name()
+                        )));
+                    }
+                }
+            }
+            Ok(current)
+        } else {
+            Err(RuntimeError::UndefinedVariable(parts[0].to_string()))
+        }
+    }
+
+    /// Apply a format specifier to a value.
+    fn apply_format_spec(&self, value: &Value, spec: &str) -> Result<String, RuntimeError> {
+        // Parse: [[fill]align][width][.precision][type]
+        let mut fill = ' ';
+        let mut align = None; // None means default (right for numbers, left for strings)
+        let mut width = 0usize;
+        let mut precision = None;
+        let mut format_type = ' '; // ' ' = display, '?' = debug, 'x'/'X' = hex, 'b' = binary, 'o' = octal, 'e' = scientific
+
+        // Check for [fill]align — align is <, >, ^
+        // If second char is an align char, first char is fill
+        let spec_chars: Vec<char> = spec.chars().collect();
+        let mut pos = 0;
+
+        if spec_chars.len() >= 2 && matches!(spec_chars[1], '<' | '>' | '^') {
+            fill = spec_chars[0];
+            align = Some(spec_chars[1]);
+            pos = 2;
+        } else if !spec_chars.is_empty() && matches!(spec_chars[0], '<' | '>' | '^') {
+            align = Some(spec_chars[0]);
+            pos = 1;
+        }
+
+        // Parse width
+        let mut width_str = String::new();
+        while pos < spec_chars.len() && spec_chars[pos].is_ascii_digit() {
+            width_str.push(spec_chars[pos]);
+            pos += 1;
+        }
+        if !width_str.is_empty() {
+            width = width_str.parse().unwrap_or(0);
+        }
+
+        // Parse .precision
+        if pos < spec_chars.len() && spec_chars[pos] == '.' {
+            pos += 1;
+            let mut prec_str = String::new();
+            while pos < spec_chars.len() && spec_chars[pos].is_ascii_digit() {
+                prec_str.push(spec_chars[pos]);
+                pos += 1;
+            }
+            precision = Some(prec_str.parse::<usize>().unwrap_or(0));
+        }
+
+        // Parse type
+        if pos < spec_chars.len() {
+            format_type = spec_chars[pos];
+        }
+
+        // Format the value based on type
+        let formatted = match format_type {
+            '?' => {
+                // Debug representation
+                self.debug_format(value)
+            }
+            'x' => {
+                // Hex lowercase
+                match value {
+                    Value::Int(n) => format!("{:x}", n),
+                    _ => format!("{}", value),
+                }
+            }
+            'X' => {
+                // Hex uppercase
+                match value {
+                    Value::Int(n) => format!("{:X}", n),
+                    _ => format!("{}", value),
+                }
+            }
+            'b' => {
+                // Binary
+                match value {
+                    Value::Int(n) => format!("{:b}", n),
+                    _ => format!("{}", value),
+                }
+            }
+            'o' => {
+                // Octal
+                match value {
+                    Value::Int(n) => format!("{:o}", n),
+                    _ => format!("{}", value),
+                }
+            }
+            'e' => {
+                // Scientific notation
+                match value {
+                    Value::Float(n) => format!("{:e}", n),
+                    Value::Int(n) => format!("{:e}", *n as f64),
+                    _ => format!("{}", value),
+                }
+            }
+            _ => {
+                // Display (default)
+                match precision {
+                    Some(prec) => match value {
+                        Value::Float(n) => format!("{:.prec$}", n, prec = prec),
+                        _ => format!("{}", value),
+                    },
+                    None => format!("{}", value),
+                }
+            }
+        };
+
+        // Apply width and alignment
+        if width > 0 && formatted.len() < width {
+            let padding = width - formatted.len();
+            let effective_align = align.unwrap_or('>');
+            match effective_align {
+                '<' => {
+                    let mut s = formatted;
+                    for _ in 0..padding {
+                        s.push(fill);
+                    }
+                    Ok(s)
+                }
+                '^' => {
+                    let left_pad = padding / 2;
+                    let right_pad = padding - left_pad;
+                    let mut s = String::new();
+                    for _ in 0..left_pad {
+                        s.push(fill);
+                    }
+                    s.push_str(&formatted);
+                    for _ in 0..right_pad {
+                        s.push(fill);
+                    }
+                    Ok(s)
+                }
+                _ => {
+                    // '>' or default: right-align
+                    let mut s = String::new();
+                    for _ in 0..padding {
+                        s.push(fill);
+                    }
+                    s.push_str(&formatted);
+                    Ok(s)
+                }
+            }
+        } else {
+            Ok(formatted)
+        }
+    }
+
+    /// Debug format a value (shows type structure).
+    fn debug_format(&self, value: &Value) -> String {
+        match value {
+            Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
+            Value::Char(c) => format!("'{}'", c),
+            Value::Vec(v) => {
+                let vec = v.lock().unwrap();
+                let items: Vec<String> = vec.iter().map(|v| self.debug_format(v)).collect();
+                format!("[{}]", items.join(", "))
+            }
+            Value::Struct { name, fields, .. } => {
+                let field_strs: Vec<String> = fields
+                    .iter()
+                    .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
+                    .collect();
+                format!("{} {{ {} }}", name, field_strs.join(", "))
+            }
+            Value::Enum { name, variant, fields } => {
+                if fields.is_empty() {
+                    format!("{}.{}", name, variant)
+                } else {
+                    let field_strs: Vec<String> =
+                        fields.iter().map(|v| self.debug_format(v)).collect();
+                    format!("{}.{}({})", name, variant, field_strs.join(", "))
+                }
+            }
+            // For primitives, Display and Debug are the same
+            _ => format!("{}", value),
         }
     }
 
@@ -1951,6 +2382,13 @@ impl Interpreter {
 
         while let Some(c) = chars.next() {
             if c == '{' {
+                // Escaped brace {{ — pass through literally for format()
+                if chars.peek() == Some(&'{') {
+                    result.push('{');
+                    result.push('{');
+                    chars.next();
+                    continue;
+                }
                 // Collect expression until '}'
                 let mut expr_str = String::new();
                 while let Some(&next) = chars.peek() {
@@ -1960,28 +2398,31 @@ impl Interpreter {
                     }
                     expr_str.push(chars.next().unwrap());
                 }
-                // Handle dotted field access (e.g., "opts.verbose")
-                let parts: Vec<&str> = expr_str.split('.').collect();
-                if let Some(val) = self.env.get(parts[0]) {
-                    let mut current = val.clone();
-                    for &part in &parts[1..] {
-                        match current {
-                            Value::Struct { fields, .. } => {
-                                current = fields.get(part).cloned().unwrap_or(Value::Unit);
-                            }
-                            _ => {
-                                return Err(RuntimeError::TypeError(format!(
-                                    "cannot access field '{}' on {}",
-                                    part,
-                                    current.type_name()
-                                )));
-                            }
-                        }
-                    }
-                    result.push_str(&format!("{}", current));
-                } else {
-                    return Err(RuntimeError::UndefinedVariable(parts[0].to_string()));
+                // Empty braces {} or format specifiers {:x} — keep literal for format()
+                if expr_str.is_empty() || expr_str.starts_with(':') {
+                    result.push('{');
+                    result.push_str(&expr_str);
+                    result.push('}');
+                    continue;
                 }
+                // Separate format specifier: {expr:spec}
+                let (expr_part, fmt_spec) = if let Some(colon_pos) = expr_str.find(':') {
+                    (&expr_str[..colon_pos], Some(&expr_str[colon_pos..]))
+                } else {
+                    (expr_str.as_str(), None)
+                };
+                let value = self.eval_interpolation_expr(expr_part)?;
+                if let Some(spec) = fmt_spec {
+                    // Re-wrap with format specifier for Display
+                    result.push_str(&Self::format_value_with_spec(&value, spec));
+                } else {
+                    result.push_str(&format!("{}", value));
+                }
+            } else if c == '}' && chars.peek() == Some(&'}') {
+                // Escaped brace }} — pass through literally for format()
+                result.push('}');
+                result.push('}');
+                chars.next();
             } else {
                 result.push(c);
             }
@@ -1990,1583 +2431,127 @@ impl Interpreter {
         Ok(result)
     }
 
-    /// Call a method on a value (handles desugared operators).
+    /// Evaluate a simple expression inside string interpolation.
+    /// Supports: variable, dotted field access, and simple binary ops (+, -, *, /).
+    fn eval_interpolation_expr(&self, expr: &str) -> Result<Value, RuntimeError> {
+        let expr = expr.trim();
+        // Try binary operators (lowest precedence first)
+        for op_str in &[" + ", " - ", " * ", " / "] {
+            if let Some(pos) = expr.find(op_str) {
+                let left = self.eval_interpolation_expr(&expr[..pos])?;
+                let right = self.eval_interpolation_expr(&expr[pos + op_str.len()..])?;
+                return match (*op_str, &left, &right) {
+                    (" + ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+                    (" - ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+                    (" * ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+                    (" / ", Value::Int(a), Value::Int(b)) => {
+                        if *b == 0 { return Err(RuntimeError::DivisionByZero); }
+                        Ok(Value::Int(a / b))
+                    }
+                    (" + ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+                    (" - ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+                    (" * ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+                    (" / ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+                    _ => Err(RuntimeError::TypeError(format!(
+                        "unsupported interpolation operation: {} {:?} {}", left.type_name(), op_str.trim(), right.type_name()
+                    ))),
+                };
+            }
+        }
+        // Try integer literal
+        if let Ok(n) = expr.parse::<i64>() {
+            return Ok(Value::Int(n));
+        }
+        // Try float literal
+        if let Ok(f) = expr.parse::<f64>() {
+            return Ok(Value::Float(f));
+        }
+        // Dotted field access (e.g., "state.score" or just "x")
+        let parts: Vec<&str> = expr.split('.').collect();
+        if let Some(val) = self.env.get(parts[0]) {
+            let mut current = val.clone();
+            for &part in &parts[1..] {
+                match current {
+                    Value::Struct { fields, .. } => {
+                        current = fields.get(part).cloned().unwrap_or(Value::Unit);
+                    }
+                    _ => {
+                        return Err(RuntimeError::TypeError(format!(
+                            "cannot access field '{}' on {}",
+                            part,
+                            current.type_name()
+                        )));
+                    }
+                }
+            }
+            Ok(current)
+        } else {
+            Err(RuntimeError::UndefinedVariable(parts[0].to_string()))
+        }
+    }
+
+    /// Format a value with a format specifier like :.2, :.1, :b, :x, etc.
+    fn format_value_with_spec(value: &Value, spec: &str) -> String {
+        let spec = &spec[1..]; // strip leading ':'
+        match value {
+            Value::Float(f) => {
+                if let Some(precision) = spec.strip_prefix('.') {
+                    if let Ok(p) = precision.parse::<usize>() {
+                        return format!("{:.*}", p, f);
+                    }
+                }
+                format!("{}", f)
+            }
+            Value::Int(n) => {
+                match spec {
+                    "b" => format!("{:b}", n),
+                    "x" => format!("{:x}", n),
+                    "X" => format!("{:X}", n),
+                    "o" => format!("{:o}", n),
+                    _ => format!("{}", n),
+                }
+            }
+            _ => format!("{}", value),
+        }
+    }
+
+    /// Call a method on a value. Dispatches to builtins or stdlib.
     fn call_method(
         &mut self,
         receiver: Value,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        match (&receiver, method) {
-            // Integer arithmetic methods
-            (Value::Int(a), "add") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a + b))
-            }
-            (Value::Int(a), "sub") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a - b))
-            }
-            (Value::Int(a), "mul") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a * b))
-            }
-            (Value::Int(a), "div") => {
-                let b = self.expect_int(&args, 0)?;
-                if b == 0 {
-                    return Err(RuntimeError::DivisionByZero);
-                }
-                Ok(Value::Int(a / b))
-            }
-            (Value::Int(a), "rem") => {
-                let b = self.expect_int(&args, 0)?;
-                if b == 0 {
-                    return Err(RuntimeError::DivisionByZero);
-                }
-                Ok(Value::Int(a % b))
-            }
-            (Value::Int(a), "neg") => Ok(Value::Int(-a)),
-
-            // Integer comparison methods
-            (Value::Int(a), "eq") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Bool(*a == b))
-            }
-            (Value::Int(a), "lt") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Bool(*a < b))
-            }
-            (Value::Int(a), "le") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Bool(*a <= b))
-            }
-            (Value::Int(a), "gt") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Bool(*a > b))
-            }
-            (Value::Int(a), "ge") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Bool(*a >= b))
-            }
-
-            // Integer bitwise methods
-            (Value::Int(a), "bit_and") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a & b))
-            }
-            (Value::Int(a), "bit_or") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a | b))
-            }
-            (Value::Int(a), "bit_xor") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a ^ b))
-            }
-            (Value::Int(a), "shl") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a << b))
-            }
-            (Value::Int(a), "shr") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int(a >> b))
-            }
-            (Value::Int(a), "bit_not") => Ok(Value::Int(!a)),
-            (Value::Int(a), "abs") => Ok(Value::Int(a.abs())),
-            (Value::Int(a), "min") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int((*a).min(b)))
-            }
-            (Value::Int(a), "max") => {
-                let b = self.expect_int(&args, 0)?;
-                Ok(Value::Int((*a).max(b)))
-            }
-            (Value::Int(a), "to_string") => {
-                Ok(Value::String(Arc::new(Mutex::new(a.to_string()))))
-            }
-            (Value::Int(a), "to_float") => Ok(Value::Float(*a as f64)),
-
-            // Float arithmetic methods
-            (Value::Float(a), "add") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a + b))
-            }
-            (Value::Float(a), "sub") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a - b))
-            }
-            (Value::Float(a), "mul") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a * b))
-            }
-            (Value::Float(a), "div") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a / b))
-            }
-            (Value::Float(a), "neg") => Ok(Value::Float(-a)),
-
-            // Float comparison methods
-            (Value::Float(a), "eq") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Bool(*a == b))
-            }
-            (Value::Float(a), "lt") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Bool(*a < b))
-            }
-            (Value::Float(a), "le") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Bool(*a <= b))
-            }
-            (Value::Float(a), "gt") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Bool(*a > b))
-            }
-            (Value::Float(a), "ge") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Bool(*a >= b))
-            }
-            (Value::Float(a), "abs") => Ok(Value::Float(a.abs())),
-            (Value::Float(a), "floor") => Ok(Value::Float(a.floor())),
-            (Value::Float(a), "ceil") => Ok(Value::Float(a.ceil())),
-            (Value::Float(a), "round") => Ok(Value::Float(a.round())),
-            (Value::Float(a), "sqrt") => Ok(Value::Float(a.sqrt())),
-            (Value::Float(a), "min") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a.min(b)))
-            }
-            (Value::Float(a), "max") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a.max(b)))
-            }
-            (Value::Float(a), "to_string") => {
-                Ok(Value::String(Arc::new(Mutex::new(a.to_string()))))
-            }
-            (Value::Float(a), "to_int") => Ok(Value::Int(*a as i64)),
-            (Value::Float(a), "pow") => {
-                let b = self.expect_float(&args, 0)?;
-                Ok(Value::Float(a.powf(b)))
-            }
-
-            // Bool comparison
-            (Value::Bool(a), "eq") => {
-                let b = self.expect_bool(&args, 0)?;
-                Ok(Value::Bool(*a == b))
-            }
-
-            // Char methods
-            (Value::Char(c), "is_whitespace") => Ok(Value::Bool(c.is_whitespace())),
-            (Value::Char(c), "is_alphabetic") => Ok(Value::Bool(c.is_alphabetic())),
-            (Value::Char(c), "is_alphanumeric") => Ok(Value::Bool(c.is_alphanumeric())),
-            (Value::Char(c), "is_digit") => Ok(Value::Bool(c.is_ascii_digit())),
-            (Value::Char(c), "is_uppercase") => Ok(Value::Bool(c.is_uppercase())),
-            (Value::Char(c), "is_lowercase") => Ok(Value::Bool(c.is_lowercase())),
-            (Value::Char(c), "to_uppercase") => {
-                Ok(Value::Char(c.to_uppercase().next().unwrap_or(*c)))
-            }
-            (Value::Char(c), "to_lowercase") => {
-                Ok(Value::Char(c.to_lowercase().next().unwrap_or(*c)))
-            }
-            (Value::Char(c), "eq") => {
-                let other = self.expect_char(&args, 0)?;
-                Ok(Value::Bool(*c == other))
-            }
-
-            // String methods
-            (Value::String(s), "len") => Ok(Value::Int(s.lock().unwrap().len() as i64)),
-            (Value::String(s), "is_empty") => Ok(Value::Bool(s.lock().unwrap().is_empty())),
-            (Value::String(s), "clone") => Ok(Value::String(Arc::clone(s))),
-            (Value::String(s), "starts_with") => {
-                let prefix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.lock().unwrap().starts_with(&prefix)))
-            }
-            (Value::String(s), "ends_with") => {
-                let suffix = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.lock().unwrap().ends_with(&suffix)))
-            }
-            (Value::String(s), "contains") => {
-                let pattern = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(s.lock().unwrap().contains(&pattern)))
-            }
-            (Value::String(s), "push") => {
-                let c = self.expect_char(&args, 0)?;
-                s.lock().unwrap().push(c);
-                Ok(Value::Unit)
-            }
-            (Value::String(s), "trim") => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim().to_string()))))
-            }
-            (Value::String(s), "trim_start") => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_start().to_string()))))
-            }
-            (Value::String(s), "trim_end") => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
-            }
-            (Value::String(s), "to_string") => Ok(Value::String(Arc::clone(s))),
-            (Value::String(s), "to_owned") => {
-                // Clone the string to create an owned copy
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))))
-            }
-            (Value::String(s), "to_uppercase") => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_uppercase()))))
-            }
-            (Value::String(s), "to_lowercase") => {
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().to_lowercase()))))
-            }
-            (Value::String(s), "split") => {
-                let delimiter = self.expect_string(&args, 0)?;
-                let parts: Vec<Value> = s
-                    .lock().unwrap()
-                    .split(&delimiter)
-                    .map(|p| Value::String(Arc::new(Mutex::new(p.to_string()))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
-            }
-            (Value::String(s), "split_whitespace") => {
-                // Split on any Unicode whitespace, skip empty
-                let parts: Vec<Value> = s
-                    .lock().unwrap()
-                    .split_whitespace()
-                    .map(|part| Value::String(Arc::new(Mutex::new(part.to_string()))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
-            }
-            (Value::String(s), "chars") => {
-                let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(chars))))
-            }
-            (Value::String(s), "lines") => {
-                let lines: Vec<Value> = s
-                    .lock().unwrap()
-                    .lines()
-                    .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
-            }
-            (Value::String(s), "replace") => {
-                let from = self.expect_string(&args, 0)?;
-                let to = self.expect_string(&args, 1)?;
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().replace(&from, &to)))))
-            }
-            (Value::String(s), "substring") => {
-                let sb = s.lock().unwrap();
-                let start = self.expect_int(&args, 0)? as usize;
-                let end = args
-                    .get(1)
-                    .map(|v| match v {
-                        Value::Int(i) => *i as usize,
-                        _ => sb.len(),
-                    })
-                    .unwrap_or(sb.len());
-                let substring: String = sb.chars().skip(start).take(end - start).collect();
-                Ok(Value::String(Arc::new(Mutex::new(substring))))
-            }
-            (Value::String(s), "parse_int") | (Value::String(s), "parse") => {
-                // parse<i32>() and parse_int() both parse as integer
-                match s.lock().unwrap().trim().parse::<i64>() {
-                    Ok(n) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Int(n)],
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "invalid integer".to_string(),
-                        )))],
-                    }),
-                }
-            }
-            (Value::String(s), "char_at") => {
-                let idx = self.expect_int(&args, 0)? as usize;
-                match s.lock().unwrap().chars().nth(idx) {
-                    Some(c) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::Char(c)],
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::String(s), "byte_at") => {
-                let idx = self.expect_int(&args, 0)? as usize;
-                match s.lock().unwrap().as_bytes().get(idx) {
-                    Some(&b) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::Int(b as i64)],
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::String(s), "parse_float") => {
-                match s.lock().unwrap().trim().parse::<f64>() {
-                    Ok(n) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Float(n)],
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "invalid float".to_string(),
-                        )))],
-                    }),
-                }
-            }
-            (Value::String(s), "index_of") => {
-                let pattern = self.expect_string(&args, 0)?;
-                match s.lock().unwrap().find(&pattern) {
-                    Some(idx) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::Int(idx as i64)],
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::String(s), "repeat") => {
-                let n = self.expect_int(&args, 0)? as usize;
-                Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().repeat(n)))))
-            }
-            (Value::String(s), "reverse") => {
-                Ok(Value::String(Arc::new(Mutex::new(
-                    s.lock().unwrap().chars().rev().collect(),
-                ))))
-            }
-
-            // Type constructor static methods (Vec.new(), string.new(), etc.)
-            (Value::TypeConstructor(TypeConstructorKind::Vec), "new") => {
-                Ok(Value::Vec(Arc::new(Mutex::new(Vec::new()))))
-            }
-            (Value::TypeConstructor(TypeConstructorKind::Vec), "with_capacity") => {
-                let cap = self.expect_int(&args, 0)? as usize;
-                Ok(Value::Vec(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
-            }
-            (Value::TypeConstructor(TypeConstructorKind::String), "new") => {
-                Ok(Value::String(Arc::new(Mutex::new(String::new()))))
-            }
-
-            // Pool constructor static methods
-            (Value::TypeConstructor(TypeConstructorKind::Pool), "new") => {
-                use crate::value::PoolData;
-                Ok(Value::Pool(Arc::new(Mutex::new(PoolData::new()))))
-            }
-            (Value::TypeConstructor(TypeConstructorKind::Pool), "with_capacity") => {
-                use crate::value::PoolData;
-                let cap = self.expect_int(&args, 0)? as usize;
-                let mut pool = PoolData::new();
-                pool.slots.reserve(cap);
-                Ok(Value::Pool(Arc::new(Mutex::new(pool))))
-            }
-
-            // Pool instance methods
-            (Value::Pool(p), "insert") => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
-                let mut pool = p.lock().unwrap();
-                let pool_id = pool.pool_id;
-                let (index, generation) = pool.insert(item);
-                let handle = Value::Handle {
-                    pool_id,
-                    index,
-                    generation,
-                };
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![handle],
-                })
-            }
-            (Value::Pool(p), "get") => {
-                if let Some(Value::Handle {
-                    pool_id,
-                    index,
-                    generation,
-                }) = args.first()
-                {
-                    let pool = p.lock().unwrap();
-                    match pool.validate(*pool_id, *index, *generation) {
-                        Ok(idx) => {
-                            let val = pool.slots[idx].1.as_ref().unwrap().clone();
-                            Ok(Value::Enum {
-                                name: "Option".to_string(),
-                                variant: "Some".to_string(),
-                                fields: vec![val],
-                            })
-                        }
-                        Err(_) => Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                        }),
-                    }
-                } else {
-                    Err(RuntimeError::TypeError(
-                        "pool.get() requires a Handle argument".to_string(),
-                    ))
-                }
-            }
-            (Value::Pool(p), "remove") => {
-                if let Some(Value::Handle {
-                    pool_id,
-                    index,
-                    generation,
-                }) = args.first()
-                {
-                    let mut pool = p.lock().unwrap();
-                    match pool.validate(*pool_id, *index, *generation) {
-                        Ok(idx) => {
-                            let val = pool.remove_at(idx).unwrap();
-                            Ok(Value::Enum {
-                                name: "Option".to_string(),
-                                variant: "Some".to_string(),
-                                fields: vec![val],
-                            })
-                        }
-                        Err(_) => Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "None".to_string(),
-                            fields: vec![],
-                        }),
-                    }
-                } else {
-                    Err(RuntimeError::TypeError(
-                        "pool.remove() requires a Handle argument".to_string(),
-                    ))
-                }
-            }
-            (Value::Pool(p), "len") => Ok(Value::Int(p.lock().unwrap().len as i64)),
-            (Value::Pool(p), "is_empty") => Ok(Value::Bool(p.lock().unwrap().len == 0)),
-            (Value::Pool(p), "contains") => {
-                if let Some(Value::Handle {
-                    pool_id,
-                    index,
-                    generation,
-                }) = args.first()
-                {
-                    let pool = p.lock().unwrap();
-                    Ok(Value::Bool(
-                        pool.validate(*pool_id, *index, *generation).is_ok(),
-                    ))
-                } else {
-                    Err(RuntimeError::TypeError(
-                        "pool.contains() requires a Handle argument".to_string(),
-                    ))
-                }
-            }
-            (Value::Pool(p), "clear") => {
-                let mut pool = p.lock().unwrap();
-                let slot_count = pool.slots.len();
-                for (_i, (gen, slot)) in pool.slots.iter_mut().enumerate() {
-                    if slot.is_some() {
-                        *slot = None;
-                        *gen = gen.saturating_add(1);
-                    }
-                }
-                pool.free_list.clear();
-                for i in 0..slot_count {
-                    pool.free_list.push(i as u32);
-                }
-                pool.len = 0;
-                Ok(Value::Unit)
-            }
-            (Value::Pool(p), "handles") | (Value::Pool(p), "cursor") => {
-                let pool = p.lock().unwrap();
-                let pool_id = pool.pool_id;
-                let handles: Vec<Value> = pool
-                    .valid_handles()
-                    .iter()
-                    .map(|(idx, gen)| Value::Handle {
-                        pool_id,
-                        index: *idx,
-                        generation: *gen,
-                    })
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(handles))))
-            }
-
-            // Handle methods
-            (Value::Handle { pool_id, index, generation, .. }, "eq") => {
-                if let Some(Value::Handle {
-                    pool_id: p2,
-                    index: i2,
-                    generation: g2,
-                }) = args.first()
-                {
-                    Ok(Value::Bool(
-                        *pool_id == *p2 && *index == *i2 && *generation == *g2,
-                    ))
-                } else {
-                    Ok(Value::Bool(false))
-                }
-            }
-            (Value::Handle { .. }, "ne") => {
-                let eq_result = self.call_method(receiver.clone(), "eq", args)?;
-                if let Value::Bool(b) = eq_result {
-                    Ok(Value::Bool(!b))
-                } else {
-                    Ok(Value::Bool(true))
-                }
-            }
-
-            // Vec instance methods
-            (Value::Vec(v), "push") => {
-                let item = args.into_iter().next().unwrap_or(Value::Unit);
-                v.lock().unwrap().push(item);
-                // Return Ok(()) wrapped as Result enum
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                })
-            }
-            (Value::Vec(v), "pop") => {
-                Ok(v.lock().unwrap().pop().unwrap_or(Value::Unit))
-            }
-            (Value::Vec(v), "len") => {
-                Ok(Value::Int(v.lock().unwrap().len() as i64))
-            }
-            (Value::Vec(v), "get") => {
-                let idx = self.expect_int(&args, 0)? as usize;
-                Ok(v.lock().unwrap().get(idx).cloned().unwrap_or(Value::Unit))
-            }
-            (Value::Vec(v), "is_empty") => {
-                Ok(Value::Bool(v.lock().unwrap().is_empty()))
-            }
-            (Value::Vec(v), "clear") => {
-                v.lock().unwrap().clear();
-                Ok(Value::Unit)
-            }
-            (Value::Vec(v), "iter") => {
-                // Return a copy of the Vec for iteration
-                // TODO: Implement proper iterator type with skip(), take(), etc.
-                Ok(Value::Vec(Arc::clone(v)))
-            }
-            (Value::Vec(v), "skip") => {
-                let n = self.expect_int(&args, 0)? as usize;
-                let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(skipped))))
-            }
-            (Value::Vec(v), "first") => {
-                match v.lock().unwrap().first().cloned() {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::Vec(v), "last") => {
-                match v.lock().unwrap().last().cloned() {
-                    Some(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![val],
-                    }),
-                    None => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::Vec(v), "contains") => {
-                if let Some(needle) = args.first() {
-                    let found = v.lock().unwrap().iter().any(|item| Self::value_eq(item, needle));
-                    Ok(Value::Bool(found))
-                } else {
-                    Err(RuntimeError::ArityMismatch { expected: 1, got: 0 })
-                }
-            }
-            (Value::Vec(v), "reverse") => {
-                v.lock().unwrap().reverse();
-                Ok(Value::Unit)
-            }
-            (Value::Vec(v), "join") => {
-                let sep = self.expect_string(&args, 0)?;
-                let joined: String = v
-                    .lock().unwrap()
-                    .iter()
-                    .map(|item| format!("{}", item))
-                    .collect::<Vec<_>>()
-                    .join(&sep);
-                Ok(Value::String(Arc::new(Mutex::new(joined))))
-            }
-
-            // Module methods (fs.read_file, io.read_line, etc.)
-            (Value::Module(ModuleKind::Fs), "read_file") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "read_lines") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::read_to_string(&path) {
-                    Ok(content) => {
-                        let lines: Vec<Value> = content
-                            .lines()
-                            .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
-                            .collect();
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::Vec(Arc::new(Mutex::new(lines)))],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "write_file") => {
-                let path = self.expect_string(&args, 0)?;
-                let content = self.expect_string(&args, 1)?;
-                match std::fs::write(&path, &content) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "append_file") => {
-                use std::io::Write;
-                let path = self.expect_string(&args, 0)?;
-                let content = self.expect_string(&args, 1)?;
-                let result = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .and_then(|mut f| f.write_all(content.as_bytes()));
-                match result {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "exists") => {
-                let path = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(std::path::Path::new(&path).exists()))
-            }
-            (Value::Module(ModuleKind::Fs), "open") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::File::open(&path) {
-                    Ok(file) => {
-                        let arc = Arc::new(Mutex::new(Some(file)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::File(arc)],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "create") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::File::create(&path) {
-                    Ok(file) => {
-                        let arc = Arc::new(Mutex::new(Some(file)));
-                        let ptr = Arc::as_ptr(&arc) as usize;
-                        self.resource_tracker.register_file(ptr, self.env.scope_depth());
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::File(arc)],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "canonicalize") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::canonicalize(&path) {
-                    Ok(p) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            p.to_string_lossy().to_string(),
-                        )))],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "metadata") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::metadata(&path) {
-                    Ok(meta) => {
-                        let mut fields = HashMap::new();
-                        fields.insert("size".to_string(), Value::Int(meta.len() as i64));
-                        // Add timestamps as unix seconds (i64)
-                        if let Ok(accessed) = meta.accessed() {
-                            if let Ok(dur) = accessed.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("accessed".to_string(), Value::Int(dur.as_secs() as i64));
-                            }
-                        }
-                        if let Ok(modified) = meta.modified() {
-                            if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
-                                fields.insert("modified".to_string(), Value::Int(dur.as_secs() as i64));
-                            }
-                        }
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::Struct {
-                                name: "Metadata".to_string(),
-                                fields,
-                                resource_id: None,
-                            }],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "remove") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::remove_file(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "remove_dir") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::remove_dir(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "create_dir") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::create_dir(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "create_dir_all") => {
-                let path = self.expect_string(&args, 0)?;
-                match std::fs::create_dir_all(&path) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "rename") => {
-                let from = self.expect_string(&args, 0)?;
-                let to = self.expect_string(&args, 1)?;
-                match std::fs::rename(&from, &to) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Fs), "copy") => {
-                let from = self.expect_string(&args, 0)?;
-                let to = self.expect_string(&args, 1)?;
-                match std::fs::copy(&from, &to) {
-                    Ok(bytes) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Int(bytes as i64)],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Io), "read_line") => {
-                use std::io::{self, BufRead};
-                let mut line = String::new();
-                match io::stdin().lock().read_line(&mut line) {
-                    Ok(_) => {
-                        if line.ends_with('\n') {
-                            line.pop();
-                            if line.ends_with('\r') {
-                                line.pop();
-                            }
-                        }
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(line)))],
-                        })
-                    }
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Cli), "args") => {
-                let args_vec: Vec<Value> = self
-                    .cli_args
-                    .iter()
-                    .map(|s| Value::String(Arc::new(Mutex::new(s.clone()))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(args_vec))))
-            }
-            (Value::Module(ModuleKind::Std), "exit") => {
-                let code = args
-                    .first()
-                    .map(|v| match v {
-                        Value::Int(n) => *n as i32,
-                        _ => 1,
-                    })
-                    .unwrap_or(0);
-                Err(RuntimeError::Exit(code))
-            }
-            (Value::Module(ModuleKind::Env), "var") => {
-                let name = self.expect_string(&args, 0)?;
-                match std::env::var(&name) {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(val)))],
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                }
-            }
-            (Value::Module(ModuleKind::Env), "vars") => {
-                let vars: Vec<Value> = std::env::vars()
-                    .map(|(k, v)| {
-                        Value::Vec(Arc::new(Mutex::new(vec![
-                            Value::String(Arc::new(Mutex::new(k))),
-                            Value::String(Arc::new(Mutex::new(v))),
-                        ])))
-                    })
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(vars))))
-            }
-
-            // random.f32() -> f32 in [0.0, 1.0)
-            (Value::Module(ModuleKind::Random), "f32") => {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let hash = hasher.finish();
-                // xorshift64 step for better distribution
-                let mut x = hash;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                let f = (x as f64) / (u64::MAX as f64);
-                Ok(Value::Float(f))
-            }
-
-            // random.f64() -> f64 in [0.0, 1.0)
-            (Value::Module(ModuleKind::Random), "f64") => {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let hash = hasher.finish();
-                let mut x = hash;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                let f = (x as f64) / (u64::MAX as f64);
-                Ok(Value::Float(f))
-            }
-
-            // random.i64() -> random i64
-            (Value::Module(ModuleKind::Random), "i64") => {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let hash = hasher.finish();
-                let mut x = hash;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                Ok(Value::Int(x as i64))
-            }
-
-            // random.bool() -> bool
-            (Value::Module(ModuleKind::Random), "bool") => {
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let hash = hasher.finish();
-                Ok(Value::Bool(hash & 1 == 1))
-            }
-
-            // random.range(low, high) -> i64 in [low, high)
-            (Value::Module(ModuleKind::Random), "range") => {
-                if args.len() != 2 {
-                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
-                }
-                let low = args[0].as_int().map_err(|e| RuntimeError::TypeError(e))?;
-                let high = args[1].as_int().map_err(|e| RuntimeError::TypeError(e))?;
-                if low >= high {
-                    return Err(RuntimeError::TypeError(
-                        format!("random.range: low ({}) must be less than high ({})", low, high)
-                    ));
-                }
-                use std::collections::hash_map::DefaultHasher;
-                use std::hash::{Hash, Hasher};
-                let mut hasher = DefaultHasher::new();
-                std::time::SystemTime::now().hash(&mut hasher);
-                std::thread::current().id().hash(&mut hasher);
-                let hash = hasher.finish();
-                let mut x = hash;
-                x ^= x << 13;
-                x ^= x >> 7;
-                x ^= x << 17;
-                let range = (high - low) as u64;
-                let value = low + (x % range) as i64;
-                Ok(Value::Int(value))
-            }
-
-            // time.sleep(duration)
-            (Value::Module(ModuleKind::Time), "sleep") => {
-                let duration_nanos = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_duration()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                let duration = std::time::Duration::from_nanos(duration_nanos);
-                std::thread::sleep(duration);
-                // Return Ok(())
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                })
-            }
-
-            // Duration instance methods
-            (Value::Duration(nanos), "as_secs") => Ok(Value::Int((nanos / 1_000_000_000) as i64)),
-            (Value::Duration(nanos), "as_millis") => Ok(Value::Int((nanos / 1_000_000) as i64)),
-            (Value::Duration(nanos), "as_micros") => Ok(Value::Int((nanos / 1_000) as i64)),
-            (Value::Duration(nanos), "as_nanos") => Ok(Value::Int(*nanos as i64)),
-            (Value::Duration(nanos), "as_secs_f32") => {
-                Ok(Value::Float(*nanos as f64 / 1_000_000_000.0))
-            }
-            (Value::Duration(nanos), "as_secs_f64") => {
-                Ok(Value::Float(*nanos as f64 / 1_000_000_000.0))
-            }
-
-            // Instant instance methods
-            (Value::Instant(instant), "duration_since") => {
-                let other_instant = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_instant()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                let duration = instant.duration_since(other_instant);
-                Ok(Value::Duration(duration.as_nanos() as u64))
-            }
-            (Value::Instant(instant), "elapsed") => {
-                let duration = instant.elapsed();
-                Ok(Value::Duration(duration.as_nanos() as u64))
-            }
-
-            // File instance methods
-            (Value::File(f), "close") => {
-                // If already closed, return silently (e.g., ensure after explicit close)
-                if f.lock().unwrap().is_none() {
-                    return Ok(Value::Unit);
-                }
-                let ptr = Arc::as_ptr(&f) as usize;
-                if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
-                    self.resource_tracker.mark_consumed(id)
-                        .map_err(|msg| RuntimeError::Panic(msg))?;
-                }
-                let _ = f.lock().unwrap().take();
-                Ok(Value::Unit)
-            }
-            (Value::File(f), "read_all") => {
-                use std::io::Read;
-                let mut file_opt = f.lock().unwrap();
-                let file = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
-                })?;
-                let mut content = String::new();
-                match file.read_to_string(&mut content) {
-                    Ok(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(content)))],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::File(f), "write") => {
-                use std::io::Write;
-                let mut file_opt = f.lock().unwrap();
-                let file = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
-                })?;
-                let content = self.expect_string(&args, 0)?;
-                match file.write_all(content.as_bytes()) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(e) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
-                    }),
-                }
-            }
-            (Value::File(f), "lines") => {
-                use std::io::{BufRead, BufReader};
-                let file_opt = f.lock().unwrap();
-                let file = file_opt.as_ref().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
-                })?;
-                // Read all lines eagerly (file handle is borrowed, can't return iterator)
-                let reader = BufReader::new(file);
-                let lines: Vec<Value> = reader
-                    .lines()
-                    .filter_map(|r| r.ok())
-                    .map(|l| Value::String(Arc::new(Mutex::new(l))))
-                    .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
-            }
-
-            // Metadata methods
-            (Value::Struct { name, fields, .. }, "size") if name == "Metadata" => {
-                Ok(fields.get("size").cloned().unwrap_or(Value::Int(0)))
-            }
-            (Value::Struct { name, fields, .. }, "accessed") if name == "Metadata" => {
-                Ok(fields.get("accessed").cloned().unwrap_or(Value::Int(0)))
-            }
-            (Value::Struct { name, fields, .. }, "modified") if name == "Metadata" => {
-                Ok(fields.get("modified").cloned().unwrap_or(Value::Int(0)))
-            }
-
-            // Struct clone
-            (Value::Struct { .. }, "clone") => Ok(receiver.clone()),
-
-            // Result methods
-            (Value::Enum { name, variant, fields }, "map_err")
-                if name == "Result" =>
-            {
-                match variant.as_str() {
-                    "Ok" => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: fields.clone(),
-                    }),
-                    "Err" => {
-                        let closure = args.into_iter().next().ok_or_else(|| {
-                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
-                        })?;
-                        let err_val = fields.first().cloned().unwrap_or(Value::Unit);
-                        let mapped = self.call_value(closure, vec![err_val])?;
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![mapped],
-                        })
-                    }
-                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, fields }, "map")
-                if name == "Result" =>
-            {
-                match variant.as_str() {
-                    "Ok" => {
-                        let closure = args.into_iter().next().ok_or_else(|| {
-                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
-                        })?;
-                        let ok_val = fields.first().cloned().unwrap_or(Value::Unit);
-                        let mapped = self.call_value(closure, vec![ok_val])?;
-                        Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![mapped],
-                        })
-                    }
-                    "Err" => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: fields.clone(),
-                    }),
-                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, fields }, "ok")
-                if name == "Result" =>
-            {
-                match variant.as_str() {
-                    "Ok" => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "Some".to_string(),
-                        fields: fields.clone(),
-                    }),
-                    "Err" => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, fields }, "unwrap_or")
-                if name == "Result" =>
-            {
-                match variant.as_str() {
-                    "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                    "Err" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
-                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, .. }, "is_ok")
-                if name == "Result" =>
-            {
-                Ok(Value::Bool(variant == "Ok"))
-            }
-            (Value::Enum { name, variant, .. }, "is_err")
-                if name == "Result" =>
-            {
-                Ok(Value::Bool(variant == "Err"))
-            }
-            (Value::Enum { name, variant, fields }, "unwrap")
-                if name == "Result" =>
-            {
-                match variant.as_str() {
-                    "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                    "Err" => Err(RuntimeError::Panic(format!(
-                        "called unwrap on Err: {}",
-                        fields.first().map(|v| format!("{}", v)).unwrap_or_default()
-                    ))),
-                    _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
-                }
-            }
-
-            // Option methods
-            (Value::Enum { name, variant, fields }, "unwrap_or")
-                if name == "Option" =>
-            {
-                match variant.as_str() {
-                    "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                    "None" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
-                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, .. }, "is_some")
-                if name == "Option" =>
-            {
-                Ok(Value::Bool(variant == "Some"))
-            }
-            (Value::Enum { name, variant, .. }, "is_none")
-                if name == "Option" =>
-            {
-                Ok(Value::Bool(variant == "None"))
-            }
-            (Value::Enum { name, variant, fields }, "map")
-                if name == "Option" =>
-            {
-                match variant.as_str() {
-                    "Some" => {
-                        let closure = args.into_iter().next().ok_or_else(|| {
-                            RuntimeError::ArityMismatch { expected: 1, got: 0 }
-                        })?;
-                        let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                        let mapped = self.call_value(closure, vec![inner])?;
-                        Ok(Value::Enum {
-                            name: "Option".to_string(),
-                            variant: "Some".to_string(),
-                            fields: vec![mapped],
-                        })
-                    }
-                    "None" => Ok(Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                    }),
-                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
-                }
-            }
-            (Value::Enum { name, variant, fields }, "unwrap")
-                if name == "Option" =>
-            {
-                match variant.as_str() {
-                    "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                    "None" => Err(RuntimeError::Panic("called unwrap on None".to_string())),
-                    _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
-                }
-            }
-
-            // Vec clone
-            (Value::Vec(v), "clone") => {
-                let cloned = v.lock().unwrap().clone();
-                Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
-            }
-
-            // String ne (not-equal)
-            (Value::String(a), "ne") => {
-                let b = self.expect_string(&args, 0)?;
-                Ok(Value::Bool(*a.lock().unwrap() != b))
-            }
-
-            // ThreadHandle methods
-            (Value::ThreadHandle(handle), "join") => {
-                let jh = handle.handle.lock().unwrap().take();
-                match jh {
-                    Some(jh) => match jh.join() {
-                        Ok(Ok(val)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![val],
-                        }),
-                        Ok(Err(msg)) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
-                        }),
-                        Err(_) => Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "thread panicked".to_string(),
-                            )))],
-                        }),
-                    },
-                    None => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "handle already joined".to_string(),
-                        )))],
-                    }),
-                }
-            }
-            (Value::ThreadHandle(handle), "detach") => {
-                let _ = handle.handle.lock().unwrap().take();
-                Ok(Value::Unit)
-            }
-
-            // Sender methods
-            (Value::Sender(tx), "send") => {
-                let val = args.into_iter().next().unwrap_or(Value::Unit);
-                let tx = tx.lock().unwrap();
-                match tx.send(val) {
-                    Ok(()) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                    }),
-                }
-            }
-
-            // Receiver methods
-            (Value::Receiver(rx), "recv") => {
-                let rx = rx.lock().unwrap();
-                match rx.recv() {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![val],
-                    }),
-                    Err(_) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                    }),
-                }
-            }
-            (Value::Receiver(rx), "try_recv") => {
-                let rx = rx.lock().unwrap();
-                match rx.try_recv() {
-                    Ok(val) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![val],
-                    }),
-                    Err(mpsc::TryRecvError::Empty) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new("empty".to_string())))],
-                    }),
-                    Err(mpsc::TryRecvError::Disconnected) => Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "channel closed".to_string(),
-                        )))],
-                    }),
-                }
-            }
-
-            // Channel constructor methods
-            (Value::TypeConstructor(TypeConstructorKind::Channel), "buffered") => {
-                let cap = self.expect_int(&args, 0)? as usize;
-                let (tx, rx) = mpsc::sync_channel::<Value>(cap);
-                let mut fields = HashMap::new();
-                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
-                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
-                Ok(Value::Struct {
-                    name: "ChannelPair".to_string(),
-                    fields,
-                    resource_id: None,
-                })
-            }
-            (Value::TypeConstructor(TypeConstructorKind::Channel), "unbuffered") => {
-                let (tx, rx) = mpsc::sync_channel::<Value>(0);
-                let mut fields = HashMap::new();
-                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
-                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
-                Ok(Value::Struct {
-                    name: "ChannelPair".to_string(),
-                    fields,
-                    resource_id: None,
-                })
-            }
-
-            // Generic to_string
-            (_, "to_string") => {
-                Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))))
-            }
-
-            // Check user-defined methods from extend blocks
-            _ => {
-                // Get the type name for looking up user methods
-                let type_name = match &receiver {
-                    Value::Struct { name, .. } => name.clone(),
-                    Value::Enum { name, .. } => name.clone(),
-                    _ => receiver.type_name().to_string(),
-                };
-
-                // Look up method in extend blocks
-                if let Some(type_methods) = self.methods.get(&type_name) {
-                    if let Some(method_fn) = type_methods.get(method).cloned() {
-                        // Check if this method consumes self (take self)
-                        let consumes_self = method_fn.params.first()
-                            .map(|p| p.name == "self" && p.is_take)
-                            .unwrap_or(false);
-                        if consumes_self {
-                            if let Some(id) = self.get_resource_id(&receiver) {
-                                self.resource_tracker.mark_consumed(id)
-                                    .map_err(|msg| RuntimeError::Panic(msg))?;
-                            }
-                        }
-
-                        // Call user-defined method with self as first argument
-                        let mut all_args = vec![receiver];
-                        all_args.extend(args);
-                        return self.call_function(&method_fn, all_args);
-                    }
-                }
-
-                Err(RuntimeError::NoSuchMethod {
-                    ty: type_name,
-                    method: method.to_string(),
-                })
-            }
+        match &receiver {
+            // Stdlib: module methods (fs.read_file, io.read_line, etc.)
+            Value::Module(module) => self.call_module_method(module, method, args),
+            // Stdlib: File instance methods
+            Value::File(f) => self.call_file_method(f, method, args),
+            // Stdlib: Duration/Instant instance methods
+            Value::Duration(nanos) => self.call_duration_method(*nanos, method),
+            Value::Instant(instant) => self.call_instant_method(instant, method, args),
+            // Stdlib: Metadata struct methods
+            Value::Struct { name, fields, .. } if name == "Metadata" => {
+                self.call_metadata_method(fields, method)
+            }
+            // Stdlib: Path struct methods
+            Value::Struct { name, fields, .. } if name == "Path" => {
+                self.call_path_instance_method(fields, method, args)
+            }
+            // Stdlib: Args struct methods (from cli.parse())
+            Value::Struct { name, fields, .. } if name == "Args" => {
+                self.call_args_method(fields, method, args)
+            }
+            // Stdlib: JsonValue enum methods
+            Value::Enum { name, variant, fields } if name == "JsonValue" => {
+                self.call_json_value_method(variant, fields, method)
+            }
+            // Everything else: builtins (primitives, string, vec, etc.) + user-defined
+            _ => self.call_builtin_method(receiver, method, args),
         }
     }
-
-    /// Call a static method on a type (e.g., Instant.now(), Duration.seconds(5)).
-    fn call_type_method(
-        &mut self,
-        type_name: &str,
-        method: &str,
-        args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        match (type_name, method) {
-            // Instant.now() -> Instant
-            ("Instant", "now") => {
-                if !args.is_empty() {
-                    return Err(RuntimeError::ArityMismatch {
-                        expected: 0,
-                        got: args.len(),
-                    });
-                }
-                Ok(Value::Instant(std::time::Instant::now()))
-            }
-
-            // Duration.seconds(n: u64) -> Duration
-            ("Duration", "seconds") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n * 1_000_000_000))
-            }
-
-            // Duration.millis(n: u64) -> Duration
-            ("Duration", "millis") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n * 1_000_000))
-            }
-
-            // Duration.micros(n: u64) -> Duration
-            ("Duration", "micros") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n * 1_000))
-            }
-
-            // Duration.nanos(n: u64) -> Duration
-            ("Duration", "nanos") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n))
-            }
-
-            // Duration.from_secs_f64(secs: f64) -> Duration
-            ("Duration", "from_secs_f64") => {
-                let secs = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_f64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                let nanos = (secs * 1_000_000_000.0) as u64;
-                Ok(Value::Duration(nanos))
-            }
-
-            // Duration.from_millis(n: u64) -> Duration (alias for millis)
-            ("Duration", "from_millis") => {
-                let n = args.first()
-                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
-                    .as_u64()
-                    .map_err(|e| RuntimeError::TypeError(e))?;
-                Ok(Value::Duration(n * 1_000_000))
-            }
-
-            _ => Err(RuntimeError::TypeError(format!(
-                "type {} has no method '{}'",
-                type_name, method
-            ))),
-        }
-    }
-
     /// Helper to extract an integer from args.
-    fn expect_int(&self, args: &[Value], idx: usize) -> Result<i64, RuntimeError> {
+    pub(crate) fn expect_int(&self, args: &[Value], idx: usize) -> Result<i64, RuntimeError> {
         match args.get(idx) {
             Some(Value::Int(n)) => Ok(*n),
             Some(v) => Err(RuntimeError::TypeError(format!(
@@ -3581,7 +2566,7 @@ impl Interpreter {
     }
 
     /// Helper to extract a float from args.
-    fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
+    pub(crate) fn expect_float(&self, args: &[Value], idx: usize) -> Result<f64, RuntimeError> {
         match args.get(idx) {
             Some(Value::Float(n)) => Ok(*n),
             Some(v) => Err(RuntimeError::TypeError(format!(
@@ -3596,7 +2581,7 @@ impl Interpreter {
     }
 
     /// Helper to extract a bool from args.
-    fn expect_bool(&self, args: &[Value], idx: usize) -> Result<bool, RuntimeError> {
+    pub(crate) fn expect_bool(&self, args: &[Value], idx: usize) -> Result<bool, RuntimeError> {
         match args.get(idx) {
             Some(Value::Bool(b)) => Ok(*b),
             Some(v) => Err(RuntimeError::TypeError(format!(
@@ -3611,7 +2596,7 @@ impl Interpreter {
     }
 
     /// Helper to extract a string from args.
-    fn expect_string(&self, args: &[Value], idx: usize) -> Result<String, RuntimeError> {
+    pub(crate) fn expect_string(&self, args: &[Value], idx: usize) -> Result<String, RuntimeError> {
         match args.get(idx) {
             Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
             Some(v) => Err(RuntimeError::TypeError(format!(
@@ -3626,7 +2611,7 @@ impl Interpreter {
     }
 
     /// Helper to extract a char from args.
-    fn expect_char(&self, args: &[Value], idx: usize) -> Result<char, RuntimeError> {
+    pub(crate) fn expect_char(&self, args: &[Value], idx: usize) -> Result<char, RuntimeError> {
         match args.get(idx) {
             Some(Value::Char(c)) => Ok(*c),
             Some(v) => Err(RuntimeError::TypeError(format!(
@@ -3703,7 +2688,7 @@ pub enum RuntimeError {
     #[error("continue")]
     Continue,
 
-    /// Error propagation via ? operator
+    /// Error propagation via try operator
     #[error("try error")]
     TryError(Value),
 }

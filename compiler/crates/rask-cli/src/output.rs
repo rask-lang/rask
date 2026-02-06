@@ -23,34 +23,6 @@ pub fn error_label() -> ColoredString {
     "error".red().bold()
 }
 
-pub fn hint_label() -> ColoredString {
-    "hint".cyan()
-}
-
-pub fn hint_text(msg: &str) -> ColoredString {
-    msg.dimmed()
-}
-
-pub fn error_arrow() -> ColoredString {
-    "-->".blue()
-}
-
-pub fn line_number(n: usize) -> ColoredString {
-    format!("{:3}", n).blue().bold()
-}
-
-pub fn pipe() -> ColoredString {
-    "|".blue()
-}
-
-pub fn caret() -> ColoredString {
-    "^".red().bold()
-}
-
-pub fn hint_equals() -> ColoredString {
-    "=".cyan()
-}
-
 // === Success Output ===
 
 pub fn banner_ok(phase: &str) -> String {

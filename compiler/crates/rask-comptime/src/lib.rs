@@ -284,17 +284,6 @@ impl ControlFlow {
         }
     }
 
-    fn is_return(&self) -> bool {
-        matches!(self, ControlFlow::Return(_))
-    }
-
-    fn is_break(&self) -> bool {
-        matches!(self, ControlFlow::Break(_))
-    }
-
-    fn is_continue(&self) -> bool {
-        matches!(self, ControlFlow::Continue)
-    }
 }
 
 // ============================================================================
@@ -1100,7 +1089,7 @@ impl ComptimeInterpreter {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Ident(_) => Ok(true), // Binds anything
-            Pattern::Literal(lit) => {
+            Pattern::Literal(_lit) => {
                 // Compare literal value - need to evaluate it
                 // For now, just return true (simplified)
                 Ok(true)

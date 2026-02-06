@@ -4,7 +4,7 @@
 //! all required methods with matching signatures.
 
 use crate::types::Type;
-use crate::checker::{TypeTable, TypeDef, MethodSig, SelfParam};
+use crate::checker::{TypeTable, TypeDef, MethodSig, SelfParam, ParamMode};
 use rask_ast::Span;
 use std::collections::HashMap;
 use thiserror::Error;
@@ -186,31 +186,31 @@ impl<'a> TraitChecker<'a> {
             "Add" => Some(vec![MethodSig {
                 name: "add".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))], // Self type
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)], // Self type
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Sub" => Some(vec![MethodSig {
                 name: "sub".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Mul" => Some(vec![MethodSig {
                 name: "mul".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Div" => Some(vec![MethodSig {
                 name: "div".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Rem" => Some(vec![MethodSig {
                 name: "rem".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Var(crate::types::TypeVarId(0)),
             }]),
             "Neg" => Some(vec![MethodSig {
@@ -222,32 +222,32 @@ impl<'a> TraitChecker<'a> {
             "Equal" | "Eq" => Some(vec![MethodSig {
                 name: "eq".to_string(),
                 self_param: SelfParam::Value,
-                params: vec![Type::Var(crate::types::TypeVarId(0))],
+                params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                 ret: Type::Bool,
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![Type::Var(crate::types::TypeVarId(0))],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
                     name: "le".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![Type::Var(crate::types::TypeVarId(0))],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
                     name: "gt".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![Type::Var(crate::types::TypeVarId(0))],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
                 MethodSig {
                     name: "ge".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![Type::Var(crate::types::TypeVarId(0))],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
             ]),
@@ -273,7 +273,7 @@ impl<'a> TraitChecker<'a> {
                 MethodSig {
                     name: "eq".to_string(),
                     self_param: SelfParam::Value,
-                    params: vec![Type::Var(crate::types::TypeVarId(0))],
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
                     ret: Type::Bool,
                 },
             ]),
@@ -347,8 +347,15 @@ impl<'a> TraitChecker<'a> {
         let self_str = match sig.self_param {
             SelfParam::None => "",
             SelfParam::Value => "self, ",
+            SelfParam::Read => "read self, ",
+            SelfParam::Take => "take self, ",
         };
-        let params_str: Vec<String> = sig.params.iter().map(|t| format!("{:?}", t)).collect();
+        let params_str: Vec<String> = sig.params.iter().map(|(t, mode)| {
+            match mode {
+                ParamMode::Take => format!("take {:?}", t),
+                ParamMode::Default => format!("{:?}", t),
+            }
+        }).collect();
         format!("fn {}({}{}) -> {:?}", sig.name, self_str, params_str.join(", "), sig.ret)
     }
 
@@ -410,8 +417,6 @@ pub fn implements_trait(
 /// Get all traits that a type implements.
 pub fn implemented_traits(types: &TypeTable, ty: &Type) -> Vec<String> {
     let mut result = Vec::new();
-    let checker = TraitChecker::new(types);
-
     // Check against known traits
     let known_traits = [
         "Add", "Sub", "Mul", "Div", "Rem", "Neg",

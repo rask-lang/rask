@@ -109,6 +109,7 @@ pub enum BuiltinKind {
     Print,
     Println,
     Panic,
+    Format,
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).
@@ -124,13 +125,17 @@ pub enum TypeConstructorKind {
 /// Module kinds for stdlib modules.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleKind {
-    Fs,   // fs.read_file, fs.write_file, etc.
-    Io,   // io.read_line, io.print, etc.
-    Cli,  // cli.args
-    Std,  // std.exit
-    Env,  // env.var, env.vars
+    Fs,     // fs.read_file, fs.write_file, etc.
+    Io,     // io.read_line, io.print, etc.
+    Cli,    // cli.parse, cli.Parser (also legacy cli.args)
+    Std,    // std.exit (legacy alias for os.exit)
+    Env,    // env.var, env.vars (legacy alias for os.env)
     Time,   // time.Instant, time.Duration, time.sleep
-    Random, // random.f32, random.f64, random.range, etc.
+    Random, // random.f64, random.range, Rng, etc.
+    Math,   // math.sin, math.PI, etc.
+    Os,     // os.env, os.args, os.exit, os.platform, etc.
+    Json,   // json.parse, json.stringify, json.encode, etc.
+    Path,   // Path.new (type constructor via module)
 }
 
 /// Inner state for a spawned thread handle.
@@ -279,6 +284,48 @@ impl Value {
         }
     }
 
+    /// Deep clone a value — creates independent copies of reference-counted internals.
+    pub fn deep_clone(&self) -> Value {
+        match self {
+            Value::String(s) => Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))),
+            Value::Vec(v) => {
+                let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
+                Value::Vec(Arc::new(Mutex::new(deep)))
+            }
+            Value::Struct { name, fields, resource_id } => {
+                let deep_fields: HashMap<String, Value> = fields.iter()
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .collect();
+                Value::Struct { name: name.clone(), fields: deep_fields, resource_id: *resource_id }
+            }
+            Value::Enum { name, variant, fields } => {
+                Value::Enum {
+                    name: name.clone(),
+                    variant: variant.clone(),
+                    fields: fields.iter().map(|f| f.deep_clone()).collect(),
+                }
+            }
+            Value::Pool(p) => {
+                let pool = p.lock().unwrap();
+                let mut new_pool = PoolData::new();
+                new_pool.slots = pool.slots.iter().map(|(gen, opt)| {
+                    (*gen, opt.as_ref().map(|v| v.deep_clone()))
+                }).collect();
+                new_pool.free_list = pool.free_list.clone();
+                new_pool.len = pool.len;
+                Value::Pool(Arc::new(Mutex::new(new_pool)))
+            }
+            Value::Closure { params, body, captured_env } => {
+                let deep_env: HashMap<String, Value> = captured_env.iter()
+                    .map(|(k, v)| (k.clone(), v.deep_clone()))
+                    .collect();
+                Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env }
+            }
+            // Value types — regular clone is sufficient
+            other => other.clone(),
+        }
+    }
+
     /// Extract u64 from Value::Int (for Duration constructors).
     pub fn as_int(&self) -> Result<i64, String> {
         match self {
@@ -404,6 +451,10 @@ impl fmt::Display for Value {
                 ModuleKind::Env => write!(f, "<module env>"),
                 ModuleKind::Time => write!(f, "<module time>"),
                 ModuleKind::Random => write!(f, "<module random>"),
+                ModuleKind::Math => write!(f, "<module math>"),
+                ModuleKind::Os => write!(f, "<module os>"),
+                ModuleKind::Json => write!(f, "<module json>"),
+                ModuleKind::Path => write!(f, "<module path>"),
             },
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {

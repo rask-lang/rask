@@ -62,7 +62,7 @@ func parse_args(args: Vec<string>) -> CopyOptions or string {
     opts.source = positional[0].clone()
     opts.dest = positional[1].clone()
 
-    Ok(opts)
+    return Ok(opts)
 }
 
 func print_usage() {
@@ -104,7 +104,7 @@ func copy_file(opts: CopyOptions) -> i64 or CopyError {
     const bytes = try fs.copy(opts.source.clone(), opts.dest.clone())
         .map_err(|e| CopyError.WriteError(e))
 
-    Ok(bytes)
+    return Ok(bytes)
 }
 
 func format_size(bytes: i64) -> string {

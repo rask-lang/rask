@@ -6,5 +6,7 @@ mod value;
 mod env;
 mod resource;
 mod interp;
+mod builtins;
+mod stdlib;
 
 pub use interp::{Interpreter, RuntimeError};

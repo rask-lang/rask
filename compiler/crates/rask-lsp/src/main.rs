@@ -10,12 +10,9 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
 
-use rask_ast::Span;
-use rask_lexer::{LexError, Lexer};
-use rask_ownership::{OwnershipError, OwnershipErrorKind};
-use rask_parser::{ParseError, Parser};
-use rask_resolve::ResolveError;
-use rask_types::TypeError;
+use rask_diagnostics::{LabelStyle, Severity, ToDiagnostic};
+use rask_lexer::Lexer;
+use rask_parser::Parser;
 
 #[derive(Debug)]
 struct Backend {
@@ -49,9 +46,8 @@ impl Backend {
         let mut last_lex_line: Option<u32> = None;
         for error in &lex_result.errors {
             let line = byte_offset_to_position(source, error.span.start).line;
-            // Only report first error per line for lexer errors
             if last_lex_line != Some(line) {
-                diagnostics.push(lex_error_to_diagnostic(source, error));
+                diagnostics.push(to_lsp_diagnostic(source, uri, &error.to_diagnostic()));
                 last_lex_line = Some(line);
             }
         }
@@ -65,7 +61,7 @@ impl Backend {
         for error in &parse_result.errors {
             let line = byte_offset_to_position(source, error.span.start).line;
             if last_parse_line != Some(line) {
-                diagnostics.push(parse_error_to_diagnostic(source, error));
+                diagnostics.push(to_lsp_diagnostic(source, uri, &error.to_diagnostic()));
                 last_parse_line = Some(line);
             }
         }
@@ -83,7 +79,7 @@ impl Backend {
             Ok(r) => r,
             Err(errors) => {
                 for error in &errors {
-                    diagnostics.push(resolve_error_to_diagnostic(source, uri, error));
+                    diagnostics.push(to_lsp_diagnostic(source, uri, &error.to_diagnostic()));
                 }
                 return diagnostics;
             }
@@ -94,7 +90,7 @@ impl Backend {
             Ok(t) => t,
             Err(errors) => {
                 for error in &errors {
-                    diagnostics.push(type_error_to_diagnostic(source, error));
+                    diagnostics.push(to_lsp_diagnostic(source, uri, &error.to_diagnostic()));
                 }
                 return diagnostics;
             }
@@ -103,171 +99,92 @@ impl Backend {
         // Run ownership analysis
         let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
         for error in &ownership_result.errors {
-            diagnostics.push(ownership_error_to_diagnostic(source, uri, error));
+            diagnostics.push(to_lsp_diagnostic(source, uri, &error.to_diagnostic()));
         }
 
         diagnostics
     }
 }
 
-fn lex_error_to_diagnostic(source: &str, error: &LexError) -> Diagnostic {
-    let start = byte_offset_to_position(source, error.span.start);
-    let end = byte_offset_to_position(source, error.span.end);
+/// Convert a rask diagnostic to an LSP diagnostic.
+fn to_lsp_diagnostic(
+    source: &str,
+    uri: &Url,
+    diag: &rask_diagnostics::Diagnostic,
+) -> Diagnostic {
+    // Primary span determines the main range
+    let primary = diag
+        .labels
+        .iter()
+        .find(|l| l.style == LabelStyle::Primary)
+        .or(diag.labels.first());
 
-    let mut message = error.message.clone();
-    if let Some(hint) = &error.hint {
-        message = format!("{}\n\nHint: {}", message, hint);
+    let range = if let Some(label) = primary {
+        let start = byte_offset_to_position(source, label.span.start);
+        let end = byte_offset_to_position(source, label.span.end);
+        Range::new(start, end)
+    } else {
+        Range::new(Position::new(0, 0), Position::new(0, 0))
+    };
+
+    let severity = Some(match diag.severity {
+        Severity::Error => DiagnosticSeverity::ERROR,
+        Severity::Warning => DiagnosticSeverity::WARNING,
+        Severity::Note => DiagnosticSeverity::INFORMATION,
+    });
+
+    let code = diag
+        .code
+        .as_ref()
+        .map(|c| NumberOrString::String(c.0.clone()));
+
+    // Build message: main message + primary label + notes + help
+    let mut message = diag.message.clone();
+
+    if let Some(label) = primary {
+        if let Some(ref msg) = label.message {
+            message = format!("{}: {}", message, msg);
+        }
     }
 
+    for note in &diag.notes {
+        message = format!("{}\n\nnote: {}", message, note);
+    }
+
+    if let Some(ref help) = diag.help {
+        message = format!("{}\n\nhelp: {}", message, help.message);
+    }
+
+    // Secondary labels become related information
+    let related_information: Vec<DiagnosticRelatedInformation> = diag
+        .labels
+        .iter()
+        .filter(|l| l.style == LabelStyle::Secondary)
+        .map(|l| {
+            let start = byte_offset_to_position(source, l.span.start);
+            let end = byte_offset_to_position(source, l.span.end);
+            DiagnosticRelatedInformation {
+                location: Location {
+                    uri: uri.clone(),
+                    range: Range::new(start, end),
+                },
+                message: l.message.clone().unwrap_or_default(),
+            }
+        })
+        .collect();
+
     Diagnostic {
-        range: Range::new(start, end),
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
+        range,
+        severity,
+        code,
         code_description: None,
         source: Some("rask".to_string()),
         message,
-        related_information: None,
-        tags: None,
-        data: None,
-    }
-}
-
-fn parse_error_to_diagnostic(source: &str, error: &ParseError) -> Diagnostic {
-    let start = byte_offset_to_position(source, error.span.start);
-    let end = byte_offset_to_position(source, error.span.end);
-
-    let mut message = error.message.clone();
-    if let Some(hint) = &error.hint {
-        message = format!("{}\n\nHint: {}", message, hint);
-    }
-
-    Diagnostic {
-        range: Range::new(start, end),
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
-        code_description: None,
-        source: Some("rask".to_string()),
-        message,
-        related_information: None,
-        tags: None,
-        data: None,
-    }
-}
-
-fn resolve_error_to_diagnostic(source: &str, uri: &Url, error: &ResolveError) -> Diagnostic {
-    let start = byte_offset_to_position(source, error.span.start);
-    let end = byte_offset_to_position(source, error.span.end);
-
-    // Check for related location (duplicate definition has previous span)
-    let related_information = match &error.kind {
-        rask_resolve::ResolveErrorKind::DuplicateDefinition { previous, .. } => {
-            let prev_start = byte_offset_to_position(source, previous.start);
-            let prev_end = byte_offset_to_position(source, previous.end);
-            Some(vec![DiagnosticRelatedInformation {
-                location: Location {
-                    uri: uri.clone(),
-                    range: Range::new(prev_start, prev_end),
-                },
-                message: "previously defined here".to_string(),
-            }])
-        }
-        _ => None,
-    };
-
-    Diagnostic {
-        range: Range::new(start, end),
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
-        code_description: None,
-        source: Some("rask".to_string()),
-        message: error.kind.to_string(),
-        related_information,
-        tags: None,
-        data: None,
-    }
-}
-
-fn type_error_to_diagnostic(source: &str, error: &TypeError) -> Diagnostic {
-    let span = get_type_error_span(error);
-    let start = byte_offset_to_position(source, span.start);
-    let end = byte_offset_to_position(source, span.end);
-
-    Diagnostic {
-        range: Range::new(start, end),
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
-        code_description: None,
-        source: Some("rask".to_string()),
-        message: error.to_string(),
-        related_information: None,
-        tags: None,
-        data: None,
-    }
-}
-
-fn get_type_error_span(error: &TypeError) -> Span {
-    match error {
-        TypeError::Mismatch { span, .. } => *span,
-        TypeError::ArityMismatch { span, .. } => *span,
-        TypeError::NotCallable { span, .. } => *span,
-        TypeError::NoSuchField { span, .. } => *span,
-        TypeError::NoSuchMethod { span, .. } => *span,
-        TypeError::InfiniteType { span, .. } => *span,
-        TypeError::CannotInfer { span } => *span,
-        _ => Span::new(0, 0),
-    }
-}
-
-fn ownership_error_to_diagnostic(source: &str, uri: &Url, error: &OwnershipError) -> Diagnostic {
-    let start = byte_offset_to_position(source, error.span.start);
-    let end = byte_offset_to_position(source, error.span.end);
-
-    // Build related information for errors with secondary locations
-    let related_information = match &error.kind {
-        OwnershipErrorKind::UseAfterMove { moved_at, .. } => {
-            let mov_start = byte_offset_to_position(source, moved_at.start);
-            let mov_end = byte_offset_to_position(source, moved_at.end);
-            Some(vec![DiagnosticRelatedInformation {
-                location: Location {
-                    uri: uri.clone(),
-                    range: Range::new(mov_start, mov_end),
-                },
-                message: "value was moved here".to_string(),
-            }])
-        }
-        OwnershipErrorKind::BorrowConflict { existing_span, .. } => {
-            let ex_start = byte_offset_to_position(source, existing_span.start);
-            let ex_end = byte_offset_to_position(source, existing_span.end);
-            Some(vec![DiagnosticRelatedInformation {
-                location: Location {
-                    uri: uri.clone(),
-                    range: Range::new(ex_start, ex_end),
-                },
-                message: "conflicting access here".to_string(),
-            }])
-        }
-        OwnershipErrorKind::MutateWhileBorrowed { borrow_span, .. } => {
-            let br_start = byte_offset_to_position(source, borrow_span.start);
-            let br_end = byte_offset_to_position(source, borrow_span.end);
-            Some(vec![DiagnosticRelatedInformation {
-                location: Location {
-                    uri: uri.clone(),
-                    range: Range::new(br_start, br_end),
-                },
-                message: "borrowed here".to_string(),
-            }])
-        }
-        _ => None,
-    };
-
-    Diagnostic {
-        range: Range::new(start, end),
-        severity: Some(DiagnosticSeverity::ERROR),
-        code: None,
-        code_description: None,
-        source: Some("rask".to_string()),
-        message: error.kind.to_string(),
-        related_information,
+        related_information: if related_information.is_empty() {
+            None
+        } else {
+            Some(related_information)
+        },
         tags: None,
         data: None,
     }

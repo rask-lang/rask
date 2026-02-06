@@ -15,6 +15,7 @@ rask-resolve = { path = "../rask-resolve" }
 rask-desugar = { path = "../rask-desugar" }
 rask-types = { path = "../rask-types" }
 rask-ownership = { path = "../rask-ownership" }
+rask-diagnostics = { path = "../rask-diagnostics" }
 rask-interp = { path = "../rask-interp" }
 rask-spec-test = { path = "../rask-spec-test" }
 colored = "3"

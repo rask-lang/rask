@@ -349,20 +349,9 @@ Example:
 - Changing generic function body DOES require recompiling call sites
 - Mitigation: use `any Trait` (vtable) for stable ABI across changes
 - Trade-off: Monomorphization = fast runtime, slower incremental builds
+- Mitigation: semantic hash caching skips recompilation when function body hasn't meaningfully changed
 
-**Hash-based caching (optimization):**
-- Each generic instantiation is keyed by: (function, type arguments, body semantic hash)
-- If body semantic hash unchanged, reuse cached monomorphization
-- Semantic hash ignores: comments, formatting, local variable names
-- Semantic hash includes: control flow, operations, called functions, types
-- Result: changing `sort<T>` implementation only recompiles callers if behavior changes
-
-| Change type | Recompile callers? |
-|-------------|-------------------|
-| Rename local variable | No (same hash) |
-| Add comment | No (same hash) |
-| Change algorithm | Yes (different hash) |
-| Change called function | Yes (different hash) |
+See [Semantic Hash Caching](../compiler/semantic-hash-caching.md) for the full specification of incremental compilation and semantic hash caching.
 
 ### C Interop
 

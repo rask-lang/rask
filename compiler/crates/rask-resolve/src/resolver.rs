@@ -66,6 +66,7 @@ impl Resolver {
             ("println", BuiltinFunctionKind::Println, None::<&str>),
             ("print", BuiltinFunctionKind::Print, None),
             ("panic", BuiltinFunctionKind::Panic, Some("!")),  // Never returns
+            ("format", BuiltinFunctionKind::Format, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
@@ -87,6 +88,12 @@ impl Resolver {
             ("string", BuiltinTypeKind::String),
             ("Error", BuiltinTypeKind::Error),
             ("Channel", BuiltinTypeKind::Channel),
+            ("Pool", BuiltinTypeKind::Pool),
+            ("Atomic", BuiltinTypeKind::Atomic),
+            ("Shared", BuiltinTypeKind::Shared),
+            ("Owned", BuiltinTypeKind::Owned),
+            ("SpscRingBuffer", BuiltinTypeKind::SpscRingBuffer),
+            ("f32x8", BuiltinTypeKind::F32x8),
         ];
 
         for (name, builtin) in builtin_types {
@@ -103,6 +110,32 @@ impl Resolver {
         // Register prelude enums
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
+        self.register_builtin_enum("Ordering", &["Less", "Equal", "Greater"]);
+
+        // Built-in modules
+        let builtin_modules = [
+            ("io", BuiltinModuleKind::Io),
+            ("fs", BuiltinModuleKind::Fs),
+            ("json", BuiltinModuleKind::Json),
+            ("random", BuiltinModuleKind::Random),
+            ("time", BuiltinModuleKind::Time),
+            ("math", BuiltinModuleKind::Math),
+            ("path", BuiltinModuleKind::Path),
+            ("os", BuiltinModuleKind::Os),
+            ("net", BuiltinModuleKind::Net),
+            ("core", BuiltinModuleKind::Core),
+        ];
+
+        for (name, module) in builtin_modules {
+            let sym_id = self.symbols.insert(
+                name.to_string(),
+                SymbolKind::BuiltinModule { module },
+                None,
+                Span::new(0, 0),
+                true,
+            );
+            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
+        }
     }
 
     /// Register a built-in enum with its variants.

@@ -1,6 +1,6 @@
 # Rask Implementation Status
 
-This document tracks what is specified, implemented, and tested. Updated manually as features mature.
+What is specified, implemented, and tested. Updated 2026-02-06.
 
 ## Status Legend
 
@@ -11,109 +11,147 @@ This document tracks what is specified, implemented, and tested. Updated manuall
 | 📋 | Specified only (not implemented) |
 | ❌ | Not started |
 
+## Compiler Pipeline
+
+| Stage | Crate | Status | Notes |
+|-------|-------|--------|-------|
+| Lexer | `rask-lexer` | ✅ | All tokens, keywords, operators |
+| Parser | `rask-parser` | ✅ | Full AST: const/let, func, struct, enum, match, try, ensure, spawn, etc. |
+| Name resolution | `rask-resolve` | 🔶 | Scope tree, symbol table. Some gaps |
+| Type checker | `rask-types` | 🔶 | Works on simple programs. Gaps: `own` keyword, complex enum patterns |
+| Ownership checker | `rask-ownership` | 🔶 | Move tracking, borrow scopes. Simple programs only |
+| Interpreter | `rask-interp` | ✅ | Runs real programs end-to-end |
+| Comptime | `rask-comptime` | 🔶 | Basic comptime evaluation |
+| LSP | `rask-lsp` | 🔶 | Skeleton |
+| Code generation | — | ❌ | No backend yet |
+
 ## Language Features
 
-| Feature | Spec | Interpreter | Compiler | Tests | Example |
-|---------|------|-------------|----------|-------|---------|
-| **Bindings** (`let`/`const`) | ✅ | ✅ | ❌ | ✅ | All |
-| **Basic types** (i32, f64, bool, string) | ✅ | ✅ | ❌ | ✅ | All |
-| **Structs** | ✅ | ✅ | ❌ | 🔶 | game_loop |
-| **Enums** | ✅ | ✅ | ❌ | 🔶 | cli_calculator |
-| **Pattern matching** | ✅ | 🔶 | ❌ | 🔶 | cli_calculator |
-| **Functions** | ✅ | ✅ | ❌ | ✅ | All |
-| **Traits** | ✅ | 🔶 | ❌ | ❌ | game_loop |
-| **Generics** | ✅ | 🔶 | ❌ | ❌ | - |
-| **Closures** | ✅ | 🔶 | ❌ | ❌ | - |
-| **Modules** | ✅ | ✅ | ❌ | 🔶 | All |
+| Feature | Spec | Parser | Type Checker | Interpreter | Tests |
+|---------|------|--------|--------------|-------------|-------|
+| **Bindings** (`let`/`const`) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Basic types** (i32, f64, bool, string) | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Structs** | ✅ | ✅ | 🔶 | ✅ | ✅ |
+| **Enums** | ✅ | ✅ | 🔶 | ✅ | ✅ |
+| **Pattern matching** (match, if-is) | ✅ | ✅ | 🔶 | ✅ | ✅ |
+| **Functions** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Explicit return** | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Missing return detection** | ✅ | — | ✅ | — | ✅ |
+| **Traits** | ✅ | ✅ | 🔶 | 🔶 | ❌ |
+| **Generics** | ✅ | ✅ | 🔶 | 🔶 | ❌ |
+| **Closures** | ✅ | ✅ | ❌ | 🔶 | ❌ |
+| **Modules/imports** | ✅ | ✅ | 🔶 | ✅ | 🔶 |
+
+## Error Handling
+
+| Feature | Spec | Parser | Interpreter | Tests |
+|---------|------|--------|-------------|-------|
+| **Result / `T or E`** | ✅ | ✅ | ✅ | ✅ |
+| **`try` propagation** | ✅ | ✅ | ✅ | ✅ |
+| **Option / `T?`** | ✅ | ✅ | ✅ | ✅ |
+| **`??` default** | ✅ | ✅ | ✅ | 🔶 |
+| **`ensure` cleanup** | ✅ | ✅ | ✅ | ✅ |
+| **`ensure` catch** | ✅ | ✅ | ✅ | ✅ |
 
 ## Memory Model
 
-| Feature | Spec | Interpreter | Compiler | Tests |
-|---------|------|-------------|----------|-------|
-| **Value semantics** | ✅ | ✅ | ❌ | 🔶 |
-| **Move semantics** | ✅ | ✅ | ❌ | 🔶 |
+| Feature | Spec | Interpreter | Type Checker | Tests |
+|---------|------|-------------|--------------|-------|
+| **Value semantics** | ✅ | ✅ | 🔶 | 🔶 |
+| **Move semantics** | ✅ | ✅ | 🔶 | 🔶 |
 | **Block-scoped borrows** | ✅ | 🔶 | ❌ | ❌ |
 | **Expression-scoped borrows** | ✅ | 🔶 | ❌ | ❌ |
 | **Field projections** | ✅ | ❌ | ❌ | ❌ |
 | **Implicit copy (≤16 bytes)** | ✅ | 🔶 | ❌ | ❌ |
 
+## Resource Types
+
+| Feature | Spec | Interpreter | Tests |
+|---------|------|-------------|-------|
+| **`@resource` attribute** | ✅ | ✅ | ✅ |
+| **Linear consumption tracking** | ✅ | ✅ | ✅ |
+| **Leak detection at scope exit** | ✅ | ✅ | ✅ |
+| **`ensure` satisfies linearity** | ✅ | ✅ | ✅ |
+| **Ownership transfer via return** | ✅ | ✅ | ✅ |
+
 ## Collections
 
-| Feature | Spec | Interpreter | Compiler | Tests | Example |
-|---------|------|-------------|----------|-------|---------|
-| **Vec** | ✅ | ✅ | ❌ | 🔶 | All |
-| **Map** | ✅ | ✅ | ❌ | 🔶 | http_api_server |
-| **Pool + Handle** | ✅ | 🔶 | ❌ | ❌ | game_loop |
-| **Pool auto-resolution** | 📋 | ❌ | ❌ | ❌ | - |
+| Feature | Spec | Interpreter | Tests |
+|---------|------|-------------|-------|
+| **Vec** (push, pop, indexing, len) | ✅ | ✅ | ✅ |
+| **Vec range indexing** (`v[1..3]`) | ✅ | ✅ | ✅ |
+| **Map** (insert, get, remove) | ✅ | ✅ | 🔶 |
+| **Pool + Handle** | ✅ | 🔶 | ❌ |
+| **Pool auto-resolution** (`with`) | 📋 | ❌ | ❌ |
 
 ## Concurrency
 
-| Feature | Spec | Interpreter | Compiler | Tests | Example |
-|---------|------|-------------|----------|-------|---------|
-| **spawn (green tasks)** | ✅ | ❌ | ❌ | ❌ | http_api_server |
-| **spawn_thread** | ✅ | ❌ | ❌ | ❌ | sensor_processor |
-| **Channels** | ✅ | ❌ | ❌ | ❌ | http_api_server |
-| **Shared<T>** | ✅ | ❌ | ❌ | ❌ | http_api_server |
-| **No function coloring** | 📋 | ❌ | ❌ | ❌ | - |
+| Feature | Spec | Interpreter | Tests |
+|---------|------|-------------|-------|
+| **`spawn_raw { }` (OS thread)** | ✅ | ✅ | ✅ |
+| **`spawn_thread { }` (pool)** | ✅ | ✅ | ✅ |
+| **`with threading(n) { }`** | ✅ | ✅ | ✅ |
+| **`handle.join()`** | ✅ | ✅ | ✅ |
+| **`handle.detach()`** | ✅ | ✅ | ✅ |
+| **Channel.buffered(n)** | ✅ | ✅ | ✅ |
+| **Channel.unbuffered()** | ✅ | ✅ | ✅ |
+| **sender.send / receiver.recv** | ✅ | ✅ | ✅ |
+| **receiver.try_recv** | ✅ | ✅ | ✅ |
+| **`spawn { }` (green tasks)** | ✅ | ❌ | ❌ |
+| **`select` / `select_priority`** | ✅ | ❌ | ❌ |
+| **Shared<T>** | 📋 | ❌ | ❌ |
+| **No function coloring runtime** | 📋 | ❌ | ❌ |
 
-## Resource Types
+## String Methods
 
-| Feature | Spec | Interpreter | Compiler | Tests |
-|---------|------|-------------|----------|-------|
-| **@resource attribute** | ✅ | 🔶 | ❌ | ❌ |
-| **Linear consumption** | ✅ | ❌ | ❌ | ❌ |
-| **ensure cleanup** | ✅ | ❌ | ❌ | ❌ |
+| Method | Interpreter | Tests |
+|--------|-------------|-------|
+| `len()` | ✅ | ✅ |
+| `contains()` | ✅ | ✅ |
+| `starts_with()` / `ends_with()` | ✅ | ✅ |
+| `to_lowercase()` / `to_uppercase()` | ✅ | ✅ |
+| `trim()` / `trim_start()` / `trim_end()` | ✅ | ✅ |
+| `split()` / `split_whitespace()` | ✅ | ✅ |
+| `parse()` (→ i64) | ✅ | ✅ |
+| `to_owned()` | ✅ | ✅ |
+| `chars()` | ✅ | 🔶 |
+| String interpolation | ✅ | ✅ |
 
-## Comptime
+## Stdlib Modules (Interpreter)
 
-| Feature | Spec | Interpreter | Compiler | Tests |
-|---------|------|-------------|----------|-------|
-| **comptime functions** | ✅ | 🔶 | ❌ | ❌ |
-| **comptime constants** | ✅ | 🔶 | ❌ | ❌ |
-| **Iteration limits** | ✅ | ❌ | ❌ | ❌ |
-| **Mutable arrays at comptime** | 📋 | ❌ | ❌ | ❌ |
-
-## Stdlib Modules
-
-| Module | Spec | Interpreter | Tests | Example |
-|--------|------|-------------|-------|---------|
-| **io** (print, read_line) | 📋 | 🔶 | ❌ | cli_calculator |
-| **fs** (File, read, write) | 📋 | ❌ | ❌ | file_copy |
-| **cli** (args) | 📋 | ❌ | ❌ | grep_clone |
-| **time** (now, Duration) | 📋 | ❌ | ❌ | game_loop |
-| **net** (TcpListener) | 📋 | ❌ | ❌ | http_api_server |
-| **json** | 📋 | ❌ | ❌ | http_api_server |
-| **regex** | 📋 | ❌ | ❌ | grep_clone |
+| Module | Status | Notes |
+|--------|--------|-------|
+| **io** (println, print, read_line) | ✅ | Built-in |
+| **fs** (open, create, read, write, close) | ✅ | File I/O works, linear resource tracked |
+| **cli** (args) | ✅ | `cli.args()` returns Vec<string> |
+| **random** (random_int, random_range) | ✅ | Basic RNG |
+| **time** | ❌ | Not implemented |
+| **net** | ❌ | Not implemented |
+| **json** | ❌ | Not implemented |
+| **fmt** | ❌ | String interpolation exists, no format spec |
+| **path** | ❌ | Not implemented |
 
 ## Examples Status
 
-| Example | Parses | Runs | Tests Pass | Notes |
-|---------|--------|------|------------|-------|
-| file_copy.rask | ✅ | ❌ | N/A | Needs fs module |
-| cli_calculator.rask | ✅ | 🔶 | ❌ | Needs test runner |
-| grep_clone.rask | ✅ | ❌ | N/A | Needs fs, cli, regex |
-| http_api_server.rask | ✅ | ❌ | N/A | Needs net, concurrency |
-| game_loop.rask | ✅ | ❌ | N/A | Needs Pool, time |
-| sensor_processor.rask | ✅ | ❌ | N/A | Needs threading, SIMD |
-| text_editor.rask | ✅ | ❌ | N/A | Needs terminal I/O |
+| Example | Parses | Type Checks | Runs | Notes |
+|---------|--------|-------------|------|-------|
+| hello_world.rask | ✅ | ✅ | ✅ | |
+| simple_grep.rask | ✅ | ❌ | ✅ | Type checker gaps |
+| cli_calculator.rask | ✅ | ❌ | ✅ | Waits for stdin |
+| file_copy.rask | ✅ | ❌ | ✅ | |
+| game_loop.rask | ✅ | ❌ | ✅ | Simplified version |
+| grep_clone.rask | ✅ | ❌ | ✅ | Full featured |
+| collections_test.rask | ✅ | ❌ | ✅ | |
+| pool_test.rask | ✅ | ❌ | 🔶 | Basic pool only |
+| http_api_server.rask | ✅ | ❌ | ❌ | Needs net module |
+| text_editor.rask | ✅ | ❌ | ❌ | Needs terminal I/O |
+| sensor_processor.rask | ✅ | ❌ | ❌ | Needs SIMD, comptime |
 
-## Next Milestones
+## Test Files (root)
 
-### M1: First End-to-End Example
-- [ ] Implement minimal `fs` module (open, read, write, close)
-- [ ] Implement minimal `cli` module (args)
-- [ ] Run file_copy.rask end-to-end
-
-### M2: Test Runner
-- [ ] Implement inline `test` block execution
-- [ ] Run cli_calculator.rask tests
-- [ ] Validate syntax through passing tests
-
-### M3: Concurrency Foundation
-- [ ] Implement basic task runtime
-- [ ] Implement channels
-- [ ] Run simple spawn/join example
+All pass:
+`test_channels`, `test_ensure`, `test_ensure_catch`, `test_linear_resources`, `test_linear_file_leak`, `test_linear_struct_leak`, `test_spawn_raw`, `test_spawn_thread`, `test_thread_detach`, `test_match_*`, `test_semicolon_block*`
 
 ---
 
-*Last updated: 2026-02-05*
+*Last updated: 2026-02-06*

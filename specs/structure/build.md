@@ -203,9 +203,138 @@ struct CompileOptions {
 | Method | Description |
 |--------|-------------|
 | `compile_c(opts: CompileOptions)` | Compile C sources to object files |
+| `compile_rust(opts: RustCrateOptions)` | Compile Rust crate via cargo, optionally generate header via cbindgen |
 | `link_library(name: string)` | Link with system library (-l) |
 | `link_search_path(path: string)` | Add library search path (-L) |
 | `pkg_config(name: string)` | Use pkg-config for flags |
+
+### Rust Crate Integration
+
+Rust crates that export C ABI functions (`#[no_mangle] pub extern "C" fn`) can be compiled and linked via `compile_rust`. The Rust crate produces a static library; an optional cbindgen step generates a C header that Rask imports with the standard `import c` mechanism.
+
+**No new import syntax.** Rust is just another source of C-ABI libraries.
+
+**RustCrateOptions:**
+
+```rask
+struct RustCrateOptions {
+    path: string                     // Local path or crates.io crate name
+    version: string                  // Semver for crates.io (empty for local)
+    lib_name: string                 // Override library name (default: from Cargo.toml)
+    crate_type: string               // "staticlib" (default) or "cdylib"
+    cbindgen: bool                   // Generate C header via cbindgen (default: false)
+    cbindgen_config: string          // Path to cbindgen.toml (default: cbindgen defaults)
+    header_name: string              // Output header filename (default: "{lib_name}.h")
+    features: []string               // Cargo features to enable
+    no_default_features: bool        // Disable default Cargo features
+    target: string                   // Rust target triple (default: from ctx.target)
+    flags: []string                  // Additional cargo build flags
+    env: Map<string, string>         // Environment variables for cargo
+}
+```
+
+**What `compile_rust` does:**
+
+1. Resolve crate — local path (contains `/`) or fetch from crates.io (bare name + `version`)
+2. Run `cargo build --lib --message-format=json` with profile/target/features
+3. If `cbindgen: true`, run cbindgen → header written to `.rask-gen/{header_name}`
+4. Auto-link the resulting static library
+5. Auto-link Rust runtime system dependencies (detected from cargo JSON output)
+6. Call `declare_dependency` on local crate sources for incremental rebuilds
+
+**Example — local crate with cbindgen (common case):**
+
+```rask
+// rask.build
+import build using BuildContext
+
+public func build(ctx: BuildContext) -> () or Error {
+    try ctx.compile_rust(RustCrateOptions {
+        path: "vendor/fast-hash",
+        cbindgen: true,
+    })
+    Ok(())
+}
+```
+
+```rask
+// main.rask
+import c ".rask-gen/fast_hash.h" as hash
+
+func main() {
+    const data = "hello world"
+    const h = unsafe { hash.fast_hash_compute(data.ptr, data.len) }
+    println("Hash: {h}")
+}
+```
+
+**Example — crates.io dependency:**
+
+```rask
+// rask.build
+import build using BuildContext
+
+public func build(ctx: BuildContext) -> () or Error {
+    try ctx.compile_rust(RustCrateOptions {
+        path: "blake3",
+        version: "1.5",
+        cbindgen: true,
+        features: ["std"],
+    })
+    Ok(())
+}
+```
+
+**Example — no cbindgen (manual bindings):**
+
+```rask
+// rask.build
+import build using BuildContext
+
+public func build(ctx: BuildContext) -> () or Error {
+    try ctx.compile_rust(RustCrateOptions {
+        path: "vendor/mylib",
+    })
+    Ok(())
+}
+```
+
+```rask
+// main.rask — explicit bindings instead of import c
+extern "C" {
+    func my_init() -> c_int
+    func my_process(data: *u8, len: c_size) -> c_int
+    func my_shutdown()
+}
+```
+
+**Linking:**
+
+Static linking is the default (`crate_type: "staticlib"`). This produces a self-contained archive with no runtime library path issues. Platform-specific Rust runtime dependencies are auto-detected from cargo's `--message-format=json` output:
+
+| Platform | Typical dependencies |
+|----------|---------------------|
+| Linux (glibc) | `pthread`, `dl`, `m` |
+| macOS | `System` |
+| Windows (msvc) | `advapi32`, `ws2_32`, `userenv` |
+
+Dynamic linking (`crate_type: "cdylib"`) is available for shared library use cases. The `.so`/`.dylib`/`.dll` must be distributed alongside the binary.
+
+**Incremental rebuilds:**
+
+For local crates, `compile_rust` automatically declares dependencies on `{path}/src/**/*.rs` and `{path}/Cargo.toml`. Cargo handles its own incremental compilation internally.
+
+**Error cases:**
+
+| Case | Handling |
+|------|----------|
+| `cargo` not found | Build error: "cargo not found. Install Rust toolchain: https://rustup.rs" |
+| `cbindgen` not found | Build error: "cbindgen not found. Install: cargo install cbindgen" |
+| Cargo compilation failure | Build error with cargo stderr |
+| Crate not found on crates.io | Build error: "crate not found" |
+| Missing `crate-type = ["staticlib"]` | Build error with fix instructions |
+| No C-ABI exports | Warning: "no C-ABI symbols found" |
+| Rust panic across FFI | Undefined behavior — Rust code must use `catch_unwind` at `extern "C"` boundaries |
 
 ### Running External Tools
 

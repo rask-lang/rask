@@ -67,7 +67,7 @@ func parse_args(args: Vec<string>) -> Options or GrepError {
         i = i + 1
     }
 
-    Ok(opts)
+    return Ok(opts)
 }
 
 func print_usage() {
@@ -96,7 +96,7 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
         .map_err(|e| GrepError.FileError(e))
 
     const lines = content.lines()
-    let match_count = 0
+    let match_count: i64 = 0
     let line_num = 0
 
     for line in lines {
@@ -121,7 +121,7 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
         println("{match_count}")
     }
 
-    Ok(match_count)
+    return Ok(match_count)
 }
 
 @entry

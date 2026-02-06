@@ -79,11 +79,13 @@ impl ScopeTree {
     }
 
     /// Get the current scope ID.
+    #[allow(dead_code)]
     pub fn current(&self) -> ScopeId {
         self.current
     }
 
     /// Get a scope by ID.
+    #[allow(dead_code)]
     pub fn get(&self, id: ScopeId) -> Option<&Scope> {
         self.scopes.get(id.0 as usize)
     }

@@ -3,10 +3,46 @@
 mod output;
 
 use colored::Colorize;
+use rask_diagnostics::{formatter::DiagnosticFormatter, json, Diagnostic, ToDiagnostic};
 use std::env;
 use std::fs;
 use std::path::Path;
 use std::process;
+
+/// Output format for diagnostics.
+#[derive(Clone, Copy, PartialEq)]
+enum Format {
+    /// Rich terminal output with colors and underlines.
+    Human,
+    /// Structured JSON for IDEs and AI agents.
+    Json,
+}
+
+fn show_diagnostic(source: &str, file_name: &str, diagnostic: &Diagnostic) {
+    let formatter = DiagnosticFormatter::new(source).with_file_name(file_name);
+    eprintln!("{}", formatter.format(diagnostic));
+}
+
+/// Show multiple diagnostics. In JSON mode, emit a single structured report.
+fn show_diagnostics(
+    diagnostics: &[Diagnostic],
+    source: &str,
+    file: &str,
+    phase: &str,
+    format: Format,
+) {
+    match format {
+        Format::Human => {
+            for d in diagnostics {
+                show_diagnostic(source, file, d);
+            }
+        }
+        Format::Json => {
+            let report = json::to_json_report(diagnostics, source, file, phase);
+            println!("{}", json::to_json_string(&report));
+        }
+    }
+}
 
 fn main() {
     output::init();
@@ -17,64 +53,109 @@ fn main() {
         return;
     }
 
-    match args[1].as_str() {
+    // Parse --format json / --json flag
+    let format = if args.iter().any(|a| a == "--format=json" || a == "--json") {
+        Format::Json
+    } else if let Some(pos) = args.iter().position(|a| a == "--format") {
+        if args.get(pos + 1).map(|s| s.as_str()) == Some("json") {
+            Format::Json
+        } else {
+            Format::Human
+        }
+    } else {
+        Format::Human
+    };
+
+    // Filter out format flags for command dispatch
+    let cmd_args: Vec<&str> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| {
+            let s = a.as_str();
+            if s == "--format=json" || s == "--json" {
+                return false;
+            }
+            if s == "--format" {
+                return false;
+            }
+            if *i > 0 && args[i - 1] == "--format" {
+                return false;
+            }
+            true
+        })
+        .map(|(_, a)| a.as_str())
+        .collect();
+
+    if cmd_args.len() < 2 {
+        print_usage();
+        return;
+    }
+
+    match cmd_args[1] {
         "lex" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("lex"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            cmd_lex(&args[2]);
+            cmd_lex(cmd_args[2], format);
         }
         "parse" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("parse"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            cmd_parse(&args[2]);
+            cmd_parse(cmd_args[2], format);
         }
         "resolve" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("resolve"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            cmd_resolve(&args[2]);
+            cmd_resolve(cmd_args[2], format);
         }
         "typecheck" | "check" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            cmd_typecheck(&args[2]);
+            cmd_typecheck(cmd_args[2], format);
         }
         "ownership" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("ownership"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            cmd_ownership(&args[2]);
+            cmd_ownership(cmd_args[2], format);
         }
         "run" => {
-            if args.len() < 3 {
+            if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rask>"));
                 process::exit(1);
             }
-            // Pass remaining args to the program
-            let program_args: Vec<String> = args[2..].to_vec();
-            cmd_run(&args[2], program_args);
+            let program_args: Vec<String> = cmd_args[2..].iter().map(|s| s.to_string()).collect();
+            cmd_run(cmd_args[2], program_args, format);
         }
         "test-specs" => {
-            let path = args.get(2).map(|s| s.as_str());
+            let path = cmd_args.get(2).copied();
             cmd_test_specs(path);
         }
         "build" => {
-            let path = args.get(2).map(|s| s.as_str()).unwrap_or(".");
+            let path = cmd_args.get(2).copied().unwrap_or(".");
             cmd_build(path);
+        }
+        "explain" => {
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing error code argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("explain"), output::arg("<ERROR_CODE>"));
+                process::exit(1);
+            }
+            cmd_explain(cmd_args[2]);
         }
         "help" | "--help" | "-h" => {
             print_usage();
@@ -83,9 +164,8 @@ fn main() {
             println!("{} {}", output::title("rask"), output::version("0.1.0"));
         }
         other => {
-            // Treat as filename
             if other.ends_with(".rask") {
-                cmd_parse(other);
+                cmd_parse(other, format);
             } else {
                 eprintln!("{}: Unknown command '{}'", output::error_label(), other);
                 print_usage();
@@ -111,51 +191,23 @@ fn print_usage() {
     );
     println!();
     println!("{}", output::section_header("Commands:"));
-    println!(
-        "  {} {}       Run a Rask program",
-        output::command("run"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {}       Tokenize a file and print tokens",
-        output::command("lex"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {}     Parse a file and print AST",
-        output::command("parse"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {}   Resolve names and print symbols",
-        output::command("resolve"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {} Type check a file",
-        output::command("typecheck"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {} Check ownership and borrowing rules",
-        output::command("ownership"),
-        output::arg("<file>")
-    );
-    println!(
-        "  {} {}      Build a package",
-        output::command("build"),
-        output::arg("[dir]")
-    );
-    println!(
-        "  {} {} Run spec documentation tests",
-        output::command("test-specs"),
-        output::arg("[dir]")
-    );
+    println!("  {} {}       Run a Rask program", output::command("run"), output::arg("<file>"));
+    println!("  {} {}       Tokenize a file and print tokens", output::command("lex"), output::arg("<file>"));
+    println!("  {} {}     Parse a file and print AST", output::command("parse"), output::arg("<file>"));
+    println!("  {} {}   Resolve names and print symbols", output::command("resolve"), output::arg("<file>"));
+    println!("  {} {} Type check a file", output::command("typecheck"), output::arg("<file>"));
+    println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
+    println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
+    println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
+    println!("  {} {}  Explain an error code", output::command("explain"), output::arg("<code>"));
     println!("  {}             Show this help", output::command("help"));
     println!("  {}          Show version", output::command("version"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}   Output diagnostics as structured JSON", output::arg("--json"));
 }
 
-fn cmd_lex(path: &str) {
+fn cmd_lex(path: &str, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -167,28 +219,31 @@ fn cmd_lex(path: &str) {
     let mut lexer = rask_lexer::Lexer::new(&source);
     let result = lexer.tokenize();
 
-    // Show any errors
-    for error in &result.errors {
-        show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+    if !result.errors.is_empty() {
+        let diags: Vec<Diagnostic> = result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
     }
 
     if result.is_ok() {
-        println!("{} Tokens ({}) {}\n", "===".dimmed(), result.tokens.len(), "===".dimmed());
-        for tok in &result.tokens {
-            // Skip newlines for cleaner output (optional)
-            if matches!(tok.kind, rask_ast::token::TokenKind::Newline) {
-                continue;
+        if format == Format::Human {
+            println!("{} Tokens ({}) {}\n", "===".dimmed(), result.tokens.len(), "===".dimmed());
+            for tok in &result.tokens {
+                if matches!(tok.kind, rask_ast::token::TokenKind::Newline) {
+                    continue;
+                }
+                println!("{:4}:{:<3} {:?}", tok.span.start, tok.span.end, tok.kind);
             }
-            println!("{:4}:{:<3} {:?}", tok.span.start, tok.span.end, tok.kind);
+            println!("\n{}", output::banner_ok(&format!("Lex: {} tokens", result.tokens.len())));
         }
-        println!("\n{}", output::banner_ok(&format!("Lex: {} tokens", result.tokens.len())));
     } else {
-        eprintln!("\n{}", output::banner_fail("Lex", result.errors.len()));
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", result.errors.len()));
+        }
         process::exit(1);
     }
 }
 
-fn cmd_parse(path: &str) {
+fn cmd_parse(path: &str, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -197,58 +252,56 @@ fn cmd_parse(path: &str) {
         }
     };
 
-    let mut has_errors = false;
-    let mut error_count = 0;
+    let mut all_diags: Vec<Diagnostic> = Vec::new();
 
-    // First lex
     let mut lexer = rask_lexer::Lexer::new(&source);
     let lex_result = lexer.tokenize();
 
-    // Show lex errors (deduplicated - one per line)
     let mut last_line: Option<usize> = None;
     for error in &lex_result.errors {
         let line = get_line_number(&source, error.span.start);
         if last_line != Some(line) {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
-            error_count += 1;
-            has_errors = true;
+            all_diags.push(error.to_diagnostic());
             last_line = Some(line);
         }
     }
 
-    println!("{} Lexed {} tokens {}\n", "===".dimmed(), lex_result.tokens.len(), "===".dimmed());
+    if format == Format::Human {
+        println!("{} Lexed {} tokens {}\n", "===".dimmed(), lex_result.tokens.len(), "===".dimmed());
+    }
 
-    // Then parse
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
     let parse_result = parser.parse();
 
-    // Show parse errors (deduplicated - one per line)
     last_line = None;
     for error in &parse_result.errors {
         let line = get_line_number(&source, error.span.start);
         if last_line != Some(line) {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
-            error_count += 1;
-            has_errors = true;
+            all_diags.push(error.to_diagnostic());
             last_line = Some(line);
         }
     }
 
-    if has_errors {
-        eprintln!("\n{}", output::banner_fail("Parse", error_count));
+    if !all_diags.is_empty() {
+        show_diagnostics(&all_diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", all_diags.len()));
+        }
         process::exit(1);
     }
 
-    println!("{} AST ({} declarations) {}\n", "===".dimmed(), parse_result.decls.len(), "===".dimmed());
-    for (i, decl) in parse_result.decls.iter().enumerate() {
-        println!("--- Declaration {} ---", i + 1);
-        println!("{:#?}", decl);
-        println!();
+    if format == Format::Human {
+        println!("{} AST ({} declarations) {}\n", "===".dimmed(), parse_result.decls.len(), "===".dimmed());
+        for (i, decl) in parse_result.decls.iter().enumerate() {
+            println!("--- Declaration {} ---", i + 1);
+            println!("{:#?}", decl);
+            println!();
+        }
+        println!("{}", output::banner_ok("Parse"));
     }
-    println!("{}", output::banner_ok("Parse"));
 }
 
-fn cmd_resolve(path: &str) {
+fn cmd_resolve(path: &str, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -257,56 +310,58 @@ fn cmd_resolve(path: &str) {
         }
     };
 
-    // Lex
     let mut lexer = rask_lexer::Lexer::new(&source);
     let lex_result = lexer.tokenize();
 
     if !lex_result.is_ok() {
-        for error in &lex_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         process::exit(1);
     }
 
-    // Parse
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
     let parse_result = parser.parse();
 
     if !parse_result.is_ok() {
-        for error in &parse_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         process::exit(1);
     }
 
-    // Resolve
     match rask_resolve::resolve(&parse_result.decls) {
         Ok(resolved) => {
-            println!("{} Symbols ({}) {}\n", "===".dimmed(), resolved.symbols.iter().count(), "===".dimmed());
-            for symbol in resolved.symbols.iter() {
-                println!("{:4} {} ({:?})", symbol.id.0, symbol.name, symbol.kind);
-            }
-            println!("\n{} Resolutions ({}) {}\n", "===".dimmed(), resolved.resolutions.len(), "===".dimmed());
-            for (node_id, sym_id) in &resolved.resolutions {
-                if let Some(sym) = resolved.symbols.get(*sym_id) {
-                    println!("  NodeId({}) -> {} (SymbolId {})", node_id.0, sym.name, sym_id.0);
+            if format == Format::Human {
+                println!("{} Symbols ({}) {}\n", "===".dimmed(), resolved.symbols.iter().count(), "===".dimmed());
+                for symbol in resolved.symbols.iter() {
+                    println!("{:4} {} ({:?})", symbol.id.0, symbol.name, symbol.kind);
                 }
+                println!("\n{} Resolutions ({}) {}\n", "===".dimmed(), resolved.resolutions.len(), "===".dimmed());
+                for (node_id, sym_id) in &resolved.resolutions {
+                    if let Some(sym) = resolved.symbols.get(*sym_id) {
+                        println!("  NodeId({}) -> {} (SymbolId {})", node_id.0, sym.name, sym_id.0);
+                    }
+                }
+                println!("\n{}", output::banner_ok("Resolve"));
             }
-            println!("\n{}", output::banner_ok("Resolve"));
         }
         Err(errors) => {
-            for error in &errors {
-                show_error(&source, error.span.start, &format!("{}", error.kind), None);
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             }
-            eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             process::exit(1);
         }
     }
 }
 
-fn cmd_typecheck(path: &str) {
+fn cmd_typecheck(path: &str, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -315,111 +370,101 @@ fn cmd_typecheck(path: &str) {
         }
     };
 
-    // Lex
     let mut lexer = rask_lexer::Lexer::new(&source);
     let lex_result = lexer.tokenize();
 
     if !lex_result.is_ok() {
-        for error in &lex_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         process::exit(1);
     }
 
-    // Parse
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
     let mut parse_result = parser.parse();
 
     if !parse_result.is_ok() {
-        for error in &parse_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         process::exit(1);
     }
 
-    // Desugar operators (a + b → a.add(b), etc.)
     rask_desugar::desugar(&mut parse_result.decls);
 
-    // Resolve
     let resolved = match rask_resolve::resolve(&parse_result.decls) {
         Ok(r) => r,
         Err(errors) => {
-            for error in &errors {
-                show_error(&source, error.span.start, &format!("{}", error.kind), None);
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             }
-            eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             process::exit(1);
         }
     };
 
-    // Type check
     match rask_types::typecheck(resolved, &parse_result.decls) {
         Ok(typed) => {
-            println!("{} Types ({} registered) {}\n", "===".dimmed(), typed.types.iter().count(), "===".dimmed());
-            for type_def in typed.types.iter() {
-                match type_def {
-                    rask_types::TypeDef::Struct { name, fields, .. } => {
-                        println!("  struct {} {{", name);
-                        for (field_name, field_ty) in fields {
-                            println!("    {}: {:?}", field_name, field_ty);
-                        }
-                        println!("  }}");
-                    }
-                    rask_types::TypeDef::Enum { name, variants, .. } => {
-                        println!("  enum {} {{", name);
-                        for (var_name, var_types) in variants {
-                            if var_types.is_empty() {
-                                println!("    {}", var_name);
-                            } else {
-                                println!("    {}({:?})", var_name, var_types);
+            if format == Format::Human {
+                println!("{} Types ({} registered) {}\n", "===".dimmed(), typed.types.iter().count(), "===".dimmed());
+                for type_def in typed.types.iter() {
+                    match type_def {
+                        rask_types::TypeDef::Struct { name, fields, .. } => {
+                            println!("  struct {} {{", name);
+                            for (field_name, field_ty) in fields {
+                                println!("    {}: {:?}", field_name, field_ty);
                             }
+                            println!("  }}");
                         }
-                        println!("  }}");
-                    }
-                    rask_types::TypeDef::Trait { name, .. } => {
-                        println!("  trait {}", name);
+                        rask_types::TypeDef::Enum { name, variants, .. } => {
+                            println!("  enum {} {{", name);
+                            for (var_name, var_types) in variants {
+                                if var_types.is_empty() {
+                                    println!("    {}", var_name);
+                                } else {
+                                    println!("    {}({:?})", var_name, var_types);
+                                }
+                            }
+                            println!("  }}");
+                        }
+                        rask_types::TypeDef::Trait { name, .. } => {
+                            println!("  trait {}", name);
+                        }
                     }
                 }
-            }
 
-            println!("\n{} Expression Types ({}) {}\n", "===".dimmed(), typed.node_types.len(), "===".dimmed());
-            // Show some sample types
-            let mut count = 0;
-            for (node_id, ty) in &typed.node_types {
-                if count < 20 {
-                    println!("  NodeId({}) -> {:?}", node_id.0, ty);
-                    count += 1;
+                println!("\n{} Expression Types ({}) {}\n", "===".dimmed(), typed.node_types.len(), "===".dimmed());
+                let mut count = 0;
+                for (node_id, ty) in &typed.node_types {
+                    if count < 20 {
+                        println!("  NodeId({}) -> {:?}", node_id.0, ty);
+                        count += 1;
+                    }
                 }
-            }
-            if typed.node_types.len() > 20 {
-                println!("  ... and {} more", typed.node_types.len() - 20);
-            }
+                if typed.node_types.len() > 20 {
+                    println!("  ... and {} more", typed.node_types.len() - 20);
+                }
 
-            println!("\n{}", output::banner_ok("Typecheck"));
+                println!("\n{}", output::banner_ok("Typecheck"));
+            }
         }
         Err(errors) => {
-            for error in &errors {
-                let span = match error {
-                    rask_types::TypeError::Mismatch { span, .. } => *span,
-                    rask_types::TypeError::ArityMismatch { span, .. } => *span,
-                    rask_types::TypeError::NotCallable { span, .. } => *span,
-                    rask_types::TypeError::NoSuchField { span, .. } => *span,
-                    rask_types::TypeError::NoSuchMethod { span, .. } => *span,
-                    rask_types::TypeError::InfiniteType { span, .. } => *span,
-                    rask_types::TypeError::CannotInfer { span } => *span,
-                    _ => rask_ast::Span::new(0, 0),
-                };
-                show_error(&source, span.start, &error.to_string(), None);
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "typecheck", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
             }
-            eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
             process::exit(1);
         }
     }
 }
 
-fn cmd_ownership(path: &str) {
+fn cmd_ownership(path: &str, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -428,87 +473,78 @@ fn cmd_ownership(path: &str) {
         }
     };
 
-    // Lex
     let mut lexer = rask_lexer::Lexer::new(&source);
     let lex_result = lexer.tokenize();
 
     if !lex_result.is_ok() {
-        for error in &lex_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         process::exit(1);
     }
 
-    // Parse
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
     let mut parse_result = parser.parse();
 
     if !parse_result.is_ok() {
-        for error in &parse_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         process::exit(1);
     }
 
-    // Desugar operators
     rask_desugar::desugar(&mut parse_result.decls);
 
-    // Resolve
     let resolved = match rask_resolve::resolve(&parse_result.decls) {
         Ok(r) => r,
         Err(errors) => {
-            for error in &errors {
-                show_error(&source, error.span.start, &format!("{}", error.kind), None);
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             }
-            eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
             process::exit(1);
         }
     };
 
-    // Type check
     let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
         Ok(t) => t,
         Err(errors) => {
-            for error in &errors {
-                let span = match error {
-                    rask_types::TypeError::Mismatch { span, .. } => *span,
-                    rask_types::TypeError::ArityMismatch { span, .. } => *span,
-                    rask_types::TypeError::NotCallable { span, .. } => *span,
-                    rask_types::TypeError::NoSuchField { span, .. } => *span,
-                    rask_types::TypeError::NoSuchMethod { span, .. } => *span,
-                    rask_types::TypeError::InfiniteType { span, .. } => *span,
-                    rask_types::TypeError::CannotInfer { span } => *span,
-                    _ => rask_ast::Span::new(0, 0),
-                };
-                show_error(&source, span.start, &error.to_string(), None);
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "typecheck", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
             }
-            eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
             process::exit(1);
         }
     };
 
-    // Ownership analysis
     let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
 
     if ownership_result.is_ok() {
-        println!("{}", output::banner_ok("Ownership"));
-        println!();
-        println!("All ownership and borrowing rules verified:");
-        println!("  {} No use-after-move errors", output::status_pass());
-        println!("  {} Borrow scopes valid", output::status_pass());
-        println!("  {} Aliasing rules satisfied", output::status_pass());
-    } else {
-        for error in &ownership_result.errors {
-            show_error(&source, error.span.start, &error.kind.to_string(), None);
+        if format == Format::Human {
+            println!("{}", output::banner_ok("Ownership"));
+            println!();
+            println!("All ownership and borrowing rules verified:");
+            println!("  {} No use-after-move errors", output::status_pass());
+            println!("  {} Borrow scopes valid", output::status_pass());
+            println!("  {} Aliasing rules satisfied", output::status_pass());
         }
-        eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+    } else {
+        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "ownership", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+        }
         process::exit(1);
     }
 }
 
-fn cmd_run(path: &str, program_args: Vec<String>) {
+fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -517,34 +553,32 @@ fn cmd_run(path: &str, program_args: Vec<String>) {
         }
     };
 
-    // Lex
     let mut lexer = rask_lexer::Lexer::new(&source);
     let lex_result = lexer.tokenize();
 
     if !lex_result.is_ok() {
-        for error in &lex_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
         process::exit(1);
     }
 
-    // Parse
     let mut parser = rask_parser::Parser::new(lex_result.tokens);
     let mut parse_result = parser.parse();
 
     if !parse_result.is_ok() {
-        for error in &parse_result.errors {
-            show_error(&source, error.span.start, &error.message, error.hint.as_deref());
+        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         }
-        eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
         process::exit(1);
     }
 
-    // Desugar operators (a + b → a.add(b))
     rask_desugar::desugar(&mut parse_result.decls);
 
-    // Run the interpreter with CLI args
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     match interp.run(&parse_result.decls) {
         Ok(_) => {}
@@ -575,7 +609,6 @@ fn cmd_build(path: &str) {
 
     println!("{} Discovering packages in {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
 
-    // Discover packages
     let mut registry = PackageRegistry::new();
     match registry.discover(root) {
         Ok(_root_id) => {
@@ -599,24 +632,17 @@ fn cmd_build(path: &str) {
             }
             println!();
 
-            // Compile each package (for now, just run the full pipeline on each)
             let mut total_errors = 0;
             for pkg in registry.packages() {
                 println!("{} Compiling package: {} {}", "===".dimmed(), pkg.path_string().green(), "===".dimmed());
 
-                // Collect all decls from all files
                 let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
-
-                // Desugar
                 rask_desugar::desugar(&mut all_decls);
 
-                // Resolve with package context
                 match rask_resolve::resolve_package(&all_decls, &registry, pkg.id) {
                     Ok(resolved) => {
-                        // Type check
                         match rask_types::typecheck(resolved, &all_decls) {
                             Ok(typed) => {
-                                // Ownership check
                                 let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                                 if !ownership_result.is_ok() {
                                     for error in &ownership_result.errors {
@@ -662,50 +688,33 @@ fn get_line_number(source: &str, pos: usize) -> usize {
     source[..pos.min(source.len())].chars().filter(|&c| c == '\n').count() + 1
 }
 
-/// Show an error with source context.
-fn show_error(source: &str, pos: usize, message: &str, hint: Option<&str>) {
-    let mut line_num = 1;
-    let mut line_start = 0;
+fn cmd_explain(code: &str) {
+    use rask_diagnostics::codes::ErrorCodeRegistry;
 
-    for (i, c) in source.char_indices() {
-        if i >= pos {
-            break;
-        }
-        if c == '\n' {
-            line_num += 1;
-            line_start = i + 1;
-        }
-    }
+    let registry = ErrorCodeRegistry::default();
 
-    let col = pos - line_start + 1;
-
-    // Find end of line
-    let line_end = source[line_start..].find('\n')
-        .map(|i| line_start + i)
-        .unwrap_or(source.len());
-
-    let line = &source[line_start..line_end];
-
-    eprintln!();
-    eprintln!("{}: {}", output::error_label(), message.bold());
-    eprintln!("  {} line {}:{}", output::error_arrow(), line_num, col);
-    eprintln!("   {}", output::pipe());
-    eprintln!("{} {} {}", output::line_number(line_num), output::pipe(), line);
-    eprintln!(
-        "   {} {}{}",
-        output::pipe(),
-        " ".repeat(col.saturating_sub(1)),
-        output::caret()
-    );
-
-    if let Some(hint) = hint {
-        eprintln!("   {}", output::pipe());
-        eprintln!(
-            "   {} {}: {}",
-            output::hint_equals(),
-            output::hint_label(),
-            output::hint_text(hint)
+    if let Some(info) = registry.get(code) {
+        println!(
+            "{}[{}]: {}",
+            "error".red().bold(),
+            info.code.red().bold(),
+            info.title.bold()
         );
+        println!();
+        println!("  Category: {}", info.category);
+        println!();
+        println!("  Detailed explanation not yet available.");
+        println!("  Run `rask typecheck <file>` to see this error in context.");
+    } else {
+        eprintln!(
+            "{}: unknown error code `{}`",
+            output::error_label(),
+            code
+        );
+        eprintln!();
+        eprintln!("Error codes use the format E0NNN (e.g., E0308, E0800).");
+        eprintln!("Run `rask help` for available commands.");
+        process::exit(1);
     }
 }
 
@@ -723,7 +732,6 @@ fn cmd_test_specs(path: Option<&str>) {
     let mut summary = TestSummary::default();
     let mut all_results = Vec::new();
 
-    // Collect all markdown files
     let md_files = collect_md_files(specs_path);
     summary.files = md_files.len();
 
@@ -767,7 +775,6 @@ fn cmd_test_specs(path: Option<&str>) {
         println!();
     }
 
-    // Print summary
     println!("{}", output::separator(50));
     println!(
         "{} files, {} tests, {}, {}",
@@ -817,6 +824,7 @@ fn collect_md_files(dir: &Path) -> Vec<std::path::PathBuf> {
 }
 
 /// Validate entry points: exactly one @entry required, multiple is compile error.
+#[allow(dead_code)]
 fn validate_entry_points(decls: &[rask_ast::decl::Decl]) -> Result<(), String> {
     use rask_ast::decl::DeclKind;
 

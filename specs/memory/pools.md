@@ -33,6 +33,7 @@ pool.remove(h)
 | `pool[h]` | `&T` or `&mut T` | Access (panics if invalid) |
 | `pool.get(h)` | `Option<T>` | Safe access (T: Copy) |
 | `pool.remove(h)` | `Option<T>` | Remove and return |
+| `pool.handles()` | `Iterator<Handle<T>>` | Iterate all valid handles |
 
 ### Handle Structure
 

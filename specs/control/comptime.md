@@ -916,13 +916,13 @@ const reg32 = Register<32> { value: 0u32 }
 None identified.
 
 ### Medium Priority
-1. **Comptime memoization** — Should identical comptime calls be memoized to speed up compilation? (e.g., `fib(10)` called multiple times)
-2. **Step-through debugger** — Should IDEs support stepping through comptime interpreter? Complex but valuable for debugging.
-3. **Comptime standard library** — Which stdlib functions should be `comptime` compatible? (e.g., string formatting, math)
+1. **Step-through debugger** — Should IDEs support stepping through comptime interpreter? Complex but valuable for debugging.
+2. **Comptime standard library** — Which stdlib functions should be `comptime` compatible? (e.g., string formatting, math)
 
 ### Low Priority
 4. **Comptime imports** — Can comptime code import modules? Or only use built-in types?
 5. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
 
 ### Resolved
+5. ~~**Comptime memoization**~~ — Resolved. Pure comptime functions cached by `(function, arguments, body_hash)`. See [Semantic Hash Caching](../compiler/semantic-hash-caching.md).
 6. ~~**Comptime heap allocation**~~ — Resolved via "Collections with Freeze" pattern. `Vec`, `Map`, `string` work at comptime with compiler-managed allocator; `.freeze()` materializes to const data.

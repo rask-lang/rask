@@ -35,9 +35,9 @@ The Rask standard library provides foundational types and modules for systems pr
 ### I/O & Filesystem
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [io](#io) | Reader, Writer, Buffer traits | Planned |
-| [fs](#fs) | File operations | Planned |
-| [path](#path) | Path manipulation | Planned |
+| [io](io.md) | Reader, Writer, Buffer traits | Specified |
+| [fs](fs.md) | File operations | Specified |
+| [path](path.md) | Path manipulation | Specified |
 
 ### Networking & Web
 | Module | Purpose | Status |
@@ -50,19 +50,19 @@ The Rask standard library provides foundational types and modules for systems pr
 ### Data Formats
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [json](#json) | JSON parsing and serialization | Planned |
+| [json](json.md) | JSON parsing and serialization | Specified |
 | [csv](#csv) | CSV parsing and writing | Planned |
 | [encoding](#encoding) | Base64, hex, URL encoding | Planned |
 
 ### Utilities
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [cli](#cli) | Command-line argument parsing | Planned |
+| [cli](cli.md) | Command-line argument parsing | Specified |
 | [time](#time) | Duration, Instant, timestamps | Specified |
-| [os](#os) | Platform-specific operations | Planned |
-| [fmt](#fmt) | String formatting | Planned |
-| [math](#math) | Mathematical functions | Planned |
-| [random](#random) | Random number generation | Planned |
+| [os](os.md) | Platform-specific operations | Specified |
+| [fmt](fmt.md) | String formatting | Specified |
+| [math](math.md) | Mathematical functions | Specified |
+| [random](random.md) | Random number generation | Specified |
 | [hash](#hash) | SHA256, MD5, CRC32 | Planned |
 | [bits](#bits) | Bit manipulation utilities | Planned |
 | [unicode](#unicode) | Unicode utilities | Planned |
@@ -166,31 +166,31 @@ See:
 
 ## IO
 
-The `io` module provides traits for reading and writing byte streams.
+The `io` module provides traits for reading and writing byte streams. See [io.md](io.md) for the full specification.
 
 ### Types
 
 | Type | Description | Linear? |
 |------|-------------|---------|
-| `Reader` | Trait for reading bytes | — |
-| `Writer` | Trait for writing bytes | — |
+| `Reader` | Trait for reading bytes | -- |
+| `Writer` | Trait for writing bytes | -- |
 | `Buffer` | In-memory byte buffer | No |
+| `BufReader<R>` | Buffered reader wrapper | Inherits from R |
+| `BufWriter<W>` | Buffered writer wrapper | Inherits from W |
 | `Stdin` | Standard input handle | Yes |
 | `Stdout` | Standard output handle | Yes |
 | `Stderr` | Standard error handle | Yes |
 
-### Reader Trait
+### Core Traits
 
 ```rask
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
     func read_all(self) -> []u8 or IoError
+    func read_to_string(self) -> string or IoError
+    func read_exact(self, buf: []u8) -> () or IoError
 }
-```
 
-### Writer Trait
-
-```rask
 trait Writer {
     func write(self, data: []u8) -> usize or IoError
     func write_all(self, data: []u8) -> () or IoError
@@ -203,13 +203,19 @@ trait Writer {
 ```rask
 import io
 
-// Global accessors (return linear handles)
-const stdin = io.stdin()
-const stdout = io.stdout()
-const stderr = io.stderr()
+const stdin = io.stdin()     // Stdin (@resource, implements Reader)
+const stdout = io.stdout()   // Stdout (@resource, implements Writer)
+const stderr = io.stderr()   // Stderr (@resource, implements Writer)
 ```
 
-**Status:** Planned — detailed specification TODO.
+### Convenience
+
+```rask
+const line = try io.read_line()             // Read line from stdin
+const n = try io.copy(reader, writer)       // Copy all bytes between streams
+```
+
+**Status:** Specified -- see [io.md](io.md). Interpreter has `io.read_line()` only.
 
 ---
 
@@ -268,7 +274,7 @@ try process(data)
 | `fs.exists(path)` | Check existence |
 | `fs.metadata(path)` | Get metadata without opening |
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [fs.md](fs.md).
 
 ---
 
@@ -313,7 +319,7 @@ try stream.write_all(request)
 const response = try stream.read_all()
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [io.md](io.md).
 
 ---
 
@@ -388,7 +394,7 @@ p.is_absolute() // -> bool
 const p2 = p.join("subdir")  // "/home/user/file.txt/subdir"
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [path.md](path.md) for full specification.
 
 ---
 
@@ -414,7 +420,7 @@ os.exit(0)
 os.getpid()  // -> u32
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [os.md](os.md) for full specification.
 
 ---
 
@@ -443,7 +449,7 @@ const s = format!("{:08x}", value)  // Hex with padding
 | `{:>10}` | Right-align, width 10 |
 | `{:0>10}` | Zero-pad, width 10 |
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [fmt.md](fmt.md).
 
 ---
 
@@ -474,7 +480,7 @@ The `math` module provides mathematical functions.
 | `math.INF` | Infinity |
 | `math.NAN` | Not a number |
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [math.md](math.md) for full specification.
 
 ---
 
@@ -504,7 +510,7 @@ rng.shuffle(vec)    // In-place shuffle
 rng.choice(vec)     // -> Option<T>
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [random.md](random.md) for full specification.
 
 ---
 
@@ -557,7 +563,7 @@ const user: User = try json.decode(input)
 const output = json.encode(user)
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [json.md](json.md) for full specification.
 
 ---
 
@@ -715,7 +721,7 @@ const parser = cli.Parser.new("myapp")
 const args = try parser.parse()
 ```
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [cli.md](cli.md) for full specification.
 
 ---
 

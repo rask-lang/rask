@@ -181,6 +181,7 @@ See [Build Scripts](build.md) for full build configuration.
 | Static function in header | Not imported (internal linkage) |
 | Conflicting typedefs | First wins, warning emitted |
 | Macro with side effects | Not imported; warning emitted |
+| Rust crate via C ABI | Use `compile_rust()` in build script + `import c` for header; see [Build Scripts](build.md) |
 
 ## Examples
 

@@ -5,6 +5,7 @@ Keep docs short. In chat, explain things to me—I'm not a language architect ex
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
 - Avoid pipes (`|`) and redirects (`2>&1`) in Bash commands - they break permission matching
+- Create test scripts in `/tmp`, not the main project folder
 
 ## Goal
 
@@ -40,6 +41,7 @@ Start with [CORE_DESIGN.md](CORE_DESIGN.md). For specs: [specs/README.md](specs/
 | Concurrency | spawn/join/detach, channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
+| Rust interop | compile_rust() in build scripts, C ABI, cbindgen | [build.md](specs/structure/build.md) |
 
 ### Open
 

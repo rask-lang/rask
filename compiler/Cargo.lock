@@ -526,6 +526,9 @@ checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 [[package]]
 name = "rask-ast"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "rask-cli"
@@ -534,6 +537,7 @@ dependencies = [
  "colored",
  "rask-ast",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-interp",
  "rask-lexer",
  "rask-ownership",
@@ -556,6 +560,21 @@ name = "rask-desugar"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+]
+
+[[package]]
+name = "rask-diagnostics"
+version = "0.1.0"
+dependencies = [
+ "colored",
+ "rask-ast",
+ "rask-lexer",
+ "rask-ownership",
+ "rask-parser",
+ "rask-resolve",
+ "rask-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -582,6 +601,7 @@ version = "0.1.0"
 dependencies = [
  "rask-ast",
  "rask-desugar",
+ "rask-diagnostics",
  "rask-lexer",
  "rask-ownership",
  "rask-parser",

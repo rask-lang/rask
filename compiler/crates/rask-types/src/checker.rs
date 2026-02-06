@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{ResolvedProgram, SymbolId, SymbolKind};
@@ -38,7 +38,7 @@ pub enum TypeDef {
 pub struct MethodSig {
     pub name: String,
     pub self_param: SelfParam,
-    pub params: Vec<Type>,
+    pub params: Vec<(Type, ParamMode)>,
     pub ret: Type,
 }
 
@@ -46,7 +46,16 @@ pub struct MethodSig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfParam {
     None,  // Static method
-    Value, // self (by value)
+    Value, // self (by value, default)
+    Read,  // read self (borrowed, read-only)
+    Take,  // take self (consumed)
+}
+
+/// How a parameter is passed to a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamMode {
+    Default, // Normal pass-by-value
+    Take,    // take param (consumed)
 }
 
 // ============================================================================
@@ -244,6 +253,20 @@ impl TypeTable {
                 method,
                 span,
             },
+            TypeError::MissingReturn { function_name, expected_type, span } => TypeError::MissingReturn {
+                function_name,
+                expected_type: self.resolve_type_names(&expected_type),
+                span,
+            },
+            TypeError::TryInNonPropagatingContext { return_ty, span } => TypeError::TryInNonPropagatingContext {
+                return_ty: self.resolve_type_names(&return_ty),
+                span,
+            },
+            TypeError::InfiniteType { var, ty, span } => TypeError::InfiniteType {
+                var,
+                ty: self.resolve_type_names(&ty),
+                span,
+            },
             other => other,
         }
     }
@@ -412,6 +435,12 @@ pub enum TypeError {
     TryInNonPropagatingContext { return_ty: Type, span: Span },
     #[error("try can only be used within a function")]
     TryOutsideFunction { span: Span },
+    #[error("missing return statement")]
+    MissingReturn {
+        function_name: String,
+        expected_type: Type,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -650,6 +679,8 @@ pub struct TypeChecker {
     current_return_type: Option<Type>,
     /// Current Self type (inside extend blocks).
     current_self_type: Option<Type>,
+    /// Scope stack for local variable types (innermost scope last).
+    local_types: Vec<HashMap<String, Type>>,
 }
 
 impl TypeChecker {
@@ -664,6 +695,7 @@ impl TypeChecker {
             errors: Vec::new(),
             current_return_type: None,
             current_self_type: None,
+            local_types: Vec::new(),
         }
     }
 
@@ -791,18 +823,23 @@ impl TypeChecker {
     }
 
     fn method_signature(&self, m: &FnDecl) -> MethodSig {
-        let has_self = m.params.iter().any(|p| p.name == "self");
-        let self_param = if has_self {
-            SelfParam::Value
-        } else {
-            SelfParam::None
+        let self_param_decl = m.params.iter().find(|p| p.name == "self");
+        let self_param = match self_param_decl {
+            Some(p) if p.is_take => SelfParam::Take,
+            Some(p) if p.ty == "read Self" || p.ty == "read" => SelfParam::Read,
+            Some(_) => SelfParam::Value,
+            None => SelfParam::None,
         };
 
         let params: Vec<_> = m
             .params
             .iter()
             .filter(|p| p.name != "self")
-            .map(|p| parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error))
+            .map(|p| {
+                let ty = parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error);
+                let mode = if p.is_take { ParamMode::Take } else { ParamMode::Default };
+                (ty, mode)
+            })
             .collect();
 
         let ret = m
@@ -825,25 +862,25 @@ impl TypeChecker {
 
     fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
-            DeclKind::Fn(f) => self.check_fn(f),
+            DeclKind::Fn(f) => self.check_fn(f, decl.span),
             DeclKind::Struct(s) => {
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
                 for method in &s.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, decl.span);
                 }
                 self.current_self_type = None;
             }
             DeclKind::Enum(e) => {
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, decl.span);
                 }
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
                 self.current_self_type = self.types.get_type_id(&i.target_ty).map(Type::Named);
                 for method in &i.methods {
-                    self.check_fn(method);
+                    self.check_fn(method, decl.span);
                 }
                 self.current_self_type = None;
             }
@@ -873,7 +910,285 @@ impl TypeChecker {
         }
     }
 
-    fn check_fn(&mut self, f: &FnDecl) {
+    // ------------------------------------------------------------------------
+    // Scope Management
+    // ------------------------------------------------------------------------
+
+    fn push_scope(&mut self) {
+        self.local_types.push(HashMap::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.local_types.pop();
+    }
+
+    fn define_local(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, ty);
+        }
+    }
+
+    fn lookup_local(&self, name: &str) -> Option<Type> {
+        for scope in self.local_types.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty.clone());
+            }
+        }
+        None
+    }
+
+    // ------------------------------------------------------------------------
+    // Pattern Checking
+    // ------------------------------------------------------------------------
+
+    /// Check a pattern against a scrutinee type, returning bindings introduced.
+    fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
+        match pattern {
+            Pattern::Wildcard => vec![],
+
+            Pattern::Ident(name) => {
+                // Bind the name to the scrutinee type
+                vec![(name.clone(), scrutinee_ty.clone())]
+            }
+
+            Pattern::Literal(expr) => {
+                // Infer the literal's type and constrain it to match scrutinee
+                let lit_ty = self.infer_expr(expr);
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    scrutinee_ty.clone(),
+                    lit_ty,
+                    span,
+                ));
+                vec![]
+            }
+
+            Pattern::Constructor { name, fields } => {
+                self.check_constructor_pattern(name, fields, scrutinee_ty, span)
+            }
+
+            Pattern::Struct { name, fields, .. } => {
+                // Look up the struct type
+                if let Some(type_id) = self.types.get_type_id(name) {
+                    // Constrain scrutinee to be this struct type
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        scrutinee_ty.clone(),
+                        Type::Named(type_id),
+                        span,
+                    ));
+                    // Check each field pattern
+                    let struct_fields = self.types.get(type_id).and_then(|def| {
+                        if let TypeDef::Struct { fields, .. } = def {
+                            Some(fields.clone())
+                        } else {
+                            None
+                        }
+                    });
+                    let mut bindings = vec![];
+                    if let Some(struct_fields) = struct_fields {
+                        for (field_name, field_pattern) in fields {
+                            let field_ty = struct_fields
+                                .iter()
+                                .find(|(n, _)| n == field_name)
+                                .map(|(_, t)| t.clone())
+                                .unwrap_or_else(|| {
+                                    self.errors.push(TypeError::NoSuchField {
+                                        ty: Type::Named(type_id),
+                                        field: field_name.clone(),
+                                        span,
+                                    });
+                                    Type::Error
+                                });
+                            bindings.extend(self.check_pattern(field_pattern, &field_ty, span));
+                        }
+                    }
+                    bindings
+                } else {
+                    // Unknown struct - still check sub-patterns with fresh vars
+                    let mut bindings = vec![];
+                    for (_, field_pattern) in fields {
+                        let fresh = self.ctx.fresh_var();
+                        bindings.extend(self.check_pattern(field_pattern, &fresh, span));
+                    }
+                    bindings
+                }
+            }
+
+            Pattern::Tuple(patterns) => {
+                // Scrutinee should be a tuple with matching arity
+                let elem_types: Vec<_> = patterns.iter().map(|_| self.ctx.fresh_var()).collect();
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    scrutinee_ty.clone(),
+                    Type::Tuple(elem_types.clone()),
+                    span,
+                ));
+                let mut bindings = vec![];
+                for (pat, elem_ty) in patterns.iter().zip(elem_types.iter()) {
+                    bindings.extend(self.check_pattern(pat, elem_ty, span));
+                }
+                bindings
+            }
+
+            Pattern::Or(alternatives) => {
+                // Each alternative should bind the same names with the same types
+                // Check the first one and use its bindings
+                if let Some(first) = alternatives.first() {
+                    let bindings = self.check_pattern(first, scrutinee_ty, span);
+                    // Check remaining alternatives for consistency
+                    for alt in &alternatives[1..] {
+                        let _alt_bindings = self.check_pattern(alt, scrutinee_ty, span);
+                        // TODO: verify same names and compatible types
+                    }
+                    bindings
+                } else {
+                    vec![]
+                }
+            }
+        }
+    }
+
+    /// Check a constructor pattern like Ok(v), Some(v), Err(e), None, or user-defined variants.
+    fn check_constructor_pattern(
+        &mut self,
+        name: &str,
+        fields: &[Pattern],
+        scrutinee_ty: &Type,
+        span: Span,
+    ) -> Vec<(String, Type)> {
+        let resolved_scrutinee = self.ctx.apply(scrutinee_ty);
+
+        // Handle builtin Result variants
+        match name {
+            "Ok" => {
+                match &resolved_scrutinee {
+                    Type::Result { ok, .. } => {
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], ok, span);
+                        }
+                    }
+                    Type::Var(_) => {
+                        // Scrutinee type not yet known — constrain it to be Result<T, E>
+                        let ok_ty = self.ctx.fresh_var();
+                        let err_ty = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            scrutinee_ty.clone(),
+                            Type::Result {
+                                ok: Box::new(ok_ty.clone()),
+                                err: Box::new(err_ty),
+                            },
+                            span,
+                        ));
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], &ok_ty, span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "Err" => {
+                match &resolved_scrutinee {
+                    Type::Result { err, .. } => {
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], err, span);
+                        }
+                    }
+                    Type::Var(_) => {
+                        let ok_ty = self.ctx.fresh_var();
+                        let err_ty = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            scrutinee_ty.clone(),
+                            Type::Result {
+                                ok: Box::new(ok_ty),
+                                err: Box::new(err_ty.clone()),
+                            },
+                            span,
+                        ));
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], &err_ty, span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "Some" => {
+                match &resolved_scrutinee {
+                    Type::Option(inner) => {
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], inner, span);
+                        }
+                    }
+                    Type::Var(_) => {
+                        let inner_ty = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            scrutinee_ty.clone(),
+                            Type::Option(Box::new(inner_ty.clone())),
+                            span,
+                        ));
+                        if fields.len() == 1 {
+                            return self.check_pattern(&fields[0], &inner_ty, span);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            "None" => {
+                // None has no fields — constrain scrutinee to be Option<T>
+                if fields.is_empty() {
+                    if !matches!(&resolved_scrutinee, Type::Option(_) | Type::Var(_)) {
+                        let inner_ty = self.ctx.fresh_var();
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            scrutinee_ty.clone(),
+                            Type::Option(Box::new(inner_ty)),
+                            span,
+                        ));
+                    }
+                    return vec![];
+                }
+            }
+            _ => {}
+        }
+
+        // User-defined enum variant — look up via scrutinee type
+        match &resolved_scrutinee {
+            Type::Named(type_id) => {
+                let variant_fields = self.types.get(*type_id).and_then(|def| {
+                    if let TypeDef::Enum { variants, .. } = def {
+                        variants.iter()
+                            .find(|(n, _)| n == name)
+                            .map(|(_, f)| f.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(variant_field_types) = variant_fields {
+                    if fields.len() != variant_field_types.len() {
+                        self.errors.push(TypeError::ArityMismatch {
+                            expected: variant_field_types.len(),
+                            found: fields.len(),
+                            span,
+                        });
+                        return vec![];
+                    }
+                    let mut bindings = vec![];
+                    for (pat, field_ty) in fields.iter().zip(variant_field_types.iter()) {
+                        bindings.extend(self.check_pattern(pat, field_ty, span));
+                    }
+                    return bindings;
+                }
+            }
+            _ => {}
+        }
+
+        // Fallback: check sub-patterns with fresh type vars
+        let mut bindings = vec![];
+        for pat in fields {
+            let fresh = self.ctx.fresh_var();
+            bindings.extend(self.check_pattern(pat, &fresh, span));
+        }
+        bindings
+    }
+
+    fn check_fn(&mut self, f: &FnDecl, fn_span: Span) {
         // Set up return type
         let ret_ty = f
             .ret_ty
@@ -882,16 +1197,17 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
         self.current_return_type = Some(ret_ty);
 
-        // Register parameter types
+        // Push function scope and register parameter types
+        self.push_scope();
         for param in &f.params {
             if param.name == "self" {
+                if let Some(self_ty) = &self.current_self_type {
+                    self.define_local("self".to_string(), self_ty.clone());
+                }
                 continue;
             }
             if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
-                // Find the symbol for this parameter and record its type
-                // The name resolution should have created a symbol for it
-                // For now we just parse and validate the type
-                let _ = ty;
+                self.define_local(param.name.clone(), ty);
             }
         }
 
@@ -900,7 +1216,68 @@ impl TypeChecker {
             self.check_stmt(stmt);
         }
 
+        // Check for missing return statement
+        let ret_ty = self.current_return_type.as_ref().unwrap();
+        if !matches!(ret_ty, Type::Unit | Type::Never) {
+            if !self.has_explicit_return(&f.body) {
+                // Point to closing brace of function
+                let end_span = Span::new(fn_span.end - 1, fn_span.end);
+
+                self.errors.push(TypeError::MissingReturn {
+                    function_name: f.name.clone(),
+                    expected_type: ret_ty.clone(),
+                    span: end_span,
+                });
+            }
+        }
+
+        self.pop_scope();
         self.current_return_type = None;
+    }
+
+    fn has_explicit_return(&self, body: &[Stmt]) -> bool {
+        match body.last() {
+            Some(stmt) => self.stmt_always_returns(stmt),
+            None => false,
+        }
+    }
+
+    fn stmt_always_returns(&self, stmt: &Stmt) -> bool {
+        use rask_ast::stmt::StmtKind;
+
+        match &stmt.kind {
+            StmtKind::Return(_) => true,
+            StmtKind::Expr(expr) => self.expr_always_returns(expr),
+            _ => false,
+        }
+    }
+
+    fn expr_always_returns(&self, expr: &rask_ast::expr::Expr) -> bool {
+        use rask_ast::expr::ExprKind;
+
+        match &expr.kind {
+            // Block: check if last statement returns
+            ExprKind::Block(stmts) => {
+                stmts.last().map_or(false, |s| self.stmt_always_returns(s))
+            }
+            // Match: check if all arms return
+            ExprKind::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.expr_always_returns(&arm.body))
+            }
+            // If with else: check if both branches return
+            ExprKind::If { then_branch, else_branch, .. } => {
+                else_branch.as_ref().map_or(false, |else_br| {
+                    self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
+                })
+            }
+            // IfLet with else: check if both branches return
+            ExprKind::IfLet { then_branch, else_branch, .. } => {
+                else_branch.as_ref().map_or(false, |else_br| {
+                    self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
+                })
+            }
+            _ => false,
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -912,22 +1289,32 @@ impl TypeChecker {
             StmtKind::Expr(expr) => {
                 self.infer_expr(expr);
             }
-            StmtKind::Let { name: _, ty, init } => {
+            StmtKind::Let { name, ty, init } => {
                 let init_ty = self.infer_expr(init);
                 if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         self.ctx
-                            .add_constraint(TypeConstraint::Equal(declared, init_ty, stmt.span));
+                            .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                        self.define_local(name.clone(), declared);
+                    } else {
+                        self.define_local(name.clone(), init_ty);
                     }
+                } else {
+                    self.define_local(name.clone(), init_ty);
                 }
             }
-            StmtKind::Const { name: _, ty, init } => {
+            StmtKind::Const { name, ty, init } => {
                 let init_ty = self.infer_expr(init);
                 if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         self.ctx
-                            .add_constraint(TypeConstraint::Equal(declared, init_ty, stmt.span));
+                            .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                        self.define_local(name.clone(), declared);
+                    } else {
+                        self.define_local(name.clone(), init_ty);
                     }
+                } else {
+                    self.define_local(name.clone(), init_ty);
                 }
             }
             StmtKind::Assign { target, value } => {
@@ -955,15 +1342,25 @@ impl TypeChecker {
                 let cond_ty = self.infer_expr(cond);
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, cond_ty, stmt.span));
+                self.push_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
             }
-            StmtKind::For { iter, body, .. } => {
-                self.infer_expr(iter);
+            StmtKind::For { binding, iter, body, .. } => {
+                let iter_ty = self.infer_expr(iter);
+                self.push_scope();
+                // Infer the element type from the iterator
+                let elem_ty = match &iter_ty {
+                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
+                    _ => self.ctx.fresh_var(),
+                };
+                self.define_local(binding.clone(), elem_ty);
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
             }
             StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {}
             StmtKind::Ensure { body, catch } => {
@@ -984,16 +1381,24 @@ impl TypeChecker {
             StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
                 self.infer_expr(init);
             }
-            StmtKind::WhileLet { expr, body, .. } => {
-                self.infer_expr(expr);
+            StmtKind::WhileLet { pattern, expr, body } => {
+                let value_ty = self.infer_expr(expr);
+                self.push_scope();
+                let bindings = self.check_pattern(pattern, &value_ty, stmt.span);
+                for (name, ty) in bindings {
+                    self.define_local(name, ty);
+                }
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
             }
             StmtKind::Loop { body, .. } => {
+                self.push_scope();
                 for s in body {
                     self.check_stmt(s);
                 }
+                self.pop_scope();
             }
         }
     }
@@ -1012,8 +1417,11 @@ impl TypeChecker {
             ExprKind::Bool(_) => Type::Bool,
 
             // Identifier
-            ExprKind::Ident(_) => {
-                if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
+            ExprKind::Ident(name) => {
+                // Check local scope first (for pattern bindings, let/const)
+                if let Some(ty) = self.lookup_local(name) {
+                    ty
+                } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
                 } else {
                     Type::Error
@@ -1083,13 +1491,20 @@ impl TypeChecker {
 
             // If-let expression
             ExprKind::IfLet {
+                pattern,
                 then_branch,
                 else_branch,
                 expr: value,
-                ..
             } => {
-                self.infer_expr(value);
+                let value_ty = self.infer_expr(value);
+                // Push scope for pattern bindings in then branch
+                self.push_scope();
+                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                for (name, ty) in bindings {
+                    self.define_local(name, ty);
+                }
                 let then_ty = self.infer_expr(then_branch);
+                self.pop_scope();
                 if let Some(else_branch) = else_branch {
                     let else_ty = self.infer_expr(else_branch);
                     self.ctx.add_constraint(TypeConstraint::Equal(
@@ -1103,10 +1518,26 @@ impl TypeChecker {
 
             // Match expression
             ExprKind::Match { scrutinee, arms } => {
-                self.infer_expr(scrutinee);
+                let scrutinee_ty = self.infer_expr(scrutinee);
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
+                    // Push scope for this arm's pattern bindings
+                    self.push_scope();
+                    let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
+                    for (name, ty) in bindings {
+                        self.define_local(name, ty);
+                    }
+                    // Check guard if present
+                    if let Some(guard) = &arm.guard {
+                        let guard_ty = self.infer_expr(guard);
+                        self.ctx.add_constraint(TypeConstraint::Equal(
+                            Type::Bool,
+                            guard_ty,
+                            expr.span,
+                        ));
+                    }
                     let arm_ty = self.infer_expr(&arm.body);
+                    self.pop_scope();
                     let resolved_arm_ty = self.ctx.apply(&arm_ty);
                     // Skip Never arms - they diverge and don't constrain the result type
                     if !matches!(resolved_arm_ty, Type::Never) {
@@ -1455,14 +1886,13 @@ impl TypeChecker {
         // Check for builtin function calls by name
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
-                // Builtins accept any arguments and return Unit (or Never for panic)
                 for arg in args {
                     self.infer_expr(arg);
                 }
-                return if name == "panic" {
-                    Type::Never
-                } else {
-                    Type::Unit
+                return match name.as_str() {
+                    "panic" => Type::Never,
+                    "format" => Type::String,
+                    _ => Type::Unit,
                 };
             }
         }
@@ -1519,7 +1949,7 @@ impl TypeChecker {
 
     /// Check if a name is a built-in function.
     fn is_builtin_function(&self, name: &str) -> bool {
-        matches!(name, "println" | "print" | "panic" | "assert" | "debug")
+        matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format")
     }
 
     fn check_method_call(
@@ -1666,8 +2096,9 @@ impl TypeChecker {
                                         let ret = Type::Option(Box::new(t_var));
                                         (params, ret)
                                     } else {
-                                        // User-defined enum: use fields as-is
-                                        (fields, Type::Named(id))
+                                        // User-defined enum: instantiate any TypeVars with fresh vars
+                                        let instantiated = self.instantiate_type_vars(&fields);
+                                        (instantiated, Type::Named(id))
                                     };
 
                                     return Type::Fn {
@@ -1880,7 +2311,7 @@ impl TypeChecker {
             (_, Type::Never) => Ok(false),
 
             // Dual representation: Type::Result with Type::Named(result_type_id)
-            (Type::Result { ok, err }, Type::Named(id)) | (Type::Named(id), Type::Result { ok, err }) => {
+            (Type::Result { ok: _, err: _ }, Type::Named(id)) | (Type::Named(id), Type::Result { ok: _, err: _ }) => {
                 if Some(*id) == self.types.get_result_type_id() {
                     // These are compatible - Result<T,E> is the same as the Result TypeDef
                     // We need to bind any TypeVars in the Named type based on the Result type args
@@ -1896,7 +2327,7 @@ impl TypeChecker {
             }
 
             // Dual representation: Type::Option with Type::Named(option_type_id)
-            (Type::Option(inner), Type::Named(id)) | (Type::Named(id), Type::Option(inner)) => {
+            (Type::Option(_inner), Type::Named(id)) | (Type::Named(id), Type::Option(_inner)) => {
                 if Some(*id) == self.types.get_option_type_id() {
                     // These are compatible - Option<T> is the same as the Option TypeDef
                     Ok(false)
@@ -2071,8 +2502,8 @@ impl TypeChecker {
                     }
 
                     let mut progress = false;
-                    for (param, arg) in method_sig.params.iter().zip(args.iter()) {
-                        if self.unify(param, arg, span)? {
+                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
+                        if self.unify(param_ty, arg, span)? {
                             progress = true;
                         }
                     }
@@ -2093,11 +2524,14 @@ impl TypeChecker {
                     });
 
                     if let Some(mut fields) = variant {
-                        // For builtin enums (Result, Option), instantiate generic type parameters
+                        // Instantiate generic type parameters
                         if Some(*type_id) == self.types.get_result_type_id()
                             || Some(*type_id) == self.types.get_option_type_id()
                         {
                             fields = self.instantiate_builtin_enum_variant(*type_id, &method, &fields);
+                        } else {
+                            // User-defined enum: instantiate any TypeVars with fresh vars
+                            fields = self.instantiate_type_vars(&fields);
                         }
 
                         if fields.len() != args.len() {
@@ -2185,6 +2619,55 @@ impl TypeChecker {
             .iter()
             .map(|ty| self.apply_type_var_substitution(ty, &substitution))
             .collect()
+    }
+
+    /// Replace any TypeVar(n) references in a list of types with fresh inference variables.
+    /// Used for user-defined generic enums where TypeVar(0), TypeVar(1), etc. represent
+    /// the enum's generic type parameters.
+    fn instantiate_type_vars(&mut self, types: &[Type]) -> Vec<Type> {
+        let mut subst: HashMap<TypeVarId, Type> = HashMap::new();
+        // First pass: collect all TypeVar IDs and map to fresh vars
+        for ty in types {
+            self.collect_type_vars(ty, &mut subst);
+        }
+        // Second pass: apply substitution
+        types
+            .iter()
+            .map(|ty| self.apply_type_var_substitution(ty, &subst))
+            .collect()
+    }
+
+    /// Recursively find all TypeVar references and assign fresh inference variables.
+    fn collect_type_vars(&mut self, ty: &Type, subst: &mut HashMap<TypeVarId, Type>) {
+        match ty {
+            Type::Var(id) => {
+                subst.entry(*id).or_insert_with(|| self.ctx.fresh_var());
+            }
+            Type::Tuple(elems) => {
+                for e in elems {
+                    self.collect_type_vars(e, subst);
+                }
+            }
+            Type::Array { elem, .. } | Type::Slice(elem) | Type::Option(elem) => {
+                self.collect_type_vars(elem, subst);
+            }
+            Type::Result { ok, err } => {
+                self.collect_type_vars(ok, subst);
+                self.collect_type_vars(err, subst);
+            }
+            Type::Generic { args, .. } => {
+                for a in args {
+                    self.collect_type_vars(a, subst);
+                }
+            }
+            Type::Fn { params, ret } => {
+                for p in params {
+                    self.collect_type_vars(p, subst);
+                }
+                self.collect_type_vars(ret, subst);
+            }
+            _ => {}
+        }
     }
 
     /// Apply type variable substitution to a type.

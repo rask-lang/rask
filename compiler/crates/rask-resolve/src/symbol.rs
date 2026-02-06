@@ -83,6 +83,18 @@ pub enum BuiltinTypeKind {
     Error,
     /// Channel<T> - message channel
     Channel,
+    /// Pool<T> - arena allocator for graph structures
+    Pool,
+    /// Atomic<T> - atomic operations
+    Atomic,
+    /// Shared<T> - shared state with interior mutability
+    Shared,
+    /// Owned<T> - heap-allocated owned value
+    Owned,
+    /// SpscRingBuffer<T> - single-producer single-consumer lock-free queue
+    SpscRingBuffer,
+    /// f32x8 - SIMD vector type (8 x f32)
+    F32x8,
 }
 
 /// Built-in function kinds.
@@ -94,6 +106,8 @@ pub enum BuiltinFunctionKind {
     Print,
     /// panic - abort with message
     Panic,
+    /// format - string formatting
+    Format,
 }
 
 /// Built-in module kinds (stdlib modules).
@@ -109,6 +123,22 @@ pub enum BuiltinModuleKind {
     Cli,
     /// std - standard library utilities
     Std,
+    /// json - JSON parsing and encoding
+    Json,
+    /// random - random number generation
+    Random,
+    /// time - time and duration utilities
+    Time,
+    /// math - mathematical functions
+    Math,
+    /// path - path manipulation
+    Path,
+    /// os - operating system utilities
+    Os,
+    /// net - networking
+    Net,
+    /// core - core utilities and constants
+    Core,
 }
 
 /// A declared symbol.

@@ -1,0 +1,35 @@
+// Minimal test for semicolon in block within match arm
+
+enum Token {
+    Plus,
+    Minus,
+}
+
+struct Lexer {
+    pos: usize
+}
+
+extend Lexer {
+    func advance(self) -> char? {
+        self.pos += 1
+        Some('x')
+    }
+}
+
+func tokenize() -> Token {
+    const lexer = Lexer { pos: 0 as usize }
+    const c = 'x'
+
+    const token = match c {
+        'x' => { lexer.advance(); Token.Plus }
+        _ => Token.Minus,
+    }
+
+    token
+}
+
+@entry
+func main() {
+    const t = tokenize()
+    println("Token created successfully")
+}

@@ -2,6 +2,7 @@
 // Demonstrates: Pool pattern, handle-based refs, traits, threading, time/delta, game systems
 
 import time
+import random
 
 // Trait for updatable components
 trait Updatable {
@@ -73,7 +74,7 @@ extend GameState {
             entity_type: EntityType.Player,
         })
 
-        Ok(GameState {
+        return Ok(GameState {
             entities: entities,
             player: Some(player_handle),
             score: 0,
@@ -82,7 +83,7 @@ extend GameState {
     }
 
     func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {
-        self.entities.insert(Entity {
+        return self.entities.insert(Entity {
             position: Position { x: x, y: y },
             velocity: Velocity { dx: -50.0, dy: 0.0 },
             health: Health { current: 20, max: 20 },
@@ -93,7 +94,7 @@ extend GameState {
     }
 
     func spawn_projectile(self, x: f32, y: f32, dx: f32, dy: f32) -> Handle<Entity> or Error {
-        self.entities.insert(Entity {
+        return self.entities.insert(Entity {
             position: Position { x: x, y: y },
             velocity: Velocity { dx: dx, dy: dy },
             health: Health { current: 1, max: 1 },
@@ -200,9 +201,9 @@ func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
         // Spawn enemy at right edge with random y
         const y = (random.f32() * 500.0) + 50.0
         state.spawn_enemy(850.0, y).ok()
-        0.0  // Reset timer
+        return 0.0  // Reset timer
     } else {
-        time_since_last_spawn
+        return time_since_last_spawn
     }
 }
 
@@ -305,4 +306,5 @@ func main() -> () or Error {
         }
 
     }
+    return ()
 }

@@ -57,6 +57,7 @@ Quick navigation by task or concept:
 | "How do I..." | See |
 |---------------|-----|
 | Call C code | [structure/c-interop.md](structure/c-interop.md) |
+| Call Rust code (via C ABI) | [structure/build.md](structure/build.md) (compile_rust) |
 | Use raw pointers | [memory/unsafe.md](memory/unsafe.md) |
 | Run code at compile time | [control/comptime.md](control/comptime.md) |
 | Work with binary data | [types/binary.md](types/binary.md), [stdlib/bits.md](stdlib/bits.md) |
@@ -154,6 +155,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | Spec | Description |
 |------|-------------|
 | [generation-coalescing.md](compiler/generation-coalescing.md) | Redundant generation check elimination |
+| [semantic-hash-caching.md](compiler/semantic-hash-caching.md) | Incremental compilation, semantic hashing for generics |
 
 ---
 

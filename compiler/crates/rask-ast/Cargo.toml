@@ -3,4 +3,8 @@ name = "rask-ast"
 version.workspace = true
 edition.workspace = true
 
+[features]
+serde = ["dep:serde"]
+
 [dependencies]
+serde = { version = "1", features = ["derive"], optional = true }

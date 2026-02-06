@@ -268,7 +268,7 @@ fn run_run_test(test: SpecTest, expected: &str) -> TestResult {
 
     match interp.run(&parse_result.decls) {
         Ok(_) => {
-            let actual = output_buffer.borrow();
+            let actual = output_buffer.lock().unwrap();
             let actual_trimmed = actual.trim_end();
             let expected_trimmed = expected.trim_end();
 
