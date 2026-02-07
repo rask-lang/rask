@@ -72,7 +72,7 @@ jobs:
     - name: Copy Playground to Build
       run: |
         mkdir -p docs/build/playground
-        cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/build/playground/
+        cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/playground/
         cp -r docs/playground/pkg docs/build/playground/
 
     - name: Deploy to GitHub Pages
