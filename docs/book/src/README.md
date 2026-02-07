@@ -40,6 +40,7 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 
 ## Get Started
 
+- [Try in Playground](../playground/) - Run Rask code in your browser
 - [Installation](getting-started/installation.md)
 - [First Program](getting-started/first-program.md)
 - [Language Guide](guide/README.md)

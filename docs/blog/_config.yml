@@ -11,6 +11,8 @@ url: "https://rask-lang.dev"
 # Build settings
 markdown: kramdown
 theme: minima
+minima:
+  skin: auto  # auto switches based on system preference
 plugins:
   - jekyll-feed
   - jekyll-seo-tag
