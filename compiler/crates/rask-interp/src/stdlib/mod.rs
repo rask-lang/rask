@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Standard library module dispatch.
 //!
 //! Routes `module.method()` calls to the appropriate stdlib module handler.

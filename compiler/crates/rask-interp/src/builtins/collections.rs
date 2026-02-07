@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on collection types: Vec, Pool, Handle, and type constructors.
 
 use std::collections::HashMap;
@@ -6,10 +7,20 @@ use std::sync::{Arc, Mutex, mpsc};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{PoolData, TypeConstructorKind, Value};
 
+/// Helper function to check if a value is truthy.
+fn is_truthy(val: &Value) -> bool {
+    match val {
+        Value::Bool(b) => *b,
+        Value::Unit => false,
+        Value::Int(0) => false,
+        _ => true,
+    }
+}
+
 impl Interpreter {
     /// Handle Vec method calls.
     pub(crate) fn call_vec_method(
-        &self,
+        &mut self,
         v: &Arc<Mutex<Vec<Value>>>,
         method: &str,
         args: Vec<Value>,
@@ -24,7 +35,21 @@ impl Interpreter {
                     fields: vec![Value::Unit],
                 })
             }
-            "pop" => Ok(v.lock().unwrap().pop().unwrap_or(Value::Unit)),
+            "pop" => {
+                let result = v.lock().unwrap().pop();
+                match result {
+                    Some(val) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![val],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
             "len" => Ok(Value::Int(v.lock().unwrap().len() as i64)),
             "get" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -149,6 +174,280 @@ impl Interpreter {
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(chunks))))
             }
+            "filter" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                let mut filtered = Vec::new();
+                for item in vec.iter() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if is_truthy(&result) {
+                        filtered.push(item.clone());
+                    }
+                }
+                Ok(Value::Vec(Arc::new(Mutex::new(filtered))))
+            }
+            "map" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                let mut mapped = Vec::new();
+                for item in vec.iter() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    mapped.push(result);
+                }
+                Ok(Value::Vec(Arc::new(Mutex::new(mapped))))
+            }
+            "flat_map" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                let mut result = Vec::new();
+                for item in vec.iter() {
+                    let mapped = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if let Value::Vec(inner) = mapped {
+                        result.extend(inner.lock().unwrap().clone());
+                    } else {
+                        result.push(mapped);
+                    }
+                }
+                Ok(Value::Vec(Arc::new(Mutex::new(result))))
+            }
+            "fold" => {
+                let init = args.get(0).cloned().unwrap_or(Value::Unit);
+                let closure = args.get(1).cloned().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                let mut acc = init;
+                for item in vec.iter() {
+                    acc = self.call_value(closure.clone(), vec![acc, item.clone()])?;
+                }
+                Ok(acc)
+            }
+            "reduce" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                if vec.is_empty() {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    });
+                }
+                let mut acc = vec[0].clone();
+                for item in vec.iter().skip(1) {
+                    acc = self.call_value(closure.clone(), vec![acc, item.clone()])?;
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![acc],
+                })
+            }
+            "enumerate" => {
+                let vec = v.lock().unwrap();
+                let enumerated: Vec<Value> = vec
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        Value::Vec(Arc::new(Mutex::new(vec![Value::Int(i as i64), item.clone()])))
+                    })
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(enumerated))))
+            }
+            "zip" => {
+                if let Some(Value::Vec(other)) = args.first() {
+                    let vec1 = v.lock().unwrap();
+                    let vec2 = other.lock().unwrap();
+                    let zipped: Vec<Value> = vec1
+                        .iter()
+                        .zip(vec2.iter())
+                        .map(|(a, b)| {
+                            Value::Vec(Arc::new(Mutex::new(vec![a.clone(), b.clone()])))
+                        })
+                        .collect();
+                    Ok(Value::Vec(Arc::new(Mutex::new(zipped))))
+                } else {
+                    Err(RuntimeError::TypeError("zip requires a Vec argument".to_string()))
+                }
+            }
+            "limit" => {
+                let n = self.expect_int(&args, 0)? as usize;
+                let vec = v.lock().unwrap();
+                let taken: Vec<Value> = vec.iter().take(n).cloned().collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(taken))))
+            }
+            "flatten" => {
+                let vec = v.lock().unwrap();
+                let mut flattened = Vec::new();
+                for item in vec.iter() {
+                    if let Value::Vec(inner) = item {
+                        flattened.extend(inner.lock().unwrap().clone());
+                    } else {
+                        flattened.push(item.clone());
+                    }
+                }
+                Ok(Value::Vec(Arc::new(Mutex::new(flattened))))
+            }
+            "sort" => {
+                let mut vec = v.lock().unwrap();
+                vec.sort_by(|a, b| {
+                    Self::value_cmp(a, b).unwrap_or(std::cmp::Ordering::Equal)
+                });
+                Ok(Value::Unit)
+            }
+            "sort_by" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut vec = v.lock().unwrap();
+                // Custom comparison via closure
+                vec.sort_by(|a, b| {
+                    match self.call_value(closure.clone(), vec![a.clone(), b.clone()]) {
+                        Ok(Value::Int(n)) if n < 0 => std::cmp::Ordering::Less,
+                        Ok(Value::Int(n)) if n > 0 => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                });
+                Ok(Value::Unit)
+            }
+            "any" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                for item in vec.iter() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if is_truthy(&result) {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                Ok(Value::Bool(false))
+            }
+            "all" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                for item in vec.iter() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if !is_truthy(&result) {
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                Ok(Value::Bool(true))
+            }
+            "find" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                for item in vec.iter() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if is_truthy(&result) {
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![item.clone()],
+                        });
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
+            }
+            "position" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let vec = v.lock().unwrap();
+                for (i, item) in vec.iter().enumerate() {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    if is_truthy(&result) {
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![Value::Int(i as i64)],
+                        });
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
+            }
+            "dedup" => {
+                let mut vec = v.lock().unwrap();
+                vec.dedup_by(|a, b| Self::value_eq(a, b));
+                Ok(Value::Unit)
+            }
+            "sum" => {
+                let vec = v.lock().unwrap();
+                let mut sum = 0i64;
+                let mut float_sum = 0.0f64;
+                let mut is_float = false;
+                for item in vec.iter() {
+                    match item {
+                        Value::Int(n) => {
+                            if is_float {
+                                float_sum += *n as f64;
+                            } else {
+                                sum += n;
+                            }
+                        }
+                        Value::Float(f) => {
+                            if !is_float {
+                                float_sum = sum as f64 + f;
+                                is_float = true;
+                            } else {
+                                float_sum += f;
+                            }
+                        }
+                        _ => {
+                            return Err(RuntimeError::TypeError(format!(
+                                "sum requires numeric values, got {}",
+                                item.type_name()
+                            )))
+                        }
+                    }
+                }
+                if is_float {
+                    Ok(Value::Float(float_sum))
+                } else {
+                    Ok(Value::Int(sum))
+                }
+            }
+            "min" => {
+                let vec = v.lock().unwrap();
+                if vec.is_empty() {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    });
+                }
+                let mut min = vec[0].clone();
+                for item in vec.iter().skip(1) {
+                    if let Some(std::cmp::Ordering::Less) = Self::value_cmp(item, &min) {
+                        min = item.clone();
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![min],
+                })
+            }
+            "max" => {
+                let vec = v.lock().unwrap();
+                if vec.is_empty() {
+                    return Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    });
+                }
+                let mut max = vec[0].clone();
+                for item in vec.iter().skip(1) {
+                    if let Some(std::cmp::Ordering::Greater) = Self::value_cmp(item, &max) {
+                        max = item.clone();
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "Some".to_string(),
+                    fields: vec![max],
+                })
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
                 method: method.to_string(),
@@ -259,6 +558,23 @@ impl Interpreter {
                     .collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(handles))))
             }
+            "clone" => {
+                let pool = p.lock().unwrap();
+                // Create a new pool with a new ID (old handles won't work with clone)
+                let mut new_pool = PoolData::new();
+                // Clone all slots with their generations
+                for (gen, slot) in pool.slots.iter() {
+                    if let Some(val) = slot {
+                        new_pool.slots.push((*gen, Some(val.clone())));
+                    } else {
+                        new_pool.slots.push((*gen, None));
+                    }
+                }
+                // Clone free list and length
+                new_pool.free_list = pool.free_list.clone();
+                new_pool.len = pool.len;
+                Ok(Value::Pool(Arc::new(Mutex::new(new_pool))))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Pool".to_string(),
                 method: method.to_string(),
@@ -294,6 +610,139 @@ impl Interpreter {
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Handle".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Handle Map method calls.
+    pub(crate) fn call_map_method(
+        &self,
+        m: &Arc<Mutex<Vec<(Value, Value)>>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "insert" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let value = args.get(1).cloned().unwrap_or(Value::Unit);
+                let mut map = m.lock().unwrap();
+
+                // Check if key exists, update if so
+                for (k, v) in map.iter_mut() {
+                    if Self::value_eq(k, &key) {
+                        *v = value;
+                        return Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Unit],
+                        });
+                    }
+                }
+
+                // Key doesn't exist, insert new
+                map.push((key, value));
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                })
+            }
+            "get" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let map = m.lock().unwrap();
+
+                for (k, v) in map.iter() {
+                    if Self::value_eq(k, &key) {
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![v.clone()],
+                        });
+                    }
+                }
+
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
+            }
+            "remove" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let mut map = m.lock().unwrap();
+
+                let mut index = None;
+                for (i, (k, _)) in map.iter().enumerate() {
+                    if Self::value_eq(k, &key) {
+                        index = Some(i);
+                        break;
+                    }
+                }
+
+                if let Some(idx) = index {
+                    let (_, v) = map.remove(idx);
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    })
+                } else {
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    })
+                }
+            }
+            "contains" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let map = m.lock().unwrap();
+
+                for (k, _) in map.iter() {
+                    if Self::value_eq(k, &key) {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+
+                Ok(Value::Bool(false))
+            }
+            "keys" => {
+                let map = m.lock().unwrap();
+                let keys: Vec<Value> = map.iter().map(|(k, _)| k.clone()).collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(keys))))
+            }
+            "values" => {
+                let map = m.lock().unwrap();
+                let values: Vec<Value> = map.iter().map(|(_, v)| v.clone()).collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+            }
+            "len" => Ok(Value::Int(m.lock().unwrap().len() as i64)),
+            "is_empty" => Ok(Value::Bool(m.lock().unwrap().is_empty())),
+            "clear" => {
+                m.lock().unwrap().clear();
+                Ok(Value::Unit)
+            }
+            "iter" => {
+                let map = m.lock().unwrap();
+                let pairs: Vec<Value> = map
+                    .iter()
+                    .map(|(k, v)| {
+                        Value::Vec(Arc::new(Mutex::new(vec![k.clone(), v.clone()])))
+                    })
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+            }
+            "clone" => {
+                let map = m.lock().unwrap();
+                let cloned: Vec<(Value, Value)> = map
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                Ok(Value::Map(Arc::new(Mutex::new(cloned))))
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "Map".to_string(),
                 method: method.to_string(),
             }),
         }
@@ -348,6 +797,13 @@ impl Interpreter {
                     fields,
                     resource_id: None,
                 })
+            }
+            (TypeConstructorKind::Map, "new") => {
+                Ok(Value::Map(Arc::new(Mutex::new(Vec::new()))))
+            }
+            (TypeConstructorKind::Map, "with_capacity") => {
+                let cap = self.expect_int(&args, 0)? as usize;
+                Ok(Value::Map(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),

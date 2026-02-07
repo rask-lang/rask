@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Type system and type checker for the Rask language.
 //!
 //! Performs type inference and checking on the AST.

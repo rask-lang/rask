@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The interpreter implementation.
 //!
 //! This is a tree-walk interpreter that directly evaluates the AST.
@@ -773,6 +774,43 @@ impl Interpreter {
                         for item in items {
                             self.env.push_scope();
                             self.env.define(binding.clone(), item);
+                            match self.exec_stmts(body) {
+                                Ok(_) => {}
+                                Err(RuntimeError::Break) => {
+                                    self.env.pop_scope();
+                                    break;
+                                }
+                                Err(RuntimeError::Continue) => {
+                                    self.env.pop_scope();
+                                    continue;
+                                }
+                                Err(e) => {
+                                    self.env.pop_scope();
+                                    return Err(e);
+                                }
+                            }
+                            self.env.pop_scope();
+                        }
+                        Ok(Value::Unit)
+                    }
+                    Value::Pool(p) => {
+                        // Iterate over valid handles in the pool
+                        let pool = p.lock().unwrap();
+                        let pool_id = pool.pool_id;
+                        let handles: Vec<Value> = pool
+                            .valid_handles()
+                            .iter()
+                            .map(|(idx, gen)| Value::Handle {
+                                pool_id,
+                                index: *idx,
+                                generation: *gen,
+                            })
+                            .collect();
+                        drop(pool); // Release lock before iteration
+
+                        for handle in handles {
+                            self.env.push_scope();
+                            self.env.define(binding.clone(), handle);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(RuntimeError::Break) => {
@@ -1979,6 +2017,22 @@ impl Interpreter {
                 p1 == p2 && i1 == i2 && g1 == g2
             }
             _ => false,
+        }
+    }
+
+    /// Compare two runtime values for ordering.
+    /// Returns None if the values are not comparable.
+    pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        match (a, b) {
+            (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+            (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
+            (Value::String(a), Value::String(b)) => {
+                Some(a.lock().unwrap().cmp(&*b.lock().unwrap()))
+            }
+            (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
+            (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
+            _ => None, // Other types are not comparable
         }
     }
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Built-in type methods (always available, no import needed).
 //!
 //! Primitives, strings, collections, Result/Option, and threading types.
@@ -29,6 +30,7 @@ impl Interpreter {
             Value::Char(c) => return self.call_char_method(*c, method, &args),
             Value::String(s) => return self.call_string_method(s, method, args),
             Value::Vec(v) => return self.call_vec_method(v, method, args),
+            Value::Map(m) => return self.call_map_method(m, method, args),
             Value::Pool(p) => return self.call_pool_method(p, method, args),
             Value::Handle { pool_id, index, generation, .. } => {
                 return self.call_handle_method(&receiver, *pool_id, *index, *generation, method, args);
@@ -71,6 +73,11 @@ impl Interpreter {
         // Generic to_string fallback
         if method == "to_string" {
             return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
+        }
+
+        // Generic clone fallback (for types that don't have explicit clone)
+        if method == "clone" {
+            return Ok(receiver.clone());
         }
 
         // User-defined methods from extend blocks

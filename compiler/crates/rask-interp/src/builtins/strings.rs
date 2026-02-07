@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on the string type.
 
 use std::sync::{Arc, Mutex};
@@ -32,6 +33,11 @@ impl Interpreter {
             "push" => {
                 let c = self.expect_char(&args, 0)?;
                 s.lock().unwrap().push(c);
+                Ok(Value::Unit)
+            }
+            "push_str" => {
+                let other = self.expect_string(&args, 0)?;
+                s.lock().unwrap().push_str(&other);
                 Ok(Value::Unit)
             }
             "trim" => {

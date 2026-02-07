@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Trait checking for Rask.
 //!
 //! Implements structural trait satisfaction: a type satisfies a trait if it has

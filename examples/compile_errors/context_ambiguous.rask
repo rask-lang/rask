@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // ERROR: Multiple pools of the same type in scope
 //
 // This demonstrates the compile error when the compiler cannot uniquely

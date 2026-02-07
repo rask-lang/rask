@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Embedded Sensor Processor
 // Demonstrates: Lock-free atomics, unsafe hardware access, hard real-time deadlines,
 //               zero-allocation hot paths, interrupt handling, generics, SIMD

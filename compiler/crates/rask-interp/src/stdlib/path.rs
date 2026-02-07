@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 #![allow(dead_code)]
 //! Path module — Path type constructor and methods.
 

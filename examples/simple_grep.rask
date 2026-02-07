@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Simple grep - Pattern search using module syntax
 // Usage: rask run simple_grep.rask <pattern> <file>
 // Demonstrates: cli.args, fs.read_lines, string methods, match, Vec, loops

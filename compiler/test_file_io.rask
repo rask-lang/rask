@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Minimal test for semicolon in block within match arm
 
 enum Token {

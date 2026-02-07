@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // HTTP JSON API Server
 // Demonstrates: Concurrency (spawn, channels), JSON, error handling, with multitasking
 

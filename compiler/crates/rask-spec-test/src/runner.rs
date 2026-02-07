@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Run extracted spec tests through the compiler.
 
 use crate::extract::{Expectation, SpecTest};

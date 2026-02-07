@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Filesystem module methods (fs.*) and File/Metadata instance methods.
 
 use std::collections::HashMap;

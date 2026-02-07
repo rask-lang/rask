@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Conversions from compiler error types to `Diagnostic`.
 //!
 //! Both the CLI and LSP use these conversions. The `ToDiagnostic` trait

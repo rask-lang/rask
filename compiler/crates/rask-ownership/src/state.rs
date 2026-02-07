@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Ownership and borrowing state tracking.
 
 use rask_ast::Span;

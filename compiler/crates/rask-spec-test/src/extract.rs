@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Extract test cases from markdown spec files.
 //!
 //! Scans for HTML comment annotations followed by rask code blocks:

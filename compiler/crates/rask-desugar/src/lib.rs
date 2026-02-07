@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Operator desugaring pass for Rask.
 //!
 //! Transforms binary operators into method calls:

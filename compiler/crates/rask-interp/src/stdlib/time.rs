@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Time module methods, Duration/Instant instance and static methods.
 
 use crate::interp::{Interpreter, RuntimeError};

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Compile-time execution for Rask.
 //!
 //! Evaluates `comptime` blocks and functions at compile time.

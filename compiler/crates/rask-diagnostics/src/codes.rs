@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Error code registry.
 //!
 //! Maps error codes (E0001, E0308, etc.) to titles and categories.

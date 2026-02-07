@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // grep clone - Pattern Search CLI Tool
 // Demonstrates: CLI args, file I/O, string operations, iteration, error handling
 
@@ -52,6 +53,7 @@ func parse_args(args: Vec<string>) -> Options or GrepError {
                 print_usage()
                 std.exit(0)
             }
+            "--" => {}  // Skip arg delimiter
             _ => positional.push(arg.clone()),
         }
     }

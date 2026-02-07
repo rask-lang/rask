@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Error hints - suggestions for fixing common mistakes.
 //!
 //! Kept separate from the main parser to avoid clutter.

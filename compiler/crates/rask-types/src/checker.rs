@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Type checker implementation.
 
 use std::collections::HashMap;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on threading types: ThreadHandle, Sender, Receiver.
 
 use std::sync::{Arc, Mutex, mpsc};

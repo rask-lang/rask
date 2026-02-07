@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Abstract Syntax Tree types for the Rask language.
 //!
 //! This crate defines the AST nodes shared between the lexer, parser,

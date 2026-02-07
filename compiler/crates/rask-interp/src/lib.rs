@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Tree-walk interpreter for the Rask language.
 //!
 //! Executes the AST directly without compilation.

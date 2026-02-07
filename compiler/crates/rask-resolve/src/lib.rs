@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Name resolution for the Rask language.
 //!
 //! This crate resolves all identifiers in the AST to their declarations,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Scope tree for name resolution.
 
 use std::collections::HashMap;

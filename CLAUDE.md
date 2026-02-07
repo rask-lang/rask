@@ -7,6 +7,8 @@ Keep docs short. In chat, explain things to me—I'm not a language architect ex
 - Avoid pipes (`|`) and redirects (`2>&1`) in Bash commands - they break permission matching
 - Create test scripts in `/tmp`, not the main project folder
 
+add // SPDX-License-Identifier: (MIT OR Apache-2.0) to the top of all files
+
 ## Goal
 
 Systems language where **safety is invisible**. Eliminate abstraction tax, cover 80%+ of real use cases.

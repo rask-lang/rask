@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, Variant};

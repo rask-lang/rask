@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Runtime values.
 
 use std::collections::HashMap;
@@ -249,6 +250,8 @@ pub enum Value {
     Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
     /// Thread pool (from `with threading(n)`)
     ThreadPool(Arc<ThreadPoolInner>),
+    /// Map (key-value storage with Value keys)
+    Map(Arc<Mutex<Vec<(Value, Value)>>>),
 }
 
 impl Value {
@@ -281,6 +284,7 @@ impl Value {
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
             Value::ThreadPool(_) => "ThreadPool",
+            Value::Map(_) => "Map",
         }
     }
 
@@ -320,6 +324,13 @@ impl Value {
                     .map(|(k, v)| (k.clone(), v.deep_clone()))
                     .collect();
                 Value::Closure { params: params.clone(), body: body.clone(), captured_env: deep_env }
+            }
+            Value::Map(m) => {
+                let map = m.lock().unwrap();
+                let deep: Vec<(Value, Value)> = map.iter()
+                    .map(|(k, v)| (k.deep_clone(), v.deep_clone()))
+                    .collect();
+                Value::Map(Arc::new(Mutex::new(deep)))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),
@@ -492,6 +503,17 @@ impl fmt::Display for Value {
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),
             Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
+            Value::Map(m) => {
+                let map = m.lock().unwrap();
+                write!(f, "Map {{ ")?;
+                for (i, (k, v)) in map.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", k, v)?;
+                }
+                write!(f, " }}")
+            }
         }
     }
 }

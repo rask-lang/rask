@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Rich terminal formatter for diagnostics.
 //!
 //! Produces multi-line, color-coded error output similar to Rust/Flix:

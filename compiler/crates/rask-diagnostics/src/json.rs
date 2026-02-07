@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! JSON diagnostic output for machine consumption.
 //!
 //! Produces structured JSON that IDEs and AI agents can parse to understand

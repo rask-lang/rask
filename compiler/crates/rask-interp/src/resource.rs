@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Linear resource tracking for the interpreter.
 //!
 //! Tracks resource lifetimes to enforce that `@resource` types (like File)

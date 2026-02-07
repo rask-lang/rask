@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on primitive types: int, float, bool, char.
 
 use std::sync::{Arc, Mutex};

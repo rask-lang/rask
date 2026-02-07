@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Ownership and borrowing errors.
 
 use rask_ast::Span;

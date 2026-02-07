@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Rask compiler diagnostics.
 //!
 //! Provides a unified diagnostic type that both CLI and language server consume.

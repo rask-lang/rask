@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! OS module methods (os.*).
 //!
 //! Consolidates process/platform operations: env vars, args, exit, pid, platform info.

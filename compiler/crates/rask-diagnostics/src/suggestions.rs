@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Suggestion helpers for actionable error messages.
 //!
 //! Provides did-you-mean, type conversion hints, and ownership fix suggestions.

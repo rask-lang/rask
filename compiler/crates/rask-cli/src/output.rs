@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! CLI output formatting with colors and styling.
 //!
 //! Respects NO_COLOR and FORCE_COLOR environment variables.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Rask Standard Library
 //!
 //! This crate provides built-in functions, types, and methods for the Rask language.

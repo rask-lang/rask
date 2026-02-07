@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The lexer implementation using logos.
 
 use logos::Logos;

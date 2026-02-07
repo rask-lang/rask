@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Package discovery and management.
 //!
 //! A package in Rask is a directory containing `.rask` source files.

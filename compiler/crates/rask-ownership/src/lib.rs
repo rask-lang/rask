@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Ownership and borrowing analysis for the Rask language.
 //!
 //! This crate verifies memory safety by tracking:

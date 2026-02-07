@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Literate testing for Rask spec files.
 //!
 //! Extracts annotated code blocks from markdown spec files and runs them

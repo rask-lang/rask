@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // ERROR: Calling a function that requires a context without providing it
 //
 // This demonstrates the compile error when calling a context-requiring function

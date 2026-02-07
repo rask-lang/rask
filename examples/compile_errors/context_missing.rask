@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // ERROR: Function uses handle but has no pool context
 //
 // This demonstrates the compile error when a function accesses handle fields

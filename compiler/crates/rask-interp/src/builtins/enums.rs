@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on Result and Option enum types.
 
 use crate::interp::{Interpreter, RuntimeError};

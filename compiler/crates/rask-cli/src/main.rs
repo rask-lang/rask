@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Rask CLI - REPL and file runner.
 
 mod output;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Type method definitions for the Rask stdlib
 //!
 //! Defines what methods exist on built-in types like Vec, Map, String.

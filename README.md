@@ -72,3 +72,18 @@ From [CLAUDE.md](CLAUDE.md) (project objectives):
 2. **Mechanical Safety** — Safety by structure, not runtime checks
 3. **Practical Coverage** — Handle 80%+ of real use cases
 4. **Ergonomic Simplicity** — Common code paths must be low ceremony
+
+
+# LLMs
+
+Me, a human, has designed this language. I have used Claude code for the heavy-lifting during implementation to accelerate development, and as an assistant during design. AI should be treated as a tool, not a magic quick fix for all your problems. At its best, it can accelerate your workflow hundredfolds. At its worst it can generate thousands of lines of general AI slop. LLM's will only be as smart as the user who prompts them. 
+
+This is a human-directed, AI-accelerated project.
+
+# License
+
+Licensed under either of
+- Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
+- MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
+at your option.
+

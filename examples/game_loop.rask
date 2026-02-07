@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Game Loop with Entities
 // Demonstrates: Pool pattern, handle-based refs, traits, threading, time/delta, game systems
 
@@ -118,18 +119,18 @@ func movement_system(entities: GameState.{entities}, dt: f32) {
 }
 
 // System: Check collisions between entities
-func collision_system(entities: GameState.{entities}) {
-    let to_check = entities.handles().collect<Vec<_>>()
+func collision_system(state: GameState) {
+    let to_check = state.entities.handles()
 
     for i in 0..to_check.len() {
         for j in (i + 1)..to_check.len() {
             const h1 = to_check[i]
             const h2 = to_check[j]
 
-            if !entities[h1].active || !entities[h2].active: continue
+            if !state.entities[h1].active || !state.entities[h2].active: continue
 
-            const e1 = entities[h1]
-            const e2 = entities[h2]
+            const e1 = state.entities[h1]
+            const e2 = state.entities[h2]
 
             // Calculate distance
             const dx = e1.position.x - e2.position.x
@@ -138,7 +139,7 @@ func collision_system(entities: GameState.{entities}) {
             const min_dist = e1.collider.radius + e2.collider.radius
 
             if dist < min_dist {
-                handle_collision(entities, h1, h2)
+                handle_collision(state, h1, h2)
             }
         }
     }
@@ -148,33 +149,33 @@ func handle_collision(state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) 
     const type1 = state.entities[h1].entity_type
     const type2 = state.entities[h2].entity_type
 
-    match (type1, type2) {
-        (Player, Enemy) | (Enemy, Player) => {
-            // Player takes damage from enemy
-            const player_h = if type1 == Player: h1 else: h2
-            const enemy_h = if type1 == Enemy: h1 else: h2
+    // Player vs Enemy
+    if (type1 == EntityType.Player && type2 == EntityType.Enemy) ||
+       (type1 == EntityType.Enemy && type2 == EntityType.Player) {
+        const player_h = if type1 == EntityType.Player: h1 else: h2
+        const enemy_h = if type1 == EntityType.Enemy: h1 else: h2
 
-            state.entities[player_h].health.current -= 10
+        state.entities[player_h].health.current -= 10
+        state.entities[enemy_h].active = false
+
+        if state.entities[player_h].health.current <= 0 {
+            state.game_over = true
+        }
+    }
+
+    // Projectile vs Enemy
+    if (type1 == EntityType.Projectile && type2 == EntityType.Enemy) ||
+       (type1 == EntityType.Enemy && type2 == EntityType.Projectile) {
+        const enemy_h = if type1 == EntityType.Enemy: h1 else: h2
+        const proj_h = if type1 == EntityType.Projectile: h1 else: h2
+
+        state.entities[enemy_h].health.current -= 25
+        state.entities[proj_h].active = false
+
+        if state.entities[enemy_h].health.current <= 0 {
             state.entities[enemy_h].active = false
-
-            if state.entities[player_h].health.current <= 0 {
-                state.game_over = true
-            }
+            state.score += 100
         }
-        (Projectile, Enemy) | (Enemy, Projectile) => {
-            // Projectile destroys enemy
-            const enemy_h = if type1 == Enemy: h1 else: h2
-            const proj_h = if type1 == Projectile: h1 else: h2
-
-            state.entities[enemy_h].health.current -= 25
-            state.entities[proj_h].active = false
-
-            if state.entities[enemy_h].health.current <= 0 {
-                state.entities[enemy_h].active = false
-                state.score += 100
-            }
-        }
-        _ => {}
     }
 }
 
@@ -209,7 +210,7 @@ func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
 
 // Parallel movement update - processes entity batches across threads
 func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threads: usize) {
-    let handles = entities.handles().collect<Vec<_>>()
+    let handles = entities.handles()
     let chunk_size = (handles.len() + num_threads - 1) / num_threads
 
     // Split work across thread pool
@@ -287,9 +288,10 @@ func main() -> () or Error {
             // Render (simulated - just print status occasionally)
             if frame_count % 60 == 0 {
                 const entity_count = state.entities.len()
-                const player_health = state.player
-                    .map(|h| state.entities[h].health.current)
-                    .unwrap_or(0)
+                let player_health = 0
+                if state.player is Some(h) {
+                    player_health = state.entities[h].health.current
+                }
                 println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
             }
 
