@@ -426,7 +426,6 @@ func simd_sum_f32(data: [f32; 64], count: usize) -> f32 {
 // ============================================================================
 // Main Entry Point
 // ============================================================================
-@entry
 func main() -> () or Error {
     println("=== Real-Time Sensor Processor ===")
     println("")

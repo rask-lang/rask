@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use rask_ast::expr::Expr;
 
@@ -121,6 +121,9 @@ pub enum TypeConstructorKind {
     String,
     Pool,
     Channel,
+    Shared,
+    Atomic,
+    Ordering,
 }
 
 /// Module kinds for stdlib modules.
@@ -137,6 +140,7 @@ pub enum ModuleKind {
     Os,     // os.env, os.args, os.exit, os.platform, etc.
     Json,   // json.parse, json.stringify, json.encode, etc.
     Path,   // Path.new (type constructor via module)
+    Net,    // net.tcp_listen, net.tcp_connect
 }
 
 /// Inner state for a spawned thread handle.
@@ -177,6 +181,10 @@ pub enum Value {
     Bool(bool),
     /// Integer (using i64 for all integer types in interpreter)
     Int(i64),
+    /// 128-bit signed integer
+    Int128(i128),
+    /// 128-bit unsigned integer
+    Uint128(u128),
     /// Float (using f64 for all float types in interpreter)
     Float(f64),
     /// Character
@@ -252,6 +260,18 @@ pub enum Value {
     ThreadPool(Arc<ThreadPoolInner>),
     /// Map (key-value storage with Value keys)
     Map(Arc<Mutex<Vec<(Value, Value)>>>),
+    /// Atomic bool (lock-free boolean)
+    AtomicBool(Arc<std::sync::atomic::AtomicBool>),
+    /// Atomic usize (lock-free unsigned integer)
+    AtomicUsize(Arc<std::sync::atomic::AtomicUsize>),
+    /// Atomic u64 (lock-free 64-bit unsigned integer)
+    AtomicU64(Arc<std::sync::atomic::AtomicU64>),
+    /// Shared<T> (RwLock wrapper for concurrent read-heavy access)
+    Shared(Arc<RwLock<Value>>),
+    /// TCP listener socket (Option allows close to invalidate)
+    TcpListener(Arc<Mutex<Option<std::net::TcpListener>>>),
+    /// TCP connection (Option allows close to invalidate)
+    TcpConnection(Arc<Mutex<Option<std::net::TcpStream>>>),
 }
 
 impl Value {
@@ -261,6 +281,8 @@ impl Value {
             Value::Unit => "()",
             Value::Bool(_) => "bool",
             Value::Int(_) => "i64",
+            Value::Int128(_) => "i128",
+            Value::Uint128(_) => "u128",
             Value::Float(_) => "f64",
             Value::Char(_) => "char",
             Value::String(_) => "string",
@@ -285,6 +307,12 @@ impl Value {
             Value::Receiver(_) => "Receiver",
             Value::ThreadPool(_) => "ThreadPool",
             Value::Map(_) => "Map",
+            Value::AtomicBool(_) => "Atomic<bool>",
+            Value::AtomicUsize(_) => "Atomic<usize>",
+            Value::AtomicU64(_) => "Atomic<u64>",
+            Value::Shared(_) => "Shared",
+            Value::TcpListener(_) => "TcpListener",
+            Value::TcpConnection(_) => "TcpConnection",
         }
     }
 
@@ -393,6 +421,8 @@ impl fmt::Display for Value {
             Value::Unit => write!(f, "()"),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Int(n) => write!(f, "{}", n),
+            Value::Int128(n) => write!(f, "{}", n),
+            Value::Uint128(n) => write!(f, "{}", n),
             Value::Float(n) => write!(f, "{}", n),
             Value::Char(c) => write!(f, "{}", c),
             Value::String(s) => write!(f, "{}", s.lock().unwrap()),
@@ -446,6 +476,9 @@ impl fmt::Display for Value {
                 TypeConstructorKind::String => write!(f, "string"),
                 TypeConstructorKind::Pool => write!(f, "Pool"),
                 TypeConstructorKind::Channel => write!(f, "Channel"),
+                TypeConstructorKind::Shared => write!(f, "Shared"),
+                TypeConstructorKind::Atomic => write!(f, "Atomic"),
+                TypeConstructorKind::Ordering => write!(f, "Ordering"),
             },
             Value::EnumConstructor {
                 enum_name,
@@ -466,6 +499,7 @@ impl fmt::Display for Value {
                 ModuleKind::Os => write!(f, "<module os>"),
                 ModuleKind::Json => write!(f, "<module json>"),
                 ModuleKind::Path => write!(f, "<module path>"),
+                ModuleKind::Net => write!(f, "<module net>"),
             },
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {
@@ -513,6 +547,33 @@ impl fmt::Display for Value {
                     write!(f, "{}: {}", k, v)?;
                 }
                 write!(f, " }}")
+            }
+            Value::Shared(s) => {
+                let inner = s.read().unwrap();
+                write!(f, "Shared({})", inner)
+            }
+            Value::AtomicBool(a) => {
+                write!(f, "Atomic<bool>({})", a.load(std::sync::atomic::Ordering::Relaxed))
+            }
+            Value::AtomicUsize(a) => {
+                write!(f, "Atomic<usize>({})", a.load(std::sync::atomic::Ordering::Relaxed))
+            }
+            Value::AtomicU64(a) => {
+                write!(f, "Atomic<u64>({})", a.load(std::sync::atomic::Ordering::Relaxed))
+            }
+            Value::TcpListener(l) => {
+                if l.lock().unwrap().is_some() {
+                    write!(f, "<TcpListener>")
+                } else {
+                    write!(f, "<closed TcpListener>")
+                }
+            }
+            Value::TcpConnection(c) => {
+                if c.lock().unwrap().is_some() {
+                    write!(f, "<TcpConnection>")
+                } else {
+                    write!(f, "<closed TcpConnection>")
+                }
             }
         }
     }

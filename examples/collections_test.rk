@@ -7,7 +7,6 @@ struct Point {
     y: i32
 }
 
-@entry
 func main() {
     // Vec basics
     const v = Vec.new()

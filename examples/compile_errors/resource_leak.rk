@@ -98,7 +98,6 @@ func process(data: string) {
 }
 
 
-@entry
 func main() -> () or Error {
 
     try process_data()

@@ -52,6 +52,92 @@ impl Interpreter {
         }
     }
 
+    /// Handle i128 method calls.
+    pub(crate) fn call_int128_method(
+        &self,
+        a: i128,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "add" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a + b)) }
+            "sub" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a - b)) }
+            "mul" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a * b)) }
+            "div" => {
+                let b = self.expect_int128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Int128(a / b))
+            }
+            "rem" => {
+                let b = self.expect_int128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Int128(a % b))
+            }
+            "neg" => Ok(Value::Int128(-a)),
+            "eq" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a == b)) }
+            "lt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a < b)) }
+            "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
+            "gt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a > b)) }
+            "ge" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "bit_and" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a & b)) }
+            "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
+            "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
+            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a << b)) }
+            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Int128(a >> b)) }
+            "bit_not" => Ok(Value::Int128(!a)),
+            "abs" => Ok(Value::Int128(a.abs())),
+            "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
+            "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
+            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "i128".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Handle u128 method calls.
+    pub(crate) fn call_uint128_method(
+        &self,
+        a: u128,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "add" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a + b)) }
+            "sub" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a - b)) }
+            "mul" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a * b)) }
+            "div" => {
+                let b = self.expect_uint128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Uint128(a / b))
+            }
+            "rem" => {
+                let b = self.expect_uint128(args, 0)?;
+                if b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Uint128(a % b))
+            }
+            "eq" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a == b)) }
+            "lt" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a < b)) }
+            "le" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a <= b)) }
+            "gt" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a > b)) }
+            "ge" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "bit_and" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a & b)) }
+            "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
+            "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
+            "shl" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a << b)) }
+            "shr" => { let b = self.expect_int(args, 0)?; Ok(Value::Uint128(a >> b)) }
+            "bit_not" => Ok(Value::Uint128(!a)),
+            "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
+            "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
+            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "u128".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
     /// Handle float method calls.
     pub(crate) fn call_float_method(
         &self,

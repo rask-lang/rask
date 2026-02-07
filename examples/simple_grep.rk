@@ -34,7 +34,6 @@ func grep_file(pattern: string, path: string) -> GrepResult {
     }
 }
 
-@entry
 func main() {
     const args = cli.args()
     const argc = args.len()

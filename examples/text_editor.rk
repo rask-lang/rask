@@ -235,7 +235,6 @@ func print_help() {
     println("  h/help                  - Show this help")
 }
 
-@entry
 func main() -> () or Error {
     let doc = Document.new()
 

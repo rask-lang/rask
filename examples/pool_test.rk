@@ -5,7 +5,6 @@ struct Entity {
     active: bool
 }
 
-@entry
 func main() -> () or string {
     // Basic pool operations
     const pool = Pool.new()

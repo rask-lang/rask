@@ -967,10 +967,9 @@ func interrupt_handler() {
     // Cannot: grow Vec, create string, use .clone() on heap types
 }
 
-@entry
 func main() {
-    // Program entry point — exactly one @entry per program
-    // Convention: name it "main", but any name works
+    // Program entry point — func main() is auto-detected
+    // @entry available for non-main entry point names
 }
 
 test "addition" {
@@ -983,7 +982,7 @@ test "addition" {
 
 | Attribute | Target | Effect |
 |-----------|--------|--------|
-| `@entry` | Function | Program entry point (exactly one per program) |
+| `@entry` | Function | Marks non-main function as entry point (optional) |
 | `@inline` | Function | Hint to inline |
 | `@no_alloc` | Function | Compile error on heap allocation |
 | `@deprecated(msg)` | Any | Warn on use |
@@ -1108,7 +1107,6 @@ func greet(name: string) {
     println("Hello, {name}")
 }
 
-@entry
 func main() {
     greet("World")
 }

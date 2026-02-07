@@ -130,7 +130,6 @@ func build_tree() -> Owned<Tree<i32>> {
     own Node(own Leaf(1), own Leaf(2))
 }
 
-@entry
 func main() {
     // Default context uses system allocator
     const tree = build_tree()

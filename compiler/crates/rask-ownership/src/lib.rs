@@ -396,8 +396,8 @@ impl<'a> OwnershipChecker<'a> {
         match ty {
             // Primitives are always Copy
             Type::Unit | Type::Bool | Type::Char => true,
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 => true,
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 => true,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 => true,
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => true,
             Type::F32 | Type::F64 => true,
             Type::Never => true,
 

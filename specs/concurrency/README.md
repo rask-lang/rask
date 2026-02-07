@@ -30,7 +30,6 @@ Concurrency model for Rask.
 
 ```rask
 // Async mode - green tasks for I/O
-@entry
 func main() {
     with multitasking {
         spawn { handle_connection(conn) }.detach()
@@ -38,7 +37,6 @@ func main() {
 }
 
 // Async + CPU work
-@entry
 func main() {
     with multitasking, threading {
         const h = spawn {
@@ -51,7 +49,6 @@ func main() {
 }
 
 // Sync mode - CPU parallelism only
-@entry
 func main() {
     with threading {
         const handles = files.map { |f| spawn_thread { process(f) } }

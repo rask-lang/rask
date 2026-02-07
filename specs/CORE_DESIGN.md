@@ -456,7 +456,6 @@ See [Generics](specs/types/generics.md) and [Runtime Polymorphism](specs/types/t
 **Explicit resources:** `with multitasking { }` and `with threading { }` create and scope concurrency resources. No hidden schedulers or thread pools.
 
 ```rask
-@entry
 func main() {
     with multitasking, threading {
         run_server()

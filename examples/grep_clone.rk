@@ -126,7 +126,6 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
     return Ok(match_count)
 }
 
-@entry
 func main() {
     const args = cli.args()
     const opts = match parse_args(args) {

@@ -120,7 +120,6 @@ func format_size(bytes: i64) -> string {
     }
 }
 
-@entry
 func main() {
     const args = cli.args()
 

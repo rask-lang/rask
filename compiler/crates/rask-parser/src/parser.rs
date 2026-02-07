@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
 use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -680,37 +680,78 @@ impl Parser {
         Ok(name)
     }
 
+    /// Parse type parameters like `<T, comptime N: usize>`.
+    /// Returns (type_params, name_suffix) where name_suffix is the string representation for display.
+    fn parse_type_params(&mut self) -> Result<(Vec<TypeParam>, String), ParseError> {
+        let mut type_params = Vec::new();
+        let mut name_suffix = String::from("<");
+
+        loop {
+            let is_comptime = self.match_token(&TokenKind::Comptime);
+            let param_name = self.expect_ident()?;
+
+            if is_comptime {
+                // Const generic: `comptime N: usize`
+                self.expect(&TokenKind::Colon)?;
+                let comptime_type = self.parse_type_name()?;
+
+                type_params.push(TypeParam {
+                    name: param_name.clone(),
+                    is_comptime: true,
+                    comptime_type: Some(comptime_type.clone()),
+                    bounds: vec![],
+                });
+
+                name_suffix.push_str("comptime ");
+                name_suffix.push_str(&param_name);
+                name_suffix.push_str(": ");
+                name_suffix.push_str(&comptime_type);
+            } else {
+                // Regular type parameter: `T` or `T: Trait`
+                let mut bounds = vec![];
+                if self.match_token(&TokenKind::Colon) {
+                    // Parse trait bounds (simplified - just one for now)
+                    bounds.push(self.expect_ident()?);
+                }
+
+                type_params.push(TypeParam {
+                    name: param_name.clone(),
+                    is_comptime: false,
+                    comptime_type: None,
+                    bounds: bounds.clone(),
+                });
+
+                name_suffix.push_str(&param_name);
+                if !bounds.is_empty() {
+                    name_suffix.push_str(": ");
+                    name_suffix.push_str(&bounds.join(" + "));
+                }
+            }
+
+            if self.match_token(&TokenKind::Comma) {
+                name_suffix.push_str(", ");
+            } else {
+                break;
+            }
+        }
+
+        self.expect(&TokenKind::Gt)?;
+        name_suffix.push('>');
+
+        Ok((type_params, name_suffix))
+    }
+
     fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Struct)?;
         let mut name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
-            name.push('<');
-            loop {
-                if self.match_token(&TokenKind::Const) {
-                    name.push_str("const ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else if self.match_token(&TokenKind::Comptime) {
-                    name.push_str("comptime ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else {
-                    name.push_str(&self.expect_ident()?);
-                }
-                if self.match_token(&TokenKind::Comma) {
-                    name.push_str(", ");
-                } else {
-                    break;
-                }
-            }
-            self.expect(&TokenKind::Gt)?;
-            name.push('>');
-        }
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            let (params, suffix) = self.parse_type_params()?;
+            name.push_str(&suffix);
+            params
+        } else {
+            vec![]
+        };
 
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
@@ -746,19 +787,27 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Struct(StructDecl { name, fields, methods, is_pub, attrs }))
+        Ok(DeclKind::Struct(StructDecl {
+            name,
+            type_params,
+            fields,
+            methods,
+            is_pub,
+            attrs,
+        }))
     }
 
     fn parse_enum_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
-        let name = self.expect_ident()?;
+        let mut name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
-            while !self.check(&TokenKind::Gt) && !self.at_end() {
-                self.advance();
-            }
-            self.expect(&TokenKind::Gt)?;
-        }
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            let (params, suffix) = self.parse_type_params()?;
+            name.push_str(&suffix);
+            params
+        } else {
+            vec![]
+        };
 
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
@@ -811,7 +860,13 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Enum(EnumDecl { name, variants, methods, is_pub }))
+        Ok(DeclKind::Enum(EnumDecl {
+            name,
+            type_params,
+            variants,
+            methods,
+            is_pub,
+        }))
     }
 
     fn parse_trait_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
@@ -1602,19 +1657,50 @@ impl Parser {
                 self.advance();
                 let mut full_name = name.clone();
 
-                if Self::is_type_name(&name) && self.check(&TokenKind::Lt) && self.looks_like_generic_type_with_static_method() {
-                    self.advance();
-                    full_name.push('<');
-                    loop {
-                        full_name.push_str(&self.parse_type_name()?);
-                        if self.match_token(&TokenKind::Comma) {
-                            full_name.push_str(", ");
-                        } else {
-                            break;
+                // Parse generic arguments for type names (for static methods or struct literals)
+                if Self::is_type_name(&name) && self.check(&TokenKind::Lt) {
+                    // Check if this looks like a generic instantiation
+                    let is_static_method = self.looks_like_generic_type_with_static_method();
+                    let is_struct_literal = {
+                        // Look ahead to see if this could be a struct literal: Name<Args> {
+                        let mut lookahead_pos = self.pos + 1; // Skip the '<'
+                        let mut depth = 1;
+                        let mut found_brace = false;
+
+                        // Scan through the generic args to find the closing '>'
+                        while lookahead_pos < self.tokens.len() && depth > 0 {
+                            match &self.tokens[lookahead_pos].kind {
+                                TokenKind::Lt => depth += 1,
+                                TokenKind::Gt => {
+                                    depth -= 1;
+                                    if depth == 0 {
+                                        // Check if the next token after '>' is '{'
+                                        if lookahead_pos + 1 < self.tokens.len() {
+                                            found_brace = matches!(self.tokens[lookahead_pos + 1].kind, TokenKind::LBrace);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                            lookahead_pos += 1;
                         }
+                        found_brace
+                    };
+
+                    if is_static_method || is_struct_literal {
+                        self.advance(); // consume '<'
+                        full_name.push('<');
+                        loop {
+                            full_name.push_str(&self.parse_type_name()?);
+                            if self.match_token(&TokenKind::Comma) {
+                                full_name.push_str(", ");
+                            } else {
+                                break;
+                            }
+                        }
+                        self.expect_gt_in_generic()?;
+                        full_name.push('>');
                     }
-                    self.expect_gt_in_generic()?;
-                    full_name.push('>');
                 }
 
                 let end = self.tokens[self.pos - 1].span.end;

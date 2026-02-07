@@ -1,24 +1,23 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/rask-logo-white@3x.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/rask-logo-dark@3x.png">
-    <img alt="rask logo" src="assets/rask-logo-dark@3x.png" width="500">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/book/src/assets/rask-logo-white@3x.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/book/src/assets/rask-logo-dark@3x.png">
+    <img alt="rask logo" src="docs/book/src/assets/rask-logo-dark@3x.png" width="500">
   </picture>
 </p>
 
-Safety without the pain!
-
-
+Safety without the pain!    
+  
 
 
 Rask is a new programming language that aims to sit between Rust (compile-time safety, unergonomic) and go (runtime heavy, ergonomic).
 
 Rask targets the 80% of "systems programming" that's actually application code: servers, tools, games, embedded apps.
 
-You get Rust's safety guarantees without lifetime annotations.
+You get Rust's safety guarantees without lifetime annotations.  
 You get Go's simplicity without garbage collection.
 
-Can you build Linux in it? Probably not.
+Can you build Linux in it? Probably not.  
 Can you build the next web server? The next game? Absolutely.
 
 No annotations. No fights. No hidden costs.
@@ -88,14 +87,14 @@ Getting the ergonomics right without sacrificing transparency took a lot of iter
 
 I'm not pretending there aren't tradeoffs. Here's what you give up:
 
-**More `.clone()` calls:** In string-heavy code (CLI parsing, HTTP routing) you'll see ~5% of lines with an explicit clone. I think that's better than lifetime annotations everywhere.
-
 **Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process.
 
 **Restructuring some patterns:**
 - Parent pointers → store handles
 - String slices in structs → store indices or use StringPool
 - Arbitrary graphs → use Pool<T> with handles
+
+**More `.clone()` calls:** In string-heavy code (CLI parsing, HTTP routing) you'll see ~5% of lines with an explicit clone. I think that's better than lifetime annotations everywhere.
 
 In return, you get:
 - No use-after-free, no dangling pointers, no data races
@@ -142,9 +141,9 @@ The constant balancing act is keeping ergonomics high without hiding costs. When
 
 | If you want to... | Read this |
 |-------------------|-----------|
-| Understand the design philosophy | [CORE_DESIGN.md](CORE_DESIGN.md) |
+| Understand the design philosophy | [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
 | See specific language features | [specs/](specs/) directory |
-| Understand design constraints | [METRICS.md](METRICS.md) |
+| Understand design constraints | [METRICS.md](specs/METRICS.md) |
 | See what's still being built | [TODO.md](TODO.md) |
 | Run actual programs | [examples/](examples/) directory |
 
@@ -161,7 +160,7 @@ The constant balancing act is keeping ergonomics high without hiding costs. When
 │   ├── concurrency/        # Tasks, threads, channels
 │   ├── structure/          # Modules, packages, builds
 │   └── stdlib/             # Standard library APIs
-├── compiler/               # The actual implementation (13 crates)
+├── compiler/               # The actual implementation
 │   ├── rask-lexer/         # Tokenization
 │   ├── rask-parser/        # AST construction
 │   ├── rask-types/         # Type checking

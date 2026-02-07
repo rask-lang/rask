@@ -23,7 +23,7 @@ use rask_ast::{NodeId, Span};
 use rask_diagnostics::{LabelStyle, Severity, ToDiagnostic};
 use rask_lexer::Lexer;
 use rask_parser::Parser;
-use rask_types::{Type, TypeTable, TypedProgram};
+use rask_types::{GenericArg, Type, TypeTable, TypedProgram};
 
 /// Cached compilation result for a file.
 #[derive(Debug)]
@@ -110,7 +110,7 @@ impl<'a> TypeFormatter<'a> {
             Type::Generic { base, args } => {
                 let base_name = self.types.type_name(*base);
                 let args_str = args.iter()
-                    .map(|t| self.format(t))
+                    .map(|t| self.format_generic_arg(t))
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!("{}<{}>", base_name, args_str)
@@ -121,7 +121,7 @@ impl<'a> TypeFormatter<'a> {
                     name.clone()
                 } else {
                     let args_str = args.iter()
-                        .map(|t| self.format(t))
+                        .map(|t| self.format_generic_arg(t))
                         .collect::<Vec<_>>()
                         .join(", ");
                     format!("{}<{}>", name, args_str)
@@ -153,6 +153,13 @@ impl<'a> TypeFormatter<'a> {
             Type::UnresolvedNamed(name) => name.clone(),
             Type::Error => "<error>".to_string(),
             _ => format!("{:?}", ty),
+        }
+    }
+
+    fn format_generic_arg(&self, arg: &GenericArg) -> String {
+        match arg {
+            GenericArg::Type(ty) => self.format(ty),
+            GenericArg::ConstUsize(n) => n.to_string(),
         }
     }
 }

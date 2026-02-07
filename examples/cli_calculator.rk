@@ -316,7 +316,6 @@ func print_help() {
     println("  quit     Exit calculator")
 }
 
-@entry
 func main() -> () or Error {
     println("Rask Calculator")
     println("Type 'help' for usage, 'quit' to exit")

@@ -8,9 +8,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, StructDecl};
+use rask_ast::decl::{Decl, DeclKind, EnumDecl, Field, FnDecl, StructDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
+use rask_types::GenericArg;
 
 use crate::env::Environment;
 use crate::resource::ResourceTracker;
@@ -25,7 +26,9 @@ pub struct Interpreter {
     /// Enum declarations by name.
     enums: HashMap<String, EnumDecl>,
     /// Struct declarations by name (for @resource checking).
-    struct_decls: HashMap<String, StructDecl>,
+    pub(crate) struct_decls: HashMap<String, StructDecl>,
+    /// Monomorphized struct declarations (e.g., "Buffer<i32, 256>" -> concrete struct).
+    monomorphized_structs: HashMap<String, StructDecl>,
     /// Methods from extend blocks (type_name -> method_name -> FnDecl).
     pub(crate) methods: HashMap<String, HashMap<String, FnDecl>>,
     /// Linear resource tracker.
@@ -43,6 +46,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
@@ -56,6 +60,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
@@ -71,6 +76,7 @@ impl Interpreter {
             functions: HashMap::new(),
             enums: HashMap::new(),
             struct_decls: HashMap::new(),
+            monomorphized_structs: HashMap::new(),
             methods: HashMap::new(),
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
@@ -189,6 +195,7 @@ impl Interpreter {
                             "os" => Some(ModuleKind::Os),
                             "json" => Some(ModuleKind::Json),
                             "path" => Some(ModuleKind::Path),
+                            "net" => Some(ModuleKind::Net),
                             _ => None,
                         };
                         if let Some(kind) = module_kind {
@@ -256,6 +263,7 @@ impl Interpreter {
             "Option".to_string(),
             EnumDecl {
                 name: "Option".to_string(),
+                type_params: vec![],
                 variants: vec![
                     Variant {
                         name: "Some".to_string(),
@@ -278,6 +286,7 @@ impl Interpreter {
             "Result".to_string(),
             EnumDecl {
                 name: "Result".to_string(),
+                type_params: vec![],
                 variants: vec![
                     Variant {
                         name: "Ok".to_string(),
@@ -304,6 +313,7 @@ impl Interpreter {
             "Ordering".to_string(),
             EnumDecl {
                 name: "Ordering".to_string(),
+                type_params: vec![],
                 variants: vec![
                     Variant {
                         name: "Less".to_string(),
@@ -347,10 +357,173 @@ impl Interpreter {
             self.env.define(name, Value::Module(kind));
         }
 
-        if let Some(entry) = entry_fn {
+        // Fall back to func main() if no @entry attribute found
+        let entry = entry_fn.or_else(|| self.functions.get("main").cloned());
+
+        if let Some(entry) = entry {
             self.call_function(&entry, vec![])
         } else {
             Err(RuntimeError::NoEntryPoint)
+        }
+    }
+
+    /// Parse a generic struct name like "Buffer<i32, 256>" and monomorphize it.
+    fn monomorphize_struct_from_name(&mut self, full_name: &str) -> Result<String, RuntimeError> {
+        // Extract base name and args from "Buffer<i32, 256>"
+        let lt_pos = full_name.find('<').ok_or_else(|| {
+            RuntimeError::Generic(format!("Expected generic arguments in '{}'", full_name))
+        })?;
+
+        let base_name = &full_name[..lt_pos];
+        let args_str = &full_name[lt_pos + 1..full_name.len() - 1]; // Remove < and >
+
+        // Parse generic arguments
+        let args = self.parse_generic_args(args_str)?;
+
+        // Monomorphize
+        self.monomorphize_struct(base_name, &args)
+    }
+
+    /// Parse generic arguments from a string like "i32, 256".
+    fn parse_generic_args(&self, args_str: &str) -> Result<Vec<GenericArg>, RuntimeError> {
+        let mut args = Vec::new();
+        let parts: Vec<&str> = args_str.split(',').map(|s| s.trim()).collect();
+
+        for part in parts {
+            // Try to parse as usize (const generic)
+            if let Ok(n) = part.parse::<usize>() {
+                args.push(GenericArg::ConstUsize(n));
+            } else {
+                // It's a type - for now just store as Type with a placeholder
+                // In a real implementation, we'd parse the type properly
+                use rask_types::Type;
+                let ty = match part {
+                    "i32" => Type::I32,
+                    "i64" => Type::I64,
+                    "f32" => Type::F32,
+                    "f64" => Type::F64,
+                    "bool" => Type::Bool,
+                    "string" => Type::String,
+                    "usize" => Type::U64, // Map usize to u64 for now
+                    _ => Type::UnresolvedNamed(part.to_string()),
+                };
+                args.push(GenericArg::Type(Box::new(ty)));
+            }
+        }
+
+        Ok(args)
+    }
+
+    /// Monomorphize a generic struct by substituting type and const parameters.
+    /// Returns the monomorphized struct name (e.g., "Buffer<i32, 256>").
+    fn monomorphize_struct(&mut self, base_name: &str, args: &[GenericArg]) -> Result<String, RuntimeError> {
+        // Build the full instantiated name
+        let mut full_name = base_name.to_string();
+        full_name.push('<');
+        for (i, arg) in args.iter().enumerate() {
+            if i > 0 {
+                full_name.push_str(", ");
+            }
+            match arg {
+                GenericArg::Type(ty) => full_name.push_str(&ty.to_string()),
+                GenericArg::ConstUsize(n) => full_name.push_str(&n.to_string()),
+            }
+        }
+        full_name.push('>');
+
+        // Check if already monomorphized
+        if self.monomorphized_structs.contains_key(&full_name) {
+            return Ok(full_name);
+        }
+
+        // Get the generic struct declaration
+        // Look for a struct whose name is either exactly base_name or starts with "base_name<"
+        let base_decl = self.struct_decls.get(base_name)
+            .or_else(|| {
+                // Search for generic version: "Pair<T, U>"
+                self.struct_decls.iter()
+                    .find(|(k, _)| k.starts_with(base_name) && k.contains('<'))
+                    .map(|(_, v)| v)
+            })
+            .ok_or_else(|| RuntimeError::UndefinedVariable(base_name.to_string()))?
+            .clone();
+
+        // Verify argument count matches parameter count
+        if base_decl.type_params.len() != args.len() {
+            return Err(RuntimeError::Generic(format!(
+                "Wrong number of generic arguments for {}: expected {}, got {}",
+                base_name, base_decl.type_params.len(), args.len()
+            )));
+        }
+
+        // Build substitution map: param name -> GenericArg
+        let mut subst_map = HashMap::new();
+        for (param, arg) in base_decl.type_params.iter().zip(args.iter()) {
+            subst_map.insert(param.name.clone(), arg.clone());
+        }
+
+        // Substitute in field types
+        let mut new_fields = Vec::new();
+        for field in &base_decl.fields {
+            let new_ty = self.substitute_type(&field.ty, &subst_map)?;
+            new_fields.push(Field {
+                name: field.name.clone(),
+                ty: new_ty,
+                is_pub: field.is_pub,
+            });
+        }
+
+        // Create monomorphized struct declaration
+        let mono_decl = StructDecl {
+            name: full_name.clone(),
+            type_params: vec![], // Monomorphized structs have no params
+            fields: new_fields,
+            methods: base_decl.methods.clone(),
+            is_pub: base_decl.is_pub,
+            attrs: base_decl.attrs.clone(),
+        };
+
+        // Cache it
+        self.monomorphized_structs.insert(full_name.clone(), mono_decl.clone());
+        self.struct_decls.insert(full_name.clone(), mono_decl);
+
+        Ok(full_name)
+    }
+
+    /// Substitute type parameters in a type string.
+    fn substitute_type(&self, ty: &str, subst_map: &HashMap<String, GenericArg>) -> Result<String, RuntimeError> {
+        // Handle array types [T; N]
+        if ty.starts_with('[') && ty.ends_with(']') {
+            if let Some(semi_pos) = ty.find(';') {
+                let elem_ty = ty[1..semi_pos].trim();
+                let size_expr = ty[semi_pos + 1..ty.len() - 1].trim();
+
+                let new_elem = self.substitute_type(elem_ty, subst_map)?;
+                let new_size = if let Some(arg) = subst_map.get(size_expr) {
+                    match arg {
+                        GenericArg::ConstUsize(n) => n.to_string(),
+                        GenericArg::Type(_) => {
+                            return Err(RuntimeError::Generic(format!(
+                                "Expected const value for array size, got type"
+                            )));
+                        }
+                    }
+                } else {
+                    size_expr.to_string()
+                };
+
+                return Ok(format!("[{}; {}]", new_elem, new_size));
+            }
+        }
+
+        // Simple type parameter substitution
+        if let Some(arg) = subst_map.get(ty) {
+            match arg {
+                GenericArg::Type(t) => Ok(t.to_string()),
+                GenericArg::ConstUsize(n) => Ok(n.to_string()),
+            }
+        } else {
+            Ok(ty.to_string())
         }
     }
 
@@ -953,9 +1126,16 @@ impl Interpreter {
         }
     }
 
-    fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+    pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match &expr.kind {
-            ExprKind::Int(n, _) => Ok(Value::Int(*n)),
+            ExprKind::Int(n, suffix) => {
+                use rask_ast::token::IntSuffix;
+                match suffix {
+                    Some(IntSuffix::I128) => Ok(Value::Int128(*n as i128)),
+                    Some(IntSuffix::U128) => Ok(Value::Uint128(*n as u128)),
+                    _ => Ok(Value::Int(*n)),
+                }
+            }
             ExprKind::Float(n, _) => Ok(Value::Float(*n)),
             ExprKind::String(s) => {
                 if s.contains('{') {
@@ -981,6 +1161,9 @@ impl Interpreter {
                     "string" => return Ok(Value::TypeConstructor(TypeConstructorKind::String)),
                     "Pool" => return Ok(Value::TypeConstructor(TypeConstructorKind::Pool)),
                     "Channel" => return Ok(Value::TypeConstructor(TypeConstructorKind::Channel)),
+                    "Shared" => return Ok(Value::TypeConstructor(TypeConstructorKind::Shared)),
+                    "Atomic" => return Ok(Value::TypeConstructor(TypeConstructorKind::Atomic)),
+                    "Ordering" => return Ok(Value::TypeConstructor(TypeConstructorKind::Ordering)),
                     _ => {}
                 }
                 Err(RuntimeError::UndefinedVariable(name.clone()))
@@ -1048,8 +1231,8 @@ impl Interpreter {
             ExprKind::MethodCall {
                 object,
                 method,
+                type_args,
                 args,
-                ..
             } => {
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(name).cloned() {
@@ -1093,10 +1276,24 @@ impl Interpreter {
                 }
 
                 let receiver = self.eval_expr(object)?;
-                let arg_vals: Vec<Value> = args
+                let mut arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(a))
                     .collect::<Result<_, _>>()?;
+
+                // Inject type_args for generic methods (e.g. json.decode<T>)
+                if let Some(ta) = type_args {
+                    if let Some(first_type) = ta.first() {
+                        if let Value::Module(ModuleKind::Json) = &receiver {
+                            if method == "decode" || method == "from_value" {
+                                arg_vals.insert(
+                                    0,
+                                    Value::String(Arc::new(Mutex::new(first_type.clone()))),
+                                );
+                            }
+                        }
+                    }
+                }
 
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals);
@@ -1218,6 +1415,14 @@ impl Interpreter {
             }
 
             ExprKind::StructLit { name, fields, spread } => {
+                // Check if this is a generic instantiation
+                let concrete_name = if name.contains('<') {
+                    // Parse generic arguments and monomorphize
+                    self.monomorphize_struct_from_name(name)?
+                } else {
+                    name.clone()
+                };
+
                 let mut field_values = HashMap::new();
 
                 if let Some(spread_expr) = spread {
@@ -1235,14 +1440,14 @@ impl Interpreter {
                     field_values.insert(field.name.clone(), value);
                 }
 
-                let resource_id = if self.is_resource_type(name) {
-                    Some(self.resource_tracker.register(name, self.env.scope_depth()))
+                let resource_id = if self.is_resource_type(&concrete_name) {
+                    Some(self.resource_tracker.register(&concrete_name, self.env.scope_depth()))
                 } else {
                     None
                 };
 
                 Ok(Value::Struct {
-                    name: name.clone(),
+                    name: concrete_name,
                     fields: field_values,
                     resource_id,
                 })
@@ -1361,6 +1566,19 @@ impl Interpreter {
                         .nth(*i as usize)
                         .map(Value::Char)
                         .unwrap_or(Value::Unit)),
+                    (Value::String(s), Value::Range { start, end, inclusive }) => {
+                        let str_val = s.lock().unwrap();
+                        let len = str_val.len() as i64;
+                        let start_idx = (*start).max(0).min(len) as usize;
+                        let end_idx = if *end == i64::MAX {
+                            str_val.len()
+                        } else {
+                            let e = if *inclusive { *end + 1 } else { *end };
+                            e.max(0).min(len) as usize
+                        };
+                        let slice = &str_val[start_idx..end_idx];
+                        Ok(Value::String(Arc::new(Mutex::new(slice.to_string()))))
+                    }
                     (
                         Value::Pool(p),
                         Value::Handle {
@@ -1505,6 +1723,25 @@ impl Interpreter {
                     (Value::Int(n), "char") => {
                         Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
                     }
+                    // i128 conversions
+                    (Value::Int(n), "i128") => Ok(Value::Int128(n as i128)),
+                    (Value::Int(n), "u128") => Ok(Value::Uint128(n as u128)),
+                    (Value::Int128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::Int(n as i64)),
+                    (Value::Int128(n), "u64" | "u32" | "u16" | "u8" | "usize" | "u128") => Ok(Value::Uint128(n as u128)),
+                    (Value::Int128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Int128(n), "string") => {
+                        Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
+                    }
+                    // u128 conversions
+                    (Value::Uint128(n), "i64" | "i32" | "int" | "i16" | "i8") => Ok(Value::Int(n as i64)),
+                    (Value::Uint128(n), "i128") => Ok(Value::Int128(n as i128)),
+                    (Value::Uint128(n), "f64" | "f32" | "float") => Ok(Value::Float(n as f64)),
+                    (Value::Uint128(n), "u128" | "u64" | "u32" | "u16" | "u8" | "usize") => Ok(Value::Uint128(n)),
+                    (Value::Uint128(n), "string") => {
+                        Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
+                    }
+                    (Value::Float(n), "i128") => Ok(Value::Int128(n as i128)),
+                    (Value::Float(n), "u128") => Ok(Value::Uint128(n as u128)),
                     (v, _) => Ok(v),
                 }
             }
@@ -1604,7 +1841,9 @@ impl Interpreter {
                 })))
             }
 
-            ExprKind::WithBlock { name, args, body } if name == "threading" => {
+            ExprKind::WithBlock { name, args, body }
+                if name == "threading" || name == "multitasking" =>
+            {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()
                         .map(|n| n.get())
@@ -1808,6 +2047,8 @@ impl Interpreter {
     fn values_equal(&self, value: &Value, lit_expr: &Expr) -> bool {
         match (&value, &lit_expr.kind) {
             (Value::Int(a), ExprKind::Int(b, _)) => *a == *b,
+            (Value::Int128(a), ExprKind::Int(b, _)) => *a == *b as i128,
+            (Value::Uint128(a), ExprKind::Int(b, _)) => *a == *b as u128,
             (Value::Float(a), ExprKind::Float(b, _)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
             (Value::Char(a), ExprKind::Char(b)) => *a == *b,
@@ -2447,6 +2688,36 @@ impl Interpreter {
         }
     }
 
+    /// Helper to extract an i128 from args.
+    pub(crate) fn expect_int128(&self, args: &[Value], idx: usize) -> Result<i128, RuntimeError> {
+        match args.get(idx) {
+            Some(Value::Int128(n)) => Ok(*n),
+            Some(v) => Err(RuntimeError::TypeError(format!(
+                "expected i128, got {}",
+                v.type_name()
+            ))),
+            None => Err(RuntimeError::ArityMismatch {
+                expected: idx + 1,
+                got: args.len(),
+            }),
+        }
+    }
+
+    /// Helper to extract a u128 from args.
+    pub(crate) fn expect_uint128(&self, args: &[Value], idx: usize) -> Result<u128, RuntimeError> {
+        match args.get(idx) {
+            Some(Value::Uint128(n)) => Ok(*n),
+            Some(v) => Err(RuntimeError::TypeError(format!(
+                "expected u128, got {}",
+                v.type_name()
+            ))),
+            None => Err(RuntimeError::ArityMismatch {
+                expected: idx + 1,
+                got: args.len(),
+            }),
+        }
+    }
+
     /// Check if a value is truthy.
     fn is_truthy(&self, val: &Value) -> bool {
         match val {
@@ -2494,8 +2765,11 @@ pub enum RuntimeError {
     #[error("multiple @entry functions found (only one allowed per program)")]
     MultipleEntryPoints,
 
-    #[error("no @entry function found (add @entry to mark the program entry point)")]
+    #[error("no entry point found (add func main() or use @entry)")]
     NoEntryPoint,
+
+    #[error("generic error: {0}")]
+    Generic(String),
 
     #[error("exit with code {0}")]
     Exit(i32),

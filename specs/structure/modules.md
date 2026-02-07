@@ -105,7 +105,6 @@ Rules: items in braces follow same rules as individual imports. Trailing comma a
 ```rask
 import lazy database  // init() deferred until first function call
 
-@entry
 func main() -> () or Error {
     if args.has("--help") {
         print_help()
@@ -423,7 +422,6 @@ import http
 import std.net.http as nethttp        // alias for disambiguation
 import json.{parse, stringify}        // grouped unqualified
 
-@entry
 func main() {
     const req = http.new("GET", "/")   // qualified via last segment
     const body = parse(read())         // unqualified from grouped import

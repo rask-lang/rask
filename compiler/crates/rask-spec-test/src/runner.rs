@@ -222,17 +222,13 @@ fn wrap_in_main(code: &str) -> String {
     let stmts = stmts.trim_end();
 
     if stmts.is_empty() && decls.is_empty() {
-        // Empty code
-        "@entry\nfunc main() {}".to_string()
+        "func main() {}".to_string()
     } else if stmts.is_empty() {
-        // Only declarations - add empty main
-        format!("{}\n\n@entry\nfunc main() {{}}", decls)
+        format!("{}\n\nfunc main() {{}}", decls)
     } else if decls.is_empty() {
-        // Only statements - wrap in main
-        format!("@entry\nfunc main() {{\n{}\n}}", stmts)
+        format!("func main() {{\n{}\n}}", stmts)
     } else {
-        // Both - declarations first, then main with statements
-        format!("{}\n\n@entry\nfunc main() {{\n{}\n}}", decls, stmts)
+        format!("{}\n\nfunc main() {{\n{}\n}}", decls, stmts)
     }
 }
 

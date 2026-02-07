@@ -750,7 +750,6 @@ For codegen requiring external tools or extensive I/O:
 
 ```rask
 // rask.build
-@entry
 func main() -> () or Error {
     const schema = try fs.read_file("schema.json")
     const code = generate_types_from_schema(schema)

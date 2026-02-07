@@ -1,0 +1,37 @@
+[book]
+title = "The Rask Programming Language"
+authors = ["Rask Contributors"]
+description = "A systems language where safety is invisible"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../build"
+create-missing = true
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/dritory/rask"
+edit-url-template = "https://github.com/dritory/rask/edit/main/docs/book/{path}"
+site-url = "/rask/"
+additional-css = ["theme/custom.css"]
+additional-js = ["theme/rask-highlight.js"]
+
+[output.html.playground]
+editable = false
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+teaser-word-count = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1
+expand = true
+heading-split-level = 3

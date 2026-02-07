@@ -7,7 +7,7 @@ mod types;
 mod checker;
 mod traits;
 
-pub use types::{Type, TypeId, TypeVarId};
+pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, InferenceContext, TypeConstraint, MethodSig, SelfParam,

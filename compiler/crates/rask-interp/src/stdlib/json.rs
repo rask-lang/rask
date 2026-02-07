@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use rask_ast::decl::StructDecl;
+
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
@@ -67,6 +69,26 @@ impl Interpreter {
                     .next()
                     .ok_or(RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
                 value_to_json(&value)
+            }
+            "decode" => {
+                // decode(type_name, json_string) — type_name injected from type_args
+                if args.len() < 2 {
+                    return Err(RuntimeError::ArityMismatch {
+                        expected: 2,
+                        got: args.len(),
+                    });
+                }
+                let type_name = self.expect_string(&args, 0)?;
+                let input = self.expect_string(&args, 1)?;
+                match parse_json(&input) {
+                    Ok(json_val) => {
+                        match json_to_typed(&json_val, &type_name, &self.struct_decls) {
+                            Ok(value) => Ok(make_result_ok(value)),
+                            Err(e) => Ok(make_result_err(&e)),
+                        }
+                    }
+                    Err(e) => Ok(make_result_err(&e)),
+                }
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "json".to_string(),
@@ -636,6 +658,179 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
             fields: map,
             resource_id: None,
         }],
+    }
+}
+
+// ─── JSON Decode (typed deserialization) ───
+
+/// Convert a parsed JsonValue into a typed Rask value based on struct declarations.
+fn json_to_typed(
+    json: &Value,
+    type_name: &str,
+    struct_decls: &HashMap<String, StructDecl>,
+) -> Result<Value, String> {
+    // Unwrap JsonValue enum wrapper if present
+    let raw = unwrap_json_value(json);
+
+    match type_name {
+        "string" => extract_string(raw),
+        "i32" | "i64" => extract_int(raw),
+        "f32" | "f64" => extract_float(raw),
+        "bool" => extract_bool(raw),
+        _ => {
+            // Look up struct declaration
+            let decl = struct_decls
+                .get(type_name)
+                .ok_or_else(|| format!("unknown type: {}", type_name))?;
+            let obj_fields = extract_object_fields(raw)?;
+            let mut struct_fields = HashMap::new();
+
+            for field in &decl.fields {
+                if let Some(json_field) = obj_fields.get(&field.name) {
+                    let value =
+                        json_field_to_value(json_field, &field.ty, struct_decls)?;
+                    struct_fields.insert(field.name.clone(), value);
+                } else {
+                    // Optional field → None
+                    if field.ty.ends_with('?') {
+                        struct_fields.insert(field.name.clone(), option_none());
+                    } else {
+                        return Err(format!(
+                            "missing field '{}' in JSON for type '{}'",
+                            field.name, type_name
+                        ));
+                    }
+                }
+            }
+
+            Ok(Value::Struct {
+                name: type_name.to_string(),
+                fields: struct_fields,
+                resource_id: None,
+            })
+        }
+    }
+}
+
+/// Convert a single JSON value to a typed Rask value based on the field's declared type.
+fn json_field_to_value(
+    json: &Value,
+    ty: &str,
+    struct_decls: &HashMap<String, StructDecl>,
+) -> Result<Value, String> {
+    let raw = unwrap_json_value(json);
+
+    // Handle optional types
+    if let Some(inner_ty) = ty.strip_suffix('?') {
+        if is_json_null(raw) {
+            return Ok(option_none());
+        }
+        let inner = json_field_to_value(raw, inner_ty, struct_decls)?;
+        return Ok(option_some(inner));
+    }
+
+    match ty {
+        "string" => extract_string(raw),
+        "i32" | "i64" | "int" => extract_int(raw),
+        "f32" | "f64" | "float" => extract_float(raw),
+        "bool" => extract_bool(raw),
+        _ if ty.starts_with("Vec<") => {
+            // Vec<T> — extract inner type
+            let inner_ty = &ty[4..ty.len() - 1];
+            let items = extract_array(raw)?;
+            let converted: Result<Vec<Value>, String> = items
+                .iter()
+                .map(|item| json_field_to_value(item, inner_ty, struct_decls))
+                .collect();
+            Ok(Value::Vec(Arc::new(Mutex::new(converted?))))
+        }
+        _ => {
+            // Nested struct
+            json_to_typed(raw, ty, struct_decls)
+        }
+    }
+}
+
+/// Unwrap a JsonValue enum to its inner content for easier inspection.
+fn unwrap_json_value(json: &Value) -> &Value {
+    match json {
+        Value::Enum {
+            name,
+            variant,
+            fields,
+        } if name == "JsonValue" => match variant.as_str() {
+            "String" | "Number" | "Bool" | "Array" | "Object" => {
+                fields.first().unwrap_or(json)
+            }
+            _ => json,
+        },
+        _ => json,
+    }
+}
+
+fn is_json_null(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Enum { name, variant, .. } if name == "JsonValue" && variant == "Null"
+    ) || matches!(v, Value::Unit)
+}
+
+fn extract_string(v: &Value) -> Result<Value, String> {
+    match v {
+        Value::String(_) => Ok(v.clone()),
+        _ => Err(format!("expected string, found {}", v.type_name())),
+    }
+}
+
+fn extract_int(v: &Value) -> Result<Value, String> {
+    match v {
+        Value::Int(n) => Ok(Value::Int(*n)),
+        Value::Float(f) => Ok(Value::Int(*f as i64)),
+        _ => Err(format!("expected number, found {}", v.type_name())),
+    }
+}
+
+fn extract_float(v: &Value) -> Result<Value, String> {
+    match v {
+        Value::Float(f) => Ok(Value::Float(*f)),
+        Value::Int(n) => Ok(Value::Float(*n as f64)),
+        _ => Err(format!("expected number, found {}", v.type_name())),
+    }
+}
+
+fn extract_bool(v: &Value) -> Result<Value, String> {
+    match v {
+        Value::Bool(b) => Ok(Value::Bool(*b)),
+        _ => Err(format!("expected bool, found {}", v.type_name())),
+    }
+}
+
+fn extract_array(v: &Value) -> Result<Vec<Value>, String> {
+    match v {
+        Value::Vec(vec) => Ok(vec.lock().unwrap().clone()),
+        _ => Err(format!("expected array, found {}", v.type_name())),
+    }
+}
+
+/// Extract fields from a JSON object (either a JsonValue.Object or a Map/Struct).
+fn extract_object_fields(v: &Value) -> Result<HashMap<String, Value>, String> {
+    match v {
+        // JsonValue.Object wraps a Struct named "Map" with field→value pairs
+        Value::Struct { fields, .. } => Ok(fields.clone()),
+        // Direct Map (from parsed JSON)
+        Value::Map(m) => {
+            let map = m.lock().unwrap();
+            let mut result = HashMap::new();
+            for (k, v) in map.iter() {
+                let key = match k {
+                    Value::String(s) => s.lock().unwrap().clone(),
+                    _ => continue,
+                };
+                result.insert(key, v.clone());
+            }
+            Ok(result)
+        }
+        _ => Err(format!("expected object, found {}", v.type_name())),
     }
 }
 

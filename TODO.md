@@ -84,7 +84,7 @@ Run the 5 validation programs for real. Each one surfaces design gaps that need 
 - [x] **Game loop** — ✅ **FULLY WORKING** (tested: entities, collision, spawning, scoring)
   - Fixed: Pool iteration, projection parameters, Rust syntax (.collect, .map closure), tuple enum patterns
   - Slow: ~60ms/frame in interpreter, but functionally correct
-- [ ] **HTTP JSON API server** — **BLOCKED** on: `net` module (TCP), `json` module, `Shared<T>` RwLock wrapper, `with multitasking` runtime (Map methods ✅ complete)
+- [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `with multitasking` ✅ (aliased to threading), `Map.from` ✅, string slicing ✅
 - [ ] **Sensor processor** — **BLOCKED** on: const generics `<const N: usize>`, fixed arrays `[T; N]`, SIMD `f32x8`, `u128` type, `@no_alloc` enforcement
 
 **Additional Interpreter Enhancements (2026-02-07):**

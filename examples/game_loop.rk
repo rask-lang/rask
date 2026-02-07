@@ -234,7 +234,6 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
 }
 
 // Main game loop with fixed timestep and threading
-@entry
 func main() -> () or Error {
     // Thread pool for CPU-bound physics work
     with threading(4) {

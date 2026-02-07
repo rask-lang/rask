@@ -85,10 +85,23 @@ pub struct Param {
     pub default: Option<Expr>,
 }
 
+/// A type parameter (for generics).
+#[derive(Debug, Clone)]
+pub struct TypeParam {
+    pub name: String,
+    /// True if this is a comptime parameter (e.g., `comptime N: usize`)
+    pub is_comptime: bool,
+    /// Type for comptime parameters (e.g., "usize" for `comptime N: usize`)
+    pub comptime_type: Option<String>,
+    /// Trait bounds (for regular type parameters)
+    pub bounds: Vec<String>,
+}
+
 /// A struct declaration.
 #[derive(Debug, Clone)]
 pub struct StructDecl {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub fields: Vec<Field>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
@@ -107,6 +120,7 @@ pub struct Field {
 #[derive(Debug, Clone)]
 pub struct EnumDecl {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub variants: Vec<Variant>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,

@@ -91,7 +91,6 @@ comptime func huge_array() -> [u8; 100_000_000] {
     [0u8; 100_000_000]
 }
 
-@entry
 func main() {
     println("Factorial of 10 is {FACT_10}")
 }

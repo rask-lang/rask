@@ -107,7 +107,6 @@ func save(data: Data) -> () or IoError {
     // No explicit return needed - implicit Ok(())
 }
 
-@entry
 func main() -> () or Error {
     println("Starting...")
     try run_app()

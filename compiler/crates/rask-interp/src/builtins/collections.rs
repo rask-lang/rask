@@ -2,7 +2,7 @@
 //! Methods on collection types: Vec, Pool, Handle, and type constructors.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{PoolData, TypeConstructorKind, Value};
@@ -805,9 +805,204 @@ impl Interpreter {
                 let cap = self.expect_int(&args, 0)? as usize;
                 Ok(Value::Map(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
             }
+            (TypeConstructorKind::Map, "from") => {
+                // Map.from(array_of_tuples) — build map from [(key, value), ...]
+                let arr = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                match arr {
+                    Value::Vec(v) => {
+                        let vec = v.lock().unwrap();
+                        let mut pairs = Vec::with_capacity(vec.len());
+                        for item in vec.iter() {
+                            match item {
+                                Value::Vec(tuple) => {
+                                    let t = tuple.lock().unwrap();
+                                    if t.len() >= 2 {
+                                        pairs.push((t[0].clone(), t[1].clone()));
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Ok(Value::Map(Arc::new(Mutex::new(pairs))))
+                    }
+                    _ => Err(RuntimeError::TypeError(
+                        "Map.from expects an array of pairs".to_string(),
+                    )),
+                }
+            }
+            (TypeConstructorKind::Shared, "new") => {
+                let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                Ok(Value::Shared(Arc::new(RwLock::new(value))))
+            }
+            (TypeConstructorKind::Atomic, "new") => {
+                let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+                match value {
+                    Value::Bool(b) => Ok(Value::AtomicBool(Arc::new(AtomicBool::new(b)))),
+                    Value::Int(n) => Ok(Value::AtomicUsize(Arc::new(AtomicUsize::new(n as usize)))),
+                    _ => Err(RuntimeError::TypeError(format!(
+                        "Atomic.new requires bool or int, got {}",
+                        value.type_name()
+                    ))),
+                }
+            }
+            (TypeConstructorKind::Ordering, "Relaxed") => {
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "Relaxed".to_string(),
+                    fields: vec![],
+                })
+            }
+            (TypeConstructorKind::Ordering, "Acquire") => {
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "Acquire".to_string(),
+                    fields: vec![],
+                })
+            }
+            (TypeConstructorKind::Ordering, "Release") => {
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "Release".to_string(),
+                    fields: vec![],
+                })
+            }
+            (TypeConstructorKind::Ordering, "AcqRel") => {
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "AcqRel".to_string(),
+                    fields: vec![],
+                })
+            }
+            (TypeConstructorKind::Ordering, "SeqCst") => {
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "SeqCst".to_string(),
+                    fields: vec![],
+                })
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: format!("{:?}", kind),
                 method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Handle AtomicBool method calls.
+    pub(crate) fn call_atomic_bool_method(
+        &self,
+        atomic: &Arc<std::sync::atomic::AtomicBool>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "load" => {
+                let ordering = self.parse_ordering(&args, 0)?;
+                let value = atomic.load(ordering);
+                Ok(Value::Bool(value))
+            }
+            "store" => {
+                let value = self.expect_bool(&args, 0)?;
+                let ordering = self.parse_ordering(&args, 1)?;
+                atomic.store(value, ordering);
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "Atomic<bool>".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Handle AtomicUsize method calls.
+    pub(crate) fn call_atomic_usize_method(
+        &self,
+        atomic: &Arc<std::sync::atomic::AtomicUsize>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "load" => {
+                let ordering = self.parse_ordering(&args, 0)?;
+                let value = atomic.load(ordering);
+                Ok(Value::Int(value as i64))
+            }
+            "store" => {
+                let value = self.expect_int(&args, 0)?;
+                let ordering = self.parse_ordering(&args, 1)?;
+                atomic.store(value as usize, ordering);
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "Atomic<usize>".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Handle AtomicU64 method calls.
+    pub(crate) fn call_atomic_u64_method(
+        &self,
+        atomic: &Arc<std::sync::atomic::AtomicU64>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "load" => {
+                let ordering = self.parse_ordering(&args, 0)?;
+                let value = atomic.load(ordering);
+                Ok(Value::Int(value as i64))
+            }
+            "store" => {
+                let value = self.expect_int(&args, 0)?;
+                let ordering = self.parse_ordering(&args, 1)?;
+                atomic.store(value as u64, ordering);
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "Atomic<u64>".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Parse an Ordering enum value from arguments.
+    fn parse_ordering(
+        &self,
+        args: &[Value],
+        idx: usize,
+    ) -> Result<std::sync::atomic::Ordering, RuntimeError> {
+        use std::sync::atomic::Ordering;
+        match args.get(idx) {
+            Some(Value::Enum { name, variant, .. }) if name == "Ordering" => {
+                match variant.as_str() {
+                    "Relaxed" => Ok(Ordering::Relaxed),
+                    "Acquire" => Ok(Ordering::Acquire),
+                    "Release" => Ok(Ordering::Release),
+                    "AcqRel" => Ok(Ordering::AcqRel),
+                    "SeqCst" => Ok(Ordering::SeqCst),
+                    _ => Err(RuntimeError::TypeError(format!(
+                        "unknown Ordering variant: {}",
+                        variant
+                    ))),
+                }
+            }
+            Some(v) => Err(RuntimeError::TypeError(format!(
+                "expected Ordering, got {}",
+                v.type_name()
+            ))),
+            None => Err(RuntimeError::ArityMismatch {
+                expected: idx + 1,
+                got: args.len(),
             }),
         }
     }

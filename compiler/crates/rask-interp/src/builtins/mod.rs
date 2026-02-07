@@ -8,6 +8,7 @@ mod strings;
 mod collections;
 mod enums;
 mod threading;
+mod shared;
 
 use std::sync::{Arc, Mutex};
 
@@ -25,6 +26,8 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match &receiver {
             Value::Int(a) => return self.call_int_method(*a, method, &args),
+            Value::Int128(a) => return self.call_int128_method(*a, method, &args),
+            Value::Uint128(a) => return self.call_uint128_method(*a, method, &args),
             Value::Float(a) => return self.call_float_method(*a, method, &args),
             Value::Bool(a) => return self.call_bool_method(*a, method, &args),
             Value::Char(c) => return self.call_char_method(*c, method, &args),
@@ -45,6 +48,12 @@ impl Interpreter {
             Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
+            Value::AtomicBool(atomic) => return self.call_atomic_bool_method(atomic, method, args),
+            Value::AtomicUsize(atomic) => return self.call_atomic_usize_method(atomic, method, args),
+            Value::AtomicU64(atomic) => return self.call_atomic_u64_method(atomic, method, args),
+            Value::Shared(s) => return self.call_shared_method(&Arc::clone(s), method, args),
+            Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
+            Value::TcpConnection(c) => return self.call_tcp_stream_method(&Arc::clone(c), method, args),
             Value::Enum { .. } if method == "eq" => {
                 if let Some(other) = args.first() {
                     if let (Value::Enum { name: n1, variant: v1, fields: f1 },

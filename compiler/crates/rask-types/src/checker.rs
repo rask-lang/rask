@@ -9,7 +9,7 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
 use rask_resolve::{ResolvedProgram, SymbolId, SymbolKind};
 
-use crate::types::{Type, TypeId, TypeVarId};
+use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 
 // ============================================================================
 // Type Definitions
@@ -208,7 +208,7 @@ impl TypeTable {
             },
             Type::Generic { base, args } => Type::UnresolvedGeneric {
                 name: self.type_name(*base),
-                args: args.iter().map(|a| self.resolve_type_names(a)).collect(),
+                args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
             },
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| self.resolve_type_names(p)).collect(),
@@ -221,6 +221,13 @@ impl TypeTable {
             },
             Type::Slice(elem) => Type::Slice(Box::new(self.resolve_type_names(elem))),
             other => other.clone(),
+        }
+    }
+
+    fn resolve_generic_arg(&self, arg: &GenericArg) -> GenericArg {
+        match arg {
+            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.resolve_type_names(ty))),
+            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 
@@ -334,11 +341,11 @@ impl InferenceContext {
             }
             Type::Generic { base, args } => Type::Generic {
                 base: *base,
-                args: args.iter().map(|t| self.apply(t)).collect(),
+                args: args.iter().map(|a| self.apply_generic_arg(a)).collect(),
             },
             Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
                 name: name.clone(),
-                args: args.iter().map(|t| self.apply(t)).collect(),
+                args: args.iter().map(|a| self.apply_generic_arg(a)).collect(),
             },
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|t| self.apply(t)).collect(),
@@ -359,6 +366,13 @@ impl InferenceContext {
         }
     }
 
+    fn apply_generic_arg(&self, arg: &GenericArg) -> GenericArg {
+        match arg {
+            GenericArg::Type(ty) => GenericArg::Type(Box::new(self.apply(ty))),
+            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
+        }
+    }
+
     /// Check if a type variable occurs in a type (prevents infinite types).
     fn occurs_in(&self, var: TypeVarId, ty: &Type) -> bool {
         match ty {
@@ -372,7 +386,7 @@ impl InferenceContext {
                 false
             }
             Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
-                args.iter().any(|a| self.occurs_in(var, a))
+                args.iter().any(|a| self.occurs_in_generic_arg(var, a))
             }
             Type::Fn { params, ret } => {
                 params.iter().any(|p| self.occurs_in(var, p)) || self.occurs_in(var, ret)
@@ -382,6 +396,13 @@ impl InferenceContext {
             Type::Slice(inner) | Type::Option(inner) => self.occurs_in(var, inner),
             Type::Result { ok, err } => self.occurs_in(var, ok) || self.occurs_in(var, err),
             _ => false,
+        }
+    }
+
+    fn occurs_in_generic_arg(&self, var: TypeVarId, arg: &GenericArg) -> bool {
+        match arg {
+            GenericArg::Type(ty) => self.occurs_in(var, ty),
+            GenericArg::ConstUsize(_) => false,
         }
     }
 }
@@ -433,6 +454,8 @@ pub enum TypeError {
         expected_type: Type,
         span: Span,
     },
+    #[error("generic argument error: {0}")]
+    GenericError(String, Span),
 }
 
 // ============================================================================
@@ -501,20 +524,39 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let name = s[..lt_pos].trim();
             let args_str = &s[lt_pos + 1..s.len() - 1];
             let arg_strs = split_type_args(args_str);
-            let args: Result<Vec<_>, _> =
-                arg_strs.iter().map(|a| parse_type_string(a, types)).collect();
+            let args: Result<Vec<GenericArg>, _> =
+                arg_strs.iter().map(|a| parse_generic_arg(a, types)).collect();
             let args = args?;
 
             match name {
                 "Option" if args.len() == 1 => {
-                    return Ok(Type::Option(Box::new(args.into_iter().next().unwrap())));
+                    // Option takes a single type argument
+                    if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
+                        return Ok(Type::Option(ty));
+                    } else {
+                        return Err(TypeError::GenericError(
+                            "Option expects a type argument, not a const".to_string(),
+                            Span::new(0, 0),
+                        ));
+                    }
                 }
                 "Result" if args.len() == 2 => {
+                    // Result takes two type arguments
                     let mut iter = args.into_iter();
-                    return Ok(Type::Result {
-                        ok: Box::new(iter.next().unwrap()),
-                        err: Box::new(iter.next().unwrap()),
-                    });
+                    let ok_arg = iter.next().unwrap();
+                    let err_arg = iter.next().unwrap();
+
+                    match (ok_arg, err_arg) {
+                        (GenericArg::Type(ok), GenericArg::Type(err)) => {
+                            return Ok(Type::Result { ok, err });
+                        }
+                        _ => {
+                            return Err(TypeError::GenericError(
+                                "Result expects two type arguments, not const".to_string(),
+                                Span::new(0, 0),
+                            ));
+                        }
+                    }
                 }
                 _ => {
                     if let Some(base_id) = types.get_type_id(name) {
@@ -534,6 +576,20 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
     }
 
     Ok(Type::UnresolvedNamed(s.to_string()))
+}
+
+/// Parse a single generic argument, which can be either a type or a const value.
+fn parse_generic_arg(s: &str, types: &TypeTable) -> Result<GenericArg, TypeError> {
+    let trimmed = s.trim();
+
+    // Try to parse as a usize literal (const generic)
+    if let Ok(n) = trimmed.parse::<usize>() {
+        return Ok(GenericArg::ConstUsize(n));
+    }
+
+    // Otherwise parse as a type
+    let ty = parse_type_string(trimmed, types)?;
+    Ok(GenericArg::Type(Box::new(ty)))
 }
 
 fn split_type_args(s: &str) -> Vec<&str> {
@@ -1402,13 +1458,13 @@ impl TypeChecker {
                     Some(IntSuffix::I16) => Type::I16,
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
-                    Some(IntSuffix::I128) => Type::I64,  // TODO: Add I128 to Type enum
+                    Some(IntSuffix::I128) => Type::I128,
                     Some(IntSuffix::Isize) => Type::I64,  // isize maps to i64
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
                     Some(IntSuffix::U64) => Type::U64,
-                    Some(IntSuffix::U128) => Type::U64,  // TODO: Add U128 to Type enum
+                    Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,  // usize maps to u64
                     None => Type::I32, // Default integer type
                 }
@@ -2136,7 +2192,7 @@ impl TypeChecker {
                 }
                 let mut progress = false;
                 for (arg1, arg2) in a1.iter().zip(a2.iter()) {
-                    if self.unify(arg1, arg2, span)? {
+                    if self.unify_generic_arg(arg1, arg2, span)? {
                         progress = true;
                     }
                 }
@@ -2261,6 +2317,18 @@ impl TypeChecker {
             _ => Err(TypeError::Mismatch {
                 expected: t1,
                 found: t2,
+                span,
+            }),
+        }
+    }
+
+    fn unify_generic_arg(&mut self, arg1: &GenericArg, arg2: &GenericArg, span: Span) -> Result<bool, TypeError> {
+        match (arg1, arg2) {
+            (GenericArg::Type(t1), GenericArg::Type(t2)) => self.unify(t1, t2, span),
+            (GenericArg::ConstUsize(n1), GenericArg::ConstUsize(n2)) => Ok(n1 != n2),
+            _ => Err(TypeError::Mismatch {
+                expected: Type::Error,  // TODO: Better error representation
+                found: Type::Error,
                 span,
             }),
         }
@@ -2546,7 +2614,7 @@ impl TypeChecker {
             }
             Type::Generic { args, .. } => {
                 for a in args {
-                    self.collect_type_vars(a, subst);
+                    self.collect_type_vars_generic_arg(a, subst);
                 }
             }
             Type::Fn { params, ret } => {
@@ -2556,6 +2624,13 @@ impl TypeChecker {
                 self.collect_type_vars(ret, subst);
             }
             _ => {}
+        }
+    }
+
+    fn collect_type_vars_generic_arg(&mut self, arg: &GenericArg, subst: &mut HashMap<TypeVarId, Type>) {
+        match arg {
+            GenericArg::Type(ty) => self.collect_type_vars(ty, subst),
+            GenericArg::ConstUsize(_) => {}
         }
     }
 
@@ -2590,7 +2665,7 @@ impl TypeChecker {
                 base: *base,
                 args: args
                     .iter()
-                    .map(|a| self.apply_type_var_substitution(a, substitution))
+                    .map(|a| self.apply_type_var_substitution_generic_arg(a, substitution))
                     .collect(),
             },
             Type::Fn { params, ret } => Type::Fn {
@@ -2601,6 +2676,19 @@ impl TypeChecker {
                 ret: Box::new(self.apply_type_var_substitution(ret, substitution)),
             },
             _ => ty.clone(),
+        }
+    }
+
+    fn apply_type_var_substitution_generic_arg(
+        &self,
+        arg: &GenericArg,
+        substitution: &HashMap<TypeVarId, Type>,
+    ) -> GenericArg {
+        match arg {
+            GenericArg::Type(ty) => {
+                GenericArg::Type(Box::new(self.apply_type_var_substitution(ty, substitution)))
+            }
+            GenericArg::ConstUsize(n) => GenericArg::ConstUsize(*n),
         }
     }
 

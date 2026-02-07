@@ -59,7 +59,6 @@ func parse_header(line: string) -> Option<(string, string)> {
 }
 
 
-@entry
 func main() -> () or Error {
     const line = "Content-Type: text/plain"
     match parse_header(line) {

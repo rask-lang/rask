@@ -133,7 +133,6 @@ func update_player(h: PlayerHandle) {
 }
 
 // Context setup
-@entry
 func main() {
     const ctx = Context {
         players: Pool.new(),

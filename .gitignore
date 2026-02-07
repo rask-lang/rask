@@ -2,9 +2,16 @@
 *__pycache__/
 *.pyc
 
-# Refinement working files (temporary analysis)
-.refinement/current/
-
-# Keep the history log tracked
-!.refinement/history.jsonl
+# Claude artifacts (removed from history)
+.refinement/
+research/
 .claude
+
+# mdBook build artifacts
+docs/build/
+docs/book/book/
+
+# Playground builds (future)
+docs/playground/dist/
+docs/playground/node_modules/
+docs/playground/.cache/

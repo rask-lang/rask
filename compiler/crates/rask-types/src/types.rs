@@ -12,6 +12,15 @@ pub struct TypeId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TypeVarId(pub u32);
 
+/// A generic argument (for const generics support).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum GenericArg {
+    /// A type argument (regular generic)
+    Type(Box<Type>),
+    /// A const usize argument (const generic)
+    ConstUsize(usize),
+}
+
 /// A type in Rask.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
@@ -24,11 +33,13 @@ pub enum Type {
     I16,
     I32,
     I64,
+    I128,
     /// Unsigned integers
     U8,
     U16,
     U32,
     U64,
+    U128,
     /// Floating point
     F32,
     F64,
@@ -43,12 +54,12 @@ pub enum Type {
     /// Generic type with parameters
     Generic {
         base: TypeId,
-        args: Vec<Type>,
+        args: Vec<GenericArg>,
     },
     /// Unresolved generic (before type registration)
     UnresolvedGeneric {
         name: std::string::String,
-        args: Vec<Type>,
+        args: Vec<GenericArg>,
     },
     /// Function type
     Fn {
@@ -90,6 +101,15 @@ impl Type {
     }
 }
 
+impl fmt::Display for GenericArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            GenericArg::Type(ty) => write!(f, "{}", ty),
+            GenericArg::ConstUsize(n) => write!(f, "{}", n),
+        }
+    }
+}
+
 impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -99,10 +119,12 @@ impl fmt::Display for Type {
             Type::I16 => write!(f, "i16"),
             Type::I32 => write!(f, "i32"),
             Type::I64 => write!(f, "i64"),
+            Type::I128 => write!(f, "i128"),
             Type::U8 => write!(f, "u8"),
             Type::U16 => write!(f, "u16"),
             Type::U32 => write!(f, "u32"),
             Type::U64 => write!(f, "u64"),
+            Type::U128 => write!(f, "u128"),
             Type::F32 => write!(f, "f32"),
             Type::F64 => write!(f, "f64"),
             Type::Char => write!(f, "char"),

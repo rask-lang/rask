@@ -150,7 +150,6 @@ func http_response(status: i32, body: string) -> HttpResponse {
     }
 }
 
-@entry
 func main() -> () or Error {
     const db = Shared.new(Database.new())
 

@@ -9,6 +9,7 @@ mod fs;
 mod io;
 mod json;
 mod math;
+mod net;
 mod os;
 mod path;
 mod random;
@@ -38,6 +39,7 @@ impl Interpreter {
             ModuleKind::Env => self.call_env_method(method, args),
             ModuleKind::Cli => self.call_cli_module_method(method, args),
             ModuleKind::Std => self.call_os_method(method, args),
+            ModuleKind::Net => self.call_net_method(method, args),
         }
     }
 

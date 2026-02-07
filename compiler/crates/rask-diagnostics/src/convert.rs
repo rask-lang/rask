@@ -240,6 +240,10 @@ impl ToDiagnostic for rask_types::TypeError {
                 "add `return` statement with a value of type `{}`",
                 expected_type
             )),
+
+            GenericError(msg, span) => Diagnostic::error(format!("generic argument error: {}", msg))
+                .with_code("E0319")
+                .with_primary(*span, "invalid generic argument"),
         }
     }
 }

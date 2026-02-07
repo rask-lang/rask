@@ -835,13 +835,14 @@ fn collect_md_files(dir: &Path) -> Vec<std::path::PathBuf> {
     files
 }
 
-/// Validate entry points: exactly one @entry required, multiple is compile error.
+/// Validate entry points: needs exactly one @entry or a func main().
 #[allow(dead_code)]
 fn validate_entry_points(decls: &[rask_ast::decl::Decl]) -> Result<(), String> {
     use rask_ast::decl::DeclKind;
 
     let mut entry_count = 0;
     let mut entry_names = Vec::new();
+    let mut has_main = false;
 
     for decl in decls {
         if let DeclKind::Fn(f) = &decl.kind {
@@ -849,11 +850,15 @@ fn validate_entry_points(decls: &[rask_ast::decl::Decl]) -> Result<(), String> {
                 entry_count += 1;
                 entry_names.push(f.name.clone());
             }
+            if f.name == "main" {
+                has_main = true;
+            }
         }
     }
 
     match entry_count {
-        0 => Err("no @entry function found (add @entry to mark the program entry point)".to_string()),
+        0 if has_main => Ok(()),
+        0 => Err("no entry point found (add func main() or use @entry)".to_string()),
         1 => Ok(()),
         _ => Err(format!(
             "multiple @entry functions found: {} (only one allowed per program)",
