@@ -67,7 +67,7 @@ jobs:
       run: |
         cd docs/blog
         bundle install
-        bundle exec jekyll build --destination ../build/blog
+        bundle exec jekyll build --source . --destination ../build/blog
 
     - name: Copy Playground to Build
       run: |
