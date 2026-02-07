@@ -1,20 +1,20 @@
 # Concurrency Specifications
 
-This folder contains the concurrency model for Rask.
+Concurrency model for Rask.
 
 ## Design Philosophy
 
-**Go-like ergonomics, compile-time safety:** Simple spawn syntax with affine handles that catch forgotten tasks at compile time.
+**Go-like ergonomics, compile-time safety.** Spawn syntax with affine handles. Forgotten tasks become compile errors.
 
-**Concurrency != Parallelism:**
-- **Concurrency** (green tasks): Many tasks interleaved on few threads. For I/O-bound work.
-- **Parallelism** (thread pool): True simultaneous execution. For CPU-bound work.
+**Concurrency vs parallelism:**
+- **Concurrency** (green tasks): Interleaved execution on few threads. I/O-bound work.
+- **Parallelism** (thread pool): Simultaneous execution. CPU-bound work.
 
-**No function coloring:** Functions are just functions. I/O pauses automatically (IDE shows pause points as ghost annotations). No ecosystem split.
+**No function coloring.** Functions work the same way regardless of I/O. Pausing happens automatically—IDEs show pause points as ghost annotations. No ecosystem split.
 
-**Affine handles:** All spawn constructs return handles that must be consumed (joined or detached). Compile error if forgotten.
+**Affine handles.** All spawn constructs return handles that must be consumed (joined or detached). Forgetting one is a compile error.
 
-**Explicit resources:** `with multitasking { }` and `with threading { }` clearly declare what's available.
+**Explicit resources.** `with multitasking { }` and `with threading { }` declare available capabilities.
 
 ## Specifications
 
@@ -114,20 +114,20 @@ try h.join()
 
 ## Validation Criteria
 
-- Can build HTTP server handling 100k concurrent connections?
-- Can build CLI pipeline tool (grep | sort | uniq)?
-- Can build producer-consumer with multiple workers?
-- Can process 1M items across all CPU cores?
-- Is the model as simple as Go for web services?
+- HTTP server handling 100k concurrent connections
+- CLI pipeline tool (grep | sort | uniq)
+- Producer-consumer with multiple workers
+- Process 1M items across all CPU cores
+- Model as simple as Go for web services
 
 ## Key Principles
 
 - `with multitasking { }` creates M:N scheduler for green tasks
 - `with threading { }` creates thread pool for CPU work
-- Configuration: `multitasking(N)`, `threading(N)` - just numbers
-- Affine handles (must join or detach)
+- Configuration via numbers: `multitasking(N)`, `threading(N)`
+- Affine handles must be joined or detached
 - `.join()` pauses in async mode, blocks in sync mode
-- Tasks own their data (no shared mutable state)
-- Channels work everywhere (pause in async, block in sync)
-- No function coloring (no async/await keywords)
-- Sync mode is default (no Multitasking needed for CLI/embedded)
+- Tasks own their data—no shared mutable state
+- Channels work everywhere—pause in async, block in sync
+- No function coloring, no async/await keywords
+- Sync mode is default—multitasking optional for CLI/embedded

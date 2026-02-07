@@ -1,15 +1,15 @@
 # Solution: Closure Capture
 
 ## The Question
-How do closures capture variables from their environment? Can closures mutate captured state? How do closures interact with borrowing rules?
+How do closures capture variables? Can closures mutate captured state? How do closures interact with borrowing?
 
 ## Decision
-Two kinds of closures with different capture semantics:
-1. **Storable closures** — Capture by value (copy/move), can be stored and returned
-2. **Expression-scoped closures** — Access outer scope directly, must execute immediately
+Two kinds:
+1. **Storable closures** — Capture by value (copy/move), can be stored
+2. **Expression-scoped closures** — Access outer scope directly, execute immediately
 
 ## Rationale
-Capture-by-value ensures closures are self-contained and thread-safe. The Pool+Handle pattern provides shared mutable state without the complexity of captured mutable references. Expression-scoped closures enable iterator patterns without ownership transfer.
+Capture-by-value makes closures self-contained and thread-safe. Pool+Handle gives you shared mutable state without mutable reference complexity. Expression-scoped closures enable iterator patterns.
 
 ## Mental Model: "Closures Are Suitcases"
 

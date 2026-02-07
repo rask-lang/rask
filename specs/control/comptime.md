@@ -4,16 +4,16 @@
 What subset of Rask can execute at compile time? How is compile-time execution requested? What restrictions apply? How does it integrate with the type system and build process?
 
 ## Decision
-Explicit `comptime` keyword marks compile-time evaluation. Restricted subset of Rask (pure computation, no I/O, no runtime-only features). Used for constants, generic specialization, conditional compilation. Separate from build scripts (which run as separate programs before compilation).
+Explicit `comptime` keyword marks compile-time evaluation. Restricted subset: pure computation, no I/O, no runtime-only features. Used for constants, generic specialization, conditional compilation. Separate from build scripts (separate programs before compilation).
 
 ## Rationale
-Explicit marking (`comptime`) makes it clear when code runs at compile time vs runtime, following Zig's proven approach. Restricting to a pure computational subset keeps the comptime interpreter simple and avoids the complexity nightmare of full-language interpretation (as seen with Rust's limited `const fn`). Rask has runtime-heavy features (pools, linear resources, concurrency) that don't make sense at compile time—limiting comptime to pure computation is pragmatic. Separating comptime (in-compiler evaluation) from build scripts (separate programs) provides flexibility without complexity.
+Explicit marking: `comptime` clarifies when code runs at compile time vs runtime. Follows Zig's proven approach. I restrict to pure computation to keep the comptime interpreter simple and avoid full-language interpretation complexity (see Rust's limited `const fn`). Rask's runtime-heavy features (pools, linear resources, concurrency) don't make sense at compile time. Separating comptime (in-compiler) from build scripts (separate programs) gives flexibility without complexity.
 
 ## Specification
 
 ### The `comptime` Keyword
 
-**Purpose:** Explicitly marks code that must execute at compile time.
+Explicitly marks code that must execute at compile time.
 
 **Forms:**
 
@@ -26,10 +26,10 @@ Explicit marking (`comptime`) makes it clear when code runs at compile time vs r
 | Comptime block | `comptime { ... }` | Block evaluated at compile time |
 
 **Semantics:**
-- `comptime` forces evaluation at compile time
-- Comptime expressions MUST be evaluable with only compile-time-known inputs
-- Comptime functions can ONLY call other comptime functions or pure operations
-- Attempting to use runtime values in comptime context is a compile error
+- Forces evaluation at compile time
+- Expressions must be evaluable with only compile-time-known inputs
+- Functions can only call other comptime functions or pure operations
+- Using runtime values in comptime context is a compile error
 
 ### Comptime Constants
 
@@ -167,7 +167,7 @@ func example() {
 
 ### Comptime Collections with Freeze
 
-Comptime supports standard collections (`Vec`, `Map`, `string`) with a **compiler-managed allocator**. Collections must be **frozen** to escape comptime as const data.
+Comptime supports standard collections (`Vec`, `Map`, `string`) with a compiler-managed allocator. Collections must be frozen to escape comptime as const data.
 
 **How it works:**
 
@@ -175,7 +175,7 @@ Comptime supports standard collections (`Vec`, `Map`, `string`) with a **compile
    - Subject to existing 256MB limit
    - Deterministic: same source produces same result across all machines (fixed allocation strategy, not system allocator)
 
-2. **Freeze to escape** — Collections must call `.freeze()` to become const
+2. **Freeze to escape** — Collections call `.freeze()` to become const
    - `Vec<T>.freeze()` → `[T; N]` (size inferred from length)
    - `Map<K,V>.freeze()` → static map (perfect hash or similar)
    - `string.freeze()` → `str` (string literal)
@@ -224,13 +224,7 @@ const BAD = comptime {
 
 **Why freeze?**
 
-| Concern | How Addressed |
-|---------|---------------|
-| Memory allocation | Compiler-managed scratch heap, bounded |
-| Determinism | No allocator variance, frozen = immutable |
-| Debuggability | `@comptime_print` works, normal collection APIs |
-| Clear boundary | `.freeze()` makes materialization explicit |
-| Existing limits | Subject to 256MB/10s/iteration limits |
+Makes the boundary explicit. Compiler-managed scratch heap is bounded (256MB), deterministic (no allocator variance), frozen means immutable. Normal collection APIs work. `.freeze()` makes materialization explicit.
 
 **Comparison with Zig:**
 
@@ -397,7 +391,7 @@ const B = comptime get_value(5)  // ❌ Compile error: "Index out of bounds: 5 >
 
 ### Debugging Comptime Code
 
-**The challenge:** Comptime errors occur during compilation, not runtime. No traditional debugger (gdb/lldb), errors happen far from source, call stacks can be confusing.
+Comptime errors occur during compilation. No traditional debugger (gdb/lldb). Errors can be far from source, call stacks confusing.
 
 **Debugging tools:**
 
@@ -425,8 +419,8 @@ comptime func build_table() -> [u8; 256] {
 
 **Build output:**
 ```bash
-$ raskc --comptime-verbose main.rask
-Compiling main.rask...
+$ raskc --comptime-verbose main.rk
+Compiling main.rk...
   [comptime] Building lookup table...
   [comptime] Progress: 0/256
   [comptime] Progress: 64/256
@@ -435,7 +429,7 @@ Compiling main.rask...
   [comptime] Done!
 Done.
 
-$ raskc main.rask  # Without flag: silent
+$ raskc main.rk  # Without flag: silent
 ```
 
 **Rules:**
@@ -484,13 +478,13 @@ const F = comptime factorial(1000)
 error: Comptime evaluation exceeded backwards branch quota (1,000)
 
 Comptime call stack:
-  → factorial(1000) at math.rask:5:9
-  → factorial(999)  at math.rask:5:9
+  → factorial(1000) at math.rk:5:9
+  → factorial(999)  at math.rk:5:9
     ... [repeated 996 more times]
-  → factorial(0)    at math.rask:5:9
+  → factorial(0)    at math.rk:5:9
 
 Triggered by:
-  const F = comptime factorial(1000) at main.rask:10:11
+  const F = comptime factorial(1000) at main.rk:10:11
            ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 note: Add @comptime_quota(N) to increase limit
@@ -502,17 +496,17 @@ note: Or rewrite using iteration instead of recursion
 error: Comptime panic: Division by zero
 
 Comptime call stack:
-  → divide(10, 0) at math.rask:3:9
+  → divide(10, 0) at math.rk:3:9
     panic("Division by zero")
     ^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Triggered by:
-  const X = comptime divide(10, 0) at main.rask:15:11
+  const X = comptime divide(10, 0) at main.rk:15:11
 ```
 
 #### 4. Testing Pattern
 
-**Test comptime logic at runtime first:**
+Test comptime logic at runtime first:
 
 ```rask
 // The comptime function
@@ -543,7 +537,7 @@ const F5 = comptime factorial(5)
 
 #### 5. IDE Integration
 
-**IDEs SHOULD provide:**
+IDEs should provide:
 
 - **Hover for comptime values:**
   ```rask
@@ -563,7 +557,7 @@ const F5 = comptime factorial(5)
 
 ### Comptime Limits
 
-**To prevent infinite compilation:**
+To prevent infinite compilation:
 
 | Limit | Default | Override | Purpose |
 |-------|---------|----------|---------|
@@ -608,7 +602,7 @@ comptime func large_computation() -> [u8; 10000] {
 ```rask
 func process<T, comptime N: usize>(items: [T; N])
 where T: Copy {
-    // N is known at compile time, T is substituted
+    // N known at compile time, T substituted
     for i in 0..N {
         handle(items[i])
     }
@@ -645,7 +639,7 @@ func buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] 
 
 ### Comptime vs Build Scripts
 
-**Two separate mechanisms:**
+Two separate mechanisms:
 
 | Aspect | Comptime | Build Scripts |
 |--------|----------|---------------|
@@ -707,7 +701,7 @@ Need to transform/process files (not just embed)?
 
 **Preferred: Use Collections with Freeze**
 
-For unknown-size results, use `Vec`, `Map`, or `string` with `.freeze()`:
+For unknown-size results, use `Vec`, `Map`, or `string` with `.freeze()`. Simpler than the legacy two-pass pattern:
 
 ```rask
 const PRIMES: [u32; _] = comptime {
@@ -719,11 +713,9 @@ const PRIMES: [u32; _] = comptime {
 }
 ```
 
-This is simpler than the legacy two-pass pattern.
-
 **Alternative: Two-Pass Computation**
 
-When you want to avoid collections entirely:
+When you want to avoid collections:
 
 ```rask
 // Step 1: Count
@@ -762,7 +754,7 @@ For codegen requiring external tools or extensive I/O:
 func main() -> () or Error {
     const schema = try fs.read_file("schema.json")
     const code = generate_types_from_schema(schema)
-    try fs.write_file("generated/types.rask", code)
+    try fs.write_file("generated/types.rk", code)
     Ok(())
 }
 ```
@@ -902,13 +894,13 @@ const reg32 = Register<32> { value: 0u32 }
 ## Integration Notes
 
 - **Type System:** Comptime enables type-level computation (selecting types, computing sizes). Generic parameters can be `comptime` to require compile-time-known values.
-- **Memory Model:** Comptime has no runtime heap, no pools, no handles. All data lives in compiler memory. Move/copy semantics still apply (comptime functions consume/borrow their inputs).
-- **Error Handling:** `Result` and `try` work at comptime. Errors become compile errors with full context. Panics also become compile errors.
+- **Memory Model:** Comptime has no runtime heap, pools, or handles. All data lives in compiler memory. Move/copy semantics still apply.
+- **Error Handling:** `Result` and `try` work at comptime. Errors become compile errors with full context.
 - **Generics:** `comptime` parameters enable array sizes, algorithm selection, conditional feature inclusion. Monomorphization sees comptime-known values as constants.
-- **Compilation Model:** Comptime evaluation happens during type checking, before codegen. Results are constants embedded in the final binary. Comptime limits ensure bounded compilation time.
-- **Build System:** Comptime is orthogonal to build scripts. Comptime runs in-compiler (limited); build scripts run as separate programs (unlimited). Dependencies in `rask.toml` are resolved before comptime execution.
-- **Module System:** Comptime constants can be `pub` and exported. Importing comptime constants from other packages is allowed. Comptime functions can be called across package boundaries.
-- **Tooling Contract:** IDEs SHOULD show comptime values as ghost annotations (e.g., show `const X = comptime fib(10)` with ghost text `// 55`). Comptime errors should include clickable links to source locations in comptime call stack.
+- **Compilation Model:** Comptime evaluation happens during type checking, before codegen. Results are constants embedded in binary. Comptime limits ensure bounded compilation time.
+- **Build System:** Comptime orthogonal to build scripts. Comptime runs in-compiler (limited); build scripts run as separate programs (unlimited).
+- **Module System:** Comptime constants can be `public` and exported. Can import comptime constants from other packages. Comptime functions callable across package boundaries.
+- **Tooling Contract:** IDEs should show comptime values as ghost annotations. Comptime errors include clickable links to source locations in call stack.
 
 ## Remaining Issues
 

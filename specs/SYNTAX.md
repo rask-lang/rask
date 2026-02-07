@@ -1,8 +1,8 @@
 # Rask Syntax Design
 
 **Goals:**
-- Intuitive for Python developers (clean, readable, minimal ceremony)
-- Not irritating for Rust developers (expression-oriented, pattern matching, explicit ownership)
+- Intuitive for Python devs (clean, readable, minimal ceremony)
+- Not irritating for Rust devs (expression-oriented, pattern matching, explicit ownership)
 - Not verbose like Go (no `if err != nil` noise, good inference)
 - Syntactic Noise ≤ 0.3 (at most 30% ceremony tokens)
 
@@ -11,15 +11,16 @@
 ## Design Principles
 
 ### 1. Newlines Are Statement Terminators
-No semicolons required. Use `;` only for multiple statements on one line.
+No semicolons required. Use `;` only for multiple statements on one line. 
+Of course, if you want you can have them, it works both ways.
 
 ```rask
-let x = 1
-let y = 2
-let z = 3; let w = 4  // Multiple on one line
+const x = 1
+const y = 2
+const z = 3; const w = 4  // Multiple on one line
 ```
 
-**Rationale:** Python developers expect newlines to matter. Rust developers won't be bothered (semicolons are just noise most of the time).
+**Rationale:** Python devs expect newlines to matter. Rust devs won't care — semicolons are just noise most of the time.
 
 ### 2. Colon for Inline, Braces for Multi-line
 
@@ -30,7 +31,7 @@ Single-expression blocks use `:`. Multi-statement blocks use `{ }`.
 if x > 0: return x
 const sign = if x > 0: "+" else: "-"
 
-// Multi-line (braces required)
+// Multi-line (braces and return required)
 if x > 0 {
     process(x)
     return x
@@ -39,27 +40,31 @@ if x > 0 {
 
 **Parsing rule:** `:` takes one expression until newline or next keyword. `{ }` for multiple statements.
 
-**Rationale:** Python-style colon is cleaner for simple cases. Braces are explicit for complex blocks.
+**Why:** Python-style colon is cleaner for simple cases. Braces are explicit when you need them.
 
 ### 3. Minimal Type Annotations
-Types inferred within function bodies. Public function signatures require explicit types; private functions may omit them entirely.
+Types inferred within function bodies. Public signatures require explicit types; private functions can omit them entirely.
 
 ```rask
-let x = 42              // i32 inferred (within body, unchanged)
-let y: u64 = 42         // Explicit when needed
+const x = 42            // i32 inferred (within body)
+const y: u64 = 42       // Explicit when needed
 
 // Public: full signature required
-public func add(a: i32, b: i32) -> i32 { a + b }
+public func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
 
 // Private: types optional (compiler infers from body)
-func add(a, b) { a + b }
+func add(a, b) {
+    return a + b
+}
 // Compiler infers: func add<T: Numeric>(a: T, b: T) -> T
 ```
 
 See [Gradual Constraints](types/gradual-constraints.md) for full rules on omitted types, bounds, and return types.
 
 ### 4. Keywords Are English Words
-Use readable keywords, not symbols or abbreviations.
+Try to use readable keywords, not symbols or abbreviations.
 
 | Concept | Rask | Rust | Go |
 |---------|------|------|-----|
@@ -71,14 +76,17 @@ Use readable keywords, not symbols or abbreviations.
 | Visibility | `public` | `pub` | Capitalization |
 
 ### 5. Expression-Oriented
-Everything that can be an expression, is. Blocks return their last expression.
+Everything that can be an expression is one. Blocks in expression context produce values implicitly; function bodies require explicit `return`.
 
 ```rask
-let status = if count > 0 { "active" } else { "empty" }
+const result = {
+    const temp = compute()
+    transform(temp)  // Last expression is the value (expression context)
+}
 
-let result = {
-    let temp = compute()
-    transform(temp)  // Last expression is the result
+// Function bodies: require explicit return
+func compute() -> i32 {
+    return 42  // Explicit return required
 }
 ```
 
@@ -145,7 +153,7 @@ let x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 | `let x = v` | Mutable — can reassign |
 | `x = v` | Reassignment (variable must exist) |
 
-**Rationale:** `const` means "constant" (won't change). `let` means "let it vary" (can change). This is the opposite of Rust but more intuitive for most programmers.
+**Why:** `const` means "constant" (won't change). `let` means "let it vary" (can change). Opposite of Rust but more intuitive.
 
 ---
 
@@ -159,19 +167,25 @@ func greet(name: string) {
 }
 
 func add(a: i32, b: i32) -> i32 {
-    a + b                     // Implicit return
+    return a + b              // Explicit return required
 }
 
 func divide(a: f64, b: f64) -> f64 or Error {
     if b == 0.0: return Err(Error.DivByZero)
-    a / b                     // Auto-wrapped in Ok
+    return a / b              // Auto-wrapped in Ok (explicit return)
 }
 ```
 
 **Private functions — types optional (gradual constraints):**
+It is possible to gradually introduce type constrains in private functions. This makes it easier to write prototype code, but is discouraged in production code. Public functions must declare types.
+
 ```rask
-func double(x) { x * 2 }           // Inferred: func double<T: Numeric>(x: T) -> T
-func greet(name) { println("Hi, {name}") }  // Inferred: func greet(name: string)
+func double(x) {
+    return x * 2          // Inferred: func double<T: Numeric>(x: T) -> T
+}
+func greet(name) {
+    println("Hi, {name}")  // Inferred: func greet(name: string) -> ()
+}
 
 // Partial annotation — mix explicit and inferred
 func process(data: Vec<Record>, handler) -> () or Error {
@@ -184,9 +198,10 @@ public func serve(port: i32) -> () or Error { ... }
 ```
 
 **Parameter modes:**
+Default is mutable borrow, read-only is optional.
 ```rask
-func process(data: Data)           // Borrow (mutability inferred)
-func validate(read data: Data)     // Read-only (enforced)
+func process(data: Data)           // Borrow (mutability inferred), can both read and write
+func validate(read data: Data)     // Read-only borrow (enforced)
 func consume(take data: Data)      // Takes ownership
 ```
 
@@ -200,7 +215,7 @@ create_user("Alice", "alice@x.com", false)
 // Named (must match declaration order)
 create_user(name: "Alice", email: "alice@x.com", admin: false)
 ```
-Named arguments improve readability but don't allow reordering. Per Principle 7, the IDE shows parameter names as ghost annotations even for positional calls.
+Named arguments improve readability but don't allow reordering. IDE shows parameter names as ghost annotations even for positional calls.
 
 **Default arguments:**
 ```rask
@@ -231,16 +246,16 @@ extend Point {
     func distance(self, other: Point) -> f64 {
         const dx = self.x - other.x
         const dy = self.y - other.y
-        sqrt((dx*dx + dy*dy) as f64)
+        return sqrt((dx*dx + dy*dy) as f64)
     }
 
     func origin() -> Point {        // Static (no self)
-        Point { x: 0, y: 0 }
+        return Point { x: 0, y: 0 }
     }
 }
 ```
 
-Methods are always defined in `extend` blocks, separate from the data definition. This keeps struct/enum definitions focused on data layout.
+Methods go in `extend` blocks, separate from data. Keeps struct/enum definitions focused on data layout.
 
 ### Structs
 
@@ -262,7 +277,7 @@ const user = User {
 const updated = User { email: "new@example.com", ..user }
 ```
 
-**Unique structs** (cannot be copied, can be dropped):
+**Unique structs** (can't be copied, can be dropped):
 ```rask
 @unique
 struct UserId {
@@ -271,7 +286,7 @@ struct UserId {
 // Prevents accidental duplication — each instance is unique
 ```
 
-**Linear structs** (must be consumed exactly once):
+**Linear structs** (must consume exactly once):
 ```rask
 @resource
 struct File {
@@ -322,14 +337,14 @@ enum Option<T> {
 
 extend Option<T> {
     func is_some(self) -> bool {
-        match self {
+        return match self {
             Some(_) => true,
             None => false,
         }
     }
 
     func unwrap(take self) -> T {
-        match self {
+        return match self {
             Some(v) => v,
             None => panic("unwrap on None"),
         }
@@ -359,17 +374,17 @@ struct Point {
 
 extend Point {
     func display(self) -> string {
-        "{self.x}, {self.y}"
+        return "{self.x}, {self.y}"
     }
 }
-// Point now satisfies Display automatically
+// Point satisfies Display automatically
 ```
 
-**Explicit trait implementation:** Use `extend Type with Trait` when you want to document intent or implement a trait explicitly:
+**Explicit trait implementation:** Use `extend Type with Trait` when you want to document intent:
 ```rask
 extend Point with Display {
     func display(self) -> string {
-        "({self.x}, {self.y})"
+        return "({self.x}, {self.y})"
     }
 }
 ```
@@ -377,7 +392,7 @@ extend Point with Display {
 **Runtime polymorphism:** Use `any Trait` for heterogeneous collections:
 ```rask
 const widgets: []any Widget = [button, textbox, slider]
-for w in widgets: w.draw()    // Dispatches to correct implementation
+for w in widgets: w.draw()    // Dynamic dispatch
 ```
 
 ### Generics
@@ -386,10 +401,13 @@ Unknown PascalCase identifiers in type position are automatically generic parame
 
 ```rask
 // T is automatically a type parameter (no <T> declaration needed)
-func identity(x: T) -> T { x }
+func identity(x: T) -> T {
+    return x
+}
 
 func map(list: List<Item>, f: func(Item) -> Result) -> List<Result> {
     // Item and Result are type parameters
+    // ... implementation ...
 }
 
 struct Pair {
@@ -401,18 +419,23 @@ struct Pair {
 **Same name = same type:**
 ```rask
 func swap(a: T, b: T) -> (T, T) {
-    (b, a)  // Both T must be the same type
+    return (b, a)  // Both T must be the same type
 }
 ```
 
 **Omitted types entirely (gradual constraints):**
 ```rask
-func identity(x) { x }             // Inferred generic: func identity<T>(x: T) -> T
-func sum(items) { items.sum() }    // Inferred: func sum<T: Numeric>(items: Vec<T>) -> T
+func identity(x) {
+    return x                // Inferred generic: func identity<T>(x: T) -> T
+}
+func sum(items) {
+    return items.sum()      // Inferred: func sum<T: Numeric>(items: Vec<T>) -> T
+}
 
 // Mix: explicit type + inferred bounds
-func sort(items: Vec<T>) { items.sort() }
-// T is auto-generic (PascalCase), bound inferred as T: Comparable
+func sort(items: Vec<T>) {
+    items.sort()            // T is auto-generic (PascalCase), bound inferred as T: Comparable
+}
 ```
 
 **Context clauses with `with`:**
@@ -424,11 +447,11 @@ func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
 
 // Named context (auto-resolution + structural operations)
 func spawn(count: i32) with enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
-    let handles = Vec.new()
+    const handles = Vec.new()
     for i in 0..count {
         handles.push(try enemies.insert(Enemy.new()))
     }
-    handles
+    return handles
 }
 
 // Multiple contexts
@@ -474,14 +497,16 @@ public func complex<K, V>(map: Map<K, V>, key: K) -> V or NotFound
     where K: HashKey, V: Clone
 {
     const v_handle = try map.get(key)
-    v_handle.clone()
+    return v_handle.clone()
 }
 ```
 
 **Explicit declaration (disambiguation):**
 ```rask
-// When a name conflicts with a real type, use explicit <>
-func make_item<Item>(x: Item) -> Item  // Forces Item to be generic
+// When a name conflicts with a real type, force it generic with <>
+func make_item<Item>(x: Item) -> Item {
+    return x
+}
 
 // Also useful for clarity in complex signatures
 struct Cache<Key, Value> {
@@ -520,8 +545,8 @@ if (x > 0 && y < 10): handle()
 ```
 
 **Rules:**
-- No parentheses required for simple conditions
-- Parentheses required when condition spans multiple lines
+- No parens for simple conditions
+- Parens required when condition spans multiple lines
 - `:` for single expression, `{ }` for multiple statements
 
 ### Match
@@ -569,7 +594,7 @@ match point {
 
 ### Pattern Matching in Conditions: `is`
 
-Use `is` to match a single pattern in `if` or `while`, with automatic binding:
+Match a single pattern in `if` or `while` with automatic binding:
 
 ```rask
 // Check enum variant with binding
@@ -606,7 +631,7 @@ if state is Connected(sock) && sock.is_ready() {
 
 **Guard pattern with `let ... is ... else`:**
 
-For early exits where bindings need to escape to the outer scope:
+Early exits where bindings need to escape to outer scope:
 
 ```rask
 let value = result is Ok else { return Err(e) }
@@ -617,7 +642,7 @@ let item = queue.pop() is Some else { break }
 let (a, b) = pair is Some else { return None }
 ```
 
-The `else` block must diverge (`return`, `break`, `panic`, etc.).
+The `else` block must diverge (`return`, `break`, `panic`).
 
 ### Loops
 
@@ -711,12 +736,12 @@ const h = try pool.insert(Entity { health: 100, x: 0, y: 0 })
 // Access
 pool[h].health -= 10
 
-// Handle auto-resolution (handle knows its pool)
+// Handle auto-resolution
 func damage(entity: Handle<Entity>, amount: i32) {
     entity.health -= amount    // Auto-resolves via pool registry
 }
 
-// Explicit pool access for structural changes
+// Explicit pool for structural changes
 func kill(pool: Pool<Entity>, h: Handle<Entity>) {
     pool.remove(h)
 }
@@ -735,10 +760,10 @@ with pool {
 ```rask
 func process(path: string) -> Data or Error {
     const file = try File.open(path)
-    ensure file.close()          // Runs on ANY exit (return, try, panic)
+    ensure file.close()               // Runs on ANY exit (return, try, panic)
 
     const data = try file.read_all()  // May fail, ensure still runs
-    transform(data)
+    return transform(data)
 }
 ```
 
@@ -768,7 +793,7 @@ try conn.close()    // MUST call (compiler error if not)
 
 ### Projections (Partial Borrows)
 
-Borrow only specific fields of a struct, enabling disjoint borrows across functions:
+Borrow specific fields of a struct, enabling disjoint borrows across functions:
 
 ```rask
 struct Player {
@@ -832,14 +857,14 @@ const must_exist = optional! "custom panic message"
 // Result
 func read_file(path: string) -> string or IoError {
     const file = try File.open(path)
-    file.read_all()
+    return file.read_all()
 }
 
 // Error propagation with try
 func load_config() -> Config or (IoError | ParseError) {
     const content = try read_file("config.json")    // IoError
     const config = try parse_json(content)          // ParseError
-    config                                          // Auto-wrapped in Ok
+    return config                                   // Auto-wrapped in Ok
 }
 ```
 
@@ -862,14 +887,14 @@ match load_config() {
 ### Spawn and Task Groups
 
 ```rask
-// Basic spawn (must handle the handle!)
+// Basic spawn (must handle it)
 const handle = spawn { compute() }
 const result = try handle.join()
 
 // Fire-and-forget (explicit detach)
 spawn { background_work() }.detach()
 
-// Spawn without handling = compile error
+// Spawn without handling = error
 spawn { work() }  // ERROR: unused TaskHandle
 
 // Task groups for dynamic spawning
@@ -921,7 +946,7 @@ queue.lock(|q| q.push(item))
 
 ## Attributes
 
-Use `@` prefix (familiar from Python decorators, Java annotations).
+`@` prefix (familiar from Python decorators, Java annotations).
 
 ```rask
 @layout(C)
@@ -974,14 +999,14 @@ test "addition" {
 ## Modules and Imports
 
 ```rask
-// File: math/vector.rask
+// File: math/vector.rk
 public struct Vec3 {
     public x: f32
     public y: f32
     public z: f32
 }
 
-// File: main.rask
+// File: main.rk
 import math.vector.Vec3
 import math.vector.*           // Import all public items
 import math.vector.Vec3 as V3  // Alias
@@ -1029,7 +1054,7 @@ func handler(w: ResponseWriter, r: Request) -> () or HttpError {
     const body = try r.body.read_all()
     const req = try json.parse<Request>(body)
     const result = try process(req)
-    w.write_json(result)
+    return w.write_json(result)
 }
 ```
 
@@ -1053,11 +1078,11 @@ func process_file(path: string) -> Data or IoError {
     const file = try File.open(path)
     ensure file.close()
     const content = try file.read_all()
-    transform(content)
+    return transform(content)
 }
 ```
 
-Similar structure, but with explicit error handling and resource cleanup.
+Similar structure, explicit error handling and resource cleanup.
 
 ### Iteration
 
@@ -1162,4 +1187,4 @@ println("{sum}")
 | Interpolation | `"{x}"` | In all strings |
 | Comments | `//` and `/* */` | Standard |
 
-The syntax aims to be immediately readable by developers from Python, Rust, or Go backgrounds, while keeping the ceremony minimal and the ownership semantics visible.
+The syntax is immediately readable for Python, Rust, or Go devs, with minimal ceremony and visible ownership semantics.

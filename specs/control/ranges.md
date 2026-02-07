@@ -31,7 +31,7 @@ for i in 0.. {
 **Semantics:**
 - Iterator yields values indefinitely (0, 1, 2, ...)
 - Loop never terminates unless `break`, `return`, or `try` exits
-- Valid use case: event loops, generators, polling
+- Valid use cases: event loops, generators, polling
 
 **Desugaring:**
 
@@ -63,7 +63,7 @@ for i in (0..10).rev() {  // Iterates 9, 8, 7, ..., 0
 }
 ```
 
-**Rule:** If `start >= end`, range is empty (loop body never executes). This is NOT an error.
+**Rule:** `start >= end` means empty range (loop body never executes). Not an error.
 
 | Range | Iterations | Values |
 |-------|-----------|--------|
@@ -91,7 +91,7 @@ for i in 0u16..256 {  // OK: u16 can hold 256
 }
 ```
 
-**Rule:** Range end value MUST fit in the iterator type. Compiler enforces at type-checking.
+**Rule:** Range end value must fit in iterator type. Compiler enforces at type-checking.
 
 **Case 2: Increment overflow**
 
@@ -104,8 +104,8 @@ for i in 0u8.. {
 **Behavior:** When incrementing from max value:
 - Unsigned types: Wraps to 0 (infinite loop: 0, 1, ..., 255, 0, 1, ...)
 - Signed types: Wraps to min value (e.g., i8: 127 → -128)
-- In **debug mode**: PANIC on overflow
-- In **release mode**: Wrap (silent)
+- Debug mode: panic on overflow
+- Release mode: wrap (silent)
 
 **Recommendation:** Use `.take()` adapter to bound infinite ranges:
 
@@ -124,7 +124,7 @@ for i in 0u8..=255 {
 // After yielding 255, how does iterator know it's done?
 ```
 
-**Implementation:** `RangeInclusive` tracks whether the final value has been yielded:
+**Implementation:** `RangeInclusive` tracks whether final value has been yielded:
 
 ```rask
 struct RangeInclusive<T> {
@@ -141,17 +141,17 @@ extend RangeInclusive<T> with Iterator<T> where T: Int {
             return Some(self.end);
         }
         const val = self.start;
-        self.start += 1;  // This wraps after yielding max value, but exhausted=true prevents re-use
+        self.start += 1;  // Wraps after yielding max value, but exhausted=true prevents re-use
         Some(val)
     }
 }
 ```
 
-**Rule:** `RangeInclusive<u8>` for `0..=255` is valid and terminates correctly.
+`RangeInclusive<u8>` for `0..=255` is valid and terminates correctly.
 
 **Step Ranges:**
 
-The `step` keyword allows iteration with custom increments:
+The `step` keyword allows iteration with custom increments.
 
 ```rask
 for i in 0..100 step 2 {     // 0, 2, 4, ..., 98
@@ -194,9 +194,9 @@ for x in 0.0..1.0 step 0.1 { // Floats: 0.0, 0.1, 0.2, ..., 0.9
 
 **Type constraints:**
 - Step type must match range type
-- For floats, beware of precision: `0.0..1.0 step 0.3` yields 0.0, 0.3, 0.6, 0.9 (not exactly 0.9)
+- Floats: beware precision: `0.0..1.0 step 0.3` yields 0.0, 0.3, 0.6, 0.9 (not exactly 0.9)
 
-**Overflow:** Same rules as regular increment—debug panics, release wraps. Use `.take()` to bound.
+Overflow: Same rules as regular increment—debug panics, release wraps. Use `.take()` to bound.
 
 **Type Inference:**
 

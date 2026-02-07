@@ -9,7 +9,7 @@ How can collections be iterated when borrows cannot be stored, without lifetime 
 Loops yield indices/handles (never borrowed values). Access uses existing collection borrow rules. Value extraction follows the 16-byte Copy threshold. Ownership transfer uses explicit `take_all()`.
 
 ## Rationale
-Index-based iteration eliminates the need for stored references while preserving Rask's core constraints: no lifetime annotations, local analysis only, transparent costs. The existing expression-scoped collection access rules extend naturally to loop bodies without new concepts. Copy extraction for small types (≤16 bytes) matches assignment semantics, while explicit `clone()` makes large copies visible.
+Index-based iteration eliminates stored references while preserving Rask's core constraints: no lifetime annotations, local analysis only, transparent costs. Expression-scoped collection access rules extend naturally to loop bodies without new concepts. Copy extraction for small types (≤16 bytes) matches assignment semantics, explicit `clone()` makes large copies visible.
 
 ## Loop Syntax
 
@@ -24,11 +24,11 @@ for <binding> in <collection> { ... }
 | `Map<K,V>` | `K` (requires K: Copy) | Key (copied) |
 | `Range` (`0..n`) | Integer | Range value |
 
-**No mode annotations.** Loop variables are always owned indices/handles (Copy types).
+No mode annotations. Loop variables are always owned indices/handles (Copy types).
 
 ## Loop Borrowing Semantics
 
-**Core Rule:** `for i in collection` does NOT borrow the collection. The loop variable receives a Copy value (index or handle), and the collection remains accessible within the loop body.
+Core rule: `for i in collection` does not borrow the collection. Loop variable receives a Copy value (index or handle), collection remains accessible within the loop body.
 
 | Loop Syntax | Ownership Transfer | Collection Access Inside Loop |
 |-------------|-------------------|------------------------------|
@@ -66,9 +66,9 @@ for item in vec.take_all() { body }
 
 **Why no borrow?**
 - Indices are Copy values, not references
-- Each `vec[i]` access is independent (expression-scoped)
-- Enables mutation patterns: `for i in vec { vec[i].field = x }`
-- Local analysis only — no loop-level borrow tracking
+- Each `vec[i]` access independent (expression-scoped)
+- Enables mutation: `for i in vec { vec[i].field = x }`
+- Local analysis only—no loop-level borrow tracking
 - Same semantics as Go, C, Zig
 
 **Implication:** Collection length captured at loop start. Mutations during iteration may invalidate indices (programmer responsibility).

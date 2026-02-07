@@ -7,9 +7,9 @@ How do libraries differ from executables? What constitutes an entry point, can a
 **Package role is determined by presence of `@entry` function.** No manifest, no configuration flags, no dual-purpose packages. Libraries export public API; executables contain an `@entry` function. Testing allows both patterns. Convention is to name the entry function `main`, but any name works.
 
 ## Rationale
-Maximum simplicity: the compiler determines package role from code structure. No build files needed for basic usage. Follows "package = directory" principle—structure determines behavior. Separates "library with CLI example" from "application" clearly. Testing gets special handling because tests need to import the package they're testing while providing their own entry points.
+Maximum simplicity: compiler determines package role from code structure. No build files needed for basic usage. Follows "package = directory" principle—structure determines behavior. Separates "library with CLI example" from "application" clearly. Testing gets special handling because tests need to import the package they're testing while providing their own entry points.
 
-The `@entry` attribute makes entry points explicit rather than relying on a magic function name. Developers unfamiliar with C conventions can see `@entry` and understand immediately that this is where the program starts.
+The `@entry` attribute makes entry points explicit rather than relying on a magic function name. Developers unfamiliar with C conventions can see `@entry` and understand immediately this is where the program starts.
 
 ## Specification
 
@@ -19,14 +19,14 @@ The `@entry` attribute makes entry points explicit rather than relying on a magi
 |---------|---------------|--------------|
 | Package with `@entry` function | Executable | Binary |
 | Package without `@entry` | Library | No output (imported only) |
-| Package with `*_test.rask` | Library + tests | Test binary (when testing) |
+| Package with `*_test.rk` | Library + tests | Test binary (when testing) |
 
 **Rules:**
-- Presence of ANY `@entry` function → executable
-- `@entry` function MUST be `public` (external tools need to find entry point)
-- `@entry` function MUST be in root package directory (not nested packages)
+- Presence of any `@entry` function → executable
+- `@entry` function must be `public` (external tools need to find entry point)
+- `@entry` function must be in root package directory (not nested packages)
 - **Exactly one `@entry` per program** — multiple `@entry` functions is a compile error
-- Nested packages (`pkg/sub/`) are ALWAYS libraries (cannot have `@entry`)
+- Nested packages (`pkg/sub/`) are always libraries (can't have `@entry`)
 
 ### Entry Point Signatures
 
@@ -95,7 +95,7 @@ public func main() {
 **Properties:**
 - Linear resources (must be consumed exactly once)
 - Available in `main()` scope without import
-- Not available in other functions (pass as parameters if needed)
+- Not available in other functions (pass as parameters if you need them)
 - Can use `ensure` for cleanup (e.g., flush on exit)
 
 ### Process Exit
@@ -135,20 +135,20 @@ public func main() {
 **Cleanup on exit:**
 - `ensure` blocks run before exit (unless `sys.exit()` used)
 - Linear resources must be consumed before `@entry` returns
-- Init errors: if package init fails, entry function never runs
+- If package init fails, entry function never runs
 
 ### Libraries (No main())
 
 **Library packages:**
 - Export `public` functions, types, traits
-- Cannot be executed directly
+- Can't be executed directly
 - Must be imported by executables or other libraries
 - Can have `init()` for package initialization
 
 **Example:**
 ```rask
 // pkg: http
-// file: http/request.rask
+// file: http/request.rk
 public struct Request { ... }
 public func new(method: string, path: string) -> Request { ... }
 
@@ -172,10 +172,10 @@ public func main() {
 
 ```rask
 // pkg: http
-// file: http/request.rask
+// file: http/request.rk
 public func parse(input: string) -> Request or Error { ... }
 
-// file: http/request_test.rask
+// file: http/request_test.rk
 import http  // Can import own package in tests
 
 public func test_parse() {
@@ -206,7 +206,7 @@ public func main(args: Args) {
 ```
 
 **Rules:**
-- Test files (`*_test.rask`) can have their own `@entry` for custom test runners
+- Test files (`*_test.rk`) can have their own `@entry` for custom test runners
 - Tests access all package items (public and non-public)
 - Test binaries are separate from package binary
 
@@ -214,7 +214,7 @@ public func main(args: Args) {
 
 **No configuration needed for basic cases:**
 ```rask
-raskc myapp          # Builds myapp/main.rask → myapp binary
+raskc myapp          # Builds myapp/main.rk → myapp binary
 raskc mylib          # Error: no main() found
 raskc --lib mylib    # Success: builds library (for checking only, no output)
 ```
@@ -251,24 +251,24 @@ c_link_libs = ["ssl", "crypto"]
 
 **Solution:** Explicit file selection via CLI
 ```rask
-raskc myapp/cli.rask → cli binary
-raskc myapp/server.rask → server binary
+raskc myapp/cli.rk → cli binary
+raskc myapp/server.rk → server binary
 ```
 
 **OR:** Use rask.toml to define multiple binaries
 ```
 [[bin]]
 name = "cli"
-path = "cli.rask"
+path = "cli.rk"
 
 [[bin]]
 name = "server"
-path = "server.rask"
+path = "server.rk"
 ```
 
 **Rules:**
 - Each binary file has its own `@entry` function
-- Files NOT in `[[bin]]` list are library code (importable by binaries)
+- Files not in `[[bin]]` list are library code (importable by binaries)
 - Without rask.toml: compile one file at a time explicitly
 
 ### Examples Directory Pattern
@@ -277,33 +277,33 @@ path = "server.rask"
 
 ```bash
 mylib/
-  core.rask         # Library code, public API
-  internal.rask     # Library code, pkg-visible
+  core.rk         # Library code, public API
+  internal.rk     # Library code, pkg-visible
   examples/
-    basic.rask      # Example program with @entry
-    advanced.rask   # Another example with @entry
+    basic.rk      # Example program with @entry
+    advanced.rk   # Another example with @entry
 ```
 
 **Without rask.toml:**
 ```bash
-raskc mylib/examples/basic.rask → basic binary
+raskc mylib/examples/basic.rk → basic binary
 ```
 
 **With rask.toml:**
 ```toml
 [[example]]
 name = "basic"
-path = "examples/basic.rask"
+path = "examples/basic.rk"
 
 [[example]]
 name = "advanced"
-path = "examples/advanced.rask"
+path = "examples/advanced.rk"
 ```
 
 **Behavior:**
 - `raskc --examples mylib` builds all examples
 - Examples can `import mylib` (import parent package)
-- Examples are NOT built by default (explicit opt-in)
+- Examples aren't built by default (explicit opt-in)
 
 ### Edge Cases
 
@@ -316,7 +316,7 @@ path = "examples/advanced.rask"
 | Linear resource leak in `@entry` | Compile error: must consume before return |
 | `sys.exit()` with unconsumed linear resource | Resource leaked (exit is unsafe operation) |
 | Package has both library code and `@entry` | Legal: can `import myapp` OR `raskc myapp` (but confusing, discouraged) |
-| Test with multiple `test_*.rask` files | Each file can have tests, one `@entry` total (framework-generated) |
+| Test with multiple `test_*.rk` files | Each file can have tests, one `@entry` total (framework-generated) |
 | `init()` failure before `@entry` | Entry function never runs, process exits with init error |
 | Args not used in `@entry` | Legal: `@entry func main()` or `@entry func main(_: Args)` both fine |
 
@@ -344,14 +344,14 @@ path = "examples/advanced.rask"
 **Rask approach:**
 - No build script needed (simpler than Zig)
 - No special package name needed (simpler than Go)
-- Explicit attribute makes entry point self-documenting (no magic name knowledge required)
+- Explicit attribute makes entry point self-documenting (no magic name knowledge)
 - Structure determines role (like Odin, but with explicit attribute)
 - Optional manifest only for complex cases (like Cargo, but not required)
 
 ## Migration Path
 
 **Phase 1 (current):** No build system, manual compilation
-- Use `raskc file.rask` for executables
+- Use `raskc file.rk` for executables
 - Libraries are checked but not built
 
 **Phase 2:** Add rask.toml support

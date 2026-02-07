@@ -4,16 +4,16 @@
 How do we provide heap-allocated values with single ownership for recursive data structures and large values, without runtime overhead?
 
 ## Decision
-`Owned<T>` is a linear heap pointer. The `own` keyword allocates and returns an `Owned<T>`. Safety comes from linearity (compile-time), not generation checks (runtime). This is the same as a Box<T> in Rust.
+`Owned<T>` is a linear heap pointer. `own` keyword allocates and returns `Owned<T>`. Safety from linearity (compile-time), not generation checks (runtime). Same as Rust's Box<T>.
 
 ## Rationale
-Recursive types (trees, linked lists, ASTs) require indirection—a type cannot contain itself directly. `Owned<T>` provides this indirection with:
+Recursive types (trees, linked lists, ASTs) need indirection—a type can't contain itself. `Owned<T>` provides this:
 
-- **Compile-time safety:** Linearity prevents use-after-free, double-free, and leaks
+- **Compile-time safety:** Linearity prevents use-after-free, double-free, leaks
 - **Zero runtime overhead:** No generation checks, no reference counting
-- **Visible allocation:** The `own` keyword marks allocation sites explicitly
+- **Visible allocation:** `own` keyword marks allocation sites
 
-Unlike `Handle<T>` (which uses generation checks for safety), `Owned<T>` relies entirely on the compiler. This is possible because `Owned<T>` has exactly one owner—there's no aliasing to track at runtime.
+Unlike `Handle<T>` (generation checks), `Owned<T>` relies on the compiler. Works because `Owned<T>` has exactly one owner—no aliasing to track at runtime.
 
 ## Specification
 

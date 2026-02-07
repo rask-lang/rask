@@ -33,7 +33,7 @@ pub fn for_expected(expected: &str, found: &TokenKind) -> Option<&'static str> {
         ("expression", _) => Some("Try a value, variable, or function call"),
 
         // Name/identifier hints
-        ("a name", TokenKind::Int(_)) => Some("Names can't start with a number"),
+        ("a name", TokenKind::Int(_, _)) => Some("Names can't start with a number"),
         ("a name", _) => Some("Names start with a letter or '_'"),
 
         // Type hints

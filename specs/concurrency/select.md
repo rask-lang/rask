@@ -1,10 +1,10 @@
 # Select and Multiplex
 
-Waiting on multiple sources simultaneously.
+Wait on multiple sources simultaneously.
 
 ## Overview
 
-Select allows waiting on multiple channel operations simultaneously.
+Select waits on multiple channel operations simultaneously.
 
 ## Syntax
 
@@ -25,7 +25,7 @@ result = select {
 | Send | `tx <- val: expr` | Wait for send completion |
 | Default | `_: expr` | Non-blocking fallback |
 
-Timeouts use `Timer.after(duration)` which returns a receiver that fires once after the duration elapses. This is just a regular receive arm—no special syntax needed.
+Timeouts use `Timer.after(duration)` which returns a receiver that fires once after the duration elapses. Regular receive arm—no special syntax needed.
 
 ## Semantics
 
@@ -40,7 +40,7 @@ When multiple arms are ready simultaneously:
 
 #### `select` (Default)
 
-The runtime selects **uniformly at random** among all ready arms. This prevents starvation—no arm can be indefinitely skipped if it's always ready.
+Runtime selects **uniformly at random** among all ready arms. Prevents starvation—no arm can be indefinitely skipped if it's always ready.
 
 ```rask
 select {
@@ -49,7 +49,7 @@ select {
 }
 ```
 
-**Guarantee:** If an arm is ready on N consecutive iterations, it fires with probability approaching 1 as N increases.
+**Guarantee:** If an arm is ready on N consecutive iterations, it fires with probability approaching 1 as N grows.
 
 #### `select_priority` (Opt-in)
 

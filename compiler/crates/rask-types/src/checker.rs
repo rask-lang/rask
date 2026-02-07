@@ -92,7 +92,6 @@ impl TypeTable {
     }
 
     fn register_builtins(&mut self) {
-        // Primitive types
         self.builtins.insert("i8".to_string(), Type::I8);
         self.builtins.insert("i16".to_string(), Type::I16);
         self.builtins.insert("i32".to_string(), Type::I32);
@@ -107,16 +106,11 @@ impl TypeTable {
         self.builtins.insert("char".to_string(), Type::Char);
         self.builtins.insert("string".to_string(), Type::String);
         self.builtins.insert("()".to_string(), Type::Unit);
-        // Integer type aliases
         self.builtins.insert("int".to_string(), Type::I64);
         self.builtins.insert("uint".to_string(), Type::U64);
         self.builtins.insert("isize".to_string(), Type::I64);
         self.builtins.insert("usize".to_string(), Type::U64);
 
-        // Register builtin generic enums: Option<T> and Result<T, E>
-        // Use TypeVar placeholders for generic parameters
-
-        // Option<T> with variants: Some(T), None
         let option_id = self.register_type(TypeDef::Enum {
             name: "Option".to_string(),
             variants: vec![
@@ -127,7 +121,6 @@ impl TypeTable {
         });
         self.option_type_id = Some(option_id);
 
-        // Result<T, E> with variants: Ok(T), Err(E)
         let result_id = self.register_type(TypeDef::Enum {
             name: "Result".to_string(),
             variants: vec![
@@ -205,7 +198,6 @@ impl TypeTable {
         }
     }
 
-    /// Resolve Named(TypeId) types in a type to readable names.
     fn resolve_type_names(&self, ty: &Type) -> Type {
         match ty {
             Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
@@ -232,7 +224,6 @@ impl TypeTable {
         }
     }
 
-    /// Resolve Named types to readable names in error messages.
     pub fn resolve_error_types(&self, error: TypeError) -> TypeError {
         match error {
             TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
@@ -456,18 +447,15 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::Unit);
     }
 
-    // Never type
     if s == "!" {
         return Ok(Type::Never);
     }
 
-    // Check for optional suffix: T?
     if s.ends_with('?') && !s.starts_with('(') {
         let inner = parse_type_string(&s[..s.len() - 1], types)?;
         return Ok(Type::Option(Box::new(inner)));
     }
 
-    // Check for tuple: (T1, T2, ...)
     if s.starts_with('(') && s.ends_with(')') {
         let inner = &s[1..s.len() - 1];
         if inner.is_empty() {
@@ -475,20 +463,17 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         }
         let parts = split_type_args(inner);
         if parts.len() == 1 && !inner.contains(',') {
-            // Single element in parens - not a tuple, just grouping
             return parse_type_string(inner, types);
         }
         let elems: Result<Vec<_>, _> = parts.iter().map(|p| parse_type_string(p, types)).collect();
         return Ok(Type::Tuple(elems?));
     }
 
-    // Check for slice: []T
     if s.starts_with("[]") {
         let inner = parse_type_string(&s[2..], types)?;
         return Ok(Type::Slice(Box::new(inner)));
     }
 
-    // Check for array: [T; N]
     if s.starts_with('[') && s.ends_with(']') {
         let inner = &s[1..s.len() - 1];
         if let Some(semi_pos) = inner.find(';') {
@@ -503,17 +488,14 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                 len,
             });
         }
-        // Just [T] - slice
         let inner = parse_type_string(inner, types)?;
         return Ok(Type::Slice(Box::new(inner)));
     }
 
-    // Check for function type: func(T1, T2) -> R
     if s.starts_with("func(") || s.starts_with("fn(") {
         return parse_fn_type(s, types);
     }
 
-    // Check for generic: Name<T, U>
     if let Some(lt_pos) = s.find('<') {
         if s.ends_with('>') {
             let name = s[..lt_pos].trim();
@@ -523,7 +505,6 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                 arg_strs.iter().map(|a| parse_type_string(a, types)).collect();
             let args = args?;
 
-            // Special cases
             match name {
                 "Option" if args.len() == 1 => {
                     return Ok(Type::Option(Box::new(args.into_iter().next().unwrap())));
@@ -536,11 +517,9 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
                     });
                 }
                 _ => {
-                    // Check if base type is registered
                     if let Some(base_id) = types.get_type_id(name) {
                         return Ok(Type::Generic { base: base_id, args });
                     }
-                    // Unresolved generic
                     return Ok(Type::UnresolvedGeneric {
                         name: name.to_string(),
                         args,
@@ -550,16 +529,13 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         }
     }
 
-    // Simple type name
     if let Some(ty) = types.lookup(s) {
         return Ok(ty);
     }
 
-    // Unresolved named type
     Ok(Type::UnresolvedNamed(s.to_string()))
 }
 
-/// Split generic arguments by comma, respecting nested angle brackets.
 fn split_type_args(s: &str) -> Vec<&str> {
     let mut result = Vec::new();
     let mut depth = 0;
@@ -587,7 +563,6 @@ fn split_type_args(s: &str) -> Vec<&str> {
     result
 }
 
-/// Parse a function type: func(T1, T2) -> R
 fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let prefix = if s.starts_with("func(") {
         "func("
@@ -596,7 +571,6 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     };
     let rest = &s[prefix.len()..];
 
-    // Find matching paren
     let mut depth = 1;
     let mut paren_end = 0;
     for (i, c) in rest.char_indices() {
@@ -616,7 +590,6 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let params_str = &rest[..paren_end];
     let after_paren = &rest[paren_end + 1..].trim();
 
-    // Parse params
     let params: Result<Vec<_>, _> = if params_str.is_empty() {
         Ok(Vec::new())
     } else {
@@ -627,7 +600,6 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     };
     let params = params?;
 
-    // Parse return type
     let ret = if after_paren.starts_with("->") {
         let ret_str = after_paren[2..].trim();
         parse_type_string(ret_str, types)?
@@ -700,20 +672,15 @@ impl TypeChecker {
         }
     }
 
-    /// Type check a list of declarations.
     pub fn check(mut self, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
-        // Pass 1: Collect type declarations
         self.collect_type_declarations(decls);
 
-        // Pass 2: Check all declarations
         for decl in decls {
             self.check_decl(decl);
         }
 
-        // Pass 3: Solve constraints
         self.solve_constraints();
 
-        // Pass 4: Apply substitutions to all node types
         let node_types: HashMap<_, _> = self
             .node_types
             .iter()
@@ -728,9 +695,52 @@ impl TypeChecker {
                 node_types,
             })
         } else {
-            // Resolve Named(TypeId) to readable names in error messages
-            let errors = self.errors.into_iter().map(|e| self.types.resolve_error_types(e)).collect();
+            let ctx = &self.ctx;
+            let types = &self.types;
+            let errors = self.errors.into_iter()
+                .map(|e| Self::apply_error_substitutions_with_ctx(e, ctx))
+                .map(|e| types.resolve_error_types(e))
+                .collect();
             Err(errors)
+        }
+    }
+
+    fn apply_error_substitutions_with_ctx(error: TypeError, ctx: &InferenceContext) -> TypeError {
+        match error {
+            TypeError::Mismatch { expected, found, span } => TypeError::Mismatch {
+                expected: ctx.apply(&expected),
+                found: ctx.apply(&found),
+                span,
+            },
+            TypeError::NotCallable { ty, span } => TypeError::NotCallable {
+                ty: ctx.apply(&ty),
+                span,
+            },
+            TypeError::NoSuchField { ty, field, span } => TypeError::NoSuchField {
+                ty: ctx.apply(&ty),
+                field,
+                span,
+            },
+            TypeError::NoSuchMethod { ty, method, span } => TypeError::NoSuchMethod {
+                ty: ctx.apply(&ty),
+                method,
+                span,
+            },
+            TypeError::MissingReturn { function_name, expected_type, span } => TypeError::MissingReturn {
+                function_name,
+                expected_type: ctx.apply(&expected_type),
+                span,
+            },
+            TypeError::TryInNonPropagatingContext { return_ty, span } => TypeError::TryInNonPropagatingContext {
+                return_ty: ctx.apply(&return_ty),
+                span,
+            },
+            TypeError::InfiniteType { var, ty, span } => TypeError::InfiniteType {
+                var,
+                ty: ctx.apply(&ty),
+                span,
+            },
+            other => other,
         }
     }
 
@@ -739,7 +749,6 @@ impl TypeChecker {
     // ------------------------------------------------------------------------
 
     fn collect_type_declarations(&mut self, decls: &[Decl]) {
-        // First pass: register struct/enum/trait types
         for decl in decls {
             match &decl.kind {
                 DeclKind::Struct(s) => self.register_struct(s),
@@ -748,7 +757,6 @@ impl TypeChecker {
                 _ => {}
             }
         }
-        // Second pass: register methods from extend blocks
         for decl in decls {
             if let DeclKind::Impl(i) = &decl.kind {
                 self.register_impl_methods(i);
@@ -942,18 +950,15 @@ impl TypeChecker {
     // Pattern Checking
     // ------------------------------------------------------------------------
 
-    /// Check a pattern against a scrutinee type, returning bindings introduced.
     fn check_pattern(&mut self, pattern: &Pattern, scrutinee_ty: &Type, span: Span) -> Vec<(String, Type)> {
         match pattern {
             Pattern::Wildcard => vec![],
 
             Pattern::Ident(name) => {
-                // Bind the name to the scrutinee type
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
             Pattern::Literal(expr) => {
-                // Infer the literal's type and constrain it to match scrutinee
                 let lit_ty = self.infer_expr(expr);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     scrutinee_ty.clone(),
@@ -1004,7 +1009,6 @@ impl TypeChecker {
                     }
                     bindings
                 } else {
-                    // Unknown struct - still check sub-patterns with fresh vars
                     let mut bindings = vec![];
                     for (_, field_pattern) in fields {
                         let fresh = self.ctx.fresh_var();
@@ -1015,7 +1019,6 @@ impl TypeChecker {
             }
 
             Pattern::Tuple(patterns) => {
-                // Scrutinee should be a tuple with matching arity
                 let elem_types: Vec<_> = patterns.iter().map(|_| self.ctx.fresh_var()).collect();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     scrutinee_ty.clone(),
@@ -1030,11 +1033,8 @@ impl TypeChecker {
             }
 
             Pattern::Or(alternatives) => {
-                // Each alternative should bind the same names with the same types
-                // Check the first one and use its bindings
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);
-                    // Check remaining alternatives for consistency
                     for alt in &alternatives[1..] {
                         let _alt_bindings = self.check_pattern(alt, scrutinee_ty, span);
                         // TODO: verify same names and compatible types
@@ -1047,7 +1047,6 @@ impl TypeChecker {
         }
     }
 
-    /// Check a constructor pattern like Ok(v), Some(v), Err(e), None, or user-defined variants.
     fn check_constructor_pattern(
         &mut self,
         name: &str,
@@ -1057,7 +1056,6 @@ impl TypeChecker {
     ) -> Vec<(String, Type)> {
         let resolved_scrutinee = self.ctx.apply(scrutinee_ty);
 
-        // Handle builtin Result variants
         match name {
             "Ok" => {
                 match &resolved_scrutinee {
@@ -1067,7 +1065,6 @@ impl TypeChecker {
                         }
                     }
                     Type::Var(_) => {
-                        // Scrutinee type not yet known — constrain it to be Result<T, E>
                         let ok_ty = self.ctx.fresh_var();
                         let err_ty = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Equal(
@@ -1132,7 +1129,6 @@ impl TypeChecker {
                 }
             }
             "None" => {
-                // None has no fields — constrain scrutinee to be Option<T>
                 if fields.is_empty() {
                     if !matches!(&resolved_scrutinee, Type::Option(_) | Type::Var(_)) {
                         let inner_ty = self.ctx.fresh_var();
@@ -1148,7 +1144,6 @@ impl TypeChecker {
             _ => {}
         }
 
-        // User-defined enum variant — look up via scrutinee type
         match &resolved_scrutinee {
             Type::Named(type_id) => {
                 let variant_fields = self.types.get(*type_id).and_then(|def| {
@@ -1180,7 +1175,6 @@ impl TypeChecker {
             _ => {}
         }
 
-        // Fallback: check sub-patterns with fresh type vars
         let mut bindings = vec![];
         for pat in fields {
             let fresh = self.ctx.fresh_var();
@@ -1190,7 +1184,6 @@ impl TypeChecker {
     }
 
     fn check_fn(&mut self, f: &FnDecl, fn_span: Span) {
-        // Set up return type
         let ret_ty = f
             .ret_ty
             .as_ref()
@@ -1198,7 +1191,6 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
         self.current_return_type = Some(ret_ty);
 
-        // Push function scope and register parameter types
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
@@ -1212,16 +1204,13 @@ impl TypeChecker {
             }
         }
 
-        // Check body
         for stmt in &f.body {
             self.check_stmt(stmt);
         }
 
-        // Check for missing return statement
         let ret_ty = self.current_return_type.as_ref().unwrap();
         if !matches!(ret_ty, Type::Unit | Type::Never) {
             if !self.has_explicit_return(&f.body) {
-                // Point to closing brace of function
                 let end_span = Span::new(fn_span.end - 1, fn_span.end);
 
                 self.errors.push(TypeError::MissingReturn {
@@ -1257,21 +1246,17 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind;
 
         match &expr.kind {
-            // Block: check if last statement returns
             ExprKind::Block(stmts) => {
                 stmts.last().map_or(false, |s| self.stmt_always_returns(s))
             }
-            // Match: check if all arms return
             ExprKind::Match { arms, .. } => {
                 !arms.is_empty() && arms.iter().all(|arm| self.expr_always_returns(&arm.body))
             }
-            // If with else: check if both branches return
             ExprKind::If { then_branch, else_branch, .. } => {
                 else_branch.as_ref().map_or(false, |else_br| {
                     self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
                 })
             }
-            // IfLet with else: check if both branches return
             ExprKind::IfLet { then_branch, else_branch, .. } => {
                 else_branch.as_ref().map_or(false, |else_br| {
                     self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
@@ -1352,7 +1337,6 @@ impl TypeChecker {
             StmtKind::For { binding, iter, body, .. } => {
                 let iter_ty = self.infer_expr(iter);
                 self.push_scope();
-                // Infer the element type from the iterator
                 let elem_ty = match &iter_ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
                     _ => self.ctx.fresh_var(),
@@ -1411,15 +1395,37 @@ impl TypeChecker {
     fn infer_expr(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
-            ExprKind::Int(_) => Type::I32, // Default integer type
-            ExprKind::Float(_) => Type::F64, // Default float type
+            ExprKind::Int(_, suffix) => {
+                use rask_ast::token::IntSuffix;
+                match suffix {
+                    Some(IntSuffix::I8) => Type::I8,
+                    Some(IntSuffix::I16) => Type::I16,
+                    Some(IntSuffix::I32) => Type::I32,
+                    Some(IntSuffix::I64) => Type::I64,
+                    Some(IntSuffix::I128) => Type::I64,  // TODO: Add I128 to Type enum
+                    Some(IntSuffix::Isize) => Type::I64,  // isize maps to i64
+                    Some(IntSuffix::U8) => Type::U8,
+                    Some(IntSuffix::U16) => Type::U16,
+                    Some(IntSuffix::U32) => Type::U32,
+                    Some(IntSuffix::U64) => Type::U64,
+                    Some(IntSuffix::U128) => Type::U64,  // TODO: Add U128 to Type enum
+                    Some(IntSuffix::Usize) => Type::U64,  // usize maps to u64
+                    None => Type::I32, // Default integer type
+                }
+            }
+            ExprKind::Float(_, suffix) => {
+                use rask_ast::token::FloatSuffix;
+                match suffix {
+                    Some(FloatSuffix::F32) => Type::F32,
+                    Some(FloatSuffix::F64) => Type::F64,
+                    None => Type::F64, // Default float type
+                }
+            }
             ExprKind::String(_) => Type::String,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
 
-            // Identifier
             ExprKind::Ident(name) => {
-                // Check local scope first (for pattern bindings, let/const)
                 if let Some(ty) = self.lookup_local(name) {
                     ty
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
@@ -1429,20 +1435,16 @@ impl TypeChecker {
                 }
             }
 
-            // Binary operation
             ExprKind::Binary { op, left, right } => {
                 self.check_binary(*op, left, right, expr.span)
             }
 
-            // Unary operation
             ExprKind::Unary { op: _, operand } => {
                 self.infer_expr(operand)
             }
 
-            // Function call
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
 
-            // Method call
             ExprKind::MethodCall {
                 object,
                 method,
@@ -1450,14 +1452,11 @@ impl TypeChecker {
                 ..
             } => self.check_method_call(object, method, args, expr.span),
 
-            // Field access
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
-            // Index access
             ExprKind::Index { object, index } => {
                 let obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);
-                // Result type depends on collection type
                 match &obj_ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
                     Type::String => Type::Char,
@@ -1465,7 +1464,6 @@ impl TypeChecker {
                 }
             }
 
-            // If expression
             ExprKind::If {
                 cond,
                 then_branch,
@@ -1490,7 +1488,6 @@ impl TypeChecker {
                 }
             }
 
-            // If-let expression
             ExprKind::IfLet {
                 pattern,
                 then_branch,
@@ -1498,7 +1495,6 @@ impl TypeChecker {
                 expr: value,
             } => {
                 let value_ty = self.infer_expr(value);
-                // Push scope for pattern bindings in then branch
                 self.push_scope();
                 let bindings = self.check_pattern(pattern, &value_ty, expr.span);
                 for (name, ty) in bindings {
@@ -1517,18 +1513,15 @@ impl TypeChecker {
                 then_ty
             }
 
-            // Match expression
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let result_ty = self.ctx.fresh_var();
                 for arm in arms {
-                    // Push scope for this arm's pattern bindings
                     self.push_scope();
                     let bindings = self.check_pattern(&arm.pattern, &scrutinee_ty, expr.span);
                     for (name, ty) in bindings {
                         self.define_local(name, ty);
                     }
-                    // Check guard if present
                     if let Some(guard) = &arm.guard {
                         let guard_ty = self.infer_expr(guard);
                         self.ctx.add_constraint(TypeConstraint::Equal(
@@ -1540,7 +1533,6 @@ impl TypeChecker {
                     let arm_ty = self.infer_expr(&arm.body);
                     self.pop_scope();
                     let resolved_arm_ty = self.ctx.apply(&arm_ty);
-                    // Skip Never arms - they diverge and don't constrain the result type
                     if !matches!(resolved_arm_ty, Type::Never) {
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             result_ty.clone(),
@@ -1552,16 +1544,13 @@ impl TypeChecker {
                 result_ty
             }
 
-            // Block expression
             ExprKind::Block(stmts) => {
                 for stmt in stmts {
                     self.check_stmt(stmt);
                 }
-                // Block type is unit unless last statement is an expression or diverges
                 if let Some(last) = stmts.last() {
                     match &last.kind {
                         StmtKind::Expr(e) => return self.infer_expr(e),
-                        // Diverging statements - block never returns normally
                         StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {
                             return Type::Never
                         }
@@ -1571,11 +1560,8 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Struct literal
             ExprKind::StructLit { name, fields, .. } => {
-                // Get struct type
                 if let Some(ty) = self.types.lookup(name) {
-                    // Check field types
                     if let Type::Named(type_id) = &ty {
                         if let Some(TypeDef::Struct {
                             fields: struct_fields,
@@ -1603,7 +1589,6 @@ impl TypeChecker {
                 }
             }
 
-            // Array literal
             ExprKind::Array(elements) => {
                 if elements.is_empty() {
                     let elem_ty = self.ctx.fresh_var();
@@ -1628,13 +1613,11 @@ impl TypeChecker {
                 }
             }
 
-            // Tuple literal
             ExprKind::Tuple(elements) => {
                 let elem_types: Vec<_> = elements.iter().map(|e| self.infer_expr(e)).collect();
                 Type::Tuple(elem_types)
             }
 
-            // Range
             ExprKind::Range { start, end, .. } => {
                 if let Some(s) = start {
                     self.infer_expr(s);
@@ -1642,32 +1625,26 @@ impl TypeChecker {
                 if let Some(e) = end {
                     self.infer_expr(e);
                 }
-                // Range type - simplified
                 Type::UnresolvedNamed("Range".to_string())
             }
 
-            // Try (try prefix or postfix ?)
             ExprKind::Try(inner) => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
-                // Result/Option unwrapping
                 match &resolved {
                     Type::Option(inner) => *inner.clone(),
                     Type::Result { ok, .. } => *ok.clone(),
                     Type::Var(_) => {
-                        // Unresolved type - check function return type to determine if Option or Result
                         if let Some(return_ty) = &self.current_return_type {
                             let resolved_ret = self.ctx.apply(return_ty);
                             match &resolved_ret {
                                 Type::Option(_) => {
-                                    // Function returns Option, so inner should be Option<T>
                                     let inner_opt_ty = self.ctx.fresh_var();
                                     let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
                                     let _ = self.unify(&inner_ty, &option_ty, expr.span);
                                     inner_opt_ty
                                 }
                                 Type::Result { .. } => {
-                                    // Function returns Result, so inner should be Result<T, E>
                                     let ok_ty = self.ctx.fresh_var();
                                     let err_ty = self.ctx.fresh_var();
                                     let result_ty = Type::Result {
@@ -1678,12 +1655,9 @@ impl TypeChecker {
                                     ok_ty
                                 }
                                 Type::Var(_) => {
-                                    // Return type also unresolved - can't determine yet
-                                    // Return fresh var and let later constraints resolve
                                     self.ctx.fresh_var()
                                 }
                                 _ => {
-                                    // Error: try in function that doesn't return Option or Result
                                     self.errors.push(TypeError::TryInNonPropagatingContext {
                                         return_ty: resolved_ret.clone(),
                                         span: expr.span,
@@ -1692,7 +1666,6 @@ impl TypeChecker {
                                 }
                             }
                         } else {
-                            // No return type context - error
                             self.errors.push(TypeError::TryOutsideFunction { span: expr.span });
                             Type::Error
                         }
@@ -1711,7 +1684,6 @@ impl TypeChecker {
                 }
             }
 
-            // Closure
             ExprKind::Closure { params, body, .. } => {
                 let param_types: Vec<_> = params
                     .iter()
@@ -1728,18 +1700,15 @@ impl TypeChecker {
                 }
             }
 
-            // Cast
             ExprKind::Cast { expr: inner, ty } => {
                 self.infer_expr(inner);
                 parse_type_string(ty, &self.types).unwrap_or(Type::Error)
             }
 
-            // Unsafe block
             ExprKind::Unsafe { body } => {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                // Unsafe block type is unit unless last statement is an expression
                 if let Some(last) = body.last() {
                     if let StmtKind::Expr(e) = &last.kind {
                         return self.infer_expr(e);
@@ -1748,12 +1717,10 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Comptime block
             ExprKind::Comptime { body } => {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                // Comptime block type is unit unless last statement is an expression
                 if let Some(last) = body.last() {
                     if let StmtKind::Expr(e) = &last.kind {
                         return self.infer_expr(e);
@@ -1762,16 +1729,13 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Spawn block
             ExprKind::Spawn { body } => {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                // Returns a handle to the spawned task
                 Type::UnresolvedNamed("JoinHandle".to_string())
             }
 
-            // With block
             ExprKind::WithBlock { args, body, .. } => {
                 for arg in args {
                     self.infer_expr(arg);
@@ -1782,7 +1746,6 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Block call (e.g., spawn_raw { ... })
             ExprKind::BlockCall { body, .. } => {
                 for stmt in body {
                     self.check_stmt(stmt);
@@ -1790,22 +1753,18 @@ impl TypeChecker {
                 Type::Unit
             }
 
-            // Array repeat expression
             ExprKind::ArrayRepeat { value, count } => {
                 let elem_ty = self.infer_expr(value);
                 self.infer_expr(count);
-                // We don't know the size at compile time necessarily
                 Type::Array {
                     elem: Box::new(elem_ty),
-                    len: 0, // Unknown size
+                    len: 0,
                 }
             }
 
-            // Null coalesce
             ExprKind::NullCoalesce { value, default } => {
                 let val_ty = self.infer_expr(value);
                 let def_ty = self.infer_expr(default);
-                // Result should be the inner type
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     val_ty,
                     Type::Option(Box::new(def_ty.clone())),
@@ -1814,7 +1773,6 @@ impl TypeChecker {
                 def_ty
             }
 
-            // Optional field access
             ExprKind::OptionalField { object, field } => {
                 let obj_ty = self.infer_expr(object);
                 let field_ty = self.ctx.fresh_var();
@@ -1827,7 +1785,6 @@ impl TypeChecker {
                 Type::Option(Box::new(field_ty))
             }
 
-            // Assert/Check expressions
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
                 let cond_ty = self.infer_expr(condition);
                 self.ctx.add_constraint(TypeConstraint::Equal(
@@ -1847,7 +1804,6 @@ impl TypeChecker {
             }
         };
 
-        // Record the type for this node
         self.node_types.insert(expr.id, ty.clone());
         ty
     }
@@ -1860,7 +1816,6 @@ impl TypeChecker {
         let left_ty = self.infer_expr(left);
         let right_ty = self.infer_expr(right);
 
-        // Add constraint that operands have compatible types
         self.ctx.add_constraint(TypeConstraint::Equal(
             left_ty.clone(),
             right_ty.clone(),
@@ -1868,23 +1823,18 @@ impl TypeChecker {
         ));
 
         match op {
-            // Comparison operators return bool
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => Type::Bool,
-            // Logical operators need bool operands, return bool
             BinOp::And | BinOp::Or => {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(Type::Bool, left_ty, span));
                 Type::Bool
             }
-            // Arithmetic operators return the operand type
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => left_ty,
-            // Bitwise operators
             BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => left_ty,
         }
     }
 
     fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> Type {
-        // Check for builtin function calls by name
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
                 for arg in args {
@@ -1903,10 +1853,7 @@ impl TypeChecker {
 
         match func_ty {
             Type::Fn { params, ret } => {
-                // If function has 0 params but was called with args,
-                // it might be a builtin - be lenient
                 if params.is_empty() && !arg_types.is_empty() {
-                    // Probably a builtin or variadic function
                     return *ret;
                 }
 
@@ -1927,7 +1874,6 @@ impl TypeChecker {
                 *ret
             }
             Type::Var(_) => {
-                // Unknown function type - create fresh return type
                 let ret = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     func_ty,
@@ -1941,14 +1887,11 @@ impl TypeChecker {
             }
             Type::Error => Type::Error,
             _ => {
-                // Check if it's a builtin function or constructor
-                // For now, assume it might be callable
                 self.ctx.fresh_var()
             }
         }
     }
 
-    /// Check if a name is a built-in function.
     fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format")
     }
@@ -1993,14 +1936,11 @@ impl TypeChecker {
     }
 
     fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {
-        // Check if we've already inferred a type
         if let Some(ty) = self.symbol_types.get(&sym_id) {
             return ty.clone();
         }
 
-        // Check for annotation in symbol table
         if let Some(sym) = self.resolved.symbols.get(sym_id) {
-            // Check kind-specific type info
             match &sym.kind {
                 SymbolKind::Function { ret_ty, params, .. } => {
                     let param_types: Vec<_> = params
@@ -2040,21 +1980,17 @@ impl TypeChecker {
                 }
                 SymbolKind::EnumVariant { enum_id } => {
                     if let Some(enum_sym) = self.resolved.symbols.get(*enum_id) {
-                        // Determine the type_id for this enum
                         let type_id = if enum_sym.span == Span::new(0, 0) {
-                            // Builtin enum
                             match enum_sym.name.as_str() {
                                 "Result" => self.types.get_result_type_id(),
                                 "Option" => self.types.get_option_type_id(),
                                 _ => None,
                             }
                         } else {
-                            // User-defined enum
                             self.types.get_type_id(&enum_sym.name)
                         };
 
                         if let Some(id) = type_id {
-                            // Get variant fields to determine if this is a constructor function
                             let variant_fields = self.types.get(id).and_then(|def| {
                                 if let TypeDef::Enum { variants, .. } = def {
                                     variants.iter()
@@ -2067,13 +2003,9 @@ impl TypeChecker {
 
                             if let Some(fields) = variant_fields {
                                 if fields.is_empty() {
-                                    // Unit variant: just the enum type
                                     return Type::Named(id);
                                 } else {
-                                    // Variant with fields: function type
-                                    // For builtin enums, create fresh type variables instead of using hardcoded TypeVar(0), TypeVar(1)
                                     let (param_types, ret_type) = if Some(id) == self.types.get_result_type_id() {
-                                        // Result<T, E>: create fresh type vars
                                         let t_var = self.ctx.fresh_var();
                                         let e_var = self.ctx.fresh_var();
                                         let params = match sym.name.as_str() {
@@ -2087,7 +2019,6 @@ impl TypeChecker {
                                         };
                                         (params, ret)
                                     } else if Some(id) == self.types.get_option_type_id() {
-                                        // Option<T>: create fresh type var
                                         let t_var = self.ctx.fresh_var();
                                         let params = if sym.name == "Some" {
                                             vec![t_var.clone()]
@@ -2097,7 +2028,6 @@ impl TypeChecker {
                                         let ret = Type::Option(Box::new(t_var));
                                         (params, ret)
                                     } else {
-                                        // User-defined enum: instantiate any TypeVars with fresh vars
                                         let instantiated = self.instantiate_type_vars(&fields);
                                         (instantiated, Type::Named(id))
                                     };
@@ -2108,7 +2038,6 @@ impl TypeChecker {
                                     };
                                 }
                             } else {
-                                // Variant not found in TypeDef, return enum type as fallback
                                 return Type::Named(id);
                             }
                         }
@@ -2118,7 +2047,6 @@ impl TypeChecker {
             }
         }
 
-        // No type yet - create fresh variable
         let var = self.ctx.fresh_var();
         self.symbol_types.insert(sym_id, var.clone());
         var
@@ -2172,10 +2100,8 @@ impl TypeChecker {
         let t2 = self.ctx.apply(t2);
 
         match (&t1, &t2) {
-            // Same type - done
             (a, b) if a == b => Ok(false),
 
-            // Type variable on left - bind it
             (Type::Var(id), other) => {
                 if self.ctx.occurs_in(*id, other) {
                     return Err(TypeError::InfiniteType {
@@ -2188,7 +2114,6 @@ impl TypeChecker {
                 Ok(true)
             }
 
-            // Type variable on right - bind it
             (other, Type::Var(id)) => {
                 if self.ctx.occurs_in(*id, other) {
                     return Err(TypeError::InfiniteType {
@@ -2201,7 +2126,6 @@ impl TypeChecker {
                 Ok(true)
             }
 
-            // Generic types - unify base and args
             (Type::Generic { base: b1, args: a1 }, Type::Generic { base: b2, args: a2 }) => {
                 if b1 != b2 || a1.len() != a2.len() {
                     return Err(TypeError::Mismatch {
@@ -2249,7 +2173,6 @@ impl TypeChecker {
                 Ok(progress)
             }
 
-            // Tuple types
             (Type::Tuple(e1), Type::Tuple(e2)) => {
                 if e1.len() != e2.len() {
                     return Err(TypeError::Mismatch {
@@ -2267,10 +2190,8 @@ impl TypeChecker {
                 Ok(progress)
             }
 
-            // Option types
             (Type::Option(inner1), Type::Option(inner2)) => self.unify(inner1, inner2, span),
 
-            // Result types
             (
                 Type::Result { ok: o1, err: e1 },
                 Type::Result { ok: o2, err: e2 },
@@ -2280,7 +2201,6 @@ impl TypeChecker {
                 Ok(p1 || p2)
             }
 
-            // Array types
             (
                 Type::Array {
                     elem: e1,
@@ -2301,22 +2221,15 @@ impl TypeChecker {
                 self.unify(e1, e2, span)
             }
 
-            // Slice types
             (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
 
-            // Error absorbs everything (error recovery)
             (Type::Error, _) | (_, Type::Error) => Ok(false),
 
-            // Never coerces to anything
             (Type::Never, _) => Ok(false),
             (_, Type::Never) => Ok(false),
 
-            // Dual representation: Type::Result with Type::Named(result_type_id)
             (Type::Result { ok: _, err: _ }, Type::Named(id)) | (Type::Named(id), Type::Result { ok: _, err: _ }) => {
                 if Some(*id) == self.types.get_result_type_id() {
-                    // These are compatible - Result<T,E> is the same as the Result TypeDef
-                    // We need to bind any TypeVars in the Named type based on the Result type args
-                    // For now, just accept them as compatible
                     Ok(false)
                 } else {
                     Err(TypeError::Mismatch {
@@ -2327,10 +2240,8 @@ impl TypeChecker {
                 }
             }
 
-            // Dual representation: Type::Option with Type::Named(option_type_id)
             (Type::Option(_inner), Type::Named(id)) | (Type::Named(id), Type::Option(_inner)) => {
                 if Some(*id) == self.types.get_option_type_id() {
-                    // These are compatible - Option<T> is the same as the Option TypeDef
                     Ok(false)
                 } else {
                     Err(TypeError::Mismatch {
@@ -2341,15 +2252,12 @@ impl TypeChecker {
                 }
             }
 
-            // Unresolved types - defer
             (Type::UnresolvedNamed(_), _) | (_, Type::UnresolvedNamed(_)) => {
-                // Re-add constraint for later
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(t1, t2, span));
                 Ok(false)
             }
 
-            // Mismatch
             _ => Err(TypeError::Mismatch {
                 expected: t1,
                 found: t2,
@@ -2358,7 +2266,6 @@ impl TypeChecker {
         }
     }
 
-    /// Resolve UnresolvedNamed types (e.g. "Self") to their Named type.
     fn resolve_named(&self, ty: &Type) -> Type {
         match ty {
             Type::UnresolvedNamed(name) => {
@@ -2387,7 +2294,6 @@ impl TypeChecker {
 
         match &ty {
             Type::Var(_) => {
-                // Type not yet known - re-add constraint
                 self.ctx.add_constraint(TypeConstraint::HasField {
                     ty,
                     field,
@@ -2405,10 +2311,8 @@ impl TypeChecker {
                         TypeDef::Enum { variants, .. } => {
                             variants.iter().find(|(n, _)| n == &field).map(|(_, fields)| {
                                 if fields.is_empty() {
-                                    // Unit variant: GrepError.NoPattern -> GrepError
                                     ty.clone()
                                 } else {
-                                    // Variant with fields: GrepError.FileError -> fn(string) -> GrepError
                                     Type::Fn {
                                         params: fields.clone(),
                                         ret: Box::new(ty.clone()),
@@ -2431,7 +2335,6 @@ impl TypeChecker {
                 }
             }
             Type::Tuple(elems) => {
-                // Tuple field access: t.0, t.1, etc.
                 if let Ok(idx) = field.parse::<usize>() {
                     if idx < elems.len() {
                         self.unify(&expected, &elems[idx], span)
@@ -2468,9 +2371,12 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
+        if method == "clone" && args.is_empty() {
+            return self.unify(&ty, &ret, span);
+        }
+
         match &ty {
             Type::Var(_) => {
-                // Type not yet known - re-add constraint
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,
                     method,
@@ -2515,7 +2421,6 @@ impl TypeChecker {
 
                     Ok(progress)
                 } else {
-                    // Check if it's an enum variant constructor
                     let variant = self.types.get(*type_id).and_then(|def| {
                         if let TypeDef::Enum { variants, .. } = def {
                             variants.iter().find(|(n, _)| n == &method).map(|(_, fields)| fields.clone())
@@ -2548,7 +2453,6 @@ impl TypeChecker {
                                 progress = true;
                             }
                         }
-                        // Variant constructor returns the enum type
                         if self.unify(&ty, &ret, span)? {
                             progress = true;
                         }
@@ -2562,13 +2466,11 @@ impl TypeChecker {
                     }
                 }
             }
-            // Built-in type methods
             Type::String => self.resolve_string_method(&method, &args, &ret, span),
             Type::Array { .. } | Type::Slice(_) => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span)
             }
             _ => {
-                // Defer unresolved method calls
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,
                     method,
@@ -2581,29 +2483,22 @@ impl TypeChecker {
         }
     }
 
-    /// Instantiate generic type parameters for builtin enum variants.
-    /// For Result<T, E>: TypeVar(0) -> T, TypeVar(1) -> E
-    /// For Option<T>: TypeVar(0) -> T
     fn instantiate_builtin_enum_variant(
         &self,
         type_id: TypeId,
         _variant_name: &str,
         variant_fields: &[Type],
     ) -> Vec<Type> {
-        // Build substitution map from current return type
         let substitution = if Some(type_id) == self.types.get_result_type_id() {
-            // For Result: extract Ok and Err types from return type
             if let Some(Type::Result { ok, err }) = &self.current_return_type {
                 let mut subst = HashMap::new();
                 subst.insert(TypeVarId(0), *ok.clone());
                 subst.insert(TypeVarId(1), *err.clone());
                 subst
             } else {
-                // Return type not yet resolved, leave as TypeVars
                 HashMap::new()
             }
         } else if Some(type_id) == self.types.get_option_type_id() {
-            // For Option: extract inner type from return type
             if let Some(Type::Option(inner)) = &self.current_return_type {
                 let mut subst = HashMap::new();
                 subst.insert(TypeVarId(0), *inner.clone());
@@ -2615,30 +2510,23 @@ impl TypeChecker {
             HashMap::new()
         };
 
-        // Apply substitution to variant field types
         variant_fields
             .iter()
             .map(|ty| self.apply_type_var_substitution(ty, &substitution))
             .collect()
     }
 
-    /// Replace any TypeVar(n) references in a list of types with fresh inference variables.
-    /// Used for user-defined generic enums where TypeVar(0), TypeVar(1), etc. represent
-    /// the enum's generic type parameters.
     fn instantiate_type_vars(&mut self, types: &[Type]) -> Vec<Type> {
         let mut subst: HashMap<TypeVarId, Type> = HashMap::new();
-        // First pass: collect all TypeVar IDs and map to fresh vars
         for ty in types {
             self.collect_type_vars(ty, &mut subst);
         }
-        // Second pass: apply substitution
         types
             .iter()
             .map(|ty| self.apply_type_var_substitution(ty, &subst))
             .collect()
     }
 
-    /// Recursively find all TypeVar references and assign fresh inference variables.
     fn collect_type_vars(&mut self, ty: &Type, subst: &mut HashMap<TypeVarId, Type>) {
         match ty {
             Type::Var(id) => {
@@ -2671,7 +2559,6 @@ impl TypeChecker {
         }
     }
 
-    /// Apply type variable substitution to a type.
     fn apply_type_var_substitution(
         &self,
         ty: &Type,
@@ -2713,7 +2600,6 @@ impl TypeChecker {
                     .collect(),
                 ret: Box::new(self.apply_type_var_substitution(ret, substitution)),
             },
-            // For other types, return as-is
             _ => ty.clone(),
         }
     }
@@ -2725,9 +2611,7 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        // Check rask-stdlib for method definition
         if let Some(method_def) = rask_stdlib::lookup_method("string", method) {
-            // Method exists in stdlib - validate arity (excluding self)
             let expected_params = method_def.params.len();
             if args.len() != expected_params {
                 return Err(TypeError::ArityMismatch {
@@ -2736,18 +2620,16 @@ impl TypeChecker {
                     span,
                 });
             }
-            // Map common return types
             return match method_def.ret_ty {
                 "usize" => self.unify(ret, &Type::U64, span),
                 "bool" => self.unify(ret, &Type::Bool, span),
                 "()" => self.unify(ret, &Type::Unit, span),
                 "string" => self.unify(ret, &Type::String, span),
                 "char" => self.unify(ret, &Type::Char, span),
-                _ => Ok(false), // Complex return type - defer
+                _ => Ok(false),
             };
         }
 
-        // Fallback for unlisted methods
         match method {
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
@@ -2756,10 +2638,7 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             "push" | "push_str" => self.unify(ret, &Type::Unit, span),
-            _ => {
-                // Unknown method - could be user-defined extension
-                Ok(false)
-            }
+            _ => Ok(false),
         }
     }
 
@@ -2771,9 +2650,7 @@ impl TypeChecker {
         ret: &Type,
         span: Span,
     ) -> Result<bool, TypeError> {
-        // Check rask-stdlib for Vec method definition
         if let Some(method_def) = rask_stdlib::lookup_method("Vec", method) {
-            // Method exists in stdlib - validate arity (excluding self)
             let expected_params = method_def.params.len();
             if args.len() != expected_params {
                 return Err(TypeError::ArityMismatch {
@@ -2782,22 +2659,19 @@ impl TypeChecker {
                     span,
                 });
             }
-            // Map common return types
             return match method_def.ret_ty {
                 "usize" => self.unify(ret, &Type::U64, span),
                 "bool" => self.unify(ret, &Type::Bool, span),
                 "()" => self.unify(ret, &Type::Unit, span),
-                _ => Ok(false), // Complex return type (Option<T>, Result, etc.) - defer
+                _ => Ok(false),
             };
         }
 
-        // Fallback for specific methods with complex types
         match method {
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "push" => self.unify(ret, &Type::Unit, span),
             "pop" => {
-                // Returns Option<T>
                 let elem_ty = self.ctx.fresh_var();
                 self.unify(ret, &Type::Option(Box::new(elem_ty)), span)
             }
@@ -2816,7 +2690,6 @@ impl Default for TypeChecker {
 // Public API
 // ============================================================================
 
-/// Type check a resolved program.
 pub fn typecheck(resolved: ResolvedProgram, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
     let checker = TypeChecker::new(resolved);
     checker.check(decls)

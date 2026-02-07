@@ -333,8 +333,8 @@ impl ComptimeInterpreter {
     fn eval_expr_cf(&mut self, expr: &Expr) -> ComptimeResult<ControlFlow> {
         let value = match &expr.kind {
             // Literals
-            ExprKind::Int(v) => ComptimeValue::I64(*v),
-            ExprKind::Float(v) => ComptimeValue::F64(*v),
+            ExprKind::Int(v, _) => ComptimeValue::I64(*v),
+            ExprKind::Float(v, _) => ComptimeValue::F64(*v),
             ExprKind::String(s) => ComptimeValue::String(s.clone()),
             ExprKind::Char(c) => ComptimeValue::Char(*c),
             ExprKind::Bool(b) => ComptimeValue::Bool(*b),

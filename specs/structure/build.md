@@ -4,10 +4,10 @@
 How do build scripts work? What is the file format, entry point, and API? How does code generation integrate with compilation?
 
 ## Decision
-`rask.build` is a Rask source file with a `build(ctx: BuildContext)` entry point. The compiler provides a `build` module with types for declaring generated code, assets, and build configuration. Generated files go to `.rask-gen/` and are automatically included in compilation.
+`rask.build` is a Rask source file with a `build(ctx: BuildContext)` entry point. Compiler provides a `build` module with types for declaring generated code, assets, and build configuration. Generated files go to `.rk-gen/` and are automatically included in compilation.
 
 ## Rationale
-Full Rask in build scripts (unlike comptime's restricted subset) enables I/O-heavy tasks: reading schemas, calling external tools, generating code from templates. A structured API (not stdout directives like Cargo) makes build scripts type-checked and IDE-friendly. Automatic inclusion of generated files removes manual wiring. The `.rask-gen/` directory is gitignored but inspectable for debugging.
+Full Rask in build scripts (unlike comptime's restricted subset) lets you do I/O-heavy tasks: reading schemas, calling external tools, generating code from templates. A structured API (not stdout directives like Cargo) means build scripts are type-checked and IDE-friendly. Generated files are automatically included—no manual wiring. The `.rk-gen/` directory is gitignored but you can inspect it for debugging.
 
 ## Specification
 
@@ -28,8 +28,8 @@ public func build(ctx: BuildContext) -> () or Error {
 **Rules:**
 - `rask.build` is a separate compilation unit (compiled before the main package)
 - Full Rask language available (I/O, pools, concurrency, C interop)
-- Build scripts CANNOT import the package they're building (circular dependency)
-- Build scripts CAN import external packages (declared in `[build-dependencies]`)
+- Can't import the package you're building (circular dependency)
+- Can import external packages (declared in `[build-dependencies]`)
 
 ### BuildContext API
 
@@ -48,7 +48,7 @@ struct BuildContext {
     public features: Set<string>      // enabled feature flags
 
     // Output directories
-    public gen_dir: Path              // .rask-gen/ for generated code
+    public gen_dir: Path              // .rk-gen/ for generated code
     public out_dir: Path              // build artifacts
 }
 
@@ -78,7 +78,7 @@ public func build(ctx: BuildContext) -> () or Error {
     const code = generate_types(schema)
 
     // Write to gen_dir (automatically included in compilation)
-    try ctx.write_source("generated_types.rask", code)
+    try ctx.write_source("generated_types.rk", code)
 
     Ok(())
 }
@@ -88,13 +88,13 @@ public func build(ctx: BuildContext) -> () or Error {
 
 | Method | Description |
 |--------|-------------|
-| `write_source(name: string, code: string)` | Write `.rask` file to gen_dir |
+| `write_source(name: string, code: string)` | Write `.rk` file to gen_dir |
 | `write_file(name: string, data: []u8)` | Write arbitrary file to out_dir |
 | `declare_dependency(path: Path)` | Mark file as input (triggers rebuild on change) |
 
 **Generated file location:**
-- `ctx.write_source("foo.rask")` → `.rask-gen/foo.rask`
-- `.rask-gen/` is automatically added to package source set
+- `ctx.write_source("foo.rk")` → `.rk-gen/foo.rk`
+- `.rk-gen/` is automatically added to package source set
 - Generated files have package visibility (not `public` unless explicitly written as such)
 
 ### Build Dependencies
@@ -118,8 +118,8 @@ codegen-utils = "0.5"
 **Rules:**
 - `[build-dependencies]` are separate from `[dependencies]`
 - Build dependencies compiled first, used by build script
-- Build dependencies NOT available to main package code
-- Version conflicts between build-deps and deps: allowed (separate compilation)
+- Not available to main package code
+- Version conflicts between build-deps and deps are fine (separate compilation)
 
 ### Build Lifecycle
 
@@ -129,8 +129,8 @@ codegen-utils = "0.5"
 1. Resolve dependencies (rask.toml + rask.lock)
 2. Fetch/compile build-dependencies
 3. Compile rask.build (if exists)
-4. Execute rask.build → generates files to .rask-gen/
-5. Compile main package (includes .rask-gen/*.rask)
+4. Execute rask.build → generates files to .rk-gen/
+5. Compile main package (includes .rk-gen/*.rk)
 6. Link
 ```
 
@@ -212,7 +212,7 @@ struct CompileOptions {
 
 Rust crates that export C ABI functions (`#[no_mangle] pub extern "C" fn`) can be compiled and linked via `compile_rust`. The Rust crate produces a static library; an optional cbindgen step generates a C header that Rask imports with the standard `import c` mechanism.
 
-**No new import syntax.** Rust is just another source of C-ABI libraries.
+No new import syntax. Rust is just another source of C-ABI libraries.
 
 **RustCrateOptions:**
 
@@ -237,7 +237,7 @@ struct RustCrateOptions {
 
 1. Resolve crate — local path (contains `/`) or fetch from crates.io (bare name + `version`)
 2. Run `cargo build --lib --message-format=json` with profile/target/features
-3. If `cbindgen: true`, run cbindgen → header written to `.rask-gen/{header_name}`
+3. If `cbindgen: true`, run cbindgen → header written to `.rk-gen/{header_name}`
 4. Auto-link the resulting static library
 5. Auto-link Rust runtime system dependencies (detected from cargo JSON output)
 6. Call `declare_dependency` on local crate sources for incremental rebuilds
@@ -258,8 +258,8 @@ public func build(ctx: BuildContext) -> () or Error {
 ```
 
 ```rask
-// main.rask
-import c ".rask-gen/fast_hash.h" as hash
+// main.rk
+import c ".rk-gen/fast_hash.h" as hash
 
 func main() {
     const data = "hello world"
@@ -300,7 +300,7 @@ public func build(ctx: BuildContext) -> () or Error {
 ```
 
 ```rask
-// main.rask — explicit bindings instead of import c
+// main.rk — explicit bindings instead of import c
 extern "C" {
     func my_init() -> c_int
     func my_process(data: *u8, len: c_size) -> c_int
@@ -310,7 +310,7 @@ extern "C" {
 
 **Linking:**
 
-Static linking is the default (`crate_type: "staticlib"`). This produces a self-contained archive with no runtime library path issues. Platform-specific Rust runtime dependencies are auto-detected from cargo's `--message-format=json` output:
+Static linking is the default (`crate_type: "staticlib"`). Produces a self-contained archive with no runtime library path issues. Platform-specific Rust runtime dependencies are auto-detected from cargo's `--message-format=json` output:
 
 | Platform | Typical dependencies |
 |----------|---------------------|
@@ -343,7 +343,7 @@ public func build(ctx: BuildContext) -> () or Error {
     // Run protoc
     const result = try ctx.run(Command {
         program: "protoc",
-        args: ["--rask_out=.rask-gen/", "schema.proto"],
+        args: ["--rask_out=.rk-gen/", "schema.proto"],
         env: [],
     })
 
@@ -365,9 +365,9 @@ public func build(ctx: BuildContext) -> () or Error {
         try ctx.link_library("crypto")
 
         // Generate feature flag for main code
-        try ctx.write_source("features.rask", "public const SSL_ENABLED: bool = true")
+        try ctx.write_source("features.rk", "public const SSL_ENABLED: bool = true")
     } else {
-        try ctx.write_source("features.rask", "public const SSL_ENABLED: bool = false")
+        try ctx.write_source("features.rk", "public const SSL_ENABLED: bool = false")
     }
 
 }
@@ -399,11 +399,11 @@ full = ["ssl", "json"]
 error: Build script failed
   --> rask.build:15:5
    |
-15 |     try ctx.write_source("bad.rask", invalid_code)
+15 |     try ctx.write_source("bad.rk", invalid_code)
    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
    |
    = note: Generated file has syntax errors
-   = note: See .rask-gen/bad.rask for generated content
+   = note: See .rk-gen/bad.rk for generated content
 ```
 
 ### Edge Cases
@@ -420,7 +420,7 @@ error: Build script failed
 
 ## Comptime vs Build Scripts
 
-**Clear separation of concerns:**
+Clear separation of concerns:
 
 | Task | Use | Why |
 |------|-----|-----|
@@ -440,18 +440,18 @@ const VERSION: string = comptime @embed_file("VERSION")
 ```
 
 **Constraints:**
-- Path MUST be a string literal (no runtime values)
+- Path must be a string literal (no runtime values)
 - Path is relative to package root
 - Read-only (no side effects)
 - File read at compile time, contents embedded in binary
 
-This handles the common "embed this file" case. Build scripts are for **transforms**: reading input, processing it, writing generated code.
+Handles the common "embed this file" case. Build scripts are for **transforms**: reading input, processing it, writing generated code.
 
 ## Integration Notes
 
 - **Comptime:** Build scripts are separate from comptime. Comptime runs in-compiler (restricted subset, plus `@embed_file`); build scripts run as separate programs (full language). Use comptime for constants/embedding; build scripts for I/O-heavy codegen.
 - **Package System:** Build scripts are compiled like any package. Build-dependencies resolved via same MVS algorithm. Generated code has package visibility.
-- **Module System:** `.rask-gen/` files are part of the package. `import` works normally. No special syntax for generated code.
+- **Module System:** `.rk-gen/` files are part of the package. `import` works normally. No special syntax for generated code.
 - **Incremental Compilation:** Build script re-runs only when inputs change. Generated files cached. Main package recompiles if generated files change.
 
 ## Remaining Issues

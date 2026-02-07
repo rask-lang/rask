@@ -2,7 +2,7 @@
 
 ## Operator Precedence
 
-Higher precedence binds tighter. Left-to-right associativity unless noted.
+Higher precedence binds tighter. Left-to-right unless noted.
 
 | Prec | Operators | Description | Assoc |
 |------|-----------|-------------|-------|
@@ -25,7 +25,7 @@ Higher precedence binds tighter. Left-to-right associativity unless noted.
 
 `&` (AND), `|` (OR), `^` (XOR), `~` (NOT), `<<` (left shift), `>>` (right shift).
 
-Integer operands only. Shift exceeding bit width panics. `>>` is arithmetic on signed, logical on unsigned.
+Integer only. Shift exceeding bit width panics. `>>` arithmetic on signed, logical on unsigned.
 
 ## Comparison
 
@@ -47,16 +47,16 @@ trait Equal {
 
 `==` calls `eq()`. `!=` is `!eq()`.
 
-**Requirements (compiler does NOT verify, programmer must ensure):**
+**Requirements (programmer must ensure, compiler doesn't verify):**
 - Reflexive: `a == a` is true
 - Symmetric: `a == b` implies `b == a`
 - Transitive: `a == b` and `b == c` implies `a == c`
 
-**Derivable:** Structs and enums can derive `Equal` if all fields implement `Equal`.
+**Derivable:** Structs and enums can derive if all fields implement `Equal`.
 
-**Floating-point:** `f32` and `f64` implement `Equal` with IEEE 754 semantics:
+**Floating-point:** `f32` and `f64` implement with IEEE 754 semantics:
 - `NaN == NaN` is `false` (breaks reflexivity)
-- Use `.total_eq()` for reflexive comparison where `NaN.total_eq(NaN)` is `true`
+- Use `.total_eq()` for reflexive where `NaN.total_eq(NaN)` is `true`
 
 ### Ordered
 
@@ -71,14 +71,14 @@ enum Ordering { Less, Equal, Greater }
 `<` `>` `<=` `>=` are derived from `cmp()`.
 
 **Requirements:**
-- Total: exactly one of `a < b`, `a == b`, `a > b` is true
+- Total: exactly one of `a < b`, `a == b`, `a > b` true
 - Transitive: `a < b` and `b < c` implies `a < c`
 - Antisymmetric: `a < b` implies `!(b < a)`
 
-**Derivable:** Structs derive lexicographic ordering (first field, then second, etc.). Note: structs containing `f32` or `f64` cannot auto-derive `Ordered` since floats don't implement it. Use explicit `Comparable` extend with `.total_cmp()` if ordering is needed.
+**Derivable:** Structs derive lexicographic ordering (first field, then second, etc.). Structs with `f32`/`f64` can't auto-derive (floats don't implement). Use explicit `Comparable` extend with `.total_cmp()` if needed.
 
-**Floating-point:** `f32` and `f64` do NOT implement `Ordered` (NaN breaks totality).
-- Use `.total_cmp()` for total ordering where `NaN` sorts after all values
+**Floating-point:** `f32` and `f64` don't implement `Ordered` (NaN breaks totality).
+- Use `.total_cmp()` for total ordering where `NaN` sorts last
 
 ### Comparison Summary
 

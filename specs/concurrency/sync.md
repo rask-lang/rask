@@ -4,7 +4,7 @@ Cross-task shared state when channels aren't enough.
 
 ## The Question
 
-Channels work for message-passing, but some patterns become awkward:
+Channels work for message-passing, but some patterns are awkward:
 - **Shared config**: Read by many tasks, occasionally updated
 - **Metrics/counters**: Written by many, read for reporting
 - **Caches**: Read-heavy with occasional invalidation
@@ -21,17 +21,17 @@ Three primitives for different access patterns:
 | `Mutex<T>` | Write-heavy | High (all access exclusive) | Queues, state machines |
 | Atomics | Single values | None (lock-free) | Counters, flags |
 
-All three are **explicit escape hatches** from "no shared mutable memory." Usage is visible and intentional.
+All three are **explicit escape hatches** from "no shared mutable memory". Usage visible and intentional.
 
 ## Rationale
 
-1. **Transparency (TC ≥ 0.90):** Shared state is explicit—`Shared.new()`, `Mutex.new()`, not hidden in language magic.
+**Transparency (TC ≥ 0.90).** Shared state explicit—`Shared.new()`, `Mutex.new()`, not hidden in language magic.
 
-2. **Mechanical Correctness (MC ≥ 0.90):** Closure-based access prevents escaping references. Data races impossible by construction.
+**Mechanical Correctness (MC ≥ 0.90).** Closure-based access prevents escaping references. Data races impossible by construction.
 
-3. **Ergonomic Delta (ED ≤ 1.2):** Matches Go's `sync.RWMutex` ergonomics without the footgun of forgetting to unlock.
+**Ergonomic Delta (ED ≤ 1.2).** Matches Go's `sync.RWMutex` ergonomics without forgetting-to-unlock footgun.
 
-4. **Use Case Coverage (UCC ≥ 0.80):** Read-heavy patterns (config, caches) are common in servers. Without `Shared<T>`, users resort to channels with awkward request/response patterns.
+**Use Case Coverage (UCC ≥ 0.80).** Read-heavy patterns (config, caches) common in servers. Without `Shared<T>`, users resort to awkward channel request/response patterns.
 
 ## Specification
 
@@ -77,7 +77,7 @@ extend Shared<T> {
 }
 ```
 
-**Note:** Method names indicate access mode: `read` gives read-only access, `write` gives mutable access. Interior mutability pattern (like atomics).
+Method names indicate access mode—`read` gives read-only access, `write` gives mutable access. Interior mutability pattern (like atomics).
 
 **Properties:**
 
@@ -89,7 +89,7 @@ extend Shared<T> {
 | Direct nested deadlock | Prevented (syntactic detection) |
 | Starvation | Writers may starve under heavy read load |
 
-**Implementation:** Built on `RwLock` internally. Platform-specific (pthread_rwlock, SRWLock, etc.).
+**Implementation:** Built on `RwLock` internally. Platform-specific—pthread_rwlock, SRWLock, etc.
 
 ### Mutex<T> — Exclusive Access
 
@@ -170,7 +170,7 @@ mutex.lock(|data| {
 | Nested locks | Easy to deadlock | Compiler error (closure borrows mutex) |
 | Borrow checker | Needs lifetime tracking | No lifetimes needed |
 
-**The key insight:** Rask's "no storable references" principle naturally leads to closure-based APIs. This isn't a restriction—it's the design working as intended.
+Key insight—Rask's "no storable references" principle naturally leads to closure-based APIs. Not a restriction, but the design working as intended.
 
 ### Preventing Deadlock
 
@@ -188,24 +188,24 @@ a.lock(|a_val| {
 })
 ```
 
-**Wait, that's an error?** Yes—because `b.lock()` would borrow `b` while we're in a closure that might hold references. The closure-based API prevents direct nested locking by construction.
+That's an error because `b.lock()` would borrow `b` while already inside a closure that might hold references. Closure-based API prevents direct nested locking by construction.
 
 ### Nested Lock Detection Scope
 
-The compiler uses **syntactic analysis only** (per Principle 5: Local Analysis).
+Compiler uses **syntactic analysis only** (per Principle 5: Local Analysis).
 
 **Guaranteed (compile error):**
 - `a.lock(|_| b.lock(|_| ...))` — direct nested lock call
 - `shared.read(|_| shared.write(|_| ...))` — same lock re-acquisition
 
-**NOT guaranteed (programmer responsibility):**
+**NOT guaranteed (your responsibility):**
 - `a.lock(|_| some_function())` where `some_function` acquires locks
 - Locks behind trait method calls
 - Locks acquired through dynamic dispatch
 
-Detecting all lock acquisition paths would require whole-program analysis, which violates local-only compilation. For indirect cases, use the patterns below.
+Detecting all lock acquisition paths requires whole-program analysis, which violates local-only compilation.
 
-**For patterns that genuinely need multiple locks:**
+For patterns that genuinely need multiple locks:
 
 ```rask
 // Pattern 1: Lock ordering (acquire in consistent order)
@@ -255,7 +255,7 @@ When should you use `Shared<T>` vs a channel?
 | Latest value | ✅ Natural | Need "watch" channel |
 | Historical values | ❌ Wrong tool | ✅ Buffer |
 
-**Example: Config that needs both patterns**
+**Example — Config that needs both patterns:**
 
 ```rask
 // Config with watch channel for updates
@@ -410,7 +410,7 @@ extend FeatureFlags {
 - **Pools:** `Pool<T>` is single-task. For cross-task entity access, use channels to send handles. See [pools.md](../memory/pools.md).
 - **Closures:** Closure-based access follows the same pattern as `pool.modify()`. See [closures.md](../memory/closures.md).
 
-**Anti-pattern: Don't wrap Pool in Mutex**
+**Anti-pattern—Don't wrap Pool in Mutex:**
 
 ```rask
 // ❌ WRONG: Wrapping a pool in Mutex causes contention
@@ -425,7 +425,7 @@ let h = try rx.recv()
 entities[h].update()  // No lock needed
 ```
 
-Handles are Copy and cheap to send. The pool stays fast; only coordination crosses task boundaries.
+Handles are Copy and cheap to send. Pool stays fast—only coordination crosses task boundaries.
 
 ## Design Decisions
 

@@ -26,7 +26,7 @@ func process_teams() {
 // Expected error message:
 //
 // error: ambiguous context requirement Pool<Player>
-//   --> context_ambiguous.rask:21
+//   --> context_ambiguous.rk:21
 //    |
 // 15 |     const team_a = Pool::<Player>.new()
 //    |           ------ candidate Pool<Player>

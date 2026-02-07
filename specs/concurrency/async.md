@@ -4,7 +4,7 @@ Green tasks with affine handles. No function coloring. Explicit resource declara
 
 ## Overview
 
-Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work. Unlike Rust/JavaScript, there is no `async`/`await` syntax—all functions work the same way regardless of whether they perform I/O.
+Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work. No `async`/`await` syntax—functions work the same way regardless of whether they do I/O.
 
 | Property | Value |
 |----------|-------|
@@ -21,16 +21,16 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | `spawn_thread { }` | Thread from pool | `with threading` | No |
 | `spawn_raw { }` | Raw OS thread | Nothing | No |
 
-**All return affine handles** - must be joined or detached (compile error if forgotten).
+**All return affine handles**—must be joined or detached (compile error if forgotten).
 
 ### Naming Rationale
 
-- `multitasking` - describes the capability (cooperative green tasks, M:N scheduling)
-- `threading` - describes the capability (thread pool), consistent with `multitasking`
-- `spawn_*` - consistent family of spawn keywords:
-  - `spawn` - green task (requires `with multitasking`)
-  - `spawn_thread` - pooled thread (requires `with threading`)
-  - `spawn_raw` - raw OS thread (works anywhere)
+- `multitasking` — describes capability (cooperative green tasks, M:N scheduling)
+- `threading` — describes capability (thread pool), consistent with `multitasking`
+- `spawn_*` — consistent spawn family:
+  - `spawn` — green task (requires `with multitasking`)
+  - `spawn_thread` — pooled thread (requires `with threading`)
+  - `spawn_raw` — raw OS thread (works anywhere)
 
 ## Concurrency vs Parallelism
 
@@ -39,7 +39,7 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | **Concurrency** | Interleaved execution | Green tasks via `spawn { }` |
 | **Parallelism** | Simultaneous execution | Thread pool via `spawn_thread { }` |
 
-Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they're interleaved on a small number of OS threads. For CPU-bound work that needs true parallelism, use `spawn_thread { }`.
+Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they interleave on a few OS threads. CPU-bound work needing true parallelism requires `spawn_thread { }`.
 
 ## Basic Usage
 
@@ -70,16 +70,16 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 
 **Key points:**
 - `with multitasking { }` enables green tasks
-- `spawn { }` returns a `TaskHandle` (affine type)
-- `.detach()` explicitly opts out of tracking (fire-and-forget)
+- `spawn { }` returns `TaskHandle` (affine type)
+- `.detach()` opts out of tracking (fire-and-forget)
 - No `.await`, no `async` keywords
-- 100k concurrent connections? No problem.
+- 100k concurrent connections supported
 
 ## Task Spawning
 
 ### Affine Handles
 
-`spawn { }` returns a `TaskHandle<T>` that **must be consumed**:
+`spawn { }` returns a `TaskHandle<T>` that **must be consumed**.
 
 ```rask
 // Get result - must join
@@ -158,7 +158,7 @@ func main() {
 
 The `with` block creates and scopes the multitasking scheduler. No explicit construction needed.
 
-For configuration:
+Configuration:
 
 ```rask
 with multitasking(4) { }              // 4 scheduler threads
@@ -197,7 +197,7 @@ with multitasking(4), threading(8) { }  // Both
 
 ## How I/O Works
 
-**Stdlib I/O automatically pauses the task:**
+**Stdlib I/O automatically pauses tasks.**
 
 ```rask
 func process_file(path: string) -> Data or Error {
@@ -207,22 +207,22 @@ func process_file(path: string) -> Data or Error {
 }
 ```
 
-The programmer doesn't write `.await`. The stdlib handles pausing internally:
+No `.await` needed. Stdlib handles pausing internally:
 
 1. Function calls `file.read_all()`
 2. Stdlib issues non-blocking syscall
-3. If not ready, scheduler parks this task
+3. If not ready, scheduler parks task
 4. Scheduler runs other tasks
-5. When I/O completes, scheduler wakes the task
-6. Function continues from where it left off
+5. When I/O completes, scheduler wakes task
+6. Function continues from where it paused
 
-**IDE shows pause points as ghost annotations** (per Principle 7: "Compiler Knowledge is Visible"):
+**IDEs show pause points as ghost annotations:**
 
 ```rask
 const data = try file.read()  // IDE shows: ⟨pauses⟩
 ```
 
-No code ceremony required. Transparency achieved through tooling.
+No code ceremony. Transparency through tooling.
 
 ## Thread Pool (CPU Parallelism)
 
@@ -241,9 +241,9 @@ func main() {
 }
 ```
 
-### Why a Separate Thread Pool?
+### Why Separate Thread Pool?
 
-Without a thread pool, CPU-heavy code starves other tasks:
+Without thread pool, CPU-heavy code starves other tasks:
 
 ```rask
 spawn { cpu_intensive() }.detach()  // BAD: Hogs scheduler thread
@@ -280,7 +280,7 @@ with threading {
 
 ### Thread Pool Without Multitasking
 
-Thread pool works independently for pure CPU-parallelism (CLI tools, batch processing):
+Thread pool works independently for pure CPU-parallelism—CLI tools, batch processing.
 
 ```rask
 @entry
@@ -318,7 +318,7 @@ Same affine handle rules apply. Works anywhere (no multitasking or threading req
 
 ## Sync Mode (Default)
 
-Without Multitasking, I/O operations block the thread:
+Without multitasking, I/O operations block the thread.
 
 ```rask
 @entry
@@ -340,7 +340,7 @@ func main() {
 | `spawn_thread { }` | Thread pool | Thread pool (same) |
 | Stdlib I/O | Pauses task | Blocks thread |
 
-**No special attribute needed.** The presence of `with multitasking { }` is the opt-in.
+No special attribute needed. The presence of `with multitasking { }` is the opt-in.
 
 ## Join Semantics
 
@@ -381,11 +381,11 @@ spawn { handle_request(conn) }.detach()
 | Forgotten tasks | Silent | **Compile error** |
 | Function coloring | No | No |
 
-**Safety difference:** Rask catches forgotten tasks at compile time.
+Safety difference—Rask catches forgotten tasks at compile time.
 
 ## Cancellation
 
-Cooperative model with cleanup guarantees:
+Cooperative model with cleanup guarantees.
 
 ```rask
 const h = spawn {
@@ -403,15 +403,15 @@ try h.cancel()  // Request cancellation, wait for exit
 ```
 
 **Rules:**
-- `ensure` blocks always run (cancellation doesn't skip cleanup)
-- Cancellation is cooperative (task checks `cancelled()` flag)
+- `ensure` blocks always run—cancellation doesn't skip cleanup
+- Cancellation is cooperative—task checks `cancelled()` flag
 - If task ignores flag, it keeps running
-- I/O operations check the flag and return `Err(Cancelled)` if set
-- Linear resources are handled by `ensure` blocks
+- I/O operations check flag and return `Err(Cancelled)` if set
+- Linear resources handled by `ensure` blocks
 
 ## Channels
 
-Channels work in both modes:
+Channels work in both modes.
 
 | Mode | Channel behavior |
 |------|------------------|
@@ -447,10 +447,7 @@ struct Receiver<T> { ... }   // NOT linear - can be dropped
 
 **Channel handles are NOT linear resource types.** They can be dropped without explicit close.
 
-**Rationale:**
-- Fire-and-forget patterns (`.detach()` tasks) would require close ceremony
-- Go's channels can be dropped without explicit close (ED ≤ 1.2)
-- Matches `ensure` philosophy: explicit handling available, implicit path is simple
+Why: Fire-and-forget patterns (`.detach()` tasks) would require close ceremony. Go's channels drop without explicit close (ED ≤ 1.2). Matches `ensure` philosophy—explicit handling available, implicit path simple.
 
 ### Channel Creation
 
@@ -472,7 +469,7 @@ struct Receiver<T> { ... }   // NOT linear - can be dropped
 
 ### Close and Drop Semantics
 
-**Key design:** Explicit `close()` for error handling, implicit drop ignores errors.
+Explicit `close()` for error handling, implicit drop ignores errors.
 
 | Action | Behavior |
 |--------|----------|
@@ -481,7 +478,7 @@ struct Receiver<T> { ... }   // NOT linear - can be dropped
 | `tx` dropped | Implicit close, errors silently ignored |
 | `rx` dropped | Implicit close, errors silently ignored |
 
-This matches `ensure` semantics: explicit handling when needed, simple implicit path.
+Matches `ensure` semantics—explicit handling when needed, simple implicit path.
 
 **Example - explicit close when errors matter:**
 ```rask
@@ -513,7 +510,7 @@ spawn {
 | Receiver dropped, buffer has items | Items are **dropped** (lost) |
 | All receivers dropped | Senders get `Err(Closed)` on next send |
 
-**Rationale:** This is standard MPSC/MPMC semantics. Items are not "lost" unless all receivers are gone.
+Standard MPSC/MPMC semantics. Items aren't "lost" unless all receivers are gone.
 
 **Example - draining a closed channel:**
 ```rask
@@ -571,7 +568,7 @@ enum TryRecvError {
 
 ## Select
 
-Wait on multiple operations:
+Wait on multiple operations.
 
 ```rask
 loop {

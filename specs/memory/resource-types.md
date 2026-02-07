@@ -1,15 +1,15 @@
 # Solution: Resource Types
 
 ## The Question
-How do we ensure resources like files, connections, and locks are properly consumed (closed, released) before going out of scope?
+How do we ensure resources like files, connections, and locks are properly consumed before going out of scope?
 
 ## Decision
-The `@resource` attribute marks types that must be consumed exactly once. The compiler enforces consumption before scope exit. The `ensure` statement provides deferred consumption that satisfies the resource requirement.
+`@resource` marks types that must be consumed exactly once. Compiler enforces it. `ensure` provides deferred consumption.
 
 ## Rationale
-Resource types (based on linear resource types from type theory) prevent resource leaks by construction. Unlike RAII (which runs destructors automatically), resource types require explicit consumption—making cleanup visible (TC ≥ 0.90) while guaranteeing it happens (MC ≥ 0.90).
+Resource types prevent leaks by construction. Unlike RAII (automatic destructors), resources need explicit consumption—cleanup is visible while still guaranteed.
 
-The `ensure` statement bridges resource types with error handling: you can commit to consuming a resource early, then use `try` freely knowing cleanup will happen.
+`ensure` bridges resources with error handling: commit to cleanup early, then use `try` freely knowing it'll happen.
 
 ## Specification
 
@@ -343,7 +343,7 @@ Resources must be explicitly consumed (use take_all() before drop).
 | GC finalizers | Eventual | ❌ Hidden | ❌ No |
 | Resource types | Explicit + compiler | ✅ Yes | ✅ Yes |
 
-Resource types are "visible RAII"—you see the cleanup, and the compiler guarantees it happens.
+Resource types are "visible RAII"—you see it, the compiler guarantees it.
 
 ### Unique vs Resource
 

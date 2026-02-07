@@ -2,6 +2,8 @@
 
 **Goal:** Groundbreaking systems language that eliminates abstraction tax while covering 80%+ of real-world use cases.
 
+These metrics are how I measure whether the design actually works. If Rask doesn't hit these targets, it's just another language—not worth building.
+
 ---
 
 ## Core Metrics
@@ -12,7 +14,7 @@ TC = (Apparent Operations) / (Actual Operations)
 Target: TC ≥ 0.90
 ```
 
-MAJOR costs must be visible. Small O(1) safety checks can be implicit.
+I want major costs visible in the code. Small O(1) safety checks can be implicit—I'm not going to make you write ceremony for bounds checks.
 
 **Visible (require explicit syntax):**
 - Allocations, reallocations
@@ -42,7 +44,7 @@ buffer overflow, memory leaks, stale references, type confusion,
 uninitialized reads, integer overflow
 ```
 
-Bugs must be impossible by construction, not just caught at runtime.
+Bugs must be impossible by construction, not just caught at runtime. That's the whole point.
 
 ---
 
@@ -111,7 +113,7 @@ Compare against WHICHEVER language is simplest for that task:
 Target: ED ≤ 1.2 vs the simplest alternative for that use case
 ```
 
-**Critical:** Rask must feel natural. Compare against whatever language solves that problem most elegantly—not just Rust/Go.
+**Critical:** I want Rask to feel natural. I compare against whatever language solves each problem most elegantly—not just Rust/Go. If Python is simpler for a CLI tool, that's the bar.
 
 **Measure via:**
 - Lines of code for equivalent functionality
@@ -138,6 +140,8 @@ Logic: actual computation, data transformation, control flow
 - ❌ `users.get(id) or { return None }.name or { return None }` — ceremony dominates
 - ✅ `for user in users { ... }` — clean iteration
 - ❌ `users.lock(ref) { |user| ... } or continue` — nested callback noise
+
+I target SN ≤ 0.3 because error handling shouldn't dominate the actual logic.
 
 **Red flags (auto-fail if common patterns require):**
 - `or` clause on >50% of lines
@@ -178,7 +182,7 @@ CS = (Rust compile time) / (Rask compile time)
 Target: CS ≥ 5× faster than Rust
 ```
 
-No whole-program analysis. Module-local inference only.
+No whole-program analysis. Module-local inference only. I've waited too long for Rust to compile—I want build times that scale linearly.
 
 **Red flags (auto-fail):**
 - Whole-program escape/borrow analysis
@@ -192,11 +196,11 @@ No whole-program analysis. Module-local inference only.
 TC ≥ 0.90 AND MC ≥ 0.90 AND UCC ≥ 0.80 AND PI ≥ 0.85 AND ED ≤ 1.2 AND SN ≤ 0.3 AND RO ≤ 1.10 (hot) AND CS ≥ 5× Rust AND IF is HIGH
 ```
 
-**Hard requirement:** Must feel lighter than the status quo for systems programming.
+**Hard requirement:** Must feel lighter than the status quo for systems programming. If it doesn't, what's the point?
 
-**The goal:** A language where safety is the default but doesn't feel like a tax. Draw inspiration from ANYWHERE—the best ideas often come from unexpected sources (Erlang's supervision, Forth's simplicity, APL's notation, Lisp's macros, ML's types).
+**The goal:** A language where safety is the default but doesn't feel like a tax. I draw inspiration from anywhere—the best ideas often come from unexpected sources (Erlang's supervision, Forth's simplicity, APL's notation, Lisp's macros, ML's types).
 
-**Not bound to:** Rust's borrow checker, Go's simplicity, C's model. These are data points, not constraints.
+**Not bound to:** Rust's borrow checker, Go's simplicity, C's model. These are data points, not constraints. I'm trying to find a better tradeoff.
 
 **The holy grail:** Memory safety that doesn't feel like memory safety. The programmer thinks about their problem, not the language.
 

@@ -4,10 +4,10 @@
 How does Rask achieve memory safety without garbage collection, reference counting overhead, or Rust-style lifetime annotations?
 
 ## Decision
-Value semantics with single ownership, scoped borrowing, and handle-based indirection for dynamic structures. Safety emerges from structure, not annotations.
+Value semantics with single ownership, scoped borrowing, and handle-based indirection. Safety emerges from structure, not annotations.
 
 ## Rationale
-The goal is "safety without annotation"—memory safety as a structural property, not extra work. By combining strict ownership with scoped borrowing that cannot escape, we eliminate use-after-free, dangling pointers, and data races without requiring lifetime parameters in signatures.
+I wanted "safety without annotation." Strict ownership plus scoped borrowing that can't escape eliminates use-after-free, dangling pointers, and data races—no lifetime parameters in signatures.
 
 ## Specification
 

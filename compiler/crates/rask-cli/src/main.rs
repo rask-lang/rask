@@ -67,8 +67,19 @@ fn main() {
         Format::Human
     };
 
+    // Split at -- delimiter
+    let delimiter_pos = args.iter().position(|a| a == "--");
+    let (cli_args, prog_args) = match delimiter_pos {
+        Some(pos) => {
+            let cli = &args[..pos];
+            let prog = &args[pos + 1..];  // Skip the "--" itself
+            (cli, prog)
+        }
+        None => (&args[..], &[] as &[String])
+    };
+
     // Filter out format flags for command dispatch
-    let cmd_args: Vec<&str> = args
+    let cmd_args: Vec<&str> = cli_args
         .iter()
         .enumerate()
         .filter(|(i, a)| {
@@ -79,7 +90,7 @@ fn main() {
             if s == "--format" {
                 return false;
             }
-            if *i > 0 && args[i - 1] == "--format" {
+            if *i > 0 && cli_args[i - 1] == "--format" {
                 return false;
             }
             true
@@ -96,7 +107,7 @@ fn main() {
         "lex" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("lex"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("lex"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             cmd_lex(cmd_args[2], format);
@@ -104,7 +115,7 @@ fn main() {
         "parse" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("parse"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("parse"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             cmd_parse(cmd_args[2], format);
@@ -112,7 +123,7 @@ fn main() {
         "resolve" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("resolve"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("resolve"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             cmd_resolve(cmd_args[2], format);
@@ -120,7 +131,7 @@ fn main() {
         "typecheck" | "check" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             cmd_typecheck(cmd_args[2], format);
@@ -128,7 +139,7 @@ fn main() {
         "ownership" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("ownership"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("ownership"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             cmd_ownership(cmd_args[2], format);
@@ -136,10 +147,10 @@ fn main() {
         "run" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rask>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
                 process::exit(1);
             }
-            let program_args: Vec<String> = cmd_args[2..].iter().map(|s| s.to_string()).collect();
+            let program_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
             cmd_run(cmd_args[2], program_args, format);
         }
         "test-specs" => {
@@ -165,7 +176,7 @@ fn main() {
             println!("{} {}", output::title("rask"), output::version("0.1.0"));
         }
         other => {
-            if other.ends_with(".rask") {
+            if other.ends_with(".rk") {
                 cmd_parse(other, format);
             } else {
                 eprintln!("{}: Unknown command '{}'", output::error_label(), other);

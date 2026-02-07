@@ -37,7 +37,6 @@ pub struct Interpreter {
 }
 
 impl Interpreter {
-    /// Create a new interpreter.
     pub fn new() -> Self {
         Self {
             env: Environment::new(),
@@ -51,7 +50,6 @@ impl Interpreter {
         }
     }
 
-    /// Create a new interpreter with command-line arguments.
     pub fn with_args(args: Vec<String>) -> Self {
         Self {
             env: Environment::new(),
@@ -65,8 +63,7 @@ impl Interpreter {
         }
     }
 
-    /// Create an interpreter with output capture enabled.
-    /// Returns the interpreter and a reference to the output buffer.
+    /// Returns interpreter and output buffer reference.
     pub fn with_captured_output() -> (Self, Arc<Mutex<String>>) {
         let buffer = Arc::new(Mutex::new(String::new()));
         let interp = Self {
@@ -82,8 +79,7 @@ impl Interpreter {
         (interp, buffer)
     }
 
-    /// Create a child interpreter for running in a spawned thread.
-    /// Clones function/enum/method tables and captured environment variables.
+    /// Clones function/enum/method tables and captured environment for spawned thread.
     fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
         let mut child = Interpreter::new();
         child.functions = self.functions.clone();
@@ -96,7 +92,6 @@ impl Interpreter {
         child
     }
 
-    /// Write to output (buffer or stdout).
     fn write_output(&self, s: &str) {
         if let Some(buf) = &self.output_buffer {
             buf.lock().unwrap().push_str(s);
@@ -105,7 +100,6 @@ impl Interpreter {
         }
     }
 
-    /// Write a newline to output (buffer or stdout).
     fn write_output_ln(&self) {
         if let Some(buf) = &self.output_buffer {
             buf.lock().unwrap().push('\n');
@@ -114,7 +108,6 @@ impl Interpreter {
         }
     }
 
-    /// Check if a type name is a resource type (@resource attribute or built-in File).
     fn is_resource_type(&self, name: &str) -> bool {
         if name == "File" {
             return true;
@@ -125,7 +118,6 @@ impl Interpreter {
             .unwrap_or(false)
     }
 
-    /// Get the resource ID from a Value, checking both struct resource_id and File Arc pointer.
     pub(crate) fn get_resource_id(&self, value: &Value) -> Option<u64> {
         match value {
             Value::Struct { resource_id, .. } => *resource_id,
@@ -137,7 +129,6 @@ impl Interpreter {
         }
     }
 
-    /// Transfer a resource (if present in the value) to a different scope depth.
     /// Handles nested values like Result.Ok(file) or Result.Err(FileError{file}).
     fn transfer_resource_to_scope(&mut self, value: &Value, new_depth: usize) {
         match value {
@@ -159,22 +150,13 @@ impl Interpreter {
         }
     }
 
-    /// Run a program (list of declarations).
-    ///
-    /// This:
-    /// 1. Registers all function declarations
-    /// 2. Registers built-in functions (println, print, panic)
-    /// 3. Registers imported modules
-    /// 4. Finds and calls the @entry function
     pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeError> {
-        // Pass 1: Register all function, enum declarations, and collect imports
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
 
         for decl in decls {
             match &decl.kind {
                 DeclKind::Fn(f) => {
-                    // Check for @entry attribute
                     if f.attrs.iter().any(|a| a == "entry") {
                         if entry_fn.is_some() {
                             return Err(RuntimeError::MultipleEntryPoints);
@@ -187,14 +169,12 @@ impl Interpreter {
                     self.enums.insert(e.name.clone(), e.clone());
                 }
                 DeclKind::Impl(impl_decl) => {
-                    // Register methods from extend block
                     let type_methods = self.methods.entry(impl_decl.target_ty.clone()).or_default();
                     for method in &impl_decl.methods {
                         type_methods.insert(method.name.clone(), method.clone());
                     }
                 }
                 DeclKind::Import(import) => {
-                    // Handle module imports: import fs, import io as input, etc.
                     if let Some(module_name) = import.path.first() {
                         let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
                         let module_kind = match module_name.as_str() {
@@ -209,7 +189,7 @@ impl Interpreter {
                             "os" => Some(ModuleKind::Os),
                             "json" => Some(ModuleKind::Json),
                             "path" => Some(ModuleKind::Path),
-                            _ => None, // Unknown module, ignore for now
+                            _ => None,
                         };
                         if let Some(kind) = module_kind {
                             imports.push((alias, kind));
@@ -218,7 +198,6 @@ impl Interpreter {
                 }
                 DeclKind::Struct(s) => {
                     self.struct_decls.insert(s.name.clone(), s.clone());
-                    // Register methods from struct's inline methods
                     if !s.methods.is_empty() {
                         let type_methods = self.methods.entry(s.name.clone()).or_default();
                         for method in &s.methods {
@@ -230,8 +209,6 @@ impl Interpreter {
             }
         }
 
-        // Register built-in functions in the global scope
-        // Global functions (no module prefix)
         self.env
             .define("print".to_string(), Value::Builtin(BuiltinKind::Print));
         self.env
@@ -241,8 +218,6 @@ impl Interpreter {
         self.env
             .define("format".to_string(), Value::Builtin(BuiltinKind::Format));
 
-        // Register shorthand constructors for Option and Result
-        // Some(x), None, Ok(x), Err(x)
         self.env.define(
             "Some".to_string(),
             Value::EnumConstructor {
@@ -276,7 +251,6 @@ impl Interpreter {
             },
         );
 
-        // Register built-in enums (Option, Result, Ordering)
         use rask_ast::decl::{EnumDecl, Field, Variant};
         self.enums.insert(
             "Option".to_string(),
@@ -331,7 +305,6 @@ impl Interpreter {
             EnumDecl {
                 name: "Ordering".to_string(),
                 variants: vec![
-                    // Comparison ordering (cmp)
                     Variant {
                         name: "Less".to_string(),
                         fields: vec![],
@@ -344,7 +317,6 @@ impl Interpreter {
                         name: "Greater".to_string(),
                         fields: vec![],
                     },
-                    // Memory ordering (atomics)
                     Variant {
                         name: "Relaxed".to_string(),
                         fields: vec![],
@@ -371,23 +343,18 @@ impl Interpreter {
             },
         );
 
-        // Register only imported modules
         for (name, kind) in imports {
             self.env.define(name, Value::Module(kind));
         }
 
-        // Pass 2: Call the @entry function
         if let Some(entry) = entry_fn {
             self.call_function(&entry, vec![])
         } else {
-            // No @entry function - error
             Err(RuntimeError::NoEntryPoint)
         }
     }
 
-    /// Call a user-defined function with arguments.
     pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        // Check arity
         if args.len() != func.params.len() {
             return Err(RuntimeError::ArityMismatch {
                 expected: func.params.len(),
@@ -395,18 +362,13 @@ impl Interpreter {
             });
         }
 
-        // Create new scope for function body
         self.env.push_scope();
 
-        // Bind parameters to arguments
-        // Handle projection types: if param type is "Type.{field}", extract field from struct arg
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
             if let Some(proj_start) = param.ty.find(".{") {
-                // Projection parameter — extract named field from struct
                 let proj_fields_str = &param.ty[proj_start + 2..param.ty.len() - 1];
                 let proj_fields: Vec<&str> = proj_fields_str.split(',').map(|s| s.trim()).collect();
                 if proj_fields.len() == 1 && param.name == proj_fields[0] {
-                    // Single field projection: bind the field value directly
                     if let Value::Struct { fields, .. } = &arg {
                         if let Some(field_val) = fields.get(proj_fields[0]) {
                             self.env.define(param.name.clone(), field_val.clone());
@@ -428,10 +390,8 @@ impl Interpreter {
             }
         }
 
-        // Execute function body (ensures run inside here via exec_stmts)
         let result = self.exec_stmts(&func.body);
 
-        // Before popping scope, transfer any resources in the return value to caller scope
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
         match &result {
@@ -439,36 +399,25 @@ impl Interpreter {
                 self.transfer_resource_to_scope(v, caller_depth);
             }
             Err(RuntimeError::TryError(v)) => {
-                // Error propagation — the Err value may contain a resource
                 self.transfer_resource_to_scope(v, caller_depth);
             }
             _ => {}
         }
 
-        // Check for unconsumed resources at this scope depth
         if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
             self.env.pop_scope();
             return Err(RuntimeError::Panic(msg));
         }
 
-        // Pop function scope
         self.env.pop_scope();
 
-        // Handle return value:
-        // - Ok(_) means function completed without explicit return → return Unit
-        //   (Rask requires explicit `return` to produce values from functions)
-        // - Err(Return(v)) means explicit return → return v
-        // - Err(TryError(v)) means `try` propagated error → return Err value
-        // - Err(other) means actual error → propagate
         let value = match result {
             Ok(_) => Value::Unit,
             Err(RuntimeError::Return(v)) => v,
-            Err(RuntimeError::TryError(v)) => v, // Return the Err value
+            Err(RuntimeError::TryError(v)) => v,
             Err(e) => return Err(e),
         };
 
-        // Auto-Ok wrapping: if return type is Result<T, E> (from `T or E`)
-        // and the value isn't already a Result, wrap it in Ok
         let returns_result = func.ret_ty.as_ref()
             .map(|t| t.starts_with("Result<"))
             .unwrap_or(false);
@@ -486,11 +435,7 @@ impl Interpreter {
         }
     }
 
-    /// Execute a list of statements, returning the value of the last expression.
-    ///
-    /// Collects `ensure` blocks encountered during execution and runs them in
-    /// LIFO order when the block exits (normal completion or any error).
-    /// This implements block-scoped deferred cleanup per the ensure spec.
+    /// Runs ensure blocks in LIFO order on block exit.
     fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeError> {
         let mut last_value = Value::Unit;
         let mut ensures: Vec<&Stmt> = Vec::new();
@@ -510,10 +455,8 @@ impl Interpreter {
             }
         }
 
-        // Run ensures in LIFO order before returning
         let ensure_fatal = self.run_ensures(&ensures);
 
-        // Original exit reason takes priority; ensure panics only matter on normal exit
         if let Some(e) = exit_error {
             Err(e)
         } else if let Some(fatal) = ensure_fatal {
@@ -523,17 +466,14 @@ impl Interpreter {
         }
     }
 
-    /// Run ensure blocks in LIFO order. Returns a fatal error (Panic/Exit) if one occurs.
-    /// Non-fatal errors from ensure bodies are silently ignored or passed to catch handlers.
+    /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to catch handlers.
     fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeError> {
         for ensure_stmt in ensures.iter().rev() {
             if let StmtKind::Ensure { body, catch } = &ensure_stmt.kind {
-                // Execute the ensure body (simple sequential execution, no ensure collection)
                 let result = self.exec_ensure_body(body);
 
                 match result {
                     Ok(value) => {
-                        // Check if value is a Result::Err (Rask-level error from cleanup)
                         if let Value::Enum { name, variant, fields } = &value {
                             if name == "Result" && variant == "Err" {
                                 let err_val = fields.first().cloned().unwrap_or(Value::Unit);
@@ -544,19 +484,15 @@ impl Interpreter {
                     Err(RuntimeError::Panic(msg)) => return Some(RuntimeError::Panic(msg)),
                     Err(RuntimeError::Exit(code)) => return Some(RuntimeError::Exit(code)),
                     Err(RuntimeError::TryError(val)) => {
-                        // try used inside ensure (spec forbids this, handle gracefully)
                         self.handle_ensure_error(val, catch);
                     }
-                    Err(_) => {
-                        // Other runtime errors in ensure body: silently ignore
-                    }
+                    Err(_) => {}
                 }
             }
         }
         None
     }
 
-    /// Execute statements in an ensure body (no ensure collection — simple sequential execution).
     fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
         let mut last_value = Value::Unit;
         for stmt in body {
@@ -565,7 +501,6 @@ impl Interpreter {
         Ok(last_value)
     }
 
-    /// Handle an error from an ensure body: pass to catch handler or silently ignore.
     fn handle_ensure_error(&mut self, error_value: Value, catch: &Option<(String, Vec<Stmt>)>) {
         if let Some((name, handler)) = catch {
             self.env.push_scope();
@@ -573,16 +508,12 @@ impl Interpreter {
             let _ = self.exec_ensure_body(handler);
             self.env.pop_scope();
         }
-        // Without catch: error is silently ignored per spec
     }
 
-    /// Execute a single statement.
     fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
         match &stmt.kind {
-            // Expression statement - evaluate and return the value
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
-            // Const binding (immutable) - evaluate init and bind
             StmtKind::Const { name, init, .. } => {
                 let value = self.eval_expr(init)?;
                 if let Some(id) = self.get_resource_id(&value) {
@@ -592,7 +523,6 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            // Let binding (mutable) - same as const for now (mutability checked earlier)
             StmtKind::Let { name, init, .. } => {
                 let value = self.eval_expr(init)?;
                 if let Some(id) = self.get_resource_id(&value) {
@@ -602,28 +532,24 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            // Let tuple destructuring: let (a, b) = expr
             StmtKind::LetTuple { names, init } => {
                 let value = self.eval_expr(init)?;
                 self.destructure_tuple(names, value)?;
                 Ok(Value::Unit)
             }
 
-            // Const tuple destructuring: const (a, b) = expr
             StmtKind::ConstTuple { names, init } => {
                 let value = self.eval_expr(init)?;
                 self.destructure_tuple(names, value)?;
                 Ok(Value::Unit)
             }
 
-            // Assignment - evaluate and update existing binding
             StmtKind::Assign { target, value } => {
                 let val = self.eval_expr(value)?;
                 self.assign_target(target, val)?;
                 Ok(Value::Unit)
             }
 
-            // Return - wrap value in error for control flow
             StmtKind::Return(expr) => {
                 let value = if let Some(e) = expr {
                     self.eval_expr(e)?
@@ -633,7 +559,6 @@ impl Interpreter {
                 Err(RuntimeError::Return(value))
             }
 
-            // While loop
             StmtKind::While { cond, body } => {
                 loop {
                     let cond_val = self.eval_expr(cond)?;
@@ -661,7 +586,6 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            // While-let pattern matching loop (while expr is Pattern)
             StmtKind::WhileLet {
                 pattern,
                 expr,
@@ -670,10 +594,8 @@ impl Interpreter {
                 loop {
                     let value = self.eval_expr(expr)?;
 
-                    // Try to match the pattern
                     if let Some(bindings) = self.match_pattern(pattern, &value) {
                         self.env.push_scope();
-                        // Bind pattern variables
                         for (name, val) in bindings {
                             self.env.define(name, val);
                         }
@@ -694,14 +616,12 @@ impl Interpreter {
                         }
                         self.env.pop_scope();
                     } else {
-                        // Pattern didn't match, exit loop
                         break;
                     }
                 }
                 Ok(Value::Unit)
             }
 
-            // Infinite loop
             StmtKind::Loop { body, .. } => loop {
                 self.env.push_scope();
                 match self.exec_stmts(body) {
@@ -722,23 +642,18 @@ impl Interpreter {
                 self.env.pop_scope();
             },
 
-            // Break
             StmtKind::Break(_) => Err(RuntimeError::Break),
 
-            // Continue
             StmtKind::Continue(_) => Err(RuntimeError::Continue),
 
-            // For-in loop (basic implementation for ranges)
             StmtKind::For {
                 binding,
                 iter,
                 body,
                 ..
             } => {
-                // Evaluate the iterator expression
                 let iter_val = self.eval_expr(iter)?;
 
-                // Handle Range values (from a..b expressions)
                 match iter_val {
                     Value::Range {
                         start,
@@ -769,7 +684,6 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Vec(v) => {
-                        // Clone vec items to avoid borrow issues during iteration
                         let items: Vec<Value> = v.lock().unwrap().clone();
                         for item in items {
                             self.env.push_scope();
@@ -794,7 +708,6 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Pool(p) => {
-                        // Iterate over valid handles in the pool
                         let pool = p.lock().unwrap();
                         let pool_id = pool.pool_id;
                         let handles: Vec<Value> = pool
@@ -806,7 +719,7 @@ impl Interpreter {
                                 generation: *gen,
                             })
                             .collect();
-                        drop(pool); // Release lock before iteration
+                        drop(pool);
 
                         for handle in handles {
                             self.env.push_scope();
@@ -837,16 +750,12 @@ impl Interpreter {
                 }
             }
 
-            // Ensure block - collected by exec_stmts, not executed here directly
             StmtKind::Ensure { .. } => Ok(Value::Unit),
 
-            // Other statements not yet implemented
             _ => Ok(Value::Unit),
         }
     }
 
-    /// Assign a value to a target expression.
-    /// Destructure a tuple/vec/struct into named bindings.
     fn destructure_tuple(&mut self, names: &[String], value: Value) -> Result<(), RuntimeError> {
         match value {
             Value::Vec(v) => {
@@ -862,7 +771,6 @@ impl Interpreter {
                 }
             }
             Value::Struct { fields, .. } => {
-                // Destructure struct by field names
                 for name in names {
                     let val = fields.get(name).cloned().unwrap_or(Value::Unit);
                     self.env.define(name.clone(), val);
@@ -877,8 +785,6 @@ impl Interpreter {
         Ok(())
     }
 
-    /// Assign a value through a chain of field accesses.
-    /// field_chain is [field1, field2, ..., fieldN] for target.field1.field2...fieldN = value.
     fn assign_nested_field(obj: &mut Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
         if field_chain.is_empty() {
             *obj = value;
@@ -887,7 +793,6 @@ impl Interpreter {
         let mut current = obj;
         for (i, field) in field_chain.iter().enumerate() {
             if i == field_chain.len() - 1 {
-                // Last field — assign the value
                 match current {
                     Value::Struct { fields, .. } => {
                         fields.insert(field.clone(), value);
@@ -898,7 +803,6 @@ impl Interpreter {
                     ))),
                 }
             } else {
-                // Intermediate field — navigate deeper
                 current = match current {
                     Value::Struct { fields, .. } => {
                         fields.get_mut(field).ok_or_else(|| {
@@ -922,19 +826,16 @@ impl Interpreter {
                 }
                 Ok(())
             }
-            // Field assignment: obj.field = value (supports arbitrary nesting)
             ExprKind::Field { .. } => {
-                // Collect the chain of field accesses from outermost to base
                 let mut field_chain = Vec::new();
                 let mut current = target;
                 while let ExprKind::Field { object, field: f } = &current.kind {
                     field_chain.push(f.clone());
                     current = object;
                 }
-                field_chain.reverse(); // Now: [outer_field, ..., inner_field]
+                field_chain.reverse();
 
                 match &current.kind {
-                    // Simple: var.field1.field2...fieldN = value
                     ExprKind::Ident(var_name) => {
                         if let Some(obj) = self.env.get_mut(var_name) {
                             Self::assign_nested_field(obj, &field_chain, value)
@@ -942,7 +843,6 @@ impl Interpreter {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }
                     }
-                    // Indexed: container[idx].field1.field2...fieldN = value
                     ExprKind::Index { object: idx_obj, index: idx_expr } => {
                         let idx_val = self.eval_expr(idx_expr)?;
                         if let ExprKind::Ident(var_name) = &idx_obj.kind {
@@ -983,14 +883,12 @@ impl Interpreter {
                                 Err(RuntimeError::UndefinedVariable(var_name.clone()))
                             }
                         } else {
-                            // Nested indexing on non-ident (e.g., complex expressions)
                             Err(RuntimeError::TypeError("complex nested assignment not yet supported".to_string()))
                         }
                     }
                     _ => Err(RuntimeError::TypeError("unsupported assignment target".to_string())),
                 }
             }
-            // Index assignment: collection[idx] = value
             ExprKind::Index { object, index } => {
                 let idx = self.eval_expr(index)?;
                 if let ExprKind::Ident(var_name) = &object.kind {
@@ -1055,14 +953,11 @@ impl Interpreter {
         }
     }
 
-    /// Evaluate an expression and return its value.
     fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
         match &expr.kind {
-            // Literals - just wrap in Value
-            ExprKind::Int(n) => Ok(Value::Int(*n)),
-            ExprKind::Float(n) => Ok(Value::Float(*n)),
+            ExprKind::Int(n, _) => Ok(Value::Int(*n)),
+            ExprKind::Float(n, _) => Ok(Value::Float(*n)),
             ExprKind::String(s) => {
-                // String interpolation: replace {name} with variable values
                 if s.contains('{') {
                     let interpolated = self.interpolate_string(s)?;
                     Ok(Value::String(Arc::new(Mutex::new(interpolated))))
@@ -1073,17 +968,13 @@ impl Interpreter {
             ExprKind::Char(c) => Ok(Value::Char(*c)),
             ExprKind::Bool(b) => Ok(Value::Bool(*b)),
 
-            // Identifier lookup
             ExprKind::Ident(name) => {
-                // First check local/global variables
                 if let Some(val) = self.env.get(name) {
                     return Ok(val.clone());
                 }
-                // Then check if it's a function name
                 if self.functions.contains_key(name) {
                     return Ok(Value::Function { name: name.clone() });
                 }
-                // Check type constructors (Vec, Map, string, etc.)
                 match name.as_str() {
                     "Vec" => return Ok(Value::TypeConstructor(TypeConstructorKind::Vec)),
                     "Map" => return Ok(Value::TypeConstructor(TypeConstructorKind::Map)),
@@ -1095,12 +986,7 @@ impl Interpreter {
                 Err(RuntimeError::UndefinedVariable(name.clone()))
             }
 
-            // Function call
             ExprKind::Call { func, args } => {
-                // Special case: OptionalField used as function (e.g., foo()?.bar())
-                // This happens when `?.` is lexed as a single token, creating
-                // Call { func: OptionalField { object, field }, args }
-                // We treat this as: try on object, then method call on unwrapped value
                 if let ExprKind::OptionalField { object, field } = &func.kind {
                     let obj_val = self.eval_expr(object)?;
                     let arg_vals: Vec<Value> = args
@@ -1108,7 +994,6 @@ impl Interpreter {
                         .map(|a| self.eval_expr(a))
                         .collect::<Result<_, _>>()?;
 
-                    // Handle Result: unwrap Ok or propagate Err
                     if let Value::Enum {
                         name,
                         variant,
@@ -1131,7 +1016,6 @@ impl Interpreter {
                                 "Some" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
                                     let result = self.call_method(inner, field, arg_vals)?;
-                                    // Wrap result in Some for optional chaining
                                     return Ok(Value::Enum {
                                         name: "Option".to_string(),
                                         variant: "Some".to_string(),
@@ -1150,7 +1034,6 @@ impl Interpreter {
                         }
                     }
 
-                    // Fallback: try to call the field as a method
                     return self.call_method(obj_val, field, arg_vals);
                 }
 
@@ -1162,14 +1045,12 @@ impl Interpreter {
                 self.call_value(func_val, arg_vals)
             }
 
-            // Method call (handles desugared operators like a.add(b))
             ExprKind::MethodCall {
                 object,
                 method,
                 args,
                 ..
             } => {
-                // Check if this is an enum variant constructor (e.g., Option.Some(42))
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(name).cloned() {
                         if let Some(variant) = enum_decl.variants.iter().find(|v| &v.name == method)
@@ -1193,11 +1074,8 @@ impl Interpreter {
                         }
                     }
 
-                    // Check for static method on type (e.g., Parser.new(), Lexer.new())
-                    // These are methods in extend blocks that don't take self
                     if let Some(type_methods) = self.methods.get(name).cloned() {
                         if let Some(method_fn) = type_methods.get(method) {
-                            // Check if it's a static method (first param is not "self")
                             let is_static = method_fn
                                 .params
                                 .first()
@@ -1214,14 +1092,12 @@ impl Interpreter {
                     }
                 }
 
-                // Regular method call
                 let receiver = self.eval_expr(object)?;
                 let arg_vals: Vec<Value> = args
                     .iter()
                     .map(|a| self.eval_expr(a))
                     .collect::<Result<_, _>>()?;
 
-                // Handle type static methods (e.g., Instant.now(), Duration.seconds(5))
                 if let Value::Type(type_name) = &receiver {
                     return self.call_type_method(type_name, method, arg_vals);
                 }
@@ -1229,10 +1105,8 @@ impl Interpreter {
                 self.call_method(receiver, method, arg_vals)
             }
 
-            // Binary operators (only && and || remain after desugaring)
             ExprKind::Binary { op, left, right } => match op {
                 BinOp::And => {
-                    // Short-circuit: if left is false, don't evaluate right
                     let l = self.eval_expr(left)?;
                     if !self.is_truthy(&l) {
                         Ok(Value::Bool(false))
@@ -1242,7 +1116,6 @@ impl Interpreter {
                     }
                 }
                 BinOp::Or => {
-                    // Short-circuit: if left is true, don't evaluate right
                     let l = self.eval_expr(left)?;
                     if self.is_truthy(&l) {
                         Ok(Value::Bool(true))
@@ -1252,7 +1125,6 @@ impl Interpreter {
                     }
                 }
                 _ => {
-                    // Other operators should have been desugared
                     Err(RuntimeError::TypeError(format!(
                         "unexpected binary op {:?} - should be desugared to method call",
                         op
@@ -1260,7 +1132,6 @@ impl Interpreter {
                 }
             },
 
-            // Unary operators
             ExprKind::Unary { op, operand } => {
                 let val = self.eval_expr(operand)?;
                 match op {
@@ -1286,7 +1157,6 @@ impl Interpreter {
                 }
             }
 
-            // Block expression - execute statements and return last value
             ExprKind::Block(stmts) => {
                 self.env.push_scope();
                 let result = self.exec_stmts(stmts);
@@ -1294,7 +1164,6 @@ impl Interpreter {
                 result
             }
 
-            // If expression
             ExprKind::If {
                 cond,
                 then_branch,
@@ -1310,7 +1179,6 @@ impl Interpreter {
                 }
             }
 
-            // Range expression (a..b or a..=b)
             ExprKind::Range {
                 start,
                 end,
@@ -1327,7 +1195,7 @@ impl Interpreter {
                         }
                     }
                 } else {
-                    0 // Default start
+                    0
                 };
                 let end_val = if let Some(e) = end {
                     match self.eval_expr(e)? {
@@ -1340,7 +1208,7 @@ impl Interpreter {
                         }
                     }
                 } else {
-                    i64::MAX // No end (open range)
+                    i64::MAX
                 };
                 Ok(Value::Range {
                     start: start_val,
@@ -1349,11 +1217,9 @@ impl Interpreter {
                 })
             }
 
-            // Struct literal
             ExprKind::StructLit { name, fields, spread } => {
                 let mut field_values = HashMap::new();
 
-                // Handle spread first if present
                 if let Some(spread_expr) = spread {
                     if let Value::Struct {
                         fields: base_fields,
@@ -1364,7 +1230,6 @@ impl Interpreter {
                     }
                 }
 
-                // Evaluate and set explicit fields
                 for field in fields {
                     let value = self.eval_expr(&field.value)?;
                     field_values.insert(field.name.clone(), value);
@@ -1383,25 +1248,20 @@ impl Interpreter {
                 })
             }
 
-            // Field access
             ExprKind::Field { object, field } => {
-                // Check if this is an enum variant access (e.g., Option.Some)
                 if let ExprKind::Ident(enum_name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
-                        // Find the variant
                         if let Some(variant) =
                             enum_decl.variants.iter().find(|v| &v.name == field)
                         {
                             let field_count = variant.fields.len();
                             if field_count == 0 {
-                                // Unit variant - return the enum value directly
                                 return Ok(Value::Enum {
                                     name: enum_name.clone(),
                                     variant: field.clone(),
                                     fields: vec![],
                                 });
                             } else {
-                                // Constructor - return callable
                                 return Ok(Value::EnumConstructor {
                                     enum_name: enum_name.clone(),
                                     variant_name: field.clone(),
@@ -1412,14 +1272,12 @@ impl Interpreter {
                     }
                 }
 
-                // Fall through to struct field access or module field access
                 let obj = self.eval_expr(object)?;
                 match obj {
                     Value::Struct { fields, .. } => {
                         Ok(fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
                     Value::Module(ModuleKind::Time) => {
-                        // time.Instant, time.Duration → return type values
                         match field.as_str() {
                             "Instant" => Ok(Value::Type("Instant".to_string())),
                             "Duration" => Ok(Value::Type("Duration".to_string())),
@@ -1430,11 +1288,9 @@ impl Interpreter {
                         }
                     }
                     Value::Module(ModuleKind::Math) => {
-                        // math.PI, math.E, etc. → return constant values
                         self.get_math_field(field)
                     }
                     Value::Module(ModuleKind::Path) => {
-                        // path.Path → return type value for Path.new() etc.
                         match field.as_str() {
                             "Path" => Ok(Value::Type("Path".to_string())),
                             _ => Err(RuntimeError::TypeError(format!(
@@ -1444,7 +1300,6 @@ impl Interpreter {
                         }
                     }
                     Value::Module(ModuleKind::Random) => {
-                        // random.Rng → return type value for Rng.new() etc.
                         match field.as_str() {
                             "Rng" => Ok(Value::Type("Rng".to_string())),
                             _ => Err(RuntimeError::TypeError(format!(
@@ -1454,7 +1309,6 @@ impl Interpreter {
                         }
                     }
                     Value::Module(ModuleKind::Json) => {
-                        // json.JsonValue → return type for constructors
                         match field.as_str() {
                             "JsonValue" => Ok(Value::Type("JsonValue".to_string())),
                             _ => Err(RuntimeError::TypeError(format!(
@@ -1464,7 +1318,6 @@ impl Interpreter {
                         }
                     }
                     Value::Module(ModuleKind::Cli) => {
-                        // cli.Parser → return type for builder
                         match field.as_str() {
                             "Parser" => Ok(Value::Type("Parser".to_string())),
                             _ => Err(RuntimeError::TypeError(format!(
@@ -1480,7 +1333,6 @@ impl Interpreter {
                 }
             }
 
-            // Index access
             ExprKind::Index { object, index } => {
                 let obj = self.eval_expr(object)?;
                 let idx = self.eval_expr(index)?;
@@ -1531,7 +1383,6 @@ impl Interpreter {
                 }
             }
 
-            // Array literal
             ExprKind::Array(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
@@ -1540,7 +1391,6 @@ impl Interpreter {
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
 
-            // Tuple literal — evaluated as Vec for pattern matching
             ExprKind::Tuple(elements) => {
                 let values: Vec<Value> = elements
                     .iter()
@@ -1549,13 +1399,11 @@ impl Interpreter {
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
 
-            // Match expression
             ExprKind::Match { scrutinee, arms } => {
                 let value = self.eval_expr(scrutinee)?;
 
                 for arm in arms {
                     if let Some(bindings) = self.match_pattern(&arm.pattern, &value) {
-                        // Check guard if present
                         if let Some(guard) = &arm.guard {
                             self.env.push_scope();
                             for (name, val) in &bindings {
@@ -1568,7 +1416,6 @@ impl Interpreter {
                             }
                         }
 
-                        // Execute arm body with bindings
                         self.env.push_scope();
                         for (name, val) in bindings {
                             self.env.define(name, val);
@@ -1579,11 +1426,9 @@ impl Interpreter {
                     }
                 }
 
-                // No arm matched
                 Err(RuntimeError::NoMatchingArm)
             }
 
-            // If-let pattern matching
             ExprKind::IfLet {
                 expr,
                 pattern,
@@ -1607,8 +1452,6 @@ impl Interpreter {
                 }
             }
 
-            // Try operator (?) - unwrap Result/Option or propagate error
-            // Works with any enum that has Ok/Some (success) or Err/None (failure) variants
             ExprKind::Try(inner) => {
                 let val = self.eval_expr(inner)?;
                 match &val {
@@ -1629,7 +1472,6 @@ impl Interpreter {
                 }
             }
 
-            // Closure expression (|x, y| body)
             ExprKind::Closure { params, body } => {
                 let captured = self.env.capture();
                 Ok(Value::Closure {
@@ -1639,7 +1481,6 @@ impl Interpreter {
                 })
             }
 
-            // Type cast (x as i32)
             ExprKind::Cast { expr, ty } => {
                 let val = self.eval_expr(expr)?;
                 match (val, ty.as_str()) {
@@ -1664,11 +1505,10 @@ impl Interpreter {
                     (Value::Int(n), "char") => {
                         Ok(Value::Char(char::from_u32(n as u32).unwrap_or('\0')))
                     }
-                    (v, _) => Ok(v), // no-op for unrecognized casts
+                    (v, _) => Ok(v),
                 }
             }
 
-            // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
                 let val = self.eval_expr(value)?;
                 match &val {
@@ -1686,7 +1526,6 @@ impl Interpreter {
                 }
             }
 
-            // spawn_raw { body } - raw OS thread
             ExprKind::BlockCall { name, body } if name == "spawn_raw" => {
                 let body = body.clone();
                 let captured = self.env.capture();
@@ -1709,7 +1548,6 @@ impl Interpreter {
                 })))
             }
 
-            // spawn_thread { body } - thread from pool
             ExprKind::BlockCall { name, body } if name == "spawn_thread" => {
                 let pool = self.env.get("__thread_pool").cloned();
                 let pool = match pool {
@@ -1725,7 +1563,6 @@ impl Interpreter {
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
 
-                // Create a oneshot channel for the result
                 let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
 
                 let task = PoolTask {
@@ -1745,7 +1582,6 @@ impl Interpreter {
                     }),
                 };
 
-                // Send work to pool
                 let sender = pool.sender.lock().unwrap();
                 if let Some(ref tx) = *sender {
                     tx.send(task).map_err(|_| {
@@ -1757,7 +1593,6 @@ impl Interpreter {
                     ));
                 }
 
-                // Wrap the result receiver as a thread handle
                 let join_handle = std::thread::spawn(move || {
                     result_rx
                         .recv()
@@ -1769,7 +1604,6 @@ impl Interpreter {
                 })))
             }
 
-            // with threading(n) { body }
             ExprKind::WithBlock { name, args, body } if name == "threading" => {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()
@@ -1780,7 +1614,6 @@ impl Interpreter {
                         .map_err(|e| RuntimeError::TypeError(e))? as usize
                 };
 
-                // Create thread pool
                 let (tx, rx) = mpsc::channel::<PoolTask>();
                 let rx = Arc::new(Mutex::new(rx));
                 let mut workers = Vec::with_capacity(num_threads);
@@ -1795,7 +1628,7 @@ impl Interpreter {
                             };
                             match task {
                                 Ok(task) => (task.work)(),
-                                Err(_) => break, // Channel closed, exit
+                                Err(_) => break,
                             }
                         }
                     }));
@@ -1807,7 +1640,6 @@ impl Interpreter {
                     size: num_threads,
                 });
 
-                // Store pool in environment and execute body
                 self.env.push_scope();
                 self.env.define("__thread_pool".to_string(), Value::ThreadPool(pool.clone()));
 
@@ -1816,7 +1648,6 @@ impl Interpreter {
                     match self.exec_stmt(stmt) {
                         Ok(val) => result = val,
                         Err(e) => {
-                            // Shut down pool on error
                             *pool.sender.lock().unwrap() = None;
                             for w in workers {
                                 let _ = w.join();
@@ -1827,7 +1658,6 @@ impl Interpreter {
                     }
                 }
 
-                // Shut down pool: drop sender so workers exit
                 *pool.sender.lock().unwrap() = None;
                 for w in workers {
                     let _ = w.join();
@@ -1836,9 +1666,7 @@ impl Interpreter {
                 Ok(result)
             }
 
-            // Spawn (green task) - not yet implemented, needs M:N scheduler
             ExprKind::Spawn { body } => {
-                // For now, treat like spawn_raw (OS thread)
                 let body = body.clone();
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
@@ -1860,31 +1688,25 @@ impl Interpreter {
                 })))
             }
 
-            // Other expressions not yet implemented
             _ => Ok(Value::Unit),
         }
     }
 
-    /// Match a pattern against a value, returning bindings if successful.
     fn match_pattern(&self, pattern: &Pattern, value: &Value) -> Option<HashMap<String, Value>> {
         match pattern {
             Pattern::Wildcard => Some(HashMap::new()),
 
             Pattern::Ident(name) => {
-                // Check if this identifier is a unit enum variant
-                // If so, match against the enum value instead of binding
                 if let Value::Enum {
                     variant,
                     fields,
                     ..
                 } = value
                 {
-                    // Check if this name is a known unit variant
                     let is_unit_variant = self.enums.values().any(|e| {
                         e.variants.iter().any(|v| v.name == *name && v.fields.is_empty())
                     });
                     if is_unit_variant {
-                        // Match as enum variant, not binding
                         if variant == name && fields.is_empty() {
                             return Some(HashMap::new());
                         } else {
@@ -1892,14 +1714,12 @@ impl Interpreter {
                         }
                     }
                 }
-                // Not a unit variant - treat as variable binding
                 let mut bindings = HashMap::new();
                 bindings.insert(name.clone(), value.clone());
                 Some(bindings)
             }
 
             Pattern::Literal(lit_expr) => {
-                // Compare value to literal
                 if self.values_equal(value, lit_expr) {
                     Some(HashMap::new())
                 } else {
@@ -1957,7 +1777,6 @@ impl Interpreter {
             }
 
             Pattern::Tuple(patterns) => {
-                // For now, treat tuple as an array/vec
                 if let Value::Vec(v) = value {
                     let vec = v.lock().unwrap();
                     if patterns.len() == vec.len() {
@@ -1986,11 +1805,10 @@ impl Interpreter {
         }
     }
 
-    /// Compare a value to a literal expression for pattern matching.
     fn values_equal(&self, value: &Value, lit_expr: &Expr) -> bool {
         match (&value, &lit_expr.kind) {
-            (Value::Int(a), ExprKind::Int(b)) => *a == *b,
-            (Value::Float(a), ExprKind::Float(b)) => *a == *b,
+            (Value::Int(a), ExprKind::Int(b, _)) => *a == *b,
+            (Value::Float(a), ExprKind::Float(b, _)) => *a == *b,
             (Value::Bool(a), ExprKind::Bool(b)) => *a == *b,
             (Value::Char(a), ExprKind::Char(b)) => *a == *b,
             (Value::String(a), ExprKind::String(b)) => *a.lock().unwrap() == *b,
@@ -2070,11 +1888,9 @@ impl Interpreter {
                 captured_env,
             } => {
                 self.env.push_scope();
-                // Restore captured environment
                 for (name, val) in captured_env {
                     self.env.define(name, val);
                 }
-                // Bind parameters
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     self.env.define(param.clone(), arg);
                 }
@@ -2150,13 +1966,11 @@ impl Interpreter {
 
         while let Some(c) = chars.next() {
             if c == '{' {
-                // Check for escaped brace {{
                 if chars.peek() == Some(&'{') {
                     chars.next();
                     result.push('{');
                     continue;
                 }
-                // Collect everything until '}'
                 let mut spec_str = String::new();
                 while let Some(&next) = chars.peek() {
                     if next == '}' {
@@ -2165,7 +1979,6 @@ impl Interpreter {
                     }
                     spec_str.push(chars.next().unwrap());
                 }
-                // Parse: [arg_id][:format_spec]
                 let (arg_id, fmt_spec) = if let Some(colon_pos) = spec_str.find(':') {
                     let id_part = &spec_str[..colon_pos];
                     let spec_part = &spec_str[colon_pos + 1..];
@@ -2174,22 +1987,18 @@ impl Interpreter {
                     (spec_str, None)
                 };
 
-                // Resolve the value
                 let value = if arg_id.is_empty() {
-                    // Positional: next arg
                     if arg_index < args.len() {
                         let v = args[arg_index].clone();
                         arg_index += 1;
                         v
                     } else {
-                        // Fall back to environment lookup (empty name — just use next arg)
                         return Err(RuntimeError::TypeError(format!(
                             "format() not enough arguments (expected at least {})",
                             arg_index + 1
                         )));
                     }
                 } else if let Ok(idx) = arg_id.parse::<usize>() {
-                    // Explicit positional: {0}, {1}, etc.
                     if idx < args.len() {
                         args[idx].clone()
                     } else {
@@ -2200,11 +2009,9 @@ impl Interpreter {
                         )));
                     }
                 } else {
-                    // Named: look up variable in environment, supporting dotted access
                     self.resolve_named_placeholder(&arg_id)?
                 };
 
-                // Apply format spec
                 match fmt_spec {
                     Some(spec) => {
                         let formatted = self.apply_format_spec(&value, &spec)?;
@@ -2215,7 +2022,6 @@ impl Interpreter {
                     }
                 }
             } else if c == '}' {
-                // Check for escaped brace }}
                 if chars.peek() == Some(&'}') {
                     chars.next();
                     result.push('}');
@@ -2255,17 +2061,13 @@ impl Interpreter {
         }
     }
 
-    /// Apply a format specifier to a value.
     fn apply_format_spec(&self, value: &Value, spec: &str) -> Result<String, RuntimeError> {
-        // Parse: [[fill]align][width][.precision][type]
         let mut fill = ' ';
-        let mut align = None; // None means default (right for numbers, left for strings)
+        let mut align = None;
         let mut width = 0usize;
         let mut precision = None;
-        let mut format_type = ' '; // ' ' = display, '?' = debug, 'x'/'X' = hex, 'b' = binary, 'o' = octal, 'e' = scientific
+        let mut format_type = ' ';
 
-        // Check for [fill]align — align is <, >, ^
-        // If second char is an align char, first char is fill
         let spec_chars: Vec<char> = spec.chars().collect();
         let mut pos = 0;
 
@@ -2278,7 +2080,6 @@ impl Interpreter {
             pos = 1;
         }
 
-        // Parse width
         let mut width_str = String::new();
         while pos < spec_chars.len() && spec_chars[pos].is_ascii_digit() {
             width_str.push(spec_chars[pos]);
@@ -2288,7 +2089,6 @@ impl Interpreter {
             width = width_str.parse().unwrap_or(0);
         }
 
-        // Parse .precision
         if pos < spec_chars.len() && spec_chars[pos] == '.' {
             pos += 1;
             let mut prec_str = String::new();
@@ -2299,47 +2099,39 @@ impl Interpreter {
             precision = Some(prec_str.parse::<usize>().unwrap_or(0));
         }
 
-        // Parse type
         if pos < spec_chars.len() {
             format_type = spec_chars[pos];
         }
 
-        // Format the value based on type
         let formatted = match format_type {
             '?' => {
-                // Debug representation
                 self.debug_format(value)
             }
             'x' => {
-                // Hex lowercase
                 match value {
                     Value::Int(n) => format!("{:x}", n),
                     _ => format!("{}", value),
                 }
             }
             'X' => {
-                // Hex uppercase
                 match value {
                     Value::Int(n) => format!("{:X}", n),
                     _ => format!("{}", value),
                 }
             }
             'b' => {
-                // Binary
                 match value {
                     Value::Int(n) => format!("{:b}", n),
                     _ => format!("{}", value),
                 }
             }
             'o' => {
-                // Octal
                 match value {
                     Value::Int(n) => format!("{:o}", n),
                     _ => format!("{}", value),
                 }
             }
             'e' => {
-                // Scientific notation
                 match value {
                     Value::Float(n) => format!("{:e}", n),
                     Value::Int(n) => format!("{:e}", *n as f64),
@@ -2347,7 +2139,6 @@ impl Interpreter {
                 }
             }
             _ => {
-                // Display (default)
                 match precision {
                     Some(prec) => match value {
                         Value::Float(n) => format!("{:.prec$}", n, prec = prec),
@@ -2358,7 +2149,6 @@ impl Interpreter {
             }
         };
 
-        // Apply width and alignment
         if width > 0 && formatted.len() < width {
             let padding = width - formatted.len();
             let effective_align = align.unwrap_or('>');
@@ -2384,7 +2174,6 @@ impl Interpreter {
                     Ok(s)
                 }
                 _ => {
-                    // '>' or default: right-align
                     let mut s = String::new();
                     for _ in 0..padding {
                         s.push(fill);
@@ -2398,7 +2187,6 @@ impl Interpreter {
         }
     }
 
-    /// Debug format a value (shows type structure).
     fn debug_format(&self, value: &Value) -> String {
         match value {
             Value::String(s) => format!("\"{}\"", s.lock().unwrap()),
@@ -2424,42 +2212,36 @@ impl Interpreter {
                     format!("{}.{}({})", name, variant, field_strs.join(", "))
                 }
             }
-            // For primitives, Display and Debug are the same
             _ => format!("{}", value),
         }
     }
 
-    /// Interpolate a string, replacing {name} or {obj.field} with variable values.
     fn interpolate_string(&self, s: &str) -> Result<String, RuntimeError> {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
 
         while let Some(c) = chars.next() {
             if c == '{' {
-                // Escaped brace {{ — pass through literally for format()
                 if chars.peek() == Some(&'{') {
                     result.push('{');
                     result.push('{');
                     chars.next();
                     continue;
                 }
-                // Collect expression until '}'
                 let mut expr_str = String::new();
                 while let Some(&next) = chars.peek() {
                     if next == '}' {
-                        chars.next(); // consume '}'
+                        chars.next();
                         break;
                     }
                     expr_str.push(chars.next().unwrap());
                 }
-                // Empty braces {} or format specifiers {:x} — keep literal for format()
                 if expr_str.is_empty() || expr_str.starts_with(':') {
                     result.push('{');
                     result.push_str(&expr_str);
                     result.push('}');
                     continue;
                 }
-                // Separate format specifier: {expr:spec}
                 let (expr_part, fmt_spec) = if let Some(colon_pos) = expr_str.find(':') {
                     (&expr_str[..colon_pos], Some(&expr_str[colon_pos..]))
                 } else {
@@ -2467,13 +2249,11 @@ impl Interpreter {
                 };
                 let value = self.eval_interpolation_expr(expr_part)?;
                 if let Some(spec) = fmt_spec {
-                    // Re-wrap with format specifier for Display
                     result.push_str(&Self::format_value_with_spec(&value, spec));
                 } else {
                     result.push_str(&format!("{}", value));
                 }
             } else if c == '}' && chars.peek() == Some(&'}') {
-                // Escaped brace }} — pass through literally for format()
                 result.push('}');
                 result.push('}');
                 chars.next();
@@ -2512,15 +2292,12 @@ impl Interpreter {
                 };
             }
         }
-        // Try integer literal
         if let Ok(n) = expr.parse::<i64>() {
             return Ok(Value::Int(n));
         }
-        // Try float literal
         if let Ok(f) = expr.parse::<f64>() {
             return Ok(Value::Float(f));
         }
-        // Dotted field access (e.g., "state.score" or just "x")
         let parts: Vec<&str> = expr.split('.').collect();
         if let Some(val) = self.env.get(parts[0]) {
             let mut current = val.clone();
@@ -2569,7 +2346,6 @@ impl Interpreter {
         }
     }
 
-    /// Call a method on a value. Dispatches to builtins or stdlib.
     fn call_method(
         &mut self,
         receiver: Value,
@@ -2577,30 +2353,22 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match &receiver {
-            // Stdlib: module methods (fs.read_file, io.read_line, etc.)
             Value::Module(module) => self.call_module_method(module, method, args),
-            // Stdlib: File instance methods
             Value::File(f) => self.call_file_method(f, method, args),
-            // Stdlib: Duration/Instant instance methods
             Value::Duration(nanos) => self.call_duration_method(*nanos, method),
             Value::Instant(instant) => self.call_instant_method(instant, method, args),
-            // Stdlib: Metadata struct methods
             Value::Struct { name, fields, .. } if name == "Metadata" => {
                 self.call_metadata_method(fields, method)
             }
-            // Stdlib: Path struct methods
             Value::Struct { name, fields, .. } if name == "Path" => {
                 self.call_path_instance_method(fields, method, args)
             }
-            // Stdlib: Args struct methods (from cli.parse())
             Value::Struct { name, fields, .. } if name == "Args" => {
                 self.call_args_method(fields, method, args)
             }
-            // Stdlib: JsonValue enum methods
             Value::Enum { name, variant, fields } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
-            // Everything else: builtins (primitives, string, vec, etc.) + user-defined
             _ => self.call_builtin_method(receiver, method, args),
         }
     }

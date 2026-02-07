@@ -4,17 +4,17 @@
 How are values passed to functions? When does the caller keep the value vs give it up?
 
 ## Decision
-Three parameter modes: **borrow** (default, mutability inferred), **read** (explicit read-only), and **take** (ownership transfer).
+Three modes: **borrow** (default, mutability inferred), **read** (explicit read-only), **take** (ownership transfer).
 
 ## Rationale
-Borrowing is far more common than ownership transfer (~85% of parameters). The default should be the common case with mutability inferred from usage.
+Borrowing is 85% of parameters. Make the common case default, infer mutability from usage.
 
-However, explicit `read` provides three benefits:
-1. **API contracts** — The read-only guarantee is visible in the signature
-2. **Enforcement** — Compiler rejects any mutation, even accidental
-3. **Concurrency** — Multiple `read` borrows can coexist (no aliasing XOR mutability conflict)
+Explicit `read` gives you:
+1. **API contracts** — Read-only is visible in the signature
+2. **Enforcement** — Compiler rejects mutation
+3. **Concurrency** — Multiple `read` borrows work together
 
-The `take` keyword marks the exceptional case of ownership transfer.
+`take` marks the rare case: ownership transfer.
 
 ## Specification
 

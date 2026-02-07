@@ -274,8 +274,8 @@ impl Desugarer {
                 }
             }
             // Literals and identifiers don't need desugaring
-            ExprKind::Int(_)
-            | ExprKind::Float(_)
+            ExprKind::Int(_, _)
+            | ExprKind::Float(_, _)
             | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)

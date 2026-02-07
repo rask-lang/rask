@@ -2,25 +2,25 @@
 
 ## The Question
 
-How do we parse and build binary data (network protocols, file formats, embedded systems) with the same power as Erlang's bit syntax, but without adding new syntax to the language?
+How do we parse and build binary data (network protocols, file formats, embedded systems) with Erlang's power but without new syntax?
 
 ## Decision
 
-Use the `@binary` attribute on structs. Field "types" specify bit layout. Numbers mean bit widths. The compiler generates `.parse()` and `.build()` methods.
+Use `@binary` attribute on structs. Field "types" specify bit layout. Numbers mean bit widths. Compiler generates `.parse()` and `.build()` methods.
 
 ## Rationale
 
-Erlang's bit syntax is powerful but requires special syntax (`<<>>`, `/` specifiers). By making binary layout a property of structs via an attribute:
-- No new syntax (simpler lexer)
-- Layouts are reusable and documentable
-- Works with existing `match` syntax
-- IDE support comes for free (struct navigation)
+Erlang's bit syntax is powerful but requires special syntax (`<<>>`, `/` specifiers). I make binary layout a struct property:
+- No new syntax
+- Layouts are reusable
+- Works with existing `match`
+- IDE support comes free
 
 ## Specification
 
 ### The `@binary` Attribute
 
-**Note:** `@binary` structs use declaration order for wire format. Field reordering is not allowed — the order of fields defines the exact bit layout in the binary representation.
+**Note:** `@binary` structs use declaration order for wire format. No reordering. Field order is the bit layout.
 
 ```rask
 @binary
@@ -68,7 +68,7 @@ struct IpHeader {
 
 ### Runtime Types
 
-When a bare number `N` is used, the runtime type is the smallest unsigned integer that fits:
+Bare number `N` becomes the smallest unsigned integer that fits:
 
 | Bits | Runtime Type |
 |------|--------------|
@@ -102,9 +102,9 @@ extend T {
 
 ### Packing Rules
 
-1. Fields are packed sequentially with no padding
-2. Bits are packed MSB-first within bytes (network byte order)
-3. Total size = sum of all field bits, rounded up to nearest byte
+1. Fields packed sequentially, no padding
+2. Bits packed MSB-first (network byte order)
+3. Total size = sum of field bits, rounded up
 4. Unused bits in final byte are zero on build, ignored on parse
 
 ### Example: IP Header
@@ -214,7 +214,7 @@ struct Invalid {
 
 ### Alignment Requirement
 
-Multi-byte endian types (`u16be`, `u32le`, etc.) MUST start at a byte boundary:
+Multi-byte endian types (`u16be`, `u32le`, etc.) must start at byte boundaries:
 
 ```rask
 @binary
@@ -230,11 +230,11 @@ struct Invalid {
 }
 ```
 
-**Rationale**: Unaligned multi-byte reads are complex and slow on most architectures.
+**Rationale:** Unaligned multi-byte reads are complex and slow.
 
 ### Endianness Default
 
-There is no default endianness. Multi-byte fields MUST specify `be` or `le`:
+No default. Multi-byte fields must specify `be` or `le`:
 
 ```rask
 @binary
@@ -249,7 +249,7 @@ struct Ambiguous {
 }
 ```
 
-**Rationale**: Implicit endianness is a major source of bugs. Explicit is better.
+**Rationale:** Implicit endianness causes bugs. Explicit is better.
 
 ### Nested Binary Structs
 
@@ -295,10 +295,10 @@ See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functi
 
 ## Integration
 
-- **Match**: Use with normal pattern matching via `.parse()`
-- **Error handling**: Parse returns `Result`, integrates with `?`
-- **Comptime**: `SIZE` and `SIZE_BITS` are compile-time constants
-- **Generics**: Binary structs can be generic (rare but allowed)
+- **Match**: Works with normal pattern matching via `.parse()`
+- **Error handling**: Parse returns `Result`, integrates with `try`
+- **Comptime**: `SIZE` and `SIZE_BITS` are comptime constants
+- **Generics**: Binary structs can be generic (rare)
 
 ### Comptime Integration
 
@@ -322,12 +322,12 @@ const MAGIC_HEADER: [u8; 8] = comptime {
 ```
 
 **Comptime capabilities:**
-- `T.SIZE` and `T.SIZE_BITS` are comptime constants
-- `.build()` works at comptime (returns `Vec<u8>`, must `.freeze()`)
-- `.parse()` works at comptime for validating embedded data
-- Pattern matching on parsed results works at comptime
+- `T.SIZE` and `T.SIZE_BITS` available
+- `.build()` works (returns `Vec<u8>`, must `.freeze()`)
+- `.parse()` validates embedded data
+- Pattern matching works
 
-See [comptime.md](../control/comptime.md) for compile-time execution details.
+See [comptime.md](../control/comptime.md).
 
 ### Relationship to Other Attributes
 

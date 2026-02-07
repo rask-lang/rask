@@ -24,22 +24,22 @@
       {
         "id": "rask",
         "aliases": ["Rask", "rask"],
-        "extensions": [".rask"],
+        "extensions": [".rk"],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
       {
         "language": "rask",
-        "scopeName": "source.rask",
+        "scopeName": "source.rk",
         "path": "./syntaxes/rask.tmLanguage.json"
       },
       {
-        "scopeName": "text.markdown.rask.codeblock",
+        "scopeName": "text.markdown.rk.codeblock",
         "path": "./syntaxes/rask-markdown.tmLanguage.json",
         "injectTo": ["text.html.markdown"],
         "embeddedLanguages": {
-          "meta.embedded.block.rask": "rask"
+          "meta.embedded.block.rk": "rask"
         }
       }
     ],

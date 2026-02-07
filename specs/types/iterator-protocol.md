@@ -4,7 +4,7 @@ See also: [README.md](README.md)
 
 ## Iterator Adapters
 
-Adapters operate on index/handle streams using **lazy evaluation**. They transform the iteration protocol without creating intermediate collections.
+Adapters operate on index/handle streams using **lazy evaluation**. Transform iteration protocol without intermediate collections.
 
 | Adapter | Behavior | Signature |
 |---------|----------|-----------|
@@ -33,10 +33,10 @@ for i in 0..vec.len() {
 ```
 
 **Expression-scoped closure execution:**
-- Closure `|i| vec[i].active` receives `Index` parameter
-- Closure accesses `vec` from outer scope WITHOUT capturing it
-- Closure is called immediately during iteration, never stored
-- Legal because closure doesn't escape expression scope
+- Closure receives `Index` parameter
+- Accesses `vec` from outer scope without capturing
+- Called immediately during iteration, never stored
+- Legal because doesn't escape expression scope
 
 **Storage rules:**
 
@@ -47,9 +47,9 @@ for i in 0..vec.len() {
 | `let f = vec.filter(\|i\| vec[i].x)` | ❌ No | Closure accesses scope |
 | `let f = range.filter(\|i\| *i > 10)` | ✅ Yes | Closure doesn't access scope |
 
-**General rule:** Adapter chains can be stored UNLESS a closure accesses outer scope variables (compiler enforces).
+**General rule:** Adapter chains can be stored unless closure accesses outer scope (compiler enforces).
 
-**Lazy evaluation:** Adapters evaluate on-demand. No intermediate allocations. `take(10)` stops iteration after 10 matches.
+**Lazy:** Evaluate on-demand. No intermediate allocations. `take(10)` stops after 10 matches.
 
 ## Iterator Type System
 
@@ -104,10 +104,10 @@ Each adapter wraps the previous iterator type. The final type is:
 
 **Compiler Requirements:**
 
-1. **Type inference:** Compiler MUST infer full iterator chain types
-2. **Monomorphization:** Iterator chains MUST be fully monomorphized (no virtual dispatch)
-3. **Inlining:** Compiler SHOULD inline iterator chain code for zero-cost abstraction
-4. **Lifetime tracking:** Expression-scoped closure lifetimes MUST be enforced
+1. **Type inference:** Must infer full iterator chain types
+2. **Monomorphization:** Must fully monomorphize (no virtual dispatch)
+3. **Inlining:** Should inline for zero-cost
+4. **Lifetime tracking:** Must enforce expression-scoped closures
 
 **Custom Iterator Implementation:**
 
@@ -137,7 +137,7 @@ extend MyIterator with Iterator<usize> {
 }
 ```
 
-**Key Constraint:** Custom iterators MUST NOT store references to collections (violates "no storable references"). They MUST store Copy-able indices, handles, or owned data.
+**Key Constraint:** Custom iterators must not store references (violates "no storable references"). Must store Copy-able indices, handles, or owned data.
 
 ## For-In Desugaring Protocol
 
@@ -363,10 +363,10 @@ Each loop gets its own iterator. For index-based iteration, this is cheap (Copy 
 
 **Performance Guarantees:**
 
-- Iterator chains MUST compile to equivalent performance as hand-written loops
+- Iterator chains must match hand-written loop performance
 - No heap allocations for standard adapters
-- Closure inlining MUST eliminate function call overhead
-- Optimizer MUST fuse iterator chains into single loop bodies
+- Closure inlining must eliminate call overhead
+- Optimizer must fuse chains into single loops
 
 ---
 

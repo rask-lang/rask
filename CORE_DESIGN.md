@@ -1,10 +1,18 @@
 # Rask Core Design
 
+## The Struggle
+
+I spent a long time trying to get this right: ergonomics without sacrificing transparency. Go feels great to write but gives you no safety guarantees. Rust is safe but you spend half your time fighting the borrow checker and annotating lifetimes. I wanted something in between.
+
+The breakthrough was realizing that most of Rust's complexity comes from trying to allow storable references. If you eliminate those—make references impossible to store—you can skip lifetime annotations entirely. The cost is explicit indirection (handles instead of pointers), but that's a cost I can see and reason about.
+
+---
+
 ## Design Principles
 
 ### 1. Safety Without Annotation
 
-Memory safety is structural, not annotated. The compiler enforces safety through the type system and scope rules without requiring programmer-visible lifetime markers, borrow annotations, or ownership syntax at call sites.
+I enforce memory safety through the type system and scope rules without requiring lifetime markers, borrow annotations, or ownership syntax at call sites.
 
 **What this means:**
 - No lifetime parameters in function signatures
@@ -33,6 +41,8 @@ References cannot outlive their lexical scope. You can borrow a value temporaril
 
 **The tradeoff:** Some patterns require explicit indirection. **The gain:** No lifetime annotations, no borrow checker fights, no runtime tracking.
 
+**Why I chose this:** Rust's borrow checker is technically brilliant but ergonomically exhausting. After writing enough Rust, I realized that most of the complexity comes from allowing references to escape. Eliminate that, and the whole lifetime system becomes unnecessary. The indirection cost is explicit and measurable—much better than hidden complexity.
+
 ### 4. Transparent Costs
 
 Major costs are visible in code. Small safety checks can be implicit.
@@ -48,6 +58,8 @@ Major costs are visible in code. Small safety checks can be implicit.
 - Handle validity checks
 - Small copies of primitive types
 
+**The balancing act:** I want allocations visible (they're expensive), but I don't want ceremony on every array access. The rule is: if it's O(1) and cheap (bounds check, generation check), it can be implicit. If it's potentially expensive (allocation, I/O, locking), it must be explicit in the code.
+
 ### 5. Local Analysis Only
 
 All compiler analysis is function-local. No whole-program inference, no cross-function lifetime tracking, no escape analysis.
@@ -61,6 +73,8 @@ All compiler analysis is function-local. No whole-program inference, no cross-fu
 - Compilation speed scales linearly with code size
 
 **Clarification:** Body-local inference for private functions IS local analysis. The compiler examines one function body at a time, solving constraints within that scope. It does not trace through call graphs or analyze callers. See [Gradual Constraints](specs/types/gradual-constraints.md).
+
+**Why this matters:** Rust's borrow checker does global analysis. Change one function and the ripple effects are unpredictable. I want compilation to scale linearly—doubling your codebase should double compile time, not quadruple it. Local-only analysis makes this possible.
 
 ### 6. Resource Types
 
@@ -87,6 +101,34 @@ Information the compiler can infer should be displayed by tooling, not required 
 **The principle:** Write intent, not mechanics. The compiler knows the mechanics—let tooling reveal them.
 
 **Tooling contract:** IDEs SHOULD display compiler-inferred information as unobtrusive ghost annotations. This is not optional polish—it's how the language achieves clarity without ceremony.
+
+---
+
+## Why Not X?
+
+### Why Not Garbage Collection?
+
+GC languages (Go, Java, C#) are ergonomic but give you no control over when cleanup happens. You can't predict when the GC will run or how long it will pause. For games, real-time systems, or anything with latency requirements, this is a non-starter.
+
+I want deterministic cleanup. When a value goes out of scope, it's freed immediately. No pauses, no tuning GC parameters, no wondering why your 99th percentile latency spikes.
+
+### Why Not Reference Counting?
+
+Ref counting (Swift, Python) solves the GC pause problem but introduces overhead on every assignment and has the cycle problem. You end up with weak references and manual cycle breaking, which brings back the same cognitive load you were trying to avoid.
+
+I'd rather have explicit `.clone()` calls than hidden overhead on every pointer operation.
+
+### Why Not Rust's Borrow Checker?
+
+Rust's borrow checker is technically sound, but ergonomically expensive. Lifetime annotations leak into function signatures. The complexity is front-loaded—you pay for it whether you need it or not.
+
+I took a different approach: instead of tracking reference lifetimes, make references non-storable. This eliminates the need for lifetime tracking entirely. You trade storable references for explicit handles. I think that's a better tradeoff.
+
+### Why Not Manual Memory Management?
+
+C and C++ give you full control but no safety. Use-after-free, double-free, and dangling pointers are all possible. I wanted safety without the annotation burden, which rules out manual management.
+
+The goal was to find a sweet spot: safer than C, more ergonomic than Rust, more predictable than GC languages. YOu can have unsafe and assembly if you want, just like in rust (although not as good compile time safety).
 
 ---
 
@@ -515,7 +557,7 @@ See [Unsafe Blocks](specs/memory/unsafe.md) for raw pointers, unsafe operations,
 
 ### Module System
 
-**Package = directory.** All `.rask` files in a directory form one package. No manifest needed.
+**Package = directory.** All `.rk` files in a directory form one package. No manifest needed.
 
 **Visibility:** Two levels only.
 - Default: visible within package (no keyword)
@@ -571,7 +613,7 @@ This ensures linear values cannot be forgotten even in error paths.
 
 ## Design Tradeoffs
 
-This section documents the costs of Rask's design decisions honestly. Every design has tradeoffs—ours are intentional.
+I'm not pretending there aren't costs to these choices. Every design has tradeoffs—mine are intentional.
 
 ### Clone Ergonomics
 
@@ -623,7 +665,7 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
-**The fundamental choice:** We trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection.
+**The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection. I think the explicitness is worth it.
 
 ### Comptime Limitations
 
@@ -655,13 +697,17 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 - Scripting/prototyping → GC languages are faster to write (Python, Go)
 - Maximum raw performance → Manual memory control needed (C++, Rust, Zig)
 
-Rask targets the "90% of code" that doesn't need pointer-level control but benefits from memory safety and low ceremony.
+I'm targeting the "90% of code" that doesn't need pointer-level control but benefits from memory safety and low ceremony. If you're writing an OS kernel or a real-time audio engine with nanosecond budgets, Rask might not be the right tool. But for most applications—web services, CLI tools, games, data pipelines—I think the tradeoffs make sense.
 
 ---
 
 ## Limitations
 
+I'm upfront about what Rask doesn't do well:
+
 1. **Explicit cloning:** Large values require explicit cloning to share access
 2. **Key-based indirection:** Graphs and self-referential structures use handles, not pointers
 3. **No shared mutable state:** Cross-task data sharing requires channels or explicit synchronization primitives
 4. **Unsafe for low-level code:** OS/kernel work requires unsafe blocks with raw pointers
+
+These aren't accidents—they're deliberate tradeoffs to achieve safety without annotations.

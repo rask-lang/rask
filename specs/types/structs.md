@@ -1,13 +1,13 @@
 # Solution: Structs and Product Types
 
 ## The Question
-How are structs (product types) defined, constructed, and used in Rask? Covers field definitions, methods, visibility, construction patterns, and memory layout.
+How are structs defined, constructed, used in Rask?
 
 ## Decision
-Named product types with value semantics, structural Copy determination, `extend` block method definitions, and explicit visibility per field.
+Named product types with value semantics, structural Copy, `extend` blocks for methods, explicit visibility per field.
 
 ## Rationale
-Structs are the fundamental way to compose data. They follow value semantics (Principle 2): no implicit sharing, predictable memory layout. Field visibility is explicit—`pub` on each field—making API boundaries clear. Methods are defined in separate `extend` blocks, keeping data layout and behavior distinct. Construction uses struct literals when all fields are accessible, factory functions otherwise. Layout is compiler-controlled by default; `@layout(C)` available for C interop.
+Structs are fundamental data composition. Follow value semantics (Principle 2): no implicit sharing, predictable layout. Field visibility explicit—`public` on each field—makes API boundaries clear. Methods in separate `extend` blocks keep data and behavior distinct. Construction uses literals when fields accessible, factory functions otherwise. Layout compiler-controlled by default; `@layout(C)` for C interop.
 
 ## Specification
 
@@ -81,13 +81,13 @@ struct UserId {
 }
 ```
 
-**Use case:** Prevent accidental copying of semantically unique values like IDs, tokens, or handles where duplicate values would be a logic error. Forces explicit `.clone()` when copying is intentional.
+**Use case:** Prevent accidental copying of unique values like IDs, tokens, handles where duplicates would be logic errors. Forces explicit `.clone()` when intentional.
 
 See [Ownership](../memory/ownership.md) for complete Copy/move semantics.
 
 ### Methods
 
-Methods are defined in `extend` blocks, separate from the struct definition.
+Methods in `extend` blocks, separate from definition.
 
 <!-- test: parse -->
 ```rask
@@ -230,9 +230,9 @@ struct Marker {}
 ### Memory Layout
 
 **Default (`@layout(Rask)`):**
-- Compiler MAY reorder fields for optimal packing
-- Alignment: natural alignment of largest field
-- No guaranteed field offsets
+- Compiler may reorder for optimal packing
+- Alignment: natural of largest field
+- No guaranteed offsets
 
 **C-compatible (`@layout(C)`):**
 <!-- test: parse -->
@@ -251,19 +251,19 @@ public struct CPoint {
 | `@align(N)` | Minimum alignment of N bytes |
 | `@binary` | Binary wire format (see [Binary Structs](binary.md)) |
 
-**C interop requirement:** Types used with `extern "C"` MUST use `@layout(C)`.
+**C interop:** Types with `extern "C"` must use `@layout(C)`.
 
-**Binary formats:** For parsing network protocols or file formats with bit-level layouts, use `@binary`. See [Binary Structs](binary.md).
+**Binary formats:** For network protocols or file formats with bit-level layouts, use `@binary`. See [Binary Structs](binary.md).
 
 See [Modules](../structure/modules.md) for C interop details.
 
 ### Default Values
 
-Rask does NOT support default field values in struct definitions.
+No default field values in definitions.
 
 **Rationale:**
-- Explicit construction shows all values (cost transparency)
-- Factory functions handle defaults with clear naming
+- Explicit construction shows all values (transparency)
+- Factory functions handle defaults clearly
 - Avoids hidden initialization order issues
 
 **Pattern for defaults:**
@@ -285,7 +285,7 @@ extend Config {
 }
 ```
 
-**Zero-initialization:** Not automatic. Use explicit factory if needed.
+**Zero-initialization:** Not automatic. Explicit factory if needed.
 
 ### Edge Cases
 
@@ -325,7 +325,7 @@ let Point { x, .. } = point    // Ignore other fields
 
 ### Field Projection Types
 
-Projection types allow functions to accept only specific fields of a struct, enabling partial borrowing without lifetime annotations.
+Projection types let functions accept only specific fields, enabling partial borrowing without lifetime annotations.
 
 **Syntax:**
 <!-- test: skip -->
@@ -339,12 +339,12 @@ func system(state: MyStruct.{field1, field2}) {
 
 | Rule | Description |
 |------|-------------|
-| **P1: Field subset** | Projection type `T.{a, b}` accepts only the named fields from `T` |
-| **P2: Borrow scope** | Each projected field follows normal borrowing rules independently |
-| **P3: No overlap** | Multiple projections of the same struct can be borrowed simultaneously if fields don't overlap |
-| **P4: Nested access** | Projected fields can be accessed and mutated normally |
+| **P1: Field subset** | `T.{a, b}` accepts only named fields |
+| **P2: Borrow scope** | Each field follows normal borrowing independently |
+| **P3: No overlap** | Multiple projections can borrow simultaneously if fields don't overlap |
+| **P4: Nested access** | Projected fields accessed and mutated normally |
 
-**Example from game_loop.rask:**
+**Example from game_loop.rk:**
 <!-- test: skip -->
 ```rask
 struct GameState {

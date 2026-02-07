@@ -1,18 +1,18 @@
 # Rask Language Specifications
 
-Organized by what each category governs.
+Organized by what each category does.
 
 ## Reading Order
 
 **New to Rask?** Start here:
-1. [memory/ownership.md](memory/ownership.md) — Foundation: single ownership, move semantics
+1. [memory/ownership.md](memory/ownership.md) — Single ownership, move semantics
 2. [memory/value-semantics.md](memory/value-semantics.md) — Copy vs move, 16-byte threshold
-3. [memory/borrowing.md](memory/borrowing.md) — One rule: views last as long as the source is stable
+3. [memory/borrowing.md](memory/borrowing.md) — One rule: views last as long as source is stable
 4. [types/primitives.md](types/primitives.md) — Basic types
 5. [control/control-flow.md](control/control-flow.md) — if, loops, expressions
 
-**Working with dynamic data?**
-- [memory/pools.md](memory/pools.md) — Handle-based indirection for graphs, entity systems
+**Building graphs/trees?**
+- [memory/pools.md](memory/pools.md) — Handle-based indirection for cycles and entity systems
 
 ---
 
@@ -68,15 +68,15 @@ Quick navigation by task or concept:
 
 | Term | Definition Location |
 |------|---------------------|
-| Handle | [memory/pools.md](memory/pools.md) — opaque identifier into a Pool |
-| Borrow | [memory/borrowing.md](memory/borrowing.md) — temporary read/write access |
-| Take | [memory/parameters.md](memory/parameters.md) — ownership transfer |
-| Resource type | [memory/resource-types.md](memory/resource-types.md) — must be consumed exactly once (linear resource) |
-| Instant view | [memory/borrowing.md](memory/borrowing.md) — view released at semicolon (growable sources) |
-| Persistent view | [memory/borrowing.md](memory/borrowing.md) — view held until block ends (fixed sources) |
-| ensure | [control/ensure.md](control/ensure.md) — deferred cleanup at scope exit |
-| comptime | [control/comptime.md](control/comptime.md) — compile-time execution |
-| Gradual constraints | [types/gradual-constraints.md](types/gradual-constraints.md) — omitting types/bounds in non-public functions |
+| Handle | [memory/pools.md](memory/pools.md) — Opaque identifier into Pool |
+| Borrow | [memory/borrowing.md](memory/borrowing.md) — Temporary read/write access |
+| Take | [memory/parameters.md](memory/parameters.md) — Ownership transfer |
+| Resource type | [memory/resource-types.md](memory/resource-types.md) — Must be consumed exactly once (linear resource) |
+| Instant view | [memory/borrowing.md](memory/borrowing.md) — View released at semicolon (growable sources) |
+| Persistent view | [memory/borrowing.md](memory/borrowing.md) — View held until block ends (fixed sources) |
+| ensure | [control/ensure.md](control/ensure.md) — Deferred cleanup at scope exit |
+| comptime | [control/comptime.md](control/comptime.md) — Compile-time execution |
+| Gradual constraints | [types/gradual-constraints.md](types/gradual-constraints.md) — Omitting types/bounds in non-public functions |
 
 ---
 
@@ -103,7 +103,7 @@ Quick navigation by task or concept:
 |------|-------------|
 | [ownership.md](memory/ownership.md) | Core ownership rules, cross-task transfer |
 | [value-semantics.md](memory/value-semantics.md) | Copy vs move, 16-byte threshold, move-only types |
-| [borrowing.md](memory/borrowing.md) | One rule: views last as long as the source is stable |
+| [borrowing.md](memory/borrowing.md) | Views last as long as source is stable |
 | [parameters.md](memory/parameters.md) | Parameter modes: borrow (default) vs `take` |
 | [resource-types.md](memory/resource-types.md) | Must-consume resources (linear resources), `ensure` integration |
 | [closures.md](memory/closures.md) | Capture rules, scope constraints, Pool+Handle pattern |

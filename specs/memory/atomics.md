@@ -1,21 +1,21 @@
 # Solution: Atomics and Memory Ordering
 
 ## The Question
-How does Rask provide low-level synchronization primitives for lock-free data structures, concurrent counters, and hardware interaction—while maintaining safety guarantees and transparency?
+How does Rask provide low-level synchronization primitives for lock-free data structures, concurrent counters, and hardware interaction—while maintaining safety and transparency?
 
 ## Decision
-Atomic types provide safe, data-race-free access to shared memory with explicit memory ordering. Operations are **safe** (not requiring `unsafe` blocks) because atomics internally handle synchronization. Memory orderings follow the C11/C++11 model, which is well-understood and maps efficiently to all major CPU architectures.
+Atomic types provide safe, data-race-free shared memory access with explicit memory ordering. Operations are **safe** (no `unsafe` needed) because atomics handle synchronization internally. Memory orderings follow C11/C++11—well-understood, maps efficiently to all major CPUs.
 
 ## Rationale
-1. **Mechanical Correctness (MC ≥ 0.90):** Atomics eliminate data races by construction—the type system prevents non-atomic access to atomic values.
+1. **Mechanical Correctness:** Atomics eliminate data races by construction—the type system prevents non-atomic access.
 
-2. **Transparency (TC ≥ 0.90):** Memory orderings are explicit in every operation. No hidden synchronization costs. Programmers see exactly what guarantees they're paying for.
+2. **Transparency:** Memory orderings are explicit in every operation. No hidden costs. You see what you pay for.
 
-3. **Use Case Coverage (UCC ≥ 0.80):** Lock-free algorithms, reference counting, metrics, flags, and spin locks are essential for embedded, OS kernels, and high-performance servers.
+3. **Use Case Coverage:** Lock-free algorithms, reference counting, metrics, flags, spin locks—essential for embedded, kernels, high-performance servers.
 
-4. **Safe by default:** Unlike raw pointers, atomic operations are inherently safe—they cannot cause data races when used correctly. The danger is in incorrect *logic*, not memory safety.
+4. **Safe by default:** Unlike raw pointers, atomics can't cause data races when used correctly. Danger is in logic, not memory safety.
 
-5. **Explicit escape hatch:** CORE_DESIGN states "No shared mutable memory between tasks"—atomics are the explicit, transparent mechanism when cross-task shared state is genuinely needed (metrics, flags, lock-free structures). This cost is visible: every atomic operation requires an explicit ordering parameter.
+5. **Explicit escape hatch:** CORE_DESIGN says "no shared mutable memory between tasks"—atomics are the explicit, transparent mechanism when you genuinely need it. Cost is visible: every operation needs an ordering parameter.
 
 ## Specification
 

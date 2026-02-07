@@ -1,39 +1,10 @@
 # Time — Duration and Instant
 
-## The Question
-
-How do we measure elapsed time, handle timeouts, and sleep in Rask? How do we balance precision, portability, and ergonomics?
-
-## Decision
-
 Two-type system:
 - `Duration` — Time span (8 bytes, Copy) stored as nanoseconds
 - `Instant` — Monotonic timestamp (opaque, ≤16 bytes) for measuring intervals
 
 Defer `SystemTime` (wall-clock) to later — not needed for game loops, benchmarks, or timeouts.
-
-## Rationale
-
-**Why monotonic clock (`Instant`)?**
-- System clock can jump backward (NTP, user changes, leap seconds)
-- Monotonic clock only moves forward — perfect for measuring intervals
-- Wall-clock time (`SystemTime`) deferred — adds complexity, rarely needed for timing
-
-**Why `Duration` as nanoseconds?**
-- Single u64 covers ~584 years of span (sufficient for all practical durations)
-- Simple arithmetic — no multi-field struct needed
-- Direct conversion to/from platform APIs
-
-**Why Copy semantics?**
-- `Duration` fits in 8 bytes (one register)
-- `Instant` is opaque but platform-dependent — likely ≤16 bytes
-- No heap allocation, no ownership ceremony
-- Natural for time values: `let d = duration` just works
-
-**Why not operator overloading (`instant - instant`)?**
-- Keep stdlib simple — explicit `.duration_since()` is clearer
-- Avoids questions about panicking (what if `a < b`?)
-- Consistent with method-based API elsewhere
 
 ## Specification
 

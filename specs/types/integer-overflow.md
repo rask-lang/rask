@@ -2,13 +2,13 @@
 
 ## Decision
 
-**Default: Panic on overflow.** Consistent behavior in debug and release builds. Use `Wrapping<T>` or `Saturating<T>` types when non-panicking arithmetic is needed.
+**Default: Panic on overflow.** Consistent in debug and release. Use `Wrapping<T>` or `Saturating<T>` for non-panicking arithmetic.
 
 ## Rationale
 
-Rask prioritizes safety over silent bugs. Unlike Rust (panic-debug/wrap-release), Rask has no behavioral divergence between build modes. This aligns with "safety is invisible — it's just how the language works."
+I prioritize safety over silent bugs. Unlike Rust (panic-debug/wrap-release), no behavioral divergence between builds. Aligns with "safety is invisible—just how the language works."
 
-**No custom operators.** Rather than adding `+%` and `+|` operators (mental tax), Rask uses wrapper types. Regular `+` on `Wrapping<T>` wraps. This is clearer and self-documenting.
+**No custom operators.** Rather than `+%` and `+|` (mental tax), I use wrapper types. Regular `+` on `Wrapping<T>` wraps. Clearer and self-documenting.
 
 **Comparison:**
 | Language | Debug | Release | Opt-out |
@@ -18,7 +18,7 @@ Rask prioritizes safety over silent bugs. Unlike Rust (panic-debug/wrap-release)
 | Swift | Panic | Panic | `&+` operator |
 | **Rask** | Panic | Panic | `Wrapping<T>` type |
 
-Rask is safer than Rust: no release-only bugs from silent wrapping.
+Safer than Rust: no release-only bugs from silent wrapping.
 
 ## Specification
 
@@ -166,7 +166,7 @@ const result = value.wrapping_shl(shift)  // Masks shift amount
 
 ## Compiler-Elided Overflow Checks
 
-The compiler uses **range analysis** to prove when overflow is impossible. No special syntax needed — checks are automatically elided:
+Compiler uses **range analysis** to prove when overflow impossible. No special syntax—checks automatically elided:
 
 ### What the Compiler Can Prove
 

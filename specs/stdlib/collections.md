@@ -1,15 +1,8 @@
-# Solution: Collections (Vec and Map)
+# Collections (Vec and Map)
 
-## The Question
-How do growable collections (vectors, hash maps) work? Are they bounded at creation, do they take explicit allocator parameters, or do they grow implicitly?
-
-## Decision
-Unified collection types (`Vec<T>`, `Map<K,V>`) with optional capacity constraints set at creation, closure-based access for scoped borrows, and fallible allocation.
+Unified collection types (`Vec<T>`, `Map<K,V>`) with optional capacity constraints, closure-based access for scoped borrows, fallible allocation.
 
 For handle-based sparse storage (`Pool<T>`), see [pools.md](../memory/pools.md).
-
-## Rationale
-This balances Rask's core constraints: transparent costs (all allocations return `Result`), and local analysis (closures enforce scoped access via existing borrow rules). Capacity is a runtime property, not a type parameter, enabling generic code to work uniformly across bounded and unbounded collections.
 
 ## Specification
 
@@ -183,13 +176,13 @@ Avoids constructing on stack then moving. Useful for large types.
 let files: Vec<File> = Vec.new()  // COMPILE ERROR
 ```
 
-**Reason:** Collection drop would need to call `T.drop()` for each element, but linear resource drop can fail (returns `Result`), and collection drop cannot propagate errors.
+**Reason:** Collection drop would call `T.drop()` for each element, but linear resource drop can fail (returns `Result`), and collection drop can't propagate errors.
 
 **Solution:** Use `Pool<Linear>` with explicit consumption. See [pools.md](../memory/pools.md#linear-types-in-pools).
 
 ### Slice Descriptors
 
-Slices (`[]T`) are ephemeral fat pointers (ptr + len) that cannot be stored. For long-lived slices, use `SliceDescriptor<T>`.
+Slices (`[]T`) are ephemeral fat pointers (ptr + len) that can't be stored. For long-lived slices, use `SliceDescriptor<T>`.
 
 **Problem:** Slices are expression-scoped borrows:
 ```rask

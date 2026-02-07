@@ -1,12 +1,12 @@
 # Memory Model: Potential Solutions
 
-Analysis of design approaches that could address multiple issues from TODO.md.
+Design approaches for issues in TODO.md.
 
 ---
 
 ## Root Cause Analysis
 
-The 14 issues cluster around a few core design decisions:
+Issues cluster around a few core decisions:
 
 | Root Cause | Issues Affected |
 |------------|-----------------|
@@ -16,13 +16,13 @@ The 14 issues cluster around a few core design decisions:
 | **Fixed thresholds** | #4 |
 | **Missing specifications** | #8, #12, #13 |
 
-The biggest pain comes from **handles being separated from their pools**. This single decision cascades into context-passing, zombie handles, and multi-pool complexity.
+Biggest pain: **handles separated from pools**. Cascades into context-passing, zombie handles, multi-pool complexity.
 
 ---
 
 ## Option A: Ambient Pool Scoping
 
-**Idea:** Instead of passing pools everywhere, make them "ambient" in a scope. Handles can auto-dereference through the ambient pool.
+**Idea:** Make pools "ambient" in a scope instead of passing them everywhere. Handles auto-dereference through the ambient pool.
 
 ```rask
 with players {
@@ -45,7 +45,7 @@ with players {
 - What about multiple pools? `with (players, enemies) { ... }`?
 - Hidden dependency (pool must be in scope) — tension with TC ≥ 0.90?
 
-**Key insight:** The `with` block is explicit (visible cost), but inside it, access is clean. This might satisfy TC while improving ED.
+**Key insight:** The `with` block is explicit (visible cost), but access inside is clean. Might satisfy TC while improving ED.
 
 **Open questions:**
 - How do functions declare they need an ambient pool?
@@ -77,7 +77,7 @@ player.target = enemy                    // Cross-type reference OK (same arena)
 - Bulk deallocation only — can't free individual items
 - Major redesign of memory model
 
-**Key insight:** This is closer to Rust's arenas but with simpler "one lifetime per arena" rather than complex lifetime relationships.
+**Key insight:** Closer to Rust's arenas but simpler—one lifetime per arena instead of complex lifetime relationships.
 
 **Variations:**
 - **Region polymorphism:** Functions generic over region `func process<R>(entity: &R Entity)`
@@ -111,7 +111,7 @@ func damage(target: Handle<Player, @players>) {
 - Cross-function handles need pool identity in signature
 - Might feel like "lifetime annotations lite"
 
-**Key insight:** This is a middle ground — more type information than current design, but less than Rust's full lifetimes.
+**Key insight:** Middle ground—more type information than current design, less than Rust's full lifetimes.
 
 **Open questions:**
 - How do you pass handles to functions that don't know the pool name?
@@ -156,7 +156,7 @@ func main() {
 - Context structure must be defined upfront
 - Testing might be harder (need to set up context)
 
-**Key insight:** Odin and Jai prove this works well for games. But it's less "transparent" than Rask's current philosophy.
+**Key insight:** Odin and Jai prove this works for games. Less "transparent" than Rask's current philosophy.
 
 **Variations:**
 - **Typed context:** `context<GameContext>.players[h]`
@@ -186,7 +186,7 @@ func main() {
 - #2 Context Passing (still verbose)
 - #6 Dual Semantics (still cognitive load)
 
-**Key insight:** This is the least disruptive but doesn't address the fundamental ergonomics gap.
+**Key insight:** Least disruptive but doesn't address the fundamental ergonomics gap.
 
 ### E.1: Generation Check Coalescing
 
@@ -396,8 +396,8 @@ This directly addresses **#14 (Double Access)** and **RO ≤ 1.10** with zero sy
 3. **Long-lived + clear owner** — uniquely owned by subsystem
 4. **Long-lived + unclear owner** — shared, unknown free time
 
-**Why Rask rejected full implicit context (Option D):**
-- Violates **TC ≥ 0.90** — hidden dependencies
+**Why I rejected full implicit context (Option D):**
+- Violates **TC ≥ 0.90**—hidden dependencies
 - "Where does `context.players` come from?" is non-obvious
 
 **What Rask CAN take from Jai:**
@@ -417,7 +417,7 @@ func process_frame() {
 }   // scratch auto-cleared at frame end
 ```
 
-This addresses **#11 (Iterator Allocation)** without hidden costs—`context.temp` is explicit.
+Addresses **#11 (Iterator Allocation)** without hidden costs—`context.temp` is explicit.
 
 ---
 
@@ -432,9 +432,9 @@ This addresses **#11 (Iterator Allocation)** without hidden costs—`context.tem
 | **Jai** | Temp allocator | Scoped scratch space | TC ✅, ED ✅ |
 | **Jai** | Lifetime categories | Inform Pool patterns | Documentation |
 
-**Key insight from Vale:** Generation checks can be **eliminated entirely** for immutable data. This is huge for read-heavy workloads (rendering, queries, analysis).
+**Key insight from Vale:** Generation checks can be **eliminated entirely** for immutable data. Huge for read-heavy workloads (rendering, queries, analysis).
 
-**Key insight from Jai:** Short-lived allocations dominate most programs. A dedicated temp allocator solves this without hidden costs.
+**Key insight from Jai:** Short-lived allocations dominate most programs. Dedicated temp allocator solves this without hidden costs.
 
 ---
 

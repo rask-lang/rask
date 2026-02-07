@@ -1,35 +1,6 @@
 # JSON — Parsing and Serialization
 
-## The Question
-
-How does JSON parsing and serialization work? How do we convert between JSON and Rask structs without proc macros or a derive ecosystem?
-
-## Decision
-
-Built-in `json` module with two layers: untyped `JsonValue` enum for dynamic JSON, and zero-ceremony struct encoding/decoding where the compiler auto-generates conversion code.
-
-## Rationale
-
-**Why built-in instead of Rust's serde approach?**
-- In Rust, JSON requires a 3-crate dependency chain: `serde` (framework) + `serde_json` (format) + `serde_derive` (proc macro). This is powerful and extensible, but it's heavy for "I just want to parse some JSON"
-- JSON is the lingua franca of web APIs. A systems language targeting web services needs it in stdlib
-- The compiler already knows struct field names and types — it can auto-generate encode/decode without macros
-
-**Why `JsonValue` enum instead of just typed encode/decode?**
-- Not all JSON has a known schema. APIs return dynamic shapes, config files vary
-- `JsonValue` lets you explore unknown JSON: `data["users"][0]["name"]`
-- Typed encode/decode is sugar on top of `JsonValue`, not a replacement
-
-**Why auto-encode/decode without attributes?**
-- If a struct has all JSON-compatible fields, it should just work: `json.encode(my_struct)`
-- No `#[derive(Serialize, Deserialize)]`, no `#[serde(rename = "...")]`, no `use serde::Serialize`
-- Field name = JSON key. Struct nesting = JSON nesting. It's the obvious mapping
-- `@json(rename = "fieldName")` available for the 10% case (deferred)
-
-**Why `json.encode` / `json.decode` instead of trait methods?**
-- `json.encode(value)` reads as "convert this to JSON" — the module makes the format explicit
-- Avoids polluting every struct with `.to_json()` methods
-- If you want trait-based, implement `JsonEncodable` explicitly
+Built-in `json` module with two layers: untyped `JsonValue` enum for dynamic JSON, zero-ceremony struct encoding/decoding where compiler auto-generates conversion code.
 
 ## Specification
 
@@ -252,12 +223,12 @@ func build_response(status: string, data: Vec<string>) -> string {
 
 ## JSON Number Precision
 
-All JSON numbers are stored as `f64`. This means:
+All JSON numbers stored as `f64`:
 - Integers up to 2^53 (9,007,199,254,740,992) are exact
 - Larger integers lose precision
-- This matches JavaScript's `JSON.parse()` behavior
+- Matches JavaScript's `JSON.parse()` behavior
 
-If exact large integer handling is needed, use `json.parse()` and extract number strings manually (future: `JsonValue.NumberStr(string)` variant).
+Need exact large integer handling? Use `json.parse()` and extract number strings manually (future: `JsonValue.NumberStr(string)` variant).
 
 ## Deferred
 
@@ -271,7 +242,7 @@ If exact large integer handling is needed, use `json.parse()` and extract number
 
 - specs/stdlib/collections.md — `Vec`, `Map` used in JsonValue
 - specs/types/error-types.md — `JsonError` follows standard error pattern
-- examples/http_api_server.rask — Primary consumer of json module
+- examples/http_api_server.rk — Primary consumer of json module
 
 ## Status
 

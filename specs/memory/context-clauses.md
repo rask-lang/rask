@@ -2,17 +2,17 @@
 
 ## Overview
 
-Context clauses declare that a function requires access to a pool (or other ambient resource) without passing it as an explicit parameter. The compiler threads contexts as hidden parameters, performing compile-time checking while eliminating the ceremony of passing pools through call chains.
+Context clauses declare a function needs a pool without passing it explicitly. Compiler threads contexts as hidden parameters—compile-time checking, no ceremony of passing pools through call chains.
 
 **Key properties:**
-- Pool dependencies visible in public function signatures
+- Pool dependencies visible in public signatures
 - Compile-time checking at every call site
 - Zero runtime overhead (direct parameter passing, no registry)
-- Named contexts enable both field access and structural operations
+- Named contexts enable field access and structural operations
 
 ## Motivation
 
-Without context clauses, handle-using code has two friction points:
+Without context clauses, handle code has two pain points:
 
 **Problem 1: Pool threading ceremony**
 ```rask

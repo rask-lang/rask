@@ -1,13 +1,6 @@
-# Solution: File System (fs)
+# File System (fs)
 
-## The Question
-How do file system operations work? How does the `File` type integrate with linear resource tracking?
-
-## Decision
-Two-tier API: convenience functions that handle open/close internally, and `File` handles with explicit lifecycle. `File` is a `@resource` type -- must be consumed (closed) before scope exit. All fallible operations return `T or IoError`. `File` implements `Reader` and `Writer` traits for composability with the io module.
-
-## Rationale
-Linear `File` prevents resource leaks -- forgetting to close is a compile-time error (runtime error in interpreter). Convenience functions like `fs.read_file()` handle the full open/read/close cycle in one call, so simple cases carry zero leak risk and need no resource management. The two-tier split means 80%+ of file operations need no `ensure` block. A single error type (`IoError`) avoids proliferation.
+Two-tier API: convenience functions handle open/close internally, `File` handles have explicit lifecycle. `File` is a `@resource` type — must be consumed (closed) before scope exit. All fallible operations return `T or IoError`. `File` implements `Reader` and `Writer` traits.
 
 ## Specification
 
@@ -21,7 +14,7 @@ struct File {
 }
 ```
 
-`File` is linear: creating one starts a resource obligation, and `file.close()` (which takes ownership) is the only way to satisfy it. The compiler rejects code paths where a `File` might go unconsumed.
+`File` is linear: creating one starts a resource obligation, `file.close()` (which takes ownership) is the only way to satisfy it. Compiler rejects code paths where a `File` might go unconsumed.
 
 ### File Methods
 
@@ -180,7 +173,7 @@ const data = try file.read_to_string()
 process(data)
 ```
 
-The `ensure` block guarantees `file.close()` runs when the scope exits, even if `read_to_string()` or `process()` fails. Without `ensure` and without calling `close()`, the compiler rejects the code.
+`ensure` block guarantees `file.close()` runs when scope exits, even if `read_to_string()` or `process()` fails. Without `ensure` and without calling `close()`, compiler rejects the code.
 
 **Write a file:**
 
@@ -236,7 +229,7 @@ file.close()                        // explicit close before rename
 try fs.rename("data.tmp", "data.json")
 ```
 
-Calling `close()` explicitly before `ensure` runs is safe -- the `ensure` block's `close()` silently succeeds on an already-closed file.
+Calling `close()` explicitly before `ensure` runs is safe — `ensure` block's `close()` silently succeeds on already-closed file.
 
 ### Error Type
 

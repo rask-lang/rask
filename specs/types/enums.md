@@ -1,13 +1,13 @@
 # Solution: Sum Types and Pattern Matching
 
 ## The Question
-How do algebraic data types (sum types/enums) work in Rask? Covers enum syntax, pattern matching exhaustiveness, and interaction with ownership.
+How do algebraic data types work in Rask?
 
 ## Decision
-Tagged unions with inline payloads, compiler-inferred binding modes, compile-time exhaustiveness checking, and a single `match` keyword (no mode annotations).
+Tagged unions with inline payloads. Compiler infers binding modes. Exhaustiveness checked at compile time. One `match` keyword, no mode annotations.
 
 ## Rationale
-Enums are values like structs, following the same ownership rules. The compiler infers whether pattern bindings are borrowed or taken based on how they're used in each arm—no explicit mode annotations needed. For borrowed bindings, the compiler further infers read vs mutate. This aligns with Principle 7 (Compiler Knowledge is Visible) => the compiler infers, the IDE displays inferred modes as ghost annotations. Exhaustiveness is checked locally (all variants known from definition). Linear resources tracked through match arms (no silent drops).
+Enums follow the same ownership rules as structs. Compiler infers whether bindings are borrowed or taken based on usage in each arm. For borrows, compiler infers read vs mutate. IDE shows these as ghost annotations (Principle 7). Exhaustiveness checked locally—all variants known from definition. Linear resources tracked through match arms, no silent drops.
 
 ## Specification
 
@@ -23,10 +23,10 @@ enum Name<T> { Some(T), None }        // Generic enum
 ```
 
 **Rules:**
-- Compiler MUST allocate inline storage for largest variant
-- Compiler MUST choose discriminant size automatically: u8 (≤256 variants), u16 (≤65536 variants)
-- Compiler MUST reject enums with >65536 variants
-- IDE SHOULD display discriminant size and total enum size as ghost annotation
+- Inline storage for largest variant
+- Discriminant auto-sized: u8 (≤256 variants), u16 (≤65536 variants)
+- Max 65536 variants
+- IDE shows discriminant size and total size as ghost text
 
 ### Value Semantics
 
@@ -86,15 +86,14 @@ match result {                      // IDE ghost: [takes]
 **Mode inference rule:** Highest mode wins across all arms. If any arm takes, the whole match consumes. If any arm mutates (and none take), the match borrows mutably. Otherwise, immutable borrow.
 
 **Rules:**
-- Compiler MUST infer binding mode from usage in arm body
-- Compiler MUST apply highest mode across all arms to the matched value
-- IDE SHOULD display inferred mode as ghost annotation at match site
-- IDE SHOULD display inferred binding modes as ghost annotations in patterns
-- No mode annotations appear in source code
+- Compiler infers binding mode from usage
+- Highest mode wins across all arms
+- IDE shows inferred mode as ghost text
+- No mode annotations in source
 
 ### Exhaustiveness Checking
 
-Compiler verifies all variants handled using only local analysis (enum definition provides complete variant list).
+Compiler verifies all variants handled. Local analysis only—enum definition has complete variant list.
 
 | Condition | Compiler Behavior |
 |-----------|-------------------|
@@ -103,11 +102,11 @@ Compiler verifies all variants handled using only local analysis (enum definitio
 | Wildcard `_` present | ✅ Valid |
 | Unreachable pattern | ⚠️ Warning: "unreachable pattern" |
 
-Compiler MUST report which specific variants are unhandled.
+Compiler reports which specific variants are unhandled.
 
 ### Pattern Guards
 
-Conditional matching requires explicit catch-all to prevent hidden gaps.
+Conditional matching requires explicit catch-all. No hidden gaps.
 
 ```rask
 match response {
@@ -119,7 +118,7 @@ match response {
 
 | Rule | Enforcement |
 |------|-------------|
-| Guard on variant V | MUST have unguarded V arm OR wildcard after |
+| Guard on variant V | Must have unguarded V arm OR wildcard after |
 | No catch-all for guarded variant | ❌ Error: "pattern `V(_)` may not match when guard fails" |
 
 ```rask
@@ -149,8 +148,8 @@ match token {
 ```
 
 **Rules:**
-- All alternatives MUST have the same type
-- All alternatives MUST bind the same names with compatible types
+- All alternatives must have the same type
+- All alternatives must bind the same names with compatible types
 - Or-patterns can be nested within other patterns
 - Or-patterns work with guards: `A(x) | B(x) if x > 0 => ...`
 
@@ -251,7 +250,7 @@ match result {
 
 ### Enum Methods
 
-Methods are defined in `extend` blocks, separate from the enum definition. Methods default to non-consuming (borrow `self`).
+Methods in `extend` blocks, separate from definition. Default to non-consuming (borrow `self`).
 
 <!-- test: parse -->
 ```rask
@@ -286,7 +285,7 @@ extend Option<T> {
 
 ### Recursive Enums
 
-Self-referential enums require explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md) for full specification.
+Self-referential enums need explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md).
 
 <!-- test: parse -->
 ```rask
@@ -304,10 +303,10 @@ const tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 | `Owned<T>` | Owning heap pointer (linear) |
 
 **Rules:**
-- `own` keyword makes allocation visible at construction site
-- `Owned<T>` is linear: must be consumed exactly once
-- Drop deallocates automatically when consumed
-- Compiler MUST reject recursive enum without indirection
+- `own` makes allocation visible
+- `Owned<T>` is linear—must consume exactly once
+- Drop deallocates automatically
+- Recursive enum without indirection rejected
 
 ### Discriminant Access
 
@@ -333,7 +332,7 @@ func discriminant(e: T) -> u16 where T: Enum
 
 ### Null-Pointer Optimization
 
-Compiler MUST apply niche optimization automatically when possible.
+Compiler applies niche optimization automatically where possible.
 
 | Type | Representation |
 |------|----------------|
@@ -364,9 +363,9 @@ const value = infallible().unwrap()  // Cannot panic (compiler knows)
 
 ### Error Propagation and Linear Resources
 
-The `try` keyword extracts Ok or returns early with Err.
+`try` extracts Ok or returns early with Err.
 
-**Rule:** All linear resources in scope MUST be resolved before `try`.
+**Rule:** All linear resources in scope must be resolved before `try`.
 
 ```rask
 // ❌ INVALID: file2 may leak on early return

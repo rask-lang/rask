@@ -7,9 +7,9 @@ How do we guarantee cleanup of linear resources without verbose manual handling 
 Block-scoped `ensure` statement that schedules an expression to run when the enclosing block exits, regardless of how it exits (normal flow, early return, `try` propagation).
 
 ## Rationale
-Linear resources must be consumed exactly once, but manual cleanup on every exit path is verbose and error-prone. `ensure` provides guaranteed cleanup with minimal ceremony while keeping the cleanup action visible (transparent costs). Block-scoped (not function-scoped) gives precise control over resource lifetime.
+Linear resources must be consumed exactly once, but manual cleanup on every exit path is verbose and error-prone. `ensure` provides guaranteed cleanup with minimal ceremony while keeping cleanup visible (transparent costs). Block-scoped (not function-scoped) gives precise control over resource lifetime.
 
-The name `ensure` reads naturally: "ensure this happens before we leave this scope."
+Name reads naturally: "ensure this happens before we leave this scope."
 
 ## Specification
 
@@ -37,7 +37,7 @@ func read_file(){
 
 ### LIFO Ordering
 
-Multiple `ensure` statements run in reverse order (Last In, First Out):
+Multiple `ensure` statements run in reverse order (LIFO).
 
 <!-- test: parse -->
 ```rask
@@ -74,8 +74,8 @@ func process() -> () or Error {
 
 **Rules:**
 - `ensure` on linear resource counts as consumption commitment
-- Compiler tracks that the linear value will be consumed at scope exit
-- Using `try` after `ensure` is safe—cleanup is guaranteed
+- Compiler tracks that linear value will be consumed at scope exit
+- `try` after `ensure` is safe—cleanup guaranteed
 
 ### Error Handling in `ensure`
 
@@ -94,16 +94,16 @@ ensure file.close() catch |_| panic("!")   // Opt-in: panic on error
 
 **Rationale:**
 - Most cleanup errors are unrecoverable (what do you do when close() fails?)
-- The resource IS released to the OS regardless
+- Resource released to OS regardless
 - Silent ignore keeps simple cases simple
 - `catch` clause provides opt-in visibility when needed
 
 **Rules:**
-- If `ensure` body returns `Result<T, E>` and evaluates to `Err(e)`:
-  - Without `catch`: error is silently ignored
+- `ensure` body returns `Result<T, E>` and evaluates to `Err(e)`:
+  - Without `catch`: error silently ignored
   - With `catch |e| expr`: error passed to handler
-- The `catch` handler must be infallible (no `try` inside—nowhere to propagate)
-- `try` inside `ensure` body is forbidden
+- `catch` handler must be infallible (no `try` inside—nowhere to propagate)
+- `try` inside `ensure` body forbidden
 
 <!-- test: skip -->
 ```rask
@@ -129,7 +129,7 @@ func write_important(data: Data) -> () or Error {
 |----------|----------|
 | Linear resource with `ensure` | Consumption guaranteed, `try` allowed after |
 | Linear resource without `ensure` | Standard rules: must consume before `try` or scope exit |
-| Multiple linears, partial `ensure` | Only ensured ones are safe; others still require manual handling |
+| Multiple linears, partial `ensure` | Only ensured ones safe; others require manual handling |
 
 <!-- test: skip -->
 ```rask
@@ -143,7 +143,7 @@ func process(a: File, b: File) -> () or Error {
 
 ### Nested Scopes
 
-`ensure` is block-scoped, enabling precise lifetime control:
+`ensure` is block-scoped, enabling precise lifetime control.
 
 <!-- test: parse -->
 ```rask
@@ -182,9 +182,9 @@ const x = ensure foo()    // ❌ Invalid: ensure doesn't return
 
 ### IDE Support
 
-- IDE SHOULD show ensure execution points as ghost annotations at block end
-- IDE SHOULD show LIFO order when multiple ensures exist
-- IDE SHOULD highlight which linear resources are covered by ensure
+- IDE should show ensure execution points as ghost annotations at block end
+- IDE should show LIFO order when multiple ensures exist
+- IDE should highlight which linear resources are covered by ensure
 
 <!-- test: skip -->
 ```rask
@@ -258,7 +258,7 @@ func process_many_files(paths: Vec<string>) -> () or Error {
 }
 ```
 
-**Note:** Errors during cleanup (e.g., close() fails) are ignored in the ensure block. If cleanup errors matter, don't use ensure - explicitly take_all before returning:
+**Note:** Errors during cleanup (e.g., close() fails) ignored in ensure block. If cleanup errors matter, don't use ensure—explicitly take_all before returning:
 
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> () or Error {
@@ -280,7 +280,7 @@ func process_many_files_careful(paths: Vec<string>) -> () or Error {
 
 ### Ensure + Explicit Consumption Conflict
 
-**Problem:** What if you `ensure` something but then consume it explicitly?
+What if you `ensure` something but then consume it explicitly?
 
 ```rask
 const tx = try db.begin()
@@ -290,16 +290,16 @@ tx.commit()             // Consumes tx
 // At scope exit: tx.rollback() would use consumed tx!
 ```
 
-**Solution:** Explicit consumption cancels the ensure.
+**Solution:** Explicit consumption cancels ensure.
 
 | Scenario | Behavior |
 |----------|----------|
 | `ensure` + scope exit | Ensure runs |
 | `ensure` + explicit consumption | Ensure cancelled, explicit consumption wins |
 
-The compiler tracks:
-1. `ensure tx.rollback()` → tx will be consumed by rollback at scope exit
-2. `tx.commit()` → tx consumed now, ensure is void
+Compiler tracks:
+1. `ensure tx.rollback()` → tx consumed by rollback at scope exit
+2. `tx.commit()` → tx consumed now, ensure void
 
 ```rask
 const tx = try db.begin()
@@ -311,9 +311,9 @@ tx.commit()                 // Consumes tx, cancels ensure
 Ok(())
 ```
 
-If scope exits early (before commit), rollback runs. If commit succeeds, rollback doesn't run.
+Scope exits early (before commit): rollback runs. Commit succeeds: rollback doesn't run.
 
-This is the "transaction pattern"—ensure the unhappy path, explicitly handle the happy path.
+Transaction pattern—ensure the unhappy path, explicitly handle the happy path.
 
 ## Integration Notes
 

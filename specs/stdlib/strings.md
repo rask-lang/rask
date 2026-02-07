@@ -1,13 +1,6 @@
-# Solution: String Handling
+# String Handling
 
-## The Question
-How do strings work? UTF-8 by default? Owned vs. borrowed string types? Interaction with C strings at FFI boundary?
-
-## Decision
 Single owned `string` type with UTF-8 validation, expression-scoped slicing for zero-copy reads, plain index-based `string_view` for lightweight stored references, and `StringPool` for validated handle-based access when safety is needed.
-
-## Rationale
-Eliminates the reference type problem by making slices ephemeral (expression-only). Stored references come in two flavors: `string_view` (plain indices, zero overhead, user ensures validity) and `StringPool` (handle-based with validation, follows Pool<T> pattern). No runtime tracking overhead on plain strings.
 
 ## Specification
 
@@ -27,7 +20,7 @@ Eliminates the reference type problem by making slices ephemeral (expression-onl
 - `string_view` — Lightweight stored indices, user ensures source validity (like storing an index into a Vec)
 - `StringPool` + `StringSlice` — When you need validated access to stored substrings (parsers, tokenizers)
 
-### API Boundaries (Avoiding Rust's String/&str Problem)
+### API Boundaries
 
 **Public APIs always use `string`:**
 
@@ -35,8 +28,6 @@ Eliminates the reference type problem by making slices ephemeral (expression-onl
 |-----------|---------|
 | `func foo(s: string)` | Compiler infers borrow mode from usage |
 | `func foo(take s: string)` | Explicit ownership transfer |
-
-The compiler infers whether a parameter needs read-only borrow, mutable borrow, or can accept a slice based on how it's used in the function body.
 
 **Never use `string_view` or `StringSlice` in public APIs.** They are internal storage tools.
 
@@ -49,11 +40,6 @@ search(my_string, "foo")           // owned strings
 search(my_string[10..50], "foo")   // expression slice
 search(my_string[view], "foo")     // string_view converted via indexing
 ```
-
-**Why this avoids Rust's problem:**
-- Rust: APIs choose `String` vs `&str`, causing conversion friction
-- Rask: APIs always take `string`, caller can pass owned or expression slice
-- `string_view`/`StringSlice` are internal—convert to expression slice at call site
 
 ### Ownership Rules
 

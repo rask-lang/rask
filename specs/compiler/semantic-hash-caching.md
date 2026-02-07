@@ -1,25 +1,27 @@
-# Solution: Semantic Hash Caching
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+# Semantic Hash Caching
 
 ## The Question
-How does the compiler avoid recompiling generic instantiations that haven't meaningfully changed? What constitutes a "meaningful change"? How do changes propagate across package boundaries, and what exactly is cached?
+How does compiler avoid recompiling generic instantiations that haven't meaningfully changed? What constitutes "meaningful change"? How do changes propagate across package boundaries? What gets cached?
 
 ## Decision
-The compiler computes a structural hash of each function's desugared AST, normalizing away cosmetic differences (comments, whitespace, local variable names). Each function's hash incorporates its direct callees' hashes, forming a Merkle tree where changes propagate upward through the call graph. Cached monomorphized code is keyed by `(function_identity, type_arguments, semantic_hash)`. Two-tier caching: per-file parse cache (keyed by file content) and per-instantiation monomorphization cache (keyed by the full composite key).
+Compiler computes structural hash of each function's desugared AST, normalizing away cosmetic differences (comments, whitespace, local variable names). Each function's hash incorporates direct callees' hashes, forming Merkle tree where changes propagate upward through call graph. Monomorphized code keyed by `(function_identity, type_arguments, semantic_hash)`. Two-tier caching: per-file parse cache (keyed by file content) and per-instantiation monomorphization cache (keyed by full composite key).
 
 ## Rationale
-Monomorphization produces fast runtime code but creates an incremental compilation problem: changing a generic function's body forces recompilation of ALL call sites across ALL packages. Without mitigation, this makes monomorphization a compile-time bottleneck.
+Monomorphization produces fast runtime code but creates incremental compilation problem: changing generic function's body forces recompilation of ALL call sites across ALL packages. Without mitigation, monomorphization becomes compile-time bottleneck.
 
-Semantic hashing solves this by detecting when a function's body hasn't *meaningfully* changed — renaming a local variable or adding a comment shouldn't force downstream recompilation. The Merkle tree structure handles transitive dependencies naturally: if `sort` calls `swap` and `swap` changes, `sort`'s hash changes automatically because it incorporates `swap`'s hash.
+Semantic hashing solves this by detecting when function body hasn't *meaningfully* changed—renaming local variable or adding comment shouldn't force downstream recompilation. Merkle tree structure handles transitive dependencies naturally: if `sort` calls `swap` and `swap` changes, `sort`'s hash changes automatically because it incorporates `swap`'s hash.
 
-**Why hash the desugared AST?** The desugared AST is the first representation that is semantically stable — operators have been normalized to method calls (`a + b` → `a.add(b)`), but type information hasn't been injected yet. Hashing post-typecheck would be fragile to type inference implementation changes. Hashing pre-desugar would make `a + b` and `a.add(b)` produce different hashes for identical semantics.
+**Why hash desugared AST?** Desugared AST is first semantically stable representation—operators normalized to method calls (`a + b` → `a.add(b)`), but type information not injected yet. Hashing post-typecheck would be fragile to type inference implementation changes. Hashing pre-desugar would make `a + b` and `a.add(b)` produce different hashes for identical semantics.
 
-**Why cache monomorphized AST, not machine code?** Machine code depends on optimization level and target architecture. Caching the monomorphized, type-checked, ownership-verified AST means the cache is valid across debug/release builds and across different targets. Codegen is fast; type checking and ownership verification are the expensive phases.
+**Why cache monomorphized AST, not machine code?** Machine code depends on optimization level and target architecture. Caching monomorphized, type-checked, ownership-verified AST means cache valid across debug/release builds and different targets. Codegen is fast. Type checking and ownership verification are expensive.
 
 ## Specification
 
 ### What Is Hashed
 
-The semantic hash operates on the **desugared AST** — after operator desugaring but before type checking.
+Semantic hash operates on **desugared AST**—after operator desugaring but before type checking.
 
 **Included in hash:**
 
@@ -49,7 +51,7 @@ The semantic hash operates on the **desugared AST** — after operator desugarin
 
 ### Variable Normalization
 
-Local bindings are replaced with positional indices based on their introduction order within each scope. This ensures renaming a variable produces the same hash.
+Local bindings replaced with positional indices based on introduction order within each scope. Renaming variable produces same hash.
 
 ```rask
 // These two functions have IDENTICAL semantic hashes:
@@ -67,11 +69,11 @@ func compute(items: Vec<i32>) -> i32 {
 }
 ```
 
-Each scope tracks a counter. When a binding is introduced (`const x = ...` or `let y = ...`), it gets the next index. References to that binding use the same index. Nested scopes start a new counter but include the enclosing scope's depth.
+Each scope tracks counter. When binding introduced (`const x = ...` or `let y = ...`), gets next index. References to that binding use same index. Nested scopes start new counter but include enclosing scope depth.
 
 ### Merkle Tree: Transitive Dependency Hashing
 
-When a function calls another function, the callee's semantic hash is incorporated into the caller's hash. Since the callee's hash already incorporates *its* callees' hashes, this forms a Merkle tree: a change at any depth propagates upward automatically.
+When function calls another function, callee's semantic hash incorporated into caller's hash. Since callee's hash already incorporates *its* callees' hashes, this forms Merkle tree: change at any depth propagates upward automatically.
 
 ```
 sort<T> ──hash includes──→ swap() ──hash includes──→ compare()
@@ -83,18 +85,18 @@ If `compare()` changes:
 3. `sort<T>`'s hash changes (it includes `swap()`'s hash)
 4. All cached instantiations of `sort<T>` are invalidated
 
-**Computation order:** Within a package, hashes are computed in reverse topological order of the call graph (leaf functions first, then their callers). This ensures each function's callees are already hashed when it's processed.
+**Computation order:** Within package, hashes computed in reverse topological order of call graph (leaf functions first, then callers). Each function's callees already hashed when processed.
 
 #### Mutually Recursive Functions
 
-Mutually recursive functions form a strongly connected component (SCC) in the call graph. These are hashed as a group:
+Mutually recursive functions form strongly connected component (SCC) in call graph. Hashed as group:
 
-1. Identify all SCCs in the intra-package call graph
-2. For each SCC, hash all member functions together into a single combined hash
-3. All members of the SCC share this combined hash
-4. Any change to any member invalidates all members of the SCC
+1. Identify all SCCs in intra-package call graph
+2. For each SCC, hash all member functions together into single combined hash
+3. All members share this combined hash
+4. Any change to any member invalidates all members
 
-This is conservative but correct — mutual recursion means the functions' behaviors are intertwined.
+Conservative but correct—mutual recursion means behaviors are intertwined.
 
 ### Cache Key Structure
 
@@ -110,7 +112,7 @@ This is conservative but correct — mutual recursion means the functions' behav
 (source_package_id, function_id, [type_arguments], body_semantic_hash, [type_definition_hashes])
 ```
 
-The `type_definition_hashes` are necessary because changes to a type's definition affect monomorphized code even when the generic function's body is unchanged. If `struct Point` gains a field, `sort<Point>` must be recompiled.
+`type_definition_hashes` necessary because changes to type definition affect monomorphized code even when generic function body unchanged. If `struct Point` gains field, `sort<Point>` must recompile.
 
 ### What Is Cached (Two Tiers)
 
@@ -119,9 +121,9 @@ The `type_definition_hashes` are necessary because changes to a type's definitio
 | **Package** | Parsed + resolved AST per file | File content hash | Source file bytes change |
 | **Instantiation** | Monomorphized, type-checked, ownership-verified AST | Full composite key | Any component of cache key changes |
 
-**Package tier:** If a source file's content hash hasn't changed, skip parsing and name resolution entirely. This is a simple byte-level check — no semantic analysis needed.
+**Package tier:** If source file content hash unchanged, skip parsing and name resolution entirely. Simple byte-level check—no semantic analysis needed.
 
-**Instantiation tier:** The monomorphized AST is the result of substituting concrete types into a generic function, type-checking the result, and verifying ownership. This is the expensive work that caching avoids.
+**Instantiation tier:** Monomorphized AST is result of substituting concrete types into generic function, type-checking result, verifying ownership. Expensive work caching avoids.
 
 ### Invalidation Rules
 
@@ -200,7 +202,7 @@ Comptime results feed into the semantic hash of the enclosing function. If a com
 
 ### Cache Storage
 
-Cached artifacts live in `.rask-cache/` at the project root (gitignored).
+Cached artifacts live in `.rk-cache/` at the project root (gitignored).
 
 **Requirements:**
 - Compiler version stamp — mismatch discards entire cache
@@ -208,11 +210,11 @@ Cached artifacts live in `.rask-cache/` at the project root (gitignored).
 - `rask cache clean` removes all cached artifacts
 - `rask cache stats` shows cache size and hit/miss rates
 
-**Implementation note:** Binary serialization format and directory structure are implementation details, not part of this specification. A fast binary format (e.g., bincode) and per-package subdirectories are recommended.
+**Implementation note:** Binary serialization format and directory structure are implementation details, not part of specification. Fast binary format (e.g., bincode) and per-package subdirectories recommended.
 
 ### Quick Path: No Changes
 
-Before computing any semantic hashes, the compiler checks whether any source file in the package has changed (by content hash). If no files have changed and all upstream package metadata is unchanged, the entire package compilation is skipped. This makes the common case (no changes) essentially free.
+Before computing semantic hashes, compiler checks whether any source file in package has changed (by content hash). If no files changed and all upstream package metadata unchanged, entire package compilation skipped. Common case (no changes) essentially free.
 
 ## Edge Cases
 
@@ -236,12 +238,12 @@ Before computing any semantic hashes, the compiler checks whether any source fil
 ## Integration Notes
 
 - **Module System:** Package metadata files are produced alongside compiled output. Import resolution reads metadata to get function/type hashes for cross-package Merkle tree computation.
-- **Generics:** Semantic hash caching is the primary mitigation for monomorphization's incremental build cost. Without it, any change to a generic function body forces recompilation of ALL call sites across ALL packages. See [generics.md](../types/generics.md).
-- **Comptime:** Comptime memoization uses the same semantic hash infrastructure. Pure comptime functions can be cached by `(function, arguments, body_hash)`. This resolves the memoization question from [comptime.md](../control/comptime.md) Remaining Issues.
-- **Type System:** Type definition hashes are part of the instantiation cache key. Struct layout changes invalidate affected monomorphizations even when the generic function body is unchanged.
-- **Local Analysis:** Hash computation is function-local plus callee identities/hashes. No whole-program analysis. Packages export their hashes as metadata, maintaining the compilation boundary.
-- **Concurrency:** Hash computation is embarrassingly parallel per-function within a package (after topological sort). Cross-package hashing follows the existing parallel compilation model (independent packages in parallel).
-- **Tooling:** `rask build --cache-stats` shows hit/miss rates. IDEs MAY show "cached" annotations on functions that will be skipped in the next build.
+- **Generics:** Semantic hash caching is primary mitigation for monomorphization's incremental build cost. Without it, any change to generic function body forces recompilation of ALL call sites across ALL packages. See [generics.md](../types/generics.md).
+- **Comptime:** Comptime memoization uses same semantic hash infrastructure. Pure comptime functions cached by `(function, arguments, body_hash)`. Resolves memoization question from [comptime.md](../control/comptime.md) Remaining Issues.
+- **Type System:** Type definition hashes are part of instantiation cache key. Struct layout changes invalidate affected monomorphizations even when generic function body unchanged.
+- **Local Analysis:** Hash computation is function-local plus callee identities/hashes. No whole-program analysis. Packages export hashes as metadata, maintaining compilation boundary.
+- **Concurrency:** Hash computation embarrassingly parallel per-function within package (after topological sort). Cross-package hashing follows existing parallel compilation model (independent packages in parallel).
+- **Tooling:** `rask build --cache-stats` shows hit/miss rates. IDEs MAY show "cached" annotations on functions skipped in next build.
 
 ## Remaining Issues
 

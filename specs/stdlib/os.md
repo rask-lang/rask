@@ -1,29 +1,6 @@
 # OS — Process and Platform Interface
 
-## The Question
-
-How does a Rask program interact with its environment? Where do environment variables, command-line args, and process control live?
-
-## Decision
-
-Single `os` module for all process and platform interaction. One import gives you env vars, args, exit, pid, and platform info.
-
-## Rationale
-
-**Why one module instead of Rust's scattered approach?**
-- Rust splits this across `std::env` (vars, args), `std::process` (exit, Command), `std::os` (platform-specific). You need three imports for basic process interaction
-- Go puts it all in `os` — env, args, exit, getpid. Simple and discoverable
-- These are all "what is my process environment?" questions — they belong together
-
-**Why no filesystem in `os`?**
-- `current_dir()` and `home_dir()` are filesystem queries — they live in `fs`
-- `os` is about process identity and platform. `fs` is about what's on disk
-- Clean boundary: `os` never touches the filesystem
-
-**Why `os.env()` returns `string?` instead of `string or EnvError`?**
-- A missing env var isn't an error — it's expected. `Option` is the right type
-- `os.env_or("PORT", "8080")` covers the common case of defaults
-- Matches Go's `os.Getenv()` / `os.LookupEnv()` split but with Option sugar
+Single `os` module for all process and platform interaction. One import gives you env vars, args, exit, pid, platform info.
 
 ## Specification
 

@@ -1,24 +1,24 @@
 # Standard Library Overview
 
-The Rask standard library provides foundational types and modules for systems programming.
+Foundational types and modules for systems programming.
 
 ---
 
 ## Design Philosophy
 
-**Batteries included:** Stdlib provides everything needed to build real programs without external packages. HTTP servers, JSON parsing, CLI tools — all built-in.
+**Batteries included.** HTTP servers, JSON parsing, CLI tools — all built-in.
 
-**Pay for what you use:** Unused modules add zero cost. Don't import `http`? No HTTP code in your binary. Dead code elimination is aggressive — stdlib size doesn't affect minimal programs.
+**Pay for what you use.** Dead code elimination is aggressive — unused modules don't bloat binaries.
 
-**Timeless standards:** Only includes modules based on stable RFCs and standards that won't change. JSON (RFC 8259), HTTP (RFC 7230), TLS, Base64 (RFC 4648) — all decades-old and stable.
+**Timeless standards.** JSON (RFC 8259), HTTP (RFC 7230), Base64 (RFC 4648) — stable protocols only.
 
-**Mechanical, not opinionated:** Stdlib implements protocols and formats, not frameworks. `http.Server` handles requests; routing/middleware are packages.
+**Mechanical, not opinionated.** Implements protocols and formats, not frameworks. `http.Server` handles requests; routing/middleware live in packages.
 
-**Linear resources for I/O:** File handles, sockets, and system resources are linear resource types — must be consumed exactly once. This prevents resource leaks by construction.
+**Linear resources for I/O.** File handles, sockets, system resources are linear types — must be consumed exactly once. Prevents leaks by construction.
 
-**Fallible operations:** Operations that can fail return `Result`. No hidden exceptions.
+**Fallible operations.** Operations that can fail return `Result`. No hidden exceptions.
 
-**Transparent costs:** Allocations, I/O, and syscalls are visible in code.
+**Transparent costs.** Allocations, I/O, syscalls — visible in code.
 
 ---
 
@@ -78,7 +78,7 @@ The Rask standard library provides foundational types and modules for systems pr
 
 ## Prelude (Built-in)
 
-These types and functions are always available without import:
+Always available without import:
 
 ### Primitives
 
@@ -154,7 +154,7 @@ const file = try fs.open("data.txt")
 
 ## Core
 
-The `core` module contains fundamental types and traits. Everything in core is in the prelude.
+Fundamental types and traits. Everything in core is in the prelude.
 
 See:
 - [types/primitives.md](../types/primitives.md) — Primitive types
@@ -166,7 +166,7 @@ See:
 
 ## IO
 
-The `io` module provides traits for reading and writing byte streams. See [io.md](io.md) for the full specification.
+Traits for reading and writing byte streams. See [io.md](io.md).
 
 ### Types
 
@@ -215,13 +215,13 @@ const line = try io.read_line()             // Read line from stdin
 const n = try io.copy(reader, writer)       // Copy all bytes between streams
 ```
 
-**Status:** Specified -- see [io.md](io.md). Interpreter has `io.read_line()` only.
+**Status:** Specified — see [io.md](io.md). Interpreter has `io.read_line()` only.
 
 ---
 
 ## FS
 
-The `fs` module provides file system operations.
+File system operations.
 
 ### Types
 
@@ -280,7 +280,7 @@ try process(data)
 
 ## Net
 
-The `net` module provides networking primitives.
+Networking primitives.
 
 ### Types
 
@@ -325,7 +325,7 @@ const response = try stream.read_all()
 
 ## Time
 
-The `time` module provides time-related types and functions.
+Time-related types and functions.
 
 ### Types
 
@@ -371,7 +371,7 @@ time.sleep(Duration.millis(100))
 
 ## Path
 
-The `path` module provides cross-platform path manipulation.
+Cross-platform path manipulation.
 
 ### Type
 
@@ -400,7 +400,7 @@ const p2 = p.join("subdir")  // "/home/user/file.txt/subdir"
 
 ## OS
 
-The `os` module provides platform-specific operations.
+Platform-specific operations.
 
 ### Environment
 
@@ -426,7 +426,7 @@ os.getpid()  // -> u32
 
 ## FMT
 
-The `fmt` module provides string formatting.
+String formatting.
 
 ### Format Macro
 
@@ -455,7 +455,7 @@ const s = format!("{:08x}", value)  // Hex with padding
 
 ## Math
 
-The `math` module provides mathematical functions.
+Mathematical functions.
 
 ### Functions
 
@@ -486,7 +486,7 @@ The `math` module provides mathematical functions.
 
 ## Random
 
-The `random` module provides random number generation.
+Random number generation.
 
 ### Types
 
@@ -516,7 +516,7 @@ rng.choice(vec)     // -> Option<T>
 
 ## JSON
 
-The `json` module provides JSON parsing and serialization (RFC 8259).
+JSON parsing and serialization (RFC 8259).
 
 ### Functions
 
@@ -569,7 +569,7 @@ const output = json.encode(user)
 
 ## HTTP
 
-The `http` module provides HTTP client and server (RFC 7230-7235).
+HTTP client and server (RFC 7230-7235).
 
 ### Types
 
@@ -634,7 +634,7 @@ const resp = try client.post("https://api.example.com/submit")
 
 ## TLS
 
-The `tls` module provides TLS/SSL connections (wraps system TLS library).
+TLS/SSL connections (wraps system TLS library).
 
 ### Types
 
@@ -680,7 +680,7 @@ loop {
 
 ## CLI
 
-The `cli` module provides command-line argument parsing.
+Command-line argument parsing.
 
 ### Basic Usage
 
@@ -727,7 +727,7 @@ const args = try parser.parse()
 
 ## Encoding
 
-The `encoding` module provides common encodings (RFC 4648).
+Common encodings (RFC 4648).
 
 ### Base64
 
@@ -761,7 +761,7 @@ const decoded = try encoding.url.decode(encoded)       // "hello world"
 
 ## Hash
 
-The `hash` module provides hash functions for integrity (not security).
+Hash functions for integrity (not security).
 
 ### Functions
 
@@ -787,7 +787,7 @@ hasher.update(chunk2)
 const digest = hasher.finish()
 ```
 
-**Note:** These are integrity functions. For cryptographic security (HMAC, signatures), use the `crypto` package.
+**Note:** For cryptographic security (HMAC, signatures), use the `crypto` package.
 
 **Status:** Planned — detailed specification TODO.
 
@@ -795,7 +795,7 @@ const digest = hasher.finish()
 
 ## URL
 
-The `url` module provides URL parsing (RFC 3986).
+URL parsing (RFC 3986).
 
 ### Types
 
@@ -852,7 +852,7 @@ u.to_string()  // "https://api.example.com/users"
 
 ## Unicode
 
-The `unicode` module provides Unicode utilities beyond basic string operations.
+Unicode utilities beyond basic string operations.
 
 ### Character Properties
 
@@ -895,7 +895,7 @@ unicode.category(' ')  // Category.SpaceSeparator
 
 ## Terminal
 
-The `terminal` module provides terminal utilities and ANSI styling.
+Terminal utilities and ANSI styling.
 
 ### Colors
 
@@ -945,7 +945,7 @@ terminal.height()  // -> Option<u16>
 
 ## CSV
 
-The `csv` module provides CSV parsing and writing (RFC 4180).
+CSV parsing and writing (RFC 4180).
 
 ### Reading
 
@@ -990,7 +990,7 @@ const reader = csv.Reader.from_string(data)
 
 ## Bits
 
-The `bits` module provides bit manipulation utilities and binary parsing helpers.
+Bit manipulation utilities and binary parsing helpers.
 
 See [bits.md](bits.md) for full specification.
 

@@ -2,15 +2,15 @@
 
 ## Overview
 
-Union types (`A | B`) provide type-safe error composition. They are **restricted to error position** in `Result<T, E>`—use explicit enums for data modeling.
+Union types (`A | B`) provide type-safe error composition. **Restricted to error position** in `Result<T, E>`—use explicit enums for data modeling.
 
 ## Decision
 
-Error unions are compiler-generated anonymous enums, enabling ergonomic error composition without manual wrapper types. General-purpose union types are not supported—use explicit enums instead.
+Error unions are compiler-generated anonymous enums. Ergonomic error composition without manual wrappers. General union types not supported—use explicit enums.
 
 ## Rationale
 
-Error composition is extremely common. Requiring explicit error enums for every combination would violate Ergonomic Simplicity (ES). However, general union types add significant type system complexity (subtyping, variance, method resolution). Restricting unions to error position gives the ergonomic benefit where it matters most while keeping the type system simple.
+Error composition extremely common. Requiring explicit error enums for every combination violates Ergonomic Simplicity. But general union types add significant complexity (subtyping, variance, method resolution). Restricting to error position gives benefit where it matters while keeping type system simple.
 
 ## Specification
 
@@ -30,7 +30,7 @@ func foo(input: A | B) -> C              // Compile error
 
 ### Semantics
 
-`A | B | C` compiles to an anonymous enum:
+`A | B | C` compiles to anonymous enum:
 
 ```rask
 // IoError | ParseError compiles to:
@@ -40,7 +40,7 @@ enum __ErrorUnion_IoError_ParseError {
 }
 ```
 
-The generated name is internal—users interact via the union syntax.
+Generated name internal—users interact via union syntax.
 
 ### Canonical Ordering
 
@@ -91,7 +91,7 @@ Storage is inline (no heap allocation).
 
 ### Pattern Matching
 
-Match on union errors by type name:
+Match union errors by type name:
 
 ```rask
 match result {
@@ -103,17 +103,17 @@ match result {
 }
 ```
 
-Exhaustiveness checking works because all variants are known from the union definition.
+Exhaustiveness checking works—all variants known from definition.
 
 ### Interaction with Generics
 
-Unions can extend generic error types:
+Unions can extend generic errors:
 
 ```rask
 func transform<T, E>(result: Result<T, E>) -> U or (E | TransformError)
 ```
 
-The union extends E with additional variants.
+Union extends E with additional variants.
 
 ### No General Union Types
 
@@ -172,7 +172,7 @@ match load_app() {
 
 ## Integration
 
-- **Error propagation:** `try` auto-widens to return union
-- **Pattern matching:** Match by type name, exhaustiveness checked
-- **Enums:** Union members are typically enums with `message()` method
-- **Result methods:** `.map_err()` can transform union errors
+- **Propagation:** `try` auto-widens to return union
+- **Matching:** By type name, exhaustiveness checked
+- **Enums:** Members typically enums with `message()`
+- **Methods:** `.map_err()` transforms union errors

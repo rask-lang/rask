@@ -2,19 +2,19 @@
 
 ## The Question
 
-How does Rask express Single Instruction Multiple Data (SIMD) operations? What types represent vectors, and how do operations on them map to hardware?
+How does Rask express SIMD operations?
 
 ## Decision
 
-Explicit vector types with parametric width. Vectors are distinct from scalars. Width can be fixed (`Vec[f32, 8]`) or target-native (`Vec[f32, native]`). Operators auto-broadcast scalars to matching vector width. Masking uses method syntax (`.where()`). Reductions are methods. Lane access uses indexing.
+Explicit vector types with parametric width. Vectors distinct from scalars. Width fixed (`Vec[f32, 8]`) or target-native (`Vec[f32, native]`). Operators auto-broadcast scalars. Masking via `.where()`. Reductions as methods. Lane access via indexing.
 
 ## Rationale
 
-**Explicit vectors** provide transparent cost—users know when SIMD is happening. **Parametric width** enables both fixed-width code (for algorithms that require specific widths) and portable code (using `native`). **Auto-broadcast** is ergonomic without hiding significant cost (splat is ~1 cycle). **Method-style masking** reads left-to-right, matching Rask's expression-oriented style.
+**Explicit vectors** provide transparent cost—users know when SIMD happens. **Parametric width** enables both fixed-width (for specific algorithms) and portable (using `native`). **Auto-broadcast** is ergonomic without hiding cost (splat ~1 cycle). **Method-style masking** reads left-to-right, matching expression-oriented style.
 
-This design avoids:
-- Hidden vectorization (auto-vectorization is unreliable)
-- Implicit model complexity (SPMD mental model differs from scalar code)
+Avoids:
+- Hidden vectorization (auto-vectorization unreliable)
+- Implicit model complexity (SPMD mental model differs)
 - Graphics-specific features (letter swizzles) until demand emerges
 
 ---
@@ -31,7 +31,7 @@ Vec[T, N]
 - `T` — Element type. Must be primitive numeric: `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`, `f32`, `f64`
 - `N` — Lane count. Must be power of 2: 2, 4, 8, 16, 32, ... or special value `native`
 
-**The `native` width:** Resolved at compile time to target's optimal SIMD width:
+**The `native` width:** Resolved at compile time to target's optimal width:
 
 | Target | f32 native | f64 native |
 |--------|------------|------------|
@@ -87,7 +87,7 @@ All arithmetic operators are element-wise:
 | `a % b` | Element-wise remainder |
 | `-a` | Element-wise negate |
 
-**Operand requirements:** Both operands must be `Vec[T, N]` with same `T` and `N`, OR one operand is scalar `T` (see Broadcasting).
+**Operands:** Both `Vec[T, N]` with same `T` and `N`, OR one scalar `T` (see Broadcasting).
 
 ### Scalar Broadcasting
 
@@ -102,7 +102,7 @@ v + 1.0       // Literal also broadcasts
 v * 2.0 + 0.5 // Chained operations
 ```
 
-**Transparency:** Splat costs ~1 cycle. This is within the threshold for implicit small costs (like bounds checks).
+**Transparency:** Splat costs ~1 cycle. Within threshold for implicit small costs (like bounds checks).
 
 ### Comparison Operations
 
@@ -195,7 +195,7 @@ v.max()      // 8.0
 v.reduce(+)  // 36.0 (same as sum)
 ```
 
-**Floating-point note:** Reductions may reorder operations, affecting precision. Use `.reduce_ordered()` for strict left-to-right order (slower).
+**Floating-point:** Reductions may reorder, affecting precision. Use `.reduce_ordered()` for strict left-to-right (slower).
 
 ---
 
@@ -241,7 +241,7 @@ v.shuffle([0, 0, 0, 0])   // Broadcast: [1, 1, 1, 1]
 v.shuffle([0, 2])         // Extract: f32x2 [1, 3]
 ```
 
-**Indices must be comptime-known.** Hardware shuffle instructions require immediate operands.
+**Indices must be comptime-known.** Hardware shuffles need immediate operands.
 
 #### Two-Vector Shuffle
 
@@ -315,7 +315,7 @@ v = data.gather(indices)
 data.scatter(indices, values)
 ```
 
-**Performance note:** Gather/scatter are significantly slower than contiguous access (~10-20x). Use only when access pattern requires it.
+**Performance:** Gather/scatter significantly slower than contiguous (~10-20x). Use only when required.
 
 ---
 

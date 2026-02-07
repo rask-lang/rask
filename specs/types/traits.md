@@ -1,19 +1,19 @@
 # Solution: Runtime Polymorphism
 
 ## The Question
-How do you store different types in the same collection when they share behavior? How does Rask support heterogeneous data structures?
+How store different types in same collection when they share behavior?
 
 ## Decision
-Opt-in runtime polymorphism via `any Trait`. Monomorphization remains the default; `any` is used when you explicitly need different types in the same collection.
+Opt-in runtime polymorphism via `any Trait`. Monomorphization default; `any` when you explicitly need different types in same collection.
 
 ## Rationale
-Most code benefits from monomorphization (zero overhead, full optimization). But some patterns—HTTP handlers, UI widgets, plugin systems—fundamentally need heterogeneous collections. `any Trait` provides this capability with explicit, visible runtime cost.
+Most code benefits from monomorphization (zero overhead, full optimization). But some patterns—HTTP handlers, UI widgets, plugins—need heterogeneous collections. `any Trait` provides this with explicit, visible runtime cost.
 
 ## Specification
 
 ### The Problem
 
-With monomorphization only, all items in a collection must be the same type:
+Monomorphization only: all items must be same type:
 
 ```rask
 trait Widget {
@@ -42,9 +42,9 @@ for w in widgets {
 
 ### How It Works
 
-A `any Trait` value consists of two parts:
-1. **Data**: The actual value (or pointer to it)
-2. **Vtable**: A table of function pointers for the trait's methods
+`any Trait` value has two parts:
+1. **Data**: Actual value (or pointer)
+2. **Vtable**: Function pointers for trait methods
 
 ```rask
 ┌─────────────┐
@@ -59,7 +59,7 @@ When you call `w.draw()`, the runtime:
 1. Looks up the `draw` function pointer in the vtable
 2. Calls it with the data
 
-This is called **dynamic dispatch** or **vtable dispatch**.
+Called **dynamic dispatch** or **vtable dispatch**.
 
 ### When to Use `any Trait`
 
@@ -143,7 +143,7 @@ trait Container {
 | Code size | One copy per type | One copy total |
 | Flexibility | Same-type only | Heterogeneous |
 
-The overhead is small—one pointer indirection per method call. For most applications (UI, handlers, plugins) this is negligible. For tight inner loops, prefer monomorphization or enums.
+Overhead small—one pointer indirection per call. For most applications (UI, handlers, plugins) negligible. For tight inner loops, prefer monomorphization or enums.
 
 ### Comparison with Enums
 

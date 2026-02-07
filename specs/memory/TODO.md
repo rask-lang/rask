@@ -1,14 +1,14 @@
 # Memory Model: Open Issues
 
-Remaining stress points that need specification or resolution.
+Stress points that need specification or resolution.
 
 ---
 
 ## 1. Expression-Scoped Aliasing Detection
 
-Rule EC4 (aliasing rules apply to expression-scoped closures) requires local analysis to detect aliasing violations within expression chains.
+Rule EC4 (aliasing rules apply to expression-scoped closures) needs local analysis to catch aliasing violations.
 
-**The Problem:** `pool.modify(h, |e| pool.remove(h))` — the closure body accesses `pool` while `modify()` holds a mutable borrow on it. The compiler must detect this conflict without whole-program analysis.
+**Problem:** `pool.modify(h, |e| pool.remove(h))`—closure accesses `pool` while `modify()` holds a mutable borrow. Must catch this without whole-program analysis.
 
 ### Algorithm
 
@@ -147,17 +147,17 @@ No cross-function analysis required. Method signatures provide borrow requiremen
 
 ### Implementation Notes
 
-1. **Method signatures are trusted**: The compiler infers from the method body whether `self` is read or mutated, determining shared vs exclusive borrow. No cross-function analysis needed—just check method body.
+1. **Method signatures are trusted**: Compiler infers from method body whether `self` is read or mutated. No cross-function analysis—just check method body.
 
-2. **Expression-scoped only**: This analysis only applies to closures that execute immediately within the expression. Storable closures use capture-by-value and don't have this problem.
+2. **Expression-scoped only**: Analysis only applies to closures that execute immediately. Storable closures use capture-by-value.
 
-3. **Conservative for dynamic indices**: `pool[computed_index]` borrows the entire pool, not a specific slot. This is sound but may reject some valid programs.
+3. **Conservative for dynamic indices**: `pool[computed_index]` borrows the entire pool, not a specific slot. Sound but may reject valid programs.
 
-4. **Error messages**: Report the borrow source (e.g., "pool is exclusively borrowed by modify() at line 5") and the conflicting access (e.g., "cannot call pool.remove() while pool is borrowed").
+4. **Error messages**: Report borrow source ("pool is exclusively borrowed by modify() at line 5") and conflicting access ("cannot call pool.remove() while pool is borrowed").
 
 ### Status
 
-✅ **Specification complete.** Ready for implementation.
+✅ **Specified.** Ready to implement.
 
 ---
 

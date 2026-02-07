@@ -1,30 +1,6 @@
 # Random — Random Number Generation
 
-## The Question
-
-How does random number generation work? Do we need a complex trait hierarchy for different RNG algorithms? How do we balance convenience vs reproducibility?
-
-## Decision
-
-One `Rng` type plus module-level convenience functions. Two concepts total: an explicit generator for reproducible sequences, and quick module functions for when you just need a random number.
-
-## Rationale
-
-**Why not Rust's `rand` crate approach?**
-- Rust's `rand` has 12+ traits and types: `Rng`, `RngCore`, `CryptoRng`, `CryptoRngCore`, `SeedableRng`, `Distribution`, `Standard`, `Uniform`, `thread_rng()`, `StdRng`, `SmallRng`, `OsRng`...
-- For 95% of uses you just want `random.range(1, 100)` or a seeded generator for tests
-- The trait hierarchy exists to support pluggable algorithms — but most programs only need one good algorithm
-
-**Why xoshiro256++?**
-- Fast (4 cycles per number), excellent statistical quality
-- Small state (32 bytes), simple implementation
-- Not cryptographically secure — but that's fine. Crypto RNG is a separate concern (`crypto.random()` when needed)
-- Same algorithm Go uses for `math/rand/v2`
-
-**Why both Rng struct and module functions?**
-- Module functions (`random.range(1, 100)`) — for scripts, games, quick prototyping. Zero ceremony
-- `Rng` struct — for tests (deterministic seed), simulations, anything needing reproducibility
-- Module functions use a thread-local system-seeded Rng internally
+One `Rng` type plus module-level convenience functions. Explicit generator for reproducible sequences, quick module functions for when you just need a random number.
 
 ## Specification
 

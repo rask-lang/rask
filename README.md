@@ -1,89 +1,181 @@
-# Rask
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/rask-logo-white@3x.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/rask-logo-dark@3x.png">
+    <img alt="rask logo" src="assets/rask-logo-dark@3x.png" width="500">
+  </picture>
+</p>
 
-A systems language where safety is invisible—it's just how the language works, not something you fight.
+Safety without the pain!
 
-**Status:** Design phase (language specification only, no implementation yet)
 
-## What is Rask?
 
-Most languages force a tradeoff: safe but slow (GC), safe but complex (borrow checker), or fast but dangerous (manual memory). Rask takes a different path—safety that emerges from simple rules, not from runtime overhead or annotation burden.
 
-**Core insight:** Most safety problems come from dangling references. Rask's memory model makes them structurally impossible without lifetime annotations.
+Rask is a new programming language that aims to sit between Rust (compile-time safety, unergonomic) and go (runtime heavy, ergonomic).
 
-### Key Concepts
+Rask targets the 80% of "systems programming" that's actually application code: servers, tools, games, embedded apps.
 
-| Concept | What It Does |
+You get Rust's safety guarantees without lifetime annotations.
+You get Go's simplicity without garbage collection.
+
+Can you build Linux in it? Probably not.
+Can you build the next web server? The next game? Absolutely.
+
+No annotations. No fights. No hidden costs.
+
+**Status:** Design phase with working interpreter (grep, game loop, text editor all run). No compiler.
+
+---
+
+## Quick Look
+
+```rask
+func search_file(path: string, pattern: string) -> () or IoError {
+    const file = try fs.open(path)
+    ensure file.close()
+
+    for line in file.lines() {
+        if line.contains(pattern): println(line)
+    }
+}
+```
+
+No lifetime annotations. No borrow checker fights. No GC pauses. Just clean code that's safe by construction.
+
+Full example: [grep_clone.rk](examples/grep_clone.rk)
+
+---
+
+**Jump to:**
+- [Why Rask?](#why-rask) - The design choices that make this possible
+- [What This Costs](#what-this-costs) - Honest tradeoffs
+- [Implementation Status](#implementation-status) - What works today
+- [Design Principles](#design-principles) - Core philosophy
+- [Documentation](#documentation) - Where to look
+
+---
+
+## Why Rask?
+
+### No Lifetime Annotations
+They're the wrong abstraction. Instead of tracking how long references live, I made references impossible to store. This eliminates use-after-free without any annotations.
+
+### No Storable References
+You can borrow a value temporarily (for a function call or expression), but you can't store that borrow in a struct or return it. This sounds limiting—and it is—but it removes entire categories of bugs by construction. For graphs and complex structures, you use handles (validated indices) instead.
+
+### No Traditional Classes
+For this memory model, composition works better. Structs hold data, traits define behavior, you extend types with methods. No inheritance hierarchies, no vtable gymnastics unless you explicitly want runtime polymorphism (`any Trait`).
+
+### No Garbage Collection
+Predictable performance. Every allocation is visible in the code. Cleanup happens deterministically when values go out of scope. For I/O resources, the `ensure` keyword guarantees cleanup even on early returns.
+
+### The Core Ideas
+
+Getting the ergonomics right without sacrificing transparency took a lot of iteration. Here's what I landed on:
+
+| Concept | What It Means |
 |---------|--------------|
 | **Value semantics** | Everything is a value, no hidden sharing |
-| **Single ownership** | Every value has one owner, deterministic cleanup |
-| **Scoped borrowing** | Temporary access that cannot escape scope |
-| **Handles** | Safe references into collections (key + generation) |
-| **Linear resource types** | Resources that must be explicitly consumed |
-| **Task isolation** | No shared mutable memory between tasks |
-| **Comptime** | Pure computation at compile time |
+| **Single ownership** | Every value has one owner, cleanup is deterministic |
+| **Scoped borrowing** | Temporary access that can't escape scope |
+| **Handles instead of pointers** | Collections use validated indices (pool ID + generation check) |
+| **Linear resource types** | Files, sockets must be explicitly consumed—can't forget to close them |
+| **No function coloring** | I/O operations just work, no async/await split |
 
-### The Tradeoffs
+---
 
-**What Rask makes harder:**
-- Graph structures with arbitrary cross-references (use handles or arenas)
-- Shared mutable state across tasks (use channels)
-- Escaping references (by design—prevents bugs)
+## What This Costs
 
-**What Rask eliminates:**
-- Use-after-free, double-free, dangling pointers
-- Data races (impossible by construction)
-- Null pointer crashes (optional types)
-- Memory leaks for linear resources
-- Lifetime annotation burden
-- GC pauses and overhead
+I'm not pretending there aren't tradeoffs. Here's what you give up:
 
-## Where to Start
+**More `.clone()` calls:** In string-heavy code (CLI parsing, HTTP routing) you'll see ~5% of lines with an explicit clone. I think that's better than lifetime annotations everywhere.
 
-| If you want to... | Read this |
-|-------------------|-----------|
-| Understand the core design | [CORE_DESIGN.md](CORE_DESIGN.md) |
-| See specific language features | [specs/](specs/) |
-| Understand design constraints | [METRICS.md](METRICS.md) |
-| See what's still being designed | [TODO.md](TODO.md) |
+**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process.
 
-## Directory Structure
+**Restructuring some patterns:**
+- Parent pointers → store handles
+- String slices in structs → store indices or use StringPool
+- Arbitrary graphs → use Pool<T> with handles
 
-```
-├── CORE_DESIGN.md          # Core language design principles
-├── METRICS.md              # Design scoring methodology
-├── TODO.md                 # Known gaps and open questions
-├── REFINEMENT_PROTOCOL.md  # How specs are iteratively refined
-├── specs/                  # Language specifications
-│   ├── types/              # What values can be
-│   ├── memory/             # How values are owned
-│   ├── control/            # How execution flows
-│   ├── concurrency/        # How tasks run in parallel
-│   ├── structure/          # How code is organized
-│   └── stdlib/             # Standard library
-├── versions/               # Historical spec versions (design evolution)
-└── research/               # Archived exploration and experiments
-```
+In return, you get:
+- No use-after-free, no dangling pointers, no data races
+- No lifetime annotation burden
+- No GC pauses
+- No borrow checker fights
+- Function signatures that are actually readable
+
+---
+
+## Implementation Status
+
+**Right now:** Everything runs interpreted. The lexer, parser, type checker, and interpreter work for the core language features. Three of the five litmus test programs run (grep, game loop, text editor). It might be buggy, haven't have time testing everything.
+
+**What works:**
+- Memory model: ownership, moves, borrows, handles
+- Type system: primitives, structs, enums, generics, traits
+- Control flow: if/match/loops with explicit returns
+- Concurrency: spawn/join, channels, thread pools
+- Resource types: files must be closed, linear tracking works
+- Error handling: `T or E` results, `try` propagation
+- Standard types: Vec, Map, Pool, String, Option, Result
+
+**What's next:**
+- Code generation (right now it's all interpreted)
+- Network I/O (HTTP server example is blocked on this)
+- SIMD and const generics (embedded example needs this)
+- LSP completion and real IDE support
+
+---
 
 ## Design Principles
 
-From [CLAUDE.md](CLAUDE.md) (project objectives):
-
-1. **Transparency of Cost** — Major costs (allocations, I/O) visible in code
-2. **Mechanical Safety** — Safety by structure, not runtime checks
+1. **Transparency of Cost** — Major costs visible in code (allocations, locks, I/O)
+2. **Mechanical Safety** — Safety by construction, not runtime checks
 3. **Practical Coverage** — Handle 80%+ of real use cases
-4. **Ergonomic Simplicity** — Common code paths must be low ceremony
+4. **Ergonomic Simplicity** — Common patterns should be low ceremony.
 
+The constant balancing act is keeping ergonomics high without hiding costs. When in doubt, I choose visibility over convenience.
 
-# LLMs
+---
 
-Me, a human, has designed this language. I have used Claude code for the heavy-lifting during implementation to accelerate development, and as an assistant during design. AI should be treated as a tool, not a magic quick fix for all your problems. At its best, it can accelerate your workflow hundredfolds. At its worst it can generate thousands of lines of general AI slop. LLM's will only be as smart as the user who prompts them. 
+## Documentation
 
-This is a human-directed, AI-accelerated project.
+| If you want to... | Read this |
+|-------------------|-----------|
+| Understand the design philosophy | [CORE_DESIGN.md](CORE_DESIGN.md) |
+| See specific language features | [specs/](specs/) directory |
+| Understand design constraints | [METRICS.md](METRICS.md) |
+| See what's still being built | [TODO.md](TODO.md) |
+| Run actual programs | [examples/](examples/) directory |
 
-# License
+### Project Structure
 
-Licensed under either of
-- Apache License, Version 2.0 (LICENSE-APACHE or http://www.apache.org/licenses/LICENSE-2.0)
-- MIT license (LICENSE-MIT or http://opensource.org/licenses/MIT)
-at your option.
+```
+├── CORE_DESIGN.md          # Design philosophy and core mechanisms
+├── METRICS.md              # How I measure whether the design works
+├── TODO.md                 # What's done, what's next
+├── specs/                  # Language specifications
+│   ├── types/              # Type system, generics, traits
+│   ├── memory/             # Ownership, borrowing, resources
+│   ├── control/            # Loops, match, comptime
+│   ├── concurrency/        # Tasks, threads, channels
+│   ├── structure/          # Modules, packages, builds
+│   └── stdlib/             # Standard library APIs
+├── compiler/               # The actual implementation (13 crates)
+│   ├── rask-lexer/         # Tokenization
+│   ├── rask-parser/        # AST construction
+│   ├── rask-types/         # Type checking
+│   ├── rask-interp/        # Interpreter (current execution)
+│   └── ...
+└── examples/               # Real programs that run today
+    ├── grep_clone.rk
+    ├── game_loop.rk
+    ├── text_editor.rk
+    └── ...
+```
 
+---
+
+## License
+
+Licensed under either of Apache License or MIT license at your option.

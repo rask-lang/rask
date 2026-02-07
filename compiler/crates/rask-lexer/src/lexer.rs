@@ -2,7 +2,7 @@
 //! The lexer implementation using logos.
 
 use logos::Logos;
-use rask_ast::token::{Token, TokenKind};
+use rask_ast::token::{FloatSuffix, IntSuffix, Token, TokenKind};
 use rask_ast::Span;
 
 /// Raw token type for logos - we parse values in a second pass.
@@ -483,33 +483,43 @@ impl<'a> Lexer<'a> {
 
             // Literals - parse the values
             RawToken::DecInt => {
-                let cleaned: String = strip_int_suffix(slice)
+                let (stripped, suffix) = parse_int_suffix(slice);
+                let cleaned: String = stripped
                     .chars()
                     .filter(|c| *c != '_')
                     .collect();
                 let value = cleaned.parse::<i64>().map_err(|_| LexError::invalid_number(start, end))?;
-                TokenKind::Int(value)
+                TokenKind::Int(value, suffix)
             }
             RawToken::HexInt => {
-                let stripped = strip_int_suffix(slice);
+                let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let value = i64::from_str_radix(&cleaned, 16).map_err(|_| LexError::invalid_number(start, end))?;
-                TokenKind::Int(value)
+                TokenKind::Int(value, suffix)
             }
             RawToken::BinInt => {
-                let stripped = strip_int_suffix(slice);
+                let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let value = i64::from_str_radix(&cleaned, 2).map_err(|_| LexError::invalid_number(start, end))?;
-                TokenKind::Int(value)
+                TokenKind::Int(value, suffix)
             }
             RawToken::OctInt => {
-                let stripped = strip_int_suffix(slice);
+                let (stripped, suffix) = parse_int_suffix(slice);
                 let cleaned: String = stripped[2..].chars().filter(|c| *c != '_').collect();
                 let value = i64::from_str_radix(&cleaned, 8).map_err(|_| LexError::invalid_number(start, end))?;
-                TokenKind::Int(value)
+                TokenKind::Int(value, suffix)
             }
             RawToken::Float => {
-                // Remove suffix if present and underscores
+                // Detect suffix
+                let suffix = if slice.ends_with("f32") {
+                    Some(FloatSuffix::F32)
+                } else if slice.ends_with("f64") {
+                    Some(FloatSuffix::F64)
+                } else {
+                    None
+                };
+
+                // Remove suffix and underscores
                 let cleaned: String = slice
                     .trim_end_matches("f32")
                     .trim_end_matches("f64")
@@ -517,7 +527,7 @@ impl<'a> Lexer<'a> {
                     .filter(|c| *c != '_')
                     .collect();
                 let value = cleaned.parse::<f64>().map_err(|_| LexError::invalid_number(start, end))?;
-                TokenKind::Float(value)
+                TokenKind::Float(value, suffix)
             }
             RawToken::Char => {
                 let inner = &slice[1..slice.len() - 1]; // Remove quotes
@@ -544,18 +554,21 @@ impl<'a> Lexer<'a> {
     }
 }
 
-/// Strip integer type suffix from a number literal.
-fn strip_int_suffix(s: &str) -> &str {
-    const SUFFIXES: &[&str] = &[
-        "i128", "i64", "i32", "i16", "i8", "isize",
-        "u128", "u64", "u32", "u16", "u8", "usize",
+/// Parse integer type suffix from a number literal.
+/// Returns the stripped string and the optional suffix.
+fn parse_int_suffix(s: &str) -> (&str, Option<IntSuffix>) {
+    const SUFFIXES: &[(&str, IntSuffix)] = &[
+        ("i128", IntSuffix::I128), ("i64", IntSuffix::I64), ("i32", IntSuffix::I32),
+        ("i16", IntSuffix::I16), ("i8", IntSuffix::I8), ("isize", IntSuffix::Isize),
+        ("u128", IntSuffix::U128), ("u64", IntSuffix::U64), ("u32", IntSuffix::U32),
+        ("u16", IntSuffix::U16), ("u8", IntSuffix::U8), ("usize", IntSuffix::Usize),
     ];
-    for suffix in SUFFIXES {
-        if let Some(stripped) = s.strip_suffix(suffix) {
-            return stripped;
+    for (suffix_str, suffix_enum) in SUFFIXES {
+        if let Some(stripped) = s.strip_suffix(suffix_str) {
+            return (stripped, Some(*suffix_enum));
         }
     }
-    s
+    (s, None)
 }
 
 /// Parse a character literal (handling escape sequences).

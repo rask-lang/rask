@@ -7,13 +7,13 @@ How do conditionals, loops, and control transfer work in Rask? What is the disti
 Context-dependent expressions. The assignment context determines whether a construct produces a value or executes for side effects. Functions require explicit `return`. Labels use `label:` syntax.
 
 ## Rationale
-Most control flow is for side effects (logging, validation, mutation), not value production. The assignment context (`const x = match/if ...`) naturally signals value production, while standalone constructs are side effects. This eliminates the need for trailing semicolons without introducing ambiguity. `return` always means "exit the function" — no overloading. The `loop` keyword with `deliver` provides clear syntax for value-returning loops.
+Most control flow is for side effects (logging, validation, mutation). Assignment context (`const x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity. `return` always means "exit the function" — no overloading. `loop` with `deliver` provides clear syntax for value-returning loops.
 
 ## Specification
 
 ### Expression Context vs Statement Context
 
-**The assignment context determines whether a construct produces a value or executes for side effects.**
+The assignment context determines whether a construct produces a value or executes for side effects.
 
 **Expression context** — assigned to a variable, arms/branches produce values:
 ```rask
@@ -84,16 +84,16 @@ func format_size(bytes: i64) -> string {
 
 ### Semicolons
 
-**Semicolons separate statements on the same line.** Newlines also separate statements.
+Semicolons separate statements on the same line. Newlines also separate statements.
 
 ```rask
-// These are equivalent
+// Equivalent forms
 do_thing()
 do_other()
 
 do_thing(); do_other()
 
-// Semicolons also separate statements within expression-context blocks
+// Semicolons separate statements within expression-context blocks
 const token = match c {
     '+' => { self.advance(); Token.Plus }
 }
@@ -108,11 +108,11 @@ if condition { consequent }  // else branch implicitly ()
 ```
 
 **Rules:**
-- Condition MUST be type `bool` (no implicit conversion)
-- Parentheses around condition: allowed but not required
-- Braces MUST be present (no single-statement form), except inline syntax
-- In expression context: both branches MUST have same type
-- When `else` omitted: statement context only (produces `()`)
+- Condition must be `bool` (no implicit conversion)
+- Parentheses around condition allowed but not required
+- Braces required (no single-statement form), except inline syntax
+- Expression context: both branches must have same type
+- `else` omitted: statement context only (produces `()`)
 
 | Pattern | Context | Type | Notes |
 |---------|---------|------|-------|
@@ -142,7 +142,7 @@ if cond {
 
 ### Pattern Matching in Conditions: `is`
 
-The `is` keyword enables pattern matching within `if` and `while` conditions, with automatic binding of matched values.
+The `is` keyword enables pattern matching within `if` and `while` conditions, with automatic binding.
 
 **Syntax:**
 ```rask
@@ -151,9 +151,9 @@ while expr is Pattern(binding) { body }
 ```
 
 **Semantics:**
-- Expression is evaluated once
-- If pattern matches, bindings are available in the block (smart unwrap)
-- If pattern doesn't match, block is skipped (or loop exits)
+- Expression evaluated once
+- Pattern matches: bindings available in block (smart unwrap)
+- Pattern doesn't match: block skipped (or loop exits)
 - Works with any enum, not just Option
 
 ```rask
@@ -203,14 +203,14 @@ Note: `!` applies to the whole `is` expression. There is no `is not` syntax.
 | Loop over iterator | `for x in iter` | `while iter.next() is Some(x)` |
 
 **Rules:**
-- `is` patterns are NOT exhaustive — unmatched cases skip the block
-- Bindings are scoped to the block (like `if opt?`)
-- Linear resources in bindings follow normal linear rules within the block
-- `is` is an expression returning `bool`, but bindings only available in truthy branch
+- `is` patterns not exhaustive — unmatched cases skip the block
+- Bindings scoped to block (like `if opt?`)
+- Linear resources in bindings follow normal linear rules
+- `is` returns `bool`, bindings only available in truthy branch
 
 **Ownership:**
-- Expression is evaluated once; if it produces a non-Copy value, it's moved into the pattern
-- If pattern doesn't match and value is linear, it must still be handled
+- Expression evaluated once; non-Copy values moved into pattern
+- Pattern doesn't match and value is linear: must still be handled
 
 ```rask
 // Linear resource: must handle both paths
@@ -223,7 +223,7 @@ if file_result is Ok(file) {
 
 ### Extracting with `let ... is ... else`
 
-When you need the binding to escape to the outer scope (for early returns), use `let` with `is` and a diverging `else`:
+When you need the binding to escape to the outer scope (for early returns), use `let` with `is` and a diverging `else`.
 
 **Syntax:**
 ```rask
@@ -231,9 +231,9 @@ const binding = expr is Pattern else { diverge }
 ```
 
 **Semantics:**
-- `expr` is evaluated and matched against `Pattern`
-- If match succeeds, payload is bound to `binding` in outer scope
-- If match fails, `else` block executes (must diverge: `return`, `break`, `panic`, etc.)
+- `expr` evaluated and matched against `Pattern`
+- Match succeeds: payload bound to `binding` in outer scope
+- Match fails: `else` block executes (must diverge: `return`, `break`, `panic`, etc.)
 
 ```rask
 // Early return on error
@@ -262,9 +262,9 @@ let (a, b) = result is Ok else { return Err(e) }
 | `let v = x is P else { ... }` | Outer scope | Early exit / guard |
 
 **Rules:**
-- The `else` block MUST diverge (`return`, `break`, `continue`, `panic`, `deliver`)
-- If `else` doesn't diverge, compiler error: "else block must diverge"
-- Linear resources: if pattern doesn't match, the value is available in `else` for cleanup
+- `else` block must diverge (`return`, `break`, `continue`, `panic`, `deliver`)
+- `else` doesn't diverge: compiler error "else block must diverge"
+- Linear resources: pattern doesn't match, value available in `else` for cleanup
 
 ```rask
 // Linear: must handle the error case
@@ -321,7 +321,7 @@ const input = loop {
 | No exit reachable | `Never` | Infinite loop |
 
 **Rules:**
-- All `deliver` expressions MUST have the same type
+- All `deliver` expressions must have the same type
 - If both `deliver` and `break` are used, `deliver` determines type and `break` is error
 - `deliver` only valid inside `loop` (not `while` or `for`)
 
@@ -338,11 +338,11 @@ while condition { body }
 - Produces `()` (statement, not expression)
 
 **Rules:**
-- Condition MUST be type `bool`
-- Parentheses around condition: allowed but not required
+- Condition must be `bool`
+- Parentheses around condition allowed but not required
 - `break` exits loop
 - `continue` skips to next iteration
-- `deliver` NOT allowed (use `loop` for value-returning)
+- `deliver` not allowed (use `loop` for value-returning)
 
 ```rask
 while queue.len() > 0 {
@@ -355,10 +355,10 @@ while queue.len() > 0 {
 
 Fully specified in [Loops](loops.md) and [Iteration](../stdlib/iteration.md).
 
-**Key points for control flow:**
+**Key points:**
 - Produces `()` (statement, not expression)
 - `break` and `continue` supported
-- `deliver` NOT allowed (use `loop` for value-returning)
+- `deliver` not allowed (use `loop` for value-returning)
 - Labels supported: `label: for i in coll { ... }`
 
 ### Loop Labels
@@ -384,7 +384,7 @@ outer: for i in rows {
 
 **Rules:**
 - Labels are identifiers followed by `:`
-- Labels MUST be unique within function scope
+- Labels must be unique within function scope
 - `break label` exits labeled loop
 - `continue label` continues labeled loop
 - `deliver label value` exits labeled `loop` with value
@@ -413,7 +413,7 @@ return value     // Returns value from function
 - Type of `return` expression is `Never`
 
 **Linear Resources:**
-- All linear resources in scope MUST be consumed or ensured before `return`
+- All linear resources in scope must be consumed or ensured before `return`
 - `ensure` satisfies this requirement
 - See [Sum Types - Error Propagation](../types/enums.md#error-propagation-and-linear-resources)
 
@@ -428,7 +428,7 @@ func process(file: File) -> Data or Error {
 
 ### Function Returns
 
-**Functions require explicit `return` to produce values. `return` always exits the function.**
+Functions require explicit `return` to produce values. `return` always exits the function.
 
 ```rask
 func double(x: i32) -> i32 {
@@ -468,7 +468,7 @@ func token_string(self) -> string {
 
 ### Block Expressions
 
-**Blocks in statement context produce `()`.** Blocks in expression context produce their last expression's value.
+Blocks in statement context produce `()`. Blocks in expression context produce their last expression's value.
 
 ```rask
 // Statement context — block produces ()
@@ -635,11 +635,11 @@ func run_server(server: Server) {
 
 ## Integration Notes
 
-- **Match:** Already specified in [enums.md](../types/enums.md); follows same expression semantics
+- **Match:** Specified in [enums.md](../types/enums.md); same expression semantics
 - **For loops:** Specified in [loops.md](loops.md); statement, not expression
 - **Ensure:** Cleanup runs on all control flow exits; see [ensure.md](ensure.md)
 - **Linear resource types:** Must be consumed on all branches; ensure enables `try`/`return` safety
-- **Compiler:** Control flow analysis is local (no whole-program); divergence tracked per-block
+- **Compiler:** Control flow analysis local (no whole-program); divergence tracked per-block
 
 ## Summary
 

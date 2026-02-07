@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
-  "scopeName": "text.markdown.rask.codeblock",
+  "scopeName": "text.markdown.rk.codeblock",
   "injectionSelector": "L:text.html.markdown",
   "patterns": [
     {
@@ -23,9 +23,9 @@
         {
           "begin": "(^|\\G)(\\s*)",
           "while": "(^|\\G)(?!\\s*```\\s*$)",
-          "contentName": "meta.embedded.block.rask",
+          "contentName": "meta.embedded.block.rk",
           "patterns": [
-            { "include": "source.rask" }
+            { "include": "source.rk" }
           ]
         }
       ]

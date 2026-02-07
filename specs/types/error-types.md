@@ -2,7 +2,7 @@
 
 ## Overview
 
-Errors are values. Any type with a `message()` method can be used as an error. Error composition uses union types for type-safe propagation.
+Errors are values. Any type with `message()` can be an error. Composition uses union types for type-safe propagation.
 
 ## The Error Trait
 
@@ -12,7 +12,7 @@ trait Error {
 }
 ```
 
-Structural matching — any type with `func message(self) -> string` satisfies `Error`.
+Structural matching—any type with `message(self) -> string` satisfies it.
 
 ## Result Type
 
@@ -25,7 +25,7 @@ enum Result<T, E> {
 
 ### Result Shorthand: `T or E`
 
-`T or E` is `Result<T, E>` — same type, shorter notation. Consistent with how `T?` is `Option<T>`.
+`T or E` is `Result<T, E>`—same type, shorter. Consistent with `T?` being `Option<T>`.
 
 | Shorthand | Full type | Meaning |
 |-----------|-----------|---------|
@@ -40,7 +40,7 @@ func save(data: Data) -> () or IoError                    // Result<(), IoError>
 
 **Precedence:** `?` (tightest) > `|` (error union) > `or` (loosest). So `string? or IoError | ParseError` = `Result<Option<string>, IoError | ParseError>`.
 
-Both notations are interchangeable — `Result<T, E>` remains valid everywhere. `or` works in return types, variable types, fields, and generic parameters.
+Both notations interchangeable. `or` works in return types, variables, fields, generics.
 
 For `Option<T>`, see [Optionals](optionals.md).
 
@@ -62,7 +62,7 @@ Force unwrap uses operators, not methods:
 
 ## Error Propagation: `try`
 
-Extracts `Ok` or returns early with `Err`. Prefix keyword.
+Extracts `Ok` or returns early with `Err`. Prefix.
 
 ```rask
 func process() -> Data or IoError {
@@ -72,11 +72,11 @@ func process() -> Data or IoError {
 }
 ```
 
-`try` works on both `Result` and `Option` — it uniformly means "propagate failure." The `?` character is reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default, `if x?` smart unwrap).
+`try` works on both `Result` and `Option`—uniformly means "propagate failure." `?` reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default, `if x?` smart unwrap).
 
-**Binding:** `try` binds to the full following expression including method chains. Use parens or line-splitting when chaining after: `(try file.read()).trim()`.
+**Binding:** `try` binds to full following expression including chains. Use parens for chaining after: `(try file.read()).trim()`.
 
-**IDE support:** Per Principle 7, the IDE shows `→ returns Err` as ghost text after `try` expressions to make control flow visible.
+**IDE support:** IDE shows `→ returns Err` as ghost text after `try` for visibility.
 
 ### Auto-Ok Wrapping
 
@@ -116,11 +116,11 @@ func main() -> () or Error {
 }
 ```
 
-**Rationale:** If you wanted to return an error, you would have used `return Err(...)` or `try`. Reaching the end of a `() or E` function means success. This eliminates the noisy `Ok(())` that would otherwise appear at the end of most side-effecting functions.
+**Rationale:** If you wanted an error, you'd use `return Err(...)` or `try`. Reaching the end means success. Eliminates noisy `Ok(())` at function ends.
 
 ### Error Type Widening
 
-When return type is a union, `try` auto-widens:
+When return type is union, `try` auto-widens:
 
 ```rask
 func load() -> Config or (IoError | ParseError) {

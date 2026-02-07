@@ -1,29 +1,6 @@
 # CLI — Command-Line Argument Parsing
 
-## The Question
-
-How do Rask programs parse command-line arguments? Do we need a full framework or just helpers? How do we balance simplicity (scripts) with power (real tools)?
-
-## Decision
-
-Two-level API: quick ad-hoc parsing for scripts, and a builder for tools that need help text and validation. Both built into the standard library.
-
-## Rationale
-
-**Why built-in instead of an external crate like Rust?**
-- Rust has no stdlib arg parsing. You must choose between `clap` (powerful, heavy, proc macros), `argh` (lighter), or raw `std::env::args()`
-- CLI parsing is needed by almost every command-line program. It's as fundamental as file I/O
-- Go has `flag` in its stdlib. Python has `argparse`. Rask should too
-
-**Why two levels?**
-- Quick API (`cli.parse()`) — for scripts and simple tools. Three lines and you're parsing flags. Like Go's `flag`
-- Builder API (`cli.Parser`) — for real tools with `--help`, validation, required options. Like Python's `argparse`
-- Quick API is a subset of the Builder — same `Args` return type
-
-**Why not derive-based like `clap`?**
-- Derive macros are powerful but require understanding proc macros, attribute syntax, and Cargo features
-- The builder pattern is explicit and discoverable — you can read it top to bottom
-- `parse_into<T>()` for struct-based parsing is deferred — it's syntactic sugar over the builder, not the core API
+Two-level API: quick ad-hoc parsing for scripts, builder API for tools needing help text and validation.
 
 ## Specification
 
@@ -126,7 +103,7 @@ enum CliError {
 
 ### Auto-Generated Help
 
-The builder auto-generates `--help` and `--version`:
+Builder auto-generates `--help` and `--version`:
 
 ```
 $ mygrep --help

@@ -1,42 +1,6 @@
 # Formatting — format(), Display, Debug
 
-## The Question
-
-How does string formatting work in Rask? How do programs build formatted output for logging, debugging, and display?
-
-## Decision
-
-- `format(template, args...)` as a builtin function (not a macro -- macros are not specified yet)
-- When macros are added later, `format!(template, args...)` can become syntax sugar for the function
-- Standard placeholder syntax: `{}`, `{0}`, `{name}`, `{:spec}`
-- Format specifiers follow industry conventions (Rust/Python/C#)
-- `Display` and `Debug` traits for type-to-string conversion
-- `println`/`print` do implicit interpolation of `{name}` in string arguments
-
-## Rationale
-
-**Why a function, not a macro?**
-- Macros are not specified yet. A builtin function works today in the interpreter.
-- When macros land, `format!(...)` becomes zero-cost sugar over the same semantics.
-- No compile-time string parsing needed -- runtime is fine for now.
-
-**Why `{name}` implicit interpolation in println?**
-- Named placeholders leverage existing string interpolation (already works in println).
-- Covers the 80% case without importing `format()` for simple debug prints.
-
-**Why Rust-style format specifiers?**
-- Proven, widely known syntax. No reason to invent something new.
-- Familiar to anyone coming from Rust, Python, or C#.
-
-**Why separate Display and Debug?**
-- `Display` is the user-facing representation (clean output).
-- `Debug` shows structure (field names, enum variants) -- essential for debugging.
-- Matches Rust's proven model. Primitives get both for free.
-
-**Why separate from strings.md?**
-- `strings.md` covers the string data type, ownership, and slicing.
-- Formatting is output-focused: converting values to text for display.
-- `string_builder` handles low-level concatenation; `format()` handles structured templates.
+`format(template, args...)` builtin function with standard placeholder syntax: `{}`, `{0}`, `{name}`, `{:spec}`. `Display` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit interpolation of `{name}` in string arguments.
 
 ## Specification
 
@@ -100,7 +64,7 @@ trait Display {
 }
 ```
 
-All primitive types (`i32`, `i64`, `f64`, `bool`, `string`, `char`, etc.) implement `Display` by default. Structs do NOT auto-implement `Display` -- you must add it:
+All primitive types (`i32`, `i64`, `f64`, `bool`, `string`, `char`, etc.) implement `Display` by default. Structs do NOT auto-implement `Display` — you must add it:
 
 ```rask
 struct Point { x: f64, y: f64 }
@@ -184,7 +148,7 @@ for item in items.iter() {
 const report = b.build()
 ```
 
-This keeps allocation visible and predictable per Rask's transparency principle.
+Keeps allocation visible and predictable per Rask's transparency principle.
 
 ## Examples
 

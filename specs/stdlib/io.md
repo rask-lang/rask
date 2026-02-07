@@ -1,13 +1,6 @@
-# Solution: I/O Module
+# I/O Module
 
-## The Question
-How do byte-level I/O operations work? What traits unify file, network, and buffer I/O?
-
-## Decision
-Trait-based I/O with `Reader` and `Writer` as the foundation. Buffered wrappers (`BufReader`, `BufWriter`) for efficient line-oriented access. Standard streams (`Stdin`, `Stdout`, `Stderr`) are linear resource handles. A single `IoError` enum covers all I/O errors.
-
-## Rationale
-Trait-based I/O enables generic functions (`io.copy`, pipe, tee) that work across files, sockets, and in-memory buffers. Linear handles for standard streams prevent accidental closing of stdout/stderr. Buffered wrappers are separate types (not implicit) to keep cost transparent (TC >= 0.90). A single error enum avoids proliferation while remaining matchable.
+Trait-based I/O with `Reader` and `Writer` as foundation. Buffered wrappers (`BufReader`, `BufWriter`) for efficient line-oriented access. Standard streams (`Stdin`, `Stdout`, `Stderr`) are linear resource handles. Single `IoError` enum covers all I/O errors.
 
 ## Specification
 
@@ -145,9 +138,9 @@ const stderr = io.stderr()   // Stderr (@resource, implements Writer)
 | `Stdout` | `Writer` | Yes | Must close or use with `ensure` |
 | `Stderr` | `Writer` | Yes | Must close or use with `ensure` |
 
-**Why linear?** Standard streams are process-global resources. Making them linear prevents:
+**Why linear?** Standard streams are process-global resources. Linear prevents:
 - Accidentally closing stdout mid-program
-- Multiple parts of code racing to close the same stream
+- Multiple parts of code racing to close same stream
 - Silent resource leaks in long-running processes
 
 **Typical usage with `ensure`:**
@@ -165,7 +158,7 @@ func main() -> () or IoError {
 }
 ```
 
-**Close semantics:** Calling `close()` on a standard stream releases the handle. It does NOT close the underlying file descriptor (the OS manages that at process exit). This satisfies the linear requirement without surprising behavior.
+**Close semantics:** Calling `close()` on standard stream releases the handle. Doesn't close underlying file descriptor (OS manages that at process exit). Satisfies linear requirement without surprising behavior.
 
 ### Buffer Type
 
@@ -190,7 +183,7 @@ struct Buffer {
 | `len(self)` | `usize` | Total bytes written |
 | `reset(self)` | `()` | Reset read position to 0 |
 
-Buffer is useful for testing (mock I/O) and for building data in memory before writing.
+Useful for testing (mock I/O) and building data in memory before writing.
 
 <!-- test: skip -->
 ```rask
@@ -210,7 +203,7 @@ The `io` module provides shortcuts for common operations.
 | `io.read_line()` | `string or IoError` | Read one line from stdin (strips newline) |
 | `io.copy(reader, writer)` | `usize or IoError` | Copy all bytes from reader to writer. Returns total bytes copied |
 
-These avoid the ceremony of acquiring and managing standard stream handles for simple programs.
+Avoids ceremony of acquiring and managing standard stream handles for simple programs.
 
 <!-- test: skip -->
 ```rask

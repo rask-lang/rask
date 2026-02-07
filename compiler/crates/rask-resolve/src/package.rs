@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Package discovery and management.
 //!
-//! A package in Rask is a directory containing `.rask` source files.
+//! A package in Rask is a directory containing `.rk` source files.
 //! All files in a directory form one package. Nested directories
 //! are separate packages (e.g., `pkg/sub/` is package `pkg.sub`).
 
@@ -71,7 +71,7 @@ pub enum PackageError {
     CircularDependency(Vec<String>),
     /// Package not found.
     NotFound(Vec<String>),
-    /// No .rask files found in directory.
+    /// No .rk files found in directory.
     EmptyPackage(PathBuf),
 }
 
@@ -94,7 +94,7 @@ impl std::fmt::Display for PackageError {
                 write!(f, "Package not found: {}", path.join("."))
             }
             PackageError::EmptyPackage(path) => {
-                write!(f, "No .rask files found in {}", path.display())
+                write!(f, "No .rk files found in {}", path.display())
             }
         }
     }
@@ -139,7 +139,7 @@ impl PackageRegistry {
             return Ok(id);
         }
 
-        // Find all .rask files in this directory
+        // Find all .rk files in this directory
         let mut files = Vec::new();
         let mut subdirs = Vec::new();
 
@@ -326,8 +326,8 @@ mod tests {
         let pkg_dir = tmp.path().join("mypackage");
 
         create_test_package(&pkg_dir, &[
-            ("main.rask", "@entry\n func main() { }"),
-            ("util.rask", "func helper() { }"),
+            ("main.rk", "@entry\n func main() { }"),
+            ("util.rk", "func helper() { }"),
         ]);
 
         let mut registry = PackageRegistry::new();
@@ -345,10 +345,10 @@ mod tests {
         let sub = root.join("sub");
 
         create_test_package(&root, &[
-            ("main.rask", "@entry\n func main() { }"),
+            ("main.rk", "@entry\n func main() { }"),
         ]);
         create_test_package(&sub, &[
-            ("helper.rask", "func help() { }"),
+            ("helper.rk", "func help() { }"),
         ]);
 
         let mut registry = PackageRegistry::new();

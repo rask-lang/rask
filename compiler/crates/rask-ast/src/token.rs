@@ -10,12 +10,26 @@ pub struct Token {
     pub span: Span,
 }
 
+/// Float literal type suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FloatSuffix {
+    F32,
+    F64,
+}
+
+/// Integer literal type suffix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntSuffix {
+    I8, I16, I32, I64, I128, Isize,
+    U8, U16, U32, U64, U128, Usize,
+}
+
 /// The kind of token.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenKind {
     // Literals
-    Int(i64),
-    Float(f64),
+    Int(i64, Option<IntSuffix>),
+    Float(f64, Option<FloatSuffix>),
     String(String),
     Char(char),
     Bool(bool),
@@ -138,8 +152,8 @@ impl TokenKind {
     pub fn display_name(&self) -> &'static str {
         match self {
             // Literals
-            TokenKind::Int(_) => "a number",
-            TokenKind::Float(_) => "a number",
+            TokenKind::Int(_, _) => "a number",
+            TokenKind::Float(_, _) => "a number",
             TokenKind::String(_) => "a string",
             TokenKind::Char(_) => "a character",
             TokenKind::Bool(_) => "'true' or 'false'",

@@ -2,7 +2,7 @@
 
 ## Overview
 
-The `bits` module provides bit manipulation utilities, byte order conversion, and binary data parsing/building helpers.
+Bit manipulation utilities, byte order conversion, and binary data parsing/building helpers.
 
 ## Bit Operations
 
@@ -175,11 +175,11 @@ enum ParseError {
 
 ## Integration with @binary Structs
 
-The `bits` module complements `@binary` structs:
+`bits` complements `@binary` structs:
 
-- Use `@binary struct` for reusable, documented layouts
-- Use `bits.unpack` for one-off inline parsing
-- Use slice methods for streaming/incremental parsing
+- `@binary struct` for reusable, documented layouts
+- `bits.unpack` for one-off inline parsing
+- Slice methods for streaming/incremental parsing
 
 ```rask
 // Struct for well-known format
@@ -196,6 +196,6 @@ let (options, rest) = try rest.take(header.data_offset * 4 - 20)
 
 ## Performance Notes
 
-- All parsing is zero-copy where possible (returns slices into original data)
+- Parsing is zero-copy where possible (returns slices into original data)
 - `unpack` validates all lengths upfront (single bounds check)
 - Builder pre-allocates when total size is known at comptime

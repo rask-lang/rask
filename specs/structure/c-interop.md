@@ -7,7 +7,7 @@ How does Rask call C code and expose Rask code to C?
 Two approaches: automatic header parsing (built-in C parser, like Zig) for well-behaved libraries, and explicit `extern "C"` bindings for edge cases. No libclang dependency.
 
 ## Rationale
-Zig proves that a built-in C parser can handle most real-world C interop without heavy dependencies. Explicit bindings provide an escape hatch for C++, complex macros, and compiler extensions. The combination gives convenience for common cases and full control when needed.
+Zig proves a built-in C parser can handle most real-world C interop without heavy dependencies. Explicit bindings give you an escape hatch for C++, complex macros, and compiler extensions. The combination gives convenience for common cases and full control when you need it.
 
 ## Specification
 
@@ -32,7 +32,7 @@ Zig proves that a built-in C parser can handle most real-world C interop without
 - Compiler includes a built-in C parser (like Zig)—no external dependencies
 - No libclang required; custom parser handles standard C
 - Header parsed at compile time; C types/functions available immediately
-- Calling C functions requires `unsafe` context
+- All C function calls require `unsafe` context
 
 **Example:**
 ```rask
@@ -68,8 +68,8 @@ extern "C" {
 ```
 
 **Rules:**
-- `extern "C"` declarations MUST match C ABI exactly
-- Compiler does NOT verify correctness (programmer responsibility)
+- `extern "C"` declarations must match C ABI exactly
+- Compiler doesn't verify correctness (programmer responsibility)
 - Explicit bindings can coexist with `import c`
 - Explicit bindings override auto-parsed declarations
 
@@ -154,7 +154,7 @@ warning: skipping macro `CONTAINER_OF` (uses token pasting)
 - Pointers: `*T`, `*mut T`
 - `extern "C" struct` with only C-compatible fields
 
-**NOT C-compatible:**
+**Not C-compatible:**
 - `string`, `Vec`, `Pool` (internal layout not stable)
 - Handles (generational references have no C equivalent)
 - Closures, trait objects
@@ -249,7 +249,7 @@ public extern "C" struct RaskResult {
 
 ## Linear Resources and FFI
 
-Linear resources (files, sockets, etc.) crossing FFI boundary require special handling:
+Linear resources (files, sockets, etc.) crossing FFI boundary need special handling:
 
 ```rask
 @resource

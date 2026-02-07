@@ -22,7 +22,7 @@ func process_damage(h: Handle<Enemy>) {
 // Expected error message:
 //
 // error: cannot satisfy context requirement Pool<Enemy>
-//   --> context_unavailable.rask:17
+//   --> context_unavailable.rk:17
 //    |
 // 17 |     damage(h, 10)
 //    |     ^^^^^^ function requires Pool<Enemy>

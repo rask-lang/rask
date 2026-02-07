@@ -4,10 +4,10 @@
 How do values behave on assignment, parameter passing, and return? When are types copied implicitly vs moved?
 
 ## Decision
-All types are values with single ownership. Small types (≤16 bytes) that contain only copyable data are implicitly copied; larger types require explicit `.clone()` or move. The `@unique` attribute allows opt-out of implicit copy for semantic reasons.
+All types are values with single ownership. Small types (≤16 bytes) copy implicitly; larger types need explicit `.clone()` or move. `@unique` opts out of implicit copy when semantics demand it.
 
 ## Rationale
-Implicit copy is fundamental for ergonomic value semantics—without it, even integer assignments would invalidate the source. The 16-byte threshold balances ergonomics (covers common types like points, colors, pairs) with cost transparency (larger types require visible `.clone()`).
+Without implicit copy, even `const y = x` for integers would invalidate `x`. That's unusable. The 16-byte threshold covers common types (points, colors, pairs) while keeping large copies visible.
 
 ## Specification
 
@@ -30,9 +30,9 @@ All types are values. There is no distinction between "value types" and "referen
 
 ### Why Implicit Copy?
 
-Implicit copy is a fundamental requirement for ergonomic value semantics, not an optional optimization.
+This isn't optional. Without implicit copy, primitives break:
 
-**Without implicit copy, primitives would have move semantics:**
+**Broken without copy:**
 ```rask
 const x = 5
 const y = x              // Without copy: x moved to y
@@ -50,9 +50,9 @@ Alternative approaches fail design constraints:
 
 ### The 16-Byte Threshold
 
-Value semantics (Principle 2) requires uniform behavior: if `i32` copies, then `Point{x: i32, y: i32}` should also copy. But blind copying of large types violates cost transparency (TC ≥ 0.90).
+If `i32` copies, then `Point{x: i32, y: i32}` should too. But blind copying of large structs hides costs.
 
-The threshold balances ergonomics with visibility:
+The threshold splits the difference:
 - **Below threshold:** Types behave like mathematical values (copy naturally)
 - **Above threshold:** Explicit `.clone()` required (cost visible)
 
@@ -65,21 +65,19 @@ The threshold balances ergonomics with visibility:
 | **Cache efficiency** | 16 bytes = 1/4 cache line; small enough to not pollute cache |
 | **Visibility boundary** | Large enough for natural types, small enough that copies stay obvious |
 
-**Chosen threshold: 16 bytes**
-
-Rationale:
-- Matches x86-64 and ARM register-passing conventions (zero-cost copy)
+**Why 16 bytes:**
+- Matches x86-64 and ARM register-passing (zero-cost copy)
 - Covers `(i64, i64)`, `Point3D{x, y, z: f32}`, `RGBA{r, g, b, a: u8}`
-- Small enough that silent copies don't violate cost transparency
-- Consistent with Rust's typical Copy threshold (though Rust leaves it to type authors)
+- Small enough that copies stay visible
+- Rust does similar (though it's opt-in per type)
 
-Types above 16 bytes MUST use explicit `.clone()` or move semantics, making allocation/copy cost visible.
+Bigger than 16? Use `.clone()` or move. Cost visible.
 
 ### Threshold Non-Configurability
 
-The 16-byte threshold is **fixed by the language specification** and is NOT configurable.
+The 16-byte threshold is fixed. No knobs.
 
-**Rationale for fixed threshold:**
+**Why:**
 
 | Reason | Justification |
 |--------|---------------|
@@ -150,13 +148,12 @@ Code written for Linux (SysV ABI) compiles identically for Windows (x64 ABI). Se
 
 ### Automatic Copy Derivation
 
-**Copy is automatic (structural):**
+Copy is automatic—structural, not declared:
 
-The compiler automatically determines whether a type is Copy based on structure:
-- Primitives: always Copy (language-defined)
+- Primitives: always Copy
 - Structs/enums: Copy if all fields are Copy AND size ≤16 bytes
 
-No explicit `extend Copy` declaration is required—Copy is a structural property.
+No `extend Copy` needed. The compiler figures it out.
 
 ### Unique Types (Opt-Out)
 

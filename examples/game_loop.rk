@@ -67,10 +67,10 @@ extend GameState {
 
         // Spawn player at center
         const player_handle = try entities.insert(Entity {
-            position: Position { x: 400.0, y: 300.0 },
-            velocity: Velocity { dx: 0.0, dy: 0.0 },
+            position: Position { x: 400.0f32, y: 300.0f32 },
+            velocity: Velocity { dx: 0.0f32, dy: 0.0f32 },
             health: Health { current: 100, max: 100 },
-            collider: Collider { radius: 16.0 },
+            collider: Collider { radius: 16.0f32 },
             active: true,
             entity_type: EntityType.Player,
         })
@@ -86,9 +86,9 @@ extend GameState {
     func spawn_enemy(self, x: f32, y: f32) -> Handle<Entity> or Error {
         return self.entities.insert(Entity {
             position: Position { x: x, y: y },
-            velocity: Velocity { dx: -50.0, dy: 0.0 },
+            velocity: Velocity { dx: -50.0f32, dy: 0.0f32 },
             health: Health { current: 20, max: 20 },
-            collider: Collider { radius: 12.0 },
+            collider: Collider { radius: 12.0f32 },
             active: true,
             entity_type: EntityType.Enemy,
         })
@@ -99,7 +99,7 @@ extend GameState {
             position: Position { x: x, y: y },
             velocity: Velocity { dx: dx, dy: dy },
             health: Health { current: 1, max: 1 },
-            collider: Collider { radius: 4.0 },
+            collider: Collider { radius: 4.0f32 },
             active: true,
             entity_type: EntityType.Projectile,
         })
@@ -185,7 +185,7 @@ func cleanup_system(state: GameState) {
 
     for h in state.entities {
         if !state.entities[h].active {
-            try to_remove.push(h)
+            to_remove.push(h).ok()
         }
     }
 
@@ -196,13 +196,13 @@ func cleanup_system(state: GameState) {
 
 // System: Spawn enemies periodically
 func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
-    const spawn_interval = 2.0
+    const spawn_interval = 2.0f32
 
     if time_since_last_spawn >= spawn_interval {
         // Spawn enemy at right edge with random y
-        const y = (random.f32() * 500.0) + 50.0
-        state.spawn_enemy(850.0, y).ok()
-        return 0.0  // Reset timer
+        const y = (random.f32() * 500.0f32) + 50.0f32
+        state.spawn_enemy(850.0f32, y).ok()
+        return 0.0f32  // Reset timer
     } else {
         return time_since_last_spawn
     }
@@ -224,12 +224,12 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
                 entities[h].position.y += entities[h].velocity.dy * dt
             }
         }
-        try thread_handles.push(task)
+        thread_handles.push(task).ok()
     }
 
     // Wait for all chunks to complete
     for h in thread_handles {
-        try h.join()
+        h.join().ok()
     }
 }
 
@@ -240,22 +240,22 @@ func main() -> () or Error {
     with threading(4) {
         let state = try GameState.new()
 
-        const target_fps = 60.0
-        const dt = 1.0 / target_fps
-        const NUM_PHYSICS_THREADS: usize = 4
+        const target_fps = 60.0f32
+        const dt = 1.0f32 / target_fps
+        const NUM_PHYSICS_THREADS: usize = 4u64
 
-        let last_time = time.Instant.now()
-        let accumulator = 0.0
-        let spawn_timer = 0.0
+        let last_time = 0.0f32  // Simplified: track elapsed time
+        let accumulator = 0.0f32
+        let spawn_timer = 0.0f32
         let frame_count = 0
 
         println("Game started! Score: 0")
 
         // Simulate game for a few seconds
         while !state.game_over && frame_count < 300 {
-            const current_time = time.Instant.now()
-            const frame_time = current_time.duration_since(last_time).as_secs_f32()
-            last_time = current_time
+            // Simulate frame time (16ms = ~60fps)
+            const frame_time = 0.016f32
+            last_time += frame_time
 
             accumulator += frame_time
 
@@ -267,7 +267,7 @@ func main() -> () or Error {
                     if state.player is Some(player_h) {
                         const px = state.entities[player_h].position.x
                         const py = state.entities[player_h].position.y
-                        try state.spawn_projectile(px + 20.0, py, 300.0, 0.0)
+                        try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
                     }
                 }
 
@@ -297,8 +297,8 @@ func main() -> () or Error {
 
             frame_count += 1
 
-            // Sleep to maintain frame rate
-            time.sleep(time.Duration.from_millis(16))
+            // In a real game, we'd sleep here to maintain frame rate
+            // time.sleep(time.Duration.from_millis(16))
         }
 
         if state.game_over {
@@ -306,7 +306,7 @@ func main() -> () or Error {
         } else {
             println("Demo complete! Final Score: {state.score}")
         }
-
     }
-    return ()
+
+    return Result.Ok(())
 }

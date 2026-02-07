@@ -2,15 +2,15 @@
 
 ## The Question
 
-How do optional values (values that may be absent) work in Rask?
+How do optional values work in Rask?
 
 ## Decision
 
-`Option<T>` is a standard enum with syntax sugar for ergonomic handling: `T?` for the type, `none` for absence, `?.` for chaining, `??` for defaults, `if x?` for smart unwrap.
+`Option<T>` is standard enum with syntax sugar: `T?` for type, `none` for absence, `?.` for chaining, `??` for defaults, `if x?` for smart unwrap.
 
 ## Rationale
 
-Optional handling is extremely common. Rask provides both uniformity (Option is a normal enum) and ergonomics (syntax sugar eliminates ceremony). This matches Swift's approach: the type exists, but sugar makes it pleasant to use.
+Optional handling is common. I provide both uniformity (Option is normal enum) and ergonomics (sugar eliminates ceremony). Matches Swift: type exists, sugar makes it pleasant.
 
 ## Specification
 
@@ -23,7 +23,7 @@ enum Option<T> {
 }
 ```
 
-`Option<T>` is a standard enum with pattern matching, traits, and generics.
+`Option<T>` is standard enum with pattern matching, traits, generics.
 
 ### Syntax Sugar
 
@@ -38,14 +38,14 @@ enum Option<T> {
 
 ### The `none` Literal
 
-`none` is a literal representing absence:
+`none` represents absence:
 
 ```rask
 let x: User? = none
 func find(id: i64) -> User? { none }
 ```
 
-Type is inferred from context. Equivalent to `Option.None`.
+Type inferred from context. Equivalent to `Option.None`.
 
 ### Auto-wrapping
 
@@ -79,7 +79,7 @@ const name = user?.name ?? "Anonymous"
 | Some(v) | v (unwrapped) |
 | None | y |
 
-Short-circuits: `y` only evaluated if `x` is none.
+Short-circuits: `y` evaluated only if `x` is none.
 
 ### Force Unwrap: `!`
 
@@ -108,7 +108,7 @@ if user? && user.active {
 }
 ```
 
-**Negation:** `if !x?` does NOT smart-unwrap in else (too error-prone).
+**Negation:** `if !x?` doesn't smart-unwrap in else (too error-prone).
 
 ### Methods
 
@@ -124,7 +124,7 @@ if user? && user.active {
 
 ### Pattern Matching
 
-Standard enum matching works:
+Standard enum matching:
 
 ```rask
 match user {
@@ -133,7 +133,7 @@ match user {
 }
 ```
 
-Rarely needed — prefer `if x?` and `??`.
+Rarely needed—prefer `if x?` and `??`.
 
 ### Linear Resources
 
@@ -161,7 +161,7 @@ x == y          // compare inner values or both none
 
 ### The Operator Family
 
-`try` propagates failure for both `Option<T>` and `Result<T, E>`. The `?` character is used only for Option sugar (types, chaining, smart unwrap) — never for propagation.
+`try` propagates failure for both `Option<T>` and `Result<T, E>`. `?` used only for Option sugar (types, chaining, smart unwrap)—never for propagation.
 
 | Syntax | Option | Result |
 |--------|--------|--------|

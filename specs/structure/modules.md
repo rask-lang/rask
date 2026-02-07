@@ -7,7 +7,7 @@ How are programs organized? What are the visibility rules, import/export mechani
 Package-visible default with explicit `public`, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
 
 ## Rationale
-Packages are compilation units—default package visibility keeps related code accessible without ceremony. Fixed built-in types eliminate noise for ubiquitous types while preserving predictability (you always know what's in scope). Path-based imports (`import pkg` for qualified, `import pkg.Name` for unqualified) are intuitive—import a package for qualified access, import a symbol for direct access. `export` clearly communicates re-export intent for library authors. Transparent re-exports (identity = origin) preserve composability.
+Packages are compilation units—default package visibility keeps related code accessible without ceremony. Fixed built-in types eliminate noise for ubiquitous types while preserving predictability (you always know what's in scope). Path-based imports (`import pkg` for qualified, `import pkg.Name` for unqualified) are intuitive—import a package for qualified access, import a symbol for direct access. `export` clearly communicates re-export intent. Transparent re-exports (identity = origin) preserve composability.
 
 ## Specification
 
@@ -21,7 +21,7 @@ Packages are compilation units—default package visibility keeps related code a
 **Rules:**
 - Package-visible default: items visible to all files in package
 - `public` exposes to external packages
-- Test files (`*_test.rask`) access all package items
+- Test files (`*_test.rk`) access all package items
 - No file-private visibility (same package = same team)
 
 ### Built-in Types (Always Available)
@@ -32,10 +32,10 @@ Packages are compilation units—default package visibility keeps related code a
 - Variants: `Ok`, `Err`, `Some`, `None`
 
 **Rules:**
-- **Fixed set:** Cannot be extended by users or projects
+- **Fixed set:** Can't be extended by users or projects
 - Defining local type with built-in name: **compile error** (prevents silent breakage)
 - Qualified access always works: `core.Result` even if local `Result` exists
-- NOT built-in: `File`, `Socket`, `Task`, `Pool`, `Queue` (must import explicitly)
+- Not built-in: `File`, `Socket`, `Task`, `Pool`, `Queue` (must import explicitly)
 
 **Why fixed?** Predictability (PI ≥ 0.85). Reading any Rask file, you always know what's in scope. Go has no extension mechanism either—IDE auto-import handles repetition.
 
@@ -43,10 +43,10 @@ Packages are compilation units—default package visibility keeps related code a
 
 | Rule | Behavior |
 |------|----------|
-| Package = directory | All `.rask` files in directory form one package |
+| Package = directory | All `.rk` files in directory form one package |
 | Package name = directory name | Derived from path, no declaration |
 | Nested packages | `pkg/sub/` is package `pkg.sub` (separate compilation unit) |
-| One package per directory | MUST NOT mix packages |
+| One package per directory | Can't mix packages |
 
 ### Import Mechanism
 
@@ -86,7 +86,7 @@ Rules: items in braces follow same rules as individual imports. Trailing comma a
 
 **Design rationale:**
 - Path determines access: import package → qualified, import symbol → unqualified
-- `import http.Request` clearly indicates `Request` is available directly
+- `import http.Request` clearly says `Request` is available directly
 - Glob imports emit a compiler warning to discourage overuse
 
 **Disambiguation (package vs symbol):**
@@ -129,7 +129,7 @@ func main() -> () or Error {
 - First function call to a lazy-imported package triggers its `init()`
 - Init runs exactly once, synchronized across threads (like `OnceLock`)
 - Init errors propagate to the call site via `?`
-- If ANY importer uses eager import, package initializes eagerly (eager wins)
+- If any importer uses eager import, package initializes eagerly (eager wins)
 
 **When to use:**
 
@@ -148,10 +148,10 @@ func main() -> () or Error {
 | `export internal.Name as Alias` | Re-export with rename |
 | `export internal.Name, internal.Other` | Multiple re-exports |
 
-**Purpose:** Library authors expose a clean API without revealing internal structure.
+**Purpose:** Library authors can expose a clean API without revealing internal structure.
 
 ```rask
-// mylib/api.rask
+// mylib/api.rk
 export internal.parser.Parser
 export internal.lexer.Lexer
 
@@ -167,7 +167,7 @@ mylib.Parser  // works, don't need to know about internal/parser
 - Re-exports preserve type equality for interoperability
 
 **Constraints:**
-- CANNOT export non-public item: compile error
+- Can't export non-public item: compile error
 - Export cycles detected at import graph construction: compile error
 
 ### Struct Visibility
@@ -179,9 +179,9 @@ mylib.Parser  // works, don't need to know about internal/parser
 | Mixed visibility struct | MUST provide factory function |
 
 **Field addition semantics:**
-- Adding `public` field to all-public struct: **breaking change**
-- Adding non-public field to all-public struct: **breaking change** (disables literals)
-- Adding any field to mixed struct: **non-breaking** (already factory-only)
+- Adding `public` field to all-public struct: breaking change
+- Adding non-public field to all-public struct: breaking change (disables literals)
+- Adding any field to mixed struct: non-breaking (already factory-only)
 
 **Factory-first pattern:**
 ```rask
@@ -250,7 +250,7 @@ node.accept(concrete_visitor)  // Monomorphized: zero indirection
 **When trait objects required:**
 - Heterogeneous collections: `[]any Visitor`
 - Runtime polymorphism: storing different visitor types
-- NOT required for compile-time-known cycles: use explicit generics `<T: Trait>`
+- Not required for compile-time-known cycles: use explicit generics `<T: Trait>`
 
 **Self-referential types (NOT cycles):**
 
@@ -269,7 +269,7 @@ struct Node {
 | `<T: Trait>` | Cross-package interaction with statically-known types (generics) |
 | `any Trait` | Heterogeneous collections, runtime polymorphism |
 
-Handles are **not** trait objects—they're indices into a pool. No vtable, no indirection beyond array lookup.
+Handles aren't trait objects—they're indices into a pool. No vtable, no indirection beyond array lookup.
 
 ### Package-Level State
 
@@ -286,7 +286,7 @@ Handles are **not** trait objects—they're indices into a pool. No vtable, no i
 let counter: i32 = 0  // ✗ Compile error: no mutable globals (use Atomic or Shared)
 ```
 
-**Rationale:** Unsynchronized mutable globals are race conditions waiting to happen. Requiring sync primitives makes the intent explicit and enables safe parallel initialization.
+**Rationale:** Unsynchronized mutable globals are race conditions waiting to happen. Sync primitives make the intent explicit and enable safe parallel initialization.
 
 ### Package Initialization
 
@@ -313,8 +313,8 @@ Intra-package init order is a **parallel topological sort** of the file import D
 
 ```
 Example:
-    api.rask imports db.rask, cache.rask
-    db.rask, cache.rask, util.rask have no intra-package imports
+    api.rk imports db.rk, cache.rk
+    db.rk, cache.rk, util.rk have no intra-package imports
 
     ┌────────┐
     │  api   │  ← waits for db, cache
@@ -326,7 +326,7 @@ Example:
   └────┘  └───────┘  └──────┘
 ```
 
-**Why parallel is safe:** Package-level mutable state requires sync primitives, so concurrent init cannot race.
+**Why parallel is safe:** Package-level mutable state requires sync primitives, so concurrent init can't race.
 
 **Failure:**
 - Init returning `Err`: dependent packages do NOT run, independent packages continue
@@ -346,7 +346,7 @@ Example:
 | Parallelization | Independent packages compile in parallel |
 
 **Generic recompilation honesty:**
-- Changing generic function body DOES require recompiling call sites
+- Changing generic function body does require recompiling call sites
 - Mitigation: use `any Trait` (vtable) for stable ABI across changes
 - Trade-off: Monomorphization = fast runtime, slower incremental builds
 - Mitigation: semantic hash caching skips recompilation when function body hasn't meaningfully changed
@@ -381,7 +381,7 @@ All C calls require `unsafe` context.
 | Generic body unchanged (hash match) | Skip recompilation of instantiation sites |
 | Unsync package-level mutable | Compile error: "must be sync-safe" (use `Atomic`, `Mutex`, `Shared`) |
 | Multiple `init()` in same file | Compile error: "at most one init() per file" |
-| Circular intra-package init | Compile error: "circular init dependency: a.rask → b.rask → a.rask" |
+| Circular intra-package init | Compile error: "circular init dependency: a.rk → b.rk → a.rk" |
 | Init order dependency | Use explicit imports to establish ordering between files |
 | Lazy + eager import same pkg | Eager wins: package initializes before main() |
 | Lazy init failure | Error propagates to call site via `?` |
@@ -395,7 +395,7 @@ All C calls require `unsafe` context.
 
 ### Basic Package Structure
 ```rask
-// file: http/request.rask
+// file: http/request.rk
 public struct Request {
     public method: string
     public path: string
@@ -410,7 +410,7 @@ func next_id() -> u64 { ... }  // pkg-visible helper
 
 func debug_id(r: Request) -> u64 { r.id }  // pkg-visible
 
-// file: http/handler.rask (same package)
+// file: http/handler.rk (same package)
 func log(r: Request) {
     print(debug_id(r))  // OK: pkg-visible
 }
@@ -418,7 +418,7 @@ func log(r: Request) {
 
 ### Import Patterns
 ```rask
-// file: main.rask
+// file: main.rk
 import http
 import std.net.http as nethttp        // alias for disambiguation
 import json.{parse, stringify}        // grouped unqualified

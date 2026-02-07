@@ -1,25 +1,27 @@
-# Solution: Code Generation
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+# Code Generation
 
 ## The Question
-How does Rask go from a type-checked, ownership-verified AST to a native executable? What intermediate representation sits between the AST and the machine code backend? Which backend(s) should be used? What does the runtime library provide?
+How does Rask go from type-checked AST to native executable? What sits between AST and machine code? Which backend? What does the runtime provide?
 
 ## Decision
-The compiler introduces a mid-level IR (MIR) as a non-SSA control-flow graph. MIR is the target of monomorphization and the input to Rask-specific optimizations (generation check coalescing, ensure lowering). MIR is then lowered to a backend IR — Cranelift for development builds, with LLVM as an optional release backend added later. Compiled programs link against a runtime library (`rask-rt`) written in Rust.
+Rask uses mid-level IR (MIR) as non-SSA control-flow graph. Monomorphization produces MIR. Rask-specific optimizations run on MIR (generation check coalescing, ensure lowering). MIR lowers to backend IR—Cranelift for dev builds, LLVM optional later for release. Programs link against runtime library (`rask-rt`) written in Rust.
 
 ## Rationale
 
-### Why a MIR?
+### Why MIR?
 
-The AST is tree-shaped with high-level concepts (ensure, try, pattern matching, expression-scoped borrows). Backend IRs (Cranelift, LLVM) are flat CFGs with basic blocks. Lowering directly from AST to backend IR conflates two concerns:
+AST is tree-shaped with high-level constructs (ensure, try, pattern matching, expression-scoped borrows). Backend IRs (Cranelift, LLVM) are flat CFGs with basic blocks. Direct AST-to-backend lowering conflates two concerns:
 
-1. **Rask-specific lowering** — desugar ensure, try, pattern matching, resource tracking into control flow
-2. **Backend-specific lowering** — emit the right instructions for Cranelift vs LLVM
+1. **Rask-specific lowering** — desugar ensure, try, patterns, resource tracking into control flow
+2. **Backend-specific lowering** — emit instructions for Cranelift vs LLVM
 
-A MIR separates these. Rask → MIR handles (1), MIR → backend handles (2). This makes adding a second backend straightforward and gives us a natural place for Rask-specific optimization passes.
+MIR separates these. Rask → MIR handles (1), MIR → backend handles (2). Adding a second backend is straightforward. Rask-specific optimization passes have a natural home.
 
 ### Why non-SSA?
 
-Cranelift's `FunctionBuilder` API accepts non-SSA input — you `declare_var`, `def_var`, `use_var` and it constructs SSA internally. LLVM has a `mem2reg` pass that promotes stack allocations to SSA registers. So a non-SSA MIR is the simplest representation that both backends accept, avoiding the complexity of SSA construction in the Rask compiler itself.
+Cranelift's `FunctionBuilder` accepts non-SSA input—`declare_var`, `def_var`, `use_var` construct SSA internally. LLVM has `mem2reg` promoting stack allocations to SSA registers. Non-SSA MIR is simplest representation both backends accept. Avoids SSA construction complexity in Rask compiler.
 
 ### Why Cranelift first?
 
@@ -32,11 +34,11 @@ Cranelift's `FunctionBuilder` API accepts non-SSA input — you `declare_var`, `
 | Debug info (DWARF) | Incomplete (improving) | Full support |
 | Target platforms | x86_64, aarch64, s390x, riscv64 | Nearly everything |
 
-Cranelift is pure Rust with no external dependencies. Its `FunctionBuilder` handles SSA construction. Compile speed is significantly faster. The output quality gap (~10-15%) is acceptable during language development — the priority is fast iteration on language semantics, not peak runtime performance.
+Cranelift is pure Rust, no external dependencies. `FunctionBuilder` handles SSA construction. Compile speed significantly faster. Output quality gap (~10-15%) acceptable during language development—priority is fast iteration on semantics, not peak runtime performance.
 
-LLVM is added later as `rask build --release` for production builds. The MIR is backend-independent, so this is additive work that doesn't change the core pipeline.
+LLVM added later as `rask build --release` for production. MIR is backend-independent. Additive work that doesn't change core pipeline.
 
-**Industry precedent:** Rust is adding Cranelift as its dev-mode backend. Zig uses LLVM for release + a custom backend for dev. Odin is building a custom dev backend (Tilde). The pattern is universal: fast backend for development, optimizing backend for release.
+**Industry precedent:** Rust adding Cranelift for dev builds. Zig uses LLVM for release + custom backend for dev. Odin building custom dev backend (Tilde). Universal pattern: fast backend for dev, optimizing backend for release.
 
 ## Specification
 
@@ -70,14 +72,14 @@ Executable
 
 ### Monomorphization
 
-Monomorphization produces concrete function instances from generic definitions. It runs after type checking and ownership checking, producing fully-typed AST fragments where all generic parameters are replaced with concrete types.
+Monomorphization produces concrete function instances from generic definitions. Runs after type checking and ownership checking, producing fully-typed AST where all generic parameters are replaced with concrete types.
 
 **Process:**
 
-1. **Collect call sites:** Walk all reachable code from `main()`. For each generic function call, record `(function_id, [concrete_type_args])`.
-2. **Instantiate:** For each unique `(function_id, [type_args])` pair, produce a copy of the function's AST with all type parameters replaced by concrete types.
-3. **Compute layouts:** For each concrete struct and enum type, compute field offsets, sizes, and alignments.
-4. **Transitively collect:** If an instantiated function calls other generic functions, add those to the work queue. Continue until no new instantiations are discovered.
+1. **Collect call sites:** Walk reachable code from `main()`. For each generic call, record `(function_id, [concrete_type_args])`.
+2. **Instantiate:** For each unique `(function_id, [type_args])`, produce a copy of the function's AST with all type parameters replaced.
+3. **Compute layouts:** For each concrete struct and enum type, compute field offsets, sizes, alignments.
+4. **Transitively collect:** If an instantiated function calls other generics, add to work queue. Continue until no new instantiations discovered.
 
 **Output:**
 
@@ -100,11 +102,11 @@ MonoFunction {
 }
 ```
 
-**Caching integration:** Monomorphized AST is what the semantic hash cache stores (see [semantic-hash-caching.md](semantic-hash-caching.md)). The cache key is `(function_id, [type_args], body_semantic_hash, [type_definition_hashes])`. On a cache hit, monomorphization is skipped entirely.
+**Caching integration:** Semantic hash cache stores monomorphized AST (see [semantic-hash-caching.md](semantic-hash-caching.md)). Cache key is `(function_id, [type_args], body_semantic_hash, [type_definition_hashes])`. Cache hit skips monomorphization entirely.
 
 **`any Trait` (runtime polymorphism):**
 
-`any Trait` values use vtable dispatch instead of monomorphization. For each concrete type `T` that satisfies a trait, a vtable is generated:
+`any Trait` values use vtable dispatch, not monomorphization. For each concrete type `T` that satisfies a trait, generate a vtable:
 
 ```
 VtableLayout {
@@ -159,7 +161,7 @@ FieldLayout {
 }
 ```
 
-**Field ordering:** Fields are sorted by alignment (largest first) to minimize padding. This matches Rust's default `repr(Rust)` strategy. `@repr(C)` overrides to declaration order for C interop.
+**Field ordering:** Fields sorted by alignment (largest first) to minimize padding. Matches Rust's default `repr(Rust)` strategy. `@layout(C)` overrides to declaration order for C interop.
 
 #### Enum Layout
 
@@ -181,7 +183,7 @@ VariantLayout {
 }
 ```
 
-**Niche optimization:** `Option<Ptr>` uses null as the `None` discriminant — no tag needed, same size as a bare pointer. `Option<Handle>` uses a sentinel generation value (`0`). The compiler applies niche optimization when a type has an invalid bit pattern that can represent `None`.
+**Niche optimization:** `Option<Ptr>` uses null as `None` discriminant—no tag needed, same size as bare pointer. `Option<Handle>` uses sentinel generation value (`0`). Compiler applies niche optimization when type has invalid bit pattern representing `None`.
 
 #### Functions
 
@@ -280,7 +282,7 @@ MirTerminator:
 
 ### MIR Optimization Passes
 
-Passes run on MIR before backend lowering. All are semantics-preserving.
+Passes run on MIR before backend lowering. All semantics-preserving.
 
 | Pass | What it does | Priority |
 |------|-------------|----------|
@@ -459,7 +461,7 @@ block_loop_exit:
 
 #### Closures
 
-Closures are lowered to a struct (captured environment) + function pointer:
+Closures lower to struct (captured environment) + function pointer:
 
 ```
 ClosureLayout {
@@ -468,11 +470,11 @@ ClosureLayout {
 }
 ```
 
-The closure function takes `env: Ptr` as its first parameter. Captures are loaded from the env struct. Storable closures copy/move captured values into the env struct at creation. Expression-scoped closures take a pointer to the enclosing stack frame.
+Closure function takes `env: Ptr` as first parameter. Captures loaded from env struct. Storable closures copy/move captured values into env struct at creation. Expression-scoped closures take pointer to enclosing stack frame.
 
 ### Runtime Library (`rask-rt`)
 
-The runtime is written in Rust and compiled to a static library. Compiled Rask programs link against it. The runtime surface area maps to the interpreter's Value enum — every runtime concept the interpreter handles, the runtime library provides.
+Runtime is Rust, compiled to static library. Compiled Rask programs link against it. Runtime surface area maps to interpreter's Value enum—every runtime concept the interpreter handles, runtime library provides.
 
 #### Core (always linked)
 
@@ -499,15 +501,15 @@ The runtime is written in Rust and compiled to a static library. Compiled Rask p
 
 #### Why Rust?
 
-The runtime is written in Rust because:
-1. Rust's stdlib provides threads, channels, IO, allocation — no need to reimplement.
+Runtime is Rust:
+1. Rust stdlib provides threads, channels, IO, allocation—no need to reimplement.
 2. Cranelift emits object files. Linking Rust `.a` with Cranelift `.o` is straightforward.
-3. No bootstrapping problem — the runtime doesn't need Rask to compile.
-4. The runtime is small (~2-3k lines). When Rask is self-hosting, it can be rewritten in Rask.
+3. No bootstrapping problem—runtime doesn't need Rask to compile.
+4. Runtime is small (~2-3k lines). When Rask self-hosts, rewrite in Rask.
 
 ### Backend Lowering: MIR → Cranelift
 
-The Cranelift backend translates MIR to Cranelift IR using the `cranelift-frontend` crate.
+Cranelift backend translates MIR to Cranelift IR using `cranelift-frontend` crate.
 
 **Mapping:**
 
@@ -525,13 +527,13 @@ The Cranelift backend translates MIR to Cranelift IR using the `cranelift-fronte
 | `FieldAccess` | `ins().load(ty, base, offset)` |
 | `Store` | `ins().store(flags, value, addr, offset)` |
 
-**Struct passing:** Small structs (≤16 bytes) passed in registers. Larger structs passed by pointer (caller allocates stack space, callee receives pointer). This follows standard calling convention behavior.
+**Struct passing:** Small structs (≤16 bytes) passed in registers. Larger structs by pointer (caller allocates stack space, callee receives pointer). Standard calling convention behavior.
 
-**Object emission:** `cranelift-object` emits ELF (Linux) or Mach-O (macOS) object files. These are linked with `rask-rt.a` using the system linker (`cc`).
+**Object emission:** `cranelift-object` emits ELF (Linux) or Mach-O (macOS) object files. Linked with `rask-rt.a` using system linker (`cc`).
 
 ### C ABI
 
-Neither Cranelift nor LLVM handles C calling conventions automatically. The Rask compiler must implement platform ABI rules for C interop:
+Neither Cranelift nor LLVM handles C calling conventions automatically. Rask compiler must implement platform ABI rules for C interop:
 
 | Platform | ABI | Register passing |
 |----------|-----|-----------------|
@@ -539,20 +541,20 @@ Neither Cranelift nor LLVM handles C calling conventions automatically. The Rask
 | macOS aarch64 | AAPCS64 | First 8 integer args in x0-x7. First 8 float args in v0-v7. |
 | Windows x86_64 | Microsoft x64 | First 4 args in rcx, rdx, r8, r9. Shadow space required. |
 
-For Rask-to-Rask calls, the compiler can use its own (simpler) calling convention. C ABI is only needed at `unsafe` FFI boundaries.
+For Rask-to-Rask calls, compiler can use its own (simpler) calling convention. C ABI only needed at `unsafe` FFI boundaries.
 
 ### Linking
 
 ```
-rask build main.rask -o myapp
+rask build main.rk -o myapp
 
-1. Compile: main.rask → main.o (via Cranelift)
+1. Compile: main.rk → main.o (via Cranelift)
 2. Link: cc -o myapp main.o -lrask_rt -lpthread -ldl
 ```
 
-The system linker (`cc`) handles linking. The runtime library is pre-compiled as `librask_rt.a`. `-lpthread` and `-ldl` are needed for threading and dynamic loading on Linux.
+System linker (`cc`) handles linking. Runtime library precompiled as `librask_rt.a`. `-lpthread` and `-ldl` needed for threading and dynamic loading on Linux.
 
-**Multi-file projects:** Each `.rask` file compiles to a `.o` file. All are linked together with the runtime.
+**Multi-file projects:** Each `.rk` file compiles to `.o` file. All linked together with runtime.
 
 ## Examples
 
@@ -653,18 +655,18 @@ func read_config(path: RaskString) -> Result<RaskString, IoError>:
 
 ## Integration Notes
 
-- **Semantic Hash Caching:** Monomorphized AST is the cached artifact. MIR and machine code are NOT cached (they depend on target and optimization level). See [semantic-hash-caching.md](semantic-hash-caching.md).
-- **Generation Check Coalescing:** Implemented as a MIR optimization pass on `PoolCheckedAccess` statements. See [generation-coalescing.md](generation-coalescing.md).
-- **Type System:** MIR types are derived from the `Type` enum in `rask-types`. All generics are resolved to concrete types by monomorphization before MIR lowering.
-- **Ownership:** The ownership checker runs before codegen. By the time we reach MIR, all moves and borrows are validated. MIR does not re-check ownership — it trusts the checker's results.
-- **Concurrency:** Thread spawning in MIR is a `Call` to the runtime library. The closure environment is a struct (captured variables). Channels are opaque handles managed by the runtime.
-- **Comptime:** Comptime expressions are evaluated before codegen (by the comptime interpreter). MIR only sees the resulting constants.
-- **Build System:** `rask build` compiles all `.rask` files to `.o` files, then links with `rask-rt`. Build scripts (`rask.build`) run before compilation and may generate additional `.rask` source files.
-- **Debug Info:** Cranelift's DWARF support is incomplete. `SourceLocation` statements in MIR provide line/column info. Full debug info improves when Cranelift matures or when the LLVM backend is added.
+- **Semantic Hash Caching:** Monomorphized AST cached. MIR and machine code NOT cached (depend on target and optimization level). See [semantic-hash-caching.md](semantic-hash-caching.md).
+- **Generation Check Coalescing:** Implemented as MIR optimization pass on `PoolCheckedAccess` statements. See [generation-coalescing.md](generation-coalescing.md).
+- **Type System:** MIR types derived from `Type` enum in `rask-types`. All generics resolved to concrete types by monomorphization before MIR lowering.
+- **Ownership:** Ownership checker runs before codegen. By MIR stage, all moves and borrows validated. MIR doesn't recheck ownership—trusts checker results.
+- **Concurrency:** Thread spawning in MIR is `Call` to runtime library. Closure environment is struct (captured variables). Channels are opaque handles managed by runtime.
+- **Comptime:** Comptime expressions evaluated before codegen (by comptime interpreter). MIR sees only resulting constants.
+- **Build System:** `rask build` compiles all `.rk` files to `.o` files, links with `rask-rt`. Build scripts (`rask.build`) run before compilation, may generate additional `.rk` source files.
+- **Debug Info:** Cranelift's DWARF support incomplete. `SourceLocation` statements in MIR provide line/column info. Full debug info improves when Cranelift matures or LLVM backend added.
 
 ## Implementation Roadmap
 
-Implementation is phased. Each step produces a working compiler that handles a larger subset of Rask.
+Implementation is phased. Each step produces working compiler that handles larger subset of Rask.
 
 | Step | What compiles | New crates |
 |------|--------------|------------|
@@ -680,15 +682,15 @@ Implementation is phased. Each step produces a working compiler that handles a l
 ## Remaining Issues
 
 ### High Priority
-1. **C ABI implementation** — Platform-specific calling convention handling for unsafe FFI. Required for C interop. Significant engineering effort per platform.
-2. **Debug info strategy** — Cranelift's DWARF support is incomplete. Need a plan for debugging compiled Rask programs. Options: rely on print debugging initially, invest in Cranelift DWARF upstream, or prioritize the LLVM backend.
+1. **C ABI implementation** — Platform-specific calling convention handling for unsafe FFI. Required for C interop. Significant engineering per platform.
+2. **Debug info strategy** — Cranelift's DWARF support incomplete. Need plan for debugging compiled programs. Options: print debugging initially, invest in Cranelift DWARF upstream, or prioritize LLVM backend.
 
 ### Medium Priority
-3. **Green task runtime** — `spawn { }` requires an M:N scheduler. This is a significant runtime component (work stealing, cooperative scheduling). Can defer to after basic threading works.
-4. **Shared instantiation dedup** — If packages A and B both instantiate `sort<i32>`, the linker should deduplicate. Affects binary size.
+3. **Green task runtime** — `spawn { }` requires M:N scheduler. Significant runtime component (work stealing, cooperative scheduling). Can defer until after basic threading works.
+4. **Shared instantiation dedup** — If packages A and B both instantiate `sort<i32>`, linker should deduplicate. Affects binary size.
 5. **Stack overflow detection** — Need guard pages or stack probes for deep recursion.
 
 ### Low Priority
 6. **Profile-guided optimization** — Feed runtime profiles back into MIR optimization passes.
 7. **Link-time optimization (LTO)** — Cross-module inlining. Possible with LLVM backend.
-8. **Cross-compilation** — Emit code for a different target than the host. Cranelift supports this natively.
+8. **Cross-compilation** — Emit code for different target than host. Cranelift supports natively.

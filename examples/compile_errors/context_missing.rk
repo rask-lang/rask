@@ -18,7 +18,7 @@ func damage(h: Handle<Player>, amount: i32) {
 // Expected error message:
 //
 // error: function 'damage' requires Pool<Player> context
-//   --> context_missing.rask:13
+//   --> context_missing.rk:13
 //    |
 // 13 | func damage(h: Handle<Player>, amount: i32) {
 //    |      ^^^^^^ add `with Pool<Player>` to signature

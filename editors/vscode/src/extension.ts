@@ -25,7 +25,7 @@ export function activate(context: ExtensionContext) {
     const clientOptions: LanguageClientOptions = {
         documentSelector: [{ scheme: 'file', language: 'rask' }],
         synchronize: {
-            fileEvents: workspace.createFileSystemWatcher('**/*.rask'),
+            fileEvents: workspace.createFileSystemWatcher('**/*.rk'),
         },
     };
 

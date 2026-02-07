@@ -8,22 +8,22 @@ These examples serve two purposes:
 
 ## Examples
 
-### [borrow_stored.rask](borrow_stored.rask)
+### [borrow_stored.rk](borrow_stored.rk)
 **Error:** Cannot store a reference in a struct
 
 Demonstrates that references are block-scoped only. You cannot store a borrow in a struct, return it from a function, or let it escape its scope. This prevents use-after-free and dangling pointers by construction.
 
-### [resource_leak.rask](resource_leak.rask)
+### [resource_leak.rk](resource_leak.rk)
 **Error:** Resource type not consumed
 
 Demonstrates that `@resource` types (files, connections, etc.) must be consumed exactly once. Forgetting to close a file or dropping a connection without cleanup is a compile error.
 
-### [comptime_loop.rask](comptime_loop.rask)
+### [comptime_loop.rk](comptime_loop.rk)
 **Error:** Comptime iteration limit exceeded
 
 Demonstrates that compile-time execution has safety limits. Infinite loops or excessive computation at comptime produces a clear error rather than hanging the compiler.
 
-### [error_mismatch.rask](error_mismatch.rask)
+### [error_mismatch.rk](error_mismatch.rk)
 **Error:** Incompatible error types with `?`
 
 Demonstrates that error propagation with `?` requires compatible error types. You cannot propagate an error that doesn't fit in the function's return type without explicit conversion.

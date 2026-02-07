@@ -2,7 +2,7 @@
 
 ## Decision
 
-Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts require explicit methods (consistent with integer-overflow philosophy).
+Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts need explicit methods (consistent with overflow philosophy).
 
 ## Specification
 
@@ -25,7 +25,7 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts requir
 
 ### The `char` Type
 
-`char` is a 4-byte value representing a **Unicode scalar value**—any code point in the range 0x0000–0xD7FF or 0xE000–0x10FFFF. Surrogate code points (0xD800–0xDFFF) are explicitly excluded.
+`char` is 4-byte **Unicode scalar value**—code point in range 0x0000–0xD7FF or 0xE000–0x10FFFF. Surrogate code points (0xD800–0xDFFF) excluded.
 
 **Why `char` exists (not just `u32` + validation):**
 
@@ -77,7 +77,7 @@ Fixed-size primitives, IEEE 754 floats, explicit conversions. Lossy casts requir
 | `c.is_lowercase()` | `bool` | |
 | `c.is_uppercase()` | `bool` | |
 
-**Note:** `to_lowercase()`/`to_uppercase()` use simple (1:1) Unicode case mappings. For full case mappings (e.g., 'ß' → "SS"), use string methods.
+**Note:** `to_lowercase()`/`to_uppercase()` use simple (1:1) mappings. For full case (e.g., 'ß' → "SS"), use string methods.
 
 **ASCII Shortcuts:**
 
@@ -145,7 +145,7 @@ IEEE 754 compliant. Special values: `INFINITY`, `NEG_INFINITY`, `NAN`.
 
 ### Endian-Explicit Types
 
-For binary data parsing/building (see [Binary Structs](binary.md)), endian-explicit type aliases specify byte order:
+For binary data (see [Binary Structs](binary.md)), endian-explicit aliases specify byte order:
 
 | Type | Size | Byte Order | Runtime Type |
 |------|------|------------|--------------|
@@ -158,7 +158,7 @@ For binary data parsing/building (see [Binary Structs](binary.md)), endian-expli
 | `f32be`, `f32le` | 4 bytes | Big/Little | f32 |
 | `f64be`, `f64le` | 8 bytes | Big/Little | f64 |
 
-**Usage context:** These types are primarily used in `@binary` struct field declarations. At runtime, values are stored in native byte order—the endian suffix only affects parsing and building.
+**Usage:** Primarily in `@binary` struct fields. Runtime values stored in native byte order—endian suffix only affects parsing and building.
 
 ```rask
 @binary

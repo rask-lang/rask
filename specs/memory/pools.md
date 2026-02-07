@@ -4,15 +4,15 @@
 How do we provide stable references for graphs, entity systems, and other dynamic structures without lifetime annotations or garbage collection?
 
 ## Decision
-`Pool<T>` is a handle-based sparse storage container. Handles are opaque identifiers validated at access time via generation counters. Pools are a core memory mechanism (not just a data structure) enabling safe indirection without borrow checker complexity.
+`Pool<T>` is handle-based sparse storage. Handles are opaque IDs validated at access via generation counters. Pools are a core memory mechanism, not just a data structure.
 
 ## Rationale
-Many patterns require stable references that survive mutations: entity-component systems, graphs with cycles, observers with subscriptions. Rust's borrow checker makes these difficult without `Rc`/`RefCell` ceremony.
+Entity systems, graphs with cycles, observers—they need stable references that survive mutations. Rust's borrow checker makes this painful without `Rc`/`RefCell` ceremony.
 
-Pools solve this by:
-- **Generation counters:** Detect stale handles at O(1) cost
-- **Expression-scoped access:** Allow interleaved mutation
-- **No lifetime parameters:** Handles are values, not references
+Pools fix this:
+- **Generation counters:** Detect stale handles at O(1)
+- **Expression-scoped access:** Interleaved mutation works
+- **No lifetime parameters:** Handles are values
 
 ## Specification
 
@@ -51,7 +51,7 @@ Handle<T> = {
 
 **Handle size** = `sizeof(PoolId) + sizeof(Index) + sizeof(Gen)`
 
-Default: `4 + 4 + 4 = 12 bytes` (4 bytes under copy threshold, leaving headroom for future extension).
+Default: `4 + 4 + 4 = 12 bytes` (fits under 16-byte copy threshold with room to spare).
 
 **Common configurations:**
 
@@ -116,7 +116,7 @@ This works because:
 3. **No overlapping borrows:** First borrow ends at semicolon, before second begins
 4. **Aliasing rule applies to borrows:** The rule is "aliasing XOR mutation of borrows", not "aliasing XOR mutation of handles"
 
-**Mental model:** Handles are like database primary keys or array indices. You can have many copies of the key `42` — using any copy accesses the same row. The keys themselves aren't borrowed; only the access is.
+**Mental model:** Handles are database primary keys. You can have 10 copies of the key `42`—they all access the same row. The keys aren't borrowed; only the access is.
 
 **Within a single expression:**
 

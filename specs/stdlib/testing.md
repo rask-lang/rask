@@ -1,15 +1,6 @@
 # Testing Framework
 
-## Design Rationale
-
-| Inspiration | Feature | Why |
-|-------------|---------|-----|
-| Zig/D | `test "name" {}` blocks | Lowest ceremony, tests live near code |
-| Go | `check` continues on failure | Reveal all failures, not just first |
-| D | Inline tests as documentation | Tests verify examples stay accurate |
-| Odin | Seeded random, cleanup LIFO | Reproducible failures |
-| V | Assertions removed in prod | Zero runtime cost |
-| Zig | Comptime tests | Verify compile-time functions |
+Built-in test framework with `test` blocks, `assert`/`check` assertions, `ensure` cleanup, parallel execution, seeded random, and comptime tests.
 
 ## Test Declaration
 
@@ -31,14 +22,14 @@ test "addition works" {
 ## Test Location
 
 Tests MAY appear:
-1. **Inline** — In any `.rask` file, near the code they test
-2. **Separate files** — In `*_test.rask` files in the same directory
+1. **Inline** — In any `.rk` file, near the code they test
+2. **Separate files** — In `*_test.rk` files in the same directory
 
 | Location | Private access | Use case |
 |----------|---------------|----------|
 | Inline | Yes | Unit tests near implementation |
-| `*_test.rask` (same package) | Yes | Larger test suites |
-| `*_test.rask` (external) | No (`public` only) | Integration tests |
+| `*_test.rk` (same package) | Yes | Larger test suites |
+| `*_test.rk` (external) | No (`public` only) | Integration tests |
 
 ## Assertions
 

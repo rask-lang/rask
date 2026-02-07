@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression AST nodes.
 
+use crate::token::{FloatSuffix, IntSuffix};
 use crate::{NodeId, Span};
 
 /// An expression in the AST.
@@ -15,9 +16,9 @@ pub struct Expr {
 #[derive(Debug, Clone)]
 pub enum ExprKind {
     /// Integer literal
-    Int(i64),
+    Int(i64, Option<IntSuffix>),
     /// Float literal
-    Float(f64),
+    Float(f64, Option<FloatSuffix>),
     /// String literal
     String(String),
     /// Character literal

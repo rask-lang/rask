@@ -21,7 +21,7 @@ func cleanup(h: Handle<Entity>) with Pool<Entity> {
 // Expected error message:
 //
 // error[E0425]: cannot find value `pool` in this scope
-//   --> context_unnamed_structural.rask:15
+//   --> context_unnamed_structural.rk:15
 //    |
 // 15 |         pool.remove(h)
 //    |         ^^^^ not found in this scope

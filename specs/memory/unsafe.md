@@ -1,15 +1,15 @@
 # Solution: Unsafe Blocks and Raw Pointers
 
 ## The Question
-How does Rask enable low-level code (OS interaction, FFI, performance-critical sections) while maintaining safety guarantees elsewhere?
+How does Rask enable low-level code (OS interaction, FFI, performance-critical sections) while maintaining safety elsewhere?
 
 ## Decision
-Explicit `unsafe` blocks quarantine operations that bypass safety checks. Raw pointers exist only in unsafe contexts. Safe wrappers encapsulate unsafe operations behind safe interfaces. **Debug mode catches common pointer errors at runtime** (Zig-inspired), while release mode allows full optimization.
+Explicit `unsafe` blocks quarantine operations that bypass safety checks. Raw pointers exist only in unsafe. Safe wrappers encapsulate unsafe behind safe interfaces. **Debug mode catches common pointer errors at runtime** (Zig-inspired), release mode runs fast.
 
 ## Rationale
-Safety is Rask's core property—but some code inherently cannot be verified by the compiler (FFI, hardware access, hand-optimized algorithms). The `unsafe` keyword marks these regions explicitly, making the safety boundary visible. All code outside unsafe blocks retains full safety guarantees. This follows Principle 4 (Transparent Costs): the risk is visible, not hidden.
+Safety is core—but FFI, hardware access, hand-optimized algorithms can't be verified by the compiler. `unsafe` marks these regions explicitly. The boundary is visible. Code outside unsafe keeps full safety guarantees.
 
-**Pragmatic UB handling:** Rather than making all pointer errors "just UB" like Rust, Rask provides debug-mode runtime checks. This dramatically reduces debugging time without sacrificing release performance. The philosophy: **crash loudly in development, run fast in production**.
+**Pragmatic UB:** Instead of "all pointer errors are UB" like Rust, I added debug-mode runtime checks. Cuts debugging time massively without hurting release performance. Philosophy: **crash loudly in development, run fast in production**.
 
 ## Specification
 

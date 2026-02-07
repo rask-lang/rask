@@ -1,29 +1,6 @@
 # Math — Mathematical Functions and Constants
 
-## The Question
-
-Where do mathematical functions like `sin`, `cos`, `log` live? How do we handle constants like `PI`? Should math be methods on numbers or a module?
-
-## Decision
-
-Dedicated `math` module for functions that don't naturally attach to a single value (trig, logarithms, multi-argument functions) plus constants. Common single-value operations (`abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max`) remain as methods on `f64`/`i64`.
-
-## Rationale
-
-**Why a module instead of all-methods?**
-- `sin(x)` reads better as `math.sin(x)` than `x.sin()` — it's a function you apply, not a property of the value
-- Multi-argument functions like `atan2(y, x)` and `hypot(x, y)` don't belong on either argument
-- Constants need a home: `math.PI` is clear, `f64.PI` is awkward
-
-**Why keep some operations as methods?**
-- `x.abs()`, `x.sqrt()`, `x.floor()` are natural — they transform the value
-- `x.min(y)`, `x.max(y)` read well as methods
-- These are already implemented as f64/i64 methods in Rask
-
-**Why not `std::f64::consts::PI` like Rust?**
-- Three levels of nesting for a math constant is absurd
-- `math.PI` is what every other language does (Go, Python, Java, C)
-- One import, one namespace, done
+Dedicated `math` module for functions that don't naturally attach to single value (trig, logarithms, multi-argument functions) plus constants. Common single-value operations (`abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max`) remain as methods on `f64`/`i64`.
 
 ## Specification
 
@@ -186,7 +163,7 @@ func moving_average(samples: Vec<f64>, window: i64) -> Vec<f64> {
 
 ## Implementation Notes
 
-All functions map directly to platform `libm` or hardware FPU instructions. No allocation, no error returns — these are pure numeric operations following IEEE 754 semantics.
+All functions map directly to platform `libm` or hardware FPU instructions. No allocation, no error returns — pure numeric operations following IEEE 754 semantics.
 
 ## References
 

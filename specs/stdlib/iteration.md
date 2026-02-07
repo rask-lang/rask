@@ -48,7 +48,7 @@ Access follows expression-scoped collection rules:
 
 Ref mode (`for (h, item) in collection.iter()`) provides ergonomic read-only access.
 
-**Enforcement:** The compiler forbids all mutation operations within ref loop blocks:
+**Enforcement:** Compiler forbids all mutation operations within ref loop blocks:
 
 | Operation | In Ref Mode Loop | Error |
 |-----------|------------------|-------|

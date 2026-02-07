@@ -1,29 +1,6 @@
 # Path — Cross-Platform Path Manipulation
 
-## The Question
-
-How do we handle file paths across platforms? Do we need separate types for owned vs borrowed paths? How do we handle non-UTF-8 paths?
-
-## Decision
-
 Single `Path` type. It's a string with path-aware methods. No `PathBuf`/`OsStr`/`OsString` zoo. Non-UTF-8 paths get lossy conversion at the system boundary.
-
-## Rationale
-
-**Why one type instead of Rust's four?**
-- Rust's `Path`/`PathBuf`/`OsStr`/`OsString` is one of its most complained-about ergonomic issues
-- In practice, 99% of paths are UTF-8. The 1% edge case (Windows legacy filenames) doesn't justify 4 types for everyone
-- A `Path` IS a string — it just has extra methods. You can pass it to any function expecting a string
-- Lossy conversion at the boundary (OS → Rask) handles the edge case. If you need byte-exact paths, use `unsafe` + raw pointers
-
-**Why not just use `string` directly?**
-- Path-aware methods prevent bugs: `p.join("sub")` adds a separator, string concat doesn't
-- `p.extension()` knows about dots in filenames vs directory names
-- Type clarity: `func open(path: Path)` is clearer than `func open(path: string)`
-
-**Why `/` operator for join?**
-- Natural: `base / "src" / "main.rask"` reads like a path
-- Go uses `filepath.Join()`, Python uses `/` via `pathlib.Path`. Rask follows Python here — it's just better
 
 ## Specification
 
@@ -106,7 +83,7 @@ func output_path(input: Path, ext: string) -> Path {
 }
 
 func main() {
-    const src = Path.new("src/main.rask")
+    const src = Path.new("src/main.rk")
     const out = output_path(src, "o")
     println(out.to_string())  // "src/main.o"
 }

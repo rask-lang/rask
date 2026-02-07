@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Simple grep - Pattern search using module syntax
-// Usage: rask run simple_grep.rask <pattern> <file>
+// Usage: rask run simple_grep.rk <pattern> <file>
 // Demonstrates: cli.args, fs.read_lines, string methods, match, Vec, loops
 
 import fs
@@ -40,7 +40,7 @@ func main() {
     const argc = args.len()
 
     if argc < 3 {
-        println("Usage: rask run simple_grep.rask <pattern> <file>")
+        println("Usage: rask run simple_grep.rk <pattern> <file>")
         std.exit(1)
     }
 

@@ -4,14 +4,14 @@
 How do temporary references work? When can code read or mutate data without taking ownership?
 
 ## Decision
-One borrowing principle: **views last as long as the source is stable.** Sources that can grow or shrink (Vec, Pool, Map) release views instantly. Sources that are fixed (strings, struct fields) allow views to persist until block end.
+One rule: **views last as long as the source is stable.** Collections (Vec, Pool, Map) release views instantly. Fixed sources (strings, struct fields) keep views until block end.
 
 ## Rationale
-This design prevents "borrow checker wrestling"—the frustrating experience of writing code that looks fine, then hitting a confusing conflict 20 lines later.
+I wanted to avoid "borrow checker wrestling"—code that looks fine then explodes 20 lines later.
 
-For collections, views are instant: you use them inline or copy values out. There's no "wrong path" to walk down—the pattern is always clear. For fixed sources like strings, views persist naturally because the source can't invalidate them.
+Collections have instant views: use inline or copy out. No wrong path to stumble down. Fixed sources like strings keep views naturally because they can't invalidate.
 
-The result: one mental model, predictable behavior, no wrestling.
+One mental model. Predictable. No wrestling.
 
 ## Mental Model: One Rule
 
@@ -26,7 +26,7 @@ That's the entire model. One question, one rule.
 
 ### Why This Prevents Wrestling
 
-Collections release views instantly, which means you'll never write code like this:
+Collections release views instantly. You'll never write this:
 
 <!-- test: skip -->
 ```rask
@@ -43,21 +43,21 @@ The error is immediate. The fix is obvious: use inline or copy out. No "but I st
 
 ### Why Collections Have Instant Views
 
-Collections can change structurally at any time:
-- `Vec` may reallocate when capacity is exceeded (all element addresses change)
-- `Pool` may compact or remove elements (handle becomes stale)
-- `Map` may rehash on insert (all bucket positions change)
+Collections can change structurally:
+- `Vec` reallocates (all addresses change)
+- `Pool` compacts or removes (handles go stale)
+- `Map` rehashes (buckets move)
 
-A persistent view would become dangling if the collection changes. Instant views eliminate this entire class of bugs—and eliminate the wrestling that comes with debugging them.
+Persistent views would dangle. Instant views kill this bug class—and the wrestling.
 
 ### Why Strings Have Persistent Views
 
-A string's structure is fixed once created:
-- Characters cannot be inserted/removed without creating a new string
-- The backing memory cannot relocate during a view
-- Slicing creates a view into existing memory
+Strings don't change structure once created:
+- Can't insert/remove chars without making a new string
+- Memory can't relocate during a view
+- Slicing views existing memory
 
-Since the source can't change, the view stays valid until the block ends. This enables ergonomic multi-statement string parsing without copying.
+Source can't change, so views stay valid. Multi-statement string parsing without copying.
 
 ### The Pattern for Collections
 

@@ -5,7 +5,7 @@
 //!
 //! ```text
 //! error[E0308]: mismatched types
-//!   --> main.rask:10:25
+//!   --> main.rk:10:25
 //!    |
 //! 10 |     const result: string = calculate()
 //!    |                   ------   ^^^^^^^^^^^ expected `string`, found `i32`

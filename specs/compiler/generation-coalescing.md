@@ -1,13 +1,15 @@
-# Solution: Generation Check Coalescing
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+# Generation Check Coalescing
 
 ## The Question
-How do we eliminate redundant generation checks when the same handle is accessed multiple times?
+How to eliminate redundant generation checks when same handle gets accessed multiple times?
 
 ## Decision
-The compiler performs local dataflow analysis to coalesce multiple generation checks on the same handle into a single check, when no intervening pool mutations could invalidate the handle.
+Compiler performs local dataflow analysis to coalesce multiple generation checks on same handle into single check, when no intervening pool mutations invalidate the handle.
 
 ## Rationale
-Expression-scoped borrowing means each `pool[h]` access performs a generation check. Sequential accesses to the same handle repeat this check unnecessarily:
+Expression-scoped borrowing means each `pool[h]` access performs generation check. Sequential accesses to same handle repeat unnecessarily:
 
 ```rask
 pool[h].health -= damage        // Check 1
@@ -16,13 +18,13 @@ if pool[h].health <= 0 {        // Check 2 (redundant)
 }
 ```
 
-This affects RO ≤ 1.10 (runtime overhead). Generation coalescing is a pure compiler optimization that eliminates redundant checks without changing semantics.
+Affects RO ≤ 1.10 (runtime overhead). Generation coalescing is pure compiler optimization—eliminates redundant checks without changing semantics.
 
 ## Specification
 
 ### Performance Guarantees
 
-Generation check coalescing is a **best-effort optimization**. The compiler applies strong heuristics (GC1-GC4) but may conservatively retain checks when analysis is uncertain (GC5).
+Generation check coalescing is **best-effort**. Compiler applies strong heuristics (GC1-GC4) but may conservatively retain checks when analysis is uncertain (GC5).
 
 | Guarantee Level | Mechanism | Checks | Use Case |
 |-----------------|-----------|--------|----------|
@@ -30,11 +32,11 @@ Generation check coalescing is a **best-effort optimization**. The compiler appl
 | **Guaranteed 1** | `with_valid(h, f)` | 1 | Write hot paths (safe) |
 | **Guaranteed zero** | `get_unchecked(h)` (unsafe) | 0 | Caller-validated handles |
 | **Expected ≤1/handle** | Coalescing | ≤1 | General code |
-| **Worst case** | No coalescing | 1/access | Compiler cannot prove safety |
+| **Worst case** | No coalescing | 1/access | Compiler can't prove safety |
 
-**Why best-effort?** Guaranteeing coalescing requires proving no aliasing between handles and no intervening mutations. This analysis may require inter-procedural reasoning (violates local analysis) and has corner cases where conservatism is the only safe choice.
+**Why best-effort?** Guaranteeing coalescing requires proving no aliasing between handles and no intervening mutations. Analysis may require inter-procedural reasoning (violates local analysis). Corner cases need conservative choice.
 
-**Escape hatches:** For hot paths where coalescing is insufficient, use `with_valid` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See [pools.md](../memory/pools.md) for details.
+**Escape hatches:** Hot paths where coalescing insufficient: use `with_valid` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See [pools.md](../memory/pools.md).
 
 ### Basic Coalescing
 
@@ -129,7 +131,7 @@ with pool {
 
 ### Known Mutations
 
-The compiler tracks which operations may invalidate handles:
+Compiler tracks which operations may invalidate handles:
 
 | Operation | Invalidates Coalescing? |
 |-----------|------------------------|
@@ -149,7 +151,7 @@ The compiler tracks which operations may invalidate handles:
 | Debug | Coalescing still applies (optimization is semantics-preserving) |
 | Release | More aggressive coalescing with inlining |
 
-Coalescing is always safe because it only removes checks that would have succeeded anyway.
+Coalescing always safe—only removes checks that would have succeeded anyway.
 
 ### Interaction with Frozen Pools
 
@@ -161,11 +163,11 @@ frozen[h].x = 1    // No check (frozen)
 frozen[h].y = 2    // No check (frozen)
 ```
 
-Coalescing is irrelevant for frozen pools—there are no checks to coalesce.
+Coalescing irrelevant for frozen pools—no checks to coalesce.
 
 ### Compiler IR
 
-The compiler represents coalesced access as a single checked dereference:
+Compiler represents coalesced access as single checked dereference:
 
 ```rask
 // IR (simplified)
@@ -204,17 +206,17 @@ store %slot2.y, 2
 
 ### Debugging
 
-Compiler flag to disable coalescing for debugging:
+Compiler flag to disable coalescing:
 
 ```
 rask build --no-generation-coalescing
 ```
 
-This ensures every access performs its check, useful for debugging stale handle issues.
+Every access performs its check. Useful for debugging stale handle issues.
 
 ### IDE Support
 
-IDE SHOULD show coalesced regions:
+IDE should show coalesced regions:
 
 ```rask
 pool[h].x = 1    // IDE: [generation check]
@@ -268,7 +270,7 @@ pool[h1].y = 2        // Fresh check for h1 (h1 might be h2!)
 
 ## Integration Notes
 
-- **Memory Model:** No semantic change. Optimization is invisible to user.
+- **Memory Model:** No semantic change. Optimization invisible to user.
 - **Type System:** No impact.
 - **Generics:** Works for all `Pool<T>`.
 - **Concurrency:** Each task optimizes independently.

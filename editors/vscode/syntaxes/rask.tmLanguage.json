@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
   "name": "Rask",
-  "scopeName": "source.rask",
+  "scopeName": "source.rk",
   "patterns": [
     { "include": "#comments" },
     { "include": "#strings" },
@@ -17,15 +17,15 @@
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.documentation.rask",
+          "name": "comment.line.documentation.rk",
           "match": "///.*$"
         },
         {
-          "name": "comment.line.double-slash.rask",
+          "name": "comment.line.double-slash.rk",
           "match": "//.*$"
         },
         {
-          "name": "comment.block.rask",
+          "name": "comment.block.rk",
           "begin": "/\\*",
           "end": "\\*/",
           "patterns": [
@@ -37,7 +37,7 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.triple.rask",
+          "name": "string.quoted.triple.rk",
           "begin": "\"\"\"",
           "end": "\"\"\"",
           "patterns": [
@@ -45,7 +45,7 @@
           ]
         },
         {
-          "name": "string.quoted.double.rask",
+          "name": "string.quoted.double.rk",
           "begin": "\"",
           "end": "\"",
           "patterns": [
@@ -53,7 +53,7 @@
           ]
         },
         {
-          "name": "string.quoted.single.rask",
+          "name": "string.quoted.single.rk",
           "begin": "'",
           "end": "'",
           "patterns": [
@@ -65,7 +65,7 @@
     "string-escapes": {
       "patterns": [
         {
-          "name": "constant.character.escape.rask",
+          "name": "constant.character.escape.rk",
           "match": "\\\\(n|r|t|\\\\|0|'|\"|\\{|u\\{[0-9a-fA-F]{1,6}\\})"
         }
       ]
@@ -73,23 +73,23 @@
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.hex.rask",
+          "name": "constant.numeric.hex.rk",
           "match": "\\b0x[0-9a-fA-F_]+(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?\\b"
         },
         {
-          "name": "constant.numeric.binary.rask",
+          "name": "constant.numeric.binary.rk",
           "match": "\\b0b[01_]+(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?\\b"
         },
         {
-          "name": "constant.numeric.octal.rask",
+          "name": "constant.numeric.octal.rk",
           "match": "\\b0o[0-7_]+(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?\\b"
         },
         {
-          "name": "constant.numeric.float.rask",
+          "name": "constant.numeric.float.rk",
           "match": "\\b[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9]+)?(f32|f64)?\\b"
         },
         {
-          "name": "constant.numeric.integer.rask",
+          "name": "constant.numeric.integer.rk",
           "match": "\\b[0-9][0-9_]*(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?\\b"
         }
       ]
@@ -97,17 +97,17 @@
     "attributes": {
       "patterns": [
         {
-          "name": "meta.attribute.rask",
+          "name": "meta.attribute.rk",
           "match": "@[a-zA-Z_][a-zA-Z0-9_]*",
           "captures": {
-            "0": { "name": "entity.name.function.decorator.rask" }
+            "0": { "name": "entity.name.function.decorator.rk" }
           }
         },
         {
-          "name": "meta.attribute.rask",
+          "name": "meta.attribute.rk",
           "begin": "@([a-zA-Z_][a-zA-Z0-9_]*)\\(",
           "beginCaptures": {
-            "1": { "name": "entity.name.function.decorator.rask" }
+            "1": { "name": "entity.name.function.decorator.rk" }
           },
           "end": "\\)",
           "patterns": [
@@ -120,27 +120,27 @@
     "keywords": {
       "patterns": [
         {
-          "name": "keyword.control.rask",
+          "name": "keyword.control.rk",
           "match": "\\b(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try)\\b"
         },
         {
-          "name": "keyword.declaration.rask",
+          "name": "keyword.declaration.rk",
           "match": "\\b(func|let|const|struct|enum|trait|extend|import|type|test)\\b"
         },
         {
-          "name": "keyword.modifier.rask",
-          "match": "\\b(public|take|own|unsafe|comptime|native|export|using|lazy)\\b"
+          "name": "keyword.modifier.rk",
+          "match": "\\b(public|take|own|read|unsafe|comptime|native|export|using|lazy)\\b"
         },
         {
-          "name": "keyword.other.rask",
+          "name": "keyword.other.rk",
           "match": "\\b(spawn|spawn_thread|spawn_raw|select|with|ensure|where|as|or|asm|step|benchmark)\\b"
         },
         {
-          "name": "constant.language.rask",
+          "name": "constant.language.rk",
           "match": "\\b(true|false|None|null)\\b"
         },
         {
-          "name": "variable.language.self.rask",
+          "name": "variable.language.self.rk",
           "match": "\\bself\\b"
         }
       ]
@@ -148,11 +148,11 @@
     "types": {
       "patterns": [
         {
-          "name": "storage.type.primitive.rask",
+          "name": "storage.type.primitive.rk",
           "match": "\\b(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize|f32|f64|bool|char|string)\\b"
         },
         {
-          "name": "entity.name.type.rask",
+          "name": "entity.name.type.rk",
           "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
         }
       ]
@@ -160,43 +160,43 @@
     "operators": {
       "patterns": [
         {
-          "name": "keyword.operator.comparison.rask",
+          "name": "keyword.operator.comparison.rk",
           "match": "(==|!=|<=|>=|<|>)"
         },
         {
-          "name": "keyword.operator.assignment.compound.rask",
+          "name": "keyword.operator.assignment.compound.rk",
           "match": "(\\+=|-=|\\*=|/=|%=|&=|\\|=|\\^=|<<=|>>=)"
         },
         {
-          "name": "keyword.operator.assignment.rask",
+          "name": "keyword.operator.assignment.rk",
           "match": "="
         },
         {
-          "name": "keyword.operator.arithmetic.rask",
+          "name": "keyword.operator.arithmetic.rk",
           "match": "(\\+|-|\\*|/|%)"
         },
         {
-          "name": "keyword.operator.logical.rask",
+          "name": "keyword.operator.logical.rk",
           "match": "(&&|\\|\\||!)"
         },
         {
-          "name": "keyword.operator.bitwise.rask",
+          "name": "keyword.operator.bitwise.rk",
           "match": "(&|\\||\\^|~|<<|>>)"
         },
         {
-          "name": "keyword.operator.arrow.rask",
+          "name": "keyword.operator.arrow.rk",
           "match": "(->|=>)"
         },
         {
-          "name": "keyword.operator.range.rask",
+          "name": "keyword.operator.range.rk",
           "match": "(\\.\\.|\\.\\.=)"
         },
         {
-          "name": "keyword.operator.optional.rask",
+          "name": "keyword.operator.optional.rk",
           "match": "(\\?\\?|\\?\\.)"
         },
         {
-          "name": "keyword.operator.optional.rask",
+          "name": "keyword.operator.optional.rk",
           "match": "\\?"
         }
       ]
@@ -204,27 +204,27 @@
     "punctuation": {
       "patterns": [
         {
-          "name": "punctuation.separator.rask",
+          "name": "punctuation.separator.rk",
           "match": "[,;]"
         },
         {
-          "name": "punctuation.accessor.rask",
+          "name": "punctuation.accessor.rk",
           "match": "\\."
         },
         {
-          "name": "punctuation.definition.block.rask",
+          "name": "punctuation.definition.block.rk",
           "match": "[{}]"
         },
         {
-          "name": "punctuation.definition.parameters.rask",
+          "name": "punctuation.definition.parameters.rk",
           "match": "[()]"
         },
         {
-          "name": "punctuation.definition.brackets.rask",
+          "name": "punctuation.definition.brackets.rk",
           "match": "[\\[\\]]"
         },
         {
-          "name": "punctuation.separator.colon.rask",
+          "name": "punctuation.separator.colon.rk",
           "match": ":"
         }
       ]
@@ -232,11 +232,11 @@
     "identifiers": {
       "patterns": [
         {
-          "name": "entity.name.function.rask",
+          "name": "entity.name.function.rk",
           "match": "\\b([a-z_][a-zA-Z0-9_]*)(?=\\s*\\()"
         },
         {
-          "name": "variable.other.rask",
+          "name": "variable.other.rk",
           "match": "\\b[a-z_][a-zA-Z0-9_]*\\b"
         }
       ]
