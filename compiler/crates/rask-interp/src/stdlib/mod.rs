@@ -5,10 +5,13 @@
 
 mod cli;
 mod env;
+#[cfg(not(target_arch = "wasm32"))]
 mod fs;
+#[cfg(not(target_arch = "wasm32"))]
 mod io;
 mod json;
 mod math;
+#[cfg(not(target_arch = "wasm32"))]
 mod net;
 mod os;
 mod path;
@@ -27,8 +30,27 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match module {
+            #[cfg(not(target_arch = "wasm32"))]
             ModuleKind::Fs => self.call_fs_method(method, args),
+            #[cfg(target_arch = "wasm32")]
+            ModuleKind::Fs => Err(RuntimeError::Generic(
+                "fs module not available in browser playground".to_string()
+            )),
+
+            #[cfg(not(target_arch = "wasm32"))]
             ModuleKind::Io => self.call_io_method(method, args),
+            #[cfg(target_arch = "wasm32")]
+            ModuleKind::Io => Err(RuntimeError::Generic(
+                "io module not available in browser playground".to_string()
+            )),
+
+            #[cfg(not(target_arch = "wasm32"))]
+            ModuleKind::Net => self.call_net_method(method, args),
+            #[cfg(target_arch = "wasm32")]
+            ModuleKind::Net => Err(RuntimeError::Generic(
+                "net module not available in browser playground".to_string()
+            )),
+
             ModuleKind::Time => self.call_time_module_method(method, args),
             ModuleKind::Random => self.call_random_method(method, args),
             ModuleKind::Math => self.call_math_method(method, args),
@@ -39,7 +61,6 @@ impl Interpreter {
             ModuleKind::Env => self.call_env_method(method, args),
             ModuleKind::Cli => self.call_cli_module_method(method, args),
             ModuleKind::Std => self.call_os_method(method, args),
-            ModuleKind::Net => self.call_net_method(method, args),
         }
     }
 

@@ -15,6 +15,7 @@ members = [
     "crates/rask-cli",
     "crates/rask-lsp",
     "crates/rask-spec-test",
+    "crates/rask-wasm",
 ]
 
 [workspace.package]

@@ -6,7 +6,7 @@ email: your-email@example.com
 
 # URL settings
 baseurl: "/rask/blog"
-url: "https://dritory.github.io"
+url: "https://rask-lang.dev"
 
 # Build settings
 markdown: kramdown

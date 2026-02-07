@@ -52,7 +52,9 @@ impl Interpreter {
             Value::AtomicUsize(atomic) => return self.call_atomic_usize_method(atomic, method, args),
             Value::AtomicU64(atomic) => return self.call_atomic_u64_method(atomic, method, args),
             Value::Shared(s) => return self.call_shared_method(&Arc::clone(s), method, args),
+            #[cfg(not(target_arch = "wasm32"))]
             Value::TcpListener(l) => return self.call_tcp_listener_method(&Arc::clone(l), method, args),
+            #[cfg(not(target_arch = "wasm32"))]
             Value::TcpConnection(c) => return self.call_tcp_stream_method(&Arc::clone(c), method, args),
             Value::Enum { .. } if method == "eq" => {
                 if let Some(other) = args.first() {
