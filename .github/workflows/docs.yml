@@ -7,6 +7,10 @@ on:
     branches: [ main ]
     paths:
       - 'docs/book/**'
+      - 'docs/blog/**'
+      - 'docs/playground/**'
+      - 'compiler/crates/rask-wasm/**'
+      - 'compiler/crates/rask-interp/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
@@ -18,15 +22,58 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
+    - name: Setup Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: wasm32-unknown-unknown
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          compiler/target/
+        key: ${{ runner.os }}-cargo-wasm-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install wasm-pack
+      run: cargo install wasm-pack --locked || true
+
+    - name: Build WASM Playground
+      run: |
+        cd compiler/crates/rask-wasm
+        wasm-pack build --target web --out-dir ../../../docs/playground/pkg
+
     - name: Setup mdBook
       uses: peaceiris/actions-mdbook@v2
       with:
         mdbook-version: 'latest'
 
-    - name: Build book
+    - name: Setup Ruby
+      uses: ruby/setup-ruby@v1
+      with:
+        ruby-version: '3.2'
+        bundler-cache: true
+        working-directory: docs/blog
+
+    - name: Build mdBook
       run: |
         cd docs/book
         mdbook build
+
+    - name: Build Jekyll blog
+      run: |
+        cd docs/blog
+        bundle install
+        bundle exec jekyll build --destination ../build/blog
+
+    - name: Copy Playground to Build
+      run: |
+        mkdir -p docs/build/playground
+        cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/build/playground/
+        cp -r docs/playground/pkg docs/build/playground/
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v4

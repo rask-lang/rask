@@ -2,13 +2,10 @@
 
 Keep docs short. In chat, explain things to me—I'm not a language architect expert.
 
-**Writing style:** See [STYLE.md](STYLE.md) for voice and tone guide (documentation and code comments).
-
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
 - Avoid pipes (`|`) and redirects (`2>&1`) in Bash commands - they break permission matching
 - Create test scripts in `/tmp`, not the main project folder
-
 
 # Rask Writing Style Guide
 

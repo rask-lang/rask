@@ -1,0 +1,68 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rask Playground</title>
+    <meta name="description" content="Try Rask in your browser - interactive playground for the Rask programming language">
+    <link rel="stylesheet" href="playground.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/6.65.7/codemirror.min.css">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>🎮 Rask Playground</h1>
+            <div class="header-controls">
+                <select id="examples" aria-label="Select example">
+                    <option value="">Examples...</option>
+                    <option value="hello_world">Hello World</option>
+                    <option value="collections">Collections</option>
+                    <option value="patterns">Pattern Matching</option>
+                    <option value="math_demo">Math Demo</option>
+                </select>
+                <button id="run-btn" class="btn btn-primary" title="Run code (Ctrl+Enter)">▶ Run</button>
+                <button id="reset-btn" class="btn" title="Clear editor">↻ Reset</button>
+                <button id="share-btn" class="btn" title="Copy shareable link">🔗 Share</button>
+            </div>
+        </div>
+    </header>
+
+    <main class="playground-container">
+        <div class="editor-pane">
+            <div class="pane-header">
+                <h2>Code</h2>
+                <span class="hint">Ctrl+Enter to run</span>
+            </div>
+            <div id="editor"></div>
+        </div>
+
+        <div class="output-pane">
+            <div class="pane-header">
+                <h2>Output</h2>
+                <button id="clear-output-btn" class="btn-small">Clear</button>
+            </div>
+            <pre id="output" class="output-content">Click "Run" to execute your code...</pre>
+        </div>
+    </main>
+
+    <div id="loading-overlay" class="loading">
+        <div class="spinner"></div>
+        <p>Loading Rask interpreter...</p>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <footer>
+        <p>
+            Powered by WebAssembly |
+            <a href="https://github.com/dritory/rask" target="_blank">GitHub</a> |
+            <a href="../">Documentation</a>
+        </p>
+        <p class="version">Rask v<span id="version">...</span></p>
+    </footer>
+
+    <!-- CodeMirror 6 -->
+    <script type="module" src="playground.js"></script>
+</body>
+</html>

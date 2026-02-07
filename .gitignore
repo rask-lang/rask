@@ -11,7 +11,8 @@ research/
 docs/build/
 docs/book/book/
 
-# Playground builds (future)
+# Playground builds
 docs/playground/dist/
 docs/playground/node_modules/
 docs/playground/.cache/
+docs/playground/pkg/

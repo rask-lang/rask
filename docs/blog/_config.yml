@@ -1,0 +1,38 @@
+# Jekyll configuration for Rask blog
+title: "Rask Blog"
+description: "Thoughts on systems programming, language design, and Rask development"
+author: "Rask Contributors"
+email: your-email@example.com
+
+# URL settings
+baseurl: "/rask/blog"
+url: "https://dritory.github.io"
+
+# Build settings
+markdown: kramdown
+theme: minima
+plugins:
+  - jekyll-feed
+  - jekyll-seo-tag
+
+# Permalink structure
+permalink: /:year/:month/:day/:title/
+
+# Exclude from build
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - README.md
+
+# Show excerpts on home page
+show_excerpts: true
+
+# Header links
+header_pages:
+  - about.md
+
+# Social links (optional)
+github_username: dritory
+
+# Timezone
+timezone: Europe/Oslo
