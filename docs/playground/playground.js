@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Rask Playground - Browser-based code execution
 
-import { EditorView, basicSetup } from 'https://esm.sh/codemirror@6';
+import { EditorView } from 'https://esm.sh/@codemirror/view@6';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
+import { basicSetup } from 'https://esm.sh/codemirror@6';
 import { javascript } from 'https://esm.sh/@codemirror/lang-javascript@6';
 import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark@6';
 
