@@ -445,7 +445,8 @@ impl Parser {
 
     fn parse_attribute(&mut self) -> Result<String, ParseError> {
         self.expect(&TokenKind::At)?;
-        let mut attr = self.expect_ident()?;
+        // Use expect_ident_or_keyword so @test, @benchmark etc. work
+        let mut attr = self.expect_ident_or_keyword()?;
 
         if self.match_token(&TokenKind::LParen) {
             attr.push('(');
@@ -2508,6 +2509,12 @@ impl Parser {
         self.expect(&TokenKind::With)?;
         let name = self.expect_ident()?;
 
+        // Disambiguate: with...as (element binding) vs with...{ } (resource scoping)
+        // If ident is followed by [ or ., it's an expression → with...as mode
+        if self.check(&TokenKind::LBracket) || self.check(&TokenKind::Dot) {
+            return self.parse_with_as(start, name);
+        }
+
         let args = if self.match_token(&TokenKind::LParen) {
             let args = self.parse_args()?;
             self.expect(&TokenKind::RParen)?;
@@ -2524,6 +2531,73 @@ impl Parser {
             kind: ExprKind::WithBlock { name, args, body },
             span: Span::new(start, end),
         })
+    }
+
+    /// Parse with...as element binding: with expr as name, ... { body }
+    fn parse_with_as(&mut self, start: usize, first_ident: String) -> Result<Expr, ParseError> {
+        let mut bindings = Vec::new();
+
+        // Parse first binding (ident already consumed)
+        let first_expr = self.build_with_as_expr(start, first_ident)?;
+        self.expect(&TokenKind::As)?;
+        let first_name = self.expect_ident()?;
+        bindings.push((first_expr, first_name));
+
+        // Parse additional comma-separated bindings
+        while self.match_token(&TokenKind::Comma) {
+            // Use bp=22 to stop before consuming 'as' (which has bp=21)
+            let expr = self.parse_expr_bp(22)?;
+            self.expect(&TokenKind::As)?;
+            let name = self.expect_ident()?;
+            bindings.push((expr, name));
+        }
+
+        self.skip_newlines();
+        let body = self.parse_block_body()?;
+        let end = self.tokens[self.pos - 1].span.end;
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::WithAs { bindings, body },
+            span: Span::new(start, end),
+        })
+    }
+
+    /// Build an expression from an already-consumed ident, parsing postfix [index] and .field
+    /// until we reach the `as` keyword.
+    fn build_with_as_expr(&mut self, start: usize, ident: String) -> Result<Expr, ParseError> {
+        let ident_end = self.current().span.start;
+        let mut expr = Expr {
+            id: self.next_id(),
+            kind: ExprKind::Ident(ident),
+            span: Span::new(start, ident_end),
+        };
+
+        loop {
+            if self.check(&TokenKind::LBracket) {
+                self.advance();
+                let index = self.parse_expr_bp(0)?;
+                let end = self.current().span.end;
+                self.expect(&TokenKind::RBracket)?;
+                expr = Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Index { object: Box::new(expr), index: Box::new(index) },
+                    span: Span::new(start, end),
+                };
+            } else if self.check(&TokenKind::Dot) {
+                self.advance();
+                let field = self.expect_ident()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                expr = Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::Field { object: Box::new(expr), field },
+                    span: Span::new(start, end),
+                };
+            } else {
+                break;
+            }
+        }
+
+        Ok(expr)
     }
 
     fn parse_spawn_expr(&mut self) -> Result<Expr, ParseError> {

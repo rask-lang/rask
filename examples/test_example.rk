@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Example: test runner demonstration
+//
+// Run tests:      rask test examples/test_example.rk
+// Filter tests:   rask test examples/test_example.rk -f "add"
+// Run benchmarks: rask benchmark examples/test_example.rk
+
+func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+func divide(a: f64, b: f64) -> f64 or string {
+    if b == 0.0 {
+        return Err("division by zero")
+    }
+    return a / b
+}
+
+// === Test blocks ===
+
+test "add basic" {
+    assert add(2, 3) == 5
+    assert add(0, 0) == 0
+    assert add(-1, 1) == 0
+}
+
+test "add negative" {
+    assert add(-5, -3) == -8
+}
+
+test "divide success" {
+    assert divide(10.0, 2.0).is_ok()
+    assert divide(6.0, 3.0).is_ok()
+}
+
+test "divide by zero" {
+    assert divide(1.0, 0.0).is_err()
+}
+
+test "check gathers all failures" {
+    check 1 + 1 == 2
+    check 2 + 2 == 4
+    check true
+}
+
+test "assert with message" {
+    const x = 42
+    assert x == 42, "x should be 42"
+}
+
+// === @test function ===
+
+@test
+func add_is_commutative() {
+    assert add(3, 4) == add(4, 3)
+    assert add(0, 5) == add(5, 0)
+}
+
+// === Benchmark ===
+
+benchmark "add 1000 times" {
+    let sum = 0
+    for i in 0..1000 {
+        sum = add(sum, i)
+    }
+}
+
+// Entry point (not needed for rask test, but makes the file also runnable)
+func main() {
+    println("Run 'rask test examples/test_example.rk' to run tests")
+    println("Run 'rask benchmark examples/test_example.rk' to run benchmarks")
+}

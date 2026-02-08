@@ -10,4 +10,4 @@ mod interp;
 mod builtins;
 mod stdlib;
 
-pub use interp::{Interpreter, RuntimeError};
+pub use interp::{BenchmarkResult, Interpreter, RuntimeError, TestResult};

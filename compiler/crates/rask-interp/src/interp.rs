@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, Field, FnDecl, StructDecl};
+use rask_ast::decl::{BenchmarkDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, StructDecl, TestDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_types::GenericArg;
@@ -16,6 +16,35 @@ use rask_types::GenericArg;
 use crate::env::Environment;
 use crate::resource::ResourceTracker;
 use crate::value::{BuiltinKind, ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
+
+/// Declarations collected during registration.
+struct RegisteredProgram {
+    entry_fn: Option<FnDecl>,
+    tests: Vec<TestDecl>,
+    benchmarks: Vec<BenchmarkDecl>,
+    test_fns: Vec<FnDecl>,
+}
+
+/// Result of running a single test.
+#[derive(Debug)]
+pub struct TestResult {
+    pub name: String,
+    pub passed: bool,
+    pub duration: std::time::Duration,
+    pub errors: Vec<String>,
+}
+
+/// Result of running a single benchmark.
+#[derive(Debug)]
+pub struct BenchmarkResult {
+    pub name: String,
+    pub iterations: u64,
+    pub total: std::time::Duration,
+    pub min: std::time::Duration,
+    pub max: std::time::Duration,
+    pub mean: std::time::Duration,
+    pub median: std::time::Duration,
+}
 
 /// The tree-walk interpreter.
 pub struct Interpreter {
@@ -157,8 +186,84 @@ impl Interpreter {
     }
 
     pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeError> {
+        let registered = self.register_declarations(decls)?;
+
+        if let Some(entry) = registered.entry_fn {
+            self.call_function(&entry, vec![])
+        } else {
+            Err(RuntimeError::NoEntryPoint)
+        }
+    }
+
+    /// Run all tests in the program (test blocks + @test functions).
+    /// Does NOT require an entry point.
+    pub fn run_tests(&mut self, decls: &[Decl], filter: Option<&str>) -> Vec<TestResult> {
+        let registered = match self.register_declarations(decls) {
+            Ok(r) => r,
+            Err(e) => {
+                return vec![TestResult {
+                    name: "<registration>".to_string(),
+                    passed: false,
+                    duration: std::time::Duration::ZERO,
+                    errors: vec![format!("{}", e)],
+                }];
+            }
+        };
+
+        let mut results = Vec::new();
+
+        for test_decl in &registered.tests {
+            if let Some(pat) = filter {
+                if !test_decl.name.contains(pat) {
+                    continue;
+                }
+            }
+            results.push(self.run_single_test(&test_decl.name, &test_decl.body));
+        }
+
+        for test_fn in &registered.test_fns {
+            if let Some(pat) = filter {
+                if !test_fn.name.contains(pat) {
+                    continue;
+                }
+            }
+            results.push(self.run_test_function(&test_fn));
+        }
+
+        results
+    }
+
+    /// Run all benchmarks in the program.
+    pub fn run_benchmarks(&mut self, decls: &[Decl], filter: Option<&str>) -> Vec<BenchmarkResult> {
+        let registered = match self.register_declarations(decls) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Registration error: {}", e);
+                return vec![];
+            }
+        };
+
+        let mut results = Vec::new();
+
+        for bench in &registered.benchmarks {
+            if let Some(pat) = filter {
+                if !bench.name.contains(pat) {
+                    continue;
+                }
+            }
+            results.push(self.run_single_benchmark(&bench.name, &bench.body));
+        }
+
+        results
+    }
+
+    /// Register all declarations, builtins, and collect tests/benchmarks.
+    fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
+        let mut tests: Vec<TestDecl> = Vec::new();
+        let mut benchmarks: Vec<BenchmarkDecl> = Vec::new();
+        let mut test_fns: Vec<FnDecl> = Vec::new();
 
         for decl in decls {
             match &decl.kind {
@@ -168,6 +273,9 @@ impl Interpreter {
                             return Err(RuntimeError::MultipleEntryPoints);
                         }
                         entry_fn = Some(f.clone());
+                    }
+                    if f.attrs.iter().any(|a| a == "test") {
+                        test_fns.push(f.clone());
                     }
                     self.functions.insert(f.name.clone(), f.clone());
                 }
@@ -211,6 +319,12 @@ impl Interpreter {
                             type_methods.insert(method.name.clone(), method.clone());
                         }
                     }
+                }
+                DeclKind::Test(t) => {
+                    tests.push(t.clone());
+                }
+                DeclKind::Benchmark(b) => {
+                    benchmarks.push(b.clone());
                 }
                 _ => {}
             }
@@ -258,7 +372,7 @@ impl Interpreter {
             },
         );
 
-        use rask_ast::decl::{EnumDecl, Field, Variant};
+        use rask_ast::decl::{Variant};
         self.enums.insert(
             "Option".to_string(),
             EnumDecl {
@@ -357,13 +471,134 @@ impl Interpreter {
             self.env.define(name, Value::Module(kind));
         }
 
-        // Fall back to func main() if no @entry attribute found
         let entry = entry_fn.or_else(|| self.functions.get("main").cloned());
 
-        if let Some(entry) = entry {
-            self.call_function(&entry, vec![])
-        } else {
-            Err(RuntimeError::NoEntryPoint)
+        Ok(RegisteredProgram {
+            entry_fn: entry,
+            tests,
+            benchmarks,
+            test_fns,
+        })
+    }
+
+    /// Run a single test block with isolation and check-continuation.
+    fn run_single_test(&mut self, name: &str, body: &[Stmt]) -> TestResult {
+        let start = std::time::Instant::now();
+        let mut errors: Vec<String> = Vec::new();
+        let mut ensures: Vec<&Stmt> = Vec::new();
+
+        self.env.push_scope();
+
+        for stmt in body {
+            if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
+                ensures.push(stmt);
+            } else {
+                match self.exec_stmt(stmt) {
+                    Ok(_) => {}
+                    Err(RuntimeError::CheckFailed(msg)) => {
+                        errors.push(msg);
+                    }
+                    Err(RuntimeError::AssertionFailed(msg)) => {
+                        errors.push(msg);
+                        break;
+                    }
+                    Err(RuntimeError::Return(_)) => {
+                        break;
+                    }
+                    Err(e) => {
+                        errors.push(format!("{}", e));
+                        break;
+                    }
+                }
+            }
+        }
+
+        self.run_ensures(&ensures);
+        self.env.pop_scope();
+
+        TestResult {
+            name: name.to_string(),
+            passed: errors.is_empty(),
+            duration: start.elapsed(),
+            errors,
+        }
+    }
+
+    /// Run an @test function.
+    fn run_test_function(&mut self, func: &FnDecl) -> TestResult {
+        let start = std::time::Instant::now();
+        let mut errors: Vec<String> = Vec::new();
+
+        match self.call_function(func, vec![]) {
+            Ok(_) => {}
+            Err(RuntimeError::Return(_)) => {}
+            Err(RuntimeError::CheckFailed(msg)) | Err(RuntimeError::AssertionFailed(msg)) => {
+                errors.push(msg);
+            }
+            Err(e) => {
+                errors.push(format!("{}", e));
+            }
+        }
+
+        TestResult {
+            name: func.name.clone(),
+            passed: errors.is_empty(),
+            duration: start.elapsed(),
+            errors,
+        }
+    }
+
+    /// Run a single benchmark with warmup and auto-calibrated iterations.
+    fn run_single_benchmark(&mut self, name: &str, body: &[Stmt]) -> BenchmarkResult {
+        // Warmup: 3 iterations
+        for _ in 0..3 {
+            self.env.push_scope();
+            let _ = self.exec_stmts(body);
+            self.env.pop_scope();
+        }
+
+        // Calibrate: find iteration count that takes >100ms total
+        let mut iterations: u64 = 10;
+        loop {
+            let start = std::time::Instant::now();
+            for _ in 0..iterations {
+                self.env.push_scope();
+                let _ = self.exec_stmts(body);
+                self.env.pop_scope();
+            }
+            let elapsed = start.elapsed();
+            if elapsed.as_millis() >= 100 || iterations >= 10_000 {
+                break;
+            }
+            iterations *= 2;
+        }
+
+        // Measure
+        let mut timings: Vec<std::time::Duration> = Vec::with_capacity(iterations as usize);
+        for _ in 0..iterations {
+            self.env.push_scope();
+            let start = std::time::Instant::now();
+            let _ = self.exec_stmts(body);
+            let elapsed = start.elapsed();
+            self.env.pop_scope();
+            timings.push(elapsed);
+        }
+
+        timings.sort();
+        let total: std::time::Duration = timings.iter().sum();
+        let min = timings[0];
+        let max = timings[timings.len() - 1];
+        let mean = total / iterations as u32;
+        let median = timings[timings.len() / 2];
+
+        BenchmarkResult {
+            name: name.to_string(),
+            iterations,
+            total,
+            min,
+            max,
+            mean,
+            median,
         }
     }
 
@@ -1964,6 +2199,99 @@ impl Interpreter {
                 })))
             }
 
+            ExprKind::Assert { condition, message } => {
+                let cond_val = self.eval_expr(condition)?;
+                if self.is_truthy(&cond_val) {
+                    Ok(Value::Unit)
+                } else {
+                    let msg = if let Some(msg_expr) = message {
+                        let v = self.eval_expr(msg_expr)?;
+                        format!("{}", v)
+                    } else {
+                        "assertion failed".to_string()
+                    };
+                    Err(RuntimeError::AssertionFailed(msg))
+                }
+            }
+
+            ExprKind::Check { condition, message } => {
+                let cond_val = self.eval_expr(condition)?;
+                if self.is_truthy(&cond_val) {
+                    Ok(Value::Unit)
+                } else {
+                    let msg = if let Some(msg_expr) = message {
+                        let v = self.eval_expr(msg_expr)?;
+                        format!("{}", v)
+                    } else {
+                        "check failed".to_string()
+                    };
+                    Err(RuntimeError::CheckFailed(msg))
+                }
+            }
+
+            ExprKind::WithAs { bindings, body } => {
+                // Collect (collection_value, key_value, binding_name, cloned_element)
+                struct BindingInfo {
+                    collection: Value,
+                    key: Value,
+                    name: String,
+                }
+                let mut infos: Vec<BindingInfo> = Vec::new();
+
+                for (source_expr, binding_name) in bindings {
+                    // Source must be an Index expression: collection[key]
+                    if let ExprKind::Index { object, index } = &source_expr.kind {
+                        let collection = self.eval_expr(object)?;
+                        let key = self.eval_expr(index)?;
+                        infos.push(BindingInfo {
+                            collection,
+                            key,
+                            name: binding_name.clone(),
+                        });
+                    } else {
+                        return Err(RuntimeError::TypeError(
+                            "with...as source must be a collection index (e.g., pool[h])".to_string(),
+                        ));
+                    }
+                }
+
+                // Check aliasing: same-collection bindings must have different keys
+                for i in 0..infos.len() {
+                    for j in (i + 1)..infos.len() {
+                        if Self::value_eq(&infos[i].collection, &infos[j].collection)
+                            && Self::value_eq(&infos[i].key, &infos[j].key)
+                        {
+                            return Err(RuntimeError::Panic(
+                                "with...as: duplicate key in same collection (aliasing)".to_string(),
+                            ));
+                        }
+                    }
+                }
+
+                // Read current values and push scope with bindings
+                self.env.push_scope();
+                for info in &infos {
+                    let elem = self.index_into(&info.collection, &info.key)?;
+                    self.env.define(info.name.clone(), elem);
+                }
+
+                // Execute body
+                let mut result = Value::Unit;
+                for stmt in body {
+                    result = self.exec_stmt(stmt)?;
+                }
+
+                // Writeback: read binding values and write back to collections
+                for info in &infos {
+                    if let Some(updated) = self.env.get(&info.name).cloned() {
+                        self.write_back_index(&info.collection, &info.key, updated)?;
+                    }
+                }
+
+                self.env.pop_scope();
+                Ok(result)
+            }
+
             _ => Ok(Value::Unit),
         }
     }
@@ -2119,7 +2447,6 @@ impl Interpreter {
     /// Compare two runtime values for ordering.
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
-        use std::cmp::Ordering;
         match (a, b) {
             (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
@@ -2129,6 +2456,75 @@ impl Interpreter {
             (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
             (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
             _ => None, // Other types are not comparable
+        }
+    }
+
+    /// Read a value from a collection at the given key (for with...as).
+    fn index_into(&self, collection: &Value, key: &Value) -> Result<Value, RuntimeError> {
+        match (collection, key) {
+            (Value::Vec(v), Value::Int(i)) => {
+                let vec = v.lock().unwrap();
+                vec.get(*i as usize).cloned().ok_or_else(|| {
+                    RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() }
+                })
+            }
+            (Value::Pool(p), Value::Handle { pool_id, index, generation }) => {
+                let pool = p.lock().unwrap();
+                let slot_idx = pool.validate(*pool_id, *index, *generation)
+                    .map_err(RuntimeError::Panic)?;
+                pool.slots[slot_idx].1.clone().ok_or_else(|| {
+                    RuntimeError::Panic("pool slot is empty".to_string())
+                })
+            }
+            (Value::Map(m), _) => {
+                let map = m.lock().unwrap();
+                for (k, v) in map.iter() {
+                    if Self::value_eq(k, key) {
+                        return Ok(v.clone());
+                    }
+                }
+                Err(RuntimeError::Panic("key not found in map".to_string()))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "with...as: cannot index into {}", collection.type_name()
+            ))),
+        }
+    }
+
+    /// Write a value back to a collection at the given key (for with...as writeback).
+    fn write_back_index(&self, collection: &Value, key: &Value, value: Value) -> Result<(), RuntimeError> {
+        match (collection, key) {
+            (Value::Vec(v), Value::Int(i)) => {
+                let mut vec = v.lock().unwrap();
+                let idx = *i as usize;
+                if idx < vec.len() {
+                    vec[idx] = value;
+                    Ok(())
+                } else {
+                    Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
+                }
+            }
+            (Value::Pool(p), Value::Handle { pool_id, index, generation }) => {
+                let mut pool = p.lock().unwrap();
+                let slot_idx = pool.validate(*pool_id, *index, *generation)
+                    .map_err(RuntimeError::Panic)?;
+                pool.slots[slot_idx].1 = Some(value);
+                Ok(())
+            }
+            (Value::Map(m), _) => {
+                let mut map = m.lock().unwrap();
+                for (k, v) in map.iter_mut() {
+                    if Self::value_eq(k, key) {
+                        *v = value;
+                        return Ok(());
+                    }
+                }
+                map.push((key.clone(), value));
+                Ok(())
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "with...as: cannot write back to {}", collection.type_name()
+            ))),
         }
     }
 
@@ -2835,4 +3231,12 @@ pub enum RuntimeError {
     /// Error propagation via try operator
     #[error("try error")]
     TryError(Value),
+
+    /// Assertion failed (assert expr) — stops test immediately
+    #[error("assertion failed: {0}")]
+    AssertionFailed(String),
+
+    /// Check failed (check expr) — test continues, marked failed
+    #[error("check failed: {0}")]
+    CheckFailed(String),
 }
