@@ -302,36 +302,38 @@ footer a:hover {
 .feature-card {
     background: var(--bg-2);
     border: 2px solid var(--border);
-    border-radius: 8px;
-    padding: 1.25rem;
+    border-radius: 10px;
+    padding: 1.5rem;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .feature-card:hover {
     border-color: var(--green-light);
-    transform: translateX(4px);
-    box-shadow: 0 2px 8px rgba(15, 122, 74, 0.15);
+    transform: translateX(6px);
+    box-shadow: 0 4px 16px rgba(15, 122, 74, 0.2);
 }
 
 .feature-card.active {
     border-color: var(--green-light);
-    background: var(--bg);
-    transform: translateX(4px);
+    background: linear-gradient(135deg, var(--bg) 0%, rgba(15, 122, 74, 0.05) 100%);
+    transform: translateX(6px);
+    box-shadow: 0 4px 16px rgba(15, 122, 74, 0.25);
 }
 
 .feature-card h3 {
-    margin: 0 0 0.4rem 0;
+    margin: 0 0 0.5rem 0;
     color: var(--green-light);
-    font-size: 1.1rem;
+    font-size: 1.15rem;
     font-weight: 600;
+    letter-spacing: -0.01em;
 }
 
 .feature-card p {
-    margin: 0 0 0.25rem 0;
+    margin: 0 0 0.35rem 0;
     color: var(--text-dim);
-    font-size: 0.9rem;
-    line-height: 1.5;
+    font-size: 0.95rem;
+    line-height: 1.6;
 }
 
 .comparison {
@@ -361,6 +363,10 @@ footer a:hover {
     margin-top: 0;
 }
 
+/* Syntax highlighting */
+.kw { color: #81A1C1; font-weight: 500; }
+.ty { color: #8FBCBB; }
+.fn { color: #88C0D0; }
 .str { color: #A3BE8C; }
 .cmt { color: #616E88; font-style: italic; }
 
