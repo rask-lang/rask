@@ -1,24 +1,16 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 # Design Rationale
 
-This document explains design decisions where Rask intentionally rejected patterns from other languages, and why.
+Why I made certain design choices. Mostly about what I didn't add from other languages.
 
 ---
 
-## Rejected: Algebraic Effects
+## Algebraic Effects
 
-**Languages:** OCaml, Koka, Unison
-**Decision:** Do not add algebraic effects
-**Date:** 2026-02-08
+**Looked at:** OCaml, Koka, Unison
 
-### What Are Algebraic Effects?
+Algebraic effects are elegant. Functions raise "effects" that handlers up the call stack intercept and resume. Clean abstraction for I/O, state, errors—without changing signatures.
 
-Algebraic effects allow functions to raise "effects" (like exceptions, but more general) that handlers up the call stack can intercept and resume. They enable:
-- Implicit control flow (non-local jumps)
-- Handler composition across function boundaries
-- Effect polymorphism (functions abstract over effects)
-
-Example (hypothetical):
 ```
 // Function can raise Async effect without declaring it
 func process(data: Data) -> Result {
@@ -26,138 +18,62 @@ func process(data: Data) -> Result {
 }
 ```
 
-### Why Rejected
+I'm not adding them. Here's why.
 
-Algebraic effects **fundamentally violate Rask's core design principles:**
+### They hide costs
 
-#### 1. Transparency of Cost (Principle 4)
-
-From `CORE_DESIGN.md`:
-> "Major costs are visible in code. Small safety checks can be implicit."
-
-Effects hide major costs (I/O, allocation, locking) behind implicit control flow:
+I want major costs visible in code. With effects, `process(file)` could do I/O, allocate memory, jump to handlers halfway up the stack—none visible at the call site.
 
 ```rask
-// Current Rask: all costs visible
-const file = try open(path)    // Visible: I/O syscall
-ensure file.close()            // Visible: cleanup guarantee
-try process(file)              // Visible: error propagation
+// Current Rask
+const file = try open(path)    // I/O here
+ensure file.close()            // Cleanup here
+try process(file)              // Error propagation here
 
-// With effects: costs hidden
-process(file)  // What actually happens?
-               // - Does it allocate?
-               // - Does it do I/O?
-               // - Does it call handlers invisibly?
-               // - Does ensure still run? When?
+// With effects
+process(file)  // Hidden costs
 ```
 
-A function like `process(data)` could pause for I/O, allocate, or jump to handlers—none visible at the call site.
+That breaks transparency.
 
-#### 2. Local Analysis Only (Principle 5)
+### They break local analysis
 
-From `CORE_DESIGN.md`:
-> "All compiler analysis is function-local. No whole-program inference, no cross-function lifetime tracking."
+To understand if a function is safe, you need to track all effects it can raise, trace all possible handlers in scope, analyze handler compositions across the call stack. Change a handler deep in the stack? Type-checking cascades everywhere.
 
-Effects require **whole-program analysis** to understand behavior:
-1. Track all effects a function can raise
-2. Trace all possible handlers in scope
-3. Analyze handler compositions across the call stack
+I want function-local compilation. Effects require whole-program analysis.
 
-This breaks local compilation. Changing a handler deep in the call stack affects type-checking and behavior of functions far above it.
+### They break resource safety
 
-#### 3. Mechanical Safety (Principle 2)
+Rask's safety is structural—linear resources, affine handles, block-scoped cleanup. `ensure` blocks run on all exits, LIFO order, guaranteed.
 
-Rask's safety is "by structure"—linear resources, affine handles, block-scoped cleanup. Effects introduce non-local control flow that breaks structural guarantees:
+Effects introduce non-local jumps. Does the handler run before or after cleanup? What if an effect jumps past an `ensure` block? You need to reason about effect boundaries intersecting with resource scopes. Structural guarantees become ambiguous.
 
-```rask
-const file = try open(path)
-ensure file.close()       // Does this ALWAYS run?
-try process(file)         // What if process raises an effect that jumps the stack?
-                          // Is file still valid across the effect boundary?
-```
+### They're function coloring in disguise
 
-Currently, `ensure` has **clear semantics** (LIFO, block-scoped, runs on all exits). Effects make this ambiguous.
+I don't want `async`/`await` because it splits the ecosystem. Effects do the same—functions that raise effects become constrained. Can't use them without handlers. Same problem, hidden in effect types instead of keywords.
 
-#### 4. No Function Coloring
+### Errors become invisible
 
-From `CORE_DESIGN.md`:
-> "There is no `async`/`await`. Functions are just functions."
+Right now `const value = try some_operation()` tells you it can fail. With effects, handlers catch errors before they reach you. Error flow becomes hidden in handler chains.
 
-Effects create a **hidden coloring problem**: Functions that can raise effects become implicitly constrained. You can't use them in contexts without handlers. This is the `async`/`await` split Rask explicitly rejects—just hidden in effect types instead of keywords.
+### What I chose instead
 
-#### 5. Explicit Error Handling
+Result types for errors. `with multitasking` for async I/O (tasks pause automatically). `ensure` blocks for cleanup. Function parameters or `with` blocks for context. `Shared<T>` for shared state.
 
-Rask's error model is intentionally **visible and non-local**:
+More verbose in places, but every cost is visible and every path is local. Effects give you less ceremony—I chose transparency. More `try` keywords in error-heavy code, but errors should be visible.
 
-```rask
-const value = try some_operation()   // IDE shows: "→ returns Err"
-```
-
-Effects hide error flows. A handler could catch errors before they reach the caller, violating:
-> "No hidden control flow. Errors do not throw or unwind. All error paths are visible in types."
-
-### What Rask Chose Instead
-
-Rather than algebraic effects, Rask provides **explicit, transparent mechanisms**:
-
-| Need | Effect Solution | Rask Solution |
-|------|-----------------|---------------|
-| Error handling | Effect handlers | `Result<T, E>` types + `try` |
-| Async I/O | Async effect | `with multitasking`, I/O pauses tasks |
-| Resource cleanup | Finalizer effect | `ensure` blocks (LIFO, guaranteed) |
-| Context passing | Reader effect | Function parameters or `with` blocks |
-| State | State effect | `Shared<T>` or explicit parameters |
-
-These are more **verbose** than effects in some cases, but **every cost is visible and every path is local**.
-
-### The Fundamental Tradeoff
-
-**Algebraic effects trade:**
-- ✅ Less ceremony for effect handling
-- ❌ Loss of local reasoning
-- ❌ Whole-program compilation required
-- ❌ Hidden control flow
-- ❌ Implicit resource semantics
-
-**Rask trades:**
-- ✅ Complete local analysis
-- ✅ Linear compile times
-- ✅ Visible error paths
-- ✅ Predictable resource cleanup
-- ❌ More explicit propagation in error-heavy code
-
-### Conclusion
-
-If Rask added effects, it would no longer be Rask. The entire design would shift from "mechanical safety by structure" to "safety by effect algebra," requiring whole-program analysis, breaking incremental compilation, and hiding costs.
-
-The stated goal—"safety is invisible" but "major costs are visible"—becomes impossible to achieve with algebraic effects.
+If Rask had effects, it wouldn't be Rask.
 
 ---
 
-## Rejected: Automatic Supervision (Erlang-Style)
+## Automatic Supervision
 
-**Languages:** Erlang, Elixir
-**Decision:** Supervision is a library pattern, not a language feature
-**Date:** 2026-02-08
+**Looked at:** Erlang, Elixir
 
-### What Is Automatic Supervision?
-
-Erlang has built-in supervision trees where supervisors automatically monitor and restart failed processes:
-- Processes are linked in hierarchies
-- When a child process crashes, supervisor automatically restarts it
-- Propagation and restart strategies are language primitives
-
-### Why Rejected
-
-Automatic restart is a **hidden side effect** that violates transparency of cost.
-
-From `CORE_DESIGN.md`:
-> "Major costs are visible in code."
-
-Automatic restarts are **major costs**—they're not cheap, and they should be explicit:
+Erlang's supervision trees are great—processes automatically restart when they crash. "Let it crash" philosophy. But automatic restart is a hidden side effect. Restarts aren't cheap, and I want costs visible:
 
 ```rask
-// Explicit restart loop (all costs visible)
+// Explicit restart loop
 let restart_count = 0
 loop {
     const h = spawn { worker_task() }
@@ -167,13 +83,12 @@ loop {
             restart_count += 1
             if restart_count > 5: return Err("too many restarts")
             println("Restarting after error: {e}")
-            // Loop continues, spawns new task
         }
     }
 }
 ```
 
-This is **intentionally explicit** per Rask's design principles.
+That's intentionally explicit. Supervision is still there—just as library code, not language magic.
 
 ### What Conflicts with Rask
 
@@ -184,172 +99,158 @@ This is **intentionally explicit** per Rask's design principles.
 
 ### What Rask Chose Instead
 
-**Supervision as a library pattern** (like TaskGroup):
+Supervision works fine as a library:
 
 ```rask
 const sup = Supervisor.new()
-    .with_policy(RestartPolicy.OneForOne)
-    .with_max_restarts(5)
-
 sup.spawn_child("worker", || worker_task())
 sup.spawn_child("logger", || logger_task())
-
-sup.run()  // Explicit supervision loop
+sup.run()  // Monitors and restarts
 ```
 
-**Why library, not language feature:**
+I considered making it a `with supervisor { }` block (like `with threading`), but supervisors typically run for the lifetime of the application. `with` blocks are for scoped resources—they cleanup on exit. Wrong model.
 
-| Aspect | Erlang (language) | Rask (library) |
-|--------|-------------------|----------------|
-| Restart mechanism | Automatic | Explicit (library code) |
-| Task tracking | Implicit linking | Explicit spawn_child() |
-| Supervision scope | Global process tree | Local struct methods |
-| Failure visibility | Escalation to supervisor | Result<T, E> + monitoring loop |
-
-**Rask's approach:**
-- ✅ Transparency: Restart loops are explicit code
-- ✅ Local analysis: Supervisors are regular structs
-- ✅ Mechanical safety: Affine handles prevent orphaned tasks
-- ✅ No magic: All behavior is visible user code
-
-### Why NOT `with supervisor`?
-
-We considered making supervision a `with` block (like `with threading`), but rejected it:
-
-1. **Ambiguous spawn tracking** - How does supervisor know which spawns to supervise?
-   - All spawns? Breaks explicit tracking
-   - Only `spawn_supervised`? Adds new spawn variant, breaks consistency
-
-2. **Conflicts with block scope** - `with` blocks cleanup on exit, supervisors run indefinitely
-
-3. **Less flexible** - Can't easily model supervision trees or selective supervision
-
-**Supervision is more like `TaskGroup` than `with threading`:**
-
-| Pattern | Purpose | Scope |
-|---------|---------|-------|
-| `with threading { }` | Provides thread pool **capability** | Block-scoped |
-| `TaskGroup.new()` | Provides task **grouping** | Explicit tracking |
-| `Supervisor.new()` | Provides task **supervision** | Explicit monitoring |
-
-TaskGroup is already a struct because it needs explicit control over which spawns join the group. Supervision has the same requirement.
-
-### Conclusion
-
-Erlang-style supervision patterns are **valuable and compatible with Rask**—but as explicit library code, not magical language behavior. This maintains transparency of cost while still enabling fault-tolerant systems.
+Also, how would the supervisor know which spawns to monitor? All of them? That breaks explicit tracking. Same reason TaskGroup is a struct and not a `with` block—you need explicit control over which tasks join.
 
 ---
 
-## Rejected: Kotlin-Style Implicit Scope Functions
+## Scope Functions
 
-**Languages:** Kotlin
-**Decision:** Use explicit closure parameters instead of implicit `it`/`this`
-**Date:** 2026-02-08
+**Looked at:** Kotlin
 
-### What Are Kotlin-Style Scope Functions?
+Kotlin has `.let`, `.apply`, `.also` with implicit receivers—`it` or `this`. Terse and convenient.
 
-Kotlin has `.let`, `.apply`, `.also`, `.run` that use implicit receivers:
-
-```kotlin
-// Kotlin - implicit 'it' receiver
-val result = config.let { it.validate() }
-
-// Kotlin - implicit 'this' receiver
-val configured = Config().apply {
-    this.host = "localhost"
-    this.port = 8080
-}
-```
-
-### Why Rejected (Syntax Sugar)
-
-Rask **already has scope function patterns** via explicit closure parameters. Adding Kotlin-style syntax would:
-
-1. **Add parser complexity** - Special-case `.let { }` desugaring
-2. **Contradict "explicit over implicit"** - Rask prefers clarity over terseness
-3. **Less debuggable** - Implicit `it` doesn't appear in stack traces
-4. **Unclear scope entry** - What resource is being borrowed/locked?
-
-### What Rask Chose Instead
-
-**Explicit closure parameters:**
+Rask already has the pattern, just with explicit parameters:
 
 ```rask
-// Rask - explicit parameter name
-const users = db.read(|d| {
-    d.users.values().map(|u| transform(u)).collect()
-})
-
-// Rask - explicit mutation
-db.write(|d| {
-    d.users.insert(id, user)
-})
+const users = db.read(|d| d.users.values().collect())
+db.write(|d| { d.users.insert(id, user) })
 ```
 
-**Comparison:**
+Compare `obj.let { it.field }` vs `obj.read(|d| d.field)`. The parameter name shows intent—you're entering a read scope, not just "letting" something happen. More characters, but clearer. Parameter names also show up in stack traces when debugging.
 
-| Kotlin | Rask Equivalent | Rask Advantage |
-|--------|-----------------|----------------|
-| `obj.let { it.field }` | `obj.read(\|d\| d.field)` | Explicit parameter name (no magic `it`) |
-| `obj.apply { mutate() }` | `obj.write(\|d\| d.mutate())` | Clear borrow semantics |
-| `obj.also { log(it) }` | `obj.read(\|d\| { log(d); d })` | Explicit return value |
-
-**Why explicit is better:**
-- No implicit `it` or `this` - parameter name shows intent
-- Clear what scope you're entering (lock, borrow, etc.)
-- Compiler can enforce cleanup naturally
-- More debuggable - parameter appears in stack traces
-
-### Optional: Generic Scope Functions
-
-If desired, Rask could provide **generic methods** without syntax sugar:
-
-```rask
-extend<T> T {
-    func let<R>(self, f: |Self| -> R) -> R {
-        return f(own self)
-    }
-
-    func apply(self, f: |Self| -> ()) -> Self {
-        f(self)
-        return self
-    }
-}
-
-// Usage (no parser changes needed)
-const result = config.let(|c| c.validate())
-const configured = Config.new().apply(|c| {
-    c.host = "localhost"
-    c.port = 8080
-})
-```
-
-This works with **current syntax**—no language changes required.
-
-### Conclusion
-
-Rask's explicit closure parameters are **more readable than Kotlin's implicit receivers**, not less. The pattern already exists and works naturally. Adding Kotlin-style syntax sugar would sacrifice clarity for minimal ergonomic gain.
-
-Position explicit parameters as a **feature, not a limitation**.
+Could add Kotlin-style methods as library code if needed—no parser changes required. But explicit parameters work well enough.
 
 ---
 
-## Design Philosophy Summary
+## Lifetimes
 
-These rejections share a common thread:
+**Looked at:** Rust
 
-| Rejected Feature | Why | Rask Alternative |
-|------------------|-----|------------------|
-| Algebraic effects | Hidden control flow, whole-program analysis | Explicit Result types, `try`, `ensure` |
-| Automatic supervision | Hidden restart costs, non-local behavior | Library pattern, explicit loops |
-| Implicit scope functions | Magic receivers, unclear scope | Explicit closure parameters |
+Rust's lifetime annotations are precise and powerful. But they break local analysis.
 
-**Core principle:** Rask optimizes for **transparency and local reasoning** over **terseness and magic**.
+To verify a function is safe, you need to understand all lifetime parameters, how they relate, how callers will instantiate them, what constraints propagate up. This cascades—add one `&'a` and half your codebase needs annotations.
 
-This is not a judgment on other languages—Kotlin, Erlang, and OCaml made different tradeoffs for different goals. Rask's goal is systems programming where:
-- Costs must be visible
-- Analysis must be local
-- Safety must be structural
-- Debugging must be predictable
+I chose block-scoped borrowing only:
 
-These rejected features would make Rask more **convenient** in some cases, but less **transparent**—which contradicts the core design philosophy.
+```rask
+func process(data: Vec<u8>) {
+    const view = data.slice(0, 10)  // Borrow
+    use(view)
+    // Borrow ends
+}
+```
+
+References can't escape the block. No annotations needed. Compiler verifies safety by looking at the block—that's it.
+
+Tradeoff: Rust lets you return references and build complex borrowing graphs. Rask says clone or restructure. More `.clone()` calls, but I think that's better than `<'a, 'b, 'c>` everywhere.
+
+---
+
+## Async/Await
+
+**Looked at:** Rust, JavaScript, C#, Python
+
+Async/await is standard for concurrent I/O. But function coloring is a tax on the whole language—split ecosystem, viral annotations, library duplication (need async and sync versions of everything).
+
+I chose green tasks that pause automatically:
+
+```rask
+func fetch_user(id: u64) -> User or Error {
+    const response = try http_get(format("/users/{id}"))  // Pauses
+    return parse_user(response)
+}
+
+const user = try fetch_user(42)  // No await
+```
+
+No `async` keyword, no `await`, no coloring. I/O operations pause the task transparently. The runtime knows which operations can pause—you don't annotate it.
+
+Tradeoff: async/await is explicit about suspension points. Rask makes them implicit (IDEs can show them though). I chose simplicity here. No split ecosystem, just write code.
+
+Note: Does this violate the transparency goal of Rask? 
+
+---
+
+## Affine Task Handles
+
+**vs:** Go's fire-and-forget
+
+Go lets you spawn and forget: `go handleRequest(conn)` and the task disappears. Easy to write, also easy to leak goroutines or miss errors.
+
+Rask requires handles to be joined or detached:
+
+```rask
+spawn { work() }.detach()  // Explicit
+
+const h = spawn { compute() }
+const result = try h.join()
+
+spawn { work() }  // Compile error: unused TaskHandle
+```
+
+Compiler catches forgotten tasks. Six extra characters (`.detach()`) to prevent real bugs.
+
+---
+
+## Result Types vs Exceptions
+
+**vs:** Java, C++, Python, C#
+
+Most languages use exceptions. Hidden control flow—you don't know what throws without reading docs or source.
+
+```java
+// Java - where does this throw?
+User user = database.getUser(id);
+processUser(user);
+sendEmail(user);
+```
+
+Rask puts errors in the type system:
+
+```rask
+const user = try database.get_user(id)     // -> User or DbError
+try process_user(user)
+try send_email(user)
+```
+
+Signature tells you it can fail. `try` shows propagation. All paths visible.
+
+More `try` keywords, but errors should be visible.
+
+---
+
+## const/let Semantics
+
+**vs:** Rust's `let`/`let mut`
+
+Rust: `let x = 1` immutable, `let mut x = 1` mutable.
+
+Rask: `const x = 1` immutable, `let x = 1` mutable.
+
+Why flip it? "Const" means constant. "Let" means let it vary. Semantics match the names.
+
+Rust programmers will find this backwards. I think it's clearer for everyone else.
+
+---
+
+## Summary
+
+Common thread: I optimize for transparency and local reasoning over terseness and magic.
+
+Rejected: exceptions, async/await, lifetimes, automatic supervision, algebraic effects, implicit receivers.
+Chose: Result types, green tasks, block-scoped borrows, library patterns, explicit parameters.
+
+Not a judgment on other languages—Kotlin, Erlang, OCaml, Rust made different tradeoffs for different goals. Those features work well in their contexts.
+
+I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural, debugging must be predictable. The features I rejected would make Rask more convenient in some cases, but less transparent—which defeats the purpose.
