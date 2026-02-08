@@ -74,6 +74,7 @@ jobs:
         mkdir -p docs/build/playground
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/playground/
         cp -r docs/playground/pkg docs/build/playground/
+        cp docs/CNAME docs/build/CNAME
 
     - name: Deploy to GitHub Pages
       uses: peaceiris/actions-gh-pages@v4
