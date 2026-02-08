@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Traits and polymorphism
+
+// Define a trait - a shared behavior that types can implement
+trait Describable {
+    func describe(self) -> string
+}
+
+// Different struct types
+struct Point {
+    x: i32
+    y: i32
+}
+
+struct Circle {
+    radius: f64
+}
+
+struct Person {
+    name: string
+    age: i32
+}
+
+// Implement Describable for Point
+extend Point with Describable {
+    func describe(self) -> string {
+        return format("Point({}, {})", self.x, self.y)
+    }
+}
+
+// Implement Describable for Circle
+extend Circle with Describable {
+    func describe(self) -> string {
+        return format("Circle with radius {}", self.radius)
+    }
+}
+
+// Implement Describable for Person
+extend Person with Describable {
+    func describe(self) -> string {
+        return format("{}, age {}", self.name, self.age)
+    }
+}
+
+// Generic function that works with any Describable type
+func print_description<T: Describable>(item: T) {
+    const desc = item.describe()
+    print(desc)
+    print("\n")
+}
+
+// Function that takes multiple Describable items
+func describe_all<T: Describable, U: Describable>(first: T, second: U) {
+    print("First: ")
+    print(first.describe())
+    print("\n")
+
+    print("Second: ")
+    print(second.describe())
+    print("\n")
+}
+
+func main() {
+    const point = Point { x: 10, y: 20 }
+    const circle = Circle { radius: 5.5 }
+    const person = Person { name: "Alice", age: 30 }
+
+    // Call describe directly
+    print("Direct calls:\n")
+    print(point.describe())
+    print("\n")
+    print(circle.describe())
+    print("\n")
+    print(person.describe())
+    print("\n\n")
+
+    // Use generic function - works with any Describable
+    print("Via generic function:\n")
+    print_description(point)
+    print_description(circle)
+    print_description(person)
+    print("\n")
+
+    // Mix different types in one function
+    print("Mixing types:\n")
+    describe_all(point, circle)
+    describe_all(circle, person)
+}

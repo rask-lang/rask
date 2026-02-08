@@ -1,8 +1,8 @@
 // Learn: Structs and methods
 
 struct Person {
-    name: string,
-    age: i32,
+    name: string
+    age: i32
 }
 
 extend Person {

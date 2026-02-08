@@ -1,0 +1,117 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Generic types and functions
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Not all features are implemented yet (generic extend, closure types).
+// See examples/README.md for status.
+
+// Generic struct with two type parameters
+struct Pair<T, U> {
+    first: T,
+    second: U,
+}
+
+// Generic struct with one type parameter
+struct Box<T> {
+    value: T,
+}
+
+// Methods on generic types
+extend<T> Box<T> {
+    func new(value: T) -> Box<T> {
+        return Box { value: value }
+    }
+
+    func get(self) -> T {
+        return self.value
+    }
+}
+
+// Generic function that swaps a pair
+func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
+    return Pair {
+        first: pair.second,
+        second: pair.first,
+    }
+}
+
+// Generic function that finds the larger of two values
+// Note: In real Rask, would need Comparable trait constraint
+func max_value<T>(a: T, b: T, compare: |T, T| -> bool) -> T {
+    if compare(a, b) {
+        return a
+    }
+    return b
+}
+
+// Generic function with type inference
+func wrap<T>(value: T) -> Box<T> {
+    return Box { value: value }
+}
+
+// Generic function that works with any type
+func identity<T>(x: T) -> T {
+    return x
+}
+
+func main() {
+    // Create pairs with different type combinations
+    const int_string = Pair { first: 42, second: "hello" }
+    print("Pair: (")
+    print(int_string.first)
+    print(", ")
+    print(int_string.second)
+    print(")\n")
+
+    // Swap the pair
+    const string_int = swap(int_string)
+    print("Swapped: (")
+    print(string_int.first)
+    print(", ")
+    print(string_int.second)
+    print(")\n\n")
+
+    // Use Box with different types
+    const int_box = Box.new(100)
+    const string_box = Box.new("wrapped")
+
+    print("Int box: ")
+    print(int_box.get())
+    print("\n")
+
+    print("String box: ")
+    print(string_box.get())
+    print("\n\n")
+
+    // Type inference with wrap
+    const auto_box = wrap(3.14)  // Type inferred as Box<f64>
+    print("Auto-wrapped: ")
+    print(auto_box.value)
+    print("\n\n")
+
+    // Identity function works with any type
+    const id_int = identity(42)
+    const id_str = identity("test")
+    print("Identity int: ")
+    print(id_int)
+    print("\n")
+    print("Identity string: ")
+    print(id_str)
+    print("\n\n")
+
+    // Generic max with custom comparator
+    const greater = |a: i32, b: i32| -> bool { return a > b }
+    const max_num = max_value(10, 20, greater)
+    print("Max of 10 and 20: ")
+    print(max_num)
+    print("\n")
+
+    // Works with strings too
+    const str_greater = |a: string, b: string| -> bool {
+        return a.len() > b.len()
+    }
+    const longer = max_value("cat", "elephant", str_greater)
+    print("Longer word: ")
+    print(longer)
+    print("\n")
+}

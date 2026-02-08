@@ -1,0 +1,175 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Memory management with Pool and Handle
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Generic Pool and Handle types not fully implemented yet.
+// See examples/README.md for status.
+
+// Node in a linked list - uses Handle instead of references
+struct Node {
+    value: i32
+    next: Handle<Node>?,  // Optional handle to next node
+}
+
+// Entity in a game or simulation
+struct Entity {
+    id: i32
+    name: string
+    health: i32
+    target: Handle<Entity>?,  // Optional handle to target entity
+}
+
+func main() {
+    print("=== Pool/Handle Pattern ===\n\n")
+
+    // Problem: References can dangle
+    // Solution: Pool<T> allocates, Handle<T> refers
+    // Handles remain valid even if pool reorganizes memory
+
+    // Create a pool for nodes
+    const node_pool = Pool<Node>.new()
+
+    print("Creating linked list with handles:\n")
+
+    // Allocate nodes in the pool
+    const first = node_pool.alloc(Node {
+        value: 1,
+        next: None,
+    })
+
+    const second = node_pool.alloc(Node {
+        value: 2,
+        next: None,
+    })
+
+    const third = node_pool.alloc(Node {
+        value: 3,
+        next: None,
+    })
+
+    // Link nodes using handles
+    node_pool.get_mut(first).next = Some(second)
+    node_pool.get_mut(second).next = Some(third)
+
+    // Traverse the list using handles
+    print("List values: ")
+    let current = Some(first)
+
+    loop {
+        if current is Some(handle) {
+            const node = node_pool.get(handle)
+            print(node.value)
+            print(" -> ")
+            current = node.next
+        } else {
+            print("end\n\n")
+            deliver ()
+        }
+    }
+
+    // Create entity pool for game-like scenario
+    const entities = Pool<Entity>.new()
+
+    print("Creating game entities:\n")
+
+    const player = entities.alloc(Entity {
+        id: 1,
+        name: "Player",
+        health: 100,
+        target: None,
+    })
+
+    const enemy1 = entities.alloc(Entity {
+        id: 2,
+        name: "Goblin",
+        health: 50,
+        target: Some(player),  // Enemy targets player
+    })
+
+    const enemy2 = entities.alloc(Entity {
+        id: 3,
+        name: "Orc",
+        health: 80,
+        target: Some(player),
+    })
+
+    // Player targets first enemy
+    entities.get_mut(player).target = Some(enemy1)
+
+    // Display entity relationships
+    print("\nEntity relationships:\n")
+
+    const player_ent = entities.get(player)
+    print(player_ent.name)
+    print(" (HP: ")
+    print(player_ent.health)
+    print(")")
+
+    if player_ent.target is Some(target_handle) {
+        const target = entities.get(target_handle)
+        print(" -> targets ")
+        print(target.name)
+    }
+    print("\n")
+
+    const e1 = entities.get(enemy1)
+    print(e1.name)
+    print(" (HP: ")
+    print(e1.health)
+    print(")")
+
+    if e1.target is Some(target_handle) {
+        const target = entities.get(target_handle)
+        print(" -> targets ")
+        print(target.name)
+    }
+    print("\n")
+
+    const e2 = entities.get(enemy2)
+    print(e2.name)
+    print(" (HP: ")
+    print(e2.health)
+    print(")")
+
+    if e2.target is Some(target_handle) {
+        const target = entities.get(target_handle)
+        print(" -> targets ")
+        print(target.name)
+    }
+    print("\n\n")
+
+    // Modify entities through handles
+    print("Applying damage:\n")
+
+    entities.get_mut(enemy1).health = entities.get(enemy1).health - 20
+    print("Goblin health: ")
+    print(entities.get(enemy1).health)
+    print("\n")
+
+    entities.get_mut(player).health = entities.get(player).health - 10
+    print("Player health: ")
+    print(entities.get(player).health)
+    print("\n\n")
+
+    // Handle invalidation - removing entities
+    print("Removing defeated enemy:\n")
+
+    entities.free(enemy1)  // Free the goblin
+
+    // Player's target handle is now invalid
+    // In a real system, you'd clear dangling handles
+    print("Enemy1 removed from pool\n\n")
+
+    // Why Pool/Handle instead of references?
+    // 1. No lifetime annotations needed
+    // 2. Handles stay valid across pool reorganization
+    // 3. Can have cycles (node.next can refer back)
+    // 4. Clear ownership (pool owns all data)
+    // 5. Easy to invalidate handles when removing items
+
+    print("=== Key Benefits ===\n")
+    print("- No lifetime parameters\n")
+    print("- Handles never dangle (invalidation explicit)\n")
+    print("- Perfect for graphs, entity systems, UI trees\n")
+    print("- Pool owns memory, handles are lightweight IDs\n")
+}

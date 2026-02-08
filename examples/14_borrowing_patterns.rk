@@ -1,0 +1,170 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Borrowing patterns in Rask
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Borrow checker and reference types not fully implemented yet.
+// See examples/README.md for status.
+
+struct User {
+    name: string,
+    age: i32,
+}
+
+func print_user(user: &User) {
+    print("User: ")
+    print(user.name)
+    print(", age ")
+    print(user.age)
+    print("\n")
+}
+
+func get_age(user: &User) -> i32 {
+    return user.age
+}
+
+func main() {
+    // Expression-scoped borrowing with collections
+    // Collections are borrowed only during method call
+    const numbers = Vec.from([1, 2, 3, 4, 5])
+
+    // Borrow happens during .iter() call, ends immediately
+    const sum = numbers.iter().fold(0, |acc, x| acc + x)
+
+    // Can use numbers again immediately
+    print("Sum: ")
+    print(sum)
+    print("\n")
+
+    print("Count: ")
+    print(numbers.len())
+    print("\n\n")
+
+    // Multiple borrows in sequence
+    const first = numbers.iter().find(|x| x > 0)
+    const last = numbers.iter().find(|x| x == 5)
+
+    match first {
+        Some(n) => {
+            print("First: ")
+            print(n)
+            print("\n")
+        }
+        None => print("No first\n")
+    }
+
+    // Block-scoped borrowing with values
+    const user = User { name: "Alice", age: 30 }
+
+    {
+        const borrowed = &user
+        print_user(borrowed)
+        print("Age: ")
+        print(borrowed.age)
+        print("\n")
+    }  // Borrow ends here
+
+    // user is accessible again after block
+    print("User name: ")
+    print(user.name)
+    print("\n\n")
+
+    // Multiple immutable borrows are allowed
+    const user2 = User { name: "Bob", age: 25 }
+
+    {
+        const ref1 = &user2
+        const ref2 = &user2  // OK - multiple immutable borrows
+
+        print_user(ref1)
+        print_user(ref2)
+    }
+
+    print("\n")
+
+    // Passing borrowed values to functions
+    const alice = User { name: "Alice", age: 35 }
+
+    print_user(&alice)
+
+    const age = get_age(&alice)
+    print("Retrieved age: ")
+    print(age)
+    print("\n\n")
+
+    // Iterating with borrows
+    const users = Vec.from([
+        User { name: "Charlie", age: 40 },
+        User { name: "Diana", age: 28 },
+        User { name: "Eve", age: 32 },
+    ])
+
+    print("All users:\n")
+    for user in users.iter() {
+        print_user(user)  // Each user is borrowed during iteration
+    }
+
+    print("\n")
+
+    // Collection can be used after iteration
+    print("Total users: ")
+    print(users.len())
+    print("\n\n")
+
+    // Borrow for comparison
+    const vec1 = Vec.from([1, 2, 3])
+    const vec2 = Vec.from([1, 2, 3])
+
+    // Borrowing happens during comparison only
+    if vec1.iter().eq(vec2.iter()) {
+        print("Vectors are equal\n")
+    }
+
+    // Both still usable
+    print("Vec1 length: ")
+    print(vec1.len())
+    print("\n")
+
+    print("Vec2 length: ")
+    print(vec2.len())
+    print("\n\n")
+
+    // When you need ownership instead of borrowing
+    // Use .clone() to create a copy
+    const original = Vec.from([10, 20, 30])
+    const copy = original.clone()
+
+    // Both are independent now
+    print("Original: ")
+    for n in original.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+
+    print("Copy: ")
+    for n in copy.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Pattern: borrow in expression, use immediately
+    const data = Vec.from([5, 2, 8, 1, 9])
+
+    const max = data.iter()
+        .fold(0, |acc, x| {
+            if x > acc {
+                return x
+            }
+            return acc
+        })
+
+    print("Max value: ")
+    print(max)
+    print("\n")
+
+    // data is still available
+    print("Data length: ")
+    print(data.len())
+    print("\n")
+}

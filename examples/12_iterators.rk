@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Iterator patterns and functional chains
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Iterator trait and method chaining not fully implemented yet.
+// See examples/README.md for status.
+
+func main() {
+    const numbers = Vec.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+    // Basic iteration
+    print("All numbers: ")
+    for n in numbers.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Map - transform each element
+    const doubled = numbers.iter()
+        .map(|n| n * 2)
+        .collect()
+
+    print("Doubled: ")
+    for n in doubled.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+
+    const squared = numbers.iter()
+        .map(|n| n * n)
+        .collect()
+
+    print("Squared: ")
+    for n in squared.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Filter - keep only elements that match predicate
+    const evens = numbers.iter()
+        .filter(|n| n % 2 == 0)
+        .collect()
+
+    print("Even numbers: ")
+    for n in evens.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+
+    const large = numbers.iter()
+        .filter(|n| n > 5)
+        .collect()
+
+    print("Numbers > 5: ")
+    for n in large.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Chain multiple operations
+    const result = numbers.iter()
+        .filter(|n| n % 2 == 0)  // Keep evens
+        .map(|n| n * n)           // Square them
+        .collect()
+
+    print("Even numbers squared: ")
+    for n in result.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Skip and take
+    const middle = numbers.iter()
+        .skip(3)   // Skip first 3
+        .take(4)   // Take next 4
+        .collect()
+
+    print("Middle section (skip 3, take 4): ")
+    for n in middle.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Complex chain
+    const complex = numbers.iter()
+        .skip(1)                  // Skip first element
+        .filter(|n| n < 8)        // Keep elements < 8
+        .map(|n| n * 3)           // Triple them
+        .filter(|n| n > 10)       // Keep only results > 10
+        .collect()
+
+    print("Complex chain result: ")
+    for n in complex.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Fold - reduce to a single value
+    const sum = numbers.iter()
+        .fold(0, |acc, n| acc + n)
+
+    print("Sum of all numbers: ")
+    print(sum)
+    print("\n")
+
+    const product = numbers.iter()
+        .take(5)
+        .fold(1, |acc, n| acc * n)
+
+    print("Product of first 5: ")
+    print(product)
+    print("\n\n")
+
+    // Find - get first element matching predicate
+    const first_large = numbers.iter()
+        .find(|n| n > 7)
+
+    match first_large {
+        Some(n) => {
+            print("First number > 7: ")
+            print(n)
+            print("\n")
+        }
+        None => print("Not found\n")
+    }
+
+    // Any/all predicates
+    const has_even = numbers.iter()
+        .any(|n| n % 2 == 0)
+
+    print("Has even numbers: ")
+    if has_even {
+        print("yes\n")
+    } else {
+        print("no\n")
+    }
+
+    const all_positive = numbers.iter()
+        .all(|n| n > 0)
+
+    print("All positive: ")
+    if all_positive {
+        print("yes\n")
+    } else {
+        print("no\n")
+    }
+
+    print("\n")
+
+    // Working with strings
+    const words = Vec.from(["hello", "world", "rask", "language"])
+
+    const uppercase = words.iter()
+        .map(|s| s.to_uppercase())
+        .collect()
+
+    print("Uppercase words: ")
+    for word in uppercase.iter() {
+        print(word)
+        print(" ")
+    }
+    print("\n")
+
+    const long_words = words.iter()
+        .filter(|s| s.len() > 4)
+        .collect()
+
+    print("Words longer than 4 chars: ")
+    for word in long_words.iter() {
+        print(word)
+        print(" ")
+    }
+    print("\n")
+}
