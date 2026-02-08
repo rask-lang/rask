@@ -2,8 +2,8 @@
 
 Try Rask directly in your browser with our interactive playground!
 
-<div style="position: relative; width: 100%; height: 600px; margin: 20px 0; border: 1px solid #4C566A; border-radius: 4px; overflow: hidden;">
-  <iframe src="../app/" style="width: 100%; height: 100%; border: none;" title="Rask Playground"></iframe>
+<div class="playground-container">
+  <iframe src="../app/" class="playground-iframe" title="Rask Playground"></iframe>
 </div>
 
 **[Open in full screen →](../app/)**
