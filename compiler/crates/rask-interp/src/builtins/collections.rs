@@ -63,6 +63,11 @@ impl Interpreter {
                 let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(skipped))))
             }
+            "take" => {
+                let n = self.expect_int(&args, 0)? as usize;
+                let taken: Vec<Value> = v.lock().unwrap().iter().take(n).cloned().collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(taken))))
+            }
             "first" => {
                 match v.lock().unwrap().first().cloned() {
                     Some(val) => Ok(Value::Enum {
