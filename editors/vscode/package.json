@@ -4,10 +4,10 @@
   "description": "Language support for Rask",
   "version": "0.1.0",
   "publisher": "rask",
-  "license": "MIT",
+  "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/user/rask"
+    "url": "https://github.com/rask-lang/rask"
   },
   "engines": {
     "vscode": "^1.75.0"
