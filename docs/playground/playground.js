@@ -42,14 +42,6 @@ async function init() {
         document.getElementById('clear-output-btn').addEventListener('click', clearOutput);
         document.getElementById('examples').addEventListener('change', loadExample);
 
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                e.preventDefault();
-                runCode();
-            }
-        });
-
         showLoading(false);
         showToast('Playground ready! Press Ctrl+Enter to run.', 'success');
 
@@ -98,6 +90,24 @@ function populateExamples() {
 
 // Initialize CodeMirror editor
 function initEditor() {
+    // Custom keymap for Ctrl+Enter to run code
+    const runKeymap = keymap.of([
+        {
+            key: "Ctrl-Enter",
+            run: () => {
+                runCode();
+                return true;
+            }
+        },
+        {
+            key: "Cmd-Enter",  // For Mac
+            run: () => {
+                runCode();
+                return true;
+            }
+        }
+    ]);
+
     const startState = EditorState.create({
         doc: DEFAULT_CODE,
         extensions: [
@@ -105,6 +115,7 @@ function initEditor() {
             javascript(), // Use JavaScript highlighting as placeholder
             oneDark,
             keymap.of([indentWithTab]),
+            runKeymap,
             EditorView.theme({
                 "&": { height: "100%" },
                 ".cm-scroller": { overflow: "auto" }
@@ -137,7 +148,8 @@ async function runCode() {
         output.textContent = result || '(no output)';
         output.className = 'output-content success';
     } catch (error) {
-        output.textContent = error.toString();
+        // Error messages may contain HTML from ANSI-to-HTML conversion
+        output.innerHTML = error.toString();
         output.className = 'output-content error';
     }
 }
