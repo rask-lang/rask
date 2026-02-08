@@ -105,30 +105,70 @@ impl Playground {
     }
 }
 
-/// Strip ANSI color codes from formatted diagnostic output.
+/// Convert ANSI color codes to HTML with CSS classes.
 ///
-/// The DiagnosticFormatter uses ANSI escapes for terminal colors,
-/// but browsers need plain text (for now - HTML conversion could be added later).
+/// The DiagnosticFormatter uses ANSI escapes for terminal colors.
+/// This converts them to HTML spans for browser display.
 fn strip_ansi_codes(s: &str) -> String {
-    // ANSI escape sequences start with ESC [ and end with a letter
-    let mut result = String::with_capacity(s.len());
+    let mut result = String::with_capacity(s.len() * 2);
     let mut chars = s.chars().peekable();
+    let mut open_span = false;
 
     while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            // ESC character - skip until we find a letter
-            if chars.peek() == Some(&'[') {
-                chars.next(); // Skip '['
-                while let Some(&peek) = chars.peek() {
-                    chars.next();
-                    if peek.is_ascii_alphabetic() {
-                        break;
-                    }
+        if ch == '\x1b' && chars.peek() == Some(&'[') {
+            chars.next(); // Skip '['
+
+            // Collect the escape sequence
+            let mut code = String::new();
+            while let Some(&peek) = chars.peek() {
+                chars.next();
+                if peek.is_ascii_alphabetic() {
+                    break;
                 }
+                code.push(peek);
+            }
+
+            // Close previous span if open
+            if open_span {
+                result.push_str("</span>");
+                open_span = false;
+            }
+
+            // Convert ANSI code to CSS class
+            let class = match code.as_str() {
+                "31" | "31;1" => Some("error"),      // Red (errors)
+                "1;31" => Some("error"),              // Bold red
+                "34" | "34;1" => Some("info"),        // Blue (info/secondary)
+                "1;34" => Some("info"),               // Bold blue
+                "36" | "36;1" => Some("help"),        // Cyan (help/notes)
+                "1;36" => Some("help"),               // Bold cyan
+                "33" | "33;1" => Some("warning"),     // Yellow (warnings)
+                "1;33" => Some("warning"),            // Bold yellow
+                "1" => Some("bold"),                  // Bold
+                "0" => None,                          // Reset
+                _ => None,
+            };
+
+            if let Some(class_name) = class {
+                result.push_str(&format!("<span class=\"diag-{}\">", class_name));
+                open_span = true;
             }
         } else {
-            result.push(ch);
+            // Escape HTML special chars
+            match ch {
+                '<' => result.push_str("&lt;"),
+                '>' => result.push_str("&gt;"),
+                '&' => result.push_str("&amp;"),
+                '"' => result.push_str("&quot;"),
+                '\n' => result.push_str("\n"),
+                _ => result.push(ch),
+            }
         }
+    }
+
+    // Close final span if open
+    if open_span {
+        result.push_str("</span>");
     }
 
     result

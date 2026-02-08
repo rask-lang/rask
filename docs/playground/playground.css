@@ -217,6 +217,29 @@ select {
     color: var(--nord11);
 }
 
+/* Diagnostic colors (for formatted errors) */
+.diag-error {
+    color: var(--nord11);
+    font-weight: 600;
+}
+
+.diag-info {
+    color: var(--nord8);
+}
+
+.diag-help {
+    color: var(--nord8);
+}
+
+.diag-warning {
+    color: var(--nord13);
+    font-weight: 600;
+}
+
+.diag-bold {
+    font-weight: 600;
+}
+
 /* Loading overlay */
 .loading {
     position: fixed;
