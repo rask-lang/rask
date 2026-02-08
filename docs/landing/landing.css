@@ -334,6 +334,26 @@ td {
     margin: 0 0 2rem 0;
 }
 
+/* Status Section */
+.status-section {
+    margin: 4rem 0;
+}
+
+.status-section .contribute {
+    margin-top: 1.5rem;
+    font-size: 1rem;
+    color: var(--text-dim);
+}
+
+.status-section .contribute a {
+    color: var(--green-light);
+    text-decoration: none;
+}
+
+.status-section .contribute a:hover {
+    text-decoration: underline;
+}
+
 
 /* Footer */
 footer {
