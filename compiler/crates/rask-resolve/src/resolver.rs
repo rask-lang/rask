@@ -247,6 +247,19 @@ impl Resolver {
                     }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
+                DeclKind::Extern(extern_decl) => {
+                    // Declare extern functions in symbol table
+                    let sym_id = self.symbols.insert(
+                        extern_decl.name.clone(),
+                        SymbolKind::Function { params: vec![], ret_ty: extern_decl.ret_ty.clone() },
+                        None,
+                        decl.span,
+                        false, // Extern functions are not pub-exported from module
+                    );
+                    if let Err(e) = self.scopes.define(extern_decl.name.clone(), sym_id, decl.span) {
+                        self.errors.push(e);
+                    }
+                }
             }
         }
     }
@@ -486,6 +499,7 @@ impl Resolver {
                 }
                 DeclKind::Import(_) => {}
                 DeclKind::Export(_) => {}
+                DeclKind::Extern(_) => {}
             }
         }
     }
