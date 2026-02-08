@@ -542,6 +542,12 @@ pub enum TypeError {
     },
     #[error("generic argument error: {0}")]
     GenericError(String, Span),
+    #[error("cannot mutate `{var}` while borrowed")]
+    AliasingViolation {
+        var: String,
+        borrow_span: Span,
+        access_span: Span,
+    },
 }
 
 // ============================================================================
@@ -773,6 +779,25 @@ pub struct TypedProgram {
 }
 
 // ============================================================================
+// Borrow Tracking for Aliasing Detection
+// ============================================================================
+
+/// Borrow mode for active borrows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BorrowMode {
+    Shared,    // Read-only borrow
+    Exclusive, // Mutable borrow
+}
+
+/// An active borrow tracked during expression evaluation.
+#[derive(Debug, Clone)]
+struct ActiveBorrow {
+    var_name: String,
+    mode: BorrowMode,
+    span: Span,
+}
+
+// ============================================================================
 // Type Checker
 // ============================================================================
 
@@ -796,6 +821,8 @@ pub struct TypeChecker {
     current_self_type: Option<Type>,
     /// Scope stack for local variable types (innermost scope last).
     local_types: Vec<HashMap<String, Type>>,
+    /// Active borrows for aliasing detection (ESAD Phase 1).
+    borrow_stack: Vec<ActiveBorrow>,
 }
 
 impl TypeChecker {
@@ -811,6 +838,7 @@ impl TypeChecker {
             current_return_type: None,
             current_self_type: None,
             local_types: Vec::new(),
+            borrow_stack: Vec::new(),
         }
     }
 
@@ -1086,6 +1114,97 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    // ------------------------------------------------------------------------
+    // Borrow Stack Management (ESAD Phase 1)
+    // ------------------------------------------------------------------------
+
+    /// Push a borrow onto the stack.
+    fn push_borrow(&mut self, var_name: String, mode: BorrowMode, span: Span) {
+        self.borrow_stack.push(ActiveBorrow { var_name, mode, span });
+    }
+
+    /// Pop all borrows from the current expression (called at statement end).
+    fn clear_expression_borrows(&mut self) {
+        self.borrow_stack.clear();
+    }
+
+    /// Check if accessing a variable would conflict with active borrows.
+    /// Returns the conflicting borrow if found.
+    fn check_borrow_conflict(&self, var_name: &str, access_mode: BorrowMode) -> Option<&ActiveBorrow> {
+        for borrow in self.borrow_stack.iter().rev() {
+            if borrow.var_name == var_name {
+                // Check conflict rules from ESAD spec
+                match (borrow.mode, access_mode) {
+                    (BorrowMode::Shared, BorrowMode::Shared) => {
+                        // Shared + Shared = OK
+                        continue;
+                    }
+                    (BorrowMode::Shared, BorrowMode::Exclusive) |
+                    (BorrowMode::Exclusive, BorrowMode::Shared) |
+                    (BorrowMode::Exclusive, BorrowMode::Exclusive) => {
+                        // Any combination with Exclusive = ERROR
+                        return Some(borrow);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Scan a closure body for variable accesses and check for conflicts.
+    /// This implements ESAD Phase 2.
+    fn check_closure_aliasing(&mut self, body: &Expr) {
+        self.collect_closure_accesses(body);
+    }
+
+    /// Recursively collect variable accesses in a closure body.
+    fn collect_closure_accesses(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                // Check if this variable is borrowed in the outer scope
+                if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Shared) {
+                    self.errors.push(TypeError::AliasingViolation {
+                        var: name.clone(),
+                        borrow_span: borrow.span,
+                        access_span: expr.span,
+                    });
+                }
+            }
+            ExprKind::MethodCall { object, method: _, args, .. } => {
+                // Check if the object is mutably borrowed
+                if let ExprKind::Ident(name) = &object.kind {
+                    // Assume method calls are exclusive borrows (conservative)
+                    if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Exclusive) {
+                        self.errors.push(TypeError::AliasingViolation {
+                            var: name.clone(),
+                            borrow_span: borrow.span,
+                            access_span: object.span,
+                        });
+                    }
+                }
+                // Recurse into arguments
+                for arg in args {
+                    self.collect_closure_accesses(arg);
+                }
+            }
+            ExprKind::Call { func, args } => {
+                self.collect_closure_accesses(func);
+                for arg in args {
+                    self.collect_closure_accesses(arg);
+                }
+            }
+            ExprKind::Block(stmts) => {
+                for stmt in stmts {
+                    if let StmtKind::Expr(e) = &stmt.kind {
+                        self.collect_closure_accesses(e);
+                    }
+                }
+            }
+            // TODO: Add more expression kinds as needed
+            _ => {}
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -1416,6 +1535,8 @@ impl TypeChecker {
         match &stmt.kind {
             StmtKind::Expr(expr) => {
                 self.infer_expr(expr);
+                // ESAD Phase 1: Clear borrows at statement end (semicolon)
+                self.clear_expression_borrows();
             }
             StmtKind::Let { name, ty, init } => {
                 let init_ty = self.infer_expr(init);
@@ -1430,6 +1551,7 @@ impl TypeChecker {
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
+                self.clear_expression_borrows();
             }
             StmtKind::Const { name, ty, init } => {
                 let init_ty = self.infer_expr(init);
@@ -1444,6 +1566,7 @@ impl TypeChecker {
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
+                self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
                 let target_ty = self.infer_expr(target);
@@ -1451,6 +1574,7 @@ impl TypeChecker {
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     target_ty, value_ty, stmt.span,
                 ));
+                self.clear_expression_borrows();
             }
             StmtKind::Return(value) => {
                 let ret_ty = if let Some(expr) = value {
@@ -1465,6 +1589,7 @@ impl TypeChecker {
                         stmt.span,
                     ));
                 }
+                self.clear_expression_borrows();
             }
             StmtKind::While { cond, body, .. } => {
                 let cond_ty = self.infer_expr(cond);
@@ -1854,6 +1979,10 @@ impl TypeChecker {
                             .unwrap_or_else(|| self.ctx.fresh_var())
                     })
                     .collect();
+
+                // ESAD Phase 2: Check for aliasing violations in closure body
+                self.check_closure_aliasing(body);
+
                 let ret_ty = self.infer_expr(body);
                 Type::Fn {
                     params: param_types,
@@ -2102,6 +2231,19 @@ impl TypeChecker {
             if self.types.builtin_modules.is_module(name) {
                 return self.check_module_method(name, method, args, span);
             }
+        }
+
+        // ESAD Phase 1: Push borrow for the object being called
+        // For now, conservatively assume all methods on collections create exclusive borrows
+        // TODO: Refine this by checking method signatures for `read self` vs `self`
+        if let ExprKind::Ident(var_name) = &object.kind {
+            // Determine borrow mode based on method name (conservative heuristic)
+            let mode = if method.starts_with("get") || method == "read" || method == "len" {
+                BorrowMode::Shared
+            } else {
+                BorrowMode::Exclusive
+            };
+            self.push_borrow(var_name.clone(), mode, object.span);
         }
 
         let obj_ty_raw = self.infer_expr(object);
