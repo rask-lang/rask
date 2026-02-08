@@ -23,3 +23,4 @@ rask-resolve = { path = "../rask-resolve" }
 rask-types = { path = "../rask-types" }
 rask-ownership = { path = "../rask-ownership" }
 rask-diagnostics = { path = "../rask-diagnostics" }
+rask-stdlib = { path = "../rask-stdlib" }
