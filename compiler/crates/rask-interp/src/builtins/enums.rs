@@ -32,7 +32,7 @@ impl Interpreter {
                         fields: vec![mapped],
                     })
                 }
-                _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
             "map" => match variant {
                 "Ok" => {
@@ -52,7 +52,7 @@ impl Interpreter {
                     variant: "Err".to_string(),
                     fields: fields.to_vec(),
                 }),
-                _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
             "ok" => match variant {
                 "Ok" => Ok(Value::Enum {
@@ -65,12 +65,12 @@ impl Interpreter {
                     variant: "None".to_string(),
                     fields: vec![],
                 }),
-                _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
             "unwrap_or" => match variant {
                 "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                 "Err" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
-                _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
             "is_ok" => Ok(Value::Bool(variant == "Ok")),
             "is_err" => Ok(Value::Bool(variant == "Err")),
@@ -80,7 +80,7 @@ impl Interpreter {
                     "called unwrap on Err: {}",
                     fields.first().map(|v| format!("{}", v)).unwrap_or_default()
                 ))),
-                _ => Err(RuntimeError::TypeError("invalid Result variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Result".to_string(),
@@ -101,7 +101,7 @@ impl Interpreter {
             "unwrap_or" => match variant {
                 "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                 "None" => Ok(args.into_iter().next().unwrap_or(Value::Unit)),
-                _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
             "is_some" => Ok(Value::Bool(variant == "Some")),
             "is_none" => Ok(Value::Bool(variant == "None")),
@@ -123,12 +123,12 @@ impl Interpreter {
                     variant: "None".to_string(),
                     fields: vec![],
                 }),
-                _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
             "unwrap" => match variant {
                 "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
                 "None" => Err(RuntimeError::Panic("called unwrap on None".to_string())),
-                _ => Err(RuntimeError::TypeError("invalid Option variant".to_string())),
+                _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Option".to_string(),

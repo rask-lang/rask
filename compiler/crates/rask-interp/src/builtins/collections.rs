@@ -146,7 +146,7 @@ impl Interpreter {
                 let item = args.into_iter().nth(1).unwrap_or(Value::Unit);
                 let mut vec = v.lock().unwrap();
                 if idx > vec.len() {
-                    return Err(RuntimeError::Panic(format!("index {} out of bounds for Vec of length {}", idx, vec.len())));
+                    return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
                 vec.insert(idx, item);
                 Ok(Value::Enum {
@@ -159,7 +159,7 @@ impl Interpreter {
                 let idx = self.expect_int(&args, 0)? as usize;
                 let mut vec = v.lock().unwrap();
                 if idx >= vec.len() {
-                    return Err(RuntimeError::Panic(format!("index {} out of bounds for Vec of length {}", idx, vec.len())));
+                    return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
                 let removed = vec.remove(idx);
                 Ok(removed)
@@ -498,7 +498,7 @@ impl Interpreter {
                         }),
                     }
                 } else {
-                    Err(RuntimeError::TypeError("pool.get() requires a Handle argument".to_string()))
+                    Err(RuntimeError::TypeError("pool.get() expects a Handle; use the handle returned by pool.add()".to_string()))
                 }
             }
             "get_mut" => {
@@ -520,7 +520,7 @@ impl Interpreter {
                         }),
                     }
                 } else {
-                    Err(RuntimeError::TypeError("pool.get_mut() requires a Handle argument".to_string()))
+                    Err(RuntimeError::TypeError("pool.get_mut() expects a Handle; use the handle returned by pool.add()".to_string()))
                 }
             }
             "remove" => {
@@ -542,7 +542,7 @@ impl Interpreter {
                         }),
                     }
                 } else {
-                    Err(RuntimeError::TypeError("pool.remove() requires a Handle argument".to_string()))
+                    Err(RuntimeError::TypeError("pool.remove() expects a Handle; use the handle returned by pool.add()".to_string()))
                 }
             }
             "len" => Ok(Value::Int(p.lock().unwrap().len as i64)),
@@ -552,7 +552,7 @@ impl Interpreter {
                     let pool = p.lock().unwrap();
                     Ok(Value::Bool(pool.validate(*pool_id, *index, *generation).is_ok()))
                 } else {
-                    Err(RuntimeError::TypeError("pool.contains() requires a Handle argument".to_string()))
+                    Err(RuntimeError::TypeError("pool.contains() expects a Handle; use the handle returned by pool.add()".to_string()))
                 }
             }
             "clear" => {

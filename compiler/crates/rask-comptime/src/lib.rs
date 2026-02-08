@@ -109,64 +109,64 @@ impl ComptimeValue {
 /// Errors that can occur during comptime evaluation.
 #[derive(Debug, Error)]
 pub enum ComptimeError {
-    #[error("Comptime evaluation exceeded backwards branch quota ({0})")]
+    #[error("comptime exceeded backwards branch quota ({0}); increase with @branch_quota")]
     BranchQuotaExceeded(usize),
 
-    #[error("Comptime evaluation exceeded time limit")]
+    #[error("comptime exceeded time limit; simplify the expression or increase the limit")]
     TimeoutExceeded,
 
-    #[error("Comptime evaluation exceeded memory limit")]
+    #[error("comptime exceeded memory limit; reduce allocations in comptime block")]
     MemoryLimitExceeded,
 
-    #[error("Undefined variable: {0}")]
+    #[error("undefined variable `{0}` in comptime context")]
     UndefinedVariable(String),
 
-    #[error("Undefined function: {0}")]
+    #[error("undefined function `{0}` in comptime context")]
     UndefinedFunction(String),
 
-    #[error("Type mismatch: expected {expected}, found {found}")]
+    #[error("type mismatch: expected `{expected}`, found `{found}`")]
     TypeMismatch { expected: String, found: String },
 
-    #[error("Division by zero")]
+    #[error("division by zero in comptime evaluation")]
     DivisionByZero,
 
-    #[error("Index out of bounds: {index} >= {len}")]
+    #[error("index {index} out of bounds (length is {len})")]
     IndexOutOfBounds { index: usize, len: usize },
 
-    #[error("Cannot call runtime function '{0}' at comptime")]
+    #[error("cannot call runtime function `{0}` at comptime; mark it `comptime func` or restructure")]
     RuntimeFunctionCall(String),
 
-    #[error("I/O operations not allowed at comptime")]
+    #[error("I/O not allowed at comptime; use runtime code for file/network operations")]
     IoNotAllowed,
 
-    #[error("Pools and handles not allowed at comptime")]
+    #[error("pools and handles not allowed at comptime; use Vec or arrays instead")]
     PoolsNotAllowed,
 
-    #[error("Concurrency not allowed at comptime")]
+    #[error("concurrency not allowed at comptime; spawn/channels require runtime")]
     ConcurrencyNotAllowed,
 
-    #[error("Unsafe blocks not allowed at comptime")]
+    #[error("unsafe blocks not allowed at comptime; raw pointers require runtime")]
     UnsafeNotAllowed,
 
-    #[error("Comptime panic: {0}")]
+    #[error("comptime panic: {0}")]
     Panic(String),
 
-    #[error("No such field: {field} on {ty}")]
+    #[error("no field `{field}` on type `{ty}`")]
     NoSuchField { ty: String, field: String },
 
-    #[error("Not a struct: {0}")]
+    #[error("`{0}` is not a struct")]
     NotAStruct(String),
 
-    #[error("Break outside of loop")]
+    #[error("break outside of loop")]
     BreakOutsideLoop,
 
-    #[error("Continue outside of loop")]
+    #[error("continue outside of loop")]
     ContinueOutsideLoop,
 
-    #[error("Return outside of function")]
+    #[error("return outside of function")]
     ReturnOutsideFunction,
 
-    #[error("Feature not supported at comptime: {0}")]
+    #[error("not supported at comptime: {0}")]
     NotSupported(String),
 }
 

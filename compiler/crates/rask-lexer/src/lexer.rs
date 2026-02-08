@@ -677,8 +677,8 @@ impl LexError {
     fn unexpected_char(ch: char, pos: usize) -> Self {
         Self {
             span: Span::new(pos, pos + ch.len_utf8()),
-            message: format!("Unexpected character '{}'", ch),
-            hint: None,
+            message: format!("unexpected character '{}'", ch),
+            hint: Some("remove this character or check for typos".to_string()),
         }
     }
 
@@ -686,24 +686,24 @@ impl LexError {
     fn unterminated_string(start: usize, end: usize) -> Self {
         Self {
             span: Span::new(start, end),
-            message: "Unterminated string".to_string(),
-            hint: Some("Add a closing '\"'".to_string()),
+            message: "unterminated string".to_string(),
+            hint: Some("add a closing '\"'".to_string()),
         }
     }
 
     fn invalid_escape(pos: usize) -> Self {
         Self {
             span: Span::new(pos, pos + 1),
-            message: "Invalid escape sequence".to_string(),
-            hint: Some("Valid: \\n \\r \\t \\\\ \\0 \\' \\\" \\u{...}".to_string()),
+            message: "invalid escape sequence".to_string(),
+            hint: Some("valid escapes: \\n \\r \\t \\\\ \\0 \\' \\\" \\u{...}".to_string()),
         }
     }
 
     fn invalid_number(start: usize, end: usize) -> Self {
         Self {
             span: Span::new(start, end),
-            message: "Invalid number".to_string(),
-            hint: None,
+            message: "invalid number literal".to_string(),
+            hint: Some("check for extra digits or invalid prefix (0x, 0b, 0o)".to_string()),
         }
     }
 }

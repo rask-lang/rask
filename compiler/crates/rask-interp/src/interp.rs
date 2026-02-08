@@ -1029,37 +1029,37 @@ impl Interpreter {
                                             if let Some(ref mut elem) = pool.slots[slot_idx].1 {
                                                 Self::assign_nested_field(elem, &field_chain, value)
                                             } else {
-                                                Err(RuntimeError::TypeError("pool slot is empty".to_string()))
+                                                Err(RuntimeError::TypeError("pool slot is empty; the handle may have been removed".to_string()))
                                             }
                                         } else {
-                                            Err(RuntimeError::TypeError("Pool index must be a Handle".to_string()))
+                                            Err(RuntimeError::TypeError("Pool indexing requires a Handle; use `pool.add()` to get one".to_string()))
                                         }
                                     }
                                     Value::Vec(v) => {
                                         if let Value::Int(i) = idx_val {
-                                            let i = i as usize;
+                                            let idx = i as usize;
                                             let mut vec = v.lock().unwrap();
-                                            if i < vec.len() {
-                                                Self::assign_nested_field(&mut vec[i], &field_chain, value)
+                                            if idx < vec.len() {
+                                                Self::assign_nested_field(&mut vec[idx], &field_chain, value)
                                             } else {
-                                                Err(RuntimeError::TypeError(format!("index {} out of bounds", i)))
+                                                Err(RuntimeError::IndexOutOfBounds { index: i, len: vec.len() })
                                             }
                                         } else {
-                                            Err(RuntimeError::TypeError("Vec index must be integer".to_string()))
+                                            Err(RuntimeError::TypeError("Vec index must be an integer".to_string()))
                                         }
                                     }
                                     _ => Err(RuntimeError::TypeError(format!(
-                                        "cannot field-assign on indexed {}", container.type_name()
+                                        "cannot index into `{}`; only Vec and Pool support indexing", container.type_name()
                                     ))),
                                 }
                             } else {
                                 Err(RuntimeError::UndefinedVariable(var_name.clone()))
                             }
                         } else {
-                            Err(RuntimeError::TypeError("complex nested assignment not yet supported".to_string()))
+                            Err(RuntimeError::TypeError("nested assignment through multiple levels not yet supported".to_string()))
                         }
                     }
-                    _ => Err(RuntimeError::TypeError("unsupported assignment target".to_string())),
+                    _ => Err(RuntimeError::TypeError("invalid assignment target; assign to a variable, field, or index".to_string())),
                 }
             }
             ExprKind::Index { object, index } => {
@@ -1859,7 +1859,7 @@ impl Interpreter {
                 let sender = pool.sender.lock().unwrap();
                 if let Some(ref tx) = *sender {
                     tx.send(task).map_err(|_| {
-                        RuntimeError::TypeError("thread pool is shut down".to_string())
+                        RuntimeError::ResourceClosed { resource_type: "ThreadPool".to_string(), operation: "spawn on".to_string() }
                     })?;
                 } else {
                     return Err(RuntimeError::TypeError(
@@ -2777,37 +2777,46 @@ impl Default for Interpreter {
 /// A runtime error.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
-    #[error("undefined variable: {0}")]
+    #[error("undefined variable `{0}`")]
     UndefinedVariable(String),
 
-    #[error("undefined function: {0}")]
+    #[error("undefined function `{0}`")]
     UndefinedFunction(String),
 
-    #[error("type error: {0}")]
+    #[error("{0}")]
     TypeError(String),
 
-    #[error("division by zero")]
+    #[error("division by zero; check divisor before dividing")]
     DivisionByZero,
 
-    #[error("arity mismatch: expected {expected}, got {got}")]
+    #[error("expected {expected} argument{}, got {got}", if *.expected == 1 { "" } else { "s" })]
     ArityMismatch { expected: usize, got: usize },
 
-    #[error("no such method '{method}' on type {ty}")]
+    #[error("no method `{method}` on type `{ty}`")]
     NoSuchMethod { ty: String, method: String },
+
+    #[error("no field `{field}` on type `{ty}`")]
+    NoSuchField { ty: String, field: String },
+
+    #[error("index {index} out of bounds (length is {len})")]
+    IndexOutOfBounds { index: i64, len: usize },
+
+    #[error("resource is closed; cannot {operation} a closed {resource_type}")]
+    ResourceClosed { resource_type: String, operation: String },
 
     #[error("panic: {0}")]
     Panic(String),
 
-    #[error("no matching arm in match expression")]
+    #[error("no matching arm in match; add a wildcard `_` arm to handle all cases")]
     NoMatchingArm,
 
-    #[error("multiple @entry functions found (only one allowed per program)")]
+    #[error("multiple @entry functions found; only one `func main()` or `@entry` per program")]
     MultipleEntryPoints,
 
-    #[error("no entry point found (add func main() or use @entry)")]
+    #[error("no entry point found; add `func main()` or use `@entry`")]
     NoEntryPoint,
 
-    #[error("generic error: {0}")]
+    #[error("{0}")]
     Generic(String),
 
     #[error("exit with code {0}")]
