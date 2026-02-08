@@ -148,4 +148,45 @@ mod tests {
         let result = parse("import pkg.{}");
         assert!(!result.is_ok(), "Expected error for empty braces");
     }
+
+    // Tests for Rust syntax error messages
+    #[test]
+    fn rust_syntax_pub_keyword() {
+        let result = parse("pub struct Point { x: i32 }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "unknown keyword 'pub'");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'public' instead of 'pub'"));
+    }
+
+    #[test]
+    fn rust_syntax_fn_keyword() {
+        let result = parse("fn add(a: i32) -> i32 { return a }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "unknown keyword 'fn'");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use 'func' instead of 'fn'"));
+    }
+
+    #[test]
+    fn rust_syntax_trailing_comma() {
+        let result = parse("struct User {\n    name: string\n    age: i32,\n}");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "unexpected ',' in struct definition");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("struct fields are separated by newlines, not commas"));
+    }
+
+    #[test]
+    fn rust_syntax_double_colon() {
+        let result = parse("func main() { const x = Result::Ok }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "unexpected '::'");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("use '.' for paths (e.g., Result.Ok) instead of '::'"));
+    }
+
+    #[test]
+    fn rust_syntax_let_mut() {
+        let result = parse("func main() { let mut counter = 0 }");
+        assert!(!result.is_ok());
+        assert_eq!(result.errors[0].message, "unexpected 'mut' keyword");
+        assert_eq!(result.errors[0].hint.as_deref(), Some("'let' is already mutable in Rask. Use 'const' for immutable bindings"));
+    }
 }

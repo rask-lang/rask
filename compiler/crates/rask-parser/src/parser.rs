@@ -400,6 +400,23 @@ impl Parser {
         let is_comptime = self.match_token(&TokenKind::Comptime);
         let is_unsafe = if !is_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
 
+        // Detect common Rust keywords
+        if let TokenKind::Ident(s) = self.current_kind() {
+            if s == "pub" {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unknown keyword 'pub'".to_string(),
+                    hint: Some("use 'public' instead of 'pub'".to_string()),
+                });
+            } else if s == "fn" {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unknown keyword 'fn'".to_string(),
+                    hint: Some("use 'func' instead of 'fn'".to_string()),
+                });
+            }
+        }
+
         let kind = match self.current_kind() {
             TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs)?,
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs)?,
@@ -847,6 +864,15 @@ impl Parser {
             }
 
             let field_pub = self.match_token(&TokenKind::Public);
+
+            // Detect trailing/separator comma (Rust syntax)
+            if self.check(&TokenKind::Comma) {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unexpected ',' in struct definition".to_string(),
+                    hint: Some("struct fields are separated by newlines, not commas".to_string()),
+                });
+            }
 
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![])? {
@@ -2586,6 +2612,7 @@ impl Parser {
         match self.current_kind() {
             TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(25),
             TokenKind::Question => Some(24),
+            TokenKind::ColonColon => Some(25), // Same precedence as dot for better error messages
             _ => None,
         }
     }
