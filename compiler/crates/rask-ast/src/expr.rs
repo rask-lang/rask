@@ -119,6 +119,11 @@ pub enum ExprKind {
         args: Vec<Expr>,
         body: Vec<super::stmt::Stmt>,
     },
+    /// With-as element binding (with expr as name, ... { body })
+    WithAs {
+        bindings: Vec<(Expr, String)>,
+        body: Vec<super::stmt::Stmt>,
+    },
     /// Closure (|x, y| x + y)
     Closure {
         params: Vec<ClosureParam>,

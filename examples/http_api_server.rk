@@ -46,7 +46,7 @@ struct Database {
 
 extend Database {
     func new() -> Database {
-        Database {
+        return Database {
             users: Map.new(),
             next_id: 1,
         }
@@ -98,7 +98,7 @@ func list_users(db: Shared<Database>) -> HttpResponse {
             email: u.email.clone(),
         }).collect()
     })
-    http_response(200, json.encode(users))
+    return http_response(200, json.encode(users))
 }
 
 func get_user(db: Shared<Database>, id: i64) -> HttpResponse {
@@ -108,7 +108,7 @@ func get_user(db: Shared<Database>, id: i64) -> HttpResponse {
         email: u.email.clone(),
     }))
 
-    match user {
+    return match user {
         Some(u) => http_response(200, json.encode(u)),
         None => http_response(404, json.encode(ErrorResponse { error: "User not found" })),
     }
@@ -126,24 +126,24 @@ func create_user(db: Shared<Database>, body: string) -> HttpResponse {
         const id = d.next_id
         d.next_id += 1
         const user = User { id: id, name: req.name, email: req.email }
-        try d.users.insert(id, user.clone())
+        d.users.insert(id, user.clone())
         UserResponse { id: user.id, name: user.name, email: user.email }
     })
 
-    http_response(201, json.encode(user))
+    return http_response(201, json.encode(user))
 }
 
 func delete_user(db: Shared<Database>, id: i64) -> HttpResponse {
     const removed = db.write(|d| d.users.remove(id))
 
-    match removed {
+    return match removed {
         Some(_) => http_response(204, ""),
         None => http_response(404, json.encode(ErrorResponse { error: "User not found" })),
     }
 }
 
 func http_response(status: i32, body: string) -> HttpResponse {
-    HttpResponse {
+    return HttpResponse {
         status: status,
         headers: Map.from([("Content-Type", "application/json")]),
         body: body,

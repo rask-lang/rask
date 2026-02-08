@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+[package]
+name = "rask-fmt"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-lexer = { path = "../rask-lexer" }
+rask-parser = { path = "../rask-parser" }

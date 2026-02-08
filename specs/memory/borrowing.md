@@ -310,6 +310,67 @@ for h in handles {
 }
 ```
 
+### Block-Scoped Element Binding (`with...as`)
+
+For multi-statement access, `with...as` provides block-scoped element bindings as an alternative to closures:
+
+```rask
+// Single element
+with pool[h] as entity {
+    entity.health -= damage
+    entity.last_hit = now()
+    if entity.health <= 0 {
+        entity.status = Status.Dead
+    }
+}
+
+// Multiple elements (comma-separated)
+with pool[h1] as e1, pool[h2] as e2 {
+    e1.health -= damage
+    e2.health += heal
+}
+
+// Cross-collection bindings
+with pool[h] as entity, map[key] as config {
+    entity.speed = config.base_speed
+}
+
+// Produces a value (expression context)
+const health = with pool[h] as entity {
+    entity.health -= 10
+    entity.health
+}
+```
+
+**Semantics:**
+
+| Rule | Description |
+|------|-------------|
+| **W1: Sugar for modify** | Same borrowing rules as closure-based `modify()` |
+| **W2: Exclusive borrow** | Collection exclusively borrowed for block duration |
+| **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
+| **W4: Error semantics** | Match direct indexing—panics on invalid handle/OOB |
+| **W5: Mutable bindings** | Bindings are mutable (can assign to fields) |
+| **W6: Value production** | Block can produce a value (last expression) |
+
+**When to use which:**
+
+| Pattern | Use |
+|---------|-----|
+| 1 statement | Direct `collection[key].field = value` |
+| Method chain | Direct `collection[key].pos.normalize()` |
+| 2+ statements, simple | `with collection[key] as name { ... }` |
+| Need error propagation | Closure `modify()` with Result return |
+| Multiple disjoint elements | `with collection[k1] as a, collection[k2] as b { ... }` |
+
+**Disambiguation from other `with` forms:**
+
+| Syntax | Meaning |
+|--------|---------|
+| `with threading(n) { }` | Scoped resource context |
+| `with context.allocator = arena { }` | Context override |
+| `with pool[h] as entity { }` | Element binding (has `as` keyword) |
+
 ### Field Projections for Partial Borrowing
 
 **Problem:** Borrowing a struct borrows all of it. If two functions need different fields, they can't run in parallel—even though they don't conflict.

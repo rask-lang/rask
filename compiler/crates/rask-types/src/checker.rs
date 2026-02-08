@@ -57,7 +57,8 @@ pub enum SelfParam {
 /// How a parameter is passed to a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamMode {
-    Default, // Normal pass-by-value
+    Default, // Normal pass-by-value (mutability inferred)
+    Read,    // read param (enforced read-only)
     Take,    // take param (consumed)
 }
 
@@ -203,6 +204,39 @@ impl BuiltinModules {
         });
 
         modules.insert("fs".to_string(), fs_methods);
+
+        // net module
+        let error_ty = Type::UnresolvedNamed("Error".to_string());
+        let mut net_methods = Vec::new();
+        // net.tcp_listen(addr: string) -> TcpListener or Error
+        net_methods.push(ModuleMethodSig {
+            name: "tcp_listen".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::UnresolvedNamed("TcpListener".to_string())),
+                err: Box::new(error_ty.clone()),
+            },
+        });
+        modules.insert("net".to_string(), net_methods);
+
+        // json module
+        let mut json_methods = Vec::new();
+        // json.encode(value) -> string (accepts any type)
+        json_methods.push(ModuleMethodSig {
+            name: "encode".to_string(),
+            params: vec![Type::UnresolvedNamed("_Any".to_string())],
+            ret: Type::String,
+        });
+        // json.decode(str: string) -> T or Error (generic, returns fresh var)
+        json_methods.push(ModuleMethodSig {
+            name: "decode".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::UnresolvedNamed("_JsonDecodeResult".to_string())),
+                err: Box::new(error_ty),
+            },
+        });
+        modules.insert("json".to_string(), json_methods);
 
         Self { modules }
     }
@@ -629,6 +663,11 @@ pub enum TypeError {
         borrow_span: Span,
         access_span: Span,
     },
+    #[error("cannot mutate read-only parameter `{name}`")]
+    MutateReadParam {
+        name: String,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -676,9 +715,9 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let elem_str = inner[..semi_pos].trim();
             let len_str = inner[semi_pos + 1..].trim();
             let elem = parse_type_string(elem_str, types)?;
-            let len: usize = len_str
-                .parse()
-                .map_err(|_| TypeError::InvalidTypeString(s.to_string()))?;
+            // Numeric size or comptime param name — use placeholder 0 for symbolic sizes
+            // so element type checking proceeds. Actual size resolves at comptime.
+            let len: usize = len_str.parse().unwrap_or(0);
             return Ok(Type::Array {
                 elem: Box::new(elem),
                 len,
@@ -912,7 +951,8 @@ pub struct TypeChecker {
     /// Current Self type (inside extend blocks).
     current_self_type: Option<Type>,
     /// Scope stack for local variable types (innermost scope last).
-    local_types: Vec<HashMap<String, Type>>,
+    /// Tuple: (type, is_read_only).
+    local_types: Vec<HashMap<String, (Type, bool)>>,
     /// Active borrows for aliasing detection (ESAD Phase 1).
     borrow_stack: Vec<ActiveBorrow>,
 }
@@ -937,9 +977,12 @@ impl TypeChecker {
     pub fn check(mut self, decls: &[Decl]) -> Result<TypedProgram, Vec<TypeError>> {
         self.collect_type_declarations(decls);
 
+        // Global scope for module-level bindings (imports, etc.)
+        self.push_scope();
         for decl in decls {
             self.check_decl(decl);
         }
+        self.pop_scope();
 
         self.solve_constraints();
 
@@ -1112,7 +1155,13 @@ impl TypeChecker {
             .filter(|p| p.name != "self")
             .map(|p| {
                 let ty = parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error);
-                let mode = if p.is_take { ParamMode::Take } else { ParamMode::Default };
+                let mode = if p.is_take {
+                    ParamMode::Take
+                } else if p.is_read {
+                    ParamMode::Read
+                } else {
+                    ParamMode::Default
+                };
                 (ty, mode)
             })
             .collect();
@@ -1181,6 +1230,21 @@ impl TypeChecker {
                     self.check_stmt(stmt);
                 }
             }
+            DeclKind::Import(imp) => {
+                // Register module name as local for field/method resolution.
+                // Modules handled by BuiltinModules (net, json, fs) route through
+                // check_method_call directly. Others like 'time' need local registration
+                // so field access (time.Instant) flows through resolve_field.
+                if imp.path.len() == 1 {
+                    let module_name = imp.alias.as_ref().unwrap_or(&imp.path[0]).clone();
+                    if !self.types.builtin_modules.is_module(&module_name) {
+                        self.define_local(
+                            module_name.clone(),
+                            Type::UnresolvedNamed(format!("__module_{}", module_name)),
+                        );
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -1199,17 +1263,43 @@ impl TypeChecker {
 
     fn define_local(&mut self, name: String, ty: Type) {
         if let Some(scope) = self.local_types.last_mut() {
-            scope.insert(name, ty);
+            scope.insert(name, (ty, false));
+        }
+    }
+
+    fn define_local_read_only(&mut self, name: String, ty: Type) {
+        if let Some(scope) = self.local_types.last_mut() {
+            scope.insert(name, (ty, true));
         }
     }
 
     fn lookup_local(&self, name: &str) -> Option<Type> {
         for scope in self.local_types.iter().rev() {
-            if let Some(ty) = scope.get(name) {
+            if let Some((ty, _)) = scope.get(name) {
                 return Some(ty.clone());
             }
         }
         None
+    }
+
+    /// Check if a local variable is read-only (from `read` parameter mode).
+    fn is_local_read_only(&self, name: &str) -> bool {
+        for scope in self.local_types.iter().rev() {
+            if let Some((_, read_only)) = scope.get(name) {
+                return *read_only;
+            }
+        }
+        false
+    }
+
+    /// Extract the root identifier name from an assignment target expression.
+    fn root_ident_name(expr: &Expr) -> Option<String> {
+        match &expr.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object, .. } => Self::root_ident_name(object),
+            ExprKind::Index { object, .. } => Self::root_ident_name(object),
+            _ => None,
+        }
     }
 
     // ------------------------------------------------------------------------
@@ -1557,7 +1647,11 @@ impl TypeChecker {
                 continue;
             }
             if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
-                self.define_local(param.name.clone(), ty);
+                if param.is_read {
+                    self.define_local_read_only(param.name.clone(), ty);
+                } else {
+                    self.define_local(param.name.clone(), ty);
+                }
             }
         }
 
@@ -1713,6 +1807,15 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
+                // Reject mutation of read-only parameters
+                if let Some(root) = Self::root_ident_name(target) {
+                    if self.is_local_read_only(&root) {
+                        self.errors.push(TypeError::MutateReadParam {
+                            name: root,
+                            span: stmt.span,
+                        });
+                    }
+                }
                 let target_ty = self.infer_expr(target);
                 let value_ty = self.infer_expr(value);
                 self.ctx.add_constraint(TypeConstraint::Equal(
@@ -2195,38 +2298,43 @@ impl TypeChecker {
 
             ExprKind::Spawn { body } => {
                 // Spawn blocks are like anonymous functions - they have their own return type
-                // Save the outer function's return type and set a fresh type variable
                 let outer_return_type = self.current_return_type.take();
                 let spawn_return_type = self.ctx.fresh_var();
                 self.current_return_type = Some(spawn_return_type.clone());
 
-                // Check statements with the spawn block's return type
-                for stmt in body {
-                    self.check_stmt(stmt);
+                // Check all statements except the last (which we infer separately)
+                let last_idx = body.len().saturating_sub(1);
+                for (i, stmt) in body.iter().enumerate() {
+                    if i < last_idx {
+                        self.check_stmt(stmt);
+                    }
                 }
 
-                // Infer the actual return type from the last statement
+                // Infer the return type from the last statement (only process once)
                 let inner_type = if let Some(last) = body.last() {
                     match &last.kind {
                         StmtKind::Expr(e) => self.infer_expr(e),
-                        StmtKind::Return(_) => Type::Never,
-                        _ => Type::Unit,
+                        StmtKind::Return(_) => {
+                            self.check_stmt(last);
+                            Type::Never
+                        }
+                        _ => {
+                            self.check_stmt(last);
+                            Type::Unit
+                        }
                     }
                 } else {
                     Type::Unit
                 };
 
-                // Unify the spawn block's return type with the inferred type
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     spawn_return_type.clone(),
                     inner_type,
                     expr.span,
                 ));
 
-                // Restore the outer function's return type
                 self.current_return_type = outer_return_type;
 
-                // Return ThreadHandle<T> where T is the spawn block's return type
                 Type::UnresolvedGeneric {
                     name: "ThreadHandle".to_string(),
                     args: vec![GenericArg::Type(Box::new(spawn_return_type))],
@@ -2240,6 +2348,19 @@ impl TypeChecker {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
+                Type::Unit
+            }
+
+            ExprKind::WithAs { bindings, body } => {
+                self.push_scope();
+                for (source_expr, binding_name) in bindings {
+                    let elem_ty = self.infer_expr(source_expr);
+                    self.define_local(binding_name.clone(), elem_ty);
+                }
+                for stmt in body {
+                    self.check_stmt(stmt);
+                }
+                self.pop_scope();
                 Type::Unit
             }
 
@@ -2447,8 +2568,11 @@ impl TypeChecker {
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
-            // Check parameter count
-            if sig.params.len() != arg_types.len() {
+            // Check parameter count — skip for wildcard params (_Any accepts anything)
+            let has_wildcard = sig.params.iter().any(|p| {
+                matches!(p, Type::UnresolvedNamed(n) if n == "_Any")
+            });
+            if !has_wildcard && sig.params.len() != arg_types.len() {
                 self.errors.push(TypeError::ArityMismatch {
                     expected: sig.params.len(),
                     found: arg_types.len(),
@@ -2457,16 +2581,19 @@ impl TypeChecker {
                 return Type::Error;
             }
 
-            // Check parameter types
-            for (param_ty, arg_ty) in sig.params.iter().zip(arg_types.iter()) {
-                self.ctx.add_constraint(TypeConstraint::Equal(
-                    param_ty.clone(),
-                    arg_ty.clone(),
-                    span,
-                ));
+            // Check parameter types (skip _Any wildcards)
+            if !has_wildcard {
+                for (param_ty, arg_ty) in sig.params.iter().zip(arg_types.iter()) {
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        param_ty.clone(),
+                        arg_ty.clone(),
+                        span,
+                    ));
+                }
             }
 
-            sig.ret.clone()
+            // Replace placeholder types with fresh vars for generic module methods
+            self.freshen_module_return_type(&sig.ret.clone())
         } else {
             self.errors.push(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed(module.to_string()),
@@ -2474,6 +2601,19 @@ impl TypeChecker {
                 span,
             });
             Type::Error
+        }
+    }
+
+    /// Replace internal placeholder types (_JsonDecodeResult, _Any) with fresh type vars.
+    fn freshen_module_return_type(&mut self, ty: &Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(n) if n.starts_with('_') => self.ctx.fresh_var(),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.freshen_module_return_type(ok)),
+                err: Box::new(self.freshen_module_return_type(err)),
+            },
+            Type::Option(inner) => Type::Option(Box::new(self.freshen_module_return_type(inner))),
+            _ => ty.clone(),
         }
     }
 
@@ -2658,6 +2798,13 @@ impl TypeChecker {
 
         match (&t1, &t2) {
             (a, b) if a == b => Ok(false),
+
+            // Empty tuple and Unit are equivalent
+            (Type::Tuple(elems), Type::Unit) | (Type::Unit, Type::Tuple(elems))
+                if elems.is_empty() =>
+            {
+                Ok(false)
+            }
 
             (Type::Var(id), other) => {
                 if self.ctx.occurs_in(*id, other) {
@@ -3037,6 +3184,41 @@ impl TypeChecker {
                     })
                 }
             }
+            // Builtin struct field resolution for runtime/stdlib types
+            Type::UnresolvedNamed(name) => {
+                let field_ty = match (name.as_str(), field.as_str()) {
+                    // time module namespace
+                    ("__module_time", "Instant") => Some(Type::UnresolvedNamed("Instant".to_string())),
+                    ("__module_time", "Duration") => Some(Type::UnresolvedNamed("Duration".to_string())),
+                    // HttpResponse struct fields
+                    ("HttpResponse", "status") => Some(Type::I32),
+                    ("HttpResponse", "headers") => Some(Type::UnresolvedGeneric {
+                        name: "Map".to_string(),
+                        args: vec![
+                            GenericArg::Type(Box::new(Type::String)),
+                            GenericArg::Type(Box::new(Type::String)),
+                        ],
+                    }),
+                    ("HttpResponse", "body") => Some(Type::String),
+                    // HttpRequest struct fields
+                    ("HttpRequest", "method") => Some(Type::String),
+                    ("HttpRequest", "path") => Some(Type::String),
+                    ("HttpRequest", "body") => Some(Type::String),
+                    ("HttpRequest", "headers") => Some(Type::UnresolvedGeneric {
+                        name: "Map".to_string(),
+                        args: vec![
+                            GenericArg::Type(Box::new(Type::String)),
+                            GenericArg::Type(Box::new(Type::String)),
+                        ],
+                    }),
+                    _ => None,
+                };
+                if let Some(ft) = field_ty {
+                    self.unify(&expected, &ft, span)
+                } else {
+                    Err(TypeError::NoSuchField { ty, field, span })
+                }
+            }
             _ => Err(TypeError::NoSuchField {
                 ty,
                 field,
@@ -3159,6 +3341,14 @@ impl TypeChecker {
             }
             Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
                 self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
+            }
+            // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
+            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
+                self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
+            }
+            // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "HttpResponse" | "Shared") => {
+                self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
                 let (methods, type_params) = match self.types.get(*base) {
@@ -3588,6 +3778,199 @@ impl TypeChecker {
                 method: method.to_string(),
                 span,
             }),
+        }
+    }
+
+    fn resolve_runtime_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let error_ty = Type::UnresolvedNamed("Error".to_string());
+        match (type_name, method) {
+            // Instant static constructor and instance methods
+            ("Instant", "now") if args.is_empty() => {
+                self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
+            }
+            ("Instant", "elapsed") if args.is_empty() => {
+                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
+            }
+            ("Instant", "duration_since") if args.len() == 1 => {
+                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
+            }
+            // Duration methods
+            ("Duration", "as_secs_f64") if args.is_empty() => {
+                self.unify(ret, &Type::F64, span)
+            }
+            ("Duration", "as_nanos") if args.is_empty() => {
+                self.unify(ret, &Type::U64, span)
+            }
+            ("Duration", "as_secs") if args.is_empty() => {
+                self.unify(ret, &Type::U64, span)
+            }
+            ("Duration", "from_nanos") if args.len() == 1 => {
+                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
+            }
+            // TcpListener
+            ("TcpListener", "accept") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(Type::UnresolvedNamed("TcpConnection".to_string())),
+                    err: Box::new(error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // TcpConnection
+            ("TcpConnection", "read_http_request") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(Type::UnresolvedNamed("HttpRequest".to_string())),
+                    err: Box::new(error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            ("TcpConnection", "write_http_response") if args.len() == 1 => {
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // HttpResponse — allow method-style access for chaining
+            ("HttpResponse", "status") if args.is_empty() => {
+                self.unify(ret, &Type::I32, span)
+            }
+            // Shared static constructor: Shared.new(value) -> Shared<T>
+            ("Shared", "new") if args.len() == 1 => {
+                let inner = args[0].clone();
+                let shared_ty = Type::UnresolvedGeneric {
+                    name: "Shared".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner))],
+                };
+                self.unify(ret, &shared_ty, span)
+            }
+            _ => {
+                // Fall through to constraint system for unknown methods
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedNamed(type_name.to_string()),
+                    method: method.to_string(),
+                    args: args.to_vec(),
+                    ret: ret.clone(),
+                    span,
+                });
+                Ok(false)
+            }
+        }
+    }
+
+    fn resolve_concurrency_generic_method(
+        &mut self,
+        type_name: &str,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        // Extract inner type T from generic args
+        let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+
+        match (type_name, method) {
+            // Shared<T>.read(|T| -> R) -> R
+            ("Shared", "read") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                self.unify(ret, &result_var, span)
+            }
+            // Shared<T>.write(|T| -> R) -> R
+            ("Shared", "write") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                self.unify(ret, &result_var, span)
+            }
+            // Shared<T>.clone() -> Shared<T>
+            ("Shared", "clone") if args.is_empty() => {
+                let shared_ty = Type::UnresolvedGeneric {
+                    name: "Shared".to_string(),
+                    args: type_args.to_vec(),
+                };
+                self.unify(ret, &shared_ty, span)
+            }
+            // Sender<T>.send(value: T) -> () or string
+            ("Sender", "send") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // Sender<T>.clone() -> Sender<T>
+            ("Sender", "clone") if args.is_empty() => {
+                let sender_ty = Type::UnresolvedGeneric {
+                    name: "Sender".to_string(),
+                    args: type_args.to_vec(),
+                };
+                self.unify(ret, &sender_ty, span)
+            }
+            // Receiver<T>.recv() -> T or string
+            ("Receiver", "recv") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(inner_type),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // Receiver<T>.try_recv() -> T or string
+            ("Receiver", "try_recv") if args.is_empty() => {
+                let result_type = Type::Result {
+                    ok: Box::new(inner_type),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            // Channel<T>.buffered(n) -> (Sender<T>, Receiver<T>)
+            ("Channel", "buffered") if args.len() == 1 => {
+                let sender = Type::UnresolvedGeneric {
+                    name: "Sender".to_string(),
+                    args: type_args.to_vec(),
+                };
+                let receiver = Type::UnresolvedGeneric {
+                    name: "Receiver".to_string(),
+                    args: type_args.to_vec(),
+                };
+                let tuple_ty = Type::Tuple(vec![sender, receiver]);
+                self.unify(ret, &tuple_ty, span)
+            }
+            // Channel<T>.unbuffered() -> (Sender<T>, Receiver<T>)
+            ("Channel", "unbuffered") if args.is_empty() => {
+                let sender = Type::UnresolvedGeneric {
+                    name: "Sender".to_string(),
+                    args: type_args.to_vec(),
+                };
+                let receiver = Type::UnresolvedGeneric {
+                    name: "Receiver".to_string(),
+                    args: type_args.to_vec(),
+                };
+                let tuple_ty = Type::Tuple(vec![sender, receiver]);
+                self.unify(ret, &tuple_ty, span)
+            }
+            _ => {
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedGeneric {
+                        name: type_name.to_string(),
+                        args: type_args.to_vec(),
+                    },
+                    method: method.to_string(),
+                    args: args.to_vec(),
+                    ret: ret.clone(),
+                    span,
+                });
+                Ok(false)
+            }
         }
     }
 }

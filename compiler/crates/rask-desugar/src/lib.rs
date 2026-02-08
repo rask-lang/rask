@@ -257,6 +257,14 @@ impl Desugarer {
                     self.desugar_stmt(s);
                 }
             }
+            ExprKind::WithAs { bindings, body } => {
+                for (expr, _) in bindings {
+                    self.desugar_expr(expr);
+                }
+                for s in body {
+                    self.desugar_stmt(s);
+                }
+            }
             ExprKind::Closure { body, .. } => {
                 self.desugar_expr(body);
             }
