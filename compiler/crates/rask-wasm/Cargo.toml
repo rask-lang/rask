@@ -19,6 +19,7 @@ rask-interp = { path = "../rask-interp" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-desugar = { path = "../rask-desugar" }
+rask-diagnostics = { path = "../rask-diagnostics" }
 rask-ast = { path = "../rask-ast" }
 
 [profile.release]
