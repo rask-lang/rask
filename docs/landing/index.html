@@ -4,8 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rask - Safety without the pain</title>
-    <meta name="description" content="A systems programming language between Rust and Go. Memory safety without lifetime annotations.">
+    <title>Rask - Memory safety without lifetime annotations</title>
+    <meta name="description" content="A systems programming language with memory safety and no garbage collection. Compile-time safety without the complexity.">
     <link rel="icon" type="image/png" href="../book/src/assets/rask32.png">
     <link rel="stylesheet" href="landing.css">
 </head>
@@ -24,13 +24,13 @@
     <main class="container">
         <section class="hero">
             <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
-            <p class="tagline">Safety without the pain.</p>
+            <p class="tagline">Memory safety without lifetime annotations.</p>
             <p class="subtitle">
-                Rust's safety guarantees without lifetime annotations.<br>
-                Go's simplicity without garbage collection.
+                Compile-time safety without the complexity.<br>
+                Manual memory management without the pain.
             </p>
             <div class="cta">
-                <a href="app/" class="btn primary">→ try in browser</a>
+                <a href="../playground/" class="btn primary">→ try in browser</a>
                 <a href="book/index.html" class="btn secondary">read docs</a>
             </div>
         </section>
@@ -39,39 +39,39 @@
             <h2>What makes Rask different</h2>
 
             <div class="feature-cards">
-                <div class="feature-card active" data-feature="resources">
-                    <h3>Resource Safety</h3>
-                    <p>Files must be closed. Compiler enforces it.</p>
+                <div class="feature-card active" data-feature="syntax">
+                    <h3>Clean Syntax</h3>
+                    <p>Designed for humans, readable by default.</p>
                     <div class="comparison">
-                        <span class="rust-tag">Rust: Drop trait, lifetimes</span>
+                        <span class="other-tag">Rust: let mut, expr?, Result&lt;T, E&gt;, Option&lt;T&gt;</span>
+                        <span class="rask-tag">Rask: const, try expr, T or E, T?</span>
+                    </div>
+                </div>
+
+                <div class="feature-card" data-feature="resources">
+                    <h3>Resource Safety</h3>
+                    <p>Files must be closed. The compiler enforces cleanup on all paths.</p>
+                    <div class="comparison">
+                        <span class="other-tag">Rust: Drop trait, RAII</span>
                         <span class="rask-tag">Rask: @resource + ensure</span>
                     </div>
                 </div>
 
-                <div class="feature-card" data-feature="spawn">
+                <div class="feature-card" data-feature="concurrency">
                     <h3>No Function Coloring</h3>
-                    <p>Spawn threads without async/await infection.</p>
+                    <p>Spawn threads without async/await spreading through your codebase. Share state without Arc&lt;Mutex&lt;T&gt;&gt; boilerplate.</p>
                     <div class="comparison">
-                        <span class="rust-tag">Rust: async fn, .await</span>
-                        <span class="rask-tag">Rask: spawn { }</span>
+                        <span class="other-tag">Rust: async fn, Arc&lt;Mutex&lt;T&gt;&gt;</span>
+                        <span class="rask-tag">Rask: spawn { }, Shared&lt;T&gt;</span>
                     </div>
                 </div>
 
                 <div class="feature-card" data-feature="handles">
                     <h3>Graphs Without Lifetimes</h3>
-                    <p>Entity systems with no 'a annotations.</p>
+                    <p>Build entity systems and graphs without lifetime annotations. Pool&lt;T&gt; and Handle&lt;T&gt; instead of references.</p>
                     <div class="comparison">
-                        <span class="rust-tag">Rust: &'a T, PhantomData</span>
-                        <span class="rask-tag">Rask: Pool + Handle</span>
-                    </div>
-                </div>
-
-                <div class="feature-card" data-feature="shared">
-                    <h3>Safe Shared State</h3>
-                    <p>Concurrent mutation without Arc boilerplate.</p>
-                    <div class="comparison">
-                        <span class="rust-tag">Rust: Arc&lt;Mutex&lt;T&gt;&gt;</span>
-                        <span class="rask-tag">Rask: Shared&lt;T&gt;</span>
+                        <span class="other-tag">Rust: &'a T, PhantomData</span>
+                        <span class="rask-tag">Rask: Pool&lt;T&gt; + Handle&lt;T&gt;</span>
                     </div>
                 </div>
             </div>
@@ -91,58 +91,35 @@
             <h2>What you get</h2>
             <ul>
                 <li><strong>Memory safe</strong> — no use-after-free, no data races, no null pointers</li>
-                <li><strong>No lifetimes</strong> — scoped borrowing without annotations</li>
+                <li><strong>Scoped borrowing</strong> — no lifetime annotations in function signatures</li>
                 <li><strong>No GC</strong> — deterministic cleanup, predictable performance</li>
-                <li><strong>Resource safety</strong> — files must be closed, no silent leaks</li>
-                <li><strong>No async coloring</strong> — I/O just works</li>
+                <li><strong>Resource safety</strong> — compiler enforces cleanup on all exit paths</li>
+                <li><strong>No async coloring</strong> — threads without async/await spreading</li>
             </ul>
         </section>
 
-        <section class="comparison">
-            <h2>Where it sits</h2>
-            <table>
-                <thead>
-                    <tr>
-                        <th></th>
-                        <th>Rust</th>
-                        <th class="hl">Rask</th>
-                        <th>Go</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <td>Memory safe</td>
-                        <td>yes</td>
-                        <td class="hl">yes</td>
-                        <td>no</td>
-                    </tr>
-                    <tr>
-                        <td>Simple</td>
-                        <td>no</td>
-                        <td class="hl">yes</td>
-                        <td>yes</td>
-                    </tr>
-                    <tr>
-                        <td>No GC</td>
-                        <td>yes</td>
-                        <td class="hl">yes</td>
-                        <td>no</td>
-                    </tr>
-                    <tr>
-                        <td>Lifetimes</td>
-                        <td>required</td>
-                        <td class="hl">none</td>
-                        <td>n/a</td>
-                    </tr>
-                </tbody>
-            </table>
+        <section class="philosophy">
+            <h2>The goal</h2>
+            <p>Rask is the language you choose for 80% of systems code, where productivity and safety matter more than squeezing out the last 5% of performance. You get memory safety without fighting the borrow checker.</p>
+            
+            <p><strong>Lower the abstraction tax.</strong> You still manage ownership and resources—through block scopes and explicit keywords, not lifetime annotations. Major costs (allocations, locks, I/O) stay visible. Small safety checks (bounds, nulls) are implicit.</p>
+
+            <p>When you write <code>ensure file.close()</code>, the compiler guarantees it runs on all exit paths. Early return, error propagation, panic—doesn't matter. Resource types must be consumed before leaving scope.</p>
+
+            <p>Rask draws from everywhere: Rust's ownership, Zig's comptime, Erlang's supervision, Vale's regions. The goal is Rust's safety with Go's approachability.</p>
+        </section>
+
+        <section class="status-section">
+            <h2>Where we are</h2>
+            
+            <p class="status">Rask is in early development (pre-0.1). The design is coherent and there's a working interpreter, but expect breaking changes and bugs as the language evolves.</p>
         </section>
     </main>
 
     <footer>
         <div class="container">
             <a href="book/index.html">docs</a> ·
-            <a href="app/">playground</a> ·
+            <a href="../playground/">playground</a> ·
             <a href="https://github.com/dritory/rask">github</a> ·
             <a href="https://github.com/dritory/rask/blob/main/LICENSE-MIT">mit/apache-2.0</a>
         </div>
@@ -154,58 +131,73 @@
         const filename = document.querySelector('.code-preview .filename');
 
         const examples = {
+            syntax: {
+                title: 'clean_syntax.rk',
+                code: `struct Point {
+    x: f64
+    y: f64
+}
+
+extend Point {
+    func distance(self, other: Point) -> f64 {
+        const dx = self.x - other.x
+        const dy = self.y - other.y
+        return (dx * dx + dy * dy).sqrt()
+    }
+}
+
+func parse_point(s: string) -> Point or Error {
+    const parts = s.split(',')
+    const x = try parts[0].trim().parse<f64>()
+    const y = try parts[1].trim().parse<f64>()
+    return Point { x, y }
+}
+
+func find_nearest(points: Vec<Point>, target: Point) -> Point? {
+    return points.min_by(|p| p.distance(target))
+}`
+            },
             resources: {
                 title: 'resource_safety.rk',
                 code: `func backup(src: string, dst: string) -> () or Error {
     const file = try fs.open(src)
-    ensure file.close()  // Runs on ALL paths
+    ensure file.close()  // enforced on all exit paths
 
     const out = try fs.create(dst)
     ensure out.close()
 
     try out.write(try file.read_to_string())
 }
-// Compiler error if file not consumed!`
+// Compiler checks that files are closed`
             },
-            spawn: {
-                title: 'no_coloring.rk',
-                code: `func process_logs() -> () or Error {
-    const h1 = spawn { analyze("app.log") }
-    const h2 = spawn { analyze("error.log") }
+            concurrency: {
+                title: 'concurrency.rk',
+                code: `// Threads without async/await
+const h1 = spawn { analyze("app.log") }
+const h2 = spawn { analyze("error.log") }
+try h1.join()
+try h2.join()
 
-    try h1.join()
-    try h2.join()
-}
-// No async/await. spawn works ANYWHERE.`
+// Shared state
+const users = Shared.new(Map.new())
+spawn { users.write(|m| m.insert(id, user)) }.detach()
+const count = users.read(|m| m.len())`
             },
             handles: {
                 title: 'handles.rk',
                 code: `struct Entity {
-    health: i32,
+    health: i32
     target: Handle<Entity>?
 }
 
 const entities = Pool<Entity>.new()
 const player = try entities.insert(Entity {
-    health: 100,
+    health: 100
     target: None
 })
 
-// No 'a, no 'b. Just handles.
+// No lifetime annotations needed
 entities[enemy].target = Some(player)`
-            },
-            shared: {
-                title: 'shared_state.rk',
-                code: `const db = Shared.new(Database { users: Map.new() })
-
-spawn {
-    db.write(|d| { d.users.insert(id, user) })
-}.detach()
-
-spawn {
-    const count = db.read(|d| d.users.len())
-}.detach()
-// No Arc<Mutex<T>>. Safe by construction.`
             }
         };
 
@@ -216,7 +208,7 @@ spawn {
         }
 
         function syntaxHighlight(code) {
-            const keywords = /\b(func|const|let|try|ensure|spawn|struct|return|or|if|else|for|in|match)\b/g;
+            const keywords = /\b(func|const|let|try|extend|ensure|spawn|struct|return|or|if|else|for|in|match)\b/g;
             const types = /\b(string|i32|u32|f64|bool|Error|Handle|Pool|Shared|Map|Database|Entity|Vec|Option|None|Some)\b/g;
             const strings = /"[^"]*"/g;
             const comments = /\/\/.*/g;
@@ -272,7 +264,7 @@ spawn {
         }
 
         // Set default example on load
-        showExample('resources');
+        showExample('syntax');
 
         // Card click handlers
         cards.forEach(card => {
