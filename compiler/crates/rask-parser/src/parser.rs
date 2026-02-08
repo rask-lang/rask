@@ -178,31 +178,76 @@ impl Parser {
     }
 
     /// Allow keywords as field/method names.
+    /// After `.` or `?.`, any keyword can be used as an identifier.
     fn expect_ident_or_keyword(&mut self) -> Result<String, ParseError> {
         let name = match self.current_kind().clone() {
             TokenKind::Ident(name) => name,
-            TokenKind::Spawn => "spawn".to_string(),
-            TokenKind::Match => "match".to_string(),
+            // Control flow
             TokenKind::If => "if".to_string(),
             TokenKind::Else => "else".to_string(),
+            TokenKind::Match => "match".to_string(),
             TokenKind::For => "for".to_string(),
+            TokenKind::In => "in".to_string(),
             TokenKind::While => "while".to_string(),
             TokenKind::Loop => "loop".to_string(),
-            TokenKind::Return => "return".to_string(),
             TokenKind::Break => "break".to_string(),
             TokenKind::Continue => "continue".to_string(),
+            TokenKind::Return => "return".to_string(),
+            TokenKind::Deliver => "deliver".to_string(),
+            // Declarations
+            TokenKind::Func => "func".to_string(),
+            TokenKind::Let => "let".to_string(),
+            TokenKind::Const => "const".to_string(),
+            TokenKind::Struct => "struct".to_string(),
+            TokenKind::Enum => "enum".to_string(),
+            TokenKind::Trait => "trait".to_string(),
+            TokenKind::Extend => "extend".to_string(),
+            TokenKind::Import => "import".to_string(),
+            TokenKind::Type => "type".to_string(),
+            // Modifiers
+            TokenKind::Public => "public".to_string(),
+            TokenKind::Take => "take".to_string(),
+            TokenKind::Own => "own".to_string(),
+            TokenKind::Unsafe => "unsafe".to_string(),
+            TokenKind::Comptime => "comptime".to_string(),
+            TokenKind::Native => "native".to_string(),
+            TokenKind::Export => "export".to_string(),
+            TokenKind::Using => "using".to_string(),
+            TokenKind::Lazy => "lazy".to_string(),
+            // Concurrency
+            TokenKind::Spawn => "spawn".to_string(),
+            TokenKind::SpawnThread => "spawn_thread".to_string(),
+            TokenKind::SpawnRaw => "spawn_raw".to_string(),
+            TokenKind::Select => "select".to_string(),
             TokenKind::With => "with".to_string(),
-            TokenKind::In => "in".to_string(),
+            // Error handling
+            TokenKind::Ensure => "ensure".to_string(),
+            TokenKind::Catch => "catch".to_string(),
+            TokenKind::Try => "try".to_string(),
+            // Testing
+            TokenKind::Test => "test".to_string(),
+            TokenKind::Benchmark => "benchmark".to_string(),
+            TokenKind::Assert => "assert".to_string(),
+            TokenKind::Check => "check".to_string(),
+            // Operators/keywords
             TokenKind::As => "as".to_string(),
             TokenKind::Is => "is".to_string(),
+            TokenKind::Where => "where".to_string(),
             TokenKind::Step => "step".to_string(),
             TokenKind::Or => "or".to_string(),
-            TokenKind::Try => "try".to_string(),
+            // Literals/constants
+            TokenKind::Bool(true) => "true".to_string(),
+            TokenKind::Bool(false) => "false".to_string(),
+            TokenKind::None => "none".to_string(),
+            TokenKind::Null => "null".to_string(),
+            // Other
+            TokenKind::Extern => "extern".to_string(),
+            TokenKind::Asm => "asm".to_string(),
             _ => return Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
                 self.current().span,
-            )),
+            ).with_hint("Names start with a letter or '_'")),
         };
         self.advance();
         Ok(name)
@@ -2017,6 +2062,7 @@ impl Parser {
     fn parse_array_literal(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::LBracket)?;
+        self.skip_newlines();
 
         if self.check(&TokenKind::RBracket) {
             self.advance();
@@ -2025,9 +2071,11 @@ impl Parser {
         }
 
         let first = self.parse_expr()?;
+        self.skip_newlines();
 
         if self.match_token(&TokenKind::Semi) {
             let count = self.parse_expr()?;
+            self.skip_newlines();
             self.expect(&TokenKind::RBracket)?;
             let end = self.tokens[self.pos - 1].span.end;
             return Ok(Expr {
@@ -2039,9 +2087,12 @@ impl Parser {
 
         let mut elements = vec![first];
         if self.match_token(&TokenKind::Comma) {
+            self.skip_newlines();
             while !self.check(&TokenKind::RBracket) && !self.at_end() {
                 elements.push(self.parse_expr()?);
+                self.skip_newlines();
                 if !self.match_token(&TokenKind::Comma) { break; }
+                self.skip_newlines();
             }
         }
 
