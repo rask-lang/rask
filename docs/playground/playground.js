@@ -6,6 +6,7 @@ import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
 import { keymap } from 'https://esm.sh/@codemirror/view@6';
 import { indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
+import { linter } from 'https://esm.sh/@codemirror/lint@6';
 import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
 
 // Rask language definition for CodeMirror
@@ -53,6 +54,32 @@ const raskLanguage = StreamLanguage.define({
         return null;
     }
 });
+
+// Rask syntax error linter
+function raskLinter(view) {
+    if (!playground) return [];
+
+    try {
+        const code = view.state.doc.toString();
+        const diagnosticsJson = playground.check(code);
+        const report = JSON.parse(diagnosticsJson);
+
+        return report.diagnostics.map(diag => {
+            // Find primary label for position
+            const primaryLabel = diag.labels.find(l => l.role === "primary") || diag.labels[0];
+
+            return {
+                from: primaryLabel.start.byte_offset,
+                to: primaryLabel.end.byte_offset,
+                severity: diag.severity.toLowerCase(), // "error" or "warning"
+                message: diag.message
+            };
+        });
+    } catch (error) {
+        console.error('Linter error:', error);
+        return [];
+    }
+}
 
 // Global state
 let playground = null;
@@ -111,7 +138,7 @@ function populateExamples() {
         group.label = 'Learn Rask';
         learningExamples.forEach(ex => {
             const option = document.createElement('option');
-            option.value = ex.key;
+            option.value = ex.key; 
             option.textContent = ex.title;
             group.appendChild(option);
         });
@@ -159,6 +186,7 @@ function initEditor() {
             basicSetup,
             raskLanguage,
             oneDark,
+            linter(raskLinter, { delay: 300 }),
             keymap.of([indentWithTab]),
             runKeymap,
             EditorView.theme({
