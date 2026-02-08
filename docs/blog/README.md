@@ -41,12 +41,6 @@ bundle exec jekyll serve
 
 Visit `http://localhost:4000/rask/blog/`
 
-## Deployment
-
-The blog is automatically built and deployed via GitHub Actions when you push to `main`. It's published to:
-
-**https://dritory.github.io/rask/blog/**
-
 ## Structure
 
 - `_posts/` - Blog posts (date-named markdown files)
