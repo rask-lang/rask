@@ -7,7 +7,7 @@ const SQUARES = comptime {
     for i in 0..20 {
         arr.push(i * i)
     }
-    deliver arr
+    arr
 }
 
 // Fibonacci lookup table
@@ -22,7 +22,7 @@ const FIBONACCI = comptime {
         fib.push(prev1 + prev2)
     }
 
-    deliver fib
+    fib
 }
 
 // Powers of two
@@ -33,7 +33,7 @@ const POWERS_OF_TWO = comptime {
         powers.push(power)
         power = power * 2
     }
-    deliver powers
+    powers
 }
 
 // Prime numbers up to 50
@@ -45,11 +45,11 @@ const PRIMES = comptime {
 
         for i in 2..n {
             if i * i > n {
-                deliver ()  // Break early
+                ()  // Break early
             }
             if n % i == 0 {
                 is_prime = false
-                deliver ()  // Break
+                ()  // Break
             }
         }
 
@@ -58,7 +58,7 @@ const PRIMES = comptime {
         }
     }
 
-    deliver primes
+    primes
 }
 
 func main() {
@@ -100,7 +100,7 @@ func main() {
     print("\n\n")
 
     // Comptime for conditional compilation
-    const IS_DEBUG = comptime { deliver true }
+    const IS_DEBUG = comptime { true }
 
     if IS_DEBUG {
         print("Debug mode enabled\n")
@@ -119,7 +119,7 @@ func main() {
     // Comptime for generating constants
     const BUFFER_SIZE = comptime {
         // Could be based on platform, configuration, etc.
-        deliver 1024
+        1024
     }
 
     print("Buffer size: ")

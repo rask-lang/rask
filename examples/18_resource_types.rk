@@ -137,7 +137,7 @@ func demonstrate_file_resources() -> () or string {
     print("\n")
 
     // file.close() runs via ensure
-    return Ok(())
+    return ()
 }
 
 func main() {

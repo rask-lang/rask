@@ -8,7 +8,7 @@
 // Node in a linked list - uses Handle instead of references
 struct Node {
     value: i32
-    next: Handle<Node>?,  // Optional handle to next node
+    next: Handle<Node>?  // Optional handle to next node
 }
 
 // Entity in a game or simulation
@@ -16,7 +16,7 @@ struct Entity {
     id: i32
     name: string
     health: i32
-    target: Handle<Entity>?,  // Optional handle to target entity
+    target: Handle<Entity>?  // Optional handle to target entity
 }
 
 func main() {

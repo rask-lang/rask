@@ -7,13 +7,13 @@
 
 // Generic struct with two type parameters
 struct Pair<T, U> {
-    first: T,
-    second: U,
+    first: T
+    second: U
 }
 
 // Generic struct with one type parameter
 struct Box<T> {
-    value: T,
+    value: T
 }
 
 // Methods on generic types
