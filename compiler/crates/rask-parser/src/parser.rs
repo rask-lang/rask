@@ -580,11 +580,14 @@ impl Parser {
     }
 
     fn parse_base_type(&mut self) -> Result<String, ParseError> {
-        // Handle reference types: &T
+        // Reference types are not yet implemented
         if self.check(&TokenKind::Amp) {
-            self.advance();
-            let referent_ty = self.parse_type_name()?;
-            return Ok(format!("&{}", referent_ty));
+            let span = self.current().span;
+            return Err(ParseError::not_implemented(
+                "reference types",
+                "remove the '&' - Rask currently uses owned values",
+                span,
+            ));
         }
 
         // Handle raw pointer types: *const T, *mut T
@@ -1845,10 +1848,11 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::BitNot, operand: Box::new(operand) }, span: Span::new(start, end) })
             }
             TokenKind::Amp => {
-                self.advance();
-                let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = operand.span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Ref, operand: Box::new(operand) }, span: Span::new(start, end) })
+                return Err(ParseError::not_implemented(
+                    "reference expressions",
+                    "remove the '&' - Rask currently uses owned values",
+                    self.current().span,
+                ));
             }
             TokenKind::Star => {
                 self.advance();
@@ -2646,6 +2650,14 @@ impl ParseError {
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
+    }
+
+    fn not_implemented(feature: &str, hint: &str, span: Span) -> Self {
+        Self {
+            span,
+            message: format!("{} are not yet implemented", feature),
+            hint: Some(hint.to_string()),
+        }
     }
 }
 
