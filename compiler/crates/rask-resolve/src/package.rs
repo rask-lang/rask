@@ -152,7 +152,7 @@ impl PackageRegistry {
 
             if path.is_file() {
                 if let Some(ext) = path.extension() {
-                    if ext == "rask" {
+                    if ext == "rk" {
                         files.push(path);
                     }
                 }
