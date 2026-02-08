@@ -45,6 +45,7 @@ jobs:
       run: |
         cd compiler/crates/rask-wasm
         wasm-pack build --target web --out-dir ../../../docs/playground/pkg
+        rm -f ../../../docs/playground/pkg/.gitignore
 
     - name: Setup mdBook
       uses: peaceiris/actions-mdbook@v2
