@@ -41,6 +41,10 @@ drop(ptr)                           // Consume (deallocate)
 | Clone | Yes, if T: Clone (explicit `.clone()` required) |
 | Default | No |
 
+### Type Checker Behavior
+
+`Owned<T>` is transparent to type checking—`Owned<T>` unifies with `T` directly. Code that accepts `T` also accepts `Owned<T>` without explicit dereferencing at the type level. This is a deliberate simplification; full linearity enforcement (O1–O4) is a Phase 4 compiler feature.
+
 ### Linearity Rules
 
 `Owned<T>` is linear: must be consumed exactly once.

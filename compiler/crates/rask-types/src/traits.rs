@@ -354,6 +354,7 @@ impl<'a> TraitChecker<'a> {
         let params_str: Vec<String> = sig.params.iter().map(|(t, mode)| {
             match mode {
                 ParamMode::Take => format!("take {:?}", t),
+                ParamMode::Read => format!("read {:?}", t),
                 ParamMode::Default => format!("{:?}", t),
             }
         }).collect();

@@ -44,22 +44,22 @@ extend SpscRingBuffer<T, N> {
     // Called from main loop - allocation-free for real-time safety
     @no_alloc
     func try_pop(self) -> T? {
-        const read = self.read_idx.load(Ordering.Relaxed)
+        const rd = self.read_idx.load(Ordering.Relaxed)
         const write = self.write_idx.load(Ordering.Acquire)
 
-        if read == write {
+        if rd == write {
             return None  // Buffer empty
         }
 
-        const value = self.data[read]
-        self.read_idx.store((read + 1) % N, Ordering.Release)
+        const value = self.data[rd]
+        self.read_idx.store((rd + 1) % N, Ordering.Release)
         Some(value)
     }
 
     func len(self) -> usize {
         const write = self.write_idx.load(Ordering.Acquire)
-        const read = self.read_idx.load(Ordering.Acquire)
-        if write >= read { write - read } else { N - read + write }
+        const rd = self.read_idx.load(Ordering.Acquire)
+        if write >= rd { write - rd } else { N - rd + write }
     }
 }
 

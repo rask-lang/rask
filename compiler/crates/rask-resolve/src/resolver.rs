@@ -935,6 +935,28 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
+            ExprKind::WithAs { bindings, body } => {
+                for (source_expr, _) in bindings.iter() {
+                    self.resolve_expr(source_expr);
+                }
+                self.scopes.push(ScopeKind::Block);
+                for (_, binding_name) in bindings {
+                    let sym_id = self.symbols.insert(
+                        binding_name.clone(),
+                        SymbolKind::Variable { mutable: true },
+                        None,
+                        expr.span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, expr.span) {
+                        self.errors.push(e);
+                    }
+                }
+                for stmt in body {
+                    self.resolve_stmt(stmt);
+                }
+                self.scopes.pop();
+            }
             ExprKind::Closure { params, body } => {
                 self.scopes.push(ScopeKind::Closure);
                 for param in params {

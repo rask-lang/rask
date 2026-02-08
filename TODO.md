@@ -152,12 +152,13 @@ Tools that make it actually usable:
 - [ ] Decide: `char` as a type, or just `u32` + validation?
 - [ ] Decide: `discard` keyword for wildcards on non-Copy types
 - [ ] Write guidelines: when to panic vs return error
-- [ ] Spec `Owned<T>` semantics properly (only mentioned in passing right now)
+- [x] Spec `Owned<T>` semantics — see [owned.md](specs/memory/owned.md)
 
 ### Medium (Should decide before Phase 3)
-- [ ] Consolidate parameter modes — `read`, `mutate`, `take` need one unified spec
-- [ ] Design shared state primitives — `Shared<T>` / `ReadWrite<T>` for read-heavy patterns
-- [ ] Decide multi-element access syntax — `with pool[h] as entity { }` vs closure pattern
+- [x] Consolidate parameter modes — see [parameters.md](specs/memory/parameters.md) (borrow/read/take)
+  - [ ] Type checker: enforce `read` parameter mode (`ParamMode::Read`)
+- [x] Design shared state primitives — `Shared<T>`, see [sync.md](specs/concurrency/sync.md)
+- [x] Decide multi-element access syntax — `with...as` binding + closure pattern
 - [ ] Design task-local storage syntax
 
 ### Deferred

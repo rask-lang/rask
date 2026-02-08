@@ -19,4 +19,5 @@ rask-ownership = { path = "../rask-ownership" }
 rask-diagnostics = { path = "../rask-diagnostics" }
 rask-interp = { path = "../rask-interp" }
 rask-spec-test = { path = "../rask-spec-test" }
+rask-fmt = { path = "../rask-fmt" }
 colored = "3"
