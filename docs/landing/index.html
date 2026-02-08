@@ -26,9 +26,8 @@
             <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
             <p class="tagline">The Rust-Go dilemma, solved.</p>
             <p class="subtitle">
-                Rust gives you safety but makes you fight the borrow checker.<br>
-                Go gives you simplicity but no memory safety guarantees.<br>
-                Rask gives you both.
+                Simpler than Rust, safer than Go.<br>
+                No lifetime annotations, no garbage collection.
             </p>
             <div class="cta">
                 <a href="app/" class="btn primary">→ try in browser</a>
@@ -153,7 +152,7 @@ entities[enemy].target = player_handle</code></pre>
             <ul>
                 <li>Memory safety without lifetime annotations</li>
                 <li>No garbage collection, deterministic cleanup</li>
-                <li>Compile-time checks, not runtime overhead</li>
+                <li>Predictable performance (no GC pauses)</li>
                 <li>Fast compilation (local analysis only)</li>
                 <li>Simple mental model (values are owned, borrows are temporary)</li>
             </ul>
