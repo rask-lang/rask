@@ -38,7 +38,9 @@ impl Interpreter {
             Value::Handle { pool_id, index, generation, .. } => {
                 return self.call_handle_method(&receiver, *pool_id, *index, *generation, method, args);
             }
-            Value::TypeConstructor(kind) => return self.call_type_constructor_method(kind, method, args),
+            Value::TypeConstructor { kind, type_param } => {
+                return self.call_type_constructor_method(kind, type_param.clone(), method, args);
+            }
             Value::Enum { name, variant, fields } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);
             }

@@ -468,7 +468,7 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
-            "insert" => {
+            "insert" | "alloc" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit);
                 let mut pool = p.lock().unwrap();
                 let pool_id = pool.pool_id;
@@ -499,6 +499,28 @@ impl Interpreter {
                     }
                 } else {
                     Err(RuntimeError::TypeError("pool.get() requires a Handle argument".to_string()))
+                }
+            }
+            "get_mut" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.first() {
+                    let pool = p.lock().unwrap();
+                    match pool.validate(*pool_id, *index, *generation) {
+                        Ok(idx) => {
+                            let val = pool.slots[idx].1.as_ref().unwrap().clone();
+                            Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![val],
+                            })
+                        }
+                        Err(_) => Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "None".to_string(),
+                            fields: vec![],
+                        }),
+                    }
+                } else {
+                    Err(RuntimeError::TypeError("pool.get_mut() requires a Handle argument".to_string()))
                 }
             }
             "remove" => {
@@ -578,6 +600,7 @@ impl Interpreter {
                 // Clone free list and length
                 new_pool.free_list = pool.free_list.clone();
                 new_pool.len = pool.len;
+                new_pool.type_param = pool.type_param.clone();
                 Ok(Value::Pool(Arc::new(Mutex::new(new_pool))))
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -757,6 +780,7 @@ impl Interpreter {
     pub(crate) fn call_type_constructor_method(
         &self,
         kind: &TypeConstructorKind,
+        type_param: Option<String>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -790,11 +814,11 @@ impl Interpreter {
                 Ok(Value::String(Arc::new(Mutex::new(String::new()))))
             }
             (TypeConstructorKind::Pool, "new") => {
-                Ok(Value::Pool(Arc::new(Mutex::new(PoolData::new()))))
+                Ok(Value::Pool(Arc::new(Mutex::new(PoolData::with_type_param(type_param.clone())))))
             }
             (TypeConstructorKind::Pool, "with_capacity") => {
                 let cap = self.expect_int(&args, 0)? as usize;
-                let mut pool = PoolData::new();
+                let mut pool = PoolData::with_type_param(type_param.clone());
                 pool.slots.reserve(cap);
                 Ok(Value::Pool(Arc::new(Mutex::new(pool))))
             }
