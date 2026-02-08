@@ -14,13 +14,17 @@
     <header>
         <div class="header-content">
             <h1>🎮 Rask Playground</h1>
+            <nav class="header-nav">
+                <a href="../">Home</a>
+                <a href="../getting-started/">Getting Started</a>
+                <a href="../guide/">Guide</a>
+                <a href="../examples/">Examples</a>
+                <a href="../reference/">Reference</a>
+            </nav>
             <div class="header-controls">
                 <select id="examples" aria-label="Select example">
                     <option value="">Examples...</option>
-                    <option value="hello_world">Hello World</option>
-                    <option value="collections">Collections</option>
-                    <option value="patterns">Pattern Matching</option>
-                    <option value="math_demo">Math Demo</option>
+                    <!-- Populated dynamically from examples.js -->
                 </select>
                 <button id="run-btn" class="btn btn-primary" title="Run code (Ctrl+Enter)">▶ Run</button>
                 <button id="reset-btn" class="btn" title="Clear editor">↻ Reset</button>

@@ -6,92 +6,11 @@ import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
 import { keymap } from 'https://esm.sh/@codemirror/view@6';
 import { indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
+import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
 
 // Global state
 let playground = null;
 let editor = null;
-
-// Default example code
-const DEFAULT_CODE = `func main() {
-    println("Hello from Rask!")
-
-    const items = Vec.of(1, 2, 3, 4, 5)
-    let sum = 0
-
-    for item in items {
-        sum = sum + item
-    }
-
-    println("Sum:", sum)
-}`;
-
-// Example programs
-const EXAMPLES = {
-    hello_world: `func main() {
-    println("Hello, World!")
-    println("Welcome to Rask!")
-}`,
-    collections: `func main() {
-    // Vector
-    const numbers = Vec.of(1, 2, 3, 4, 5)
-    println("Numbers:", numbers)
-
-    // Struct
-    const person = Person {
-        name: "Alice",
-        age: 30
-    }
-    println("Person:", person.name, "age:", person.age)
-
-    // Pattern matching
-    const result = match person.age {
-        0...17 => "Minor",
-        18...64 => "Adult",
-        _ => "Senior"
-    }
-    println("Category:", result)
-}
-
-struct Person {
-    name: string,
-    age: i32
-}`,
-    patterns: `func main() {
-    const values = Vec.of(1, 2, 3, 4, 5)
-
-    for value in values {
-        const msg = match value {
-            1 => "one",
-            2 => "two",
-            3 => "three",
-            _ => "many"
-        }
-        println(value, "=", msg)
-    }
-
-    const opt = Option.Some(42)
-    if opt is Some(x) {
-        println("Got value:", x)
-    }
-}`,
-    math_demo: `func main() {
-    const pi = 3.14159
-    const radius = 5.0
-
-    const area = pi * radius * radius
-    println("Circle area:", area)
-
-    const nums = Vec.of(10, 20, 30, 40, 50)
-    let total = 0
-
-    for n in nums {
-        total = total + n
-    }
-
-    const avg = total / nums.len()
-    println("Average:", avg)
-}`
-};
 
 // Initialize playground
 async function init() {
@@ -109,6 +28,9 @@ async function init() {
 
         // Initialize editor
         initEditor();
+
+        // Populate examples dropdown
+        populateExamples();
 
         // Load code from URL or use default
         loadFromURL();
@@ -135,6 +57,42 @@ async function init() {
         showLoading(false);
         showError('Failed to initialize playground: ' + error.message);
         console.error('Init error:', error);
+    }
+}
+
+// Populate examples dropdown from metadata
+function populateExamples() {
+    const dropdown = document.getElementById('examples');
+
+    // Clear existing options except the first one
+    dropdown.innerHTML = '<option value="">Examples...</option>';
+
+    // Add learning examples first (01_* through 07_*)
+    const learningExamples = EXAMPLE_METADATA.filter(ex => ex.key.match(/^\d+_/));
+    if (learningExamples.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = 'Learn Rask';
+        learningExamples.forEach(ex => {
+            const option = document.createElement('option');
+            option.value = ex.key;
+            option.textContent = ex.title;
+            group.appendChild(option);
+        });
+        dropdown.appendChild(group);
+    }
+
+    // Add other examples
+    const otherExamples = EXAMPLE_METADATA.filter(ex => !ex.key.match(/^\d+_/));
+    if (otherExamples.length > 0) {
+        const group = document.createElement('optgroup');
+        group.label = 'More Examples';
+        otherExamples.forEach(ex => {
+            const option = document.createElement('option');
+            option.value = ex.key;
+            option.textContent = ex.title;
+            group.appendChild(option);
+        });
+        dropdown.appendChild(group);
     }
 }
 
