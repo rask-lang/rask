@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, mpsc};
 
-use rask_ast::decl::{BenchmarkDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, StructDecl, TestDecl};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, StructDecl, TestDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_types::GenericArg;
@@ -264,6 +264,7 @@ impl Interpreter {
         let mut tests: Vec<TestDecl> = Vec::new();
         let mut benchmarks: Vec<BenchmarkDecl> = Vec::new();
         let mut test_fns: Vec<FnDecl> = Vec::new();
+        let mut top_level_consts: Vec<ConstDecl> = Vec::new();
 
         for decl in decls {
             match &decl.kind {
@@ -325,6 +326,9 @@ impl Interpreter {
                 }
                 DeclKind::Benchmark(b) => {
                     benchmarks.push(b.clone());
+                }
+                DeclKind::Const(c) => {
+                    top_level_consts.push(c.clone());
                 }
                 _ => {}
             }
@@ -469,6 +473,12 @@ impl Interpreter {
 
         for (name, kind) in imports {
             self.env.define(name, Value::Module(kind));
+        }
+
+        // Evaluate top-level const declarations after builtins are registered
+        for c in &top_level_consts {
+            let value = self.eval_expr(&c.init)?;
+            self.env.define(c.name.clone(), value);
         }
 
         let entry = entry_fn.or_else(|| self.functions.get("main").cloned());
@@ -1159,6 +1169,13 @@ impl Interpreter {
             }
 
             StmtKind::Ensure { .. } => Ok(Value::Unit),
+
+            StmtKind::Comptime(body) => {
+                self.env.push_scope();
+                let result = self.exec_stmts(body);
+                self.env.pop_scope();
+                result
+            }
 
             _ => Ok(Value::Unit),
         }
@@ -2290,6 +2307,13 @@ impl Interpreter {
 
                 self.env.pop_scope();
                 Ok(result)
+            }
+
+            ExprKind::Comptime { body } => {
+                self.env.push_scope();
+                let result = self.exec_stmts(body);
+                self.env.pop_scope();
+                result
             }
 
             _ => Ok(Value::Unit),

@@ -522,6 +522,11 @@ impl ComptimeInterpreter {
                 ComptimeValue::Array(values)
             }
 
+            // Nested comptime — already in comptime context, just evaluate the body
+            ExprKind::Comptime { body } => {
+                return self.eval_block(body);
+            }
+
             // Closure - store as value (not supported for execution yet)
             ExprKind::Closure { .. } => {
                 return Err(ComptimeError::NotSupported("closures at comptime".to_string()));
@@ -539,7 +544,13 @@ impl ComptimeInterpreter {
 
             // Other expressions not yet supported
             _ => {
-                return Err(ComptimeError::NotSupported(format!("{:?}", expr.kind)));
+                let kind_name = match &expr.kind {
+                    ExprKind::MethodCall { method, .. } => format!("method call `.{method}()`"),
+                    ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
+                    ExprKind::IfLet { .. } => "`if` pattern match".to_string(),
+                    _ => format!("{:?}", std::mem::discriminant(&expr.kind)),
+                };
+                return Err(ComptimeError::NotSupported(kind_name));
             }
         };
 

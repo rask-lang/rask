@@ -71,67 +71,194 @@ impl<'a> Printer<'a> {
         &self.source[span.start..span.end]
     }
 
-    /// Strip trailing whitespace from a byte position to find the content end.
-    /// Parser spans include trailing newlines/whitespace; this finds the real end.
-    fn content_end(&self, pos: usize) -> usize {
+    /// Check if there's a blank line in the source immediately before `pos`,
+    /// scanning backward through whitespace only. Returns true if 2+ newlines
+    /// are found before hitting non-whitespace content.
+    fn has_blank_line_before(&self, pos: usize) -> bool {
+        let bytes = self.source.as_bytes();
+        let mut newlines = 0;
         let mut p = pos;
-        while p > 0 && self.source.as_bytes()[p - 1].is_ascii_whitespace() {
+        while p > 0 {
             p -= 1;
+            match bytes[p] {
+                b'\n' => newlines += 1,
+                b' ' | b'\t' | b'\r' => {}
+                _ => break,
+            }
         }
-        p
+        newlines >= 2
     }
 
-    /// Emit all comments before byte position `pos`. Returns the span end of
-    /// the last emitted comment (or None if no comments were emitted).
-    fn emit_comments_before(&mut self, pos: usize) -> Option<usize> {
+    /// Take comments before `pos`, emit them with proper blank lines.
+    /// Returns the comments so caller can check blank line between last comment and next item.
+    fn emit_comments_before(&mut self, pos: usize, emit_blank_before_first: bool) -> Vec<comment::Comment> {
         let comments = self.comments.take_before(pos);
-        let mut last_end = None;
-        for c in &comments {
-            // Check if there's a blank line between the last emitted item and this comment
-            if let Some(le) = last_end {
-                if comment::has_blank_line_between(self.source, le, c.span.start) {
-                    self.emit_blank_line();
-                }
+        for (i, c) in comments.iter().enumerate() {
+            if i == 0 && emit_blank_before_first && self.has_blank_line_before(c.span.start) {
+                self.emit_blank_line();
+            } else if i > 0 && self.has_blank_line_before(c.span.start) {
+                self.emit_blank_line();
             }
             self.emit_indent();
             self.output.push_str(&c.text);
             self.emit_newline();
-            last_end = Some(c.span.end);
         }
-        last_end
+        comments
     }
 
-    /// Check if there's a blank line in source between two byte positions,
-    /// stripping trailing whitespace from `a` first (parser spans include it).
-    fn has_blank_line_after(&self, span_end: usize, next_start: usize) -> bool {
-        let a = self.content_end(span_end);
-        comment::has_blank_line_between(self.source, a, next_start)
+    /// Try to emit a trailing comment on the same line as the code.
+    /// Returns true if a trailing comment was emitted.
+    fn try_emit_trailing_comment(&mut self, span_end: usize) -> bool {
+        if let Some(c) = self.comments.peek_next() {
+            // Find actual content end (skip trailing whitespace in span)
+            let bytes = self.source.as_bytes();
+            let mut content_end = span_end;
+            while content_end > 0 && bytes[content_end - 1].is_ascii_whitespace() {
+                content_end -= 1;
+            }
+            // Check if comment is on the same line (no newline between content and comment)
+            if c.span.start > content_end && c.span.start < self.source.len() {
+                let gap = &self.source[content_end..c.span.start];
+                if !gap.contains('\n') {
+                    let c = self.comments.advance().unwrap();
+                    // Preserve original spacing or use standard 2-space gap
+                    let spaces = gap.len().max(2);
+                    for _ in 0..spaces {
+                        self.output.push(' ');
+                    }
+                    self.output.push_str(&c.text);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Get the indentation level (in spaces) of a source position by scanning back to line start.
+    fn source_indent_at(&self, pos: usize) -> usize {
+        let bytes = self.source.as_bytes();
+        let mut p = pos;
+        while p > 0 && bytes[p - 1] != b'\n' {
+            p -= 1;
+        }
+        let mut spaces = 0;
+        while p + spaces < pos && bytes[p + spaces] == b' ' {
+            spaces += 1;
+        }
+        spaces
+    }
+
+    /// Consume trailing comments that belong to the current block (at current indent or deeper).
+    fn consume_trailing_block_comments(&mut self) {
+        let min_indent = self.indent * self.config.indent_width;
+        loop {
+            let c = match self.comments.peek_next() {
+                Some(c) => c,
+                None => break,
+            };
+            let comment_indent = self.source_indent_at(c.span.start);
+            if comment_indent < min_indent {
+                break;
+            }
+            let c = self.comments.advance().unwrap();
+            if self.has_blank_line_before(c.span.start) {
+                self.emit_blank_line();
+            }
+            self.emit_indent();
+            self.output.push_str(&c.text);
+            self.emit_newline();
+        }
+    }
+
+    /// Strip type params from names (parser includes `<T, U>` in names).
+    fn strip_type_params<'b>(&self, name: &'b str) -> &'b str {
+        if let Some(idx) = name.find('<') {
+            &name[..idx]
+        } else {
+            name
+        }
+    }
+
+    /// Convert parser-normalized types back to Rask syntax.
+    /// E.g., `Result<i32, string>` → `i32 or string`.
+    fn format_type(&self, ty: &str) -> String {
+        if let Some(inner) = ty.strip_prefix("Result<") {
+            if let Some(inner) = inner.strip_suffix('>') {
+                // Find the top-level comma (not inside nested angle brackets)
+                let mut depth = 0;
+                for (i, ch) in inner.char_indices() {
+                    match ch {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        ',' if depth == 0 => {
+                            let ok_ty = inner[..i].trim();
+                            let err_ty = inner[i + 1..].trim();
+                            return format!(
+                                "{} or {}",
+                                self.format_type(ok_ty),
+                                self.format_type(err_ty)
+                            );
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // Convert func(T, U) -> R back to |T, U| -> R
+        if let Some(rest) = ty.strip_prefix("func(") {
+            // Find matching closing paren
+            let mut depth = 1;
+            for (i, ch) in rest.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            let params = &rest[..i];
+                            let after = rest[i + 1..].trim();
+                            if let Some(ret) = after.strip_prefix("->") {
+                                let ret_ty = ret.trim();
+                                return format!(
+                                    "|{}| -> {}",
+                                    params,
+                                    self.format_type(ret_ty)
+                                );
+                            } else {
+                                return format!("|{}|", params);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        ty.to_string()
     }
 
     // --- File ---
 
     pub fn format_file(&mut self, decls: &[Decl]) {
-        let mut prev_end: Option<usize> = None;
+        let mut is_first = true;
         let mut prev_was_import = false;
 
         for decl in decls {
             let is_import = matches!(decl.kind, DeclKind::Import(_));
 
-            // Emit comments before this decl
-            let last_comment_end = self.emit_comments_before(decl.span.start);
+            // Emit comments before this decl (with blank lines from source)
+            let comments = self.emit_comments_before(decl.span.start, !is_first);
 
-            // Blank line between previous decl and this decl
-            if prev_end.is_some() {
+            // Blank line between previous decl/comment and this decl
+            if !is_first && comments.is_empty() {
                 if !(prev_was_import && is_import) {
                     self.emit_blank_line();
                 }
             }
 
-            // If comments were emitted, check for blank line between last comment and decl
-            if let Some(ce) = last_comment_end {
-                if comment::has_blank_line_between(self.source, ce, decl.span.start) {
-                    self.emit_blank_line();
-                }
+            // Blank line between last comment and decl (if source had one)
+            if !comments.is_empty() && self.has_blank_line_before(decl.span.start) {
+                self.emit_blank_line();
+            } else if !is_first && comments.is_empty() {
+                // Already handled above
             }
 
             self.format_decl(decl);
@@ -139,7 +266,7 @@ impl<'a> Printer<'a> {
                 self.emit_newline();
             }
 
-            prev_end = Some(decl.span.end);
+            is_first = false;
             prev_was_import = is_import;
         }
     }
@@ -148,7 +275,7 @@ impl<'a> Printer<'a> {
 
     fn format_decl(&mut self, decl: &Decl) {
         match &decl.kind {
-            DeclKind::Fn(f) => self.format_fn_decl(f, false),
+            DeclKind::Fn(f) => self.format_fn_decl(f, false, false),
             DeclKind::Struct(s) => self.format_struct_decl(s),
             DeclKind::Enum(e) => self.format_enum_decl(e),
             DeclKind::Trait(t) => self.format_trait_decl(t),
@@ -162,7 +289,7 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn format_fn_decl(&mut self, f: &FnDecl, is_method: bool) {
+    fn format_fn_decl(&mut self, f: &FnDecl, is_method: bool, is_trait_decl: bool) {
         if !is_method {
             self.emit_indent();
         }
@@ -183,7 +310,8 @@ impl<'a> Printer<'a> {
             self.emit("unsafe ");
         }
         self.emit("func ");
-        self.emit(&f.name);
+        let name = self.strip_type_params(&f.name);
+        self.emit(name);
 
         if !f.type_params.is_empty() {
             self.emit("<");
@@ -207,10 +335,13 @@ impl<'a> Printer<'a> {
 
         if let Some(ref ret_ty) = f.ret_ty {
             self.emit(" -> ");
-            self.emit(ret_ty);
+            let ty = self.format_type(ret_ty);
+            self.emit(&ty);
         }
 
-        if f.body.is_empty() {
+        if f.body.is_empty() && is_trait_decl {
+            // Trait method declaration with no body — no braces
+        } else if f.body.is_empty() {
             self.emit(" {}");
         } else {
             self.emit(" {");
@@ -258,7 +389,8 @@ impl<'a> Printer<'a> {
             }
             self.emit(&param.name);
             self.emit(": ");
-            self.emit(&param.ty);
+            let ty = self.format_type(&param.ty);
+            self.emit(&ty);
             if let Some(ref default) = param.default {
                 self.emit(" = ");
                 self.format_expr(default);
@@ -279,7 +411,8 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("struct ");
-        self.emit(&s.name);
+        let name = self.strip_type_params(&s.name);
+        self.emit(name);
 
         if !s.type_params.is_empty() {
             self.emit("<");
@@ -303,7 +436,8 @@ impl<'a> Printer<'a> {
             }
             self.emit(&field.name);
             self.emit(": ");
-            self.emit(&field.ty);
+            let ty = self.format_type(&field.ty);
+            self.emit(&ty);
             self.emit_newline();
         }
         self.indent -= 1;
@@ -318,7 +452,8 @@ impl<'a> Printer<'a> {
             self.emit("public ");
         }
         self.emit("enum ");
-        self.emit(&e.name);
+        let name = self.strip_type_params(&e.name);
+        self.emit(name);
 
         if !e.type_params.is_empty() {
             self.emit("<");
@@ -340,7 +475,8 @@ impl<'a> Printer<'a> {
             self.emit(&variant.name);
             if !variant.fields.is_empty() {
                 let is_tuple = variant.fields.first().map_or(false, |f| {
-                    f.name.parse::<usize>().is_ok()
+                    f.name.starts_with('_') && f.name[1..].parse::<usize>().is_ok()
+                        || f.name.parse::<usize>().is_ok()
                 });
                 if is_tuple {
                     self.emit("(");
@@ -348,7 +484,8 @@ impl<'a> Printer<'a> {
                         if i > 0 {
                             self.emit(", ");
                         }
-                        self.emit(&field.ty);
+                        let ty = self.format_type(&field.ty);
+                        self.emit(&ty);
                     }
                     self.emit(")");
                 } else {
@@ -359,7 +496,8 @@ impl<'a> Printer<'a> {
                         }
                         self.emit(&field.name);
                         self.emit(": ");
-                        self.emit(&field.ty);
+                        let ty = self.format_type(&field.ty);
+                        self.emit(&ty);
                     }
                     self.emit(" }");
                 }
@@ -389,7 +527,7 @@ impl<'a> Printer<'a> {
                 self.emit_blank_line();
             }
             self.emit_indent();
-            self.format_fn_decl(method, true);
+            self.format_fn_decl(method, true, true);
             self.emit_newline();
             first = false;
         }
@@ -416,7 +554,7 @@ impl<'a> Printer<'a> {
                 self.emit_blank_line();
             }
             self.emit_indent();
-            self.format_fn_decl(method, true);
+            self.format_fn_decl(method, true, false);
             self.emit_newline();
             first = false;
         }
@@ -518,46 +656,44 @@ impl<'a> Printer<'a> {
         self.emit(")");
         if let Some(ref ret_ty) = e.ret_ty {
             self.emit(" -> ");
-            self.emit(ret_ty);
+            let ty = self.format_type(ret_ty);
+            self.emit(&ty);
         }
     }
 
     // --- Statements ---
 
     fn format_stmts(&mut self, stmts: &[Stmt]) {
-        let mut prev_end: Option<usize> = None;
+        let mut is_first = true;
 
         for stmt in stmts {
-            // Preserve blank lines from original source
-            if let Some(pe) = prev_end {
-                if self.has_blank_line_after(pe, stmt.span.start) {
-                    self.emit_blank_line();
-                }
+            // Emit comments before this statement (with blank line detection)
+            let comments = self.emit_comments_before(stmt.span.start, !is_first);
+
+            // Blank line before statement (only if no comments emitted —
+            // if comments were emitted, their blank line handling covers it)
+            if !is_first && comments.is_empty() && self.has_blank_line_before(stmt.span.start) {
+                self.emit_blank_line();
             }
 
-            // Emit comments that appear before this statement
-            let last_comment_end = self.emit_comments_before(stmt.span.start);
-
-            // If comments were emitted, check for blank line between last comment and stmt
-            if let Some(ce) = last_comment_end {
-                if comment::has_blank_line_between(self.source, ce, stmt.span.start) {
-                    self.emit_blank_line();
-                }
+            // Blank line between last comment and this statement
+            if !comments.is_empty() && self.has_blank_line_before(stmt.span.start) {
+                self.emit_blank_line();
             }
 
             self.emit_indent();
             self.format_stmt(stmt);
+            // Try to emit a trailing comment on the same line
+            self.try_emit_trailing_comment(stmt.span.end);
             if !self.output.ends_with('\n') {
                 self.emit_newline();
             }
 
-            prev_end = Some(stmt.span.end);
+            is_first = false;
         }
 
-        // Emit trailing comments inside this block
-        if let Some(last) = stmts.last() {
-            self.emit_comments_before(last.span.end + 10000);
-        }
+        // Emit trailing comments inside this block (only if at current indent or deeper)
+        self.consume_trailing_block_comments();
     }
 
     fn format_stmt(&mut self, stmt: &Stmt) {
@@ -570,7 +706,8 @@ impl<'a> Printer<'a> {
                 self.emit(name);
                 if let Some(ref ty) = ty {
                     self.emit(": ");
-                    self.emit(ty);
+                    let t = self.format_type(ty);
+                    self.emit(&t);
                 }
                 self.emit(" = ");
                 self.format_expr(init);
@@ -586,7 +723,8 @@ impl<'a> Printer<'a> {
                 self.emit(name);
                 if let Some(ref ty) = ty {
                     self.emit(": ");
-                    self.emit(ty);
+                    let t = self.format_type(ty);
+                    self.emit(&t);
                 }
                 self.emit(" = ");
                 self.format_expr(init);
@@ -856,12 +994,7 @@ impl<'a> Printer<'a> {
                         self.format_expr(guard);
                     }
                     self.emit(" => ");
-                    if matches!(arm.body.kind, ExprKind::Block(_)) {
-                        self.format_expr(&arm.body);
-                    } else {
-                        self.format_expr(&arm.body);
-                        self.emit(",");
-                    }
+                    self.format_match_arm_body(&arm.body);
                     self.emit_newline();
                 }
                 self.indent -= 1;
@@ -892,9 +1025,10 @@ impl<'a> Printer<'a> {
             }
             ExprKind::StructLit { name, fields, spread } => {
                 self.emit(name);
+                let source_is_multiline = self.source_text(expr.span).contains('\n');
                 if fields.is_empty() && spread.is_none() {
                     self.emit(" {}");
-                } else if fields.len() <= 2 && spread.is_none() && self.fields_fit_one_line(fields) {
+                } else if !source_is_multiline && spread.is_none() && self.fields_fit_one_line(fields) {
                     self.emit(" { ");
                     for (i, field) in fields.iter().enumerate() {
                         if i > 0 {
@@ -1119,6 +1253,28 @@ impl<'a> Printer<'a> {
     fn fields_fit_one_line(&self, fields: &[FieldInit]) -> bool {
         let est: usize = fields.iter().map(|f| f.name.len() + 4 + 10).sum();
         est < 60
+    }
+
+    /// Format match arm body, detecting inline vs block form from source.
+    fn format_match_arm_body(&mut self, body: &Expr) {
+        if let ExprKind::Block(ref stmts) = body.kind {
+            // Check if the source had braces (block form) or not (inline expression)
+            let source_text = self.source_text(body.span).trim_start();
+            if source_text.starts_with('{') {
+                // Block form in source — emit as block
+                self.format_expr(body);
+            } else if stmts.len() == 1 {
+                // Inline expression form
+                self.format_stmt_inline(&stmts[0]);
+                self.emit(",");
+            } else {
+                // Multiple statements but no braces — use block
+                self.format_expr(body);
+            }
+        } else {
+            self.format_expr(body);
+            self.emit(",");
+        }
     }
 
     // --- Patterns ---

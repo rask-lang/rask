@@ -31,6 +31,22 @@ impl CommentList {
         result
     }
 
+    /// Peek at the next unconsumed comment without advancing.
+    pub fn peek_next(&self) -> Option<&Comment> {
+        self.comments.get(self.cursor)
+    }
+
+    /// Advance cursor by one (consume the peeked comment).
+    pub fn advance(&mut self) -> Option<Comment> {
+        if self.cursor < self.comments.len() {
+            let c = self.comments[self.cursor].clone();
+            self.cursor += 1;
+            Some(c)
+        } else {
+            None
+        }
+    }
+
     /// Drain any remaining comments.
     pub fn take_rest(&mut self) -> Vec<Comment> {
         let mut result = Vec::new();
@@ -40,13 +56,6 @@ impl CommentList {
         }
         result
     }
-}
-
-/// Check if there's a blank line between two byte positions in the source.
-pub fn has_blank_line_between(source: &str, pos_a: usize, pos_b: usize) -> bool {
-    let between = &source[pos_a..pos_b.min(source.len())];
-    let newline_count = between.chars().filter(|&c| c == '\n').count();
-    newline_count >= 2
 }
 
 /// Extract all comments from source, skipping string literals.
