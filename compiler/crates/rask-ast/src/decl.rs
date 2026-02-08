@@ -81,6 +81,7 @@ pub struct ExternDecl {
 #[derive(Debug, Clone)]
 pub struct FnDecl {
     pub name: String,
+    pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret_ty: Option<String>,
     pub body: Vec<Stmt>,

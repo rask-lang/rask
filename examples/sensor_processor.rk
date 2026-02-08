@@ -10,7 +10,7 @@ import time
 // Used for interrupt handler → main loop communication without locks
 // ============================================================================
 
-struct SpscRingBuffer<T, const N: usize> {
+struct SpscRingBuffer<T, comptime N: usize> {
     data: [T; N]
     write_idx: Atomic<usize>  // Written by producer (interrupt)
     read_idx: Atomic<usize>   // Written by consumer (main loop)
