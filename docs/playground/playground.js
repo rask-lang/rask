@@ -1,12 +1,58 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Rask Playground - Browser-based code execution
 import { EditorView, basicSetup } from 'https://esm.sh/codemirror';
-import { javascript } from 'https://esm.sh/@codemirror/lang-javascript';
+import { StreamLanguage } from 'https://esm.sh/@codemirror/language@6';
 import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
 import { keymap } from 'https://esm.sh/@codemirror/view@6';
 import { indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
 import { EXAMPLES, EXAMPLE_METADATA, DEFAULT_CODE } from './examples.js';
+
+// Rask language definition for CodeMirror
+const raskLanguage = StreamLanguage.define({
+    name: "rask",
+    startState: () => ({ inComment: false }),
+    token: (stream, state) => {
+        // Comments
+        if (stream.match("//")) {
+            stream.skipToEnd();
+            return "comment";
+        }
+
+        // Strings
+        if (stream.match(/^"(?:[^"\\]|\\.)*"/)) {
+            return "string";
+        }
+
+        // Numbers
+        if (stream.match(/^[0-9]+\.?[0-9]*/)) {
+            return "number";
+        }
+
+        // Keywords
+        if (stream.match(/^(func|const|let|if|else|match|loop|while|for|in|return|struct|enum|trait|extend|impl|public|private|try|ensure|with|break|continue|spawn|async|await)\b/)) {
+            return "keyword";
+        }
+
+        // Types
+        if (stream.match(/^(i32|i64|f32|f64|bool|string|char|Vec|Map|Option|Result|Some|None|Ok|Err)\b/)) {
+            return "type";
+        }
+
+        // Builtins
+        if (stream.match(/^(println|print|format|assert|panic)\b/)) {
+            return "builtin";
+        }
+
+        // Operators
+        if (stream.match(/^[+\-*\/%=<>!&|^]/)) {
+            return "operator";
+        }
+
+        stream.next();
+        return null;
+    }
+});
 
 // Global state
 let playground = null;
@@ -112,7 +158,7 @@ function initEditor() {
         doc: DEFAULT_CODE,
         extensions: [
             basicSetup,
-            javascript(), // Use JavaScript highlighting as placeholder
+            raskLanguage,
             oneDark,
             keymap.of([indentWithTab]),
             runKeymap,
