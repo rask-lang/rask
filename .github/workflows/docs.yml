@@ -70,11 +70,11 @@ jobs:
         bundle install
         bundle exec jekyll build --source . --destination ../build/blog
 
-    - name: Copy Playground to Build
+    - name: Copy Playground App to Build
       run: |
-        mkdir -p docs/build/playground
-        cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/playground/
-        cp -r docs/playground/pkg docs/build/playground/
+        mkdir -p docs/build/app
+        cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
+        cp -r docs/playground/pkg docs/build/app/
         cp docs/CNAME docs/build/CNAME
         cp docs/.nojekyll docs/build/.nojekyll
 

@@ -60,11 +60,32 @@ header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 20px;
 }
 
 h1 {
     font-size: 1.5rem;
     font-weight: 600;
+    white-space: nowrap;
+}
+
+.header-nav {
+    display: flex;
+    gap: 20px;
+    align-items: center;
+}
+
+.header-nav a {
+    color: rgba(255, 255, 255, 0.85);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.header-nav a:hover {
+    color: white;
+    text-decoration: underline;
 }
 
 .header-controls {
@@ -297,6 +318,14 @@ footer a:hover {
         font-size: 1.2rem;
     }
 
+    .header-nav {
+        gap: 12px;
+    }
+
+    .header-nav a {
+        font-size: 0.85rem;
+    }
+
     .header-controls {
         gap: 6px;
     }
@@ -314,6 +343,7 @@ footer a:hover {
 @media (max-width: 480px) {
     header {
         padding: 0 10px;
+        height: auto;
     }
 
     .header-content {
@@ -324,6 +354,16 @@ footer a:hover {
 
     h1 {
         font-size: 1rem;
+    }
+
+    .header-nav {
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+    }
+
+    .header-nav a {
+        font-size: 0.8rem;
     }
 
     .btn {
