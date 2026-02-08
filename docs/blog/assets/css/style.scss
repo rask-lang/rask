@@ -233,7 +233,7 @@ code {
 }
 
 pre {
-    background: var(--bg-2);
+    background: #252B35;
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 1.25rem;
@@ -242,8 +242,8 @@ pre {
     line-height: 1.6;
 }
 
-pre code {
-    background: none;
+pre code, pre code.hljs {
+    background: #252B35;
     padding: 0;
     color: var(--text);
     font-size: 0.9em;

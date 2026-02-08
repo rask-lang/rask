@@ -40,8 +40,36 @@
     </footer>
 
     <script>
+        // Register Rask language then highlight all code blocks
         document.addEventListener('DOMContentLoaded', function() {
-            if (typeof hljs !== 'undefined') { hljs.highlightAll(); }
+            if (typeof hljs === 'undefined') return;
+            hljs.registerLanguage('rask', function(hljs) {
+                return {
+                    name: 'Rask',
+                    aliases: ['rk'],
+                    keywords: {
+                        keyword: 'func struct enum trait extend match if else for while loop return const let try ensure comptime with spawn using import export public take read own deliver any unsafe break continue is in as or',
+                        literal: 'true false none',
+                        built_in: 'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char Vec Map Pool Option Result Handle println print format panic'
+                    },
+                    contains: [
+                        hljs.COMMENT('//', '$'),
+                        hljs.COMMENT('/\\*', '\\*/'),
+                        { className: 'string', variants: [
+                            {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                            {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                        ]},
+                        { className: 'number', variants: [
+                            {begin: '\\b0b[01_]+'}, {begin: '\\b0o[0-7_]+'},
+                            {begin: '\\b0x[0-9a-fA-F_]+'}, {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?'}
+                        ], relevance: 0},
+                        { className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                        { className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                        { className: 'meta', begin: /@[a-z_][a-z0-9_]*/ }
+                    ]
+                };
+            });
+            hljs.highlightAll();
         });
     </script>
 </body>
