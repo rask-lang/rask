@@ -272,6 +272,13 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_secondary(*borrow_span, format!("`{}` is borrowed here", var))
                     .with_help("restructure the code to avoid mutating while borrowed, or clone the value")
             }
+
+            MutateReadParam { name, span } => {
+                Diagnostic::error(format!("cannot mutate read-only parameter `{}`", name))
+                    .with_code("E0321")
+                    .with_primary(*span, format!("`{}` is a read parameter", name))
+                    .with_help("remove `read` from the parameter to allow mutation".to_string())
+            }
         }
     }
 }
