@@ -67,6 +67,29 @@ h1 {
     font-size: 1.5rem;
     font-weight: 600;
     white-space: nowrap;
+    margin: 0;
+}
+
+.header-left {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.back-link {
+    color: rgba(255, 255, 255, 0.7);
+    text-decoration: none;
+    font-size: 0.9rem;
+    font-weight: 500;
+    padding: 6px 12px;
+    border-radius: 4px;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.back-link:hover {
+    color: white;
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .header-nav {
@@ -326,8 +349,9 @@ footer a:hover {
 
 .version {
     margin-top: 4px;
-    color: var(--nord3);
-    font-size: 0.75rem;
+    color: var(--nord4);
+    font-size: 0.85rem;
+    font-weight: 500;
 }
 
 /* Responsive design */
@@ -377,6 +401,15 @@ footer a:hover {
 
     h1 {
         font-size: 1rem;
+    }
+
+    .header-left {
+        gap: 8px;
+    }
+
+    .back-link {
+        font-size: 0.8rem;
+        padding: 4px 8px;
     }
 
     .header-nav {
