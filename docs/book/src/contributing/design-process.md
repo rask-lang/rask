@@ -12,7 +12,7 @@ Rask's design is guided by clear principles and measured against specific metric
 6. **Resource Types** - I/O handles must be consumed
 7. **Compiler Knowledge is Visible** - IDE shows inferred information
 
-Full details: [CORE_DESIGN.md](https://github.com/dritory/rask/blob/main/CORE_DESIGN.md)
+Full details: [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md)
 
 ## Validation
 
@@ -35,11 +35,11 @@ Design decisions are evaluated using concrete metrics:
 - Binary size
 - Memory usage
 
-See [METRICS.md](https://github.com/dritory/rask/blob/main/specs/METRICS.md) for the scoring methodology.
+See [METRICS.md](https://github.com/rask-lang/rask/blob/main/specs/METRICS.md) for the scoring methodology.
 
 ## Specs and RFCs
 
-Language features are documented as formal specifications in [specs/](https://github.com/dritory/rask/tree/main/specs).
+Language features are documented as formal specifications in [specs/](https://github.com/rask-lang/rask/tree/main/specs).
 
 Major changes follow an RFC process:
 1. Open an issue for discussion
@@ -58,7 +58,7 @@ Every design has tradeoffs. Rask makes these intentional choices:
 - **No storable references** - Simpler mental model, requires restructuring some patterns
 - **Explicit costs** - Better than hidden complexity
 
-See [CORE_DESIGN.md § Tradeoffs](https://github.com/dritory/rask/blob/main/CORE_DESIGN.md#design-tradeoffs) for full discussion.
+See [CORE_DESIGN.md § Tradeoffs](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md#design-tradeoffs) for full discussion.
 
 ## Contributing to Design
 
@@ -88,7 +88,7 @@ Compilation should scale linearly. No whole-program inference, no escape analysi
 
 ## Learn More
 
-- [CORE_DESIGN.md](https://github.com/dritory/rask/blob/main/specs/CORE_DESIGN.md) - Complete design rationale
-- [METRICS.md](https://github.com/dritory/rask/blob/main/specs/METRICS.md) - How we measure success
-- [TODO.md](https://github.com/dritory/rask/blob/main/TODO.md) - What's being worked on
+- [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/specs/CORE_DESIGN.md) - Complete design rationale
+- [METRICS.md](https://github.com/rask-lang/rask/blob/main/specs/METRICS.md) - How we measure success
+- [TODO.md](https://github.com/rask-lang/rask/blob/main/TODO.md) - What's being worked on
 - [Formal Specifications](../reference/specs-link.md) - Detailed technical specs

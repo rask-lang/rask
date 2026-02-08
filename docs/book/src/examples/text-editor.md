@@ -2,7 +2,7 @@
 
 A text editor with undo/redo functionality.
 
-**Full source:** [text_editor.rk](https://github.com/dritory/rask/blob/main/examples/text_editor.rk)
+**Full source:** [text_editor.rk](https://github.com/rask-lang/rask/blob/main/examples/text_editor.rk)
 
 ## Key Concepts Demonstrated
 
@@ -81,4 +81,4 @@ rask text_editor.rk
 - State management in Rask
 - Vec operations for history tracking
 
-[View full source →](https://github.com/dritory/rask/blob/main/examples/text_editor.rk)
+[View full source →](https://github.com/rask-lang/rask/blob/main/examples/text_editor.rk)

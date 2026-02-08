@@ -2,7 +2,7 @@
 
 An entity-component system demonstrating handle-based indirection.
 
-**Full source:** [game_loop.rk](https://github.com/dritory/rask/blob/main/examples/game_loop.rk)
+**Full source:** [game_loop.rk](https://github.com/rask-lang/rask/blob/main/examples/game_loop.rk)
 
 ## Key Concepts Demonstrated
 
@@ -67,4 +67,4 @@ rask game_loop.rk
 - Expression-scoped borrowing for collections
 - Game loop structure in Rask
 
-[View full source →](https://github.com/dritory/rask/blob/main/examples/game_loop.rk)
+[View full source →](https://github.com/rask-lang/rask/blob/main/examples/game_loop.rk)

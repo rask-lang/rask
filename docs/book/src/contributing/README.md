@@ -6,25 +6,25 @@ Rask is in active design and development. Contributions welcome!
 
 - **Try the interpreter** - Run examples, report bugs
 - **Review specs** - Provide feedback on language design
-- **Implement features** - Check [TODO.md](https://github.com/dritory/rask/blob/main/TODO.md) for open tasks
+- **Implement features** - Check [TODO.md](https://github.com/rask-lang/rask/blob/main/TODO.md) for open tasks
 - **Documentation** - Improve this book
 
 ## Getting Started
 
 1. Read the [Design Process](design-process.md) to understand Rask's philosophy
 2. Check out the [formal specifications](../reference/specs-link.md)
-3. Explore the [CORE_DESIGN.md](https://github.com/dritory/rask/blob/main/CORE_DESIGN.md) document
-4. Look at [TODO.md](https://github.com/dritory/rask/blob/main/TODO.md) for what needs work
+3. Explore the [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md) document
+4. Look at [TODO.md](https://github.com/rask-lang/rask/blob/main/TODO.md) for what needs work
 
 ## Repository
 
-[github.com/dritory/rask](https://github.com/dritory/rask)
+[github.com/rask-lang/rask](https://github.com/rask-lang/rask)
 
 ## Ways to Contribute
 
 ### Bug Reports
 
-Found a bug? [Open an issue](https://github.com/dritory/rask/issues/new).
+Found a bug? [Open an issue](https://github.com/rask-lang/rask/issues/new).
 
 Include:
 - Code that demonstrates the bug

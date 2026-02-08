@@ -1,6 +1,6 @@
 # Ownership and Memory
 
-> **Placeholder:** Brief overview. For detailed specifications, see the [ownership](https://github.com/dritory/rask/blob/main/specs/memory/ownership.md) and [borrowing](https://github.com/dritory/rask/blob/main/specs/memory/borrowing.md) specs.
+> **Placeholder:** Brief overview. For detailed specifications, see the [ownership](https://github.com/rask-lang/rask/blob/main/specs/memory/ownership.md) and [borrowing](https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md) specs.
 
 ## Core Principles
 
@@ -75,5 +75,5 @@ For graphs and cycles, use [handles](collections.md) instead of references.
 ## Next Steps
 
 - [Collections and Handles](collections.md)
-- [Formal ownership spec](https://github.com/dritory/rask/blob/main/specs/memory/ownership.md)
-- [Formal borrowing spec](https://github.com/dritory/rask/blob/main/specs/memory/borrowing.md)
+- [Formal ownership spec](https://github.com/rask-lang/rask/blob/main/specs/memory/ownership.md)
+- [Formal borrowing spec](https://github.com/rask-lang/rask/blob/main/specs/memory/borrowing.md)

@@ -59,9 +59,9 @@ The playground compiles the Rask interpreter to WebAssembly using `wasm-pack`. C
 ## Source Code
 
 The playground is open source:
-- [Playground UI](https://github.com/dritory/rask/tree/main/docs/playground)
-- [WASM bindings](https://github.com/dritory/rask/tree/main/compiler/crates/rask-wasm)
+- [Playground UI](https://github.com/rask-lang/rask/tree/main/docs/playground)
+- [WASM bindings](https://github.com/rask-lang/rask/tree/main/compiler/crates/rask-wasm)
 
 ## Feedback
 
-Found a bug or have a suggestion? [Open an issue](https://github.com/dritory/rask/issues) on GitHub!
+Found a bug or have a suggestion? [Open an issue](https://github.com/rask-lang/rask/issues) on GitHub!
