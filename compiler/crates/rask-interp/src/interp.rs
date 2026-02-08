@@ -1155,15 +1155,52 @@ impl Interpreter {
                 if self.functions.contains_key(name) {
                     return Ok(Value::Function { name: name.clone() });
                 }
-                match name.as_str() {
-                    "Vec" => return Ok(Value::TypeConstructor(TypeConstructorKind::Vec)),
-                    "Map" => return Ok(Value::TypeConstructor(TypeConstructorKind::Map)),
-                    "string" => return Ok(Value::TypeConstructor(TypeConstructorKind::String)),
-                    "Pool" => return Ok(Value::TypeConstructor(TypeConstructorKind::Pool)),
-                    "Channel" => return Ok(Value::TypeConstructor(TypeConstructorKind::Channel)),
-                    "Shared" => return Ok(Value::TypeConstructor(TypeConstructorKind::Shared)),
-                    "Atomic" => return Ok(Value::TypeConstructor(TypeConstructorKind::Atomic)),
-                    "Ordering" => return Ok(Value::TypeConstructor(TypeConstructorKind::Ordering)),
+                // Check for generic type constructors (e.g., Pool<Node>)
+                let (base_name, type_param) = if let Some(lt_pos) = name.find('<') {
+                    if let Some(gt_pos) = name.rfind('>') {
+                        let base = &name[..lt_pos];
+                        let param = name[lt_pos + 1..gt_pos].trim();
+                        (base, Some(param.to_string()))
+                    } else {
+                        (name.as_str(), None)
+                    }
+                } else {
+                    (name.as_str(), None)
+                };
+
+                match base_name {
+                    "Vec" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Vec,
+                        type_param,
+                    }),
+                    "Map" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Map,
+                        type_param,
+                    }),
+                    "string" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::String,
+                        type_param,
+                    }),
+                    "Pool" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Pool,
+                        type_param,
+                    }),
+                    "Channel" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Channel,
+                        type_param,
+                    }),
+                    "Shared" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Shared,
+                        type_param,
+                    }),
+                    "Atomic" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Atomic,
+                        type_param,
+                    }),
+                    "Ordering" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Ordering,
+                        type_param,
+                    }),
                     _ => {}
                 }
                 Err(RuntimeError::UndefinedVariable(name.clone()))

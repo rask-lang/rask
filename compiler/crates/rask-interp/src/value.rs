@@ -27,6 +27,8 @@ pub struct PoolData {
     pub free_list: Vec<u32>,
     /// Count of live elements.
     pub len: usize,
+    /// Type parameter for generic Pool<T> (e.g., "Node" in Pool<Node>).
+    pub type_param: Option<String>,
 }
 
 impl PoolData {
@@ -36,6 +38,17 @@ impl PoolData {
             slots: Vec::new(),
             free_list: Vec::new(),
             len: 0,
+            type_param: None,
+        }
+    }
+
+    pub fn with_type_param(type_param: Option<String>) -> Self {
+        Self {
+            pool_id: next_pool_id(),
+            slots: Vec::new(),
+            free_list: Vec::new(),
+            len: 0,
+            type_param,
         }
     }
 
@@ -219,7 +232,10 @@ pub enum Value {
     /// Vec (growable array) with interior mutability
     Vec(Arc<Mutex<Vec<Value>>>),
     /// Type constructor (for static method calls like Vec.new())
-    TypeConstructor(TypeConstructorKind),
+    TypeConstructor {
+        kind: TypeConstructorKind,
+        type_param: Option<String>,
+    },
     /// Enum variant constructor (e.g., Option.Some before calling with args)
     EnumConstructor {
         enum_name: String,
@@ -292,7 +308,7 @@ impl Value {
             Value::Builtin(_) => "builtin",
             Value::Range { .. } => "range",
             Value::Vec(_) => "Vec",
-            Value::TypeConstructor(_) => "type",
+            Value::TypeConstructor { .. } => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
             Value::File(_) => "File",
@@ -345,6 +361,7 @@ impl Value {
                 }).collect();
                 new_pool.free_list = pool.free_list.clone();
                 new_pool.len = pool.len;
+                new_pool.type_param = pool.type_param.clone();
                 Value::Pool(Arc::new(Mutex::new(new_pool)))
             }
             Value::Closure { params, body, captured_env } => {
@@ -470,15 +487,22 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::TypeConstructor(kind) => match kind {
-                TypeConstructorKind::Vec => write!(f, "Vec"),
-                TypeConstructorKind::Map => write!(f, "Map"),
-                TypeConstructorKind::String => write!(f, "string"),
-                TypeConstructorKind::Pool => write!(f, "Pool"),
-                TypeConstructorKind::Channel => write!(f, "Channel"),
-                TypeConstructorKind::Shared => write!(f, "Shared"),
-                TypeConstructorKind::Atomic => write!(f, "Atomic"),
-                TypeConstructorKind::Ordering => write!(f, "Ordering"),
+            Value::TypeConstructor { kind, type_param } => {
+                let base_name = match kind {
+                    TypeConstructorKind::Vec => "Vec",
+                    TypeConstructorKind::Map => "Map",
+                    TypeConstructorKind::String => "string",
+                    TypeConstructorKind::Pool => "Pool",
+                    TypeConstructorKind::Channel => "Channel",
+                    TypeConstructorKind::Shared => "Shared",
+                    TypeConstructorKind::Atomic => "Atomic",
+                    TypeConstructorKind::Ordering => "Ordering",
+                };
+                if let Some(param) = type_param {
+                    write!(f, "{}<{}>", base_name, param)
+                } else {
+                    write!(f, "{}", base_name)
+                }
             },
             Value::EnumConstructor {
                 enum_name,
