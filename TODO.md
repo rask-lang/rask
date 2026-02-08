@@ -140,9 +140,9 @@ Move from interpreter to actual compiled output.
 Tools that make it actually usable:
 - [ ] Build system (`rask.build`) — syntax, relationship to comptime
 - [ ] Package manager — dependency resolution, registry
-- [ ] LSP completion — type-aware completions, go-to-definition
-- [ ] Test runner — `rask test` command
-- [ ] Formatter — `rask fmt`
+- [x] LSP completion — type-aware completions, go-to-definition
+- [x] Test runner — `rask test` command
+- [x] Formatter — `rask fmt`
 
 ---
 

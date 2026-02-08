@@ -144,6 +144,14 @@ fn main() {
             }
             cmd_ownership(cmd_args[2], format);
         }
+        "comptime" => {
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("comptime"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            cmd_comptime(cmd_args[2], format);
+        }
         "run" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
@@ -203,13 +211,9 @@ fn main() {
             println!("{} {}", output::title("rask"), output::version("0.1.0"));
         }
         other => {
-            if other.ends_with(".rk") {
-                cmd_parse(other, format);
-            } else {
-                eprintln!("{}: Unknown command '{}'", output::error_label(), other);
-                print_usage();
-                process::exit(1);
-            }
+            eprintln!("{}: Unknown command '{}'", output::error_label(), other);
+            print_usage();
+            process::exit(1);
         }
     }
 }
@@ -238,6 +242,7 @@ fn print_usage() {
     println!("  {} {}   Resolve names and print symbols", output::command("resolve"), output::arg("<file>"));
     println!("  {} {} Type check a file", output::command("typecheck"), output::arg("<file>"));
     println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
+    println!("  {} {} Evaluate comptime blocks", output::command("comptime"), output::arg("<file>"));
     println!("  {} {}       Format source files", output::command("fmt"), output::arg("<file>"));
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
     println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
@@ -583,6 +588,85 @@ fn cmd_ownership(path: &str, format: Format) {
             eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
         }
         process::exit(1);
+    }
+}
+
+fn cmd_comptime(path: &str, format: Format) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
+            process::exit(1);
+        }
+    };
+
+    let mut lexer = rask_lexer::Lexer::new(&source);
+    let lex_result = lexer.tokenize();
+
+    if !lex_result.is_ok() {
+        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "lex", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
+        }
+        process::exit(1);
+    }
+
+    let mut parser = rask_parser::Parser::new(lex_result.tokens);
+    let mut parse_result = parser.parse();
+
+    if !parse_result.is_ok() {
+        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "parse", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
+        }
+        process::exit(1);
+    }
+
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    // Evaluate comptime blocks using the restricted comptime interpreter
+    let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
+    comptime_interp.register_functions(&parse_result.decls);
+
+    let mut evaluated = 0usize;
+    let mut errors = Vec::new();
+
+    for decl in &parse_result.decls {
+        if let rask_ast::decl::DeclKind::Const(c) = &decl.kind {
+            if matches!(c.init.kind, rask_ast::expr::ExprKind::Comptime { .. }) {
+                match comptime_interp.eval_expr(&c.init) {
+                    Ok(val) => {
+                        evaluated += 1;
+                        if format == Format::Human {
+                            println!("  {} const {} = {:?}", output::status_pass(), c.name, val);
+                        }
+                    }
+                    Err(e) => {
+                        errors.push((c.name.clone(), e));
+                    }
+                }
+            }
+        }
+    }
+
+    if format == Format::Human {
+        println!();
+        if errors.is_empty() {
+            println!("{}", output::banner_ok("Comptime"));
+            println!();
+            println!("Evaluated {} comptime block(s) successfully.", evaluated);
+        } else {
+            for (name, err) in &errors {
+                eprintln!("  {} const {}: {}", output::status_fail(), name, err);
+            }
+            eprintln!();
+            eprintln!("{}", output::banner_fail("Comptime", errors.len()));
+            eprintln!();
+            eprintln!("{} evaluated, {} failed", evaluated, errors.len());
+            process::exit(1);
+        }
     }
 }
 
