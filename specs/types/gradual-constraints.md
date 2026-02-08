@@ -79,7 +79,7 @@ func find_best(items: Vec<Record>, score_fn) -> Record {
 **Level 3 — Fully explicit (publishing):**
 
 ```rask
-public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: func(T) -> U) -> T {
+public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T {
     let best = items[0]
     for i in 1..items.len() {
         if score_fn(items[i]) > score_fn(best) {
@@ -160,7 +160,7 @@ error: public function 'process' requires explicit type annotations
   |                     ^^^^  ^^^^^^^ add type annotations
 
   Inferred signature:
-    public func process<T: Validatable>(data: Vec<T>, handler: func(Vec<T>) -> T) -> T
+    public func process<T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
 
   hint: apply suggested signature? (IDE quick action)
 ```
@@ -278,7 +278,7 @@ Inference doesn't change monomorphization. Compiler infers bounds, then monomorp
 The IDE displays inferred information as ghost text:
 
 ```rask
-func process(data, handler) {           // ghost: <T: Validatable>(data: Vec<T>, handler: func(Vec<T>) -> T) -> T
+func process(data, handler) {           // ghost: <T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
     const result = handler(data)
     result.validate()
     result
@@ -338,7 +338,7 @@ func clamp(val, min_val, max_val) {
     else: val
 }
 
-// Bounds inferred — compiler derives: <T>(items: Vec<T>, predicate: func(T) -> bool) -> Option<usize>
+// Bounds inferred — compiler derives: <T>(items: Vec<T>, predicate: |T| -> bool) -> Option<usize>
 func find_first(items, predicate) {
     for i in 0..items.len() {
         if predicate(items[i]): return Some(i)

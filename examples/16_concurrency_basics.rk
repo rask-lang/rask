@@ -201,5 +201,5 @@ func main() -> () or string {
     print("- No data races - compiler enforces safety\n")
     print("- No function coloring - threads are first-class\n")
 
-    return Result.Ok(())
+    return Ok(())
 }

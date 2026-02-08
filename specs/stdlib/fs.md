@@ -36,7 +36,7 @@ extend File {
     func close(take self) -> () or IoError
 
     // Read helpers
-    func read_to_string(self) -> string or IoError
+    func read_text(self) -> string or IoError
     func lines(self) -> Vec<string> or IoError
 
     // Metadata
@@ -169,11 +169,11 @@ println(content)
 const file = try fs.open("data.txt")
 ensure file.close()
 
-const data = try file.read_to_string()
+const data = try file.read_text()
 process(data)
 ```
 
-`ensure` block guarantees `file.close()` runs when scope exits, even if `read_to_string()` or `process()` fails. Without `ensure` and without calling `close()`, compiler rejects the code.
+`ensure` block guarantees `file.close()` runs when scope exits, even if `read_text()` or `process()` fails. Without `ensure` and without calling `close()`, compiler rejects the code.
 
 **Write a file:**
 
@@ -276,7 +276,7 @@ The interpreter currently returns `string` errors. The typed `IoError` enum is p
 | `fs.copy` | Done | Planned |
 | `fs.read_dir` | -- | Planned |
 | `file.close()` | Done | Planned |
-| `file.read_all()` / `read_to_string()` | Done | Planned |
+| `file.read_all()` / `read_text()` | Done | Planned |
 | `file.write()` | Done | Planned |
 | `file.lines()` | Done | Planned |
 | `file.metadata()` | -- | Planned |

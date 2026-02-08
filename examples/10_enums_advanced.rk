@@ -7,17 +7,17 @@
 
 // Enum with different kinds of variants
 enum Message {
-    Quit,                                    // No data
-    Text(string),                            // Tuple variant
-    Move { x: i32, y: i32 },                 // Struct variant
-    Color { r: i32, g: i32, b: i32 },        // Another struct variant
+    Quit                                     // No data
+    Text(string)                             // Tuple variant
+    Move { x: i32, y: i32 }                  // Struct variant
+    Color { r: i32, g: i32, b: i32 }         // Another struct variant
 }
 
 // Enum representing different shapes
 enum Shape {
-    Circle { radius: f64 },
-    Rectangle { width: f64, height: f64 },
-    Triangle { base: f64, height: f64 },
+    Circle { radius: f64 }
+    Rectangle { width: f64, height: f64 }
+    Triangle { base: f64, height: f64 }
 }
 
 // Methods on enums

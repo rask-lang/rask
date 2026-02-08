@@ -36,10 +36,36 @@ Close the gap between "demos work" and "actually reliable."
   - [x] Pattern checking in match/if-let
   - [x] Missing return detection (basic)
   - [x] Missing return: handle match/if where all branches return
-  - [ ] `Owned<T>` coercion support
+  - [x] `Owned<T>` coercion support
   - [x] `.clone()` method recognition
-  - [ ] Register stdlib types in name resolver
+  - [x] Register stdlib types in name resolver
   - [x] Fix `<type#N>` display in error messages
+  - [x] Generic functions with trait bounds (`func foo<T: Trait>()`)
+  - [x] Return analysis through if/match/unsafe branches
+  - [x] Integer literal constrained by type annotation (fresh type var inference)
+  - [x] fs module methods recognized (`read_lines`, `canonicalize`, `copy`, etc.)
+  - [x] File `write_line` method recognized
+  - [x] Closure aliasing: skip closure params (not captured vars)
+  - [x] Auto-Ok wrapping for `T or E` return types
+  - [ ] Generic struct field resolution — blocks `09_generics` (5 errors)
+  - [ ] `Owned<T>` coercion in recursive enum fields — blocks `cli_calculator` (7 errors)
+- [ ] Fix parser gaps
+  - [x] Closure types in type positions: `f: |i32| -> i32`
+  - [x] Struct-style enum variants: `Move { x: i32, y: i32 }`
+  - [x] Struct variant patterns: `Enum.Variant { field }` in match
+  - [x] Struct variant construction: `Enum.Variant { field: val }` in expressions
+  - [x] `read` parameter mode
+  - [x] `read` keyword as method name (`db.read()`)
+  - [x] Newline after `=>` in match arms
+  - [ ] Const generics: `<const N: usize>` — blocks `sensor_processor`
+- [ ] Fix ownership checker gaps
+  - [x] False borrow errors in chained closure params (`.filter(|n| ...).map(|n| ...)`)
+- [ ] Fix resolver gaps
+  - [x] Generic type constructors `Type<T>.method()` → base name fallback
+  - [x] Generic function/struct/enum declarations → strip `<...>` from name
+  - [x] Qualified struct variant literals `Enum.Variant { ... }`
+  - [x] `null` builtin constant
+  - [x] `HttpResponse`/`HttpRequest`/`TcpListener`/`TcpConnection` net types
 - [x] Add `fmt` / string interpolation to interpreter — `format()`, `{name}` interpolation, format specifiers
 - [x] Spec `io` — Reader/Writer traits — see [io.md](specs/stdlib/io.md)
 - [x] Spec `fs` — File operations — see [fs.md](specs/stdlib/fs.md)

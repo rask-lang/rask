@@ -69,13 +69,13 @@ extend Lexer {
 
     func peek_char(self) -> char? {
         if self.pos >= self.input.len(): return None
-        self.input.char_at(self.pos)
+        return self.input.char_at(self.pos)
     }
 
     func advance(self) -> char? {
         const c = try self.peek_char()
         self.pos += 1
-        Some(c)
+        return Some(c)
     }
 
     func skip_whitespace(self) {
@@ -107,7 +107,7 @@ extend Lexer {
             _ => return Err(CalcError.UnexpectedChar(c)),
         }
 
-        Ok(token)
+        return Ok(token)
     }
 
     func read_number(self) -> Token or CalcError {
@@ -128,7 +128,7 @@ extend Lexer {
         }
 
         const value: f64 = num_str.parse().unwrap()
-        Ok(Token.Number(value))
+        return Ok(Token.Number(value))
     }
 }
 
@@ -142,7 +142,7 @@ extend Parser {
     func new(input: string) -> Parser or CalcError {
         const lexer = Lexer.new(input)
         const current = try lexer.next_token()
-        Ok(Parser { lexer: lexer, current: current })
+        return Ok(Parser { lexer: lexer, current: current })
     }
 
     func advance(self) -> () or CalcError {
@@ -189,7 +189,7 @@ extend Parser {
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
-        Ok(left)
+        return Ok(left)
     }
 
     // term = power (('*' | '/' | '%') power)*
@@ -208,7 +208,7 @@ extend Parser {
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
-        Ok(left)
+        return Ok(left)
     }
 
     // power = unary ('^' power)?  (right associative)
@@ -293,7 +293,7 @@ func evaluate(expr: Expr) -> f64 or CalcError {
 func calc(input: string) -> f64 or CalcError {
     const parser = try Parser.new(input)
     const expr = try parser.parse()
-    evaluate(expr)
+    return evaluate(expr)
 }
 
 func print_help() {

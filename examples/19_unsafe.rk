@@ -20,7 +20,8 @@ func c_string_length(s: string) -> i32 {
 }
 
 // Safe wrapper for raw pointer operations
-func copy_bytes(src: &Vec<u8>, dest: &Vec<u8>, count: i32) {
+// Rask uses `read` param mode instead of &T references
+func copy_bytes(read src: Vec<u8>, read dest: Vec<u8>, count: i32) {
     unsafe {
         const src_ptr = src.as_ptr()
         const dest_ptr = dest.as_mut_ptr()

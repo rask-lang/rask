@@ -361,12 +361,12 @@ Storable closures **cannot** use auto-resolution. They must receive pools as exp
 
 ```rask
 // ERROR: storable closure can't capture context
-const callback: func(Handle<Player>) = |h| {
+const callback: |Handle<Player>| = |h| {
     h.health -= 10    // ERROR: no Pool<Player> context
 }
 
 // OK: pool passed explicitly when closure is called
-const callback: func(Pool<Player>, Handle<Player>) = |pool, h| {
+const callback: |Pool<Player>, Handle<Player>| = |pool, h| {
     pool[h].health -= 10
 }
 ```

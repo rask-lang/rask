@@ -144,19 +144,19 @@ func crc8(data: []u8) -> u8 {
     for byte in data {
         crc = CRC8_TABLE[(crc ^ byte) as usize]
     }
-    crc
+    return crc
 }
 
 // Convert raw ADC reading to temperature (centidegrees) - no FP, O(1)
 @inline @no_alloc
 func adc_to_temp(adc_value: u16) -> i16 {
-    TEMP_CALIBRATION[adc_value.min(1023) as usize]
+    return TEMP_CALIBRATION[adc_value.min(1023) as usize]
 }
 
 // Parse command byte to opcode - O(1) lookup
 @inline @no_alloc
 func parse_command(cmd: u8) -> u8 {
-    COMMAND_OPCODES[cmd as usize]
+    return COMMAND_OPCODES[cmd as usize]
 }
 
 struct HardwareRegisters {
@@ -269,7 +269,7 @@ func isqrt(n: u128) -> u128 {
         x = y
         y = (x + n / x) / 2
     }
-    x
+    return x
 }
 
 // ============================================================================
@@ -420,7 +420,7 @@ func simd_sum_f32(data: [f32; 64], count: usize) -> f32 {
         sum += data[i]
     }
 
-    sum
+    return sum
 }
 
 // ============================================================================

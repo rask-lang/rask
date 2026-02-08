@@ -142,7 +142,7 @@ func run_game() {
 ```rask
 import time
 
-func benchmark(f: func()) -> f64 {
+func benchmark(f: || -> ()) -> f64 {
     const start = time.Instant.now()
     f()
     const elapsed = start.elapsed()

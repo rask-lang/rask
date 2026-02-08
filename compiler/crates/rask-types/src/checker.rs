@@ -127,6 +127,78 @@ impl BuiltinModules {
             params: vec![Type::String],
             ret: Type::Bool,
         });
+        // fs.read_lines(path: string) -> Vec<string> or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "read_lines".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::UnresolvedNamed("Vec<string>".to_string())),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.canonicalize(path: string) -> string or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "canonicalize".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::String),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.copy(from: string, to: string) -> u64 or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "copy".to_string(),
+            params: vec![Type::String, Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::U64),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.rename(from: string, to: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "rename".to_string(),
+            params: vec![Type::String, Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.remove(path: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "remove".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.create_dir(path: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "create_dir".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.create_dir_all(path: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "create_dir_all".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.append_file(path: string, content: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "append_file".to_string(),
+            params: vec![Type::String, Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
 
         modules.insert("fs".to_string(), fs_methods);
 
@@ -1155,15 +1227,17 @@ impl TypeChecker {
 
     /// Scan a closure body for variable accesses and check for conflicts.
     /// This implements ESAD Phase 2.
-    fn check_closure_aliasing(&mut self, body: &Expr) {
-        self.collect_closure_accesses(body);
+    fn check_closure_aliasing(&mut self, params: &[rask_ast::expr::ClosureParam], body: &Expr) {
+        let param_names: std::collections::HashSet<&str> = params.iter().map(|p| p.name.as_str()).collect();
+        self.collect_closure_accesses(body, &param_names);
     }
 
     /// Recursively collect variable accesses in a closure body.
-    fn collect_closure_accesses(&mut self, expr: &Expr) {
+    /// Skip closure params — they're fresh bindings, not captures.
+    fn collect_closure_accesses(&mut self, expr: &Expr, skip: &std::collections::HashSet<&str>) {
         match &expr.kind {
             ExprKind::Ident(name) => {
-                // Check if this variable is borrowed in the outer scope
+                if skip.contains(name.as_str()) { return; }
                 if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Shared) {
                     self.errors.push(TypeError::AliasingViolation {
                         var: name.clone(),
@@ -1173,36 +1247,34 @@ impl TypeChecker {
                 }
             }
             ExprKind::MethodCall { object, method: _, args, .. } => {
-                // Check if the object is mutably borrowed
                 if let ExprKind::Ident(name) = &object.kind {
-                    // Assume method calls are exclusive borrows (conservative)
-                    if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Exclusive) {
-                        self.errors.push(TypeError::AliasingViolation {
-                            var: name.clone(),
-                            borrow_span: borrow.span,
-                            access_span: object.span,
-                        });
+                    if !skip.contains(name.as_str()) {
+                        if let Some(borrow) = self.check_borrow_conflict(name, BorrowMode::Exclusive) {
+                            self.errors.push(TypeError::AliasingViolation {
+                                var: name.clone(),
+                                borrow_span: borrow.span,
+                                access_span: object.span,
+                            });
+                        }
                     }
                 }
-                // Recurse into arguments
                 for arg in args {
-                    self.collect_closure_accesses(arg);
+                    self.collect_closure_accesses(arg, skip);
                 }
             }
             ExprKind::Call { func, args } => {
-                self.collect_closure_accesses(func);
+                self.collect_closure_accesses(func, skip);
                 for arg in args {
-                    self.collect_closure_accesses(arg);
+                    self.collect_closure_accesses(arg, skip);
                 }
             }
             ExprKind::Block(stmts) => {
                 for stmt in stmts {
                     if let StmtKind::Expr(e) = &stmt.kind {
-                        self.collect_closure_accesses(e);
+                        self.collect_closure_accesses(e, skip);
                     }
                 }
             }
-            // TODO: Add more expression kinds as needed
             _ => {}
         }
     }
@@ -1510,10 +1582,8 @@ impl TypeChecker {
     }
 
     fn has_explicit_return(&self, body: &[Stmt]) -> bool {
-        match body.last() {
-            Some(stmt) => self.stmt_always_returns(stmt),
-            None => false,
-        }
+        // Any statement in the body that always returns means the function returns
+        body.iter().any(|stmt| self.stmt_always_returns(stmt))
     }
 
     fn stmt_always_returns(&self, stmt: &Stmt) -> bool {
@@ -1530,8 +1600,8 @@ impl TypeChecker {
         use rask_ast::expr::ExprKind;
 
         match &expr.kind {
-            ExprKind::Block(stmts) => {
-                stmts.last().map_or(false, |s| self.stmt_always_returns(s))
+            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
+                stmts.iter().any(|s| self.stmt_always_returns(s))
             }
             ExprKind::Match { arms, .. } => {
                 !arms.is_empty() && arms.iter().all(|arm| self.expr_always_returns(&arm.body))
@@ -1723,14 +1793,14 @@ impl TypeChecker {
                     Some(IntSuffix::I32) => Type::I32,
                     Some(IntSuffix::I64) => Type::I64,
                     Some(IntSuffix::I128) => Type::I128,
-                    Some(IntSuffix::Isize) => Type::I64,  // isize maps to i64
+                    Some(IntSuffix::Isize) => Type::I64,
                     Some(IntSuffix::U8) => Type::U8,
                     Some(IntSuffix::U16) => Type::U16,
                     Some(IntSuffix::U32) => Type::U32,
                     Some(IntSuffix::U64) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
-                    Some(IntSuffix::Usize) => Type::U64,  // usize maps to u64
-                    None => Type::I32, // Default integer type
+                    Some(IntSuffix::Usize) => Type::U64,
+                    None => self.ctx.fresh_var(), // Infer from context, defaults to i32
                 }
             }
             ExprKind::Float(_, suffix) => {
@@ -1738,7 +1808,7 @@ impl TypeChecker {
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => Type::F64, // Default float type
+                    None => self.ctx.fresh_var(), // Infer from context, defaults to f64
                 }
             }
             ExprKind::String(_) => Type::String,
@@ -2034,7 +2104,7 @@ impl TypeChecker {
                     .collect();
 
                 // ESAD Phase 2: Check for aliasing violations in closure body
-                self.check_closure_aliasing(body);
+                self.check_closure_aliasing(params, body);
 
                 let ret_ty = self.infer_expr(body);
                 Type::Fn {
@@ -3164,7 +3234,7 @@ impl TypeChecker {
         let io_error_ty = Type::UnresolvedNamed("IoError".to_string());
 
         match method {
-            "read_to_string" | "read_all" if args.is_empty() => {
+            "read_text" | "read_all" if args.is_empty() => {
                 // Returns string or IoError
                 let result_type = Type::Result {
                     ok: Box::new(Type::String),
@@ -3194,6 +3264,15 @@ impl TypeChecker {
                 self.unify(&args[0], &Type::String, span)?;
                 let result_type = Type::Result {
                     ok: Box::new(Type::U64),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "write_line" if args.len() == 1 => {
+                // write_line(data: string) -> () or IoError
+                self.unify(&args[0], &Type::String, span)?;
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
                     err: Box::new(io_error_ty),
                 };
                 self.unify(ret, &result_type, span)

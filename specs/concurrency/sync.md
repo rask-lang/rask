@@ -70,10 +70,10 @@ struct Shared<T> { ... }
 
 extend Shared<T> {
     func new(value: T) -> Shared<T>
-    func read<R>(self, f: func(T) -> R) -> R
-    func write<R>(self, f: func(T) -> R) -> R
-    func try_read<R>(self, f: func(T) -> R) -> Option<R>
-    func try_write<R>(self, f: func(T) -> R) -> Option<R>
+    func read<R>(self, f: |T| -> R) -> R
+    func write<R>(self, f: |T| -> R) -> R
+    func try_read<R>(self, f: |T| -> R) -> Option<R>
+    func try_write<R>(self, f: |T| -> R) -> Option<R>
 }
 ```
 
@@ -116,8 +116,8 @@ struct Mutex<T> { ... }
 
 extend Mutex<T> {
     func new(value: T) -> Mutex<T>
-    func lock<R>(self, f: func(T) -> R) -> R
-    func try_lock<R>(self, f: func(T) -> R) -> Option<R>
+    func lock<R>(self, f: |T| -> R) -> R
+    func try_lock<R>(self, f: |T| -> R) -> Option<R>
 }
 ```
 

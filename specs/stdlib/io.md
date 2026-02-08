@@ -29,7 +29,7 @@ All I/O operations return `T or IoError`. The variants map to OS-level error cat
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
     func read_all(self) -> []u8 or IoError
-    func read_to_string(self) -> string or IoError
+    func read_text(self) -> string or IoError
     func read_exact(self, buf: []u8) -> () or IoError
 }
 ```
@@ -38,7 +38,7 @@ trait Reader {
 |--------|-------------|
 | `read(buf)` | Read up to `buf.len()` bytes. Returns bytes read (0 = EOF) |
 | `read_all()` | Read all remaining bytes into a new `[]u8`. Allocates |
-| `read_to_string()` | Read all remaining bytes as UTF-8 string. Allocates. Fails if not valid UTF-8 |
+| `read_text()` | Read all remaining bytes as UTF-8 string. Allocates. Fails if not valid UTF-8 |
 | `read_exact(buf)` | Fill `buf` completely. Returns `UnexpectedEof` if stream ends early |
 
 ### Writer Trait
@@ -243,7 +243,7 @@ const bytes_copied = try io.copy(file, stdout)
 |------|----------|
 | Read from closed stream | Returns `IoError.Other("stream closed")` |
 | Write to broken pipe | Returns `IoError.BrokenPipe` |
-| `read_to_string` with invalid UTF-8 | Returns `IoError.Other("invalid UTF-8")` |
+| `read_text` with invalid UTF-8 | Returns `IoError.Other("invalid UTF-8")` |
 | `read_exact` on short stream | Returns `IoError.UnexpectedEof` |
 | `io.copy` with same reader and writer | Undefined (caller must not alias) |
 | `BufWriter` flush on drop fails | Error silently discarded (use explicit `flush()`) |

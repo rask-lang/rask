@@ -302,7 +302,7 @@ impl Interpreter {
                 let _ = file.lock().unwrap().take();
                 Ok(Value::Unit)
             }
-            "read_all" => {
+            "read_all" | "read_text" => {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {

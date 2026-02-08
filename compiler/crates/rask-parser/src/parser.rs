@@ -208,6 +208,7 @@ impl Parser {
             TokenKind::Public => "public".to_string(),
             TokenKind::Take => "take".to_string(),
             TokenKind::Own => "own".to_string(),
+            TokenKind::ReadKw => "read".to_string(),
             TokenKind::Unsafe => "unsafe".to_string(),
             TokenKind::Comptime => "comptime".to_string(),
             TokenKind::Native => "native".to_string(),
@@ -553,6 +554,7 @@ impl Parser {
 
         loop {
             let is_take = self.match_token(&TokenKind::Take);
+            let is_read = if !is_take { self.match_token(&TokenKind::ReadKw) } else { false };
             let name = self.expect_ident_or_keyword()?;
 
             let ty = if self.match_token(&TokenKind::Colon) {
@@ -573,7 +575,7 @@ impl Parser {
                 None
             };
 
-            params.push(Param { name, ty, is_take, default });
+            params.push(Param { name, ty, is_take, is_read, default });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -675,6 +677,27 @@ impl Parser {
         if let TokenKind::Int(n, _) = self.current_kind().clone() {
             self.advance();
             return Ok(n.to_string());
+        }
+
+        // Closure type: |T1, T2| -> R
+        if self.check(&TokenKind::Pipe) {
+            self.advance();
+            let mut params = Vec::new();
+            if !self.check(&TokenKind::Pipe) {
+                loop {
+                    params.push(self.parse_type_name()?);
+                    if !self.match_token(&TokenKind::Comma) { break; }
+                }
+            }
+            self.expect(&TokenKind::Pipe)?;
+
+            let ret_ty = if self.match_token(&TokenKind::Arrow) {
+                self.parse_type_name()?
+            } else {
+                "()".to_string()
+            };
+
+            return Ok(format!("func({}) -> {}", params.join(", "), ret_ty));
         }
 
         if self.check(&TokenKind::Func) {
@@ -961,6 +984,23 @@ impl Parser {
                         if !self.match_token(&TokenKind::Comma) { break; }
                     }
                     self.expect(&TokenKind::RParen)?;
+                } else if self.check(&TokenKind::LBrace) {
+                    // Struct-style variant: Move { x: i32, y: i32 }
+                    self.advance();
+                    self.skip_newlines();
+                    while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let ty = self.parse_type_name()?;
+                        fields.push(Field { name: field_name, ty, is_pub: false });
+                        if !self.match_token(&TokenKind::Comma) {
+                            self.skip_newlines();
+                            if !self.check(&TokenKind::RBrace) { continue; }
+                        } else {
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(&TokenKind::RBrace)?;
                 }
 
                 variants.push(Variant { name: variant_name, fields });
@@ -2232,6 +2272,21 @@ impl Parser {
                         self.current_kind(),
                         self.current().span,
                     ).with_hint("Generic type arguments must be followed by ()"))
+                } else if self.check(&TokenKind::LBrace) {
+                    // Struct variant constructor: Enum.Variant { field: value }
+                    // Only when base is a type name (uppercase) to avoid ambiguity with blocks
+                    if let ExprKind::Ident(base) = &lhs.kind {
+                        if base.starts_with(|c: char| c.is_uppercase()) && field.starts_with(|c: char| c.is_uppercase()) {
+                            let full_name = format!("{}.{}", base, field);
+                            self.parse_struct_literal(full_name, start)
+                        } else {
+                            let end = self.tokens[self.pos - 1].span.end;
+                            Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                        }
+                    } else {
+                        let end = self.tokens[self.pos - 1].span.end;
+                        Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
+                    }
                 } else {
                     let end = self.tokens[self.pos - 1].span.end;
                     Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) })
@@ -2475,6 +2530,7 @@ impl Parser {
             };
 
             self.expect(&TokenKind::FatArrow)?;
+            self.skip_newlines();
 
             let body = if self.check(&TokenKind::LBrace) {
                 let stmts = self.parse_block_body()?;
@@ -2562,7 +2618,17 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
+
+                // Handle qualified paths: Enum.Variant or Enum.Variant(args) or Enum.Variant { fields }
+                let name = if self.match_token(&TokenKind::Dot) {
+                    let variant = self.expect_ident()?;
+                    format!("{}.{}", name, variant)
+                } else {
+                    name
+                };
+
                 if self.match_token(&TokenKind::LParen) {
+                    // Constructor pattern: Name(patterns...) or Enum.Variant(patterns...)
                     let mut fields = Vec::new();
                     while !self.check(&TokenKind::RParen) && !self.at_end() {
                         fields.push(self.parse_pattern()?);
@@ -2570,6 +2636,30 @@ impl Parser {
                     }
                     self.expect(&TokenKind::RParen)?;
                     Ok(Pattern::Constructor { name, fields })
+                } else if self.check(&TokenKind::LBrace) && name.contains('.') {
+                    // Struct variant pattern: Enum.Variant { field1, field2 }
+                    // Only for qualified names to avoid ambiguity with blocks
+                    self.advance();
+                    self.skip_newlines();
+                    let mut fields = Vec::new();
+                    while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                        let field_name = self.expect_ident()?;
+                        let pattern = if self.match_token(&TokenKind::Colon) {
+                            self.parse_pattern()?
+                        } else {
+                            // Shorthand: { field } means { field: field }
+                            Pattern::Ident(field_name.clone())
+                        };
+                        fields.push((field_name, pattern));
+                        if !self.match_token(&TokenKind::Comma) {
+                            self.skip_newlines();
+                            if !self.check(&TokenKind::RBrace) { continue; }
+                        } else {
+                            self.skip_newlines();
+                        }
+                    }
+                    self.expect(&TokenKind::RBrace)?;
+                    Ok(Pattern::Struct { name, fields, rest: false })
                 } else {
                     Ok(Pattern::Ident(name))
                 }
