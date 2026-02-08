@@ -125,6 +125,21 @@ func manual_close() {
     // ensure won't run because conn was already closed
 }
 
+func demonstrate_file_resources() -> () or string {
+    // File handles are also linear resources
+    const file = try fs.open("test.txt")
+    ensure file.close()
+
+    // Use the file
+    const content = try file.read_to_string()
+    print("File content: ")
+    print(content)
+    print("\n")
+
+    // file.close() runs via ensure
+    return Ok(())
+}
+
 func main() {
     print("=== Linear Resources ===\n")
     print("Resources marked with @resource must be consumed\n")
@@ -137,17 +152,13 @@ func main() {
 
     print("\n=== Files as Resources ===\n")
 
-    // File handles are also linear resources
-    const file = try fs.open("test.txt")
-    ensure file.close()
-
-    // Use the file
-    const content = try file.read_to_string()
-    print("File content: ")
-    print(content)
-    print("\n")
-
-    // file.close() runs via ensure
+    // Demonstrate file resources (returns Result)
+    const result = demonstrate_file_resources()
+    if result is Err(e) {
+        print("Error: ")
+        print(e)
+        print("\n")
+    }
 
     print("\n=== Key Points ===\n")
     print("- @resource types must be explicitly consumed\n")
