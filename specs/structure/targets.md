@@ -214,28 +214,28 @@ raskc mylib          # Error: no main() found
 raskc --lib mylib    # Success: builds library (for checking only, no output)
 ```
 
-**Optional configuration file:** `rask.toml` (for complex cases only)
+**Optional build file:** `rask.build` (for dependencies, build logic, and complex cases)
+```rask
+package "myapp" "0.1.0" {
+    dep "http" { path: "../http" }
+    dep "json" "^1.0"
+}
+
+func build(ctx: BuildContext) -> () or Error {
+    try ctx.compile_c(CSource {
+        files: ["vendor/ssl.c"],
+        include_paths: ["/usr/include"],
+    })
+}
 ```
-[package]
-name = "myapp"
-version = "0.1.0"
 
-[dependencies]
-http = { path = "../http" }
-json = { version = "1.0" }
-
-[build]
-c_include_paths = ["/usr/include"]
-c_link_libs = ["ssl", "crypto"]
-```
-
-**When you need rask.toml:**
+**When you need rask.build:**
 - External dependencies
 - C library linking
-- Compiler flags
+- Build logic (code generation, etc.)
 - Multi-binary projects (see below)
 
-**When you DON'T need rask.toml:**
+**When you DON'T need rask.build:**
 - Single executable with no external dependencies
 - Library with no C dependencies
 - Local imports only
@@ -250,21 +250,17 @@ raskc myapp/cli.rk → cli binary
 raskc myapp/server.rk → server binary
 ```
 
-**OR:** Use rask.toml to define multiple binaries
-```
-[[bin]]
-name = "cli"
-path = "cli.rk"
-
-[[bin]]
-name = "server"
-path = "server.rk"
+**OR:** Define multiple binaries in `rask.build`:
+```rask
+package "myapp" "1.0.0" {
+    bin: ["cli.rk", "server.rk"]
+}
 ```
 
 **Rules:**
 - Each binary file has its own entry function (`func main()` or `@entry`)
-- Files not in `[[bin]]` list are library code (importable by binaries)
-- Without rask.toml: compile one file at a time explicitly
+- Files not in `bin` list are library code (importable by binaries)
+- Without rask.build: compile one file at a time explicitly
 
 ### Examples Directory Pattern
 
@@ -279,20 +275,16 @@ mylib/
     advanced.rk   # Another example with func main()
 ```
 
-**Without rask.toml:**
+**Without rask.build:**
 ```bash
 raskc mylib/examples/basic.rk → basic binary
 ```
 
-**With rask.toml:**
-```toml
-[[example]]
-name = "basic"
-path = "examples/basic.rk"
-
-[[example]]
-name = "advanced"
-path = "examples/advanced.rk"
+**With rask.build:**
+```rask
+package "mylib" "1.0.0" {
+    examples: ["examples/basic.rk", "examples/advanced.rk"]
+}
 ```
 
 **Behavior:**
@@ -350,7 +342,7 @@ path = "examples/advanced.rk"
 - Use `raskc file.rk` for executables
 - Libraries are checked but not built
 
-**Phase 2:** Add rask.toml support
+**Phase 2:** Add rask.build support
 - Dependencies, C linking
 - Multi-binary projects
 - Examples/tests configuration

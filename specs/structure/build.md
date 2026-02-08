@@ -1,189 +1,384 @@
-# Build Scripts
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+# Build System
 
 ## The Question
-How do build scripts work? What is the file format, entry point, and API? How does code generation integrate with compilation?
+How do packages declare dependencies, features, and build configuration? How do build scripts work?
 
 ## Decision
-`rask.build` is a Rask source file with a `build(ctx: BuildContext)` entry point. Compiler provides a `build` module with types for declaring generated code, assets, and build configuration. Generated files go to `.rk-gen/` and are automatically included in compilation.
+`rask.build` is the single source of truth—both manifest and build script. A `package` block declares metadata, dependencies, features, and profiles using keyword syntax. An optional `build()` function handles code generation and native compilation. No TOML, no separate manifest.
 
 ## Rationale
-Full Rask in build scripts (unlike comptime's restricted subset) lets you do I/O-heavy tasks: reading schemas, calling external tools, generating code from templates. A structured API (not stdout directives like Cargo) means build scripts are type-checked and IDE-friendly. Generated files are automatically included—no manual wiring. The `.rk-gen/` directory is gitignored but you can inspect it for debugging.
+Every Rask project needs dependencies. I chose Rask-native syntax over TOML because it eliminates a second language, enables type-checked metadata (typos in field names are compile errors), and keeps everything in one file. The `package` block is purely declarative—no code execution, just data. This lets the parser extract dependency information independently of build logic, so dep resolution works even if `func build()` has syntax errors.
 
-## Specification
+I considered three alternatives: TOML manifest (Cargo-style), struct literals (verbose), and versioned imports (Zig-like, scatters deps across files). The keyword approach won because it's consistent with how Rask already works—`dep`, `feature`, `scope`, and `profile` follow the same grammar as `import`, `test`, and `struct`: keyword-first declarations, no parentheses.
 
-### Build Script Location and Structure
+---
 
-**File:** `rask.build` in package root (alongside `rask.toml` if present).
+## Package Block
 
-**Entry point:**
+**File:** `rask.build` in package root.
+
 ```rask
-import build using BuildContext
+package "my-app" "1.0.0" {
+    dep "http" "^2.0"
+    dep "json" "^1.5"
+}
+```
 
-public func build(ctx: BuildContext) -> () or Error {
-    // Build logic here
-    Ok(())
+**No `rask.build` needed** for zero-dependency packages. Package name inferred from directory, version 0.0.0.
+
+### Keyword Grammar
+
+All keywords inside `package` follow the same pattern:
+
+```
+keyword "name" ["version"] [{ key: value }]
+```
+
+Sub-blocks use map syntax (`key: value`, newline-separated)—consistent with struct field declarations.
+
+| Keyword | Purpose | Example |
+|---------|---------|---------|
+| `dep` | Dependency | `dep "http" "^2.0"` |
+| `feature` | Feature group/flag | `feature "ssl" { dep "openssl" "^3.0" }` |
+| `scope` | Dependency scope | `scope "dev" { dep "mock" "^2.0" }` |
+| `profile` | Custom build profile | `profile "embedded" { opt_level: "z" }` |
+
+Package-level metadata uses map syntax directly:
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `description` | string | Package description (for publishing) |
+| `license` | string | SPDX license identifier |
+| `repository` | string | Source repository URL |
+| `members` | list | Workspace member directories |
+
+```rask
+package "json-parser" "2.1.0" {
+    description: "Fast JSON parser for Rask"
+    license: "MIT"
+    repository: "https://github.com/alice/json-parser"
+
+    dep "unicode" "^1.0"
+}
+```
+
+### Structural Rules
+
+1. **Purely declarative.** No `comptime if` inside the package block. Platform-specific deps use `{ target: "linux" }`.
+2. **No group nesting.** `scope` inside `feature` or vice versa is a compile error. Use sub-block tags for cross-cutting.
+3. **Forward references valid.** The block is declarative, not sequential—order doesn't matter semantically.
+4. **Free-form ordering.** Convention: metadata → deps → scopes → features → profiles. Not enforced.
+5. **One `package` block per file.** Duplicate is a compile error. Only valid in `.build` files.
+6. **Build module auto-imported.** No `import build using ...` needed.
+7. **Parser extracts `package` block independently.** Dep resolution works even if build logic has syntax errors.
+
+---
+
+## Dependencies
+
+### Basic Dependencies
+
+```rask
+dep "http" "^2.0"
+dep "json" "^1.5"
+dep "sqlite" "^3.0"
+```
+
+Version strings use semver ranges: `"^2.0"` (compatible with 2.x), `">=1.5"` (minimum), `"=1.0.0"` (exact).
+
+### Dep Sub-Block Properties
+
+When a dep needs more than name + version, use a sub-block:
+
+```rask
+dep "epoll" "^1.0" { target: "linux" }
+
+dep "my-fork" {
+    git: "https://github.com/me/lib"
+    branch: "fix-bug"
+}
+
+dep "shared" { path: "../shared" }
+
+dep "shared" "^1.0" { path: "../shared" }  // path for dev, version for publishing
+
+dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
+```
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `target` | string | Platform filter (`"linux"`, `"macos"`, `"windows"`) |
+| `path` | string | Local path dependency |
+| `git` | string | Git repository URL |
+| `branch` | string | Git branch (requires `git`) |
+| `with` | list | Enable features OF the dependency |
+| `scope` | string | Scope override when inside a `feature` block |
+| `feature` | string | Additional feature gate (multi-feature deps) |
+
+**Version is optional** for path and git deps: `dep "shared" { path: "../shared" }`.
+
+### Dependency Scopes
+
+Group dev and build dependencies with `scope`:
+
+```rask
+scope "dev" {
+    dep "mock-server" "^2.0"
+    dep "test-utils" "^1.0"
+    dep "bench-runner" "^1.0"
+}
+
+scope "build" {
+    dep "codegen" "^1.0"
+    dep "protobuf-gen" "^2.0"
+}
+```
+
+- `scope "dev"` — test dependencies, not included in release builds
+- `scope "build"` — build script dependencies, compiled before build script runs
+- Scope blocks only contain `dep` statements
+
+### Edge Cases
+
+| Scenario | Behavior |
+|----------|----------|
+| Dep with both `path` and `git` | Error: conflicting sources |
+| Same dep in `scope "dev"` and `scope "build"` | Valid—compiler merges (same version required) |
+| Same dep declared twice at same level | Error: duplicate dependency |
+| Dep outside `package` block | Error: dep must be inside package block |
+
+---
+
+## Features
+
+Features declare optional functionality. Deps inside a feature block are automatically optional and gated by that feature.
+
+### Basic Features
+
+```rask
+feature "ssl" {
+    dep "openssl" "^3.0"
+    dep "rustls" "^0.21"
+}
+
+feature "logging" {
+    dep "zap" "^2.0"
+}
+
+feature "full" { enables: ["ssl", "logging"] }
+```
+
+When a user enables `--features ssl`, the openssl and rustls deps are included. Without it, they're excluded.
+
+### Code-Only Features
+
+Features without deps are flags for `comptime if` in regular code:
+
+```rask
+feature "verbose"
+```
+
+No block needed. Used in code as `comptime if cfg.features.contains("verbose")`.
+
+### Default Features
+
+All features are optional by default. Mark with `default: true`:
+
+```rask
+feature "json" {
+    default: true
+    dep "serde-json" "^1.0"
+}
+```
+
+Users can disable defaults: `rask build --no-default-features`.
+
+### Multi-Feature Dependencies
+
+When a dep belongs to multiple features, tag it inside the primary feature block:
+
+```rask
+feature "ssl" {
+    dep "openssl" "^3.0"
+    dep "ring" "^0.17" { feature: "crypto" }  // also activated by "crypto"
+}
+
+feature "crypto" {
+    dep "libsodium" "^1.0"
+    // ring is also here via the tag above
+}
+```
+
+`ring` is activated when EITHER ssl or crypto is enabled.
+
+### Feature Sub-Block Properties
+
+| Key | Type | Purpose |
+|-----|------|---------|
+| `enables` | list | Other features this activates (feature names only) |
+| `default` | bool | Enabled by default (default: false) |
+
+### Feature + Scope Cross-Cutting
+
+A dep inside a feature block that's also dev-only:
+
+```rask
+feature "ssl" {
+    dep "openssl" "^3.0"
+    dep "ssl-test-helpers" "^1.0" { scope: "dev" }
+}
+```
+
+### Feature Rules
+
+- `enables` only references feature names—not dep names.
+- Optional deps MUST live inside feature blocks. No top-level `{ optional: true }`.
+- Same dep in multiple feature blocks is an error. Use `{ feature: "other" }` tag.
+- Circular `enables` is a compile error.
+- `enables` referencing unknown feature is a compile error.
+- Redundant `{ feature: "ssl" }` inside `feature "ssl"` block is a warning.
+
+---
+
+## Custom Profiles
+
+Built-in profiles: `debug` and `release`. Custom profiles use inheritance:
+
+```rask
+profile "embedded" {
+    inherits: "release"
+    opt_level: "z"
+    panic: "abort"
+}
+
+profile "bench" {
+    inherits: "release"
+    lto: "fat"
+    codegen_units: 1
+}
+
+profile "staging" {
+    inherits: "release"
+    debug_info: true
+}
+```
+
+| Key | Type | Values | Effect |
+|-----|------|--------|--------|
+| `inherits` | string | Profile name | Base settings on another profile |
+| `opt_level` | int/string | 0-3, `"s"`, `"z"` | Optimization level |
+| `debug_info` | bool | true/false | Include debug symbols |
+| `overflow_checks` | bool | true/false | Runtime integer overflow checks |
+| `lto` | bool/string | false, true, `"thin"`, `"fat"` | Link-time optimization |
+| `codegen_units` | int | 1-256 | Parallel codegen units |
+| `strip` | bool | true/false | Strip debug symbols from binary |
+| `panic` | string | `"unwind"`, `"abort"` | Panic strategy |
+
+**CLI:**
+```bash
+rask build --profile embedded
+rask build --release          # shorthand for --profile release
+```
+
+**Build script access:**
+```rask
+func build(ctx: BuildContext) -> () or Error {
+    if ctx.profile.name == "embedded" {
+        try ctx.compile_c(CompileOptions {
+            sources: ["embedded_runtime.c"],
+            flags: ["-Os", "-nostdlib"],
+        })
+    }
+}
+```
+
+---
+
+## Build Logic
+
+The optional `func build()` runs after the package block is parsed and deps resolved. It handles code generation, native compilation, and external tools.
+
+### Entry Point
+
+```rask
+func build(ctx: BuildContext) -> () or Error {
+    const schema = try fs.read_file("schema.json")
+    const code = generate_types(schema)
+    try ctx.write_source("generated_types.rk", code)
 }
 ```
 
 **Rules:**
 - `rask.build` is a separate compilation unit (compiled before the main package)
 - Full Rask language available (I/O, pools, concurrency, C interop)
-- Can't import the package you're building (circular dependency)
-- Can import external packages (declared in `[build-dependencies]`)
+- Can't import the package being built (circular dependency)
+- Build module auto-imported—`BuildContext`, `CompileOptions`, etc. available without `import`
 
 ### BuildContext API
 
-**Provided by compiler via `import build`:**
-
 ```rask
 struct BuildContext {
-    // Package information
     public package_name: string
     public package_version: string
     public package_dir: Path
 
-    // Build configuration
-    public profile: Profile           // debug | release | custom
-    public target: Target             // host or cross-compilation target
-    public features: Set<string>      // enabled feature flags
+    public profile: ProfileInfo
+    public target: Target
+    public features: Set<string>    // enabled feature flags
 
-    // Output directories
-    public gen_dir: Path              // .rk-gen/ for generated code
-    public out_dir: Path              // build artifacts
+    public gen_dir: Path            // .rk-gen/ for generated code
+    public out_dir: Path            // build artifacts
 }
 
-enum Profile {
-    Debug,
-    Release,
-    Custom(string),
+struct ProfileInfo {
+    public name: string             // "debug", "release", or custom
+    public opt_level: i32
+    public debug_info: bool
 }
 
 struct Target {
-    public arch: string       // x86_64, aarch64, etc.
-    public os: string         // linux, macos, windows, etc.
-    public env: string        // gnu, musl, msvc, etc.
+    public arch: string             // x86_64, aarch64, etc.
+    public os: string               // linux, macos, windows, etc.
+    public env: string              // gnu, musl, msvc, etc.
 }
 ```
 
 ### Code Generation
 
-**Writing generated Rask code:**
-
-```rask
-public func build(ctx: BuildContext) -> () or Error {
-    // Read schema file
-    const schema = try fs.read_file("schema.json")
-
-    // Generate code
-    const code = generate_types(schema)
-
-    // Write to gen_dir (automatically included in compilation)
-    try ctx.write_source("generated_types.rk", code)
-
-    Ok(())
-}
-```rask
-
-**BuildContext methods for code generation:**
-
 | Method | Description |
 |--------|-------------|
-| `write_source(name: string, code: string)` | Write `.rk` file to gen_dir |
+| `write_source(name: string, code: string)` | Write `.rk` file to `.rk-gen/` (auto-included in compilation) |
 | `write_file(name: string, data: []u8)` | Write arbitrary file to out_dir |
 | `declare_dependency(path: Path)` | Mark file as input (triggers rebuild on change) |
 
-**Generated file location:**
-- `ctx.write_source("foo.rk")` → `.rk-gen/foo.rk`
-- `.rk-gen/` is automatically added to package source set
-- Generated files have package visibility (not `public` unless explicitly written as such)
-
-### Build Dependencies
-
-**Declared in `rask.toml`:**
-
-```toml
-[package]
-name = "myapp"
-version = "1.0.0"
-
-[dependencies]
-http = "2.1"
-
-[build-dependencies]
-# Only available to rask.build, not main package
-json = "1.3"
-codegen-utils = "0.5"
-```
-
-**Rules:**
-- `[build-dependencies]` are separate from `[dependencies]`
-- Build dependencies compiled first, used by build script
-- Not available to main package code
-- Version conflicts between build-deps and deps are fine (separate compilation)
-
-### Build Lifecycle
-
-**Execution order:**
-
-```
-1. Resolve dependencies (rask.toml + rask.lock)
-2. Fetch/compile build-dependencies
-3. Compile rask.build (if exists)
-4. Execute rask.build → generates files to .rk-gen/
-5. Compile main package (includes .rk-gen/*.rk)
-6. Link
-```
-
-**When build script runs:**
-
-| Trigger | Build script runs? |
-|---------|-------------------|
-| `rask build` (first time) | Yes |
-| `rask build` (no changes) | No (cached) |
-| `rask.build` modified | Yes |
-| Declared dependency modified | Yes |
-| Source files modified | No (unless declared) |
-| `rask build --force` | Yes |
-
-### Declaring Input Dependencies
-
-**For incremental builds:**
-
 ```rask
-public func build(ctx: BuildContext) -> () or Error {
-    // Declare input files (rebuild if these change)
+func build(ctx: BuildContext) -> () or Error {
     try ctx.declare_dependency("schema.json")
     try ctx.declare_dependency("templates/*.tmpl")  // glob supported
 
     const schema = try fs.read_file("schema.json")
-    // ... generate code
-
-    Ok(())
+    try ctx.write_source("types.rk", generate_types(schema))
 }
 ```
 
-**Automatic dependencies:**
-- `rask.build` itself
-- All `[build-dependencies]`
-- Files read via `ctx.read_file()` (convenience wrapper)
+**Generated file location:**
+- `ctx.write_source("foo.rk")` → `.rk-gen/foo.rk`
+- `.rk-gen/` automatically added to package source set
+- Generated files have package visibility (not `public` unless written as such)
 
 ### C Build Integration
 
-**Compiling C code:**
-
 ```rask
-public func build(ctx: BuildContext) -> () or Error {
-    // Compile C sources
+func build(ctx: BuildContext) -> () or Error {
     try ctx.compile_c(CompileOptions {
         sources: ["vendor/sqlite3.c"],
         include_dirs: ["vendor/"],
         flags: ["-O2", "-DSQLITE_OMIT_LOAD_EXTENSION"],
     })
 
-    // Link with system library
     try ctx.link_library("pthread")
-
-    Ok(())
 }
 ```
 
@@ -191,26 +386,24 @@ public func build(ctx: BuildContext) -> () or Error {
 
 ```rask
 struct CompileOptions {
-    sources: []string,           // C source files
-    include_dirs: []string,      // -I paths
-    flags: []string,             // Additional compiler flags
-    define: Map<string, string>, // -D macros
+    sources: []string
+    include_dirs: []string
+    flags: []string
+    define: Map<string, string>
 }
 ```
-
-**Methods:**
 
 | Method | Description |
 |--------|-------------|
 | `compile_c(opts: CompileOptions)` | Compile C sources to object files |
-| `compile_rust(opts: RustCrateOptions)` | Compile Rust crate via cargo, optionally generate header via cbindgen |
+| `compile_rust(opts: RustCrateOptions)` | Compile Rust crate via cargo |
 | `link_library(name: string)` | Link with system library (-l) |
 | `link_search_path(path: string)` | Add library search path (-L) |
 | `pkg_config(name: string)` | Use pkg-config for flags |
 
 ### Rust Crate Integration
 
-Rust crates that export C ABI functions (`#[no_mangle] pub extern "C" fn`) can be compiled and linked via `compile_rust`. The Rust crate produces a static library; an optional cbindgen step generates a C header that Rask imports with the standard `import c` mechanism.
+Rust crates exporting C ABI functions can be compiled and linked via `compile_rust`. The Rust crate produces a static library; an optional cbindgen step generates a C header that Rask imports with the standard `import c` mechanism.
 
 No new import syntax. Rust is just another source of C-ABI libraries.
 
@@ -218,42 +411,29 @@ No new import syntax. Rust is just another source of C-ABI libraries.
 
 ```rask
 struct RustCrateOptions {
-    path: string                     // Local path or crates.io crate name
-    version: string                  // Semver for crates.io (empty for local)
-    lib_name: string                 // Override library name (default: from Cargo.toml)
-    crate_type: string               // "staticlib" (default) or "cdylib"
-    cbindgen: bool                   // Generate C header via cbindgen (default: false)
-    cbindgen_config: string          // Path to cbindgen.toml (default: cbindgen defaults)
-    header_name: string              // Output header filename (default: "{lib_name}.h")
-    features: []string               // Cargo features to enable
-    no_default_features: bool        // Disable default Cargo features
-    target: string                   // Rust target triple (default: from ctx.target)
-    flags: []string                  // Additional cargo build flags
-    env: Map<string, string>         // Environment variables for cargo
+    path: string
+    version: string
+    lib_name: string
+    crate_type: string              // "staticlib" (default) or "cdylib"
+    cbindgen: bool
+    cbindgen_config: string
+    header_name: string
+    features: []string
+    no_default_features: bool
+    target: string
+    flags: []string
+    env: Map<string, string>
 }
 ```
 
-**What `compile_rust` does:**
-
-1. Resolve crate — local path (contains `/`) or fetch from crates.io (bare name + `version`)
-2. Run `cargo build --lib --message-format=json` with profile/target/features
-3. If `cbindgen: true`, run cbindgen → header written to `.rk-gen/{header_name}`
-4. Auto-link the resulting static library
-5. Auto-link Rust runtime system dependencies (detected from cargo JSON output)
-6. Call `declare_dependency` on local crate sources for incremental rebuilds
-
-**Example — local crate with cbindgen (common case):**
+**Example — local crate with cbindgen:**
 
 ```rask
-// rask.build
-import build using BuildContext
-
-public func build(ctx: BuildContext) -> () or Error {
+func build(ctx: BuildContext) -> () or Error {
     try ctx.compile_rust(RustCrateOptions {
         path: "vendor/fast-hash",
         cbindgen: true,
     })
-    Ok(())
 }
 ```
 
@@ -268,79 +448,14 @@ func main() {
 }
 ```
 
-**Example — crates.io dependency:**
+**Linking:** Static linking default (`crate_type: "staticlib"`). Platform-specific Rust runtime deps auto-detected from cargo JSON output.
 
-```rask
-// rask.build
-import build using BuildContext
-
-public func build(ctx: BuildContext) -> () or Error {
-    try ctx.compile_rust(RustCrateOptions {
-        path: "blake3",
-        version: "1.5",
-        cbindgen: true,
-        features: ["std"],
-    })
-    Ok(())
-}
-```
-
-**Example — no cbindgen (manual bindings):**
-
-```rask
-// rask.build
-import build using BuildContext
-
-public func build(ctx: BuildContext) -> () or Error {
-    try ctx.compile_rust(RustCrateOptions {
-        path: "vendor/mylib",
-    })
-    Ok(())
-}
-```
-
-```rask
-// main.rk — explicit bindings instead of import c
-extern "C" {
-    func my_init() -> c_int
-    func my_process(data: *u8, len: c_size) -> c_int
-    func my_shutdown()
-}
-```
-
-**Linking:**
-
-Static linking is the default (`crate_type: "staticlib"`). Produces a self-contained archive with no runtime library path issues. Platform-specific Rust runtime dependencies are auto-detected from cargo's `--message-format=json` output:
-
-| Platform | Typical dependencies |
-|----------|---------------------|
-| Linux (glibc) | `pthread`, `dl`, `m` |
-| macOS | `System` |
-| Windows (msvc) | `advapi32`, `ws2_32`, `userenv` |
-
-Dynamic linking (`crate_type: "cdylib"`) is available for shared library use cases. The `.so`/`.dylib`/`.dll` must be distributed alongside the binary.
-
-**Incremental rebuilds:**
-
-For local crates, `compile_rust` automatically declares dependencies on `{path}/src/**/*.rs` and `{path}/Cargo.toml`. Cargo handles its own incremental compilation internally.
-
-**Error cases:**
-
-| Case | Handling |
-|------|----------|
-| `cargo` not found | Build error: "cargo not found. Install Rust toolchain: https://rustup.rs" |
-| `cbindgen` not found | Build error: "cbindgen not found. Install: cargo install cbindgen" |
-| Cargo compilation failure | Build error with cargo stderr |
-| Crate not found on crates.io | Build error: "crate not found" |
-| Missing `crate-type = ["staticlib"]` | Build error with fix instructions |
-| No C-ABI exports | Warning: "no C-ABI symbols found" |
-| Rust panic across FFI | Undefined behavior — Rust code must use `catch_unwind` at `extern "C"` boundaries |
+**Incremental rebuilds:** For local crates, `compile_rust` automatically declares dependencies on `{path}/src/**/*.rs` and `{path}/Cargo.toml`.
 
 ### Running External Tools
 
 ```rask
-public func build(ctx: BuildContext) -> () or Error {
-    // Run protoc
+func build(ctx: BuildContext) -> () or Error {
     const result = try ctx.run(Command {
         program: "protoc",
         args: ["--rask_out=.rk-gen/", "schema.proto"],
@@ -350,42 +465,140 @@ public func build(ctx: BuildContext) -> () or Error {
     if result.status != 0 {
         return Err(Error.new("protoc failed: {}", result.stderr))
     }
-
 }
 ```
 
-### Conditional Compilation
+---
 
-**Using features:**
+## Build Lifecycle
+
+```
+1. Parse rask.build — extract package block (independently of build logic)
+2. Resolve dependencies (package block + rask.lock)
+3. Fetch/compile scope "build" dependencies
+4. Compile build logic in rask.build (if func build exists)
+5. Execute func build() → generates files to .rk-gen/
+6. Compile main package (includes .rk-gen/*.rk)
+7. Link
+```
+
+**When build script runs:**
+
+| Trigger | Runs? |
+|---------|-------|
+| First build | Yes |
+| No changes | No (cached) |
+| `rask.build` modified | Yes |
+| Declared dependency modified | Yes |
+| Source files modified | No (unless declared) |
+| `rask build --force` | Yes |
+
+---
+
+## Conditional Compilation
+
+Inside regular code (NOT the package block), use `comptime if` with the compiler-provided `cfg` constant:
 
 ```rask
-public func build(ctx: BuildContext) -> () or Error {
-    if ctx.features.contains("ssl") {
-        try ctx.link_library("ssl")
-        try ctx.link_library("crypto")
-
-        // Generate feature flag for main code
-        try ctx.write_source("features.rk", "public const SSL_ENABLED: bool = true")
+func get_backend() -> Backend {
+    comptime if cfg.os == "linux" {
+        return LinuxBackend.new()
+    } else if cfg.os == "macos" {
+        return MacBackend.new()
     } else {
-        try ctx.write_source("features.rk", "public const SSL_ENABLED: bool = false")
+        return GenericBackend.new()
     }
+}
 
+func handle_request(req: Request) -> Response {
+    comptime if cfg.features.contains("logging") {
+        log.info("Request: {}", req.path)
+    }
+    // process request...
 }
 ```
 
-**Feature declaration in rask.toml:**
+**`cfg` fields:**
 
-```toml
-[features]
-default = ["json"]
-ssl = []
-json = []
-full = ["ssl", "json"]
+| Field | Type | Source |
+|-------|------|--------|
+| `os` | string | Target OS (`"linux"`, `"macos"`, `"windows"`) |
+| `arch` | string | Target architecture (`"x86_64"`, `"aarch64"`) |
+| `env` | string | Target environment (`"gnu"`, `"musl"`, `"msvc"`) |
+| `profile` | string | Build profile name (`"debug"`, `"release"`, custom) |
+| `features` | Set\<string\> | Enabled feature flags |
+
+**CLI:**
+```bash
+rask build --features ssl,logging
+rask build --features full
+rask build                        # default features only
+rask build --no-default-features
 ```
 
-### Error Handling
+---
 
-**Build script failures:**
+## Debugging and Testing Build Scripts
+
+### Testing
+
+Build scripts can include `test` blocks and `@test` functions:
+
+```rask
+func generate_types(schema: string) -> string {
+    // complex codegen logic...
+}
+
+@test
+func roundtrip_codegen() -> bool {
+    const output = generate_types('{"name": "string"}')
+    assert output.contains("name: string")
+    return true
+}
+
+test "empty schema produces empty output" {
+    assert generate_types("{}") == ""
+}
+```
+
+```bash
+rask test rask.build
+```
+
+### Debugging
+
+```bash
+# Verbose build output
+rask build --build-verbose
+
+# Output:
+# Parsing package block...
+#   ✓ 3 dependencies, 1 feature
+# Compiling build script...
+#   ✓ Compiled rask.build
+# Running build script...
+#   [build] Reading schema.json (1.2 KB)
+#   [build] Writing .rk-gen/types.rk (4.5 KB)
+#   ✓ Build script succeeded (42ms)
+```
+
+### Resource Limits
+
+```rask
+// In the package block
+build_timeout: 300         // seconds, default 300
+build_max_memory: "1GB"    // default 1GB
+```
+
+Exceeding limits:
+```
+error: Build script exceeded timeout (300s)
+  help: Increase in rask.build: build_timeout: 600
+```
+
+---
+
+## Error Handling
 
 | Scenario | Behavior |
 |----------|----------|
@@ -406,60 +619,104 @@ error: Build script failed
    = note: See .rk-gen/bad.rk for generated content
 ```
 
-### Edge Cases
+---
+
+## Edge Cases
 
 | Case | Handling |
 |------|----------|
-| No `rask.build` file | Skip build script phase (most packages) |
-| `rask.build` without entry point | Compile error: "Missing `public func build(ctx: BuildContext)`" |
-| Build script imports main package | Compile error: "Circular dependency" |
-| Generated file conflicts with source | Compile error: "Duplicate file" |
-| Build script modifies source files | Allowed but discouraged (declare dependency) |
+| No `rask.build` | Package name from directory, version 0.0.0, no deps |
+| `rask.build` with only `func build()` | Valid—no deps, just build logic |
+| Empty package block | Valid—declares identity only |
+| `rask.build` without `func build()` | Valid—just metadata, no build logic |
+| Build script imports main package | Compile error: circular dependency |
+| Generated file conflicts with source | Compile error: duplicate file |
+| `package` block in regular `.rk` file | Compile error: only valid in `.build` files |
+| Multiple `package` blocks | Compile error: duplicate |
+| Cross-compilation | `ctx.target` and `cfg` reflect target, not host |
+| Build script modifies source files | Allowed but discouraged |
 | Parallel builds | Build script output dir isolated per build |
-| Cross-compilation | `ctx.target` reflects target, not host |
+
+---
 
 ## Comptime vs Build Scripts
-
-Clear separation of concerns:
 
 | Task | Use | Why |
 |------|-----|-----|
 | Compute lookup tables | Comptime | Pure computation |
-| Embed file contents | Comptime (`@embed_file`) | Safe, read-only, compile-time path |
-| Generate code from schema | Build script | Needs parsing libraries, complex logic |
+| Embed file contents | Comptime (`@embed_file`) | Safe, read-only |
+| Generate code from schema | Build script | Needs parsing libraries |
 | Call external tools (protoc) | Build script | Subprocess execution |
-| Compile C sources | Build script | Needs C compiler invocation |
-| Conditional feature flags | Either | Simple flags → comptime; complex logic → build script |
+| Compile C sources | Build script | C compiler invocation |
+| Feature-based code paths | `comptime if cfg` | Compile-time branching |
 
-**`@embed_file` in comptime:**
+---
+
+## Full Example
 
 ```rask
-// Comptime file embedding (specified in comptime.md)
-const SCHEMA: []u8 = comptime @embed_file("schema.json")
-const VERSION: string = comptime @embed_file("VERSION")
+package "my-api" "1.0.0" {
+    description: "REST API server"
+    license: "MIT"
+
+    dep "http" "^2.0"
+    dep "json" "^1.5"
+    dep "config" "^3.0"
+    dep "epoll" "^1.0" { target: "linux" }
+    dep "kqueue" "^1.0" { target: "macos" }
+
+    scope "dev" {
+        dep "mock-server" "^2.0"
+        dep "test-utils" "^1.0"
+    }
+
+    scope "build" {
+        dep "protobuf-gen" "^2.0"
+    }
+
+    feature "ssl" {
+        dep "openssl" "^3.0" { target: "linux" }
+        dep "security-framework" "^2.0" { target: "macos" }
+    }
+
+    feature "logging" {
+        dep "zap" "^2.0"
+    }
+
+    feature "full" { enables: ["ssl", "logging"] }
+
+    profile "staging" {
+        inherits: "release"
+        debug_info: true
+    }
+}
+
+func build(ctx: BuildContext) -> () or Error {
+    try ctx.declare_dependency("api.proto")
+
+    const result = try ctx.run(Command {
+        program: "protoc",
+        args: ["--rask_out=.rk-gen/", "api.proto"],
+    })
+
+    if result.status != 0 {
+        return Err(Error.new("protoc failed: {}", result.stderr))
+    }
+}
+
+func generate_rpc_stubs(proto: string) -> string {
+    // codegen logic...
+}
+
+test "protobuf codegen produces valid output" {
+    const output = generate_rpc_stubs("service Foo { rpc Bar(); }")
+    assert output.contains("func bar")
+}
 ```
-
-**Constraints:**
-- Path must be a string literal (no runtime values)
-- Path is relative to package root
-- Read-only (no side effects)
-- File read at compile time, contents embedded in binary
-
-Handles the common "embed this file" case. Build scripts are for **transforms**: reading input, processing it, writing generated code.
 
 ## Integration Notes
 
-- **Comptime:** Build scripts are separate from comptime. Comptime runs in-compiler (restricted subset, plus `@embed_file`); build scripts run as separate programs (full language). Use comptime for constants/embedding; build scripts for I/O-heavy codegen.
-- **Package System:** Build scripts are compiled like any package. Build-dependencies resolved via same MVS algorithm. Generated code has package visibility.
+- **Comptime:** Build scripts are separate from comptime. Comptime runs in-compiler (restricted subset); build scripts run as separate programs (full language). Use comptime for constants/embedding; build scripts for I/O-heavy codegen.
+- **Package System:** Build scripts compiled like any package. Build-deps resolved via same MVS algorithm. Generated code has package visibility.
 - **Module System:** `.rk-gen/` files are part of the package. `import` works normally. No special syntax for generated code.
 - **Incremental Compilation:** Build script re-runs only when inputs change. Generated files cached. Main package recompiles if generated files change.
-
-## Remaining Issues
-
-### Medium Priority
-1. **Build script debugging** — How to debug build scripts? Printf? Attach debugger?
-2. **Build profiles** — How do custom profiles work beyond debug/release?
-3. **Workspace build scripts** — Can workspaces have shared build logic?
-
-### Low Priority
-4. **Build script testing** — How to test build scripts?

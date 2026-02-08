@@ -1,10 +1,12 @@
 # Testing Framework
 
-Built-in test framework with `test` blocks, `assert`/`check` assertions, `ensure` cleanup, parallel execution, seeded random, and comptime tests.
+Built-in test framework with `test` blocks, `@test` functions, `assert`/`check` assertions, `ensure` cleanup, parallel execution, seeded random, and comptime tests.
 
 ## Test Declaration
 
-Tests are declared with `test` blocks. No attributes, no special function signatures.
+Two forms: `test` blocks for standalone tests, and `@test` on functions for callable tests.
+
+### Test Blocks
 
 ```rask
 test "addition works" {
@@ -18,6 +20,36 @@ test "addition works" {
 | Location | Anywhere a statement is valid |
 | Visibility | Not exported, not callable |
 | Compilation | Stripped in release builds |
+
+### `@test` Functions
+
+The `@test` attribute marks a function as a test. Unlike `test` blocks, these are regular functions that can also be called from other code.
+
+```rask
+@test
+func config_defaults_are_valid() -> bool {
+    const cfg = Config.defaults()
+    assert cfg.port > 0
+    return cfg.is_valid()
+}
+```
+
+| Property | Value |
+|----------|-------|
+| Syntax | `@test` before `func` declaration |
+| Location | Anywhere a function is valid |
+| Visibility | Normal function visibility rules apply |
+| Callable | Yes — works as a regular function AND as a test |
+| Compilation | Function always compiled; test runner invokes it during `rask test` |
+
+**When to use which:**
+
+| Form | Use for |
+|------|---------|
+| `test "name" { }` | Standalone tests, quick assertions, table-driven tests |
+| `@test func name()` | Functions that double as tests — validation helpers, self-checking utilities |
+
+Both coexist. A file can have `test` blocks and `@test` functions side by side.
 
 ## Test Location
 
@@ -174,7 +206,7 @@ Code blocks in doc comments are extracted and run as tests:
 /// ```
 /// assert add(2, 3) == 5
 /// ```
-public func add(a: i32, b: i32) -> i32 { a + b }
+public func add(a: i32, b: i32) -> i32 { return a + b }
 ```
 
 | Block | Behavior |
@@ -230,7 +262,7 @@ Trait-based injection (no magic frameworks):
 trait Clock { func now() -> Timestamp }
 
 func schedule<C: Clock>(clock: C, delay: Duration) -> Timestamp {
-    clock.now() + delay
+    return clock.now() + delay
 }
 
 test "schedule" {
