@@ -102,6 +102,20 @@ Information the compiler can infer should be displayed by tooling, not required 
 
 **Tooling contract:** IDEs SHOULD display compiler-inferred information as unobtrusive ghost annotations. This is not optional polish—it's how the language achieves clarity without ceremony.
 
+### 8. Machine-Readable Code
+
+Code should be analyzable by tools — linters, refactoring engines, IDE plugins — without whole-program analysis. This falls naturally out of the other principles but I'm making it explicit because it should guide future decisions.
+
+**What this means:**
+- Function signatures are self-describing specifications (parameter modes, error types, context clauses)
+- Keywords carry unambiguous meaning (`try`, `own`, `take`, `read`, `ensure`)
+- One idiomatic pattern per operation (one error model, one cleanup model, one concurrency model)
+- Naming conventions encode semantics (`is_*` returns bool, `into_*` takes ownership, `to_*` allocates)
+
+**Why it matters:** Tools that analyze code benefit from the same properties that help developers read it. Local reasoning, explicit intent, consistent patterns — these make static analysis tractable and refactoring safe.
+
+See [Machine Readability](specs/machine-readability.md) for conventions, naming patterns, and tooling specs.
+
 ---
 
 ## Why Not X?
