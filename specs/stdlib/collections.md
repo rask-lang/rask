@@ -402,4 +402,4 @@ func track_session(cache: Map<SessionId, Session>, id: SessionId) -> () or Error
 
 - [Pools](../memory/pools.md) — Handle-based sparse storage for graphs, entity systems
 - [Borrowing](../memory/borrowing.md) — One rule: views last as long as the source is stable
-- [Iterator Protocol](iterator-protocol.md) — Iterator trait and adapters
+- [Iteration](iteration.md) — Iterator trait and adapters

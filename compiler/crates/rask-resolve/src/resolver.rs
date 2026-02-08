@@ -1069,6 +1069,7 @@ mod tests {
             id: NodeId(0),
             kind: DeclKind::Struct(StructDecl {
                 name: "Vec".to_string(),
+                type_params: vec![],
                 fields: vec![],
                 methods: vec![],
                 is_pub: false,
@@ -1087,6 +1088,7 @@ mod tests {
             id: NodeId(0),
             kind: DeclKind::Enum(EnumDecl {
                 name: "Option".to_string(),
+                type_params: vec![],
                 variants: vec![],
                 methods: vec![],
                 is_pub: false,
