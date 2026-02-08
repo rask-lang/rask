@@ -9,6 +9,7 @@ on:
       - 'docs/book/**'
       - 'docs/blog/**'
       - 'docs/playground/**'
+      - 'docs/landing/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
       - '.github/workflows/docs.yml'
@@ -62,7 +63,7 @@ jobs:
     - name: Build mdBook
       run: |
         cd docs/book
-        mdbook build
+        mdbook build -d ../build/book
 
     - name: Build Jekyll blog
       run: |
@@ -70,11 +71,18 @@ jobs:
         bundle install
         bundle exec jekyll build --source . --destination ../build/blog
 
-    - name: Copy Playground App to Build
+    - name: Add landing page and other content
       run: |
+        # Copy landing page to root
+        cp docs/landing/index.html docs/build/index.html
+        cp docs/landing/landing.css docs/build/landing.css
+
+        # Copy playground to /app/
         mkdir -p docs/build/app
         cp -r docs/playground/*.html docs/playground/*.js docs/playground/*.css docs/playground/*.png docs/build/app/
         cp -r docs/playground/pkg docs/build/app/
+
+        # Copy meta files
         cp docs/CNAME docs/build/CNAME
         cp docs/.nojekyll docs/build/.nojekyll
 
