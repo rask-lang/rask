@@ -52,6 +52,10 @@ pub fn vec_methods() -> &'static [MethodDef] {
         MethodDef { name: "iter", takes_self: true, params: &[], ret_ty: "Iterator<T>" },
         MethodDef { name: "take_all", takes_self: true, params: &[], ret_ty: "Iterator<T>" },
 
+        // Iterator adapters (simplified - return Vec until full Iterator impl)
+        MethodDef { name: "skip", takes_self: true, params: &[("n", "usize")], ret_ty: "Vec<T>" },
+        MethodDef { name: "take", takes_self: true, params: &[("n", "usize")], ret_ty: "Vec<T>" },
+
         // Filtering
         MethodDef { name: "retain", takes_self: true, params: &[("f", "func(T) -> bool")], ret_ty: "()" },
         MethodDef { name: "remove_where", takes_self: true, params: &[("f", "func(T) -> bool")], ret_ty: "usize" },

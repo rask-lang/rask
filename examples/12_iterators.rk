@@ -77,8 +77,8 @@ func main() {
 
     // Skip and take
     const middle = numbers.iter()
-        .skip(3)   // Skip first 3
-        .take(4)   // Take next 4
+        .skip(3)    // Skip first 3
+        .take(4)    // Take next 4
         .collect()
 
     print("Middle section (skip 3, take 4): ")
