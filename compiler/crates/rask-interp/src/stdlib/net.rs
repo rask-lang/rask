@@ -78,7 +78,7 @@ impl Interpreter {
             "accept" => {
                 let guard = listener.lock().unwrap();
                 let l = guard.as_ref().ok_or_else(|| {
-                    RuntimeError::TypeError("listener is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "TcpListener".to_string(), operation: "accept on".to_string() }
                 })?;
                 match l.accept() {
                     Ok((stream, _addr)) => {
@@ -123,7 +123,7 @@ impl Interpreter {
             "read_all" => {
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("connection is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read from".to_string() }
                 })?;
                 let mut buf = String::new();
                 match s.read_to_string(&mut buf) {
@@ -135,7 +135,7 @@ impl Interpreter {
                 let data = self.expect_string(&args, 0)?;
                 let mut guard = stream.lock().unwrap();
                 let s = guard.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("connection is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write to".to_string() }
                 })?;
                 match s.write_all(data.as_bytes()).and_then(|_| s.flush()) {
                     Ok(()) => Ok(make_result_ok(Value::Unit)),
@@ -145,7 +145,7 @@ impl Interpreter {
             "remote_addr" => {
                 let guard = stream.lock().unwrap();
                 let s = guard.as_ref().ok_or_else(|| {
-                    RuntimeError::TypeError("connection is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "get address of".to_string() }
                 })?;
                 match s.peer_addr() {
                     Ok(addr) => Ok(Value::String(Arc::new(Mutex::new(addr.to_string())))),
@@ -189,7 +189,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         let mut guard = stream.lock().unwrap();
         let tcp = guard.as_mut().ok_or_else(|| {
-            RuntimeError::TypeError("connection is closed".to_string())
+            RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "read HTTP request from".to_string() }
         })?;
 
         // Clone the stream for BufReader (TcpStream supports try_clone)
@@ -315,7 +315,7 @@ impl Interpreter {
             }
             _ => {
                 return Err(RuntimeError::TypeError(
-                    "write_http_response expects an HttpResponse struct".to_string(),
+                    "expected HttpResponse struct with `status`, `headers`, and `body` fields".to_string(),
                 ));
             }
         };
@@ -337,7 +337,7 @@ impl Interpreter {
 
         let mut guard = stream.lock().unwrap();
         let tcp = guard.as_mut().ok_or_else(|| {
-            RuntimeError::TypeError("connection is closed".to_string())
+            RuntimeError::ResourceClosed { resource_type: "TcpConnection".to_string(), operation: "write HTTP response to".to_string() }
         })?;
 
         let mut output = format!("HTTP/1.1 {} {}\r\n", status, status_text);

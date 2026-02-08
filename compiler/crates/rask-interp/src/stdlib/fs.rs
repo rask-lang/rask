@@ -306,7 +306,7 @@ impl Interpreter {
                 use std::io::Read;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read from".to_string() }
                 })?;
                 let mut content = String::new();
                 match f.read_to_string(&mut content) {
@@ -326,7 +326,7 @@ impl Interpreter {
                 use std::io::Write;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
                 })?;
                 let content = self.expect_string(&args, 0)?;
                 match f.write_all(content.as_bytes()) {
@@ -346,7 +346,7 @@ impl Interpreter {
                 use std::io::Write;
                 let mut file_opt = file.lock().unwrap();
                 let f = file_opt.as_mut().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "write to".to_string() }
                 })?;
                 let content = self.expect_string(&args, 0)?;
                 match writeln!(f, "{}", content) {
@@ -366,7 +366,7 @@ impl Interpreter {
                 use std::io::{BufRead, BufReader};
                 let file_opt = file.lock().unwrap();
                 let f = file_opt.as_ref().ok_or_else(|| {
-                    RuntimeError::TypeError("file is closed".to_string())
+                    RuntimeError::ResourceClosed { resource_type: "File".to_string(), operation: "read lines from".to_string() }
                 })?;
                 let reader = BufReader::new(f);
                 let lines: Vec<Value> = reader

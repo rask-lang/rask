@@ -54,13 +54,15 @@ impl ToDiagnostic for rask_resolve::ResolveError {
         match &self.kind {
             UndefinedSymbol { name } => Diagnostic::error(format!("undefined symbol: `{}`", name))
                 .with_code("E0200")
-                .with_primary(self.span, "not found in this scope"),
+                .with_primary(self.span, "not found in this scope")
+                .with_help("check spelling or add an import"),
 
             DuplicateDefinition { name, previous } => {
                 Diagnostic::error(format!("duplicate definition: `{}`", name))
                     .with_code("E0201")
                     .with_primary(self.span, "redefined here")
                     .with_secondary(*previous, "previously defined here")
+                    .with_help("rename one of the definitions")
             }
 
             InvalidBreak { label } => {
@@ -71,6 +73,7 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 Diagnostic::error(msg)
                     .with_code("E0204")
                     .with_primary(self.span, "cannot break here")
+                    .with_help("break can only be used inside `loop`, `while`, or `for`")
             }
 
             InvalidContinue { label } => {
@@ -81,11 +84,13 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 Diagnostic::error(msg)
                     .with_code("E0205")
                     .with_primary(self.span, "cannot continue here")
+                    .with_help("continue can only be used inside `loop`, `while`, or `for`")
             }
 
             InvalidReturn => Diagnostic::error("return outside of function")
                 .with_code("E0206")
-                .with_primary(self.span, "cannot return here"),
+                .with_primary(self.span, "cannot return here")
+                .with_help("return can only be used inside a function body"),
 
             UnknownPackage { path } => {
                 let path_str = if path.is_empty() {
@@ -96,6 +101,7 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 Diagnostic::error(format!("unknown package: `{}`", path_str))
                     .with_code("E0207")
                     .with_primary(self.span, "package not found")
+                    .with_help("check the package name or add it as a dependency")
             }
 
             NotVisible { name } => {
@@ -119,13 +125,14 @@ impl ToDiagnostic for rask_resolve::ResolveError {
                 ))
                 .with_code("E0202")
                 .with_primary(self.span, "cycle detected here")
+                .with_help("break the cycle by restructuring imports or extracting shared types")
             }
 
             ShadowsBuiltin { name } => {
                 Diagnostic::error(format!("`{}` shadows a built-in", name))
                     .with_code("E0209")
                     .with_primary(self.span, "cannot redefine built-in")
-                    .with_help("built-in types and functions cannot be redefined; use a different name")
+                    .with_help("use a different name")
             }
         }
     }
@@ -149,11 +156,13 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_primary(
                     *span,
                     format!("expected `{}`, found `{}`", expected, found),
-                ),
+                )
+                .with_help(format!("change this to type `{}`", expected)),
 
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")
-                .with_primary(Span::new(0, 0), "type not found"),
+                .with_primary(Span::new(0, 0), "type not found")
+                .with_help("check spelling or add an import for this type"),
 
             ArityMismatch {
                 expected,
@@ -166,12 +175,18 @@ impl ToDiagnostic for rask_types::TypeError {
                 found
             ))
             .with_code("E0310")
-            .with_primary(*span, format!("takes {} argument{}", expected, if *expected == 1 { "" } else { "s" })),
+            .with_primary(*span, format!("takes {} argument{}", expected, if *expected == 1 { "" } else { "s" }))
+            .with_help(if *found > *expected {
+                "remove the extra arguments".to_string()
+            } else {
+                format!("add the missing argument{}", if expected - found == 1 { "" } else { "s" })
+            }),
 
             NotCallable { ty, span } => {
                 Diagnostic::error(format!("type `{}` is not callable", ty))
                     .with_code("E0311")
                     .with_primary(*span, "not a function")
+                    .with_help("only functions and closures can be called with `()`")
             }
 
             NoSuchField { ty, field, span } => {
@@ -181,6 +196,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0312")
                 .with_primary(*span, "unknown field")
+                .with_help("check the struct definition for available fields")
             }
 
             NoSuchMethod { ty, method, span } => {
@@ -190,13 +206,14 @@ impl ToDiagnostic for rask_types::TypeError {
                 ))
                 .with_code("E0313")
                 .with_primary(*span, "method not found")
+                .with_help(format!("check available methods on `{}`", ty))
             }
 
             InfiniteType { span, .. } => {
                 Diagnostic::error("infinite type detected")
                     .with_code("E0314")
                     .with_primary(*span, "type references itself infinitely")
-                    .with_note("a type variable would create an infinite type")
+                    .with_help("break the cycle with an explicit type annotation")
             }
 
             CannotInfer { span } => Diagnostic::error("cannot infer type")
@@ -208,6 +225,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error(format!("invalid type: `{}`", s))
                     .with_code("E0309")
                     .with_primary(Span::new(0, 0), "invalid type expression")
+                    .with_help("expected a type like `i32`, `string`, or a struct name")
             }
 
             TryInNonPropagatingContext { return_ty, span } => {
@@ -224,6 +242,7 @@ impl ToDiagnostic for rask_types::TypeError {
                 Diagnostic::error("`try` can only be used within a function")
                     .with_code("E0317")
                     .with_primary(*span, "not inside a function")
+                    .with_help("move this into a function body")
             }
 
             MissingReturn {
@@ -243,15 +262,15 @@ impl ToDiagnostic for rask_types::TypeError {
 
             GenericError(msg, span) => Diagnostic::error(format!("generic argument error: {}", msg))
                 .with_code("E0319")
-                .with_primary(*span, "invalid generic argument"),
+                .with_primary(*span, "invalid generic argument")
+                .with_help("check the generic parameter count and types"),
 
             AliasingViolation { var, borrow_span, access_span } => {
                 Diagnostic::error(format!("cannot mutate `{}` while borrowed", var))
                     .with_code("E0320")
                     .with_primary(*access_span, format!("cannot mutate `{}` here", var))
                     .with_secondary(*borrow_span, format!("`{}` is borrowed here", var))
-                    .with_note("closure cannot mutate variables that are borrowed by the method calling it")
-                    .with_help("consider restructuring your code to avoid mutating the borrowed variable")
+                    .with_help("restructure the code to avoid mutating while borrowed, or clone the value")
             }
         }
     }
@@ -275,7 +294,8 @@ impl ToDiagnostic for rask_types::TraitError {
                 ty, trait_name
             ))
             .with_code("E0700")
-            .with_primary(*span, format!("trait `{}` not implemented", trait_name)),
+            .with_primary(*span, format!("trait `{}` not implemented", trait_name))
+            .with_help(format!("add `extend {} : {} {{ ... }}`", ty, trait_name)),
 
             MissingMethod {
                 ty,
@@ -289,7 +309,7 @@ impl ToDiagnostic for rask_types::TraitError {
             .with_code("E0701")
             .with_primary(*span, format!("method `{}` missing", method))
             .with_help(format!(
-                "implement `{}` for type `{}` to satisfy trait `{}`",
+                "add `func {}(...)` in `extend {} : {}`",
                 method, ty, trait_name
             )),
 
@@ -301,11 +321,13 @@ impl ToDiagnostic for rask_types::TraitError {
                 ..
             } => Diagnostic::error(format!("method `{}` has wrong signature", method))
                 .with_code("E0702")
-                .with_primary(*span, format!("expected `{}`, found `{}`", expected, found)),
+                .with_primary(*span, format!("expected `{}`, found `{}`", expected, found))
+                .with_help(format!("change `{}` signature to match the trait", method)),
 
             UnknownTrait(name) => Diagnostic::error(format!("unknown trait: `{}`", name))
                 .with_code("E0703")
-                .with_primary(Span::new(0, 0), "trait not found"),
+                .with_primary(Span::new(0, 0), "trait not found")
+                .with_help("check spelling or add an import for this trait"),
 
             ConflictingMethods {
                 method,
@@ -316,7 +338,8 @@ impl ToDiagnostic for rask_types::TraitError {
                 method, trait1, trait2
             ))
             .with_code("E0704")
-            .with_primary(Span::new(0, 0), "conflicting definitions"),
+            .with_primary(Span::new(0, 0), "conflicting definitions")
+            .with_help(format!("rename or disambiguate `{}` in one of the trait implementations", method)),
         }
     }
 }
