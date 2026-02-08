@@ -20,7 +20,7 @@ func worker(id: i32, iterations: i32) -> i32 {
     return sum
 }
 
-func main() {
+func main() -> () or string {
     print("=== Basic Threading ===\n\n")
 
     // Spawn a thread with spawn { }
@@ -200,4 +200,6 @@ func main() {
     print("- Channels enable message passing\n")
     print("- No data races - compiler enforces safety\n")
     print("- No function coloring - threads are first-class\n")
+
+    return Result.Ok(())
 }
