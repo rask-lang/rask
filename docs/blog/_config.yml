@@ -15,7 +15,7 @@ kramdown:
   syntax_highlighter_opts:
     disable: true  # Use highlight.js instead
 minima:
-  skin: auto  # auto switches based on system preference
+  skin: dark
 plugins:
   - jekyll-feed
   - jekyll-seo-tag

@@ -23,6 +23,15 @@ build_site() {
         cp -r playground/pkg build/app/
     fi
 
+    # Build blog with Jekyll
+    if command -v bundle &>/dev/null; then
+        cd blog
+        bundle exec jekyll build --destination ../build/blog --quiet 2>/dev/null
+        cd ..
+    else
+        echo "Warning: bundle not found, skipping blog build (install ruby + bundle install in docs/blog/)"
+    fi
+
     echo "Build complete at $(date +%H:%M:%S)"
 }
 
@@ -44,7 +53,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src landing/ 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src landing/ blog/_posts blog/_config.yml blog/assets 2>/dev/null && {
         echo ""
         build_site
     }

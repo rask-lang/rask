@@ -1,0 +1,48 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="{{ page.lang | default: site.lang | default: "en" }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    {%- seo -%}
+    <link rel="icon" type="image/png" href="/book/src/assets/rask32.png">
+    <link rel="stylesheet" href="{{ "/assets/css/style.css" | relative_url }}">
+    {%- feed_meta -%}
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/nord.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-links">
+                <a href="/">home</a>
+                <a href="/book/index.html">docs</a>
+                <a href="/blog/" class="active">blog</a>
+                <a href="/app/">playground</a>
+                <a href="https://github.com/rask-lang/rask">github ↗</a>
+            </div>
+            <div class="status">design phase · working interpreter</div>
+        </div>
+    </nav>
+
+    <main class="container">
+        {{ content }}
+    </main>
+
+    <footer>
+        <div class="container">
+            <a href="/">home</a> ·
+            <a href="/book/index.html">docs</a> ·
+            <a href="/blog/">blog</a> ·
+            <a href="/app/">playground</a> ·
+            <a href="https://github.com/rask-lang/rask">github</a>
+        </div>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof hljs !== 'undefined') { hljs.highlightAll(); }
+        });
+    </script>
+</body>
+</html>
