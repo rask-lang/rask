@@ -244,6 +244,15 @@ impl ToDiagnostic for rask_types::TypeError {
             GenericError(msg, span) => Diagnostic::error(format!("generic argument error: {}", msg))
                 .with_code("E0319")
                 .with_primary(*span, "invalid generic argument"),
+
+            AliasingViolation { var, borrow_span, access_span } => {
+                Diagnostic::error(format!("cannot mutate `{}` while borrowed", var))
+                    .with_code("E0320")
+                    .with_primary(*access_span, format!("cannot mutate `{}` here", var))
+                    .with_secondary(*borrow_span, format!("`{}` is borrowed here", var))
+                    .with_note("closure cannot mutate variables that are borrowed by the method calling it")
+                    .with_help("consider restructuring your code to avoid mutating the borrowed variable")
+            }
         }
     }
 }

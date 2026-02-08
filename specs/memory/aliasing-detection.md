@@ -1,18 +1,52 @@
-# Memory Model: Open Issues
+# Solution: Expression-Scoped Aliasing Detection
 
-Stress points that need specification or resolution.
+## The Question
 
----
+How do we prevent closures from mutating collections that are already borrowed by the method calling them?
 
-## 1. Expression-Scoped Aliasing Detection
+## Decision
 
-Rule EC4 (aliasing rules apply to expression-scoped closures) needs local analysis to catch aliasing violations.
+Local borrow analysis during type checking. Track active borrows in a stack, scan closure bodies for conflicts. No whole-program analysis needed.
 
-**Problem:** `pool.modify(h, |e| pool.remove(h))`—closure accesses `pool` while `modify()` holds a mutable borrow. Must catch this without whole-program analysis.
+## Rationale
+
+Expression-scoped closures (EC4 rule) can access outer scope directly. This creates a problem:
+
+```rask
+pool.modify(h, |entity| {
+    pool.remove(h)    // pool borrowed by modify(), can't mutate here
+})
+```
+
+Runtime checks would panic. Better to catch at compile time—clear error, no testing needed.
+
+The algorithm respects local analysis: method signatures declare borrow modes, closure bodies are scanned locally. Same O(function size) as existing type checking.
+
+## Specification
+
+### The Problem
+
+**Rule EC4** states that aliasing rules apply to expression-scoped closures. The dangerous pattern:
+
+```rask
+pool.modify(h, |entity| {
+    entity.health -= 10        // entity borrowed from pool
+    pool.remove(h)             // ERROR: tries to mutate pool while modify() has it borrowed
+})
+```
+
+**Without detection:** Pool's internal state could be modified while the closure reads from it, causing:
+- Handles becoming invalid while in use
+- Generation counters out of sync
+- Potential panics or data corruption
+
+**With detection:** Compile-time error prevents the pattern entirely.
 
 ### Algorithm
 
-**Phase 1: Build Borrow Graph**
+The algorithm has three phases. Phase 1-2 are mandatory, Phase 3 is optional refinement.
+
+### Phase 1: Build Borrow Stack
 
 During expression evaluation, track active borrows as a stack:
 
@@ -32,7 +66,7 @@ During expression evaluation, track active borrows as a stack:
 | `func(x: T)` | Borrow of argument (compiler infers read vs mutate) |
 | `func(take x: T)` | Move of argument |
 
-**Phase 2: Closure Body Analysis**
+### Phase 2: Closure Body Analysis
 
 When an expression-scoped closure is encountered:
 
@@ -52,7 +86,7 @@ When an expression-scoped closure is encountered:
 | Exclusive(x) | Call(x.any_method) | ❌ ERROR |
 | Any(x) | Access(y) where y ≠ x | ✅ OK (disjoint) |
 
-**Phase 3: Disjoint Access Refinement**
+### Phase 3: Disjoint Access Refinement (Optional)
 
 Field-level tracking enables more patterns:
 
@@ -72,9 +106,12 @@ Track borrows at field granularity when possible:
 | `x[i]` | Borrow of `x` (index not statically known) |
 | `x.method()` | Borrow of `x` (method may access any field) |
 
-### Examples
+**Note:** Phase 3 can be deferred. Phases 1-2 provide safety; Phase 3 reduces false positives.
 
-**Example 1: Basic conflict**
+## Examples
+
+### Example 1: Basic Conflict
+
 ```rask
 pool.modify(h, |e| {
     pool.remove(h)    // ❌ ERROR: pool exclusively borrowed by modify()
@@ -86,7 +123,19 @@ pool.modify(h, |e| {
 //   [Call(pool.remove)]  ← conflicts with Exclusive(pool)
 ```
 
-**Example 2: Disjoint OK**
+**Error message:**
+```
+error: cannot mutate `pool` while borrowed
+  --> example.rask:2:5
+   |
+ 1 | pool.modify(h, |e| {
+   |      ------ `pool` is exclusively borrowed here
+ 2 |     pool.remove(h)
+   |     ^^^^^^^^^^^^^^ cannot mutate while borrowed
+```
+
+### Example 2: Disjoint Variables
+
 ```rask
 pool.modify(h, |e| {
     other_pool.remove(h2)    // ✅ OK: different variable
@@ -97,7 +146,8 @@ pool.modify(h, |e| {
 // No conflict: pool ≠ other_pool
 ```
 
-**Example 3: Read during read**
+### Example 3: Read During Read
+
 ```rask
 pool.read(h, |e| {
     const x = pool.get(h2)    // ✅ OK: shared borrows compatible
@@ -107,7 +157,8 @@ pool.read(h, |e| {
 // Closure accesses: [Call(pool.get)]  ← Shared + Shared = OK
 ```
 
-**Example 4: Nested expression chains**
+### Example 4: Nested Expression Chains
+
 ```rask
 entities[h].weapons[w].fire(|bullet| {
     entities.spawn(bullet)    // ❌ ERROR: entities borrowed
@@ -119,7 +170,11 @@ entities[h].weapons[w].fire(|bullet| {
 //   [Call(entities.spawn)]  ← conflicts if spawn takes `self` (mutating)
 ```
 
-**Example 5: Chained methods**
+**Without Phase 3:** This fails (conservative).
+**With Phase 3:** Could succeed if `fire()` only borrows `weapons[w]`, not all of `entities`.
+
+### Example 5: Chained Methods
+
 ```rask
 pool.get(h)?.transform().apply(|v| {
     pool.insert(v)    // Depends on return type ownership
@@ -134,7 +189,7 @@ pool.get(h)?.transform().apply(|v| {
 //   ❌ ERROR if insert() needs exclusive access
 ```
 
-### Complexity
+## Complexity
 
 | Phase | Complexity | Notes |
 |-------|------------|-------|
@@ -145,53 +200,31 @@ pool.get(h)?.transform().apply(|v| {
 
 No cross-function analysis required. Method signatures provide borrow requirements without examining method bodies.
 
-### Implementation Notes
+## Implementation Notes
 
-1. **Method signatures are trusted**: Compiler infers from method body whether `self` is read or mutated. No cross-function analysis—just check method body.
+1. **Method signatures are trusted**: Compiler infers from method body whether `self` is read or mutated. No cross-function analysis—just check method body locally.
 
-2. **Expression-scoped only**: Analysis only applies to closures that execute immediately. Storable closures use capture-by-value.
+2. **Expression-scoped only**: Analysis only applies to closures that execute immediately. Storable closures use capture-by-value (different safety mechanism).
 
 3. **Conservative for dynamic indices**: `pool[computed_index]` borrows the entire pool, not a specific slot. Sound but may reject valid programs.
 
 4. **Error messages**: Report borrow source ("pool is exclusively borrowed by modify() at line 5") and conflicting access ("cannot call pool.remove() while pool is borrowed").
 
-### Status
+5. **Phase 3 is optional**: Implement Phases 1-2 first for safety. Add Phase 3 later if false positives become problematic.
 
-✅ **Specified.** Ready to implement.
+## Metrics Impact
 
----
+| Metric | Impact | Notes |
+|--------|--------|-------|
+| MC (Mechanical Safety) | ✅ +0.05 | Prevents data races in closures at compile time |
+| TC (Transparency of Cost) | ✅ Neutral | Borrow stack operations are O(1) per call (implicit) |
+| ED (Ergonomic Simplicity) | ⚠️ -0.1 to +0.1 | Phase 1-2: conservative (may reject valid patterns). Phase 3: natural |
+| SN (Syntactic Noise) | ✅ Neutral | Zero new syntax, uses existing closure patterns |
 
-## Summary
+**Recommendation:** Implement Phases 1-2 first. Measure false positive rate. Add Phase 3 if ED regression is significant.
 
-| Issue | Primary Metric Risk | Status |
-|-------|---------------------|--------|
-| 1. Expression-Scoped Aliasing | Local analysis complexity | ✅ Specified |
+## References
 
----
-
-## Resolved Issues
-
-The following issues from the original list have been addressed:
-
-| Original # | Issue | Resolution |
-|------------|-------|------------|
-| 2 | Context Passing Tax | Ambient Pool Scoping (`with pool { }`) in pools.md |
-| 3 | Handle Lifecycle Zombies | Weak Handles in pools.md |
-| 4 | Self-Referential Structures | Self-Referential Patterns section in pools.md |
-| 5 | Lifetime Extension Edge Cases | Chained temporaries section in borrowing.md |
-| 10 | Multi-Pool Operations | Multi-pool `with (a, b) { }` in pools.md |
-| 11 | Iterator + Mutation Allocation | Cursor iteration in pools.md |
-| 13 | No Thread-Local Pattern | Ambient pools establish task-local context |
-| 14 | Expression-Scoped Double Access | Frozen pools + generation check coalescing in pools.md |
-| 15 | Linear Resources in Errors | Linear Resources in Error Types section in linear-types.md |
-| 16 | Pool Partitioning for Parallelism | Scoped API (`with_partition`) + mutable chunks + snapshot isolation in pools.md. Pool::merge removed (generation conflicts). |
-| 17 | Storable Slices | SliceDescriptor<T> (Handle + Range) in collections.md |
-| 18 | Handle Exhaustion & Fragmentation | Pool Growth & Memory Management section in pools.md |
-
-The following are documented design tradeoffs (not bugs):
-
-| Original # | Issue | Documentation |
-|------------|-------|---------------|
-| 4 | 16-Byte Threshold | value-semantics.md (deliberate, with rationale) |
-| 6 | Dual Borrowing Semantics | borrowing.md (load-bearing; mitigated via "Containers Might Change" framing + IDE ghost annotations + improved error messages) |
-| 7 | Scope-Constrained Closures | closures.md (BC1-BC5 rules) |
+- [borrowing.md](borrowing.md) — Expression-scoped vs block-scoped semantics
+- [closures.md](closures.md) — EC1-EC5 rules for expression-scoped closures
+- [pools.md](pools.md) — Pool methods that use closures (`modify()`, `read()`, etc.)

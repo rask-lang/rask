@@ -160,6 +160,55 @@ try pool.modify(h, |entity| {
 | `read(h, f)` | `func(T) -> R → Option<R>` | Multi-statement read |
 | `modify(h, f)` | `func(T) -> R → Option<R>` | Multi-statement mutation |
 
+#### Closure Aliasing Prevention (Compile-Time)
+
+Closures cannot mutate the pool that called them. This is caught at compile time:
+
+```rask
+// ❌ ERROR: cannot mutate pool while borrowed by modify()
+pool.modify(h, |entity| {
+    entity.health -= 10
+    pool.remove(h)    // Compile error here
+})
+```
+
+**Why this is an error:**
+- `modify()` holds a mutable borrow of `pool` during closure execution
+- The closure tries to call `pool.remove()`, which needs its own mutable borrow
+- Two overlapping mutable borrows violate safety
+
+**Error message:**
+```
+error: cannot mutate `pool` while borrowed
+  --> example.rask:3:5
+   |
+ 2 | pool.modify(h, |entity| {
+   |      ------ `pool` is exclusively borrowed here
+ 3 |     pool.remove(h)
+   |     ^^^^^^^^^^^^^^ cannot mutate while borrowed
+```
+
+**Alternative patterns:**
+```rask
+// Pattern 1: Separate pools for different operations
+entities.modify(h, |e| {
+    events.insert(Event.Died(h))    // ✅ OK: different pool
+})
+
+// Pattern 2: Restructure logic
+const should_remove = pool[h].health <= 0
+if should_remove {
+    pool.remove(h)    // ✅ OK: not inside closure
+}
+
+// Pattern 3: Shared borrows are OK
+pool.read(h, |e| {
+    const other = pool.get(h2)    // ✅ OK: both are reads
+})
+```
+
+See [aliasing-detection.md](aliasing-detection.md) for the full compile-time analysis algorithm.
+
 ### Performance Escape Hatches
 
 For hot paths where generation check overhead matters, two mechanisms provide guaranteed check reduction:
