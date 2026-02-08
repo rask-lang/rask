@@ -1,0 +1,244 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rask - Safety without the pain</title>
+    <meta name="description" content="A systems programming language between Rust and Go. Memory safety without lifetime annotations.">
+    <link rel="icon" type="image/png" href="../book/src/assets/rask32.png">
+    <link rel="stylesheet" href="landing.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-links">
+                <a href="book/index.html">docs</a>
+                <a href="app/">playground</a>
+                <a href="https://github.com/dritory/rask">github ↗</a>
+            </div>
+            <div class="status">design phase · working interpreter</div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <section class="hero">
+            <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
+            <p class="tagline">Safety without the pain.</p>
+            <p class="subtitle">
+                Rust's safety guarantees without lifetime annotations.<br>
+                Go's simplicity without garbage collection.
+            </p>
+            <div class="cta">
+                <a href="app/" class="btn primary">→ try in browser</a>
+                <a href="book/index.html" class="btn secondary">read docs</a>
+            </div>
+        </section>
+
+        <section class="features-showcase">
+            <h2>What makes Rask different</h2>
+
+            <div class="feature-cards">
+                <div class="feature-card active" data-feature="resources">
+                    <h3>Resource Safety</h3>
+                    <p>Files must be closed. Compiler enforces it.</p>
+                    <div class="comparison">
+                        <span class="rust-tag">Rust: Drop trait, lifetimes</span>
+                        <span class="rask-tag">Rask: @resource + ensure</span>
+                    </div>
+                </div>
+
+                <div class="feature-card" data-feature="spawn">
+                    <h3>No Function Coloring</h3>
+                    <p>Spawn threads without async/await infection.</p>
+                    <div class="comparison">
+                        <span class="rust-tag">Rust: async fn, .await</span>
+                        <span class="rask-tag">Rask: spawn { }</span>
+                    </div>
+                </div>
+
+                <div class="feature-card" data-feature="handles">
+                    <h3>Graphs Without Lifetimes</h3>
+                    <p>Entity systems with no 'a annotations.</p>
+                    <div class="comparison">
+                        <span class="rust-tag">Rust: &'a T, PhantomData</span>
+                        <span class="rask-tag">Rask: Pool + Handle</span>
+                    </div>
+                </div>
+
+                <div class="feature-card" data-feature="shared">
+                    <h3>Safe Shared State</h3>
+                    <p>Concurrent mutation without Arc boilerplate.</p>
+                    <div class="comparison">
+                        <span class="rust-tag">Rust: Arc&lt;Mutex&lt;T&gt;&gt;</span>
+                        <span class="rask-tag">Rask: Shared&lt;T&gt;</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="code-preview">
+                <div class="window">
+                    <div class="title-bar">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span class="filename">resource_safety.rk</span>
+                    </div>
+                    <pre><code class="preview-code"></code></pre>
+                </div>
+            </div>
+        </section>
+
+        <section class="features">
+            <h2>What you get</h2>
+            <ul>
+                <li><strong>Memory safe</strong> — no use-after-free, no data races, no null pointers</li>
+                <li><strong>No lifetimes</strong> — scoped borrowing without annotations</li>
+                <li><strong>No GC</strong> — deterministic cleanup, predictable performance</li>
+                <li><strong>Resource safety</strong> — files must be closed, no silent leaks</li>
+                <li><strong>No async coloring</strong> — I/O just works</li>
+            </ul>
+        </section>
+
+        <section class="comparison">
+            <h2>Where it sits</h2>
+            <table>
+                <thead>
+                    <tr>
+                        <th></th>
+                        <th>Rust</th>
+                        <th class="hl">Rask</th>
+                        <th>Go</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Memory safe</td>
+                        <td>yes</td>
+                        <td class="hl">yes</td>
+                        <td>no</td>
+                    </tr>
+                    <tr>
+                        <td>Simple</td>
+                        <td>no</td>
+                        <td class="hl">yes</td>
+                        <td>yes</td>
+                    </tr>
+                    <tr>
+                        <td>No GC</td>
+                        <td>yes</td>
+                        <td class="hl">yes</td>
+                        <td>no</td>
+                    </tr>
+                    <tr>
+                        <td>Lifetimes</td>
+                        <td>required</td>
+                        <td class="hl">none</td>
+                        <td>n/a</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <a href="book/index.html">docs</a> ·
+            <a href="app/">playground</a> ·
+            <a href="https://github.com/dritory/rask">github</a> ·
+            <a href="https://github.com/dritory/rask/blob/main/LICENSE-MIT">mit/apache-2.0</a>
+        </div>
+    </footer>
+
+    <script>
+        const cards = document.querySelectorAll('.feature-card');
+        const codePreview = document.querySelector('.preview-code');
+        const filename = document.querySelector('.code-preview .filename');
+
+        const examples = {
+            resources: {
+                title: 'resource_safety.rk',
+                code: `func backup(src: string, dst: string) -> () or Error {
+    const file = try fs.open(src)
+    ensure file.close()  // Runs on ALL paths
+
+    const out = try fs.create(dst)
+    ensure out.close()
+
+    try out.write(try file.read_to_string())
+}
+// Compiler error if file not consumed!`
+            },
+            spawn: {
+                title: 'no_coloring.rk',
+                code: `func process_logs() -> () or Error {
+    const h1 = spawn { analyze("app.log") }
+    const h2 = spawn { analyze("error.log") }
+
+    try h1.join()
+    try h2.join()
+}
+// No async/await. spawn works ANYWHERE.`
+            },
+            handles: {
+                title: 'handles.rk',
+                code: `struct Entity {
+    health: i32,
+    target: Handle<Entity>?
+}
+
+const entities = Pool<Entity>.new()
+const player = try entities.insert(Entity {
+    health: 100,
+    target: None
+})
+
+// No 'a, no 'b. Just handles.
+entities[enemy].target = Some(player)`
+            },
+            shared: {
+                title: 'shared_state.rk',
+                code: `const db = Shared.new(Database { users: Map.new() })
+
+spawn {
+    db.write(|d| { d.users.insert(id, user) })
+}.detach()
+
+spawn {
+    const count = db.read(|d| d.users.len())
+}.detach()
+// No Arc<Mutex<T>>. Safe by construction.`
+            }
+        };
+
+        function showExample(feature) {
+            const example = examples[feature];
+            filename.textContent = example.title;
+            codePreview.innerHTML = syntaxHighlight(example.code);
+        }
+
+        function syntaxHighlight(code) {
+            return code
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/(func|const|try|ensure|spawn|struct|return|or)/g, '<span class="kw">$1</span>')
+                .replace(/(string|i32|Error|Handle|Pool|Shared|Map|Database|Entity)/g, '<span class="ty">$1</span>')
+                .replace(/(\w+)\(/g, '<span class="fn">$1</span>(')
+                .replace(/(".*?")/g, '<span class="str">$1</span>')
+                .replace(/(\/\/.*$)/gm, '<span class="cmt">$1</span>');
+        }
+
+        // Set default example on load
+        showExample('resources');
+
+        // Card click handlers
+        cards.forEach(card => {
+            card.addEventListener('click', () => {
+                const feature = card.dataset.feature;
+                cards.forEach(c => c.classList.remove('active'));
+                card.classList.add('active');
+                showExample(feature);
+            });
+        });
+    </script>
+</body>
+</html>
