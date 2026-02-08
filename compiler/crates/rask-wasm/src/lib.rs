@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
 
+use rask_diagnostics::{formatter::DiagnosticFormatter, ToDiagnostic};
 use rask_interp::{Interpreter, RuntimeError};
 use rask_lexer::Lexer;
 use rask_parser::Parser;
@@ -38,7 +39,7 @@ impl Playground {
     /// Run Rask source code and return output or error.
     ///
     /// Returns Ok(output) on success, Err(error_message) on failure.
-    /// The error message includes the phase (lex/parse/runtime) and details.
+    /// The error message includes rich formatting with source context.
     pub fn run(&mut self, source: &str) -> Result<String, String> {
         // Clear previous output
         self.output_buffer.lock().unwrap().clear();
@@ -48,12 +49,14 @@ impl Playground {
         let lex_result = lexer.tokenize();
 
         if !lex_result.is_ok() {
-            let errors: Vec<String> = lex_result
-                .errors
-                .iter()
-                .map(|e| format!("{}", e))
-                .collect();
-            return Err(format!("Lexer error:\n{}", errors.join("\n")));
+            let mut errors = Vec::new();
+            for err in &lex_result.errors {
+                let diag = err.to_diagnostic();
+                let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
+                let formatted = formatter.format(&diag);
+                errors.push(strip_ansi_codes(&formatted));
+            }
+            return Err(errors.join("\n\n"));
         }
 
         // Phase 2: Parsing
@@ -61,12 +64,14 @@ impl Playground {
         let mut parse_result = parser.parse();
 
         if !parse_result.is_ok() {
-            let errors: Vec<String> = parse_result
-                .errors
-                .iter()
-                .map(|e| format!("{}", e))
-                .collect();
-            return Err(format!("Parse error:\n{}", errors.join("\n")));
+            let mut errors = Vec::new();
+            for err in &parse_result.errors {
+                let diag = err.to_diagnostic();
+                let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
+                let formatted = formatter.format(&diag);
+                errors.push(strip_ansi_codes(&formatted));
+            }
+            return Err(errors.join("\n\n"));
         }
 
         // Phase 3: Desugaring (required before interpretation)
@@ -98,4 +103,33 @@ impl Playground {
     pub fn version() -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
+}
+
+/// Strip ANSI color codes from formatted diagnostic output.
+///
+/// The DiagnosticFormatter uses ANSI escapes for terminal colors,
+/// but browsers need plain text (for now - HTML conversion could be added later).
+fn strip_ansi_codes(s: &str) -> String {
+    // ANSI escape sequences start with ESC [ and end with a letter
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            // ESC character - skip until we find a letter
+            if chars.peek() == Some(&'[') {
+                chars.next(); // Skip '['
+                while let Some(&peek) = chars.peek() {
+                    chars.next();
+                    if peek.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    result
 }
