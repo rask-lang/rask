@@ -10,8 +10,8 @@ For handle-based sparse storage (`Pool<T>`), see [pools.md](../memory/pools.md).
 
 | Type | Purpose | Creation |
 |------|---------|----------|
-| `Vec<T>` | Ordered, indexed | `Vec.new()` (unbounded)<br>`Vec.with_capacity(n)` (bounded)<br>`Vec.fixed(n)` (pre-allocated, bounded) |
-| `Map<K,V>` | Key-value associative | `Map.new()` (unbounded)<br>`Map.with_capacity(n)` (bounded) |
+| `Vec<T>` | Ordered, indexed | `Vec.new()` (unbounded)<br>`Vec.with_capacity(n)` (bounded)<br>`Vec.fixed(n)` (pre-allocated, bounded)<br>`Vec.from([T; N])` (from array literal) |
+| `Map<K,V>` | Key-value associative | `Map.new()` (unbounded)<br>`Map.with_capacity(n)` (bounded)<br>`Map.from([(K,V); N])` (from array of pairs) |
 
 **When to use which:**
 - `Vec<T>` — Ordered data, access by position, elements don't need stable identity
@@ -22,6 +22,29 @@ For handle-based sparse storage (`Pool<T>`), see [pools.md](../memory/pools.md).
 - Unbounded: `capacity() == None`, grows indefinitely
 - Bounded: `capacity() == Some(n)`, cannot exceed `n` elements
 - Fixed: Bounded + pre-allocated at creation
+
+### From Literal Constructors
+
+**Convenience constructors for creating collections from literal values:**
+
+| Method | Signature | Semantics |
+|--------|-----------|-----------|
+| `Vec.from(arr)` | `[T; N] -> Vec<T>` | Copy array elements into new Vec |
+| `Map.from(pairs)` | `[(K,V); N] -> Map<K,V>` | Build Map from key-value pairs |
+
+**Examples:**
+```rask
+// Vec from array literal
+const items = Vec.from([1, 2, 3, 4, 5])
+
+// Map from pairs
+const config = Map.from([
+    ("host", "localhost"),
+    ("port", 8080),
+])
+```
+
+**Note:** Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is equivalent to `[1, 2, 3]`. The explicit constructor is provided for API clarity and consistency.
 
 ### Allocation - All Fallible
 
@@ -319,6 +342,18 @@ const KEYWORDS: Map<str, TokenKind> = comptime {
 - Familiar collection APIs, no new types to learn
 
 ## Examples
+
+### Literal Construction
+
+**Vec from array:**
+```rask
+const items = Vec.from([1, 2, 3, 4, 5])
+```
+
+**Map from pairs:**
+```rask
+const scores = Map.from([["alice", 100], ["bob", 95], ["charlie", 87]])
+```
 
 ### Web Server Request Buffer
 <!-- test: skip -->
