@@ -241,26 +241,56 @@ select {
 }
 
 /* Diagnostic colors (for formatted errors) */
-.diag-error {
-    color: var(--nord11);
+.output-content .diag-error {
+    color: var(--nord11) !important;
     font-weight: 600;
 }
 
-.diag-info {
-    color: var(--nord8);
+.output-content .diag-info {
+    color: var(--nord8) !important;
 }
 
-.diag-help {
-    color: var(--nord8);
+.output-content .diag-help {
+    color: var(--nord8) !important;
 }
 
-.diag-warning {
-    color: var(--nord13);
+.output-content .diag-warning {
+    color: var(--nord13) !important;
     font-weight: 600;
 }
 
-.diag-bold {
+.output-content .diag-bold {
     font-weight: 600;
+}
+
+/* CodeMirror inline diagnostics */
+.cm-diagnostic-error {
+    border-left: 3px solid var(--nord11);
+    background: rgba(191, 97, 106, 0.1);
+    padding: 8px;
+    margin: 5px 0;
+    border-radius: 2px;
+}
+
+.cm-diagnostic-warning {
+    border-left: 3px solid var(--nord13);
+    background: rgba(235, 203, 139, 0.1);
+    padding: 8px;
+    margin: 5px 0;
+    border-radius: 2px;
+}
+
+/* Squiggly underlines in editor */
+.cm-lintRange-error {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 3'%3E%3Cpath d='M0 3 L3 0 L6 3' stroke='%23BF616A' fill='none'/%3E%3C/svg%3E");
+    background-repeat: repeat-x;
+    background-position: bottom;
+}
+
+.cm-lintRange-warning {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 6 3'%3E%3Cpath d='M0 3 L3 0 L6 3' stroke='%23EBCB8B' fill='none'/%3E%3C/svg%3E");
+    background-repeat: repeat-x;
+    background-position: bottom;
 }
 
 /* Loading overlay */

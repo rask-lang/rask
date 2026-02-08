@@ -6,8 +6,9 @@
 
 use std::sync::{Arc, Mutex};
 use wasm_bindgen::prelude::*;
+use web_sys::console;
 
-use rask_diagnostics::{formatter::DiagnosticFormatter, ToDiagnostic};
+use rask_diagnostics::{formatter::DiagnosticFormatter, json, ToDiagnostic};
 use rask_interp::{Interpreter, RuntimeError};
 use rask_lexer::Lexer;
 use rask_parser::Parser;
@@ -99,6 +100,34 @@ impl Playground {
         }
     }
 
+    /// Check code for syntax errors without running it.
+    /// Returns JSON string containing diagnostics.
+    pub fn check(&self, source: &str) -> String {
+        let mut all_diagnostics = Vec::new();
+
+        // Phase 1: Lexing
+        let mut lexer = Lexer::new(source);
+        let lex_result = lexer.tokenize();
+
+        for err in &lex_result.errors {
+            all_diagnostics.push(err.to_diagnostic());
+        }
+
+        // Phase 2: Parsing (only if lexing succeeded)
+        if lex_result.is_ok() {
+            let mut parser = Parser::new(lex_result.tokens);
+            let parse_result = parser.parse();
+
+            for err in &parse_result.errors {
+                all_diagnostics.push(err.to_diagnostic());
+            }
+        }
+
+        // Convert to JSON
+        let report = json::to_json_report(&all_diagnostics, source, "<playground>", "check");
+        serde_json::to_string(&report).unwrap()
+    }
+
     /// Get the version of the Rask compiler.
     pub fn version() -> String {
         env!("CARGO_PKG_VERSION").to_string()
@@ -110,13 +139,20 @@ impl Playground {
 /// The DiagnosticFormatter uses ANSI escapes for terminal colors.
 /// This converts them to HTML spans for browser display.
 fn strip_ansi_codes(s: &str) -> String {
+    // Debug logging to see what we're converting
+    let preview: String = s.chars().take(100).collect();
+    console::log_1(&format!("ANSI Input (first 100 chars): {:?}", preview).into());
+    console::log_1(&format!("Contains ESC: {}", s.contains('\x1b')).into());
+
     let mut result = String::with_capacity(s.len() * 2);
     let mut chars = s.chars().peekable();
     let mut open_span = false;
+    let mut ansi_codes_found = 0;
 
     while let Some(ch) = chars.next() {
         if ch == '\x1b' && chars.peek() == Some(&'[') {
             chars.next(); // Skip '['
+            ansi_codes_found += 1;
 
             // Collect the escape sequence
             let mut code = String::new();
@@ -128,25 +164,27 @@ fn strip_ansi_codes(s: &str) -> String {
                 code.push(peek);
             }
 
+            // Log the ANSI code we found
+            console::log_1(&format!("Found ANSI code: '{}'", code).into());
+
             // Close previous span if open
             if open_span {
                 result.push_str("</span>");
                 open_span = false;
             }
 
-            // Convert ANSI code to CSS class
+            // Convert ANSI code to CSS class (expanded patterns)
             let class = match code.as_str() {
-                "31" | "31;1" => Some("error"),      // Red (errors)
-                "1;31" => Some("error"),              // Bold red
-                "34" | "34;1" => Some("info"),        // Blue (info/secondary)
-                "1;34" => Some("info"),               // Bold blue
-                "36" | "36;1" => Some("help"),        // Cyan (help/notes)
-                "1;36" => Some("help"),               // Bold cyan
-                "33" | "33;1" => Some("warning"),     // Yellow (warnings)
-                "1;33" => Some("warning"),            // Bold yellow
-                "1" => Some("bold"),                  // Bold
-                "0" => None,                          // Reset
-                _ => None,
+                "31" | "1;31" | "31;1" | "0;31" => Some("error"),      // Red (errors)
+                "34" | "1;34" | "34;1" | "0;34" => Some("info"),        // Blue (info/secondary)
+                "36" | "1;36" | "36;1" | "0;36" => Some("help"),        // Cyan (help/notes)
+                "33" | "1;33" | "33;1" | "0;33" => Some("warning"),     // Yellow (warnings)
+                "1" | "01" => Some("bold"),                              // Bold
+                "0" | "00" => None,                                      // Reset
+                _ => {
+                    console::log_1(&format!("Unknown ANSI code: '{}'", code).into());
+                    None
+                }
             };
 
             if let Some(class_name) = class {
@@ -170,6 +208,12 @@ fn strip_ansi_codes(s: &str) -> String {
     if open_span {
         result.push_str("</span>");
     }
+
+    // Log summary
+    console::log_1(&format!("Found {} ANSI codes, output contains spans: {}",
+        ansi_codes_found, result.contains("<span")).into());
+    let output_preview: String = result.chars().take(200).collect();
+    console::log_1(&format!("Output (first 200 chars): {:?}", output_preview).into());
 
     result
 }
