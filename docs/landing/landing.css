@@ -69,8 +69,8 @@ body {
 }
 
 .hero-logo {
-    height: 80px;
-    margin-bottom: 2rem;
+    height: 250px;
+    margin-bottom: 3rem;
 }
 
 .status {
@@ -328,7 +328,7 @@ footer a:hover {
 }
 
 .feature-card p {
-    margin: 0 0 0.8rem 0;
+    margin: 0 0 0.25rem 0;
     color: var(--text-dim);
     font-size: 0.9rem;
     line-height: 1.5;
@@ -337,27 +337,24 @@ footer a:hover {
 .comparison {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
-    font-size: 0.85rem;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+    font-size: 0.8rem;
+    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
 }
 
 .rust-tag, .rask-tag {
-    padding: 0.35rem 0.6rem;
-    border-radius: 4px;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    font-size: 0.75rem;
+    padding: 0;
+    color: var(--text-muted);
 }
 
 .rust-tag {
-    background: rgba(191, 97, 106, 0.15);
-    color: #BF616A;
-    border: 1px solid rgba(191, 97, 106, 0.3);
+    opacity: 0.6;
 }
 
 .rask-tag {
-    background: rgba(163, 190, 140, 0.15);
     color: var(--green-light);
-    border: 1px solid rgba(163, 190, 140, 0.3);
+    font-weight: 500;
 }
 
 .code-preview {

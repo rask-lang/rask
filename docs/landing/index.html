@@ -216,15 +216,59 @@ spawn {
         }
 
         function syntaxHighlight(code) {
-            return code
+            const keywords = /\b(func|const|let|try|ensure|spawn|struct|return|or|if|else|for|in|match)\b/g;
+            const types = /\b(string|i32|u32|f64|bool|Error|Handle|Pool|Shared|Map|Database|Entity|Vec|Option|None|Some)\b/g;
+            const strings = /"[^"]*"/g;
+            const comments = /\/\/.*/g;
+            const functions = /\b(\w+)(?=\()/g;
+
+            let result = '';
+            let lastIndex = 0;
+            const tokens = [];
+
+            // Collect all matches with their positions
+            [
+                { re: comments, cls: 'cmt' },
+                { re: strings, cls: 'str' },
+                { re: keywords, cls: 'kw' },
+                { re: types, cls: 'ty' },
+                { re: functions, cls: 'fn' }
+            ].forEach(({ re, cls }) => {
+                let match;
+                const regex = new RegExp(re.source, re.flags);
+                while ((match = regex.exec(code)) !== null) {
+                    tokens.push({ start: match.index, end: match.index + match[0].length, text: match[0], cls });
+                }
+            });
+
+            // Sort by position and remove overlaps (prioritize first match)
+            tokens.sort((a, b) => a.start - b.start);
+            const filtered = [];
+            let lastEnd = 0;
+            for (const token of tokens) {
+                if (token.start >= lastEnd) {
+                    filtered.push(token);
+                    lastEnd = token.end;
+                }
+            }
+
+            // Build result with highlighted tokens
+            lastIndex = 0;
+            for (const token of filtered) {
+                result += escapeHtml(code.substring(lastIndex, token.start));
+                result += `<span class="${token.cls}">${escapeHtml(token.text)}</span>`;
+                lastIndex = token.end;
+            }
+            result += escapeHtml(code.substring(lastIndex));
+
+            return result;
+        }
+
+        function escapeHtml(text) {
+            return text
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/(func|const|try|ensure|spawn|struct|return|or)/g, '<span class="kw">$1</span>')
-                .replace(/(string|i32|Error|Handle|Pool|Shared|Map|Database|Entity)/g, '<span class="ty">$1</span>')
-                .replace(/(\w+)\(/g, '<span class="fn">$1</span>(')
-                .replace(/(".*?")/g, '<span class="str">$1</span>')
-                .replace(/(\/\/.*$)/gm, '<span class="cmt">$1</span>');
+                .replace(/>/g, '&gt;');
         }
 
         // Set default example on load
