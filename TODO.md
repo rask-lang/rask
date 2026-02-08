@@ -129,7 +129,7 @@ Run the 5 validation programs for real. Each one surfaces design gaps that need 
 ### Phase 4: Code Generation
 Move from interpreter to actual compiled output.
 
-- [ ] Choose backend (LLVM vs Cranelift)
+- [x] Choose backend (LLVM vs Cranelift) - I use Cranelift for now
 - [ ] IR design — lower AST to backend IR
 - [ ] Monomorphization — generate concrete instances of generics
 - [ ] Basic code generation — primitives, functions, structs, control flow
@@ -143,6 +143,10 @@ Tools that make it actually usable:
 - [x] LSP completion — type-aware completions, go-to-definition
 - [x] Test runner — `rask test` command
 - [x] Formatter — `rask fmt`
+- [ ] `rask describe` — structured module summaries (JSON) for tool consumption
+- [ ] `rask explain` — compiler-generated function explanations from analysis
+- [ ] Naming convention linter — enforce `is_*`, `into_*`, `as_*`, `to_*`, `from_*`, `with_*` patterns
+- [ ] Structured error fixes — machine-parseable `fix:` blocks in diagnostics
 
 ---
 
@@ -160,6 +164,12 @@ Tools that make it actually usable:
 - [x] Design shared state primitives — `Shared<T>`, see [sync.md](specs/concurrency/sync.md)
 - [x] Decide multi-element access syntax — `with...as` binding + closure pattern
 - [ ] Design task-local storage syntax
+
+### Machine Readability (see [specs/machine-readability.md](specs/machine-readability.md))
+- [ ] Formalize "one obvious way" principle — document canonical patterns for each operation
+- [ ] Naming convention enforcement — linter rule for stdlib method naming
+- [ ] Structured error fixes — `fix:` / `why:` sections in all error messages
+- [ ] `rask describe` JSON schema — define output format for tool consumption
 
 ### Deferred
 - [ ] Capability-based security for dependencies (restrict filesystem/network access)
