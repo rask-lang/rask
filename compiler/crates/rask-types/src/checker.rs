@@ -60,6 +60,89 @@ pub enum ParamMode {
 }
 
 // ============================================================================
+// Builtin Modules
+// ============================================================================
+
+/// Builtin module method signature.
+#[derive(Debug, Clone)]
+pub struct ModuleMethodSig {
+    pub name: String,
+    pub params: Vec<Type>,
+    pub ret: Type,
+}
+
+/// Registry of builtin modules and their methods.
+#[derive(Debug, Default)]
+pub struct BuiltinModules {
+    modules: HashMap<String, Vec<ModuleMethodSig>>,
+}
+
+impl BuiltinModules {
+    pub fn new() -> Self {
+        let mut modules = HashMap::new();
+
+        // fs module
+        let mut fs_methods = Vec::new();
+        let io_error_ty = Type::UnresolvedNamed("IoError".to_string());
+
+        // fs.open(path: string) -> File or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "open".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::UnresolvedNamed("File".to_string())),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.create(path: string) -> File or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "create".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::UnresolvedNamed("File".to_string())),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.read_file(path: string) -> string or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "read_file".to_string(),
+            params: vec![Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::String),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.write_file(path: string, content: string) -> () or IoError
+        fs_methods.push(ModuleMethodSig {
+            name: "write_file".to_string(),
+            params: vec![Type::String, Type::String],
+            ret: Type::Result {
+                ok: Box::new(Type::Unit),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        // fs.exists(path: string) -> bool
+        fs_methods.push(ModuleMethodSig {
+            name: "exists".to_string(),
+            params: vec![Type::String],
+            ret: Type::Bool,
+        });
+
+        modules.insert("fs".to_string(), fs_methods);
+
+        Self { modules }
+    }
+
+    pub fn get_method(&self, module: &str, method: &str) -> Option<&ModuleMethodSig> {
+        self.modules.get(module)?.iter().find(|m| m.name == method)
+    }
+
+    pub fn is_module(&self, name: &str) -> bool {
+        self.modules.contains_key(name)
+    }
+}
+
+// ============================================================================
 // Type Table
 // ============================================================================
 
@@ -76,6 +159,8 @@ pub struct TypeTable {
     option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
     result_type_id: Option<TypeId>,
+    /// Builtin modules registry.
+    builtin_modules: BuiltinModules,
 }
 
 impl TypeTable {
@@ -86,6 +171,7 @@ impl TypeTable {
             builtins: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
+            builtin_modules: BuiltinModules::new(),
         };
         table.register_builtins();
         table
@@ -1671,7 +1757,12 @@ impl TypeChecker {
 
             ExprKind::Tuple(elements) => {
                 let elem_types: Vec<_> = elements.iter().map(|e| self.infer_expr(e)).collect();
-                Type::Tuple(elem_types)
+                // Empty tuple () is Unit type
+                if elem_types.is_empty() {
+                    Type::Unit
+                } else {
+                    Type::Tuple(elem_types)
+                }
             }
 
             ExprKind::Range { start, end, .. } => {
@@ -1688,8 +1779,22 @@ impl TypeChecker {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
-                    Type::Option(inner) => *inner.clone(),
-                    Type::Result { ok, .. } => *ok.clone(),
+                    Type::Option(inner) => {
+                        // For Option, just return the inner type
+                        // The function return type should also be Option (checked elsewhere)
+                        *inner.clone()
+                    }
+                    Type::Result { ok, err } => {
+                        // For Result, extract the ok type and ensure error types match
+                        if let Some(return_ty) = &self.current_return_type {
+                            let resolved_ret = self.ctx.apply(return_ty);
+                            if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                // Unify the Result's error type with the function's error type
+                                let _ = self.unify(err, ret_err, expr.span);
+                            }
+                        }
+                        *ok.clone()
+                    }
                     Type::Var(_) => {
                         if let Some(return_ty) = &self.current_return_type {
                             let resolved_ret = self.ctx.apply(return_ty);
@@ -1786,10 +1891,43 @@ impl TypeChecker {
             }
 
             ExprKind::Spawn { body } => {
+                // Spawn blocks are like anonymous functions - they have their own return type
+                // Save the outer function's return type and set a fresh type variable
+                let outer_return_type = self.current_return_type.take();
+                let spawn_return_type = self.ctx.fresh_var();
+                self.current_return_type = Some(spawn_return_type.clone());
+
+                // Check statements with the spawn block's return type
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                Type::UnresolvedNamed("JoinHandle".to_string())
+
+                // Infer the actual return type from the last statement
+                let inner_type = if let Some(last) = body.last() {
+                    match &last.kind {
+                        StmtKind::Expr(e) => self.infer_expr(e),
+                        StmtKind::Return(_) => Type::Never,
+                        _ => Type::Unit,
+                    }
+                } else {
+                    Type::Unit
+                };
+
+                // Unify the spawn block's return type with the inferred type
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    spawn_return_type.clone(),
+                    inner_type,
+                    expr.span,
+                ));
+
+                // Restore the outer function's return type
+                self.current_return_type = outer_return_type;
+
+                // Return ThreadHandle<T> where T is the spawn block's return type
+                Type::UnresolvedGeneric {
+                    name: "ThreadHandle".to_string(),
+                    args: vec![GenericArg::Type(Box::new(spawn_return_type))],
+                }
             }
 
             ExprKind::WithBlock { args, body, .. } => {
@@ -1959,6 +2097,13 @@ impl TypeChecker {
         args: &[Expr],
         span: Span,
     ) -> Type {
+        // Check if this is a builtin module method call (e.g., fs.open)
+        if let ExprKind::Ident(name) = &object.kind {
+            if self.types.builtin_modules.is_module(name) {
+                return self.check_module_method(name, method, args, span);
+            }
+        }
+
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
@@ -1974,6 +2119,46 @@ impl TypeChecker {
         });
 
         ret_ty
+    }
+
+    fn check_module_method(
+        &mut self,
+        module: &str,
+        method: &str,
+        args: &[Expr],
+        span: Span,
+    ) -> Type {
+        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+
+        if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
+            // Check parameter count
+            if sig.params.len() != arg_types.len() {
+                self.errors.push(TypeError::ArityMismatch {
+                    expected: sig.params.len(),
+                    found: arg_types.len(),
+                    span,
+                });
+                return Type::Error;
+            }
+
+            // Check parameter types
+            for (param_ty, arg_ty) in sig.params.iter().zip(arg_types.iter()) {
+                self.ctx.add_constraint(TypeConstraint::Equal(
+                    param_ty.clone(),
+                    arg_ty.clone(),
+                    span,
+                ));
+            }
+
+            sig.ret.clone()
+        } else {
+            self.errors.push(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedNamed(module.to_string()),
+                method: method.to_string(),
+                span,
+            });
+            Type::Error
+        }
     }
 
     fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
@@ -2538,6 +2723,12 @@ impl TypeChecker {
             Type::Array { .. } | Type::Slice(_) => {
                 self.resolve_array_method(&ty, &method, &args, &ret, span)
             }
+            Type::UnresolvedNamed(name) if name == "File" => {
+                self.resolve_file_method(&method, &args, &ret, span)
+            }
+            Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
+                self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,
@@ -2764,6 +2955,115 @@ impl TypeChecker {
                 self.unify(ret, &Type::Option(Box::new(elem_ty)), span)
             }
             _ => Ok(false),
+        }
+    }
+
+    fn resolve_file_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        // File methods return Result types (T or IoError)
+        let io_error_ty = Type::UnresolvedNamed("IoError".to_string());
+
+        match method {
+            "read_to_string" | "read_all" if args.is_empty() => {
+                // Returns string or IoError
+                let result_type = Type::Result {
+                    ok: Box::new(Type::String),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "close" if args.is_empty() => {
+                // Returns () or IoError (takes self)
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "write_all" if args.len() == 1 => {
+                // write_all(data: string) -> () or IoError
+                self.unify(&args[0], &Type::String, span)?;
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "write" if args.len() == 1 => {
+                // write(data: string) -> usize or IoError
+                self.unify(&args[0], &Type::String, span)?;
+                let result_type = Type::Result {
+                    ok: Box::new(Type::U64),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "lines" if args.is_empty() => {
+                // Returns Vec<string> or IoError
+                let vec_string = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(Type::String))],
+                };
+                let result_type = Type::Result {
+                    ok: Box::new(vec_string),
+                    err: Box::new(io_error_ty),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedNamed("File".to_string()),
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    fn resolve_thread_handle_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        // ThreadHandle<T> has two methods:
+        // - join(self) -> T or string
+        // - detach(self) -> ()
+
+        match method {
+            "join" if args.is_empty() => {
+                // Extract the T type parameter
+                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+                    *t.clone()
+                } else {
+                    self.ctx.fresh_var()
+                };
+
+                // join returns Result<T, string>
+                let result_type = Type::Result {
+                    ok: Box::new(inner_type),
+                    err: Box::new(Type::String),
+                };
+
+                self.unify(ret, &result_type, span)
+            }
+            "detach" if args.is_empty() => {
+                // detach returns ()
+                self.unify(ret, &Type::Unit, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedGeneric {
+                    name: "ThreadHandle".to_string(),
+                    args: type_args.to_vec(),
+                },
+                method: method.to_string(),
+                span,
+            }),
         }
     }
 }
