@@ -1,0 +1,33 @@
+// Learn: Pattern matching with match and if-is
+
+func main() {
+    // Match expression
+    const x = 2
+    const name = match x {
+        1 => "one",
+        2 => "two",
+        3 => "three",
+        _ => "many",
+    }
+
+    print("Number ")
+    print(x)
+    print(" is ")
+    print(name)
+    print("\n")
+
+    // Pattern matching with Option
+    const maybe = Some(42)
+
+    if maybe is Some(value) {
+        print("Got value: ")
+        print(value)
+        print("\n")
+    }
+
+    const nothing = None
+
+    if nothing is None {
+        print("Got nothing\n")
+    }
+}

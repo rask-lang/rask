@@ -1,0 +1,25 @@
+// Learn: Variables and basic types
+
+func main() {
+    // const - binding won't be reassigned
+    const name = "Alice"
+    const age = 30
+    const height = 1.75
+
+    print("Name: ")
+    print(name)
+    print("\n")
+
+    print("Age: ")
+    print(age)
+    print("\n")
+
+    // let - binding can be reassigned
+    let counter = 0
+    counter = counter + 1
+    counter = counter + 1
+
+    print("Counter: ")
+    print(counter)
+    print("\n")
+}

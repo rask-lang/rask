@@ -1,0 +1,29 @@
+// Learn: Functions and return values
+
+func main() {
+    const result = add(5, 3)
+    print("5 + 3 = ")
+    print(result)
+    print("\n")
+
+    const doubled = double(7)
+    print("7 × 2 = ")
+    print(doubled)
+    print("\n")
+
+    greet("World")
+}
+
+func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+func double(x: i32) -> i32 {
+    return x * 2
+}
+
+func greet(name: string) {
+    print("Hello, ")
+    print(name)
+    print("!\n")
+}

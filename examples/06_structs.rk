@@ -1,0 +1,44 @@
+// Learn: Structs and methods
+
+struct Person {
+    name: string,
+    age: i32,
+}
+
+extend Person {
+    func greet(self) {
+        print("Hello, I'm ")
+        print(self.name)
+        print(" and I'm ")
+        print(self.age)
+        print(" years old.\n")
+    }
+
+    func is_adult(self) -> bool {
+        return self.age >= 18
+    }
+}
+
+func main() {
+    const alice = Person {
+        name: "Alice",
+        age: 25,
+    }
+
+    alice.greet()
+
+    if alice.is_adult() {
+        print("Alice is an adult\n")
+    }
+
+    const bob = Person {
+        name: "Bob",
+        age: 16,
+    }
+
+    bob.greet()
+
+    if !bob.is_adult() {
+        print("Bob is not an adult yet\n")
+    }
+}

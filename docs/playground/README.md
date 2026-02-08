@@ -1,41 +1,73 @@
-# Playground Development
+# Rask Playground
 
-This directory will contain the WASM-based playground implementation.
+Browser-based interactive playground for trying Rask code.
 
-## Planned Architecture
+## Architecture
 
-- **Frontend**: HTML/JS editor (CodeMirror or Monaco)
-- **Backend**: Rask interpreter compiled to WASM
-- **Features**: Syntax highlighting, instant execution, sharing
+- **Frontend**: CodeMirror 6 editor with One Dark theme
+- **Backend**: Rask interpreter compiled to WASM via wasm-pack
+- **Features**: Live execution, example programs, URL sharing
 
-## Development TODO
+## Development
 
-- [ ] Compile interpreter to WASM
-- [ ] Create editor UI
-- [ ] Implement syntax highlighting for Rask
-- [ ] Add example programs
-- [ ] Implement URL sharing
-- [ ] Deploy as part of docs site
+### Building Examples
 
-## Integration
+Examples are loaded from `../../examples/*.rk` files. When you add or modify examples:
 
-Once built, the playground will be embedded in the book at `docs/book/src/playground/`.
+```bash
+cd docs/playground
+node build-examples.js
+```
 
-## Technical Notes
+This generates `examples.js` with all examples organized into:
+- **Learn Rask** (01-07): Pedagogical examples teaching concepts
+- **More Examples**: Full programs (HTTP server, grep clone, etc.)
 
-### WASM Compilation
+### Adding New Examples
 
-The interpreter needs to be compiled to WASM. This requires:
-- Ensuring all dependencies are WASM-compatible
-- Adding wasm-bindgen bindings
-- Building with `wasm-pack`
+1. Create a `.rk` file in `examples/`:
+   - Learning examples: Use prefix `01_`, `02_`, etc.
+   - Other examples: Use descriptive names
 
-### Editor
+2. Rebuild examples:
+   ```bash
+   node build-examples.js
+   ```
 
-Options:
-- CodeMirror 6 (lightweight, good Rust support)
-- Monaco (VS Code editor, heavier but feature-rich)
+3. Examples automatically populate the dropdown
 
-### Deployment
+### Building WASM
 
-Deploy alongside mdBook output in GitHub Pages.
+```bash
+cd compiler/crates/rask-wasm
+wasm-pack build --target web
+```
+
+Copy output to `docs/playground/pkg/`.
+
+### Local Development
+
+Serve with any static server:
+```bash
+python3 -m http.server 8000
+# or
+npx serve .
+```
+
+Open http://localhost:8000
+
+## Files
+
+- `index.html` - Main playground UI
+- `playground.js` - CodeMirror setup, WASM integration, event handlers
+- `playground.css` - Styling
+- `examples.js` - **Auto-generated** from `examples/*.rk`
+- `build-examples.js` - Build script for examples
+- `pkg/` - WASM module and bindings
+
+## Deployment
+
+Deployed to GitHub Pages via `.github/workflows/gh-pages.yml`:
+- Builds WASM module
+- Generates examples.js
+- Deploys to `https://dritory.github.io/rask/playground/`

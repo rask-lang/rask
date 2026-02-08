@@ -763,6 +763,24 @@ impl Interpreter {
                 let cap = self.expect_int(&args, 0)? as usize;
                 Ok(Value::Vec(Arc::new(Mutex::new(Vec::with_capacity(cap)))))
             }
+            (TypeConstructorKind::Vec, "from") => {
+                // Vec.from(array) — copy array elements into new Vec
+                let arr = args
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| RuntimeError::TypeError("Vec.from requires 1 argument".to_string()))?;
+
+                match arr {
+                    Value::Vec(v) => {
+                        let vec = v.lock().unwrap();
+                        let cloned = vec.clone();
+                        Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
+                    }
+                    _ => Err(RuntimeError::TypeError(
+                        "Vec.from expects an array/vec".to_string(),
+                    )),
+                }
+            }
             (TypeConstructorKind::String, "new") => {
                 Ok(Value::String(Arc::new(Mutex::new(String::new()))))
             }

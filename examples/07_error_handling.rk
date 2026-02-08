@@ -1,0 +1,56 @@
+// Learn: Error handling with Result and try
+
+func main() {
+    // Handling Result with match
+    const result = divide(10, 2)
+
+    match result {
+        Ok(value) => {
+            print("10 / 2 = ")
+            print(value)
+            print("\n")
+        }
+        Err(msg) => {
+            print("Error: ")
+            print(msg)
+            print("\n")
+        }
+    }
+
+    // Division by zero
+    const bad = divide(10, 0)
+
+    match bad {
+        Ok(value) => {
+            print("Result: ")
+            print(value)
+            print("\n")
+        }
+        Err(msg) => {
+            print("Error: ")
+            print(msg)
+            print("\n")
+        }
+    }
+
+    // Using try operator
+    const safe = safe_calc()
+    print("Safe calc result: ")
+    print(safe)
+    print("\n")
+}
+
+func divide(a: i32, b: i32) -> i32 or string {
+    if b == 0 {
+        return Err("Cannot divide by zero")
+    }
+    return Ok(a / b)
+}
+
+func safe_calc() -> i32 {
+    const x = divide(20, 4)
+    if x is Ok(value) {
+        return value * 2
+    }
+    return 0
+}

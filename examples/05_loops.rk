@@ -1,0 +1,31 @@
+// Learn: For loops and iteration
+
+func main() {
+    // Loop over range
+    print("Counting 1 to 5:\n")
+    for i in 1..6 {
+        print(i)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Loop over Vec
+    const fruits = Vec.from(["apple", "banana", "cherry"])
+
+    print("Fruits:\n")
+    for fruit in fruits.iter() {
+        print("- ")
+        print(fruit)
+        print("\n")
+    }
+
+    // While loop
+    let count = 0
+    print("\nWhile counting:\n")
+    while count < 3 {
+        print(count)
+        print(" ")
+        count = count + 1
+    }
+    print("\n")
+}
