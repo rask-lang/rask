@@ -1,6 +1,6 @@
 # Error Handling
 
-> **Placeholder:** Brief overview. For detailed specifications, see the [error types](https://github.com/dritory/rask/blob/main/specs/types/error-types.md) spec.
+> **Placeholder:** Brief overview. For detailed specifications, see the [error types](https://github.com/rask-lang/rask/blob/main/specs/types/error-types.md) spec.
 
 ## Result Types
 
@@ -68,5 +68,5 @@ const v = m.get("key") ?? 0
 ## Next Steps
 
 - [Concurrency](concurrency.md)
-- [Formal error types spec](https://github.com/dritory/rask/blob/main/specs/types/error-types.md)
-- [Formal ensure spec](https://github.com/dritory/rask/blob/main/specs/control/ensure.md)
+- [Formal error types spec](https://github.com/rask-lang/rask/blob/main/specs/types/error-types.md)
+- [Formal ensure spec](https://github.com/rask-lang/rask/blob/main/specs/control/ensure.md)

@@ -2,7 +2,7 @@
 
 A command-line tool for searching files with pattern matching.
 
-**Full source:** [grep_clone.rk](https://github.com/dritory/rask/blob/main/examples/grep_clone.rk)
+**Full source:** [grep_clone.rk](https://github.com/rask-lang/rask/blob/main/examples/grep_clone.rk)
 
 ## Key Concepts Demonstrated
 
@@ -73,4 +73,4 @@ rask grep_clone.rk -i "case-insensitive" *.txt
 - Resource management with `ensure`
 - String manipulation and iteration
 
-[View full source →](https://github.com/dritory/rask/blob/main/examples/grep_clone.rk)
+[View full source →](https://github.com/rask-lang/rask/blob/main/examples/grep_clone.rk)

@@ -51,6 +51,6 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 ## Design Philosophy
 
 Want to understand the "why" behind Rask's design choices?
-- [Design Principles](https://github.com/dritory/rask/blob/main/CORE_DESIGN.md)
+- [Design Principles](https://github.com/rask-lang/rask/blob/main/CORE_DESIGN.md)
 - [Formal Specifications](reference/specs-link.md)
 - [Blog](../blog/) - Development updates and design discussions

@@ -1,6 +1,6 @@
 # Concurrency
 
-> **Placeholder:** Brief overview. For detailed specifications, see the [concurrency](https://github.com/dritory/rask/blob/main/specs/concurrency/) specs.
+> **Placeholder:** Brief overview. For detailed specifications, see the [concurrency](https://github.com/rask-lang/rask/blob/main/specs/concurrency/) specs.
 
 ## No Function Coloring
 
@@ -67,5 +67,5 @@ with threading(4) {
 ## Next Steps
 
 - [Examples](../examples/README.md)
-- [Formal async spec](https://github.com/dritory/rask/blob/main/specs/concurrency/async.md)
-- [Formal sync spec](https://github.com/dritory/rask/blob/main/specs/concurrency/sync.md)
+- [Formal async spec](https://github.com/rask-lang/rask/blob/main/specs/concurrency/async.md)
+- [Formal sync spec](https://github.com/rask-lang/rask/blob/main/specs/concurrency/sync.md)

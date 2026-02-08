@@ -13,13 +13,13 @@ All example code is in the repository's `examples/` folder and runs on the curre
 ## Running Examples
 
 ```bash
-git clone https://github.com/dritory/rask.git
+git clone https://github.com/rask-lang/rask.git
 cd rask/compiler
 cargo build --release
 ./target/release/rask ../examples/grep_clone.rk --help
 ```
 
-[View all examples on GitHub →](https://github.com/dritory/rask/tree/main/examples)
+[View all examples on GitHub →](https://github.com/rask-lang/rask/tree/main/examples)
 
 ## What These Demonstrate
 

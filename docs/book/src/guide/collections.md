@@ -1,6 +1,6 @@
 # Collections and Handles
 
-> **Placeholder:** Brief overview. For detailed specifications, see the [collections](https://github.com/dritory/rask/blob/main/specs/stdlib/collections.md) and [pools](https://github.com/dritory/rask/blob/main/specs/memory/pools.md) specs.
+> **Placeholder:** Brief overview. For detailed specifications, see the [collections](https://github.com/rask-lang/rask/blob/main/specs/stdlib/collections.md) and [pools](https://github.com/rask-lang/rask/blob/main/specs/memory/pools.md) specs.
 
 ## Three Collection Types
 
@@ -66,5 +66,5 @@ for i in 0..10 {
 ## Next Steps
 
 - [Error Handling](error-handling.md)
-- [Formal collections spec](https://github.com/dritory/rask/blob/main/specs/stdlib/collections.md)
-- [Formal pools spec](https://github.com/dritory/rask/blob/main/specs/memory/pools.md)
+- [Formal collections spec](https://github.com/rask-lang/rask/blob/main/specs/stdlib/collections.md)
+- [Formal pools spec](https://github.com/rask-lang/rask/blob/main/specs/memory/pools.md)

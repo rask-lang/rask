@@ -10,7 +10,7 @@
 ## Building from Source
 
 ```bash
-git clone https://github.com/dritory/rask.git
+git clone https://github.com/rask-lang/rask.git
 cd rask/compiler
 cargo build --release
 ```
