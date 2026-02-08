@@ -531,11 +531,11 @@ The `comptime` keyword marks code that executes during compilation. A restricted
 **Example:**
 ```rask
 comptime func build_table() -> [u8; 256] {
-    let table = [0u8; 256]
+    const table = [0u8; 256]
     for i in 0..256 {
         table[i] = (i * 2) as u8
     }
-    table
+    return table
 }
 
 const LOOKUP: [u8; 256] = comptime build_table()
@@ -572,7 +572,7 @@ See [Unsafe Blocks](specs/memory/unsafe.md) for raw pointers, unsafe operations,
 
 **Libraries vs Executables:** Package role determined by presence of `public func main()`. Libraries export `public` API; executables have entry point. See [Libraries vs Executables](specs/structure/targets.md).
 
-**Dependencies:** Semantic versioning with minimal version selection (MVS), optional `rask.toml` manifest, generated lock file. See [Package Versioning and Dependencies](specs/structure/packages.md).
+**Dependencies:** Semantic versioning with minimal version selection (MVS), `rask.build` package block for dependencies, generated lock file. See [Package Versioning and Dependencies](specs/structure/packages.md).
 
 See [Module System](specs/structure/modules.md) for full specification.
 

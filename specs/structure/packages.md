@@ -4,10 +4,10 @@
 How are external dependencies managed? What versioning scheme is used? How is dependency resolution performed? How are reproducible builds guaranteed?
 
 ## Decision
-Semantic versioning with minimal version selection (MVS), optional TOML manifest for dependencies, generated lock file for reproducibility, local cache for downloaded packages, zero-config for standalone packages.
+Semantic versioning with minimal version selection (MVS), `rask.build` package block for dependencies (see [build.md](build.md)), generated lock file for reproducibility, local cache for downloaded packages, zero-config for standalone packages.
 
 ## Rationale
-Semantic versioning is well-understood and widely adopted. MVS (like Go modules) is simpler than SAT-solving (like npm/Cargo) and produces predictable, deterministic results without exponential search spaces. Optional manifest keeps simple packages simple—no `rask.toml` unless you depend on external code. Lock files ensure reproducible builds. Local cache eliminates redundant downloads while keeping packages immutable.
+Semantic versioning is well-understood and widely adopted. MVS (like Go modules) is simpler than SAT-solving (like npm/Cargo) and produces predictable, deterministic results without exponential search spaces. Dependencies are declared in `rask.build` using keyword syntax—no separate TOML manifest. Zero-config for packages without external dependencies. Lock files ensure reproducible builds. Local cache eliminates redundant downloads while keeping packages immutable.
 
 ## Specification
 
@@ -37,95 +37,74 @@ Semantic versioning is well-understood and widely adopted. MVS (like Go modules)
 - MINOR bump in `0.x` may be breaking (treat as MAJOR)
 - Dependency resolution treats `0.x` versions conservatively
 
-### Package Manifest (`rask.toml`)
+### Package Declaration
 
-**Location:** Root of package directory, alongside `.rk` source files.
+Dependencies and metadata are declared in `rask.build` using the `package` block. See [build.md](build.md) for the full package block specification.
 
-**Required only if:**
-- Package depends on external packages
-- Package needs to specify metadata for publication
-- Package has build configuration (C libraries, etc.)
+**No `rask.build` needed** for packages without external dependencies. Package name inferred from directory, version 0.0.0.
 
 **Minimal example:**
-```toml
-[package]
-name = "myapp"
-version = "1.0.0"
-
-[dependencies]
-http = "2.1.0"
-json = "1.3"
+```rask
+// rask.build
+package "myapp" "1.0.0" {
+    dep "http" "^2.1.0"
+    dep "json" "^1.3"
+}
 ```
 
 **Full example:**
-```toml
-[package]
-name = "mylib"
-version = "1.4.2"
-authors = ["Alice <alice@example.com>"]
-license = "MIT"
-repository = "https://github.com/alice/mylib"
-description = "A helpful library"
-
-[dependencies]
-http = "2.1.0"              # Exact MINOR version: ≥2.1.0, <2.2.0
-json = "1"                  # Exact MAJOR version: ≥1.0.0, <2.0.0
-crypto = { version = "3.2", source = "https://crypto.example.com/crypto.git" }
-
-[dev-dependencies]
-testing = "1.0"             # Only for tests, not transitive
-
-[build]
-c_include_paths = ["/usr/include/custom"]
-c_link_libs = ["ssl", "crypto"]
-c_flags = ["-O3"]
 ```rask
+// rask.build
+package "mylib" "1.4.2" {
+    description: "A helpful library"
+    license: "MIT"
+    repository: "https://github.com/alice/mylib"
 
-**Field specifications:**
+    dep "http" "^2.1.0"
+    dep "json" "^1.0"
+    dep "crypto" "^3.2" {
+        git: "https://crypto.example.com/crypto.git"
+    }
 
-| Field | Required | Type | Description |
-|-------|----------|------|-------------|
-| `package.name` | Yes (if manifest exists) | String | Package identifier (lowercase, hyphens allowed) |
-| `package.version` | Yes (if manifest exists) | String | Semver version |
-| `package.authors` | No | Array[String] | Author names and emails |
-| `package.license` | No | String | SPDX license identifier |
-| `package.repository` | No | String | Git repository URL |
-| `package.description` | No | String | One-line description |
-| `dependencies.<name>` | No | String or Table | Version constraint or detailed spec |
-| `dev-dependencies.<name>` | No | String or Table | Test/development-only dependencies |
-| `build.c_include_paths` | No | Array[String] | C header search paths |
-| `build.c_link_libs` | No | Array[String] | C libraries to link |
-| `build.c_flags` | No | Array[String] | Additional C compiler flags |
+    scope "dev" {
+        dep "testing" "^1.0"
+    }
+}
+```
 
-**Version constraint syntax:**
+### Version Constraint Syntax
 
 | Constraint | Meaning | Example |
 |------------|---------|---------|
-| `"1.2.3"` | Exact MINOR: `≥1.2.3, <1.3.0` | `http = "2.1.5"` → allows `2.1.5`-`2.1.999` |
-| `"1.2"` | Exact MINOR: `≥1.2.0, <1.3.0` | `json = "1.2"` → allows `1.2.0`-`1.2.999` |
-| `"1"` | Exact MAJOR: `≥1.0.0, <2.0.0` | `crypto = "3"` → allows `3.0.0`-`3.999.999` |
-| `"^1.2.3"` | Compatible: `≥1.2.3, <2.0.0` | Caret allows MINOR+PATCH bumps |
+| `"1.2.3"` | Compatible: `≥1.2.3, <2.0.0` | `dep "http" "2.1.5"` → allows `2.1.5`–`2.999.999` |
+| `"1.2"` | Compatible: `≥1.2.0, <2.0.0` | `dep "json" "1.2"` → allows `1.2.0`–`1.999.999` |
+| `"1"` | Compatible: `≥1.0.0, <2.0.0` | `dep "crypto" "3"` → allows `3.0.0`–`3.999.999` |
+| `"^1.2.3"` | Compatible (explicit): `≥1.2.3, <2.0.0` | Same as bare — caret allows MINOR+PATCH bumps |
 | `"~1.2.3"` | Tilde: `≥1.2.3, <1.3.0` | Tilde allows PATCH bumps only |
+| `"=1.2.3"` | Exact: only `1.2.3` | Pin to specific version |
 | `"1.2.3-beta.1"` | Pre-release: exact version | Pre-release MUST match exactly |
 
 **Default behavior:**
-- `"1.2.3"` (no prefix) → `^1.2.3` (allows compatible updates)
-- For `0.x` versions: `"0.3.1"` → `~0.3.1` (only patch updates, MINOR may break)
+- `"1.2.3"` (no prefix) → `^1.2.3` (compatible updates — MINOR and PATCH bumps allowed)
+- For `0.x` versions: `"0.3.1"` → `~0.3.1` (only patch updates, because MINOR may break in 0.x)
 
-**Advanced dependency specifications:**
+**Dependency source types:**
 
-```toml
-[dependencies]
-# Git source
-http = { version = "2.1", source = "https://github.com/author/http.git" }
+```rask
+// Registry (default)
+dep "http" "^2.1"
 
-# Git with branch/tag/commit
-parser = { version = "1.0", source = "https://github.com/author/parser.git", branch = "main" }
-lexer = { version = "0.5", source = "https://github.com/author/lexer.git", tag = "v0.5.3" }
-utils = { version = "1.2", source = "https://github.com/author/utils.git", commit = "abc123def" }
+// Git source
+dep "parser" {
+    git: "https://github.com/author/parser.git"
+    branch: "main"
+}
 
-# Path dependency (for local development)
-mylib = { path = "../mylib" }
+// Path dependency (for local development)
+dep "mylib" { path: "../mylib" }
+
+// Path + version (path for dev, version for publishing)
+dep "mylib" "^1.0" { path: "../mylib" }
 ```
 
 **Path dependencies:**
@@ -137,7 +116,7 @@ mylib = { path = "../mylib" }
 
 **Purpose:** Guarantee reproducible builds by recording exact versions of all transitive dependencies.
 
-**Location:** Root of package directory, alongside `rask.toml`.
+**Location:** Root of package directory, alongside `rask.build`.
 
 **Generated by:** `rask build` or `rask fetch` (auto-generated, don't hand-edit).
 
@@ -181,7 +160,7 @@ checksum = "sha256:def456abc789..."
 |----------|----------|
 | `rask.lock` exists | Use exact versions from lock file |
 | `rask.lock` missing | Resolve dependencies, generate lock file |
-| Dependency version mismatch | Error: lock file out of date, run `rask update` |
+| Dependency version mismatch | Error: lock file out of sync with rask.build, run `rask update` |
 | Lock file in version control | RECOMMENDED (ensures reproducibility) |
 | Library vs application | Applications SHOULD commit lock; libraries MAY omit |
 
@@ -206,7 +185,7 @@ checksum = "sha256:def456abc789..."
 
 1. **Build dependency graph:**
    - Start with root package's direct dependencies
-   - For each dependency, fetch its `rask.toml` and read its dependencies
+   - For each dependency, fetch its `rask.build` and read its dependencies
    - Recursively build full transitive closure
 
 2. **Select minimum satisfying version:**
@@ -227,15 +206,15 @@ checksum = "sha256:def456abc789..."
 
 ```rask
 Root depends on: http ^2.1.0, json ^1.3.0
-http 2.1.5 depends on: string-utils ^0.5.0
-json 1.3.2 depends on: string-utils ^0.5.0
+http 2.1.0 depends on: string-utils ^0.5.0
+json 1.3.0 depends on: string-utils ^0.5.1
 
 Resolution:
-- http: minimum of {≥2.1.0, <3.0.0} → select 2.1.5 (latest in registry)
-- json: minimum of {≥1.3.0, <2.0.0} → select 1.3.2
-- string-utils: minimum of {≥0.5.0 (from http), ≥0.5.0 (from json)} → select 0.5.1
+- http: minimum of {≥2.1.0, <3.0.0} → select 2.1.0
+- json: minimum of {≥1.3.0, <2.0.0} → select 1.3.0
+- string-utils: minimum of {≥0.5.0 (from http), ≥0.5.1 (from json)} → select 0.5.1
 
-Result: http@2.1.5, json@1.3.2, string-utils@0.5.1
+Result: http@2.1.0, json@1.3.0, string-utils@0.5.1
 ```
 
 **Conflict resolution:**
@@ -295,7 +274,7 @@ For `0.x` versions, MINOR bumps may break compatibility:
 **Package format (tarball):**
 - `<name>-<version>.tar.gz`
 - Contains package directory with all `.rk` files
-- Includes `rask.toml` manifest
+- Includes `rask.build` manifest
 - Excludes: tests, examples, `.git`, build artifacts
 
 **Publishing:**
@@ -310,14 +289,13 @@ For `0.x` versions, MINOR bumps may break compatibility:
 
 **Alternative registries:**
 
-```toml
-# In rask.toml
-[registry]
-default = "https://my-registry.example.com"
+```rask
+// In rask.build
+package "my-app" "1.0.0" {
+    registry: "https://my-registry.example.com"
 
-[dependencies]
-# Per-package registry override
-private-lib = { version = "1.0", registry = "https://company.internal/registry" }
+    dep "private-lib" "^1.0" { registry: "https://company.internal/registry" }
+}
 ```
 
 ### Dependency Cache
@@ -331,12 +309,12 @@ private-lib = { version = "1.0", registry = "https://company.internal/registry" 
 ```rask
 ~/.rk/cache/deps/
 ├── http-2.1.5/
-│   ├── rask.toml
+│   ├── rask.build
 │   ├── request.rk
 │   ├── response.rk
 │   └── ...
 ├── json-1.3.2/
-│   ├── rask.toml
+│   ├── rask.build
 │   ├── parser.rk
 │   └── ...
 └── checksums.db  # SQLite DB mapping name+version → checksum
@@ -373,48 +351,43 @@ private-lib = { version = "1.0", registry = "https://company.internal/registry" 
 import http
 
 // Compiler resolution:
-1. Check if "http" is local package (in workspace)
-2. If not, check dependencies in rask.toml
-3. Look up "http" in cache at ~/.rk/cache/deps/http-<resolved-version>/
-4. Import http package from cache
+// 1. Check if "http" is local package (in workspace)
+// 2. If not, check dependencies in rask.build package block
+// 3. Look up "http" in cache at ~/.rk/cache/deps/http-<resolved-version>/
+// 4. Import http package from cache
 ```
 
 **Workspace support (monorepos):**
 
-```rask
+```
 workspace/
-├── rask.toml           # Workspace manifest
+├── rask.build          # Workspace root (has members: [...])
 ├── app/
-│   ├── rask.toml       # App package
+│   ├── rask.build      # App package
 │   └── main.rk
 ├── lib1/
-│   ├── rask.toml       # Library package
+│   ├── rask.build      # Library package
 │   └── lib.rk
 └── lib2/
-    ├── rask.toml       # Library package
+    ├── rask.build      # Library package
     └── lib.rk
 ```
 
-**Workspace manifest:**
-```toml
-[workspace]
-members = ["app", "lib1", "lib2"]
-
-[workspace.dependencies]
-# Shared dependency versions across workspace
-http = "2.1.0"
-json = "1.3"
+**Workspace root:**
+```rask
+// workspace/rask.build
+package "my-workspace" "1.0.0" {
+    members: ["app", "lib1", "lib2"]
+}
 ```
 
 **Member package:**
-```toml
-[package]
-name = "app"
-version = "1.0.0"
-
-[dependencies]
-lib1 = { path = "../lib1" }
-http = { workspace = true }  # Use version from workspace manifest
+```rask
+// workspace/app/rask.build
+package "app" "1.0.0" {
+    dep "lib1" { path: "../lib1" }
+    dep "http" "^2.1"
+}
 ```
 
 **Workspace benefits:**
@@ -457,8 +430,8 @@ Compiler emits warning when deprecated items are used. MAJOR version bump can re
 
 | Case | Handling |
 |------|----------|
-| Missing `rask.toml` | Package has no external dependencies; version = "0.0.0" |
-| Lock file out of date | Error: "rask.lock is out of sync with rask.toml, run `rask update`" |
+| Missing `rask.build` | Package has no external dependencies; version = "0.0.0" |
+| Lock file out of date | Error: "rask.lock is out of sync with rask.build, run `rask update`" |
 | Network unavailable | Error: "Cannot fetch pkg@version, check network or use cache" |
 | Registry returns 404 | Error: "Package pkg@version not found in registry" |
 | Checksum mismatch | Error: "Checksum mismatch for pkg@version, possible tampering" |
@@ -479,22 +452,19 @@ Compiler emits warning when deprecated items are used. MAJOR version bump can re
 ### Simple Application
 
 **Directory structure:**
-```rask
+```
 myapp/
-├── rask.toml
+├── rask.build
 ├── main.rk
 └── util.rk
 ```
 
-**rask.toml:**
-```toml
-[package]
-name = "myapp"
-version = "1.0.0"
-
-[dependencies]
-http = "2.1"
-json = "1.3"
+**rask.build:**
+```rask
+package "myapp" "1.0.0" {
+    dep "http" "^2.1"
+    dep "json" "^1.3"
+}
 ```
 
 **main.rk:**
@@ -527,18 +497,17 @@ Build complete: ./myapp
 
 ### Library with Dev Dependencies
 
-**rask.toml:**
-```toml
-[package]
-name = "mylib"
-version = "2.3.1"
-license = "MIT"
+**rask.build:**
+```rask
+package "mylib" "2.3.1" {
+    license: "MIT"
 
-[dependencies]
-string-utils = "0.5"
+    dep "string-utils" "^0.5"
 
-[dev-dependencies]
-testing = "1.0"  # Only used in tests, not transitive
+    scope "dev" {
+        dep "testing" "^1.0"
+    }
+}
 ```
 
 **lib.rk:**
@@ -546,14 +515,14 @@ testing = "1.0"  # Only used in tests, not transitive
 import string_utils
 
 public func process(s: string) -> string {
-    string_utils.normalize(s)
+    return string_utils.normalize(s)
 }
 ```
 
 **lib_test.rk:**
 ```rask
 import testing
-import mylib  // Import own package for testing
+import mylib
 
 test "process normalizes strings" {
     testing.assert_eq(mylib.process("  hello  "), "hello")
@@ -572,46 +541,34 @@ Publishing mylib@2.3.1 to https://packages.rk-lang.org
 
 ### Monorepo Workspace
 
-**workspace/rask.toml:**
-```toml
-[workspace]
-members = ["server", "client", "shared"]
-
-[workspace.dependencies]
-http = "2.1"
-json = "1.3"
+**workspace/rask.build:**
+```rask
+package "my-workspace" "1.0.0" {
+    members: ["server", "client", "shared"]
+}
 ```
 
-**workspace/server/rask.toml:**
-```toml
-[package]
-name = "server"
-version = "1.0.0"
-
-[dependencies]
-shared = { path = "../shared" }
-http = { workspace = true }
+**workspace/server/rask.build:**
+```rask
+package "server" "1.0.0" {
+    dep "shared" { path: "../shared" }
+    dep "http" "^2.1"
+}
 ```
 
-**workspace/client/rask.toml:**
-```toml
-[package]
-name = "client"
-version = "1.0.0"
-
-[dependencies]
-shared = { path = "../shared" }
-http = { workspace = true }
+**workspace/client/rask.build:**
+```rask
+package "client" "1.0.0" {
+    dep "shared" { path: "../shared" }
+    dep "http" "^2.1"
+}
 ```
 
-**workspace/shared/rask.toml:**
-```toml
-[package]
-name = "shared"
-version = "0.1.0"
-
-[dependencies]
-json = { workspace = true }
+**workspace/shared/rask.build:**
+```rask
+package "shared" "0.1.0" {
+    dep "json" "^1.3"
+}
 ```
 
 **Build:**
@@ -629,18 +586,14 @@ Building workspace members...
 
 ### Custom Registry
 
-**rask.toml:**
-```toml
-[package]
-name = "corporate-app"
-version = "1.0.0"
+**rask.build:**
+```rask
+package "corporate-app" "1.0.0" {
+    registry: "https://registry.company.internal"
 
-[registry]
-default = "https://registry.company.internal"
-
-[dependencies]
-internal-auth = "3.2"  # From corporate registry
-http = { version = "2.1", registry = "https://packages.rk-lang.org" }  # Override: public registry
+    dep "internal-auth" "^3.2"
+    dep "http" "^2.1" { registry: "https://packages.rk-lang.org" }
+}
 ```
 
 ## Integration Notes
@@ -649,21 +602,16 @@ http = { version = "2.1", registry = "https://packages.rk-lang.org" }  # Overrid
 - **Compilation Model**: Packages compiled in topological order; independent packages compile in parallel (CS ≥ 5× Rust goal)
 - **Type System**: Type identity preserved across dependency boundaries (same as local packages)
 - **Error Handling**: Dependency resolution errors reported immediately (fail-fast); checksum errors are fatal
-- **C Interop**: `build.c_link_libs` in manifest passed to linker; C dependencies not managed by Rask (use system package manager)
+- **C Interop**: C link libraries specified via `compile_c()` in build functions (see [build.md](build.md)); C dependencies not managed by Rask (use system package manager)
 - **Tooling**: IDEs fetch package metadata on save; auto-import suggests packages from registry; `rask.lock` changes trigger rebuild
 
 ## Remaining Issues
-
-### High Priority
-None identified.
 
 ### Medium Priority
 1. **Private registry authentication** — How to handle auth tokens for private registries? Environment variables? Config file?
 2. **Vendoring** — Mechanism to bundle dependencies in source tree for offline builds or environments without registry access
 3. **Yanking** — Can published versions be "yanked" (hidden from new resolution but still available for existing lock files)?
-4. **Feature flags** — Conditional compilation based on feature flags (like Cargo's features). Needed for optional dependencies.
 
 ### Low Priority
-5. **Mirror registries** — Fallback to mirrors if primary registry unavailable
-6. **Build scripts** — Pre-build/post-build hooks for complex C interop scenarios
-7. **Patch dependencies** — Override specific dependency versions (for security patches before upstream fixes)
+4. **Mirror registries** — Fallback to mirrors if primary registry unavailable
+5. **Patch dependencies** — Override specific dependency versions (for security patches before upstream fixes)

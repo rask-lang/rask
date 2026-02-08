@@ -123,7 +123,7 @@ comptime func build_lookup_table() -> [u8; 256] {
 <!-- test: parse -->
 ```rask
 func make_buffer<T>() -> T {
-    T.default()
+    return T.default()
 }
 ```
 
@@ -131,7 +131,7 @@ func make_buffer<T>() -> T {
 <!-- test: parse -->
 ```rask
 func fixed_array<comptime N: usize>() -> [u8; N] {
-    [0u8; N]
+    return [0u8; N]
 }
 ```
 
@@ -143,7 +143,7 @@ func repeat<comptime N: usize>(value: u8) -> [u8; N] {
     for i in 0..N {
         arr[i] = value
     }
-    arr
+    return arr
 }
 
 // Usage
@@ -162,16 +162,10 @@ const buf = repeat<n>(0xff)   // ❌ ERROR: n is runtime value
 **Conditional compilation:**
 ```rask
 func process(data: []u8) {
-    comptime {
-        if FEATURE_LOGGING {
-            // This code is conditionally included at compile time
-        }
-    }
-
     // Runtime code
     for byte in data {
-        comptime if FEATURE_VALIDATION {
-            validate(byte)  // Included only if FEATURE_VALIDATION is true
+        comptime if cfg.features.contains("validation") {
+            validate(byte)  // Included only if "validation" feature is enabled
         }
         process_byte(byte)
     }
@@ -181,19 +175,75 @@ func process(data: []u8) {
 **Comptime variables in runtime context:**
 ```rask
 func example() {
-    comptime let iterations = if DEBUG_MODE { 100 } else { 10 }
+    comptime let iterations = if cfg.debug { 100 } else { 10 }
 
     // Use comptime value in runtime loop
     for i in 0..iterations {  // Loop unrolled at compile time if small
         println(i)
     }
 }
-```rask
+```
 
 **Rules:**
 - `comptime { ... }` executes at compile time, result affects compilation
 - `comptime if` conditionally compiles code
 - Comptime variables can be used in runtime code (their values are known)
+
+### The `cfg` Constant
+
+The compiler provides a `cfg` constant for conditional compilation. It's available in any `comptime if` or `comptime { }` context.
+
+**Fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `cfg.os` | `string` | Target OS: `"linux"`, `"macos"`, `"windows"` |
+| `cfg.arch` | `string` | Target architecture: `"x86_64"`, `"aarch64"`, `"riscv64"` |
+| `cfg.env` | `string` | Target environment: `"gnu"`, `"musl"`, `"msvc"` |
+| `cfg.profile` | `string` | Build profile: `"debug"`, `"release"`, or custom profile name |
+| `cfg.debug` | `bool` | Shorthand for `cfg.profile == "debug"` |
+| `cfg.features` | `Set<string>` | Features enabled for this build |
+
+**Usage in code:**
+
+```rask
+func get_backend() -> Backend {
+    comptime if cfg.features.contains("ssl") {
+        return SslBackend.new()
+    } else {
+        return PlainBackend.new()
+    }
+}
+
+func default_path() -> string {
+    comptime if cfg.os == "windows" {
+        return "C:\\Users\\Default"
+    } else {
+        return "/home/default"
+    }
+}
+```
+
+**Feature flags come from two sources:**
+
+1. **`rask.build` package block** — features declared with `feature` keyword:
+   ```rask
+   package "myapp" "1.0.0" {
+       feature "ssl" {
+           dep "openssl" "^3.0"
+       }
+       feature "verbose"
+   }
+   ```
+
+2. **CLI flags** — enabled at build time:
+   ```bash
+   rask build --features ssl,verbose
+   rask build --all-features
+   rask build --no-default-features
+   ```
+
+**Important:** `comptime if` is NOT valid inside `package` blocks. The package block is purely declarative—platform-specific dependencies use `{ target: "linux" }` modifiers instead. See [build.md](../structure/build.md).
 
 ### Comptime Collections with Freeze
 
@@ -250,7 +300,7 @@ const BAD = comptime {
     v.push(1)
     v  // ❌ ERROR: cannot return unfrozen Vec from comptime
 }
-```rask
+```
 
 **Why freeze?**
 
@@ -319,7 +369,7 @@ comptime func make_greeting(name: string) -> string {
 
     // Concatenation works if result size is comptime-known
     // This is a compiler intrinsic, not heap allocation
-    concat(prefix, name, "!")
+    return concat(prefix, name, "!")
 }
 
 const GREETING = comptime make_greeting("World")  // "Hello, World!"
@@ -336,7 +386,7 @@ comptime func read_file(path: string) -> string {
 **Implementation:**
 - Comptime strings are stored in compiler memory, not runtime heap
 - String operations are compiler intrinsics (concat, slice, etc.)
-- Result must fit in comptime string buffer (e.g., 64KB limit)
+- Result must fit in comptime string limit (1 MB, same as comptime limits table)
 
 ### File Embedding at Comptime
 
@@ -504,7 +554,7 @@ const F = comptime factorial(1000)
 ```
 
 **Error output:**
-```rask
+```
 error: Comptime evaluation exceeded backwards branch quota (1,000)
 
 Comptime call stack:
@@ -522,7 +572,7 @@ note: Or rewrite using iteration instead of recursion
 ```
 
 **For panics:**
-```rask
+```
 error: Comptime panic: Division by zero
 
 Comptime call stack:
@@ -622,7 +672,7 @@ comptime func large_computation() -> [u8; 10000] {
     for i in 0..10000 {
         table[i] = compute(i)
     }
-    table
+    return table
 }
 ```
 
@@ -643,9 +693,9 @@ where T: Copy {
 ```rask
 comptime func select_type(use_large: bool) -> type {
     if use_large {
-        u64
+        return u64
     } else {
-        u32
+        return u32
     }
 }
 
@@ -659,7 +709,7 @@ struct Config {
 **Type-level computation:**
 ```rask
 comptime func max(a: usize, b: usize) -> usize {
-    if a > b { a } else { b }
+    return if a > b { a } else { b }
 }
 
 func buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
@@ -702,7 +752,7 @@ Two separate mechanisms:
 
 **Decision tree:**
 
-```rask
+```
 Need to transform/process files (not just embed)?
   YES → Build script
   NO  → Need network or environment?
@@ -784,7 +834,6 @@ func main() -> () or Error {
     const schema = try fs.read_file("schema.json")
     const code = generate_types_from_schema(schema)
     try fs.write_file("generated/types.rk", code)
-    Ok(())
 }
 ```
 
@@ -829,7 +878,7 @@ func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or 
     if n > MAX_SIZE {
         return Err(Error.new("Packet too large"))
     }
-    Ok(buffer)
+    return Ok(buffer)
 }
 
 // Usage with different sizes
@@ -858,8 +907,6 @@ func process(data: []u8) -> () or Error {
 
         try handle(byte)
     }
-
-    Ok(())
 }
 ```
 
