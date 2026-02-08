@@ -4,6 +4,8 @@ import { EditorView, basicSetup } from 'https://esm.sh/codemirror';
 import { javascript } from 'https://esm.sh/@codemirror/lang-javascript';
 import { oneDark } from 'https://esm.sh/@codemirror/theme-one-dark';
 import { EditorState } from 'https://esm.sh/@codemirror/state@6';
+import { keymap } from 'https://esm.sh/@codemirror/view@6';
+import { indentWithTab } from 'https://esm.sh/@codemirror/commands@6';
 
 // Global state
 let playground = null;
@@ -144,6 +146,7 @@ function initEditor() {
             basicSetup,
             javascript(), // Use JavaScript highlighting as placeholder
             oneDark,
+            keymap.of([indentWithTab]),
             EditorView.theme({
                 "&": { height: "100%" },
                 ".cm-scroller": { overflow: "auto" }
