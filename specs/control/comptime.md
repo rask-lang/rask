@@ -54,6 +54,36 @@ const VERSION_STRING: string = comptime format_version(MAJOR, MINOR, PATCH)
 | Non-comptime dependency | Compile error: "Value not known at compile time" |
 | Comptime evaluation fails | Compile error with backtrace of comptime call stack |
 
+### Return Semantics in Comptime
+
+**Comptime functions require explicit `return`** (same rule as regular functions):
+
+```rask
+comptime func factorial(n: u32) -> u32 {
+    if n <= 1 {
+        return 1  // ✓ Explicit return required
+    }
+    return n * factorial(n - 1)  // ✓ Explicit return required
+}
+```
+
+**Comptime blocks use implicit last expression** (expression context):
+
+```rask
+const SQUARES = comptime {
+    const arr = Vec.new()
+    for i in 0..20 {
+        arr.push(i * i)
+    }
+    arr  // ✓ Last expression becomes the value (not a function!)
+}
+```
+
+**Why different?**
+- `return` exits the **function**, not blocks
+- Using `return` in a block would exit the enclosing function
+- Blocks in expression context naturally produce their last expression's value
+
 ### Comptime Functions
 
 **Declaration:**
@@ -63,7 +93,7 @@ comptime func factorial(n: u32) -> u32 {
     if n <= 1 {
         return 1
     }
-    n * factorial(n - 1)
+    return n * factorial(n - 1)
 }
 
 comptime func build_lookup_table() -> [u8; 256] {
@@ -71,7 +101,7 @@ comptime func build_lookup_table() -> [u8; 256] {
     for i in 0..256 {
         table[i] = (i * 2) as u8
     }
-    table
+    return table
 }
 ```
 
@@ -365,7 +395,7 @@ comptime func safe_divide(a: i32, b: i32) -> i32 or string {
     if b == 0 {
         return Err("Division by zero")
     }
-    Ok(a / b)
+    return Ok(a / b)
 }
 
 const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
@@ -376,7 +406,7 @@ const Y = try comptime safe_divide(10, 0)  // ❌ Compile error: "Division by ze
 ```rask
 comptime func get_value(i: usize) -> u8 {
     const table = [1u8, 2, 3]
-    table[i]  // Panics if i >= 3
+    return table[i]  // Panics if i >= 3
 }
 
 const A = comptime get_value(1)  // OK: 2
@@ -413,7 +443,7 @@ comptime func build_table() -> [u8; 256] {
     }
 
     @comptime_print("Done!")
-    table
+    return table
 }
 ```
 
@@ -446,7 +476,7 @@ comptime func safe_factorial(n: u32) -> u32 {
     @comptime_assert(n <= 20, "Factorial input too large: {} (max 20)", n)
 
     if n <= 1 { return 1 }
-    n * safe_factorial(n - 1)
+    return n * safe_factorial(n - 1)
 }
 
 const F = comptime safe_factorial(25)
@@ -467,7 +497,7 @@ Fails with formatted message if condition is false.
 ```rask
 comptime func factorial(n: u32) -> u32 {
     if n <= 1 { return 1 }
-    n * factorial(n - 1)
+    return n * factorial(n - 1)
 }
 
 const F = comptime factorial(1000)
@@ -512,7 +542,7 @@ Test comptime logic at runtime first:
 // The comptime function
 comptime func factorial(n: u32) -> u32 {
     if n <= 1 { return 1 }
-    n * factorial(n - 1)
+    return n * factorial(n - 1)
 }
 
 // Runtime tests (can use debugger!)
@@ -724,7 +754,7 @@ comptime func count_primes(max: u32) -> usize {
     for i in 2..max {
         if is_prime(i) { count += 1 }
     }
-    count
+    return count
 }
 
 // Step 2: Fill
@@ -737,7 +767,7 @@ comptime func fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
             idx += 1
         }
     }
-    result
+    return result
 }
 
 const PRIME_COUNT: usize = comptime count_primes(100)
@@ -776,7 +806,7 @@ comptime func crc8_table() -> [u8; 256] {
         }
         table[i] = crc
     }
-    table
+    return table
 }
 
 const CRC8_TABLE: [u8; 256] = comptime crc8_table()
@@ -786,7 +816,7 @@ func crc8(data: []u8) -> u8 {
     for byte in data {
         crc = CRC8_TABLE[(crc ^ byte) as usize]
     }
-    crc
+    return crc
 }
 ```
 
@@ -840,7 +870,7 @@ comptime func fib(n: u32) -> u32 {
     if n <= 1 {
         return n
     }
-    fib(n - 1) + fib(n - 2)
+    return fib(n - 1) + fib(n - 2)
 }
 
 const FIB_10: u32 = comptime fib(10)  // Computed at compile time: 55
@@ -855,7 +885,7 @@ func example() {
 
 ```rask
 comptime func size_type(bits: usize) -> type {
-    match bits {
+    return match bits {
         8 => u8,
         16 => u16,
         32 => u32,
