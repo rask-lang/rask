@@ -19,10 +19,37 @@
     --sidebar-active: var(--rask-primary);
 }
 
-/* Dark theme (navy) customization */
+/* Dark theme (navy) customization - match landing page Nord colors */
 .navy {
-    --links: var(--rask-light);
+    --bg: #2E3440;
+    --fg: #ECEFF4;
+    --sidebar-bg: #2E3440;
+    --sidebar-fg: #D8DEE9;
+    --sidebar-non-existant: #81A1C1;
     --sidebar-active: var(--rask-light);
+    --sidebar-spacer: #4C566A;
+    --scrollbar: #4C566A;
+    --icons: #D8DEE9;
+    --icons-hover: #ECEFF4;
+    --links: var(--rask-light);
+    --inline-code-color: #88C0D0;
+    --theme-popup-bg: #3B4252;
+    --theme-popup-border: #4C566A;
+    --theme-hover: #434C5E;
+    --quote-bg: #3B4252;
+    --quote-border: var(--rask-primary);
+    --table-border-color: #4C566A;
+    --table-header-bg: #3B4252;
+    --table-alternate-bg: #2E3440;
+    --searchbar-border-color: #4C566A;
+    --searchbar-bg: #3B4252;
+    --searchbar-fg: #ECEFF4;
+    --searchbar-shadow-color: rgba(0,0,0,0.3);
+    --searchresults-header-fg: #ECEFF4;
+    --searchresults-border-color: #4C566A;
+    --searchresults-li-bg: #3B4252;
+    --search-mark-bg: rgba(15, 122, 74, 0.3);
+    --inline-code-bg: #3B4252;
 }
 
 /* Links */

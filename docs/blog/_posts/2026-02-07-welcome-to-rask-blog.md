@@ -76,6 +76,6 @@ Next up: compiler. Probably LLVM backend, maybe cranelift. Haven't decided yet.
 
 ## Try it yourself
 
-Want to see more? Try Rask in your browser with the [playground](../../playground/), read through the [language guide](../../../book/guide/), or dive into the [design specs](https://github.com/rask-lang/rask/tree/main/specs).
+Want to see more? Try Rask in your browser with the [playground](/playground/), read through the [language guide](/book/guide/), or dive into the [design specs](https://github.com/rask-lang/rask/tree/main/specs).
 
 Have thoughts or questions? [Open an issue](https://github.com/rask-lang/rask/issues) or start a [discussion](https://github.com/rask-lang/rask/discussions) on GitHub.
