@@ -6,11 +6,11 @@
 // See examples/README.md for status.
 
 struct User {
-    name: string,
-    age: i32,
+    name: string
+    age: i32
 }
 
-func print_user(user: &User) {
+func print_user(user: User) {
     print("User: ")
     print(user.name)
     print(", age ")
@@ -18,7 +18,7 @@ func print_user(user: &User) {
     print("\n")
 }
 
-func get_age(user: &User) -> i32 {
+func get_age(user: User) -> i32 {
     return user.age
 }
 
@@ -56,7 +56,7 @@ func main() {
     const user = User { name: "Alice", age: 30 }
 
     {
-        const borrowed = &user
+        const borrowed = user
         print_user(borrowed)
         print("Age: ")
         print(borrowed.age)
@@ -72,8 +72,8 @@ func main() {
     const user2 = User { name: "Bob", age: 25 }
 
     {
-        const ref1 = &user2
-        const ref2 = &user2  // OK - multiple immutable borrows
+        const ref1 = user2
+        const ref2 = user2  // OK - multiple immutable borrows
 
         print_user(ref1)
         print_user(ref2)
@@ -84,9 +84,9 @@ func main() {
     // Passing borrowed values to functions
     const alice = User { name: "Alice", age: 35 }
 
-    print_user(&alice)
+    print_user(alice)
 
-    const age = get_age(&alice)
+    const age = get_age(alice)
     print("Retrieved age: ")
     print(age)
     print("\n\n")

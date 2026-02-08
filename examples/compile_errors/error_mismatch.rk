@@ -103,3 +103,26 @@ func might_fail() -> i32 or IoError {
 struct Config {
     value: i32
 }
+
+
+// Test 1: pub keyword
+pub struct Point { x: i32 }
+
+// Test 2: fn keyword
+fn add(a: i32, b: i32) -> i32 { return a + b }
+
+// Test 3: trailing comma
+struct User {
+    name: string
+    age: i32,
+}
+
+// Test 4: :: path separator
+func test1() {
+    const x = Result::Ok(42)
+}
+
+// Test 5: let mut
+func test2() {
+    let mut counter = 0
+}
