@@ -28,7 +28,7 @@ extend Box<T> {
 }
 
 // Generic function that swaps a pair
-func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
+func swap (pair: Pair<T, U>) -> Pair<U, T> {
     return Pair {
         first: pair.second,
         second: pair.first,
@@ -37,7 +37,7 @@ func swap<T, U>(pair: Pair<T, U>) -> Pair<U, T> {
 
 // Generic function that finds the larger of two values
 // Note: In real Rask, would need Comparable trait constraint
-func max_value<T>(a: T, b: T, compare: |T, T| -> bool) -> T {
+func max_value (a: T, b: T, compare: |T, T| -> bool) -> T {
     if compare(a, b) {
         return a
     }

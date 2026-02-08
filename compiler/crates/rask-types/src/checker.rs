@@ -20,11 +20,13 @@ use crate::types::{GenericArg, Type, TypeId, TypeVarId};
 pub enum TypeDef {
     Struct {
         name: String,
+        type_params: Vec<String>,
         fields: Vec<(String, Type)>,
         methods: Vec<MethodSig>,
     },
     Enum {
         name: String,
+        type_params: Vec<String>,
         variants: Vec<(String, Vec<Type>)>,
         methods: Vec<MethodSig>,
     },
@@ -271,6 +273,7 @@ impl TypeTable {
 
         let option_id = self.register_type(TypeDef::Enum {
             name: "Option".to_string(),
+            type_params: vec!["T".to_string()],
             variants: vec![
                 ("Some".to_string(), vec![Type::Var(TypeVarId(0))]),
                 ("None".to_string(), vec![]),
@@ -281,6 +284,7 @@ impl TypeTable {
 
         let result_id = self.register_type(TypeDef::Enum {
             name: "Result".to_string(),
+            type_params: vec!["T".to_string(), "E".to_string()],
             variants: vec![
                 ("Ok".to_string(), vec![Type::Var(TypeVarId(0))]),
                 ("Err".to_string(), vec![Type::Var(TypeVarId(1))]),
@@ -299,6 +303,11 @@ impl TypeTable {
             TypeDef::Trait { name, .. } => name.clone(),
         };
         self.types.push(def);
+        // Also register the base name (without <...>) for generic type lookup
+        if let Some(base_end) = name.find('<') {
+            let base_name = name[..base_end].to_string();
+            self.type_names.insert(base_name, id);
+        }
         self.type_names.insert(name, id);
         id
     }
@@ -693,6 +702,17 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
             let args = args?;
 
             match name {
+                "Owned" if args.len() == 1 => {
+                    // Owned<T> is transparent to the type checker — unwrap to T
+                    if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
+                        return Ok(*ty);
+                    } else {
+                        return Err(TypeError::GenericError(
+                            "Owned expects a type argument, not a const".to_string(),
+                            Span::new(0, 0),
+                        ));
+                    }
+                }
                 "Option" if args.len() == 1 => {
                     // Option takes a single type argument
                     if let GenericArg::Type(ty) = args.into_iter().next().unwrap() {
@@ -1034,8 +1054,10 @@ impl TypeChecker {
 
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
+        let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
         self.types.register_type(TypeDef::Struct {
             name: s.name.clone(),
+            type_params,
             fields,
             methods,
         });
@@ -1057,8 +1079,10 @@ impl TypeChecker {
 
         let methods = e.methods.iter().map(|m| self.method_signature(m)).collect();
 
+        let type_params: Vec<String> = e.type_params.iter().map(|p| p.name.clone()).collect();
         self.types.register_type(TypeDef::Enum {
             name: e.name.clone(),
+            type_params,
             variants,
             methods,
         });
@@ -1953,12 +1977,15 @@ impl TypeChecker {
             ExprKind::StructLit { name, fields, .. } => {
                 if let Some(ty) = self.types.lookup(name) {
                     if let Type::Named(type_id) = &ty {
-                        if let Some(TypeDef::Struct {
-                            fields: struct_fields,
-                            ..
-                        }) = self.types.get(*type_id)
-                        {
-                            let struct_fields = struct_fields.clone();
+                        let (struct_fields, type_params) = match self.types.get(*type_id) {
+                            Some(TypeDef::Struct { fields: sf, type_params: tp, .. }) => {
+                                (sf.clone(), tp.clone())
+                            }
+                            _ => (vec![], vec![]),
+                        };
+
+                        if type_params.is_empty() {
+                            // Non-generic struct: constrain directly
                             for field_init in fields {
                                 let field_ty = self.infer_expr(&field_init.value);
                                 if let Some((_, expected)) =
@@ -1971,9 +1998,33 @@ impl TypeChecker {
                                     ));
                                 }
                             }
+                            ty
+                        } else {
+                            // Generic struct: create fresh vars, substitute into fields
+                            let fresh_args: Vec<GenericArg> = type_params.iter()
+                                .map(|_| GenericArg::Type(Box::new(self.ctx.fresh_var())))
+                                .collect();
+                            let subst = Self::build_type_param_subst(&type_params, &fresh_args);
+
+                            for field_init in fields {
+                                let field_ty = self.infer_expr(&field_init.value);
+                                if let Some((_, expected)) =
+                                    struct_fields.iter().find(|(n, _)| n == &field_init.name)
+                                {
+                                    let substituted = Self::substitute_type_params(expected, &subst);
+                                    self.ctx.add_constraint(TypeConstraint::Equal(
+                                        substituted,
+                                        field_ty,
+                                        expr.span,
+                                    ));
+                                }
+                            }
+
+                            Type::Generic { base: *type_id, args: fresh_args }
                         }
+                    } else {
+                        ty
                     }
-                    ty
                 } else {
                     Type::UnresolvedNamed(name.clone())
                 }
@@ -2775,7 +2826,16 @@ impl TypeChecker {
     fn unify_generic_arg(&mut self, arg1: &GenericArg, arg2: &GenericArg, span: Span) -> Result<bool, TypeError> {
         match (arg1, arg2) {
             (GenericArg::Type(t1), GenericArg::Type(t2)) => self.unify(t1, t2, span),
-            (GenericArg::ConstUsize(n1), GenericArg::ConstUsize(n2)) => Ok(n1 != n2),
+            (GenericArg::ConstUsize(n1), GenericArg::ConstUsize(n2)) => {
+                if n1 == n2 {
+                    Ok(false)
+                } else {
+                    Err(TypeError::GenericError(
+                        format!("const generic mismatch: {} vs {}", n1, n2),
+                        span,
+                    ))
+                }
+            }
             _ => Err(TypeError::Mismatch {
                 expected: Type::Error,  // TODO: Better error representation
                 found: Type::Error,
@@ -2799,6 +2859,74 @@ impl TypeChecker {
             }
             _ => ty.clone(),
         }
+    }
+
+    /// Replace type parameter names (UnresolvedNamed) with concrete types.
+    fn substitute_type_params(ty: &Type, subst: &HashMap<&str, Type>) -> Type {
+        match ty {
+            Type::UnresolvedNamed(name) => {
+                if let Some(replacement) = subst.get(name.as_str()) {
+                    return replacement.clone();
+                }
+                ty.clone()
+            }
+            Type::Option(inner) => {
+                Type::Option(Box::new(Self::substitute_type_params(inner, subst)))
+            }
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::substitute_type_params(ok, subst)),
+                err: Box::new(Self::substitute_type_params(err, subst)),
+            },
+            Type::Array { elem, len } => Type::Array {
+                elem: Box::new(Self::substitute_type_params(elem, subst)),
+                len: *len,
+            },
+            Type::Slice(elem) => {
+                Type::Slice(Box::new(Self::substitute_type_params(elem, subst)))
+            }
+            Type::Tuple(elems) => {
+                Type::Tuple(elems.iter().map(|e| Self::substitute_type_params(e, subst)).collect())
+            }
+            Type::Fn { params, ret } => Type::Fn {
+                params: params.iter().map(|p| Self::substitute_type_params(p, subst)).collect(),
+                ret: Box::new(Self::substitute_type_params(ret, subst)),
+            },
+            Type::Generic { base, args } => Type::Generic {
+                base: *base,
+                args: args.iter().map(|a| match a {
+                    GenericArg::Type(t) => GenericArg::Type(Box::new(Self::substitute_type_params(t, subst))),
+                    other => other.clone(),
+                }).collect(),
+            },
+            Type::UnresolvedGeneric { name, args } => {
+                // Check if whole name is a type param
+                if let Some(replacement) = subst.get(name.as_str()) {
+                    return replacement.clone();
+                }
+                Type::UnresolvedGeneric {
+                    name: name.clone(),
+                    args: args.iter().map(|a| match a {
+                        GenericArg::Type(t) => GenericArg::Type(Box::new(Self::substitute_type_params(t, subst))),
+                        other => other.clone(),
+                    }).collect(),
+                }
+            }
+            _ => ty.clone(),
+        }
+    }
+
+    /// Build a substitution map from type param names to concrete types from generic args.
+    fn build_type_param_subst<'a>(
+        type_params: &'a [String],
+        args: &[GenericArg],
+    ) -> HashMap<&'a str, Type> {
+        let mut subst = HashMap::new();
+        for (param, arg) in type_params.iter().zip(args.iter()) {
+            if let GenericArg::Type(ty) = arg {
+                subst.insert(param.as_str(), *ty.clone());
+            }
+        }
+        subst
     }
 
     fn resolve_field(
@@ -2863,6 +2991,44 @@ impl TypeChecker {
                             span,
                         })
                     }
+                } else {
+                    Err(TypeError::NoSuchField {
+                        ty,
+                        field,
+                        span,
+                    })
+                }
+            }
+            Type::Generic { base, args } => {
+                let result = self.types.get(*base).and_then(|def| {
+                    match def {
+                        TypeDef::Struct { type_params, fields, .. } => {
+                            let subst = Self::build_type_param_subst(type_params, args);
+                            fields.iter().find(|(n, _)| n == &field).map(|(_, t)| {
+                                Self::substitute_type_params(t, &subst)
+                            })
+                        }
+                        TypeDef::Enum { type_params, variants, .. } => {
+                            let subst = Self::build_type_param_subst(type_params, args);
+                            variants.iter().find(|(n, _)| n == &field).map(|(_, fields)| {
+                                if fields.is_empty() {
+                                    ty.clone()
+                                } else {
+                                    Type::Fn {
+                                        params: fields.iter()
+                                            .map(|t| Self::substitute_type_params(t, &subst))
+                                            .collect(),
+                                        ret: Box::new(ty.clone()),
+                                    }
+                                }
+                            })
+                        }
+                        _ => None,
+                    }
+                });
+
+                if let Some(field_ty) = result {
+                    self.unify(&expected, &field_ty, span)
                 } else {
                     Err(TypeError::NoSuchField {
                         ty,
@@ -2993,6 +3159,90 @@ impl TypeChecker {
             }
             Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
                 self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
+            }
+            Type::Generic { base, args: generic_args } => {
+                let (methods, type_params) = match self.types.get(*base) {
+                    Some(TypeDef::Struct { methods, type_params, .. }) => {
+                        (methods.clone(), type_params.clone())
+                    }
+                    Some(TypeDef::Enum { methods, type_params, .. }) => {
+                        (methods.clone(), type_params.clone())
+                    }
+                    _ => {
+                        return Err(TypeError::NoSuchMethod {
+                            ty,
+                            method,
+                            span,
+                        });
+                    }
+                };
+
+                let subst = Self::build_type_param_subst(&type_params, generic_args);
+
+                if let Some(method_sig) = methods.iter().find(|m| m.name == method) {
+                    if method_sig.params.len() != args.len() {
+                        return Err(TypeError::ArityMismatch {
+                            expected: method_sig.params.len(),
+                            found: args.len(),
+                            span,
+                        });
+                    }
+
+                    let mut progress = false;
+                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
+                        let substituted = Self::substitute_type_params(param_ty, &subst);
+                        if self.unify(&substituted, arg, span)? {
+                            progress = true;
+                        }
+                    }
+
+                    let ret_substituted = Self::substitute_type_params(&method_sig.ret, &subst);
+                    if self.unify(&ret_substituted, &ret, span)? {
+                        progress = true;
+                    }
+
+                    Ok(progress)
+                } else {
+                    // Check enum variants as constructors
+                    let variant = self.types.get(*base).and_then(|def| {
+                        if let TypeDef::Enum { type_params: tp, variants, .. } = def {
+                            variants.iter().find(|(n, _)| n == &method).map(|(_, fields)| {
+                                let subst = Self::build_type_param_subst(tp, generic_args);
+                                fields.iter()
+                                    .map(|t| Self::substitute_type_params(t, &subst))
+                                    .collect::<Vec<_>>()
+                            })
+                        } else {
+                            None
+                        }
+                    });
+
+                    if let Some(fields) = variant {
+                        if fields.len() != args.len() {
+                            return Err(TypeError::ArityMismatch {
+                                expected: fields.len(),
+                                found: args.len(),
+                                span,
+                            });
+                        }
+                        let mut progress = false;
+                        for (field_ty, arg) in fields.iter().zip(args.iter()) {
+                            if self.unify(field_ty, arg, span)? {
+                                progress = true;
+                            }
+                        }
+                        if self.unify(&ty, &ret, span)? {
+                            progress = true;
+                        }
+                        Ok(progress)
+                    } else {
+                        Err(TypeError::NoSuchMethod {
+                            ty,
+                            method,
+                            span,
+                        })
+                    }
+                }
             }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {

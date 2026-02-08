@@ -1114,6 +1114,7 @@ mod tests {
             id: NodeId(0),
             kind: DeclKind::Fn(FnDecl {
                 name: name.to_string(),
+                type_params: vec![],
                 params: vec![],
                 ret_ty: None,
                 body: vec![],

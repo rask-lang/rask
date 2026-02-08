@@ -128,10 +128,10 @@ Compiler auto-derives Clone where:
 
 Unsafe extend Clone must be explicit and marked unsafe.
 
-### Const Generics
+### Comptime Generics
 
 ```rask
-func dot<const N: usize>(a: [f32; N], b: [f32; N]) -> f32
+func dot<comptime N: usize>(a: [f32; N], b: [f32; N]) -> f32
 ```
 
 Compiler infers `N` from array literals (`N = 2`) or known types (`arr: [f32; 5]`).

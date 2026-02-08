@@ -475,37 +475,13 @@ impl Parser {
         self.expect(&TokenKind::Func)?;
         let mut name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
-            name.push('<');
-            loop {
-                if self.match_token(&TokenKind::Const) {
-                    name.push_str("const ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else if self.match_token(&TokenKind::Comptime) {
-                    name.push_str("comptime ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else {
-                    name.push_str(&self.expect_ident()?);
-                    if self.match_token(&TokenKind::Colon) {
-                        name.push_str(": ");
-                        name.push_str(&self.parse_type_name()?);
-                    }
-                }
-                if self.match_token(&TokenKind::Comma) {
-                    name.push_str(", ");
-                } else {
-                    break;
-                }
-            }
-            self.expect(&TokenKind::Gt)?;
-            name.push('>');
-        }
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            let (params, suffix) = self.parse_type_params()?;
+            name.push_str(&suffix);
+            params
+        } else {
+            vec![]
+        };
 
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
@@ -541,7 +517,7 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, params, ret_ty, body, is_pub, is_comptime, is_unsafe, attrs }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_comptime, is_unsafe, attrs }))
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -1055,37 +1031,13 @@ impl Parser {
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
         let mut name = self.expect_ident()?;
 
-        if self.match_token(&TokenKind::Lt) {
-            name.push('<');
-            loop {
-                if self.match_token(&TokenKind::Const) {
-                    name.push_str("const ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else if self.match_token(&TokenKind::Comptime) {
-                    name.push_str("comptime ");
-                    name.push_str(&self.expect_ident()?);
-                    self.expect(&TokenKind::Colon)?;
-                    name.push_str(": ");
-                    name.push_str(&self.parse_type_name()?);
-                } else {
-                    name.push_str(&self.expect_ident()?);
-                    if self.match_token(&TokenKind::Colon) {
-                        name.push_str(": ");
-                        name.push_str(&self.parse_type_name()?);
-                    }
-                }
-                if self.match_token(&TokenKind::Comma) {
-                    name.push_str(", ");
-                } else {
-                    break;
-                }
-            }
-            self.expect(&TokenKind::Gt)?;
-            name.push('>');
-        }
+        let type_params = if self.match_token(&TokenKind::Lt) {
+            let (params, suffix) = self.parse_type_params()?;
+            name.push_str(&suffix);
+            params
+        } else {
+            vec![]
+        };
 
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
@@ -1109,6 +1061,7 @@ impl Parser {
 
         Ok(FnDecl {
             name,
+            type_params,
             params,
             ret_ty,
             body,
