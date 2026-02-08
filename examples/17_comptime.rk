@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Compile-time execution with comptime
+
+// Compute squares at compile time
+const SQUARES = comptime {
+    const arr = Vec.new()
+    for i in 0..20 {
+        arr.push(i * i)
+    }
+    deliver arr
+}
+
+// Fibonacci lookup table
+const FIBONACCI = comptime {
+    const fib = Vec.new()
+    fib.push(0)
+    fib.push(1)
+
+    for i in 2..15 {
+        const prev1 = fib[i - 1]
+        const prev2 = fib[i - 2]
+        fib.push(prev1 + prev2)
+    }
+
+    deliver fib
+}
+
+// Powers of two
+const POWERS_OF_TWO = comptime {
+    const powers = Vec.new()
+    let power = 1
+    for i in 0..16 {
+        powers.push(power)
+        power = power * 2
+    }
+    deliver powers
+}
+
+// Prime numbers up to 50
+const PRIMES = comptime {
+    const primes = Vec.new()
+
+    for n in 2..50 {
+        let is_prime = true
+
+        for i in 2..n {
+            if i * i > n {
+                deliver ()  // Break early
+            }
+            if n % i == 0 {
+                is_prime = false
+                deliver ()  // Break
+            }
+        }
+
+        if is_prime {
+            primes.push(n)
+        }
+    }
+
+    deliver primes
+}
+
+func main() {
+    print("=== Compile-Time Computation ===\n\n")
+
+    // These values were computed at compile time - zero runtime cost
+    print("Squares (computed at compile time):\n")
+    for i in 0..10 {
+        print("Square of ")
+        print(i)
+        print(" = ")
+        print(SQUARES[i])
+        print("\n")
+    }
+
+    print("\nFibonacci sequence:\n")
+    for i in 0..FIBONACCI.len() {
+        print("fib(")
+        print(i)
+        print(") = ")
+        print(FIBONACCI[i])
+        print("\n")
+    }
+
+    print("\nPowers of two:\n")
+    for i in 0..10 {
+        print("2^")
+        print(i)
+        print(" = ")
+        print(POWERS_OF_TWO[i])
+        print("\n")
+    }
+
+    print("\nPrime numbers up to 50:\n")
+    for prime in PRIMES.iter() {
+        print(prime)
+        print(" ")
+    }
+    print("\n\n")
+
+    // Comptime for conditional compilation
+    const IS_DEBUG = comptime { deliver true }
+
+    if IS_DEBUG {
+        print("Debug mode enabled\n")
+    }
+
+    print("\n")
+
+    // Use comptime values for fast lookup
+    const index = 7
+    print("Looking up square of ")
+    print(index)
+    print(": ")
+    print(SQUARES[index])
+    print(" (no computation at runtime)\n\n")
+
+    // Comptime for generating constants
+    const BUFFER_SIZE = comptime {
+        // Could be based on platform, configuration, etc.
+        deliver 1024
+    }
+
+    print("Buffer size: ")
+    print(BUFFER_SIZE)
+    print(" (determined at compile time)\n\n")
+
+    print("=== Key Benefits ===\n")
+    print("- Zero runtime cost for computed values\n")
+    print("- Perfect for lookup tables, constants\n")
+    print("- Runs during compilation, not at runtime\n")
+    print("- Can use full language features\n")
+    print("- Great for performance-critical code\n")
+}

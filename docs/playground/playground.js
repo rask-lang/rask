@@ -105,7 +105,6 @@ function populateExamples() {
     // Clear existing options except the first one
     dropdown.innerHTML = '<option value="">Examples...</option>';
 
-    // Add learning examples first (01_* through 07_*)
     const learningExamples = EXAMPLE_METADATA.filter(ex => ex.key.match(/^\d+_/));
     if (learningExamples.length > 0) {
         const group = document.createElement('optgroup');

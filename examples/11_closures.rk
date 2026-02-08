@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Closures and function types
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Full closure syntax not yet implemented.
+// See examples/README.md for status.
+
+// Function that takes a closure as a parameter
+func apply(f: |i32| -> i32, value: i32) -> i32 {
+    return f(value)
+}
+
+// Function that takes two parameters
+func apply_binary(f: |i32, i32| -> i32, a: i32, b: i32) -> i32 {
+    return f(a, b)
+}
+
+// Higher-order function that returns a closure
+func make_adder(amount: i32) -> |i32| -> i32 {
+    return |x: i32| -> i32 { return x + amount }
+}
+
+// Function that applies a function twice
+func apply_twice(f: |i32| -> i32, x: i32) -> i32 {
+    return f(f(x))
+}
+
+// Function that filters a vector based on a predicate
+func filter_vec(vec: Vec<i32>, predicate: |i32| -> bool) -> Vec<i32> {
+    const result = Vec.new()
+    for item in vec.iter() {
+        if predicate(item) {
+            result.push(item)
+        }
+    }
+    return result
+}
+
+func main() {
+    // Simple closure - inline function
+    const double = |x: i32| -> i32 { return x * 2 }
+    const squared = |x: i32| -> i32 { return x * x }
+
+    print("Double 5: ")
+    print(double(5))
+    print("\n")
+
+    print("Square 5: ")
+    print(squared(5))
+    print("\n\n")
+
+    // Pass closure to function
+    const result1 = apply(double, 10)
+    print("Apply double to 10: ")
+    print(result1)
+    print("\n")
+
+    const result2 = apply(squared, 7)
+    print("Apply squared to 7: ")
+    print(result2)
+    print("\n\n")
+
+    // Multi-parameter closures
+    const add = |a: i32, b: i32| -> i32 { return a + b }
+    const multiply = |a: i32, b: i32| -> i32 { return a * b }
+
+    print("5 + 3 = ")
+    print(apply_binary(add, 5, 3))
+    print("\n")
+
+    print("5 * 3 = ")
+    print(apply_binary(multiply, 5, 3))
+    print("\n\n")
+
+    // Capturing variables from outer scope
+    const multiplier = 10
+    const scale = |x: i32| -> i32 { return x * multiplier }
+
+    print("Scale 5 by ")
+    print(multiplier)
+    print(": ")
+    print(scale(5))
+    print("\n\n")
+
+    // Closure factory - returns a closure
+    const add_5 = make_adder(5)
+    const add_100 = make_adder(100)
+
+    print("Add 5 to 10: ")
+    print(add_5(10))
+    print("\n")
+
+    print("Add 100 to 10: ")
+    print(add_100(10))
+    print("\n\n")
+
+    // Apply function twice
+    const increment = |x: i32| -> i32 { return x + 1 }
+    const twice = apply_twice(increment, 5)
+    print("Increment 5 twice: ")
+    print(twice)
+    print("\n\n")
+
+    // Filter with predicate
+    const numbers = Vec.from([1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+
+    const is_even = |n: i32| -> bool { return n % 2 == 0 }
+    const evens = filter_vec(numbers, is_even)
+
+    print("Even numbers: ")
+    for n in evens.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+
+    const is_greater_than_5 = |n: i32| -> bool { return n > 5 }
+    const large = filter_vec(numbers, is_greater_than_5)
+
+    print("Numbers > 5: ")
+    for n in large.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+
+    // Inline closure - no need to name it
+    const odd = filter_vec(numbers, |n: i32| -> bool { return n % 2 == 1 })
+    print("Odd numbers: ")
+    for n in odd.iter() {
+        print(n)
+        print(" ")
+    }
+    print("\n")
+}

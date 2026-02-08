@@ -1,0 +1,165 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Linear resources with @resource and ensure
+
+// Linear resource must be explicitly consumed
+@resource
+struct Transaction {
+    id: i32
+    amount: i32
+    committed: bool
+}
+
+extend Transaction {
+    // Consumes the transaction (take self)
+    func commit(take self) {
+        print("Committing transaction ")
+        print(self.id)
+        print(" for $")
+        print(self.amount)
+        print("\n")
+    }
+
+    // Alternative: rollback instead of commit
+    func rollback(take self) {
+        print("Rolling back transaction ")
+        print(self.id)
+        print("\n")
+    }
+}
+
+// Another linear resource
+@resource
+struct Connection {
+    host: string
+    port: i32
+}
+
+extend Connection {
+    func close(take self) {
+        print("Closing connection to ")
+        print(self.host)
+        print(":")
+        print(self.port)
+        print("\n")
+    }
+
+    func send(self, msg: string) {
+        print("Sending: ")
+        print(msg)
+        print(" to ")
+        print(self.host)
+        print("\n")
+    }
+}
+
+func successful_payment() {
+    print("\n=== Successful Payment ===\n")
+
+    const tx = Transaction {
+        id: 1,
+        amount: 100,
+        committed: false,
+    }
+
+    // Ensure cleanup if function exits early
+    ensure tx.rollback()
+
+    print("Processing payment...\n")
+
+    // Everything succeeded, commit explicitly
+    tx.commit()  // This consumes the transaction
+
+    // ensure won't run because tx was already consumed
+}
+
+func failed_payment() {
+    print("\n=== Failed Payment ===\n")
+
+    const tx = Transaction {
+        id: 2,
+        amount: 200,
+        committed: false,
+    }
+
+    ensure tx.rollback()
+
+    print("Processing payment...\n")
+    print("Payment failed!\n")
+
+    // Function exits without commit
+    // ensure will run and rollback
+}
+
+func network_operation() {
+    print("\n=== Network Operation ===\n")
+
+    const conn = Connection {
+        host: "example.com",
+        port: 8080,
+    }
+
+    ensure conn.close()
+
+    conn.send("Hello")
+    conn.send("World")
+
+    // Connection closes automatically via ensure
+}
+
+func manual_close() {
+    print("\n=== Manual Close ===\n")
+
+    const conn = Connection {
+        host: "api.example.com",
+        port: 443,
+    }
+
+    ensure conn.close()
+
+    conn.send("GET /data")
+
+    // Close manually before ensure runs
+    conn.close()
+
+    print("After manual close\n")
+    // ensure won't run because conn was already closed
+}
+
+func main() {
+    print("=== Linear Resources ===\n")
+    print("Resources marked with @resource must be consumed\n")
+    print("Use 'ensure' for automatic cleanup\n")
+
+    successful_payment()
+    failed_payment()
+    network_operation()
+    manual_close()
+
+    print("\n=== Files as Resources ===\n")
+
+    // File handles are also linear resources
+    const file = try fs.open("test.txt")
+    ensure file.close()
+
+    // Use the file
+    const content = try file.read_to_string()
+    print("File content: ")
+    print(content)
+    print("\n")
+
+    // file.close() runs via ensure
+
+    print("\n=== Key Points ===\n")
+    print("- @resource types must be explicitly consumed\n")
+    print("- Prevents resource leaks at compile time\n")
+    print("- 'ensure' guarantees cleanup on all exit paths\n")
+    print("- Methods with 'take self' consume the resource\n")
+    print("- Compiler error if resource not consumed\n")
+
+    print("\n=== What This Prevents ===\n")
+    print("- Forgetting to close files\n")
+    print("- Forgetting to commit/rollback transactions\n")
+    print("- Forgetting to release locks\n")
+    print("- Forgetting to close network connections\n")
+    print("- All checked at compile time!\n")
+}

@@ -1,0 +1,187 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: String methods and parsing
+
+func main() {
+    // Basic string creation
+    const greeting = "Hello, Rask!"
+    print("Original: ")
+    print(greeting)
+    print("\n\n")
+
+    // String length
+    print("Length: ")
+    print(greeting.len())
+    print("\n\n")
+
+    // Case conversion
+    const lower = greeting.to_lowercase()
+    const upper = greeting.to_uppercase()
+
+    print("Lowercase: ")
+    print(lower)
+    print("\n")
+
+    print("Uppercase: ")
+    print(upper)
+    print("\n\n")
+
+    // Trimming whitespace
+    const messy = "   spaces everywhere   "
+    print("Original: '")
+    print(messy)
+    print("'\n")
+
+    const trimmed = messy.trim()
+    print("Trimmed: '")
+    print(trimmed)
+    print("'\n")
+
+    const trim_start = messy.trim_start()
+    print("Trim start: '")
+    print(trim_start)
+    print("'\n")
+
+    const trim_end = messy.trim_end()
+    print("Trim end: '")
+    print(trim_end)
+    print("'\n\n")
+
+    // Checking content
+    const text = "The quick brown fox"
+
+    if text.contains("quick") {
+        print("Contains 'quick'\n")
+    }
+
+    if text.starts_with("The") {
+        print("Starts with 'The'\n")
+    }
+
+    if text.ends_with("fox") {
+        print("Ends with 'fox'\n")
+    }
+    print("\n")
+
+    // Splitting strings
+    const sentence = "one two three four five"
+    const words = sentence.split_whitespace()
+
+    print("Words: ")
+    for word in words.iter() {
+        print("[")
+        print(word)
+        print("] ")
+    }
+    print("\n\n")
+
+    // Split by delimiter
+    const csv = "apple,banana,orange,grape"
+    const fruits = csv.split(",")
+
+    print("Fruits: ")
+    for fruit in fruits.iter() {
+        print(fruit)
+        print(" ")
+    }
+    print("\n\n")
+
+    // String slicing
+    const full = "Hello, World!"
+    const slice1 = full[0..5]    // "Hello"
+    const slice2 = full[7..]     // "World!"
+
+    print("Slice [0..5]: ")
+    print(slice1)
+    print("\n")
+
+    print("Slice [7..]: ")
+    print(slice2)
+    print("\n\n")
+
+    // String formatting
+    const name = "Alice"
+    const age = 30
+    const formatted = format("Name: {}, Age: {}", name, age)
+
+    print(formatted)
+    print("\n\n")
+
+    // Multiple format arguments
+    const x = 10
+    const y = 20
+    const msg = format("Point ({}, {})", x, y)
+    print(msg)
+    print("\n\n")
+
+    // Parsing strings to numbers
+    const num_str = "42"
+    const parsed = num_str.parse<i32>()
+
+    match parsed {
+        Ok(num) => {
+            print("Parsed number: ")
+            print(num)
+            print("\n")
+        }
+        Err(e) => {
+            print("Parse error: ")
+            print(e)
+            print("\n")
+        }
+    }
+
+    // Parsing with error handling
+    const bad_str = "not a number"
+    const bad_parsed = bad_str.parse<i32>()
+
+    match bad_parsed {
+        Ok(num) => {
+            print("This shouldn't happen\n")
+        }
+        Err(e) => {
+            print("Expected error: ")
+            print(e)
+            print("\n")
+        }
+    }
+
+    print("\n")
+
+    // String concatenation
+    const first = "Hello"
+    const second = "World"
+    const combined = format("{} {}", first, second)
+
+    print("Combined: ")
+    print(combined)
+    print("\n\n")
+
+    // Working with individual characters
+    const alpha = "abc"
+    print("Iterating chars: ")
+    for c in alpha.chars() {
+        print(c)
+        print(" ")
+    }
+    print("\n\n")
+
+    // String replacement
+    const original = "foo bar foo"
+    const replaced = original.replace("foo", "baz")
+
+    print("Original: ")
+    print(original)
+    print("\n")
+
+    print("Replaced: ")
+    print(replaced)
+    print("\n\n")
+
+    // Repeating strings
+    const pattern = "ab"
+    const repeated = pattern.repeat(3)
+
+    print("Repeated: ")
+    print(repeated)
+    print("\n")
+}

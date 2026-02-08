@@ -1,0 +1,144 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Unsafe blocks and C FFI
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Unsafe blocks, pointer operations, and FFI not yet implemented.
+// See examples/README.md for status.
+
+// External C functions must be declared
+extern "C" func strlen(ptr: *const u8) -> i32
+extern "C" func memcpy(dest: *mut u8, src: *const u8, n: i32)
+extern "C" func malloc(size: i32) -> *mut u8
+extern "C" func free(ptr: *mut u8)
+
+// Wrapper for C strlen
+func c_string_length(s: string) -> i32 {
+    unsafe {
+        const ptr = s.as_ptr()
+        return strlen(ptr)
+    }
+}
+
+// Safe wrapper for raw pointer operations
+func copy_bytes(src: &Vec<u8>, dest: &Vec<u8>, count: i32) {
+    unsafe {
+        const src_ptr = src.as_ptr()
+        const dest_ptr = dest.as_mut_ptr()
+        memcpy(dest_ptr, src_ptr, count)
+    }
+}
+
+// Manual memory management (discouraged - use safe abstractions)
+func manual_allocation_example() {
+    print("\n=== Manual Memory Allocation ===\n")
+
+    unsafe {
+        // Allocate 16 bytes
+        const ptr = malloc(16)
+
+        if ptr == null {
+            print("Allocation failed\n")
+            return
+        }
+
+        print("Allocated 16 bytes at ")
+        print(ptr as i64)
+        print("\n")
+
+        // Write some data
+        for i in 0..16 {
+            const offset_ptr = ptr.offset(i)
+            *offset_ptr = i as u8
+        }
+
+        // Read it back
+        print("Data: ")
+        for i in 0..16 {
+            const offset_ptr = ptr.offset(i)
+            const value = *offset_ptr
+            print(value)
+            print(" ")
+        }
+        print("\n")
+
+        // Must free manually
+        free(ptr)
+        print("Memory freed\n")
+    }
+}
+
+func main() {
+    print("=== Unsafe Rust Interop ===\n")
+    print("Use unsafe blocks to call C functions or use raw pointers\n\n")
+
+    // Call C function through safe wrapper
+    print("=== C FFI Example ===\n")
+
+    const test_str = "Hello, C!"
+    const len = c_string_length(test_str)
+
+    print("String: ")
+    print(test_str)
+    print("\n")
+
+    print("Length from C strlen: ")
+    print(len)
+    print("\n")
+
+    // Compare with safe method
+    print("Length from Rask: ")
+    print(test_str.len())
+    print("\n")
+
+    manual_allocation_example()
+
+    print("\n=== Raw Pointers ===\n")
+
+    const numbers = Vec.from([10, 20, 30, 40, 50])
+
+    unsafe {
+        const ptr = numbers.as_ptr()
+
+        print("First element via pointer: ")
+        const first = *ptr
+        print(first)
+        print("\n")
+
+        print("Second element via offset: ")
+        const second_ptr = ptr.offset(1)
+        const second = *second_ptr
+        print(second)
+        print("\n")
+    }
+
+    print("\n=== When to Use Unsafe ===\n")
+    print("1. FFI - calling C/C++ libraries\n")
+    print("2. Performance - bypassing bounds checks\n")
+    print("3. Low-level operations - memory management\n")
+    print("4. Hardware access - embedded systems\n")
+
+    print("\n=== Safety Invariants ===\n")
+    print("YOU must ensure:\n")
+    print("- Pointers are valid and aligned\n")
+    print("- No data races on mutable access\n")
+    print("- Memory is freed exactly once\n")
+    print("- No use-after-free\n")
+    print("- Strings are valid UTF-8\n")
+
+    print("\n=== Best Practices ===\n")
+    print("- Minimize unsafe code surface\n")
+    print("- Wrap unsafe in safe abstractions\n")
+    print("- Document safety requirements\n")
+    print("- Prefer safe Rask code when possible\n")
+    print("- Audit unsafe blocks carefully\n")
+
+    print("\n=== Example: Safe Wrapper ===\n")
+    print("Instead of exposing raw pointers:\n")
+    print("  unsafe { ptr.offset(5) }  // Caller must ensure safety\n")
+    print("\n")
+    print("Create a safe API:\n")
+    print("  vec.get(5)  // Returns Option<T>, bounds-checked\n")
+    print("\n")
+    print("The unsafe code is contained within the implementation,\n")
+    print("and users get a safe interface.\n")
+}

@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Learn: Enums with associated data
+//
+// NOTE: This is a SPEC EXAMPLE showing intended syntax.
+// Advanced pattern matching not fully implemented yet.
+// See examples/README.md for status.
+
+// Enum with different kinds of variants
+enum Message {
+    Quit,                                    // No data
+    Text(string),                            // Tuple variant
+    Move { x: i32, y: i32 },                 // Struct variant
+    Color { r: i32, g: i32, b: i32 },        // Another struct variant
+}
+
+// Enum representing different shapes
+enum Shape {
+    Circle { radius: f64 },
+    Rectangle { width: f64, height: f64 },
+    Triangle { base: f64, height: f64 },
+}
+
+// Methods on enums
+extend Shape {
+    func area(self) -> f64 {
+        match self {
+            Shape.Circle { radius } => return 3.14159 * radius * radius,
+            Shape.Rectangle { width, height } => return width * height,
+            Shape.Triangle { base, height } => return 0.5 * base * height,
+        }
+    }
+
+    func describe(self) -> string {
+        match self {
+            Shape.Circle { radius } =>
+                return format("Circle with radius {}", radius),
+            Shape.Rectangle { width, height } =>
+                return format("Rectangle {}x{}", width, height),
+            Shape.Triangle { base, height } =>
+                return format("Triangle (base={}, height={})", base, height),
+        }
+    }
+}
+
+// Function that processes messages
+func handle_message(msg: Message) {
+    match msg {
+        Message.Quit => {
+            print("Received quit signal\n")
+        }
+        Message.Text(content) => {
+            print("Text message: ")
+            print(content)
+            print("\n")
+        }
+        Message.Move { x, y } => {
+            print("Move to position (")
+            print(x)
+            print(", ")
+            print(y)
+            print(")\n")
+        }
+        Message.Color { r, g, b } => {
+            print("Set color to RGB(")
+            print(r)
+            print(", ")
+            print(g)
+            print(", ")
+            print(b)
+            print(")\n")
+        }
+    }
+}
+
+func main() {
+    // Create different message variants
+    const messages = Vec.from([
+        Message.Text("Hello, Rask!"),
+        Message.Move { x: 10, y: 20 },
+        Message.Color { r: 255, g: 128, b: 0 },
+        Message.Quit,
+    ])
+
+    print("Processing messages:\n")
+    for msg in messages.iter() {
+        handle_message(msg)
+    }
+
+    print("\n")
+
+    // Create different shapes
+    const circle = Shape.Circle { radius: 5.0 }
+    const rectangle = Shape.Rectangle { width: 4.0, height: 6.0 }
+    const triangle = Shape.Triangle { base: 3.0, height: 4.0 }
+
+    // Calculate and display areas
+    print("Shape areas:\n")
+
+    print(circle.describe())
+    print(" - Area: ")
+    print(circle.area())
+    print("\n")
+
+    print(rectangle.describe())
+    print(" - Area: ")
+    print(rectangle.area())
+    print("\n")
+
+    print(triangle.describe())
+    print(" - Area: ")
+    print(triangle.area())
+    print("\n\n")
+
+    // Pattern matching to extract values
+    const my_shape = Shape.Rectangle { width: 10.0, height: 5.0 }
+
+    match my_shape {
+        Shape.Circle { radius } => {
+            print("It's a circle with radius ")
+            print(radius)
+            print("\n")
+        }
+        Shape.Rectangle { width, height } => {
+            print("It's a rectangle: ")
+            print(width)
+            print(" x ")
+            print(height)
+            print("\n")
+        }
+        Shape.Triangle { base, height } => {
+            print("It's a triangle\n")
+        }
+    }
+}
