@@ -1,0 +1,26 @@
+---
+layout: default
+---
+
+<section class="blog-header">
+    <h1>{{ page.title | default: site.title }}</h1>
+    <p class="blog-description">{{ site.description }}</p>
+</section>
+
+{{ content }}
+
+{%- if site.posts.size > 0 -%}
+<section class="post-list">
+    {%- for post in site.posts -%}
+    <article class="post-summary">
+        <h2><a href="{{ post.url | relative_url }}">{{ post.title | escape }}</a></h2>
+        <time class="post-meta" datetime="{{ post.date | date_to_xmlschema }}">
+            {{ post.date | date: "%B %-d, %Y" }}
+        </time>
+        {%- if site.show_excerpts -%}
+        <p class="post-excerpt">{{ post.excerpt | strip_html | truncatewords: 50 }}</p>
+        {%- endif -%}
+    </article>
+    {%- endfor -%}
+</section>
+{%- endif -%}
