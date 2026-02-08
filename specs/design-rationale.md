@@ -161,24 +161,160 @@ Tradeoff: Rust lets you return references and build complex borrowing graphs. Ra
 
 **Looked at:** Rust, JavaScript, C#, Python
 
-Async/await is standard for concurrent I/O. But function coloring is a tax on the whole language—split ecosystem, viral annotations, library duplication (need async and sync versions of everything).
+Async/await is the standard for concurrent I/O. Mark functions `async`, add `.await` at call sites. Widely understood model with ecosystem support.
 
-I chose green tasks that pause automatically:
+I'm not using it. Here's why.
+
+### Function coloring splits ecosystems
+
+Async/await creates two worlds:
+
+```rust
+// Rust - two different functions
+async fn fetch() -> Result<Data>  // Returns Future<Result<Data>>
+fn fetch_sync() -> Result<Data>   // Returns Result<Data>
+
+// Can't mix them
+fn sync_code() {
+    let data = fetch().await?;  // ERROR: can't await in non-async
+}
+```
+
+Libraries duplicate their entire API (sync and async versions). Code that works in one world doesn't work in the other. You commit to async or sync upfront and it cascades through your codebase.
+
+I want one function that works everywhere.
+
+### Different return types force duplication
+
+In async/await, `async fn` returns `Future<T>`, not `T`. The type system treats them as separate:
+
+```rust
+let data: Data = fetch_sync()?;      // Returns Data
+let data: Data = fetch().await?;     // Returns Future<Data>, must await
+
+// Can't unify - they're different types
+```
+
+You need two implementations because the types are incompatible.
+
+Rask uses the same return type regardless of context:
+
+```rask
+func fetch() -> Data or Error {
+    const response = try http_get(url)
+    return parse(response)
+}
+
+// Works in sync context (blocks thread)
+const data = try fetch()
+
+// Works in async context (pauses task)
+with multitasking {
+    const data = try fetch()
+}
+```
+
+Same function. Same signature. Runtime decides execution strategy.
+
+### Syntactic noise dominates code
+
+Every I/O operation needs `.await`:
+
+```rust
+// Rust async
+let user = fetch_user(id).await?;
+let posts = fetch_posts(&user).await?;
+let comments = fetch_comments(&posts).await?;
+```
+
+That's 100% ceremony overhead. In typical async code, `.await` appears on 30-50% of lines.
+
+```rask
+// Rask
+const user = try fetch_user(id)
+const posts = try fetch_posts(user)
+const comments = try fetch_comments(posts)
+```
+
+No `.await` needed. Just call the function.
+
+### What Rask Chose Instead
+
+One function definition that adapts to context:
 
 ```rask
 func fetch_user(id: u64) -> User or Error {
-    const response = try http_get(format("/users/{id}"))  // Pauses
+    const response = try http_get(format("/users/{id}"))
     return parse_user(response)
 }
 
-const user = try fetch_user(42)  // No await
+// Sync mode - blocks thread
+func main() {
+    const user = try fetch_user(42)
+}
+
+// Async mode - pauses task
+func main() {
+    with multitasking {
+        spawn { fetch_user(42) }.detach()
+    }
+}
 ```
 
-No `async` keyword, no `await`, no coloring. I/O operations pause the task transparently. The runtime knows which operations can pause—you don't annotate it.
+`http_get()` checks the runtime context internally. If we're in a multitasking context, it issues non-blocking I/O and yields the task. Otherwise, it blocks. The function signature doesn't change—the execution strategy does.
 
-Tradeoff: async/await is explicit about suspension points. Rask makes them implicit (IDEs can show them though). I chose simplicity here. No split ecosystem, just write code.
+### The Transparency Tradeoff
 
-Note: Does this violate the transparency goal of Rask? 
+Async/await shows suspension points explicitly (`.await`). Rask makes them implicit.
+
+Does this violate transparency? Yes and no.
+
+**What's hidden:** Pause points aren't in the code (unless you use IDE annotations).
+
+**What's visible:** The `with multitasking` block at the top tells you I/O will pause. You know the execution model upfront.
+
+**Why I chose this:** Function coloring is worse than implicit pausing. Async/await's ecosystem split, library duplication, and ceremony tax outweigh the benefit of explicit `.await`. Transparency of cost doesn't mean every small cost needs ceremony—I want major architecture decisions visible (spawn, threading, multitasking), not every I/O call annotated.
+
+Plus, IDEs can show pause points as ghost annotations. The information is available without syntax.
+
+**Metrics:**
+- Syntactic Noise: 0.15 (Rask) vs 0.50 (async/await)
+- Ergonomic Delta: 1.1 vs Go (async/await would be 1.5)
+- Function coloring: None (Rask) vs Yes (async/await)
+- Transparency: 0.85-0.90 (Rask, with IDE) vs 0.95 (async/await)
+
+I chose ergonomics over explicit visibility. The 5-10% transparency gap is worth the 3x reduction in ceremony.
+
+### I/O Visibility Through Tooling
+
+To address the transparency gap, the compiler will track which functions do I/O (transitively) and use that for:
+
+**IDE annotations:**
+```rask
+const data = try file.read()         // 🔄 I/O operation
+const user = try fetch_user(id)      // 🔄 performs I/O
+const result = parse(data)           // (no marker)
+```
+
+**Compiler warnings:**
+```rask
+func main() {
+    for i in 0..10000 {
+        const data = try http_get(url)
+        // ⚠️ I/O in loop without multitasking (will block thread 10k times)
+    }
+}
+```
+
+**Generated docs:**
+```
+fetch_user(id: u64) -> User or Error
+🔄 Performs I/O (network request)
+```
+
+Information without enforcement. The compiler knows which functions do I/O, but doesn't force it into the syntax or type system. Same clean code, better tooling.
+
+One function that works everywhere, no ecosystem split, no `.await` noise—that's worth relying on IDE support for pause point visibility. 
 
 ---
 
@@ -246,11 +382,14 @@ Rust programmers will find this backwards. I think it's clearer for everyone els
 
 ## Summary
 
-Common thread: I optimize for transparency and local reasoning over terseness and magic.
+Common thread: I optimize for transparency and local reasoning, but not at the cost of ergonomics.
 
-Rejected: exceptions, async/await, lifetimes, automatic supervision, algebraic effects, implicit receivers.
-Chose: Result types, green tasks, block-scoped borrows, library patterns, explicit parameters.
+**Rejected:** Exceptions, async/await keywords, lifetime annotations, automatic supervision, algebraic effects, implicit receivers.
+
+**Chose:** Result types, green tasks without coloring, block-scoped borrows, library patterns, explicit parameters.
+
+**Key tradeoff:** Async/await is 5-10% more transparent (explicit pause points) but 3x noisier and splits ecosystems. I chose clean syntax with IDE-based transparency. When there's a conflict between "visible in syntax" and "simple to use," I lean toward simplicity—as long as the information is available through tooling.
 
 Not a judgment on other languages—Kotlin, Erlang, OCaml, Rust made different tradeoffs for different goals. Those features work well in their contexts.
 
-I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural, debugging must be predictable. The features I rejected would make Rask more convenient in some cases, but less transparent—which defeats the purpose.
+I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural. But "visible" doesn't mean "ceremony"—major decisions like `with multitasking` are in the code, while pause points can be shown by IDEs. The features I rejected would either add ceremony without value (async/await, lifetimes) or hide costs through magic (effects, exceptions, supervision). Rask is explicit where it matters, simple where it doesn't.

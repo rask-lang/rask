@@ -583,10 +583,13 @@ loop {
 |----------|--------|----------|-----|
 | Task grouping | Affine handles | Mandatory nursery | Ergonomics (ED <= 1.2) |
 | Fire-and-forget | Explicit `.detach()` | Implicit (Go-style) | Safety (MC >= 0.90) |
-| Function coloring | None | async/await | No ecosystem split |
+| Function coloring | None | async/await keywords | No ecosystem split, same function works everywhere |
+| I/O visibility | IDE + compiler warnings | `async`/`await`, `blocking` keyword | Transparency via tooling, not syntax |
 | Green task keyword | `multitasking` | `runtime` | More intuitive |
 | Thread pool keyword | `threading` | `threads`, `pool` | Consistent with `multitasking`, avoids `threads` variable collision |
 | CPU work | Explicit `spawn_thread` | Implicit pool | Transparency (TC >= 0.90) |
+
+See [design-rationale.md](../design-rationale.md#asyncawait) for detailed discussion of the async/await decision.
 
 ## Metrics Validation
 
