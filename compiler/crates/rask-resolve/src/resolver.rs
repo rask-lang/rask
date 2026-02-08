@@ -120,6 +120,28 @@ impl Resolver {
             );
             let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
         }
+
+        // Register net module types (HttpRequest, HttpResponse, TcpListener, TcpConnection)
+        for net_type in &["HttpRequest", "HttpResponse", "TcpListener", "TcpConnection"] {
+            let sym_id = self.symbols.insert(
+                net_type.to_string(),
+                SymbolKind::Struct { fields: vec![] },
+                None,
+                Span::new(0, 0),
+                true,
+            );
+            let _ = self.scopes.define(net_type.to_string(), sym_id, Span::new(0, 0));
+        }
+
+        // Register null constant for unsafe pointer comparisons
+        let null_sym = self.symbols.insert(
+            "null".to_string(),
+            SymbolKind::Variable { mutable: false },
+            Some("*mut ()".to_string()),
+            Span::new(0, 0),
+            true,
+        );
+        let _ = self.scopes.define("null".to_string(), null_sym, Span::new(0, 0));
     }
 
     fn register_builtin_enum(&mut self, name: &str, variants: &[&str]) {
@@ -264,37 +286,44 @@ impl Resolver {
         }
     }
 
+    /// Strip generic params from function name: "foo<T: Trait>" → "foo"
+    fn base_name(name: &str) -> &str {
+        name.split('<').next().unwrap_or(name)
+    }
+
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
-        if self.is_builtin_name(&fn_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(fn_decl.name.clone(), span));
+        let base = Self::base_name(&fn_decl.name).to_string();
+        if self.is_builtin_name(&base) {
+            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
         let sym_id = self.symbols.insert(
-            fn_decl.name.clone(),
+            base.clone(),
             SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone() },
             None,
             span,
             is_pub,
         );
-        if let Err(e) = self.scopes.define(fn_decl.name.clone(), sym_id, span) {
+        if let Err(e) = self.scopes.define(base, sym_id, span) {
             self.errors.push(e);
         }
         sym_id
     }
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
-        if self.is_builtin_name(&struct_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(struct_decl.name.clone(), span));
+        let base = Self::base_name(&struct_decl.name).to_string();
+        if self.is_builtin_name(&base) {
+            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
         let sym_id = self.symbols.insert(
-            struct_decl.name.clone(),
+            base.clone(),
             SymbolKind::Struct { fields: vec![] },
             None,
             span,
             struct_decl.is_pub,
         );
-        if let Err(e) = self.scopes.define(struct_decl.name.clone(), sym_id, span) {
+        if let Err(e) = self.scopes.define(base, sym_id, span) {
             self.errors.push(e);
         }
 
@@ -316,18 +345,19 @@ impl Resolver {
     }
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
-        if self.is_builtin_name(&enum_decl.name) {
-            self.errors.push(ResolveError::shadows_builtin(enum_decl.name.clone(), span));
+        let base = Self::base_name(&enum_decl.name).to_string();
+        if self.is_builtin_name(&base) {
+            self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
         let sym_id = self.symbols.insert(
-            enum_decl.name.clone(),
+            base.clone(),
             SymbolKind::Enum { variants: vec![] },
             None,
             span,
             enum_decl.is_pub,
         );
-        if let Err(e) = self.scopes.define(enum_decl.name.clone(), sym_id, span) {
+        if let Err(e) = self.scopes.define(base, sym_id, span) {
             self.errors.push(e);
         }
 
@@ -505,7 +535,8 @@ impl Resolver {
     }
 
     fn resolve_function(&mut self, fn_decl: &FnDecl) {
-        let fn_sym = self.scopes.lookup(&fn_decl.name);
+        let base = Self::base_name(&fn_decl.name);
+        let fn_sym = self.scopes.lookup(base);
         self.current_function = fn_sym;
 
         let scope_kind = if let Some(sym_id) = fn_sym {
@@ -751,6 +782,14 @@ impl Resolver {
                         self.resolutions.insert(expr.id, sym_id);
                     }
                     None => {
+                        // Try base type for generic constructors: Pool<Node> → Pool
+                        let base_name = name.split('<').next().unwrap_or(name);
+                        if base_name != name {
+                            if let Some(sym_id) = self.scopes.lookup(base_name) {
+                                self.resolutions.insert(expr.id, sym_id);
+                                return;
+                            }
+                        }
                         self.errors.push(ResolveError::undefined(name.clone(), expr.span));
                     }
                 }
@@ -844,8 +883,26 @@ impl Resolver {
             ExprKind::StructLit { name, fields, spread } => {
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     self.resolutions.insert(expr.id, sym_id);
+                } else if name.contains('.') {
+                    // Qualified struct variant: Enum.Variant { ... }
+                    let parts: Vec<&str> = name.splitn(2, '.').collect();
+                    if let Some(sym_id) = self.scopes.lookup(parts[0]) {
+                        self.resolutions.insert(expr.id, sym_id);
+                    } else {
+                        self.errors.push(ResolveError::undefined(name.clone(), expr.span));
+                    }
                 } else {
-                    self.errors.push(ResolveError::undefined(name.clone(), expr.span));
+                    // Try base type for generic: Box<T> → Box
+                    let base_name = Self::base_name(name);
+                    if base_name != name.as_str() {
+                        if let Some(sym_id) = self.scopes.lookup(base_name) {
+                            self.resolutions.insert(expr.id, sym_id);
+                        } else {
+                            self.errors.push(ResolveError::undefined(name.clone(), expr.span));
+                        }
+                    } else {
+                        self.errors.push(ResolveError::undefined(name.clone(), expr.span));
+                    }
                 }
                 for field in fields {
                     self.resolve_expr(&field.value);

@@ -219,8 +219,8 @@ Validates once at entry, then provides unchecked access inside the closure:
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_valid(h, f)` | `func(Pool<T>, Handle<T>, func(T) -> R) -> Option<R>` | One check, then read |
-| `pool.with_valid_mut(h, f)` | `func(Pool<T>, Handle<T>, func(T) -> R) -> Option<R>` | One check, then write |
+| `pool.with_valid(h, f)` | `func(Pool<T>, Handle<T>, |T| -> R) -> Option<R>` | One check, then read |
+| `pool.with_valid_mut(h, f)` | `func(Pool<T>, Handle<T>, |T| -> R) -> Option<R>` | One check, then write |
 
 ```rask
 try pool.with_valid_mut(h, |e| {
@@ -1408,7 +1408,7 @@ entities.with_partition(4, |chunks| {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_partition(n, f)` | `(Pool<T>, usize, func([FrozenChunk<T>]) -> R) -> R` | Scoped partition (read-only) |
+| `pool.with_partition(n, f)` | `(Pool<T>, usize, |[FrozenChunk<T>]| -> R) -> R` | Scoped partition (read-only) |
 | `chunk.handles()` | `Iterator<Handle<T>>` | Iterate handles in this chunk |
 | `chunk[h]` | `&T` | Access (zero generation checks) |
 | `chunk.len()` | `usize` | Number of elements in chunk |
@@ -1465,7 +1465,7 @@ entities.with_partition_mut(4, |chunks| {
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_partition_mut(n, f)` | `(Pool<T>, usize, func([MutableChunk<T>]) -> R) -> R` | Scoped partition (read-write) |
+| `pool.with_partition_mut(n, f)` | `(Pool<T>, usize, |[MutableChunk<T>]| -> R) -> R` | Scoped partition (read-write) |
 | `chunk.cursor()` | `Cursor<T>` | Mutable iterator |
 | `chunk[h]` | `&T` | Immutable access |
 | `chunk[h] = value` | N/A | Mutable access (via cursor or methods) |

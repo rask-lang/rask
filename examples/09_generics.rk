@@ -17,7 +17,7 @@ struct Box<T> {
 }
 
 // Methods on generic types
-extend<T> Box<T> {
+extend Box<T> {
     func new(value: T) -> Box<T> {
         return Box { value: value }
     }

@@ -187,7 +187,7 @@ Traits for reading and writing byte streams. See [io.md](io.md).
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
     func read_all(self) -> []u8 or IoError
-    func read_to_string(self) -> string or IoError
+    func read_text(self) -> string or IoError
     func read_exact(self, buf: []u8) -> () or IoError
 }
 

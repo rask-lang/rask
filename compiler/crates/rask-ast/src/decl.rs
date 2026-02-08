@@ -97,6 +97,7 @@ pub struct Param {
     pub name: String,
     pub ty: String,
     pub is_take: bool,
+    pub is_read: bool,
     pub default: Option<Expr>,
 }
 

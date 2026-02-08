@@ -236,7 +236,7 @@ public trait Visitor {
 
 public struct Node<V: Visitor> {
     value: i32
-    accept: func(Node<V>, V)  // generic, not trait object
+    accept: |Node<V>, V|  // generic, not trait object
 }
 
 // pkg: visitor

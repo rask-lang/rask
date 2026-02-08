@@ -30,7 +30,7 @@ Run a test to verify the interpreter works:
 The repository includes working examples:
 
 ```bash
-./target/release/rask ../examples/hello_world.rk
+./target/release/rask run ../examples/hello_world.rk
 ```
 
 ## Next Steps

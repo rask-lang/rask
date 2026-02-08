@@ -311,8 +311,16 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(end);
                 }
             }
-            ExprKind::Closure { params: _, body } => {
+            ExprKind::Closure { params, body } => {
+                // Save state — closure params are fresh bindings, not borrows of outer vars
+                let saved_bindings = self.bindings.clone();
+                let saved_borrows = self.borrows.clone();
+                for p in params {
+                    self.bindings.insert(p.name.clone(), BindingState::Owned);
+                }
                 self.check_expr(body);
+                self.bindings = saved_bindings;
+                self.borrows = saved_borrows;
             }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.check_expr(cond);

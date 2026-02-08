@@ -53,8 +53,8 @@ For `Option<T>`, see [Optionals](optionals.md).
 | `err` | `func(take self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
 | `is_ok` | `func(self) -> bool` | True if Ok |
 | `is_err` | `func(self) -> bool` | True if Err |
-| `map` | `func<U>(take self, f: func(T) -> U) -> Result<U, E>` | Transform Ok value |
-| `map_err` | `func<F>(take self, f: func(E) -> F) -> Result<T, F>` | Transform Err value |
+| `map` | `func<U>(take self, f: |T| -> U) -> Result<U, E>` | Transform Ok value |
+| `map_err` | `func<F>(take self, f: |E| -> F) -> Result<T, F>` | Transform Err value |
 
 Force unwrap uses operators, not methods:
 - `x!` — panic with auto message (includes error info)

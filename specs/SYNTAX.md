@@ -327,8 +327,7 @@ enum Result<T, E> {
     Err(E)
 }
 ```
-
-**Methods on enums:**
+ne
 ```rask
 enum Option<T> {
     Some(T)
@@ -405,7 +404,7 @@ func identity(x: T) -> T {
     return x
 }
 
-func map(list: List<Item>, f: func(Item) -> Result) -> List<Result> {
+func map(list: List<Item>, f: |Item| -> Result) -> List<Result> {
     // Item and Result are type parameters
     // ... implementation ...
 }

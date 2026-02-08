@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Vec and Map collections
 
-func main() {
+func main() -> () or Error {
     // Vec - ordered collection
     const numbers = Vec.from([1, 2, 3, 4, 5])
 

@@ -131,7 +131,7 @@ func demonstrate_file_resources() -> () or string {
     ensure file.close()
 
     // Use the file
-    const content = try file.read_to_string()
+    const content = try file.read_text()
     print("File content: ")
     print(content)
     print("\n")

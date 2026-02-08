@@ -58,7 +58,7 @@ extend Document {
             const h = try doc.lines.insert(Line { text: text })
             try doc.line_order.push(h)
         }
-        Ok(doc)
+        return Ok(doc)
     }
 
     func line_count(self) -> i32 {
@@ -120,7 +120,7 @@ extend Document {
         // Apply inverse without recording to undo stack
         try self.apply_command_silent(cmd.inverse())
         try self.redo_stack.push(cmd)
-        Ok(true)
+        return Ok(true)
     }
 
     // Redo the last undone edit
@@ -133,7 +133,7 @@ extend Document {
         // Apply command without recording to undo stack
         try self.apply_command_silent(cmd.clone())
         try self.undo_stack.push(cmd)
-        Ok(true)
+        return Ok(true)
     }
 
     // Apply a command without recording it

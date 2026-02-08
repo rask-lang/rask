@@ -104,8 +104,6 @@
             
             <p><strong>Lower the abstraction tax.</strong> You still manage ownership and resources—through block scopes and explicit keywords, not lifetime annotations. Major costs (allocations, locks, I/O) stay visible. Small safety checks (bounds, nulls) are implicit.</p>
 
-            <p>When you write <code>ensure file.close()</code>, the compiler guarantees it runs on all exit paths. Early return, error propagation, panic—doesn't matter. Resource types must be consumed before leaving scope.</p>
-
             <p>Rask draws from everywhere: Rust's ownership, Zig's comptime, Erlang's supervision, Vale's regions. The goal is Rust's safety with Go's approachability.</p>
         </section>
 

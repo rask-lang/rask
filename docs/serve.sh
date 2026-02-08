@@ -39,6 +39,9 @@ echo ""
 python3 -m http.server 8080 --directory build &
 SERVER_PID=$!
 
+# Cleanup on exit
+trap "kill $SERVER_PID 2>/dev/null" EXIT
+
 # Watch for changes and rebuild
 while true; do
     inotifywait -qr -e modify,create,delete book/src landing/ 2>/dev/null && {
@@ -46,6 +49,3 @@ while true; do
         build_site
     }
 done
-
-# Cleanup on exit
-trap "kill $SERVER_PID 2>/dev/null" EXIT
