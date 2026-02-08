@@ -10,7 +10,7 @@ build-dir = "../build"
 create-missing = true
 
 [output.html]
-default-theme = "light"
+default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/rask-lang/rask"
 edit-url-template = "https://github.com/rask-lang/rask/edit/main/docs/book/{path}"

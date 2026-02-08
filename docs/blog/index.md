@@ -3,7 +3,7 @@ layout: home
 title: "Rask Blog"
 ---
 
-**[Documentation](/) | [Playground](/playground/) | [GitHub](https://github.com/rask-lang/rask)**
+**[← Home](/) | [Documentation](/book/) | [Playground](/playground/) | [GitHub](https://github.com/rask-lang/rask)**
 
 ---
 

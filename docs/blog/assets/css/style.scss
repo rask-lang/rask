@@ -8,103 +8,62 @@
 /* Import Roboto Mono font */
 @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600;700&display=swap');
 
-/* Rask Brand Colors */
+/* Nord Dark Theme - matching landing page */
 :root {
-    --rask-primary: #0B5C38;        /* R=11 G=92 B=56 - main brand color */
-    --rask-dark: #004225;           /* R=0 G=66 B=37 - icon box background */
-    --rask-darker: #01361E;         /* R=1 G=54 B=30 - shadow */
-    --rask-light: #0F7A4A;          /* Lighter variant for hovers */
-    --rask-very-light: #E8F5F0;     /* Very light tint for backgrounds */
+    --bg: #2E3440;
+    --bg-2: #3B4252;
+    --text: #ECEFF4;
+    --text-dim: #D8DEE9;
+    --text-muted: #88C0D0;
+    --green: #0B5C38;
+    --green-light: #0F7A4A;
+    --border: #4C566A;
     --mono-font: 'Roboto Mono', 'Source Code Pro', Consolas, monospace;
+
+    /* Override minima theme */
+    --brand-color: var(--green-light);
+    --link-base-color: var(--green-light);
+    --link-visited-color: var(--green);
+    --link-hover-color: var(--green-light);
 }
 
-/* Override Minima's color scheme for light mode */
-@media (prefers-color-scheme: light) {
-    :root {
-        --brand-color: var(--rask-primary);
-        --link-base-color: var(--rask-primary);
-        --link-visited-color: var(--rask-dark);
-        --link-hover-color: var(--rask-light);
-    }
+/* Force dark theme always */
+body {
+    background-color: var(--bg);
+    color: var(--text);
 }
 
-/* Override Minima's color scheme for dark mode */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --brand-color: var(--rask-light);
-        --link-base-color: var(--rask-light);
-        --link-visited-color: var(--rask-primary);
-        --link-hover-color: #0F7A4A;
-    }
-
-    /* Adjust backgrounds for dark mode */
-    body {
-        background-color: #1a1a1a;
-        color: #e0e0e0;
-    }
-
-    .site-header {
-        border-top-color: var(--rask-light);
-    }
-
-    code, pre {
-        background-color: #2a2a2a;
-        border-color: #3a3a3a;
-    }
+.site-header {
+    background-color: var(--bg);
+    border-top-color: var(--green-light);
+    border-bottom: 1px solid var(--border);
 }
 
-/* Links - use Rask colors */
+code, pre {
+    background-color: var(--bg-2);
+    border-color: var(--border);
+}
+
+/* Links - use green on dark */
 a {
-    color: var(--rask-primary);
+    color: var(--green-light);
     text-decoration: none;
 }
 
 a:visited {
-    color: var(--rask-dark);
+    color: var(--green);
 }
 
 a:hover {
-    color: var(--rask-light);
+    color: var(--text);
     text-decoration: underline;
 }
 
-@media (prefers-color-scheme: dark) {
-    a {
-        color: var(--rask-light);
-    }
-
-    a:visited {
-        color: var(--rask-primary);
-    }
-
-    a:hover {
-        color: #10c878;
-    }
-}
-
-/* Site header */
-.site-header {
-    border-top: 3px solid var(--rask-primary);
-    border-bottom: 1px solid #e8e8e8;
-}
-
-@media (prefers-color-scheme: dark) {
-    .site-header {
-        border-top-color: var(--rask-light);
-        border-bottom-color: #3a3a3a;
-    }
-}
-
+/* Site title */
 .site-title {
     font-family: var(--mono-font);
     font-weight: 600;
-    color: var(--rask-dark) !important;
-}
-
-@media (prefers-color-scheme: dark) {
-    .site-title {
-        color: var(--rask-light) !important;
-    }
+    color: var(--text) !important;
 }
 
 .site-title:hover {
@@ -112,79 +71,43 @@ a:hover {
 }
 
 .site-nav .page-link {
-    color: var(--rask-dark);
-}
-
-@media (prefers-color-scheme: dark) {
-    .site-nav .page-link {
-        color: #e0e0e0;
-    }
+    color: var(--text-dim);
 }
 
 .site-nav .page-link:hover {
-    color: var(--rask-primary);
-}
-
-@media (prefers-color-scheme: dark) {
-    .site-nav .page-link:hover {
-        color: var(--rask-light);
-    }
+    color: var(--green-light);
 }
 
 /* Post titles and headers */
 .post-title,
 .page-heading,
 h1, h2, h3, h4, h5, h6 {
-    color: var(--rask-dark);
-}
-
-@media (prefers-color-scheme: dark) {
-    .post-title,
-    .page-heading,
-    h1, h2, h3, h4, h5, h6 {
-        color: var(--rask-light);
-    }
+    color: var(--text);
 }
 
 .post-link {
     font-weight: 600;
-    color: var(--rask-primary) !important;
-}
-
-@media (prefers-color-scheme: dark) {
-    .post-link {
-        color: var(--rask-light) !important;
-    }
+    color: var(--green-light) !important;
 }
 
 /* Code blocks */
 code, pre {
     font-family: var(--mono-font);
-    border-radius: 4px;
+    border-radius: 6px;
 }
 
 pre {
-    border: 1px solid #e8e8e8;
-    padding: 1rem;
-}
-
-@media (prefers-color-scheme: dark) {
-    pre {
-        border-color: #3a3a3a;
-        background-color: #2a2a2a;
-    }
+    border: 1px solid var(--border);
+    padding: 1.75rem;
+    background-color: var(--bg-2);
+    overflow-x: auto;
+    line-height: 1.8;
 }
 
 code {
-    background-color: #f5f5f5;
+    background-color: var(--bg-2);
+    color: var(--text-muted);
     padding: 2px 6px;
-}
-
-@media (prefers-color-scheme: dark) {
-    code {
-        background-color: #2a2a2a;
-        color: #e0e0e0;
-    }
 }
 
 /* Rask language syntax highlighting - using nord palette */
@@ -234,38 +157,22 @@ code {
 
 /* Blockquotes */
 blockquote {
-    border-left: 4px solid var(--rask-primary);
+    border-left: 4px solid var(--green);
+    background-color: var(--bg-2);
     font-style: normal;
-}
-
-@media (prefers-color-scheme: dark) {
-    blockquote {
-        border-left-color: var(--rask-light);
-        background-color: #252525;
-    }
+    padding: 0.5em 1em;
+    margin: 1em 0;
 }
 
 /* Footer */
 .site-footer {
-    border-top: 1px solid #e8e8e8;
-}
-
-@media (prefers-color-scheme: dark) {
-    .site-footer {
-        border-top-color: #3a3a3a;
-        background-color: #1a1a1a;
-    }
+    border-top: 1px solid var(--border);
+    background-color: var(--bg);
 }
 
 /* Post metadata */
 .post-meta {
-    color: #828282;
-}
-
-@media (prefers-color-scheme: dark) {
-    .post-meta {
-        color: #999;
-    }
+    color: var(--text-muted);
 }
 
 /* Home page post list */
@@ -284,8 +191,8 @@ blockquote {
 
 .post-category {
     display: inline-block;
-    background-color: var(--rask-very-light);
-    color: var(--rask-dark);
+    background-color: rgba(11, 92, 56, 0.25);
+    color: var(--green-light);
     padding: 2px 8px;
     margin-right: 0.5rem;
     border-radius: 3px;
@@ -293,45 +200,27 @@ blockquote {
     font-family: var(--mono-font);
 }
 
-@media (prefers-color-scheme: dark) {
-    .post-category {
-        background-color: rgba(11, 92, 56, 0.25);
-        color: var(--rask-light);
-    }
-}
-
 /* Tables */
 table {
     margin-bottom: 1rem;
+    border-color: var(--border);
 }
 
 table thead {
-    background-color: var(--rask-very-light);
-}
-
-@media (prefers-color-scheme: dark) {
-    table thead {
-        background-color: rgba(11, 92, 56, 0.15);
-    }
-
-    table {
-        border-color: #3a3a3a;
-    }
-
-    table tr {
-        border-bottom-color: #3a3a3a;
-    }
+    background-color: var(--bg-2);
 }
 
 table thead th {
     font-weight: 600;
-    color: var(--rask-dark);
+    color: var(--text);
 }
 
-@media (prefers-color-scheme: dark) {
-    table thead th {
-        color: var(--rask-light);
-    }
+table tr {
+    border-bottom-color: var(--border);
+}
+
+table td {
+    color: var(--text-dim);
 }
 
 /* Improve readability */
@@ -363,11 +252,5 @@ table thead th {
 }
 
 .pagination a {
-    color: var(--rask-primary);
-}
-
-@media (prefers-color-scheme: dark) {
-    .pagination a {
-        color: var(--rask-light);
-    }
+    color: var(--green-light);
 }
