@@ -862,6 +862,15 @@ impl Parser {
             self.skip_newlines();
         }
 
+        // Detect trailing comma (Rust syntax)
+        if self.check(&TokenKind::Comma) {
+            return Err(ParseError {
+                span: self.current().span,
+                message: "unexpected ',' in struct definition".to_string(),
+                hint: Some("struct fields are separated by newlines, not commas".to_string()),
+            });
+        }
+
         self.expect(&TokenKind::RBrace)?;
         Ok(DeclKind::Struct(StructDecl {
             name,
@@ -1429,6 +1438,17 @@ impl Parser {
 
     fn parse_let_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Let)?;
+
+        // Detect 'mut' keyword after 'let' (Rust syntax)
+        if let TokenKind::Ident(s) = self.current_kind() {
+            if s == "mut" {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unexpected 'mut' keyword".to_string(),
+                    hint: Some("'let' is already mutable in Rask. Use 'const' for immutable bindings".to_string()),
+                });
+            }
+        }
 
         if self.match_token(&TokenKind::LParen) {
             let mut names = Vec::new();
@@ -2123,6 +2143,13 @@ impl Parser {
 
         self.expect(&TokenKind::Pipe)?;
 
+        // Optional return type annotation
+        let _return_type = if self.match_token(&TokenKind::Arrow) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+
         let body = self.parse_expr()?;
         let end = body.span.end;
 
@@ -2203,10 +2230,21 @@ impl Parser {
             }
 
             // Try operator (?)
+            // Note: Postfix ? is for optional chaining (T?).
+            // For Result error propagation, use prefix 'try expr' instead.
             TokenKind::Question => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Try(Box::new(lhs)), span: Span::new(start, end) })
+            }
+
+            // Detect :: path separator (Rust syntax)
+            TokenKind::ColonColon => {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unexpected '::'".to_string(),
+                    hint: Some("use '.' for paths (e.g., Result.Ok) instead of '::'".to_string()),
+                });
             }
 
             _ => Ok(lhs),
