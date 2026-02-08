@@ -564,6 +564,7 @@ dependencies = [
  "rask-ast",
  "rask-desugar",
  "rask-diagnostics",
+ "rask-fmt",
  "rask-interp",
  "rask-lexer",
  "rask-ownership",
@@ -604,6 +605,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-fmt"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-lexer",
+ "rask-parser",
+]
+
+[[package]]
 name = "rask-interp"
 version = "0.1.0"
 dependencies = [
@@ -632,6 +642,7 @@ dependencies = [
  "rask-ownership",
  "rask-parser",
  "rask-resolve",
+ "rask-stdlib",
  "rask-types",
  "serde",
  "serde_json",
