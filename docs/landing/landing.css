@@ -187,27 +187,110 @@ pre {
 .fn { color: #88C0D0; }
 .ty { color: #8FBCBB; }
 
-/* Features */
-.features {
-    margin: 4rem 0;
-}
-
 h2 {
     font-size: 1.8rem;
     margin-bottom: 1.5rem;
     font-weight: 600;
 }
 
-.features ul {
+/* Insight Section */
+.insight {
+    margin: 4rem 0;
+}
+
+.insight p {
+    margin-bottom: 1.5rem;
+    font-size: 1.05rem;
+    line-height: 1.7;
+}
+
+.tradeoff-box {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-top: 2.5rem;
+}
+
+.tradeoff-box .cost,
+.tradeoff-box .benefit {
+    background: var(--bg-2);
+    padding: 1.5rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+}
+
+.tradeoff-box h3 {
+    margin: 0 0 0.8rem 0;
+    font-size: 1.1rem;
+    color: var(--text);
+}
+
+.tradeoff-box .benefit {
+    border-color: var(--green-light);
+}
+
+.tradeoff-box p {
+    margin: 0;
+    font-size: 0.95rem;
+    line-height: 1.6;
+}
+
+/* Mechanisms Section */
+.mechanisms {
+    margin: 4rem 0;
+}
+
+.mechanism {
+    margin-bottom: 3rem;
+}
+
+.mechanism:last-child {
+    margin-bottom: 0;
+}
+
+.mechanism h3 {
+    font-size: 1.3rem;
+    margin-bottom: 0.8rem;
+    color: var(--green-light);
+}
+
+.mechanism > p {
+    margin-bottom: 1.2rem;
+    font-size: 1rem;
+    line-height: 1.6;
+}
+
+/* Tradeoffs Section */
+.tradeoffs {
+    margin: 4rem 0;
+}
+
+.tradeoffs > p {
+    margin-bottom: 1.5rem;
+    font-size: 1.05rem;
+}
+
+.tradeoffs p:last-of-type {
+    margin-top: 1.5rem;
+    font-size: 1rem;
+}
+
+/* Result Section */
+.result {
+    margin: 4rem 0;
+}
+
+.result ul {
     list-style: none;
 }
 
-.features li {
+.result li {
     padding: 0.8rem 0;
     border-bottom: 1px solid var(--border);
+    font-size: 1.05rem;
 }
 
-.features li:last-child {
+.result li:last-child {
     border-bottom: none;
 }
 
@@ -270,110 +353,6 @@ footer a:hover {
     color: var(--green-light);
 }
 
-/* Feature Cards */
-.features-showcase {
-    margin: 3rem 0;
-}
-
-.features-showcase h2 {
-    text-align: center;
-    margin-bottom: 2.5rem;
-    font-size: 2rem;
-}
-
-.features-showcase > h2 {
-    grid-column: 1 / -1;
-}
-
-/* Desktop: side-by-side layout */
-@media (min-width: 900px) {
-    .features-showcase {
-        display: grid;
-        grid-template-columns: 380px 1fr;
-        gap: 2rem;
-        align-items: start;
-    }
-
-    .features-showcase h2 {
-        grid-column: 1 / -1;
-    }
-
-    .code-preview {
-        position: sticky;
-        top: 2rem;
-    }
-}
-
-.feature-cards {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-}
-
-.feature-card {
-    background: var(--bg-2);
-    border: 2px solid var(--border);
-    border-radius: 10px;
-    padding: 1.5rem;
-    cursor: pointer;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.feature-card:hover {
-    border-color: var(--green-light);
-    transform: translateX(6px);
-    box-shadow: 0 4px 16px rgba(15, 122, 74, 0.2);
-}
-
-.feature-card.active {
-    border-color: var(--green-light);
-    background: linear-gradient(135deg, var(--bg) 0%, rgba(15, 122, 74, 0.05) 100%);
-    transform: translateX(6px);
-    box-shadow: 0 4px 16px rgba(15, 122, 74, 0.25);
-}
-
-.feature-card h3 {
-    margin: 0 0 0.5rem 0;
-    color: var(--green-light);
-    font-size: 1.15rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-}
-
-.feature-card p {
-    margin: 0 0 0.5rem 0;
-    color: var(--text-dim);
-    font-size: 0.95rem;
-    line-height: 1.6;
-}
-
-.comparison {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
-    margin-top: 2rem;
-    font-size: 0.82rem;
-    font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-    line-height: 1.4;
-}
-
-.other-tag, .rask-tag {
-    padding: 0;
-    color: var(--text-muted);
-}
-
-.other-tag {
-    opacity: 0.6;
-}
-
-.rask-tag {
-    color: var(--green-light);
-    font-weight: 500;
-}
-
-.code-preview {
-    margin-top: 0;
-}
 
 /* Syntax highlighting */
 .kw { color: #81A1C1; font-weight: 500; }
@@ -422,11 +401,8 @@ footer a:hover {
         font-size: 0.9rem;
     }
 
-    .features-showcase {
-        display: block;
-    }
-
-    .code-preview {
-        margin-top: 2rem;
+    .tradeoff-box {
+        grid-template-columns: 1fr;
+        gap: 1rem;
     }
 }

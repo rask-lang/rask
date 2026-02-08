@@ -24,10 +24,11 @@
     <main class="container">
         <section class="hero">
             <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
-            <p class="tagline">Memory safety without lifetime annotations.</p>
+            <p class="tagline">The Rust-Go dilemma, solved.</p>
             <p class="subtitle">
-                Compile-time safety without the complexity.<br>
-                Manual memory management without the pain.
+                Rust gives you safety but makes you fight the borrow checker.<br>
+                Go gives you simplicity but no memory safety guarantees.<br>
+                Rask gives you both.
             </p>
             <div class="cta">
                 <a href="../playground/" class="btn primary">→ try in browser</a>
@@ -35,74 +36,134 @@
             </div>
         </section>
 
-        <section class="features-showcase">
-            <h2>What makes Rask different</h2>
+        <section class="insight">
+            <h2>The breakthrough</h2>
+            <p>Rust's complexity comes from allowing references to be stored in structs and returned from functions. Tracking those references requires lifetime annotations that spread through your entire codebase.</p>
 
-            <div class="feature-cards">
-                <div class="feature-card active" data-feature="syntax">
-                    <h3>Clean Syntax</h3>
-                    <p>Designed for humans, readable by default.</p>
-                    <div class="comparison">
-                        <span class="other-tag">Rust: let mut, expr?, Result&lt;T, E&gt;, Option&lt;T&gt;</span>
-                        <span class="rask-tag">Rask: const, try expr, T or E, T?</span>
-                    </div>
+            <p><strong>Rask's approach:</strong> Make references temporary—they exist only within a block or expression. When you need longer-lived relationships, use handles (opaque identifiers) instead.</p>
+
+            <div class="tradeoff-box">
+                <div class="cost">
+                    <h3>The cost</h3>
+                    <p>Explicit indirection for graphs. Some .clone() calls for shared data.</p>
                 </div>
-
-                <div class="feature-card" data-feature="resources">
-                    <h3>Resource Safety</h3>
-                    <p>Files must be closed. The compiler enforces cleanup on all paths.</p>
-                    <div class="comparison">
-                        <span class="other-tag">Rust: Drop trait, RAII</span>
-                        <span class="rask-tag">Rask: @resource + ensure</span>
-                    </div>
-                </div>
-
-                <div class="feature-card" data-feature="concurrency">
-                    <h3>No Function Coloring</h3>
-                    <p>Spawn threads without async/await spreading through your codebase. Share state without Arc&lt;Mutex&lt;T&gt;&gt; boilerplate.</p>
-                    <div class="comparison">
-                        <span class="other-tag">Rust: async fn, Arc&lt;Mutex&lt;T&gt;&gt;</span>
-                        <span class="rask-tag">Rask: spawn { }, Shared&lt;T&gt;</span>
-                    </div>
-                </div>
-
-                <div class="feature-card" data-feature="handles">
-                    <h3>Graphs Without Lifetimes</h3>
-                    <p>Build entity systems and graphs without lifetime annotations. Pool&lt;T&gt; and Handle&lt;T&gt; instead of references.</p>
-                    <div class="comparison">
-                        <span class="other-tag">Rust: &'a T, PhantomData</span>
-                        <span class="rask-tag">Rask: Pool&lt;T&gt; + Handle&lt;T&gt;</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="code-preview">
-                <div class="window">
-                    <div class="title-bar">
-                        <div class="dots"><span></span><span></span><span></span></div>
-                        <span class="filename">resource_safety.rk</span>
-                    </div>
-                    <pre><code class="preview-code"></code></pre>
+                <div class="benefit">
+                    <h3>The benefit</h3>
+                    <p>No lifetime annotations. No borrow checker fights. Simple mental model.</p>
                 </div>
             </div>
         </section>
 
-        <section class="features">
+        <section class="mechanisms">
+            <h2>How it works</h2>
+
+            <div class="mechanism">
+                <h3>Block-scoped borrowing</h3>
+                <p>References can't be stored or returned. They're temporary views, valid only within their block. This eliminates lifetime tracking.</p>
+                <div class="window">
+                    <div class="title-bar">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span class="filename">borrowing.rk</span>
+                    </div>
+                    <pre><code><span class="cmt">// References are temporary</span>
+<span class="kw">func</span> <span class="fn">process</span>(data: Data) {
+    <span class="kw">const</span> name = data.user.name  <span class="cmt">// temporary borrow</span>
+    <span class="cmt">// name is gone at end of block</span>
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="mechanism">
+                <h3>Handles for relationships</h3>
+                <p>For graphs and long-lived relationships, use Pool&lt;T&gt; + Handle&lt;T&gt;. Handles are checked at runtime—no lifetimes needed.</p>
+                <div class="window">
+                    <div class="title-bar">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span class="filename">handles.rk</span>
+                    </div>
+                    <pre><code><span class="cmt">// Graphs without lifetimes</span>
+<span class="kw">struct</span> <span class="ty">Entity</span> {
+    target: <span class="ty">Handle</span>&lt;<span class="ty">Entity</span>&gt;?
+}
+<span class="kw">const</span> entities = <span class="ty">Pool</span>&lt;<span class="ty">Entity</span>&gt;.<span class="fn">new</span>()
+entities[enemy].target = player_handle</code></pre>
+                </div>
+            </div>
+
+            <div class="mechanism">
+                <h3>Resource types</h3>
+                <p>Files and system resources must be explicitly consumed. The compiler enforces cleanup on all exit paths.</p>
+                <div class="window">
+                    <div class="title-bar">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span class="filename">resources.rk</span>
+                    </div>
+                    <pre><code><span class="kw">func</span> <span class="fn">backup</span>(src: <span class="ty">string</span>, dst: <span class="ty">string</span>) -> () <span class="kw">or</span> <span class="ty">Error</span> {
+    <span class="kw">const</span> file = <span class="kw">try</span> fs.<span class="fn">open</span>(src)
+    <span class="kw">ensure</span> file.<span class="fn">close</span>()  <span class="cmt">// runs on all exits</span>
+    <span class="kw">try</span> <span class="fn">write</span>(file)
+}</code></pre>
+                </div>
+            </div>
+
+            <div class="mechanism">
+                <h3>No function coloring</h3>
+                <p>I/O operations pause green tasks automatically. No async/await splitting your ecosystem.</p>
+                <div class="window">
+                    <div class="title-bar">
+                        <div class="dots"><span></span><span></span><span></span></div>
+                        <span class="filename">concurrency.rk</span>
+                    </div>
+                    <pre><code><span class="kw">func</span> <span class="fn">fetch_user</span>(id: <span class="ty">u64</span>) -> <span class="ty">User</span> <span class="kw">or</span> <span class="ty">Error</span> {
+    <span class="kw">const</span> resp = <span class="kw">try</span> <span class="fn">http_get</span>(url)  <span class="cmt">// pauses task</span>
+    <span class="kw">return</span> <span class="fn">parse</span>(resp)
+}</code></pre>
+                </div>
+            </div>
+        </section>
+
+        <section class="tradeoffs">
+            <h2>The tradeoffs</h2>
+            <p>Every design makes tradeoffs. Rask's are intentional:</p>
+
+            <table>
+                <tr>
+                    <th>You give up</th>
+                    <th>You get</th>
+                </tr>
+                <tr>
+                    <td>Storable references</td>
+                    <td>No lifetime annotations</td>
+                </tr>
+                <tr>
+                    <td>Implicit string sharing</td>
+                    <td>Explicit .clone() when needed</td>
+                </tr>
+                <tr>
+                    <td>Direct pointer traversal</td>
+                    <td>Handles with runtime checks</td>
+                </tr>
+            </table>
+
+            <p>If you need nanosecond-precise control or pointer-level optimization, use Rust or C++. Rask targets the 80% of systems code where safety and productivity matter more than squeezing out the last 5% of performance.</p>
+        </section>
+
+        <section class="result">
             <h2>What you get</h2>
             <ul>
-                <li><strong>Memory safe</strong> — no use-after-free, no data races, no null pointers</li>
-                <li><strong>Scoped borrowing</strong> — no lifetime annotations in function signatures</li>
-                <li><strong>No GC</strong> — deterministic cleanup, predictable performance</li>
-                <li><strong>Resource safety</strong> — compiler enforces cleanup on all exit paths</li>
-                <li><strong>No async coloring</strong> — threads without async/await spreading</li>
+                <li>Memory safety without lifetime annotations</li>
+                <li>No garbage collection, deterministic cleanup</li>
+                <li>Compile-time checks, not runtime overhead</li>
+                <li>Fast compilation (local analysis only)</li>
+                <li>Simple mental model (values are owned, borrows are temporary)</li>
             </ul>
         </section>
 
         <section class="philosophy">
             <h2>The goal</h2>
-            <p>Rask is the language you choose for 80% of systems code, where productivity and safety matter more than squeezing out the last 5% of performance. You get memory safety without fighting the borrow checker.</p>
-            
-            <p><strong>Lower the abstraction tax.</strong> You still manage ownership and resources—through block scopes and explicit keywords, not lifetime annotations. Major costs (allocations, locks, I/O) stay visible. Small safety checks (bounds, nulls) are implicit.</p>
+            <p>Rask targets the 80% of systems code where safety and productivity matter more than squeezing out the last 5% of performance. You get memory safety without fighting the borrow checker.</p>
+
+            <p>You still manage ownership and resources—through block scopes and explicit keywords, not lifetime annotations. Major costs (allocations, locks, I/O) stay visible. Small safety checks (bounds, nulls) are implicit.</p>
 
             <p>Rask draws from everywhere: Rust's ownership, Zig's comptime, Erlang's supervision, Vale's regions. The goal is Rust's safety with Go's approachability.</p>
         </section>
@@ -123,156 +184,5 @@
         </div>
     </footer>
 
-    <script>
-        const cards = document.querySelectorAll('.feature-card');
-        const codePreview = document.querySelector('.preview-code');
-        const filename = document.querySelector('.code-preview .filename');
-
-        const examples = {
-            syntax: {
-                title: 'clean_syntax.rk',
-                code: `struct Point {
-    x: f64
-    y: f64
-}
-
-extend Point {
-    func distance(self, other: Point) -> f64 {
-        const dx = self.x - other.x
-        const dy = self.y - other.y
-        return (dx * dx + dy * dy).sqrt()
-    }
-}
-
-func parse_point(s: string) -> Point or Error {
-    const parts = s.split(',')
-    const x = try parts[0].trim().parse<f64>()
-    const y = try parts[1].trim().parse<f64>()
-    return Point { x, y }
-}
-
-func find_nearest(points: Vec<Point>, target: Point) -> Point? {
-    return points.min_by(|p| p.distance(target))
-}`
-            },
-            resources: {
-                title: 'resource_safety.rk',
-                code: `func backup(src: string, dst: string) -> () or Error {
-    const file = try fs.open(src)
-    ensure file.close()  // enforced on all exit paths
-
-    const out = try fs.create(dst)
-    ensure out.close()
-
-    try out.write(try file.read_to_string())
-}
-// Compiler checks that files are closed`
-            },
-            concurrency: {
-                title: 'concurrency.rk',
-                code: `// Threads without async/await
-const h1 = spawn { analyze("app.log") }
-const h2 = spawn { analyze("error.log") }
-try h1.join()
-try h2.join()
-
-// Shared state
-const users = Shared.new(Map.new())
-spawn { users.write(|m| m.insert(id, user)) }.detach()
-const count = users.read(|m| m.len())`
-            },
-            handles: {
-                title: 'handles.rk',
-                code: `struct Entity {
-    health: i32
-    target: Handle<Entity>?
-}
-
-const entities = Pool<Entity>.new()
-const player = try entities.insert(Entity {
-    health: 100
-    target: None
-})
-
-// No lifetime annotations needed
-entities[enemy].target = Some(player)`
-            }
-        };
-
-        function showExample(feature) {
-            const example = examples[feature];
-            filename.textContent = example.title;
-            codePreview.innerHTML = syntaxHighlight(example.code);
-        }
-
-        function syntaxHighlight(code) {
-            const keywords = /\b(func|const|let|try|extend|ensure|spawn|struct|return|or|if|else|for|in|match)\b/g;
-            const types = /\b(string|i32|u32|f64|bool|Error|Handle|Pool|Shared|Map|Database|Entity|Vec|Option|None|Some)\b/g;
-            const strings = /"[^"]*"/g;
-            const comments = /\/\/.*/g;
-            const functions = /\b(\w+)(?=\()/g;
-
-            let result = '';
-            let lastIndex = 0;
-            const tokens = [];
-
-            // Collect all matches with their positions
-            [
-                { re: comments, cls: 'cmt' },
-                { re: strings, cls: 'str' },
-                { re: keywords, cls: 'kw' },
-                { re: types, cls: 'ty' },
-                { re: functions, cls: 'fn' }
-            ].forEach(({ re, cls }) => {
-                let match;
-                const regex = new RegExp(re.source, re.flags);
-                while ((match = regex.exec(code)) !== null) {
-                    tokens.push({ start: match.index, end: match.index + match[0].length, text: match[0], cls });
-                }
-            });
-
-            // Sort by position and remove overlaps (prioritize first match)
-            tokens.sort((a, b) => a.start - b.start);
-            const filtered = [];
-            let lastEnd = 0;
-            for (const token of tokens) {
-                if (token.start >= lastEnd) {
-                    filtered.push(token);
-                    lastEnd = token.end;
-                }
-            }
-
-            // Build result with highlighted tokens
-            lastIndex = 0;
-            for (const token of filtered) {
-                result += escapeHtml(code.substring(lastIndex, token.start));
-                result += `<span class="${token.cls}">${escapeHtml(token.text)}</span>`;
-                lastIndex = token.end;
-            }
-            result += escapeHtml(code.substring(lastIndex));
-
-            return result;
-        }
-
-        function escapeHtml(text) {
-            return text
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;');
-        }
-
-        // Set default example on load
-        showExample('syntax');
-
-        // Card click handlers
-        cards.forEach(card => {
-            card.addEventListener('click', () => {
-                const feature = card.dataset.feature;
-                cards.forEach(c => c.classList.remove('active'));
-                card.classList.add('active');
-                showExample(feature);
-            });
-        });
-    </script>
 </body>
 </html>
