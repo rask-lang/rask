@@ -1,0 +1,373 @@
+---
+# SPDX-License-Identifier: (MIT OR Apache-2.0)
+# Only the main Sass file needs front matter (the dashes are above)
+---
+
+@import "{{ site.theme }}";
+
+/* Import Roboto Mono font */
+@import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;500;600;700&display=swap');
+
+/* Rask Brand Colors */
+:root {
+    --rask-primary: #0B5C38;        /* R=11 G=92 B=56 - main brand color */
+    --rask-dark: #004225;           /* R=0 G=66 B=37 - icon box background */
+    --rask-darker: #01361E;         /* R=1 G=54 B=30 - shadow */
+    --rask-light: #0F7A4A;          /* Lighter variant for hovers */
+    --rask-very-light: #E8F5F0;     /* Very light tint for backgrounds */
+    --mono-font: 'Roboto Mono', 'Source Code Pro', Consolas, monospace;
+}
+
+/* Override Minima's color scheme for light mode */
+@media (prefers-color-scheme: light) {
+    :root {
+        --brand-color: var(--rask-primary);
+        --link-base-color: var(--rask-primary);
+        --link-visited-color: var(--rask-dark);
+        --link-hover-color: var(--rask-light);
+    }
+}
+
+/* Override Minima's color scheme for dark mode */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --brand-color: var(--rask-light);
+        --link-base-color: var(--rask-light);
+        --link-visited-color: var(--rask-primary);
+        --link-hover-color: #0F7A4A;
+    }
+
+    /* Adjust backgrounds for dark mode */
+    body {
+        background-color: #1a1a1a;
+        color: #e0e0e0;
+    }
+
+    .site-header {
+        border-top-color: var(--rask-light);
+    }
+
+    code, pre {
+        background-color: #2a2a2a;
+        border-color: #3a3a3a;
+    }
+}
+
+/* Links - use Rask colors */
+a {
+    color: var(--rask-primary);
+    text-decoration: none;
+}
+
+a:visited {
+    color: var(--rask-dark);
+}
+
+a:hover {
+    color: var(--rask-light);
+    text-decoration: underline;
+}
+
+@media (prefers-color-scheme: dark) {
+    a {
+        color: var(--rask-light);
+    }
+
+    a:visited {
+        color: var(--rask-primary);
+    }
+
+    a:hover {
+        color: #10c878;
+    }
+}
+
+/* Site header */
+.site-header {
+    border-top: 3px solid var(--rask-primary);
+    border-bottom: 1px solid #e8e8e8;
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-header {
+        border-top-color: var(--rask-light);
+        border-bottom-color: #3a3a3a;
+    }
+}
+
+.site-title {
+    font-family: var(--mono-font);
+    font-weight: 600;
+    color: var(--rask-dark) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-title {
+        color: var(--rask-light) !important;
+    }
+}
+
+.site-title:hover {
+    text-decoration: none;
+}
+
+.site-nav .page-link {
+    color: var(--rask-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-nav .page-link {
+        color: #e0e0e0;
+    }
+}
+
+.site-nav .page-link:hover {
+    color: var(--rask-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-nav .page-link:hover {
+        color: var(--rask-light);
+    }
+}
+
+/* Post titles and headers */
+.post-title,
+.page-heading,
+h1, h2, h3, h4, h5, h6 {
+    color: var(--rask-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+    .post-title,
+    .page-heading,
+    h1, h2, h3, h4, h5, h6 {
+        color: var(--rask-light);
+    }
+}
+
+.post-link {
+    font-weight: 600;
+    color: var(--rask-primary) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+    .post-link {
+        color: var(--rask-light) !important;
+    }
+}
+
+/* Code blocks */
+code, pre {
+    font-family: var(--mono-font);
+    border-radius: 4px;
+}
+
+pre {
+    border: 1px solid #e8e8e8;
+    padding: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+    pre {
+        border-color: #3a3a3a;
+        background-color: #2a2a2a;
+    }
+}
+
+code {
+    background-color: #f5f5f5;
+    padding: 2px 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+    code {
+        background-color: #2a2a2a;
+        color: #e0e0e0;
+    }
+}
+
+/* Rask language syntax highlighting - using nord palette */
+.language-rask .hljs-keyword,
+.highlight .k {
+    color: #81A1C1;
+    font-weight: 600;
+}
+
+.language-rask .hljs-built_in,
+.highlight .nb {
+    color: #88C0D0;
+    font-weight: 500;
+}
+
+.language-rask .hljs-string,
+.highlight .s,
+.highlight .s1,
+.highlight .s2 {
+    color: #A3BE8C;
+}
+
+.language-rask .hljs-comment,
+.highlight .c,
+.highlight .c1 {
+    color: #616E88;
+    font-style: italic;
+}
+
+.language-rask .hljs-function,
+.language-rask .hljs-title,
+.highlight .nf {
+    color: #88C0D0;
+}
+
+.language-rask .hljs-number,
+.highlight .m,
+.highlight .mi {
+    color: #B48EAD;
+}
+
+.language-rask .hljs-type,
+.highlight .kt {
+    color: #8FBCBB;
+    font-weight: 500;
+}
+
+/* Blockquotes */
+blockquote {
+    border-left: 4px solid var(--rask-primary);
+    font-style: normal;
+}
+
+@media (prefers-color-scheme: dark) {
+    blockquote {
+        border-left-color: var(--rask-light);
+        background-color: #252525;
+    }
+}
+
+/* Footer */
+.site-footer {
+    border-top: 1px solid #e8e8e8;
+}
+
+@media (prefers-color-scheme: dark) {
+    .site-footer {
+        border-top-color: #3a3a3a;
+        background-color: #1a1a1a;
+    }
+}
+
+/* Post metadata */
+.post-meta {
+    color: #828282;
+}
+
+@media (prefers-color-scheme: dark) {
+    .post-meta {
+        color: #999;
+    }
+}
+
+/* Home page post list */
+.post-list > li {
+    margin-bottom: 2rem;
+}
+
+.post-list h3 {
+    margin-bottom: 0.5rem;
+}
+
+/* Category tags (if you add them later) */
+.post-categories {
+    margin-top: 0.5rem;
+}
+
+.post-category {
+    display: inline-block;
+    background-color: var(--rask-very-light);
+    color: var(--rask-dark);
+    padding: 2px 8px;
+    margin-right: 0.5rem;
+    border-radius: 3px;
+    font-size: 0.85em;
+    font-family: var(--mono-font);
+}
+
+@media (prefers-color-scheme: dark) {
+    .post-category {
+        background-color: rgba(11, 92, 56, 0.25);
+        color: var(--rask-light);
+    }
+}
+
+/* Tables */
+table {
+    margin-bottom: 1rem;
+}
+
+table thead {
+    background-color: var(--rask-very-light);
+}
+
+@media (prefers-color-scheme: dark) {
+    table thead {
+        background-color: rgba(11, 92, 56, 0.15);
+    }
+
+    table {
+        border-color: #3a3a3a;
+    }
+
+    table tr {
+        border-bottom-color: #3a3a3a;
+    }
+}
+
+table thead th {
+    font-weight: 600;
+    color: var(--rask-dark);
+}
+
+@media (prefers-color-scheme: dark) {
+    table thead th {
+        color: var(--rask-light);
+    }
+}
+
+/* Improve readability */
+.post-content,
+.page-content {
+    line-height: 1.7;
+}
+
+.post-content p,
+.page-content p {
+    margin-bottom: 1rem;
+}
+
+.post-content ul,
+.page-content ul,
+.post-content ol,
+.page-content ol {
+    margin-bottom: 1rem;
+}
+
+.post-content li,
+.page-content li {
+    margin-bottom: 0.3rem;
+}
+
+/* Navigation */
+.pagination {
+    margin-top: 2rem;
+}
+
+.pagination a {
+    color: var(--rask-primary);
+}
+
+@media (prefers-color-scheme: dark) {
+    .pagination a {
+        color: var(--rask-light);
+    }
+}
