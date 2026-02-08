@@ -135,17 +135,35 @@ In return, you get:
 
 The constant balancing act is keeping ergonomics high without hiding costs. When in doubt, I choose visibility over convenience.
 
+## Inspiration
+
+Rask borrows ideas from across the systems language landscape:
+
+**From Rust:** Ownership, move semantics, Result types, traits. Don't fix what isn't broken.
+
+**From Go:** The focus on simplicity and getting out of the developer's way. If Rask needs 3+ lines where Go needs 1, something's wrong.
+
+**From Zig:** Compile-time execution (`comptime`) and transparency of cost. I want you to see where allocations happen.
+
+**From Jai:** Build scripts as real code. In Rask, `build.rk` files use the actual language, not some separate format.
+
+**From Swift:** `defer` became `ensure` for guaranteed cleanup. When a function can exit early, resources still get freed.
+
+**From Kotlin:** Extension methods (`extend` blocks) and `T?` syntax for optionals. I rejected the implicit scope functions though—Rask uses explicit closure parameters instead.
+
+**From Hylo:** Value semantics rather than pointer chasing. Where Hylo chooses the academic approach, Rask is pragmatic.
+
+**From Vale:** Vale proved that generational references are a valid memory model. I just made it less necessary to use in most code.
+
+**From Erlang:** Bitmatch and Supervision pattern. When you need it it is irreplaceable.
+
+
 ---
 
 ## Documentation
 
-| If you want to... | Read this |
-|-------------------|-----------|
-| Understand the design philosophy | [CORE_DESIGN.md](specs/CORE_DESIGN.md) |
-| See specific language features | [specs/](specs/) directory |
-| Understand design constraints | [METRICS.md](specs/METRICS.md) |
-| See what's still being built | [TODO.md](TODO.md) |
-| Run actual programs | [examples/](examples/) directory |
+For developers: See the [book](https://rask-lang.dev).  
+For language designers, see the lanugage specification in [specs/](specs/) directory.
 
 ### Project Structure
 
