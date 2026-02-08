@@ -159,28 +159,27 @@ impl<'a> OwnershipChecker<'a> {
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Let { name, ty: _, init } => {
-                // Check the initializer expression
                 self.check_expr(init);
-                // Handle potential move from initializer
-                self.handle_potential_move(init, stmt.span);
-                // Register the new binding as owned
+                // let creates mutable binding - moves the value
+                self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
             }
             StmtKind::LetTuple { names, init } => {
                 self.check_expr(init);
-                self.handle_potential_move(init, stmt.span);
+                self.handle_assignment(init, stmt.span, true);
                 for name in names {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                 }
             }
             StmtKind::Const { name, ty: _, init } => {
                 self.check_expr(init);
-                self.handle_potential_move(init, stmt.span);
+                // const creates immutable binding - borrows the value
+                self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
             }
             StmtKind::ConstTuple { names, init } => {
                 self.check_expr(init);
-                self.handle_potential_move(init, stmt.span);
+                self.handle_assignment(init, stmt.span, false);
                 for name in names {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                 }
@@ -191,7 +190,8 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Assign { target, value } => {
                 self.check_expr(value);
                 self.check_expr(target);
-                self.handle_potential_move(value, stmt.span);
+                // Assignments move the value
+                self.handle_assignment(value, stmt.span, true);
             }
             StmtKind::Return(expr) => {
                 if let Some(expr) = expr {
@@ -379,14 +379,98 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Handle potential move of a value.
-    fn handle_potential_move(&mut self, expr: &Expr, span: Span) {
-        // Get the type of the expression
+    /// Handle assignment: borrow or move depending on context.
+    ///
+    /// For `let` statements: check if borrowed, then move (is_mutable = true)
+    /// For `const` statements: create block-scoped borrow (is_mutable = false)
+    fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
             if !self.is_copy(ty) {
-                // Non-Copy type: mark as moved
-                if let ExprKind::Ident(name) = &expr.kind {
-                    self.bindings.insert(name.clone(), BindingState::Moved { at: span });
+                if let ExprKind::Ident(source_name) = &expr.kind {
+                    if is_mutable {
+                        // Mutable binding (let): check not borrowed, then move
+                        if let Some(state) = self.bindings.get(source_name) {
+                            match state {
+                                BindingState::Borrowed { .. } => {
+                                    self.errors.push(OwnershipError {
+                                        kind: OwnershipErrorKind::MutateWhileBorrowed {
+                                            name: source_name.clone(),
+                                            borrow_span: span,
+                                        },
+                                        span,
+                                    });
+                                    return;
+                                }
+                                BindingState::Moved { at } => {
+                                    self.errors.push(OwnershipError {
+                                        kind: OwnershipErrorKind::UseAfterMove {
+                                            name: source_name.clone(),
+                                            moved_at: *at,
+                                        },
+                                        span,
+                                    });
+                                    return;
+                                }
+                                BindingState::Owned => {}
+                            }
+                        }
+                        self.bindings.insert(source_name.clone(), BindingState::Moved { at: span });
+                    } else {
+                        // Immutable binding (const): create block-scoped borrow
+                        self.create_borrow(source_name.clone(), BorrowMode::Shared, span);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Create a borrow of a binding.
+    fn create_borrow(&mut self, source_name: String, mode: BorrowMode, span: Span) {
+        if let Some(state) = self.bindings.get(&source_name) {
+            match state {
+                BindingState::Owned => {
+                    self.bindings.insert(
+                        source_name.clone(),
+                        BindingState::Borrowed {
+                            mode,
+                            scope: BorrowScope::Persistent { block_id: self.current_block },
+                        },
+                    );
+                    self.borrows.push(ActiveBorrow::new(
+                        source_name,
+                        mode,
+                        BorrowScope::Persistent { block_id: self.current_block },
+                        span,
+                    ));
+                }
+                BindingState::Borrowed { mode: existing_mode, .. } => {
+                    if *existing_mode == BorrowMode::Shared && mode == BorrowMode::Shared {
+                        self.borrows.push(ActiveBorrow::new(
+                            source_name,
+                            mode,
+                            BorrowScope::Persistent { block_id: self.current_block },
+                            span,
+                        ));
+                    } else {
+                        self.errors.push(OwnershipError {
+                            kind: OwnershipErrorKind::BorrowConflict {
+                                name: source_name,
+                                requested: if mode == BorrowMode::Shared { AccessKind::Read } else { AccessKind::Write },
+                                existing: if *existing_mode == BorrowMode::Shared { AccessKind::Read } else { AccessKind::Write },
+                                existing_span: span,
+                            },
+                            span,
+                        });
+                    }
+                }
+                BindingState::Moved { at } => {
+                    self.errors.push(OwnershipError {
+                        kind: OwnershipErrorKind::UseAfterMove {
+                            name: source_name,
+                            moved_at: *at,
+                        },
+                        span,
+                    });
                 }
             }
         }
@@ -508,9 +592,32 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Release persistent borrows that end at the given block.
     fn release_persistent_borrows(&mut self, block_id: u32) {
+        use std::collections::HashSet;
+
+        let mut released_bindings = HashSet::new();
+
+        // Remove borrows for this block
         self.borrows.retain(|b| {
-            !matches!(b.scope, BorrowScope::Persistent { block_id: id } if id == block_id)
+            if matches!(b.scope, BorrowScope::Persistent { block_id: id } if id == block_id) {
+                released_bindings.insert(b.source.clone());
+                false
+            } else {
+                true
+            }
         });
+
+        // Restore bindings to Owned if no borrows remain
+        for binding_name in released_bindings {
+            let remaining_borrows = self.borrows.iter().filter(|b| b.source == binding_name).count();
+
+            if remaining_borrows == 0 {
+                if let Some(state) = self.bindings.get(&binding_name) {
+                    if matches!(state, BindingState::Borrowed { .. }) {
+                        self.bindings.insert(binding_name.clone(), BindingState::Owned);
+                    }
+                }
+            }
+        }
     }
 
     /// Register pattern bindings as owned.
