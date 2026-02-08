@@ -118,6 +118,25 @@ if result is Ok(v): use(v)                // pattern match
 let v = opt is Some else { return None }  // guard pattern
 ```
 
+**Return semantics:**
+- **Functions** (including `comptime func`): require explicit `return`
+- **Blocks** in expression context: last expression is the value (implicit)
+- **Why different?** `return` exits functions, blocks naturally produce values
+```rask
+// Functions need explicit return
+func factorial(n: u32) -> u32 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)  // ✓ explicit
+}
+
+// Blocks use implicit last expression
+const squares = comptime {
+    const arr = Vec.new()
+    for i in 0..10 { arr.push(i * i) }
+    arr  // ✓ implicit (return would exit function!)
+}
+```
+
 
 ## Goal
 
