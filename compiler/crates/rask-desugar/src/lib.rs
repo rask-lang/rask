@@ -61,6 +61,7 @@ impl Desugarer {
             }
             DeclKind::Import(_) => {}
             DeclKind::Export(_) => {}
+            DeclKind::Extern(_) => {}
         }
     }
 
@@ -394,8 +395,8 @@ fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
     match op {
         UnaryOp::Neg => Some("neg"),
         UnaryOp::BitNot => Some("bit_not"),
-        // Logical not and reference remain as unary operators
-        UnaryOp::Not | UnaryOp::Ref => None,
+        // Logical not, reference, and deref remain as unary operators
+        UnaryOp::Not | UnaryOp::Ref | UnaryOp::Deref => None,
     }
 }
 

@@ -81,6 +81,8 @@ enum RawToken {
     // Additional keywords per spec
     #[token("unsafe")]
     Unsafe,
+    #[token("extern")]
+    Extern,
     #[token("comptime")]
     Comptime,
     #[token("type")]
@@ -407,6 +409,7 @@ impl<'a> Lexer<'a> {
             RawToken::True => TokenKind::Bool(true),
             RawToken::False => TokenKind::Bool(false),
             RawToken::Unsafe => TokenKind::Unsafe,
+            RawToken::Extern => TokenKind::Extern,
             RawToken::Comptime => TokenKind::Comptime,
             RawToken::Type => TokenKind::Type,
             RawToken::None => TokenKind::None,

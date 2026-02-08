@@ -36,6 +36,8 @@ pub enum DeclKind {
     Test(TestDecl),
     /// Benchmark block
     Benchmark(BenchmarkDecl),
+    /// External function declaration
+    Extern(ExternDecl),
 }
 
 /// A top-level constant declaration.
@@ -60,6 +62,19 @@ pub struct TestDecl {
 pub struct BenchmarkDecl {
     pub name: String,
     pub body: Vec<Stmt>,
+}
+
+/// An external function declaration.
+#[derive(Debug, Clone)]
+pub struct ExternDecl {
+    /// ABI string (e.g., "C", "system")
+    pub abi: String,
+    /// Function name
+    pub name: String,
+    /// Parameters
+    pub params: Vec<Param>,
+    /// Return type (None means void)
+    pub ret_ty: Option<String>,
 }
 
 /// A function declaration.

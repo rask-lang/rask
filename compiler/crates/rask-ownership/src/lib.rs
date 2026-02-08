@@ -87,6 +87,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             DeclKind::Trait(_) => {}
+            DeclKind::Extern(_) => {}
             DeclKind::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     self.check_fn(method);

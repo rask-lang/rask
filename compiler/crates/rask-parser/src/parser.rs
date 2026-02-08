@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
 use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -67,7 +67,7 @@ impl Parser {
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                 TokenKind::Trait | TokenKind::Extend | TokenKind::Import |
-                TokenKind::Public if brace_depth == 0 => {
+                TokenKind::Extern | TokenKind::Public if brace_depth == 0 => {
                     return;
                 }
                 _ => { self.advance(); }
@@ -366,9 +366,10 @@ impl Parser {
             TokenKind::Const => self.parse_const_decl(is_pub)?,
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
+            TokenKind::Extern => self.parse_extern_decl()?,
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark)",
+                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark, extern)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -534,6 +535,33 @@ impl Parser {
     }
 
     fn parse_base_type(&mut self) -> Result<String, ParseError> {
+        // Handle reference types: &T
+        if self.check(&TokenKind::Amp) {
+            self.advance();
+            let referent_ty = self.parse_type_name()?;
+            return Ok(format!("&{}", referent_ty));
+        }
+
+        // Handle raw pointer types: *const T, *mut T
+        if self.check(&TokenKind::Star) {
+            self.advance();
+            let mutability = if self.check(&TokenKind::Const) {
+                self.advance();
+                "const"
+            } else if matches!(self.current_kind(), TokenKind::Ident(s) if s == "mut") {
+                self.advance();
+                "mut"
+            } else {
+                return Err(ParseError::expected(
+                    "'const' or 'mut' after '*' in pointer type",
+                    self.current_kind(),
+                    self.current().span,
+                ));
+            };
+            let pointee_ty = self.parse_type_name()?;
+            return Ok(format!("*{} {}", mutability, pointee_ty));
+        }
+
         if self.check(&TokenKind::LParen) {
             self.advance();
             if self.check(&TokenKind::RParen) {
@@ -1157,6 +1185,34 @@ impl Parser {
         Ok(DeclKind::Benchmark(BenchmarkDecl { name, body }))
     }
 
+    fn parse_extern_decl(&mut self) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Extern)?;
+
+        // Parse ABI string (e.g., "C", "system")
+        let abi = self.expect_string()?;
+
+        // Expect func keyword
+        self.expect(&TokenKind::Func)?;
+
+        // Parse function name
+        let name = self.expect_ident()?;
+
+        // Parse parameters
+        self.expect(&TokenKind::LParen)?;
+        let params = self.parse_params()?;
+        self.skip_newlines();
+        self.expect(&TokenKind::RParen)?;
+
+        // Parse optional return type
+        let ret_ty = if self.match_token(&TokenKind::Arrow) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+
+        Ok(DeclKind::Extern(ExternDecl { abi, name, params, ret_ty }))
+    }
+
     // =========================================================================
     // Statement Parsing
     // =========================================================================
@@ -1433,6 +1489,8 @@ impl Parser {
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With | TokenKind::Spawn
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
+                | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
+                | TokenKind::None | TokenKind::Null
         )
     }
 
@@ -1653,6 +1711,17 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Bool(b), span: Span::new(start, self.tokens[self.pos - 1].span.end) })
             }
 
+            TokenKind::None => {
+                self.advance();
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("None".to_string()), span: Span::new(start, end) })
+            }
+            TokenKind::Null => {
+                self.advance();
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("null".to_string()), span: Span::new(start, end) })
+            }
+
             TokenKind::Ident(name) => {
                 self.advance();
                 let mut full_name = name.clone();
@@ -1735,6 +1804,12 @@ impl Parser {
                 let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let end = operand.span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Ref, operand: Box::new(operand) }, span: Span::new(start, end) })
+            }
+            TokenKind::Star => {
+                self.advance();
+                let operand = self.parse_expr_bp(Self::PREFIX_BP)?;
+                let end = operand.span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: Span::new(start, end) })
             }
 
             TokenKind::Own => {

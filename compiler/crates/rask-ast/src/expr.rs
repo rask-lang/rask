@@ -210,6 +210,8 @@ pub enum UnaryOp {
     BitNot,
     /// Reference (&)
     Ref,
+    /// Dereference (*)
+    Deref,
 }
 
 /// A match arm.

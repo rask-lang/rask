@@ -817,6 +817,9 @@ impl ComptimeInterpreter {
             UnaryOp::Ref => {
                 Err(ComptimeError::NotSupported("references at comptime".to_string()))
             }
+            UnaryOp::Deref => {
+                Err(ComptimeError::NotSupported("pointer dereference at comptime".to_string()))
+            }
         }
     }
 
