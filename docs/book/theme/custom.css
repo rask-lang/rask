@@ -303,7 +303,10 @@ img[alt="rask logo"] {
     max-width: none;
 }
 
-.content p {
+.content p,
+.content ul,
+.content ol {
+    max-width: 800px;
     line-height: 1.7;
 }
 
