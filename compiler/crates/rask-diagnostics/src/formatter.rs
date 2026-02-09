@@ -166,8 +166,27 @@ impl<'a> DiagnosticFormatter<'a> {
             ));
         }
 
-        // Help
-        if let Some(ref help) = diagnostic.help {
+        // Fix/why supersede help when present
+        if diagnostic.fix.is_some() || diagnostic.why.is_some() {
+            if let Some(ref fix) = diagnostic.fix {
+                out.push_str(&format!(
+                    "{} {} {}: {}\n",
+                    " ".repeat(primary_gutter_width + 1),
+                    "=".cyan(),
+                    "fix".green().bold(),
+                    fix
+                ));
+            }
+            if let Some(ref why) = diagnostic.why {
+                out.push_str(&format!(
+                    "{} {} {}: {}\n",
+                    " ".repeat(primary_gutter_width + 1),
+                    "=".cyan(),
+                    "why".cyan().bold(),
+                    why
+                ));
+            }
+        } else if let Some(ref help) = diagnostic.help {
             self.format_help(out, help, primary_gutter_width);
         }
     }

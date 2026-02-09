@@ -1,3 +1,6 @@
+<!-- depends: memory/ownership.md, control/ensure.md -->
+<!-- implemented-by: compiler/crates/rask-interp/ -->
+
 # Solution: Resource Types
 
 ## The Question

@@ -17,6 +17,8 @@ members = [
     "crates/rask-spec-test",
     "crates/rask-wasm",
     "crates/rask-fmt",
+    "crates/rask-describe",
+    "crates/rask-lint",
 ]
 
 [workspace.package]

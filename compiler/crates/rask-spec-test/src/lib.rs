@@ -18,8 +18,10 @@
 //! - `<!-- test: run\n...\n-->` - Run and verify output matches
 //! - (no annotation) - Skipped by default
 
+pub mod deps;
 pub mod extract;
 pub mod runner;
 
+pub use deps::{check_staleness, extract_deps, SpecDeps, StalenessWarning};
 pub use extract::{extract_tests, Expectation, SpecTest};
 pub use runner::{run_test, TestResult, TestSummary};

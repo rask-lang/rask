@@ -1,3 +1,6 @@
+<!-- depends: types/enums.md, types/error-types.md -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-interp/ -->
+
 # Control Flow
 
 ## The Question
@@ -122,7 +125,7 @@ if condition { consequent }  // else branch implicitly ()
 | `if c { f() } else { g() }` | Statement | `()` | Both branches side effects |
 
 **Ownership:**
-- Condition is evaluated (read or consume per expression)
+- Condition is evaluated (mutate or consume per expression)
 - Only one branch executes; ownership tracked per branch
 - Linear resources: if consumed in one branch, MUST be consumed in other
 

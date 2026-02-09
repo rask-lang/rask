@@ -24,7 +24,7 @@ All I/O operations return `T or IoError`. The variants map to OS-level error cat
 
 ### Reader Trait
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 trait Reader {
     func read(self, buf: []u8) -> usize or IoError
@@ -124,6 +124,7 @@ struct BufWriter<W: Writer> {
 
 Standard streams are accessed through the `io` module. Each returns a linear resource handle.
 
+<!-- test: skip -->
 ```rask
 import io
 

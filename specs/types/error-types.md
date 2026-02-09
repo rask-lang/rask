@@ -1,3 +1,6 @@
+<!-- depends: types/enums.md, types/optionals.md -->
+<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
+
 # Error Types Specification
 
 ## Overview
@@ -6,6 +9,7 @@ Errors are values. Any type with `message()` can be an error. Composition uses u
 
 ## The Error Trait
 
+<!-- test: parse -->
 ```rask
 trait Error {
     func message(self) -> string
@@ -16,6 +20,7 @@ Structural matching—any type with `message(self) -> string` satisfies it.
 
 ## Result Type
 
+<!-- test: parse -->
 ```rask
 enum Result<T, E> {
     Ok(T),
@@ -32,6 +37,7 @@ enum Result<T, E> {
 | `T?` | `Option<T>` | might be absent |
 | `T or E` | `Result<T, E>` | might fail with E |
 
+<!-- test: skip -->
 ```rask
 func read_file(path: string) -> string or IoError        // Result<string, IoError>
 func load() -> Config or (IoError | ParseError)           // Result<Config, IoError | ParseError>
@@ -64,6 +70,7 @@ Force unwrap uses operators, not methods:
 
 Extracts `Ok` or returns early with `Err`. Prefix.
 
+<!-- test: skip -->
 ```rask
 func process() -> Data or IoError {
     const file = try open(path)
@@ -82,6 +89,7 @@ func process() -> Data or IoError {
 
 When a function signature is `T or E`, returning a value of type `T` is automatically wrapped in `Ok`:
 
+<!-- test: skip -->
 ```rask
 func load() -> Config or IoError {
     const content = try read_file(path)
@@ -100,6 +108,7 @@ func might_fail() -> i32 or Error {
 
 When a function returns `() or E` and reaches the end without an explicit return, it automatically returns `Ok(())`:
 
+<!-- test: skip -->
 ```rask
 func save(data: Data) -> () or IoError {
     const file = try File.create(path)
@@ -121,6 +130,7 @@ func main() -> () or Error {
 
 When return type is union, `try` auto-widens:
 
+<!-- test: skip -->
 ```rask
 func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError widens to union
@@ -137,6 +147,7 @@ See [Union Types](union-types.md) for union type semantics.
 
 Define errors as enums:
 
+<!-- test: parse -->
 ```rask
 enum AppError {
     NotFound(path: string),
@@ -157,6 +168,7 @@ extend AppError {
 
 ## Built-in IoError
 
+<!-- test: skip -->
 ```rask
 enum IoError {
     NotFound(path: string),
@@ -176,6 +188,7 @@ extend IoError {
 
 ### Same error type — direct propagation
 
+<!-- test: skip -->
 ```rask
 func read_both() -> Data or IoError {
     const a = try read_file(x)   // IoError
@@ -186,6 +199,7 @@ func read_both() -> Data or IoError {
 
 ### Different error types — union
 
+<!-- test: skip -->
 ```rask
 func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError ⊆ union
@@ -196,6 +210,7 @@ func load() -> Config or (IoError | ParseError) {
 
 ### Composing unions
 
+<!-- test: skip -->
 ```rask
 func process() -> Output or (IoError | ParseError | ValidationError) {
     const config = try load()           // IoError | ParseError ⊆ union
@@ -206,6 +221,7 @@ func process() -> Output or (IoError | ParseError | ValidationError) {
 
 ## Pattern Matching Errors
 
+<!-- test: skip -->
 ```rask
 match load() {
     Ok(config) => use(config),
@@ -220,6 +236,7 @@ match load() {
 
 Errors can contain linear resources. Wildcards on linear payloads are compile errors.
 
+<!-- test: skip -->
 ```rask
 enum FileError {
     ReadFailed(file: File, reason: string),

@@ -1,3 +1,6 @@
+<!-- depends: types/structs.md -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+
 # Solution: Sum Types and Pattern Matching
 
 ## The Question

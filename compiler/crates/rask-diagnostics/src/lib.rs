@@ -28,6 +28,12 @@ pub struct Diagnostic {
     pub labels: Vec<Label>,
     pub notes: Vec<String>,
     pub help: Option<Help>,
+    /// Concrete fix instruction (e.g., "clone before transfer").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+    /// One-sentence rule explanation (e.g., "`own` transfers ownership").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// A labeled source span within a diagnostic.
@@ -88,6 +94,8 @@ impl Diagnostic {
             labels: Vec::new(),
             notes: Vec::new(),
             help: None,
+            fix: None,
+            why: None,
         }
     }
 
@@ -99,6 +107,8 @@ impl Diagnostic {
             labels: Vec::new(),
             notes: Vec::new(),
             help: None,
+            fix: None,
+            why: None,
         }
     }
 
@@ -144,6 +154,16 @@ impl Diagnostic {
                 replacement: replacement.into(),
             });
         }
+        self
+    }
+
+    pub fn with_fix(mut self, fix: impl Into<String>) -> Self {
+        self.fix = Some(fix.into());
+        self
+    }
+
+    pub fn with_why(mut self, why: impl Into<String>) -> Self {
+        self.why = Some(why.into());
         self
     }
 

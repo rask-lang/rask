@@ -1,3 +1,6 @@
+<!-- depends: memory/resource-types.md, memory/ownership.md -->
+<!-- implemented-by: compiler/crates/rask-interp/ -->
+
 # Solution: Scope-Exit Cleanup (`ensure`)
 
 ## The Question
@@ -241,6 +244,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> () o
 
 Cleaning up pools of linear resources:
 
+<!-- test: skip -->
 ```rask
 func process_many_files(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
@@ -260,6 +264,7 @@ func process_many_files(paths: Vec<string>) -> () or Error {
 
 **Note:** Errors during cleanup (e.g., close() fails) ignored in ensure block. If cleanup errors matter, don't use ensure—explicitly take_all before returning:
 
+<!-- test: skip -->
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
@@ -282,6 +287,7 @@ func process_many_files_careful(paths: Vec<string>) -> () or Error {
 
 What if you `ensure` something but then consume it explicitly?
 
+<!-- test: skip -->
 ```rask
 const tx = try db.begin()
 ensure tx.rollback()    // Scheduled
@@ -301,6 +307,7 @@ Compiler tracks:
 1. `ensure tx.rollback()` → tx consumed by rollback at scope exit
 2. `tx.commit()` → tx consumed now, ensure void
 
+<!-- test: skip -->
 ```rask
 const tx = try db.begin()
 ensure tx.rollback()        // IDE ghost: [cancelled if consumed]

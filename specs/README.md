@@ -150,6 +150,15 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [bits.md](stdlib/bits.md) | Bit manipulation, binary parsing |
 | [testing.md](stdlib/testing.md) | Test conventions |
 
+## Tooling — Developer tools
+
+| Spec | Description |
+|------|-------------|
+| [canonical-patterns.md](canonical-patterns.md) | One obvious way: canonical patterns for every common operation |
+| [machine-readability.md](machine-readability.md) | Machine readability principles, naming conventions, error format |
+| [tooling/describe-schema.md](tooling/describe-schema.md) | `rask describe` JSON schema for module API summaries |
+| [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
+
 ## Compiler — Compiler internals
 
 | Spec | Description |

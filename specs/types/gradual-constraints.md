@@ -389,7 +389,7 @@ public func parse(input: string) -> Record or ParseError {
 
 ## Integration Notes
 
-- **Memory model:** Inference does not change ownership semantics. Parameter modes (borrow, read, take) are inferred from body usage, same as with explicit types.
+- **Memory model:** Inference does not change ownership semantics. Parameter modes (borrow, mutate, take) are inferred from body usage, same as with explicit types.
 - **Type system:** Inferred bounds are structural (same as explicit structural bounds). If an `explicit trait` is required, the programmer must annotate it.
 - **Concurrency:** Closures captured for `spawn` must own their data — inference cannot relax this requirement.
 - **Compiler:** Constraint solving is per-function, per-module. No cross-module inference. Incremental compilation preserved.

@@ -7,7 +7,7 @@ use colored::Colorize;
 use rask_diagnostics::{formatter::DiagnosticFormatter, json, Diagnostic, ToDiagnostic};
 use std::env;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 /// Output format for diagnostics.
@@ -196,6 +196,25 @@ fn main() {
             let check_only = cmd_args.iter().any(|a| *a == "--check");
             cmd_fmt(cmd_args[2], check_only);
         }
+        "describe" => {
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("describe"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            let show_all = cmd_args.iter().any(|a| *a == "--all");
+            cmd_describe(cmd_args[2], format, show_all);
+        }
+        "lint" => {
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("lint"), output::arg("<file.rk | dir>"));
+                process::exit(1);
+            }
+            let rules = extract_repeated_flag(&cmd_args, "--rule");
+            let excludes = extract_repeated_flag(&cmd_args, "--exclude");
+            cmd_lint(cmd_args[2], format, rules, excludes);
+        }
         "explain" => {
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing error code argument", output::error_label());
@@ -244,6 +263,8 @@ fn print_usage() {
     println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
     println!("  {} {} Evaluate comptime blocks", output::command("comptime"), output::arg("<file>"));
     println!("  {} {}       Format source files", output::command("fmt"), output::arg("<file>"));
+    println!("  {} {}  Describe a module's public API", output::command("describe"), output::arg("<file>"));
+    println!("  {} {}      Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
     println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
     println!("  {} {}  Explain an error code", output::command("explain"), output::arg("<code>"));
@@ -1014,6 +1035,148 @@ fn cmd_fmt(path: &str, check_only: bool) {
     }
 }
 
+fn cmd_describe(path: &str, format: Format, show_all: bool) {
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
+            process::exit(1);
+        }
+    };
+
+    let opts = rask_describe::DescribeOpts { show_all };
+    let desc = rask_describe::describe(&source, path, opts);
+
+    match format {
+        Format::Human => print!("{}", rask_describe::describe_text(&desc)),
+        Format::Json => println!("{}", rask_describe::describe_json(&desc)),
+    }
+}
+
+fn cmd_lint(path: &str, format: Format, rules: Vec<String>, excludes: Vec<String>) {
+    let p = Path::new(path);
+    let files: Vec<String> = if p.is_dir() {
+        collect_rk_files(p)
+    } else {
+        vec![path.to_string()]
+    };
+
+    if files.is_empty() {
+        eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
+        process::exit(1);
+    }
+
+    let mut total_errors = 0;
+    let mut total_warnings = 0;
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(file), e);
+                continue;
+            }
+        };
+
+        let opts = rask_lint::LintOpts {
+            rules: rules.clone(),
+            excludes: excludes.clone(),
+        };
+        let report = rask_lint::lint(&source, file, opts);
+
+        total_errors += report.error_count;
+        total_warnings += report.warning_count;
+
+        match format {
+            Format::Human => {
+                for d in &report.diagnostics {
+                    let severity_str = match d.severity {
+                        rask_lint::Severity::Error => "error".red().bold().to_string(),
+                        rask_lint::Severity::Warning => "warning".yellow().bold().to_string(),
+                    };
+                    eprintln!(
+                        "{}[{}]: {}",
+                        severity_str,
+                        d.rule.dimmed(),
+                        d.message
+                    );
+                    eprintln!(
+                        "  {} {}:{}",
+                        "-->".cyan(),
+                        output::file_path(file),
+                        d.location.line
+                    );
+                    eprintln!("   |");
+                    eprintln!(
+                        " {} | {}",
+                        d.location.line,
+                        d.location.source_line
+                    );
+                    eprintln!("   |");
+                    eprintln!("   = {}: {}", "fix".green().bold(), d.fix);
+                    eprintln!();
+                }
+            }
+            Format::Json => {
+                println!("{}", rask_lint::lint_json(&report));
+            }
+        }
+    }
+
+    if format == Format::Human {
+        if total_errors == 0 && total_warnings == 0 {
+            println!("{} No lint issues found", output::status_pass());
+        } else {
+            eprintln!(
+                "{} {} error(s), {} warning(s)",
+                output::status_fail(),
+                total_errors,
+                total_warnings
+            );
+        }
+    }
+
+    if total_errors > 0 {
+        process::exit(1);
+    }
+}
+
+/// Collect all .rk files in a directory recursively.
+fn collect_rk_files(dir: &Path) -> Vec<String> {
+    let mut files = Vec::new();
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                files.extend(collect_rk_files(&path));
+            } else if path.extension().map(|e| e == "rk").unwrap_or(false) {
+                if let Some(s) = path.to_str() {
+                    files.push(s.to_string());
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Extract repeated flag values (e.g., --rule naming/* --rule style/*)
+fn extract_repeated_flag(args: &[&str], flag: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == flag {
+            if i + 1 < args.len() {
+                values.push(args[i + 1].to_string());
+                i += 2;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    values
+}
+
 /// Get the line number for a byte offset.
 fn get_line_number(source: &str, pos: usize) -> usize {
     source[..pos.min(source.len())].chars().filter(|&c| c == '\n').count() + 1
@@ -1050,7 +1213,7 @@ fn cmd_explain(code: &str) {
 }
 
 fn cmd_test_specs(path: Option<&str>) {
-    use rask_spec_test::{extract_tests, run_test, TestSummary};
+    use rask_spec_test::{extract_tests, run_test, extract_deps, check_staleness, TestSummary};
 
     let specs_dir = path.unwrap_or("specs");
     let specs_path = Path::new(specs_dir);
@@ -1062,6 +1225,7 @@ fn cmd_test_specs(path: Option<&str>) {
 
     let mut summary = TestSummary::default();
     let mut all_results = Vec::new();
+    let mut all_deps = Vec::new();
 
     let md_files = collect_md_files(specs_path);
     summary.files = md_files.len();
@@ -1074,6 +1238,12 @@ fn cmd_test_specs(path: Option<&str>) {
                 continue;
             }
         };
+
+        // Collect dependency headers
+        let deps = extract_deps(md_path, &content);
+        if !deps.depends.is_empty() || !deps.implemented_by.is_empty() {
+            all_deps.push(deps);
+        }
 
         let tests = extract_tests(&md_path, &content);
         if tests.is_empty() {
@@ -1126,7 +1296,51 @@ fn cmd_test_specs(path: Option<&str>) {
                 result.message
             );
         }
+    }
+
+    // Staleness check — find project root (where .git lives)
+    if !all_deps.is_empty() {
+        let project_root = find_project_root(specs_path);
+        if let Some(root) = project_root {
+            let warnings = check_staleness(&all_deps, &root);
+            if !warnings.is_empty() {
+                println!("\n{}", "Staleness warnings:".yellow().bold());
+                for w in &warnings {
+                    println!(
+                        "  {} {} may be stale",
+                        "!".yellow().bold(),
+                        output::file_path(&w.spec.display().to_string()),
+                    );
+                    println!(
+                        "    {} {} (modified more recently: {})",
+                        w.direction,
+                        output::file_path(&w.dependency),
+                        w.dep_commit.dimmed(),
+                    );
+                }
+            }
+        }
+    }
+
+    if summary.failed > 0 {
         process::exit(1);
+    }
+}
+
+/// Walk up from a path to find the project root (directory containing .git).
+fn find_project_root(start: &Path) -> Option<PathBuf> {
+    let mut dir = if start.is_file() {
+        start.parent()?.to_path_buf()
+    } else {
+        start.to_path_buf()
+    };
+    loop {
+        if dir.join(".git").exists() {
+            return Some(dir);
+        }
+        if !dir.pop() {
+            return None;
+        }
     }
 }
 

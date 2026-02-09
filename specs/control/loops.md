@@ -1,3 +1,6 @@
+<!-- depends: memory/borrowing.md, control/control-flow.md -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-interp/ -->
+
 # Loop Syntax and Borrowing Semantics
 
 See also: [README.md](README.md)

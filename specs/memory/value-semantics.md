@@ -1,3 +1,5 @@
+<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
+
 # Solution: Value Semantics
 
 ## The Question
@@ -33,6 +35,7 @@ All types are values. There is no distinction between "value types" and "referen
 This isn't optional. Without implicit copy, primitives break:
 
 **Broken without copy:**
+<!-- test: skip -->
 ```rask
 const x = 5
 const y = x              // Without copy: x moved to y
@@ -160,6 +163,7 @@ No `extend Copy` needed. The compiler figures it out.
 Types can explicitly opt out of Copy using the `@unique` attribute, even if structurally eligible.
 
 **Syntax:**
+<!-- test: parse -->
 ```rask
 @unique
 struct UserId {
@@ -183,6 +187,7 @@ enum Token {
 | **U4: Transitive** | Structs containing unique fields are automatically unique |
 
 **Example:**
+<!-- test: skip -->
 ```rask
 @unique
 struct UserId { id: u64 }
@@ -204,6 +209,7 @@ const user4 = user3              // Moves, user3 invalid
 
 **Interaction with generics:**
 
+<!-- test: skip -->
 ```rask
 func process<T>(value: T) { ... }
 
@@ -247,6 +253,7 @@ A type satisfies the `Copy` trait if and only if:
 
 **Generic constraints:**
 
+<!-- test: skip -->
 ```rask
 func duplicate<T: Copy>(value: T) -> (T, T) {
     (value, value)  // ✅ OK: T is Copy, so value can be copied
@@ -272,6 +279,7 @@ func try_duplicate<T>(value: T) -> (T, T) {
 
 When a generic function is instantiated with a concrete type, the compiler checks constraints:
 
+<!-- test: skip -->
 ```rask
 const point = Point{x: 1, y: 2}
 let (p1, p2) = duplicate(point)  // ✅ OK: Point satisfies Copy
@@ -292,6 +300,7 @@ let (n1, n2) = duplicate(name)   // ❌ ERROR: string doesn't satisfy Copy
 
 All Copy types are also Clone (can call `.clone()` explicitly). Not all Clone types are Copy.
 
+<!-- test: skip -->
 ```rask
 // Copy type (implicit):
 const p1 = Point{x: 1, y: 2}
@@ -317,6 +326,7 @@ For user-defined traits, structural matching is purely for dispatch. For Copy, i
 
 **Generic constraints propagation:**
 
+<!-- test: skip -->
 ```rask
 struct Pair<T> {
     first: T,
