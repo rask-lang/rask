@@ -70,4 +70,4 @@ Open http://localhost:8000
 Deployed to GitHub Pages via `.github/workflows/gh-pages.yml`:
 - Builds WASM module
 - Generates examples.js
-- Deploys to `https://dritory.github.io/rask/playground/`
+- Deploys to `https://rask-lang.dev/app/`
