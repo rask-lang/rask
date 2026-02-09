@@ -14,7 +14,7 @@ default-theme = "navy"
 preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/rask-lang/rask"
 edit-url-template = "https://github.com/rask-lang/rask/edit/main/docs/book/{path}"
-site-url = "/rask/"
+site-url = "/book/"
 additional-css = ["theme/custom.css"]
 additional-js = ["theme/rask-highlight.js"]
 

@@ -42,7 +42,7 @@ No lifetime annotations. No borrow checker fights. No GC pauses.
 
 > **Note:** Rask is in early development. The documentation is sparse and might be outdated, bugs are warranted.
 
-- [Try in Playground](../playground/) - Run Rask code in your browser
+- [Try in Playground](/app/) - Run Rask code in your browser
 - [Installation](getting-started/installation.md)
 - [First Program](getting-started/first-program.md)
 - [Language Guide](guide/README.md)

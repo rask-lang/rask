@@ -10,5 +10,5 @@ This is the official blog for the Rask programming language.
 
 Learn more:
 - [Documentation](/)
-- [Playground](/playground/)
+- [Playground](/app/)
 - [GitHub Repository](https://github.com/rask-lang/rask)
