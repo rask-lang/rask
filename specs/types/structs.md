@@ -1,3 +1,6 @@
+<!-- depends: memory/ownership.md, memory/value-semantics.md -->
+<!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
+
 # Solution: Structs and Product Types
 
 ## The Question
@@ -113,7 +116,8 @@ extend Point {
 
 | Declaration | Mode | Effect |
 |-------------|------|--------|
-| `self` | Borrow | Borrows, struct valid after (compiler infers read vs mutate) |
+| `self` | Borrow | Read-only borrow (default) |
+| `mutate self` | Mutate | Mutable borrow |
 | `take self` | Take | Consumes struct |
 | (no self) | Static | Associated function, no instance |
 

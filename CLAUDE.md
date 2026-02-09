@@ -74,7 +74,7 @@ add // SPDX-License-Identifier: (MIT OR Apache-2.0) to the top of all files
 | Methods | `extend Type { }` | `impl Type { }` |
 | Visibility | `public` | `pub` |
 | Enum variant | `Token.Plus` | `Token::Plus` |
-| Read-only param | `func f(read x: T)` | N/A |
+| Mutable param | `func f(mutate x: T)` | `&mut` / `inout` |
 | Take ownership | `func f(take x: T)` | implicit move |
 | Pass owned | `f(own value)` | implicit move |
 | Return value | `return expr` (explicit) | `expr` (implicit) |

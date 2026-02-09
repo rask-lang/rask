@@ -1,18 +1,18 @@
+<!-- depends: memory/ownership.md, memory/borrowing.md -->
+<!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-parser/ -->
+
 # Solution: Parameter Modes
 
 ## The Question
 How are values passed to functions? When does the caller keep the value vs give it up?
 
 ## Decision
-Three modes: **borrow** (default, mutability inferred), **read** (explicit read-only), **take** (ownership transfer).
+Three modes: **borrow** (default, read-only), **mutate** (explicit mutable borrow), **take** (ownership transfer).
 
 ## Rationale
-Borrowing is 85% of parameters. Make the common case default, infer mutability from usage.
+Borrowing is 85% of parameters, and most borrows are read-only. I made the default read-only because mutation should be visible—if a function changes your data, you should see that in the signature, not buried in the body.
 
-Explicit `read` gives you:
-1. **API contracts** — Read-only is visible in the signature
-2. **Enforcement** — Compiler rejects mutation
-3. **Concurrency** — Multiple `read` borrows work together
+`mutate` marks the intent: "I will change this parameter." Like `const`/`let` for bindings, it's about communicating intent, not frequency.
 
 `take` marks the rare case: ownership transfer.
 
@@ -22,89 +22,85 @@ Explicit `read` gives you:
 
 | Mode | Syntax | Meaning | Caller After |
 |------|--------|---------|--------------|
-| **Borrow** | `param: T` | Temporary access (mutability inferred) | Value still valid |
-| **Read** | `read param: T` | Read-only access (enforced) | Value still valid |
+| **Borrow** | `param: T` | Read-only access (enforced) | Value still valid |
+| **Mutate** | `mutate param: T` | Mutable access | Value still valid |
 | **Take** | `take param: T` | Ownership transfer | Value invalid |
 
 ### Borrow Mode (Default)
 
-The default. Function temporarily accesses the value; caller keeps ownership.
+The default. Function gets read-only access; caller keeps ownership. The compiler enforces that the function cannot mutate the parameter.
 
 <!-- test: skip -->
 ```rask
 func process(data: Data) -> Report {
     // Can read data.field
     // Can call data.method()
+    // Cannot mutate data
     // Cannot give data away (store, send, return)
     Report.from(data)
 }
 
 const d = Data.new()
-process(d)      // d borrowed
+process(d)      // d borrowed (read-only)
 print(d.name)   // ✅ OK: d still valid
 ```
 
-**Mutability is inferred:**
-
-<!-- test: parse -->
-```rask
-func read_only(data: Data) {
-    print(data.name)       // Only reads → inferred immutable
-}
-
-func mutates(data: Data) {
-    data.count += 1        // Mutates → inferred mutable
-}
-```
-
-The compiler analyzes the function body and infers:
-- **Immutable borrow** if parameter is only read
-- **Mutable borrow** if parameter is mutated
-
-IDE shows inferred mutability as ghost annotation:
-<!-- test: skip -->
-```rask
-func mutates(data: Data) {   // ghost: [mutates data]
-    data.count += 1
-}
-```
-
-**Connection to borrowing rules:** Parameter borrows are persistent for the function call duration. When accessing elements of a growable parameter (Vec, Pool, Map), those element views follow instant-view rules. See [borrowing.md](borrowing.md) for the "can it grow?" rule.
-
-### Read Mode
-
-Explicit read-only guarantee. Compiler enforces no mutation.
+**Read-only is enforced:**
 
 <!-- test: skip -->
 ```rask
-func validate(read user: User) -> bool {
+func validate(user: User) -> bool {
     user.email.contains("@")  // ✅ OK: reading
-    user.count += 1           // ❌ ERROR: cannot mutate read parameter
+    user.count += 1           // ❌ ERROR: cannot mutate parameter
 }
 ```
 
-**Why use `read` over bare borrow?**
-
-1. **Explicit contract** — Signature documents the guarantee
-2. **Compiler enforcement** — Cannot accidentally add mutation
-3. **Concurrent access** — Multiple `read` borrows can coexist
+**Concurrent access:** Multiple read-only borrows can coexist:
 
 <!-- test: skip -->
 ```rask
 func process(data: Data) {
     // Both calls can happen concurrently because they only read
-    validate(data)     // read borrow
-    checksum(data)     // read borrow - OK, disjoint from validate
+    validate(data)     // read-only borrow
+    checksum(data)     // read-only borrow - OK, concurrent
 }
 
-func validate(read data: Data) -> bool { ... }
-func checksum(read data: Data) -> u32 { ... }
+func validate(data: Data) -> bool { ... }
+func checksum(data: Data) -> u32 { ... }
 ```
 
-**Use `read` when:**
-- The function should never mutate the parameter
-- You want the guarantee visible in the API
-- You want to enable concurrent read access
+**Connection to borrowing rules:** Parameter borrows are persistent for the function call duration. When accessing elements of a growable parameter (Vec, Pool, Map), those element views follow instant-view rules. See [borrowing.md](borrowing.md) for the "can it grow?" rule.
+
+### Mutate Mode
+
+Explicit mutable borrow. Function can modify the value; caller keeps ownership.
+
+<!-- test: skip -->
+```rask
+func increment(mutate counter: Counter) {
+    counter.value += 1     // ✅ OK: mutate allows modification
+}
+
+const c = Counter.new()
+increment(c)        // c mutably borrowed
+print(c.value)      // ✅ OK: c still valid (and modified)
+```
+
+**Use `mutate` when:**
+- The function needs to change the parameter's fields
+- The function calls methods that modify the parameter
+- You want to make the mutation visible in the signature
+
+<!-- test: skip -->
+```rask
+func apply_damage(mutate player: Player, amount: i32) {
+    player.health -= amount
+    player.last_hit = now()
+    if player.health <= 0 {
+        player.status = Status.Dead
+    }
+}
+```
 
 ### Take Mode
 
@@ -132,24 +128,24 @@ print(d.name)   // ❌ ERROR: d was taken
 
 ### Self Parameter
 
-Same rules apply to `self`:
+Same modes apply to `self`:
 
 | Syntax | Meaning |
 |--------|---------|
-| `self` | Borrow self (mutability inferred) |
-| `read self` | Read-only self (enforced) |
+| `self` | Read-only self (enforced) |
+| `mutate self` | Mutable self |
 | `take self` | Take ownership (consuming method) |
 
 <!-- test: skip -->
 ```rask
 extend File {
-    // Read-only: guarantees no mutation
-    func size(read self) -> usize {
+    // Read-only: guaranteed no mutation
+    func size(self) -> usize {
         self.metadata.size
     }
 
-    // Inferred: may or may not mutate
-    func read(self, buf: [u8]) -> usize or Error {
+    // Mutable: explicitly modifies self
+    func read(mutate self, buf: [u8]) -> usize or Error {
         // reads from self (mutates internal position)
     }
 
@@ -160,7 +156,7 @@ extend File {
 }
 
 const file = try File.open("data.txt")
-try file.read(buf)    // borrows file
+try file.read(buf)    // mutably borrows file
 try file.read(buf)    // ✅ OK: can borrow again
 try file.close()      // takes file
 try file.read(buf)    // ❌ ERROR: file was taken
@@ -183,7 +179,8 @@ func process(take x: i32) {
 ```
 
 For non-Copy types, the distinction matters:
-- Borrow: caller keeps value
+- Borrow: caller keeps value (read-only)
+- Mutate: caller keeps value (modified)
 - Take: caller loses value
 
 ### Interaction with Linear Resource Types
@@ -195,58 +192,34 @@ Linear resource types must be consumed exactly once. Only `take` parameters can 
 @resource
 struct File { ... }
 
-func process(file: File) {        // Borrow
-    try file.read()             // ✅ OK: reading
+func process(file: File) {         // Read-only borrow
+    try file.read()              // ✅ OK: reading
     // file must NOT be consumed here
 }   // file returned to caller
 
-func finish(take file: File) {    // Take
-    try file.close()            // ✅ OK: consuming
+func finish(take file: File) {     // Take
+    try file.close()             // ✅ OK: consuming
 }   // file consumed
 
 const f = try File.open(path)
-process(f)     // borrows f
+process(f)     // borrows f (read-only)
 finish(f)      // takes f, f now invalid
-```
-
-### Mutability Inference Rules
-
-For bare borrows (no `read` keyword), mutability is inferred:
-
-| Usage in Body | Inferred Mode |
-|---------------|---------------|
-| Only field reads | Immutable borrow |
-| Only method calls with `read self` | Immutable borrow |
-| Any field assignment | Mutable borrow |
-| Any method call with mutating `self` | Mutable borrow |
-| Passed to `take` parameter | Ownership transfer (requires `take`) |
-
-For `read` parameters, the compiler enforces read-only access regardless of what the code tries to do.
-
-**Inference is local:** The compiler only looks at the function body, not transitive calls.
-
-<!-- test: parse -->
-```rask
-func example(data: Data) {
-    data.x = 5              // Assignment → mutable
-    data.validate()         // If validate borrows → OK
-}
 ```
 
 ### Error Messages
 
-**Mutating a read parameter:**
+**Mutating a default (read-only) parameter:**
 ```
-ERROR: cannot mutate read-only parameter
-   |
-5  |  func update(read data: Data) {
-   |              ^^^^ 'data' is read-only
-6  |      data.count += 1
-   |      ^^^^^^^^^^^^^^^ cannot assign to field of read parameter
-
-HELP: Remove 'read' to allow mutation:
+ERROR: cannot mutate parameter 'data'
    |
 5  |  func update(data: Data) {
+   |              ^^^^ 'data' is read-only (default)
+6  |      data.count += 1
+   |      ^^^^^^^^^^^^^^^ cannot assign to field of read-only parameter
+
+HELP: Add 'mutate' to allow mutation:
+   |
+5  |  func update(mutate data: Data) {
 ```
 
 **Taking a borrowed parameter:**
@@ -279,18 +252,19 @@ ERROR: value used after being taken
 
 | Context | Annotation |
 |---------|------------|
-| Inferred mutable borrow | `[mutates param]` |
-| Inferred immutable borrow | `[reads param]` (on hover) |
-| Explicit `read` parameter | No ghost (already explicit in source) |
-| Take parameter | `[takes param]` (explicit in source) |
+| Default parameter | No ghost (read-only is explicit in source) |
+| `mutate` parameter | No ghost (mutation is explicit in source) |
+| Take parameter | No ghost (explicit in source) |
+
+All parameter modes are now visible in source text. Ghost annotations are no longer needed for parameter mutability.
 
 ### Hover Information
 
+<!-- test: skip -->
 ```rask
 func process(data: Data)
            ^^^^
-Parameter: Data (borrowed)
-Inferred: mutable (assigned on line 8)
+Parameter: Data (borrowed, read-only)
 
 Caller's value remains valid after call.
 ```
@@ -301,18 +275,13 @@ Caller's value remains valid after call.
 
 <!-- test: skip -->
 ```rask
-// Explicit read-only (guaranteed, visible in API)
-func validate(read user: User) -> bool {
+// Read-only (default — most common)
+func validate(user: User) -> bool {
     user.email.contains("@")
 }
 
-// Inferred read-only (same effect, but not explicit)
-func check(user: User) -> bool {
-    user.active
-}
-
-// Mutating (borrow, mutable inferred)
-func increment(counter: Counter) {
+// Mutating (explicit intent)
+func increment(mutate counter: Counter) {
     counter.value += 1
 }
 
@@ -332,8 +301,8 @@ func finish(take file: File) -> () or Error {
 <!-- test: skip -->
 ```rask
 extend Builder {
-    // Borrow self: can chain
-    func name(self, n: string) -> Self {
+    // Mutate self: can chain
+    func name(mutate self, n: string) -> Self {
         self.name = n
         self
     }
@@ -345,8 +314,8 @@ extend Builder {
 }
 
 Builder.new()
-    .name("foo")      // borrows, returns self
-    .name("bar")      // borrows, returns self
+    .name("foo")      // mutably borrows, returns self
+    .name("bar")      // mutably borrows, returns self
     .build()          // takes, returns Widget
 ```
 
@@ -357,20 +326,20 @@ Projections allow borrowing only specific fields of a struct, enabling disjoint 
 **Syntax:**
 <!-- test: skip -->
 ```rask
-func heal(p: Player.{health}) {
+func heal(mutate p: Player.{health}) {
     p.health += 10       // ✅ OK: health is projected
     p.inventory          // ❌ ERROR: not in projection
 }
 
-func loot(p: Player.{inventory}) {
+func loot(mutate p: Player.{inventory}) {
     p.inventory.push(item)
 }
 ```
 
 **Disjoint borrows:**
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
-func update(player: Player) {
+func update(mutate player: Player) {
     heal(player)         // Borrows player.health
     loot(player)         // ✅ OK: borrows player.inventory (disjoint)
 }
@@ -379,7 +348,7 @@ func update(player: Player) {
 **Multiple fields:**
 <!-- test: skip -->
 ```rask
-func combat(p: Player.{health, mana}) {
+func combat(mutate p: Player.{health, mana}) {
     p.health -= damage
     p.mana -= spell_cost
 }
@@ -389,7 +358,7 @@ func combat(p: Player.{health, mana}) {
 |------|-------------|
 | Syntax | `Type.{field1, field2, ...}` |
 | Disjoint | Non-overlapping projections can coexist |
-| Mutability | Inferred from usage (same as regular borrows) |
+| Mutability | Determined by `mutate` keyword (same as regular params) |
 | Scope | Only projected fields are accessible |
 | Nesting | Nested fields: `Player.{stats.health}` (TBD) |
 
@@ -402,8 +371,8 @@ The compiler tracks which fields each projection borrows. Two calls with disjoin
 |------|----------|
 | Generic parameters | Mode applies to concrete type at instantiation |
 | Closure captures | Captured borrows follow closure lifetime rules |
-| Pattern matching | Each arm infers mode from usage; highest wins |
-| Conditional mutation | If any branch mutates, inferred mutable |
+| Pattern matching | Mutation only allowed if parameter is `mutate` |
+| Copy type + mutate | Value is copied in; mutations affect the copy |
 
 ## Integration Notes
 

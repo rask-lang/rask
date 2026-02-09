@@ -95,6 +95,9 @@ impl Default for ErrorCodeRegistry {
                 "E0316" => ("invalid try context", Type),
                 "E0317" => ("try outside function", Type),
                 "E0318" => ("missing return statement", Type),
+                "E0319" => ("generic argument error", Type),
+                "E0320" => ("aliasing violation", Type),
+                "E0321" => ("mutate read-only parameter (add 'mutate' keyword)", Type),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait),
