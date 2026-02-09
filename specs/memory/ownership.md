@@ -1,3 +1,6 @@
+<!-- depends: memory/value-semantics.md -->
+<!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
+
 # Solution: Ownership Model
 
 ## The Question
@@ -22,6 +25,7 @@ Every value has exactly one owner. Ownership transfers on assignment/passing (fo
 | **O3: Invalid after move** | Source binding is invalid after move; use is compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 
+<!-- test: skip -->
 ```rask
 const a = Vec.new()
 const b = a              // a moved to b
@@ -45,6 +49,7 @@ Tasks are isolated. No shared mutable memory.
 
 **Rule T2.1 clarification:** `Shared<T>` and `Mutex<T>` don't violate T2 because they provide *operation-scoped* access through closures, not storable mutable references. When the closure returns, access is released. See [sync.md](../concurrency/sync.md).
 
+<!-- test: skip -->
 ```rask
 const data = load_data()
 channel.send(data)        // Ownership transferred

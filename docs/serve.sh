@@ -16,6 +16,9 @@ build_site() {
     cp landing/index.html build/index.html
     cp landing/landing.css build/landing.css
 
+    # Rebuild playground examples from examples/*.rk
+    node playground/build-examples.js
+
     # Copy playground to /app/ if it exists
     if [ -d "playground/pkg" ]; then
         mkdir -p build/app
@@ -53,7 +56,7 @@ trap "kill $SERVER_PID 2>/dev/null" EXIT
 
 # Watch for changes and rebuild
 while true; do
-    inotifywait -qr -e modify,create,delete book/src landing/ blog/_posts blog/_config.yml blog/assets 2>/dev/null && {
+    inotifywait -qr -e modify,create,delete book/src landing/ blog/_posts blog/_config.yml blog/assets ../examples/ 2>/dev/null && {
         echo ""
         build_site
     }

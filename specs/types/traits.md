@@ -1,3 +1,6 @@
+<!-- depends: types/structs.md, types/generics.md -->
+<!-- implemented-by: compiler/crates/rask-types/ -->
+
 # Solution: Runtime Polymorphism
 
 ## The Question

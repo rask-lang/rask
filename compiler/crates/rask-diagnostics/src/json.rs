@@ -14,7 +14,7 @@ use crate::{codes::ErrorCodeRegistry, Diagnostic, LabelStyle};
 /// A complete JSON diagnostic report for a compilation run.
 #[derive(Debug, Serialize)]
 pub struct DiagnosticReport {
-    /// Schema version for forward compatibility.
+    /// Schema version for forward compatibility (v2: added fix/why fields).
     pub version: u32,
     /// The file that was compiled.
     pub file: String,
@@ -57,6 +57,12 @@ pub struct JsonDiagnostic {
     /// Concrete code fix suggestion.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion: Option<JsonSuggestion>,
+    /// Concrete fix instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+    /// One-sentence rule explanation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
 }
 
 /// A source location with line/column (1-based).
@@ -135,7 +141,7 @@ pub fn to_json_report(
         .collect();
 
     DiagnosticReport {
-        version: 1,
+        version: 2,
         file: file.to_string(),
         success: error_count == 0,
         phase: phase.to_string(),
@@ -238,6 +244,8 @@ fn to_json_diagnostic(
         notes: diag.notes.clone(),
         help: diag.help.as_ref().map(|h| h.message.clone()),
         suggestion,
+        fix: diag.fix.clone(),
+        why: diag.why.clone(),
     }
 }
 

@@ -10,6 +10,7 @@ on:
       - 'docs/blog/**'
       - 'docs/playground/**'
       - 'docs/landing/**'
+      - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
       - '.github/workflows/docs.yml'
@@ -70,6 +71,14 @@ jobs:
         cd docs/blog
         bundle install
         bundle exec jekyll build --source . --destination ../build/blog
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Build playground examples
+      run: node docs/playground/build-examples.js
 
     - name: Add landing page and other content
       run: |

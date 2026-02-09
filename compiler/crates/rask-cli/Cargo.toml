@@ -21,4 +21,6 @@ rask-interp = { path = "../rask-interp" }
 rask-spec-test = { path = "../rask-spec-test" }
 rask-fmt = { path = "../rask-fmt" }
 rask-comptime = { path = "../rask-comptime" }
+rask-describe = { path = "../rask-describe" }
+rask-lint = { path = "../rask-lint" }
 colored = "3"

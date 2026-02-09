@@ -13,7 +13,7 @@
                 keyword:
                     'func struct enum trait extend match if else for while loop return ' +
                     'const let try ensure comptime with spawn using import export ' +
-                    'public take read own deliver any unsafe break continue is in as',
+                    'public take mutate own deliver any unsafe break continue is in as',
                 literal: 'true false none',
                 built_in:
                     'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char ' +

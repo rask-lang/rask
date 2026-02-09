@@ -1,3 +1,6 @@
+<!-- depends: types/structs.md, types/enums.md, types/traits.md -->
+<!-- implemented-by: compiler/crates/rask-types/ -->
+
 # Solution: Generics and Traits
 
 ## The Question

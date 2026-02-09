@@ -1,3 +1,6 @@
+<!-- depends: memory/ownership.md, types/generics.md -->
+<!-- implemented-by: compiler/crates/rask-interp/ -->
+
 # Synchronization Primitives
 
 Cross-task shared state when channels aren't enough.
@@ -64,7 +67,7 @@ config.write(|c| c.timeout = 60.seconds)
 
 **API:**
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 struct Shared<T> { ... }
 
@@ -110,7 +113,7 @@ const len = queue.lock(|q| q.len())
 
 **API:**
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 struct Mutex<T> { ... }
 

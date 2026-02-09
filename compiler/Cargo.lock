@@ -563,11 +563,13 @@ dependencies = [
  "colored",
  "rask-ast",
  "rask-comptime",
+ "rask-describe",
  "rask-desugar",
  "rask-diagnostics",
  "rask-fmt",
  "rask-interp",
  "rask-lexer",
+ "rask-lint",
  "rask-ownership",
  "rask-parser",
  "rask-resolve",
@@ -581,6 +583,17 @@ version = "0.1.0"
 dependencies = [
  "rask-ast",
  "thiserror",
+]
+
+[[package]]
+name = "rask-describe"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-lexer",
+ "rask-parser",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -630,6 +643,17 @@ dependencies = [
  "logos",
  "rask-ast",
  "thiserror",
+]
+
+[[package]]
+name = "rask-lint"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-lexer",
+ "rask-parser",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
