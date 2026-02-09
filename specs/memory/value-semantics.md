@@ -53,28 +53,37 @@ Alternative approaches fail design constraints:
 
 ### The 16-Byte Threshold
 
-If `i32` copies, then `Point{x: i32, y: i32}` should too. But blind copying of large structs hides costs.
+**The core argument:** Implicit copies in Rask are cheap enough that annotating them adds ceremony without actionable information.
 
-The threshold splits the difference:
-- **Below threshold:** Types behave like mathematical values (copy naturally)
-- **Above threshold:** Explicit `.clone()` required (cost visible)
+Types ≤16 bytes fit in register pairs and match the register-passing limit of most calling conventions. Copies are small — at worst a few bytes on the stack, never a heap allocation. Types >16 bytes don't copy at all — they move (ownership transfer) or require explicit `.clone()`. Rask never silently copies anything with meaningful cost:
 
-**Threshold criteria:**
+| Operation | What happens | Cost |
+|-----------|-------------|------|
+| `const b = a` (≤16 bytes) | Copy | Negligible (≤16 bytes, no allocation) |
+| `const b = a` (>16 bytes) | Move | Zero (ownership transfer) |
+| `func f(x: T)` | Borrow | Zero (read-only reference) |
+| `a.clone()` | Deep duplicate | Explicit, visible |
+
+
+**Why 16 bytes specifically:**
 
 | Criterion | Justification |
 |-----------|---------------|
-| **Platform ABI alignment** | Most ABIs pass ≤16 bytes in registers (x86-64 SysV, ARM AAPCS); copies are zero-cost |
-| **Common type coverage** | Covers primitives, pairs, RGBA colors, 2D/3D points, small enums |
-| **Cache efficiency** | 16 bytes = 1/4 cache line; small enough to not pollute cache |
-| **Visibility boundary** | Large enough for natural types, small enough that copies stay obvious |
+| **ABI boundary** | Most ABIs pass ≤16 bytes in registers (x86-64 SysV, ARM AAPCS, RISC-V); above this, passing conventions get more expensive |
+| **Common type coverage** | Covers `(i64, i64)`, `Point3D{x, y, z: f32}`, `RGBA{r, g, b, a: u8}`, small enums |
+| **Cache line fraction** | 16 bytes = 1/4 cache line; small enough to not pollute cache even when spilled to stack |
 
-**Why 16 bytes:**
-- Matches x86-64 and ARM register-passing (zero-cost copy)
-- Covers `(i64, i64)`, `Point3D{x, y, z: f32}`, `RGBA{r, g, b, a: u8}`
-- Small enough that copies stay visible
-- Rust does similar (though it's opt-in per type)
+The threshold is a design judgment, not a hardware law — but it's a well-grounded one. Below 16 bytes, copies are cheap enough that making them visible would add noise. Above it, copies involve real memory traffic, so you must be explicit. That's the line I'm drawing for transparent cost.
 
-Bigger than 16? Use `.clone()` or move. Cost visible.
+### The goldilock principle
+
+Languages like Hylo (Val) require explicit `.copy()` even for a `Point2D` — an operation that's a couple of register moves at most. I think that's ceremony protecting you from a cost that doesn't warrant annotation. Don't annotate trivially cheap operations.
+
+Swift has the opposite problem: any struct is a value type, regardless of size. A `[String]` with thousands of elements implicitly copies on assignment (hidden behind copy-on-write).
+
+Rask avoids both extremes — small types copy implicitly because the cost is trivial, large types require explicit `.clone()` because the cost is real.
+
+**What about performance-critical code?** Projects that need to audit every copy can enable `@warn(implicit_copy)` — an opt-in warning that flags all implicit copies without changing semantics. The language still copies, you just see where. In practice, when small copies show up in profiles, the fix is usually data layout (SoA, arenas), not copy annotation. See [warnings.md](../tooling/warnings.md#implicit_copy-w0904).
 
 ### Threshold Non-Configurability
 
