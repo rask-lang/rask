@@ -668,6 +668,20 @@ pub enum TypeError {
         name: String,
         span: Span,
     },
+    #[error("cannot hold view from growable source `{source_var}`")]
+    VolatileViewStored {
+        source_var: String,
+        view_var: String,
+        source_span: Span,
+        store_span: Span,
+    },
+    #[error("cannot mutate `{source_var}` while viewed by `{view_var}`")]
+    MutateBorrowedSource {
+        source_var: String,
+        view_var: String,
+        borrow_span: Span,
+        mutate_span: Span,
+    },
 }
 
 // ============================================================================
@@ -928,6 +942,31 @@ struct ActiveBorrow {
     span: Span,
 }
 
+/// A persistent borrow that lasts until block scope exit (ESAD Phase 2).
+/// Created when a view is stored from a fixed-size source (string, array, struct).
+#[derive(Debug, Clone)]
+struct PersistentBorrow {
+    /// Variable being borrowed (e.g., "line").
+    source_var: String,
+    /// Variable holding the view (e.g., "key").
+    view_var: String,
+    mode: BorrowMode,
+    borrow_span: Span,
+    /// Scope depth (local_types.len()) when created — cleared on scope exit.
+    scope_depth: usize,
+}
+
+/// Whether a borrow source can grow/shrink (determines view duration).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceStability {
+    /// Vec, Pool, Map — views are instant (released at semicolon).
+    Growable,
+    /// string, array, struct — views persist until block end.
+    Fixed,
+    /// Type variable, unknown — skip check (no false positives).
+    Unknown,
+}
+
 // ============================================================================
 // Type Checker
 // ============================================================================
@@ -955,6 +994,8 @@ pub struct TypeChecker {
     local_types: Vec<HashMap<String, (Type, bool)>>,
     /// Active borrows for aliasing detection (ESAD Phase 1).
     borrow_stack: Vec<ActiveBorrow>,
+    /// Persistent borrows across statements within a scope (ESAD Phase 2).
+    persistent_borrows: Vec<PersistentBorrow>,
 }
 
 impl TypeChecker {
@@ -971,6 +1012,7 @@ impl TypeChecker {
             current_self_type: None,
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
+            persistent_borrows: Vec::new(),
         }
     }
 
@@ -1258,6 +1300,9 @@ impl TypeChecker {
     }
 
     fn pop_scope(&mut self) {
+        let depth = self.local_types.len();
+        // ESAD Phase 2: Remove persistent borrows created at this scope depth
+        self.persistent_borrows.retain(|b| b.scope_depth < depth);
         self.local_types.pop();
     }
 
@@ -1390,6 +1435,150 @@ impl TypeChecker {
                 }
             }
             _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Source Classification (ESAD Phase 2)
+    // ------------------------------------------------------------------------
+
+    /// Classify a type as growable (Vec/Pool/Map) or fixed (string/array/struct).
+    /// Growable sources have instant views (released at semicolon).
+    /// Fixed sources have persistent views (released at block end).
+    fn classify_source(&self, ty: &Type) -> SourceStability {
+        let resolved = self.ctx.apply(ty);
+        match &resolved {
+            Type::String => SourceStability::Fixed,
+            Type::Array { .. } | Type::Slice(_) => SourceStability::Fixed,
+            Type::Named(id) => {
+                let name = self.types.type_name(*id);
+                match name.as_str() {
+                    "Vec" | "Pool" | "Map" => SourceStability::Growable,
+                    _ => SourceStability::Fixed,
+                }
+            }
+            Type::Generic { base, .. } => {
+                let name = self.types.type_name(*base);
+                match name.as_str() {
+                    "Vec" | "Pool" | "Map" => SourceStability::Growable,
+                    _ => SourceStability::Fixed,
+                }
+            }
+            Type::UnresolvedNamed(name) | Type::UnresolvedGeneric { name, .. } => {
+                if name.starts_with("Vec") || name.starts_with("Pool") || name.starts_with("Map") {
+                    SourceStability::Growable
+                } else {
+                    SourceStability::Fixed
+                }
+            }
+            Type::Var(_) => SourceStability::Unknown,
+            _ => SourceStability::Fixed,
+        }
+    }
+
+    /// Check if an expression creates a view (borrow) from a source variable.
+    /// Returns (source_var_name, borrow_mode) if it does.
+    fn detect_view_creation(expr: &Expr) -> Option<(String, BorrowMode)> {
+        match &expr.kind {
+            // Range indexing: source[start..end]
+            ExprKind::Index { object, index } => {
+                if matches!(&index.kind, ExprKind::Range { .. }) {
+                    if let Some(source_name) = Self::root_ident_name(object) {
+                        return Some((source_name, BorrowMode::Shared));
+                    }
+                }
+                None
+            }
+            // String view methods (trim, split, etc.)
+            ExprKind::MethodCall { object, method, .. } => {
+                let view_methods = [
+                    "trim", "trim_start", "trim_end",
+                    "split", "split_whitespace", "lines", "chars",
+                ];
+                if view_methods.contains(&method.as_str()) {
+                    if let Some(source_name) = Self::root_ident_name(object) {
+                        return Some((source_name, BorrowMode::Shared));
+                    }
+                }
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Check if mutating a variable conflicts with active persistent borrows.
+    fn check_persistent_borrow_conflict(&self, var_name: &str) -> Option<&PersistentBorrow> {
+        self.persistent_borrows.iter().rev().find(|b| b.source_var == var_name)
+    }
+
+    /// Determine borrow mode for a method call by looking up the method signature.
+    /// Falls back to a name-based heuristic for unresolved types.
+    fn method_borrow_mode(&self, var_name: &str, method_name: &str) -> BorrowMode {
+        // Try to look up the actual method signature from the variable's type
+        if let Some(ty) = self.lookup_local(var_name) {
+            let resolved = self.resolve_named(&self.ctx.apply(&ty));
+            let type_id = match &resolved {
+                Type::Named(id) => Some(*id),
+                Type::Generic { base, .. } => Some(*base),
+                _ => None,
+            };
+            if let Some(id) = type_id {
+                let methods = match self.types.get(id) {
+                    Some(TypeDef::Struct { methods, .. }) |
+                    Some(TypeDef::Enum { methods, .. }) => Some(methods),
+                    _ => None,
+                };
+                if let Some(methods) = methods {
+                    if let Some(sig) = methods.iter().find(|m| m.name == method_name) {
+                        return match sig.self_param {
+                            SelfParam::Mutate | SelfParam::Take => BorrowMode::Exclusive,
+                            SelfParam::Value | SelfParam::None => BorrowMode::Shared,
+                        };
+                    }
+                }
+            }
+        }
+        // Fallback: name-based heuristic for unknown/builtin types
+        if method_name.starts_with("get") || matches!(method_name,
+            "read" | "len" | "is_empty" | "contains" | "find"
+            | "iter" | "values" | "keys" | "handles"
+            | "starts_with" | "ends_with" | "to_string" | "to_owned" | "clone"
+            | "trim" | "trim_start" | "trim_end"
+            | "split" | "split_whitespace" | "lines" | "chars"
+        ) {
+            BorrowMode::Shared
+        } else {
+            BorrowMode::Exclusive
+        }
+    }
+
+    /// At a const/let binding, check if the init creates a view from a source.
+    /// Growable sources → error (volatile view stored).
+    /// Fixed sources → register persistent borrow.
+    fn check_view_at_binding(&mut self, binding_name: &str, init: &Expr, stmt_span: Span) {
+        if let Some((source_name, mode)) = Self::detect_view_creation(init) {
+            if let Some(source_ty) = self.lookup_local(&source_name) {
+                match self.classify_source(&source_ty) {
+                    SourceStability::Fixed => {
+                        self.persistent_borrows.push(PersistentBorrow {
+                            source_var: source_name,
+                            view_var: binding_name.to_string(),
+                            mode,
+                            borrow_span: init.span,
+                            scope_depth: self.local_types.len(),
+                        });
+                    }
+                    SourceStability::Growable => {
+                        self.errors.push(TypeError::VolatileViewStored {
+                            source_var: source_name,
+                            view_var: binding_name.to_string(),
+                            source_span: init.span,
+                            store_span: stmt_span,
+                        });
+                    }
+                    SourceStability::Unknown => {}
+                }
+            }
         }
     }
 
@@ -1790,6 +1979,8 @@ impl TypeChecker {
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
+                // ESAD Phase 2: Track view creation
+                self.check_view_at_binding(name, init, stmt.span);
                 self.clear_expression_borrows();
             }
             StmtKind::Const { name, ty, init } => {
@@ -1805,6 +1996,8 @@ impl TypeChecker {
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
+                // ESAD Phase 2: Track view creation
+                self.check_view_at_binding(name, init, stmt.span);
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
@@ -1812,8 +2005,17 @@ impl TypeChecker {
                 if let Some(root) = Self::root_ident_name(target) {
                     if self.is_local_read_only(&root) {
                         self.errors.push(TypeError::MutateReadOnlyParam {
-                            name: root,
+                            name: root.clone(),
                             span: stmt.span,
+                        });
+                    }
+                    // ESAD Phase 2: Reject mutation of persistently borrowed sources
+                    if let Some(borrow) = self.check_persistent_borrow_conflict(&root) {
+                        self.errors.push(TypeError::MutateBorrowedSource {
+                            source_var: root,
+                            view_var: borrow.view_var.clone(),
+                            borrow_span: borrow.borrow_span,
+                            mutate_span: stmt.span,
                         });
                     }
                 }
@@ -2063,19 +2265,23 @@ impl TypeChecker {
             }
 
             ExprKind::Block(stmts) => {
+                self.push_scope();
                 for stmt in stmts {
                     self.check_stmt(stmt);
                 }
-                if let Some(last) = stmts.last() {
+                let result = if let Some(last) = stmts.last() {
                     match &last.kind {
-                        StmtKind::Expr(e) => return self.infer_expr(e),
+                        StmtKind::Expr(e) => self.infer_expr(e),
                         StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {
-                            return Type::Never
+                            Type::Never
                         }
-                        _ => {}
+                        _ => Type::Unit,
                     }
-                }
-                Type::Unit
+                } else {
+                    Type::Unit
+                };
+                self.pop_scope();
+                result
             }
 
             ExprKind::StructLit { name, fields, .. } => {
@@ -2530,15 +2736,21 @@ impl TypeChecker {
         }
 
         // ESAD Phase 1: Push borrow for the object being called
-        // For now, conservatively assume all methods on collections create exclusive borrows
-        // TODO: Refine this by checking method signatures for `read self` vs `self`
         if let ExprKind::Ident(var_name) = &object.kind {
-            // Determine borrow mode based on method name (conservative heuristic)
-            let mode = if method.starts_with("get") || method == "read" || method == "len" {
-                BorrowMode::Shared
-            } else {
-                BorrowMode::Exclusive
-            };
+            let mode = self.method_borrow_mode(var_name, method);
+
+            // ESAD Phase 2: Check persistent borrow conflict for exclusive methods
+            if matches!(mode, BorrowMode::Exclusive) {
+                if let Some(borrow) = self.check_persistent_borrow_conflict(var_name) {
+                    self.errors.push(TypeError::MutateBorrowedSource {
+                        source_var: var_name.clone(),
+                        view_var: borrow.view_var.clone(),
+                        borrow_span: borrow.borrow_span,
+                        mutate_span: object.span,
+                    });
+                }
+            }
+
             self.push_borrow(var_name.clone(), mode, object.span);
         }
 

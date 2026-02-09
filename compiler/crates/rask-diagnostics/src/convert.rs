@@ -338,6 +338,26 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("add `mutate` keyword to the parameter declaration")
                     .with_why("parameters are read-only by default — add `mutate` to indicate the function modifies this value")
             }
+
+            VolatileViewStored { source_var, view_var, source_span, store_span } => {
+                Diagnostic::error(format!("cannot hold view from growable source `{}`", source_var))
+                    .with_code("E0322")
+                    .with_primary(*source_span, format!("`{}` can grow or shrink — view is instant", source_var))
+                    .with_secondary(*store_span, format!("`{}` tries to hold this view across a statement boundary", view_var))
+                    .with_help("copy the value out, or use a closure for multi-statement access")
+                    .with_fix(format!("use {}.clone() or {}.modify(key, |e| {{ ... }})", source_var, source_var))
+                    .with_why("Vec, Pool, and Map can grow or shrink, which would invalidate any persistent view — views are released at the semicolon")
+            }
+
+            MutateBorrowedSource { source_var, view_var, borrow_span, mutate_span } => {
+                Diagnostic::error(format!("cannot mutate `{}` while viewed by `{}`", source_var, view_var))
+                    .with_code("E0323")
+                    .with_primary(*mutate_span, format!("cannot mutate `{}` here", source_var))
+                    .with_secondary(*borrow_span, format!("view `{}` created here — active until block ends", view_var))
+                    .with_help("finish using the view before mutating, or work with a copy")
+                    .with_fix(format!("use {}.clone() to create an independent copy", view_var))
+                    .with_why("mutating a source can invalidate views into it")
+            }
         }
     }
 }
