@@ -373,7 +373,7 @@ func request_shutdown() {
 ### Bounded Counter (CAS Loop)
 
 ```rask
-func increment_if_below(counter: read AtomicU64, max: u64) -> bool {
+func increment_if_below(counter: AtomicU64, max: u64) -> bool {
     loop {
         const current = counter.load(Relaxed)
         if current >= max {

@@ -53,7 +53,7 @@ The JSON output follows this structure. All arrays default to `[]` when empty. O
   "name": "start",
   "public": true,
   "params": [
-    { "name": "config", "type": "Config", "mode": "read" }
+    { "name": "config", "type": "Config", "mode": "borrow" }
   ],
   "returns": { "ok": "()", "err": "ServerError" },
   "self_mode": "take",
@@ -71,7 +71,7 @@ The JSON output follows this structure. All arrays default to `[]` when empty. O
 | `public` | `bool` | Whether the function is `public`. |
 | `params` | `Param[]` | Parameters (excluding self). |
 | `returns` | `Returns` | Return type, split into ok/err for Result types. |
-| `self_mode` | `string?` | `"self"`, `"read"`, or `"take"`. Absent for standalone functions. |
+| `self_mode` | `string?` | `"self"`, `"mutate"`, or `"take"`. Absent for standalone functions. |
 | `type_params` | `string[]?` | Generic type parameter names. |
 | `context` | `string[]?` | Context clause requirements (`with` clauses). |
 | `attrs` | `string[]?` | Attributes (`@inline`, `@entry`, etc.). |
@@ -88,7 +88,7 @@ The JSON output follows this structure. All arrays default to `[]` when empty. O
 |-------|------|-------------|
 | `name` | `string` | Parameter name. |
 | `type` | `string` | Type as written in source. |
-| `mode` | `string` | `"borrow"` (default), `"read"`, or `"take"`. |
+| `mode` | `string` | `"borrow"` (default), `"mutate"`, or `"take"`. |
 
 ### Returns
 
@@ -302,7 +302,7 @@ extend Server {
           "name": "start",
           "public": true,
           "self_mode": "take",
-          "params": [{ "name": "config", "type": "Config", "mode": "read" }],
+          "params": [{ "name": "config", "type": "Config", "mode": "borrow" }],
           "returns": { "ok": "()", "err": "ServerError" },
           "context": ["Pool<Connection>"]
         },

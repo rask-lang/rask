@@ -166,14 +166,14 @@ rask lint src/ --exclude idiom/unwrap-production
 |------|---------------|
 | `rask fmt` | Whitespace, indentation, line breaks — purely visual |
 | `rask lint` | Naming conventions, idiomatic patterns, style — semantic |
-| `rask check` | Type safety, ownership, borrowing — correctness |
+| `rask check` | Type safety, ownership, borrowing — correctness; also emits [compiler warnings](warnings.md) for suspicious-but-valid code |
 
-`rask lint` sits between formatting and type checking. It doesn't affect correctness — the code compiles fine — but it enforces conventions that make code consistent across projects.
+`rask lint` sits between formatting and type checking. It doesn't affect correctness — the code compiles fine — but it enforces conventions that make code consistent across projects. Both lint rules and compiler warnings use the `@allow` attribute for suppression, but they use different ID namespaces (lint: `naming/is`, warnings: `unused_result`).
 
 ---
 
 ## Future
 
-- **Custom rules** — project-level lint configuration in `rask.toml`.
+- **Custom rules** — project-level lint configuration in `rask.build`.
 - **Auto-fix** — `rask lint --fix` for rules with unambiguous fixes (e.g., rename `is_valid` return type).
 - **CI integration** — exit code 1 on errors, 0 on warnings-only.

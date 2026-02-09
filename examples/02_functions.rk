@@ -7,7 +7,7 @@ func main() {
     print("\n")
 
     const doubled = double(7)
-    print("7 × 2 = ")
+    print("7 x 2 = ")
     print(doubled)
     print("\n")
 
