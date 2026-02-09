@@ -48,17 +48,17 @@ pub struct MethodSig {
 /// How self is passed to a method.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelfParam {
-    None,  // Static method
-    Value, // self (by value, default)
-    Read,  // read self (borrowed, read-only)
-    Take,  // take self (consumed)
+    None,   // Static method
+    Value,  // self (read-only, default)
+    Mutate, // mutate self (mutable)
+    Take,   // take self (consumed)
 }
 
 /// How a parameter is passed to a function.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParamMode {
-    Default, // Normal pass-by-value (mutability inferred)
-    Read,    // read param (enforced read-only)
+    Default, // Normal pass (read-only, default)
+    Mutate,  // mutate param (mutable borrow)
     Take,    // take param (consumed)
 }
 
@@ -663,8 +663,8 @@ pub enum TypeError {
         borrow_span: Span,
         access_span: Span,
     },
-    #[error("cannot mutate read-only parameter `{name}`")]
-    MutateReadParam {
+    #[error("cannot mutate parameter `{name}`")]
+    MutateReadOnlyParam {
         name: String,
         span: Span,
     },
@@ -951,7 +951,7 @@ pub struct TypeChecker {
     /// Current Self type (inside extend blocks).
     current_self_type: Option<Type>,
     /// Scope stack for local variable types (innermost scope last).
-    /// Tuple: (type, is_read_only).
+    /// Tuple: (type, is_read_only). Default params are read-only; `mutate` params are not.
     local_types: Vec<HashMap<String, (Type, bool)>>,
     /// Active borrows for aliasing detection (ESAD Phase 1).
     borrow_stack: Vec<ActiveBorrow>,
@@ -1144,7 +1144,7 @@ impl TypeChecker {
         let self_param_decl = m.params.iter().find(|p| p.name == "self");
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
-            Some(p) if p.ty == "read Self" || p.ty == "read" => SelfParam::Read,
+            Some(p) if p.is_mutate => SelfParam::Mutate,
             Some(_) => SelfParam::Value,
             None => SelfParam::None,
         };
@@ -1157,8 +1157,8 @@ impl TypeChecker {
                 let ty = parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error);
                 let mode = if p.is_take {
                     ParamMode::Take
-                } else if p.is_read {
-                    ParamMode::Read
+                } else if p.is_mutate {
+                    ParamMode::Mutate
                 } else {
                     ParamMode::Default
                 };
@@ -1282,7 +1282,7 @@ impl TypeChecker {
         None
     }
 
-    /// Check if a local variable is read-only (from `read` parameter mode).
+    /// Check if a local variable is read-only (default params are read-only; `mutate` params are not).
     fn is_local_read_only(&self, name: &str) -> bool {
         for scope in self.local_types.iter().rev() {
             if let Some((_, read_only)) = scope.get(name) {
@@ -1647,10 +1647,11 @@ impl TypeChecker {
                 continue;
             }
             if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
-                if param.is_read {
-                    self.define_local_read_only(param.name.clone(), ty);
-                } else {
+                if param.is_mutate || param.is_take {
                     self.define_local(param.name.clone(), ty);
+                } else {
+                    // Default params are read-only
+                    self.define_local_read_only(param.name.clone(), ty);
                 }
             }
         }
@@ -1807,10 +1808,10 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
-                // Reject mutation of read-only parameters
+                // Reject mutation of read-only parameters (default params are read-only)
                 if let Some(root) = Self::root_ident_name(target) {
                     if self.is_local_read_only(&root) {
-                        self.errors.push(TypeError::MutateReadParam {
+                        self.errors.push(TypeError::MutateReadOnlyParam {
                             name: root,
                             span: stmt.span,
                         });

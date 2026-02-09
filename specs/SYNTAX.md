@@ -198,11 +198,11 @@ public func serve(port: i32) -> () or Error { ... }
 ```
 
 **Parameter modes:**
-Default is mutable borrow, read-only is optional.
+Default is read-only borrow. Mutation and ownership transfer are explicit.
 ```rask
-func process(data: Data)           // Borrow (mutability inferred), can both read and write
-func validate(read data: Data)     // Read-only borrow (enforced)
-func consume(take data: Data)      // Takes ownership
+func validate(data: Data)            // Read-only borrow (default)
+func update(mutate data: Data)       // Mutable borrow (explicit)
+func consume(take data: Data)        // Takes ownership
 ```
 
 **Named arguments (optional, order-fixed):**
@@ -1164,7 +1164,7 @@ println("{sum}")
 | Functions | `func name(params) -> Type` | Familiar |
 | Immutable binding | `const x = ...` | Cannot reassign |
 | Mutable binding | `let x = ...` | Can reassign |
-| Read-only | `read param` | Explicit read-only borrow |
+| Mutable | `mutate param` | Explicit read borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
 | Result | `T or E` | Same as `Result<T, E>` |

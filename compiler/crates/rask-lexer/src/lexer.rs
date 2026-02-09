@@ -68,6 +68,8 @@ enum RawToken {
     Take,
     #[token("read")]
     ReadKw,
+    #[token("mutate")]
+    MutateKw,
     #[token("own")]
     Own,
     #[token("where")]
@@ -405,6 +407,7 @@ impl<'a> Lexer<'a> {
             RawToken::Catch => TokenKind::Catch,
             RawToken::Take => TokenKind::Take,
             RawToken::ReadKw => TokenKind::ReadKw,
+            RawToken::MutateKw => TokenKind::MutateKw,
             RawToken::Own => TokenKind::Own,
             RawToken::Where => TokenKind::Where,
             RawToken::As => TokenKind::As,

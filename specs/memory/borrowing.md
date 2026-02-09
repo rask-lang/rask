@@ -1,3 +1,6 @@
+<!-- depends: memory/ownership.md, memory/value-semantics.md -->
+<!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
+
 # Solution: Borrowing
 
 ## The Question
@@ -63,6 +66,7 @@ Source can't change, so views stay valid. Multi-statement string parsing without
 
 Since collection views are instant, multi-statement access uses one of two patterns:
 
+<!-- test: skip -->
 ```rask
 // Pattern 1: Copy out the value
 const health = pool[h].health    // Value copied, view released
@@ -90,6 +94,7 @@ Function parameters and method receivers create **persistent borrows** for the c
 
 **Key insight:** A borrowed `Vec<T>` parameter is a persistent borrow of the container. Access to *elements* (`vec[i]`) within the function follows instant-view rules because the Vec can grow inside the function.
 
+<!-- test: skip -->
 ```rask
 func process(items: Vec<Item>) {
     // items: persistent borrow (valid for entire function)
@@ -104,8 +109,8 @@ func process(items: Vec<Item>) {
 
 | Annotation | Borrow Mode | Determined By |
 |------------|-------------|---------------|
-| (none) | Inferred | Shared if read-only, exclusive if mutates |
-| `read` | Shared | Enforced - compile error on mutation |
+| (none) | Shared | Default — read-only, enforced |
+| `mutate` | Exclusive | Mutable access, enforced |
 | `take` | N/A | Ownership transfer, not a borrow |
 
 ### Persistent Views (Strings, Struct Fields)
@@ -121,6 +126,7 @@ Views into fixed sources persist until block end. These are sometimes called "st
 | **S5: Aliasing XOR mutation** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
 
 **Basic usage:**
+<!-- test: skip -->
 ```rask
 const line = read_line()
 const key = line[0..eq]        // Borrow, valid until block ends
@@ -130,6 +136,7 @@ process(key, value)          // ✅ OK: both valid
 ```
 
 **Lifetime extension (B4):**
+<!-- test: skip -->
 ```rask
 const slice = get_string()[0..n]  // ✅ OK: temporary extended
 
@@ -143,6 +150,7 @@ const slice = _temp[0..n]
 
 When multiple temporaries are created in a chain, ALL are extended:
 
+<!-- test: skip -->
 ```rask
 const slice = get_container().get_inner()[0..n]
 
@@ -155,6 +163,7 @@ const slice = _temp2[0..n]
 
 **Method chains with intermediate allocations:**
 
+<!-- test: skip -->
 ```rask
 const slice = get_string().to_uppercase().trim()[0..n]
 
@@ -170,6 +179,7 @@ const slice = _temp3[0..n]            // View into _temp3
 
 **What is NOT extended:**
 
+<!-- test: compile-fail -->
 ```rask
 const slice = {
     const s = get_string()
@@ -181,6 +191,7 @@ const slice = {
 Temporaries in inner blocks are NOT extended to outer blocks. Extension only works for temporaries created in the same statement as the borrow.
 
 **Mutation blocked (B5):**
+<!-- test: compile-fail -->
 ```rask
 const s = string.new()
 const slice = s[0..3]      // Read borrow active
@@ -191,6 +202,7 @@ s.push('!')              // ✅ OK: no active borrow
 ```
 
 **Nested blocks:**
+<!-- test: skip -->
 ```rask
 const s = "hello"
 {
@@ -202,6 +214,7 @@ const s = "hello"
 ```
 
 **Cannot extend to outer scope:**
+<!-- test: compile-fail -->
 ```rask
 let outer: ???
 {
@@ -224,6 +237,7 @@ Views into growable sources (Pool, Vec, Map) are released at the semicolon. Thes
 **Why instant views prevent wrestling:**
 
 If collection views persisted, you'd hit confusing errors:
+<!-- test: skip -->
 ```rask
 // ❌ With persistent views, this would fail:
 const entity = pool[h]         // View starts
@@ -235,6 +249,7 @@ if entity.health <= 0 {
 ```
 
 Instant views make the pattern obvious:
+<!-- test: skip -->
 ```rask
 // ✅ Instant views - clear pattern:
 pool[h].health -= damage     // View released at semicolon
@@ -246,6 +261,7 @@ if pool[h].health <= 0 {     // New view
 **Naming collection data:**
 
 Use handles (which persist) and copy values out when needed:
+<!-- test: skip -->
 ```rask
 const h = try pool.find(pred)   // Handle persists
 const health = pool[h].health  // Copy out value
@@ -266,6 +282,7 @@ if health <= 0 {
 | `modify(key, f)` | `func(T) -> R → Option<R>` | Multi-statement mutation |
 
 **Basic usage:**
+<!-- test: skip -->
 ```rask
 try pool.modify(h, |entity| {
     entity.health -= damage
@@ -277,6 +294,7 @@ try pool.modify(h, |entity| {
 ```
 
 **Error propagation:**
+<!-- test: skip -->
 ```rask
 try users.modify(id, |user| -> () or Error {
     user.email = try validate_email(input)
@@ -295,6 +313,7 @@ try users.modify(id, |user| -> () or Error {
 | Needs `try` inside | Closure with Result | See above |
 
 **Closure borrows collection exclusively:**
+<!-- test: compile-fail -->
 ```rask
 pool.modify(h, |e| {
     e.health -= 10
@@ -303,6 +322,7 @@ pool.modify(h, |e| {
 ```
 
 **For iteration + mutation, collect handles first:**
+<!-- test: skip -->
 ```rask
 const handles = pool.handles().collect()
 for h in handles {
@@ -314,6 +334,7 @@ for h in handles {
 
 For multi-statement access, `with...as` provides block-scoped element bindings as an alternative to closures:
 
+<!-- test: skip -->
 ```rask
 // Single element
 with pool[h] as entity {
@@ -377,6 +398,7 @@ const health = with pool[h] as entity {
 
 **Solution:** Field projection types (`Type.{field1, field2}`) allow borrowing only specific fields.
 
+<!-- test: skip -->
 ```rask
 struct GameState {
     entities: Pool<Entity>
@@ -398,6 +420,7 @@ func update_score(state: GameState.{score}, points: i32) {
 ```
 
 **Calling with projections:**
+<!-- test: skip -->
 ```rask
 func game_tick(state: GameState, dt: f32) {
     // These borrow non-overlapping fields - could run in parallel
@@ -418,6 +441,7 @@ func game_tick(state: GameState, dt: f32) {
 **Why this matters:**
 
 Without projections, ECS-style systems would conflict:
+<!-- test: skip -->
 ```rask
 // ❌ Without projections - movement and collision both borrow GameState
 func movement_system(state: GameState, dt: f32) { ... }
@@ -427,6 +451,7 @@ func collision_system(state: GameState) { ... }
 ```
 
 With projections:
+<!-- test: skip -->
 ```rask
 // ✅ With projections - explicit non-overlapping borrows
 func movement_system(entities: GameState.{entities}, dt: f32) { ... }
@@ -626,6 +651,7 @@ The IDE makes view durations visible through ghost annotations.
 | Conflict site | `[conflict: viewed on line N]` |
 
 **Example: Instant view (collection)**
+<!-- test: skip -->
 ```rask
 const health = pool[h].health  // [instant: released at ;]
 if health <= 0 {             // view already released
@@ -634,6 +660,7 @@ if health <= 0 {             // view already released
 ```
 
 **Example: Persistent view (string)**
+<!-- test: skip -->
 ```rask
 const key = line[0..eq]        // [view: until line 8]
 const value = line[eq+1..]     // [view: until line 8]
@@ -646,6 +673,7 @@ process(key, value)          // [uses views from lines 3-4]
 
 When hovering over a collection access:
 
+<!-- test: skip -->
 ```rask
 pool[h].health
 ^^^^^^ Instant view from Pool<Entity>
@@ -658,6 +686,7 @@ For multi-statement access:
 
 When hovering over a string slice:
 
+<!-- test: skip -->
 ```rask
 const key = line[0..eq]
     ^^^ Persistent view from string
@@ -670,6 +699,7 @@ The source cannot be mutated while this view exists.
 
 When a borrow conflict would occur, the IDE highlights both the borrow source and the conflict site:
 
+<!-- test: skip -->
 ```rask
 pool.modify(h, |entity| {    // [mutable borrow of pool]
     entity.health -= 10

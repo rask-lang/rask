@@ -21,7 +21,7 @@ Every function can be understood in isolation. Public signatures fully describe 
 Function signatures carry a lot of information in Rask:
 
 ```rask
-func process(read config: Config, take data: Vec<u8>) -> ProcessResult or IoError
+func process(config: Config, take data: Vec<u8>) -> ProcessResult or IoError
     with Pool<Node>
 ```
 
@@ -60,6 +60,8 @@ No implicit async. No algebraic effects. No monkey patching. No operator overloa
 ## The "One Obvious Way" Principle
 
 For each common operation, there should be one idiomatic pattern. This isn't Python's "there should be one obvious way" — it's a consequence of having a small, opinionated standard library and avoiding feature duplication.
+
+For the full canonical patterns reference covering all common operations, see [canonical-patterns.md](canonical-patterns.md). Below are the key examples.
 
 ### Canonical Patterns
 
@@ -148,7 +150,7 @@ These don't follow the main table but are standard in their domain:
 
 ### Audit Results
 
-The existing stdlib specs already follow these conventions at 98%+ adherence. This section formalizes what's already in practice. Future stdlib additions must follow these patterns; a linter rule (`rask lint`) will enforce them.
+The existing stdlib specs already follow these conventions at 98%+ adherence. This section formalizes what's already in practice. Future stdlib additions must follow these patterns; `rask lint` will enforce them. See [tooling/lint.md](tooling/lint.md) for the linter spec.
 
 ---
 
@@ -184,12 +186,13 @@ why: `own` transfers ownership — the caller can no longer access the value.
 - **One primary fix.** If there are alternatives, mention them briefly after the main suggestion. Don't present three options with no guidance on which to pick.
 - **The `fix:` section is machine-parseable.** Tools can extract the line number and replacement text to offer automated fixes.
 - **The `why:` section teaches.** Developers learn the rule; they don't just memorize the fix.
+- **Every new error must include `fix:` and `why:` text.** This is enforced in the compiler's `ToDiagnostic` implementations. The `fix` field provides a concrete action; the `why` field explains the constraint in one sentence.
 
 ---
 
 ## Tooling: `rask describe`
 
-A command that emits structured summaries of a module's public interface. Useful for any tool that needs an API overview without reading source.
+A command that emits structured summaries of a module's public interface. Useful for any tool that needs an API overview without reading source. For the formal JSON schema, see [tooling/describe-schema.md](tooling/describe-schema.md).
 
 ```
 rask describe src/server.rk --format json

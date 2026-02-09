@@ -165,17 +165,19 @@ The goal was to find a sweet spot: safer than C, more ergonomic than Rust, more 
 
 ### Parameter Passing
 
-Two parameter modes:
+Three parameter modes:
 
-**Borrow (default):** `func process(data: Data)` — Temporary access. Caller keeps ownership. Mutability inferred from usage (read vs write).
+**Borrow (default):** `func process(data: Data)` — Read-only access. Caller keeps ownership.
+
+**Mutate:** `func update(mutate data: Data)` — Mutable access. Caller keeps ownership.
 
 **Take:** `func consume(take data: Data)` — Ownership transfer. Caller's binding becomes invalid.
 
 **Default arguments:** `func connect(host: string, port: i32 = 8080)` — Optional parameters with compile-time constant defaults.
 
-**Projections:** `func heal(p: Player.{health})` — Borrow only specific fields, enabling disjoint field borrows across function calls.
+**Projections:** `func heal(mutate p: Player.{health})` — Borrow only specific fields, enabling disjoint field borrows across function calls.
 
-The calling convention is declared in the signature. Call sites do not repeat this information—the compiler knows from the signature. (Per Principle 7, IDE shows the mode at each call site as ghost text, including inferred mutability.)
+The calling convention is declared in the signature. Call sites do not repeat this information—the compiler knows from the signature. Mutation is always visible: if a function changes your data, `mutate` appears in the signature.
 
 ### Ownership and Uniqueness
 

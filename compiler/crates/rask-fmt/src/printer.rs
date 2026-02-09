@@ -377,15 +377,15 @@ impl<'a> Printer<'a> {
         if param.name == "self" {
             if param.is_take {
                 self.emit("take ");
-            } else if param.is_read {
-                self.emit("read ");
+            } else if param.is_mutate {
+                self.emit("mutate ");
             }
             self.emit("self");
         } else {
             if param.is_take {
                 self.emit("take ");
-            } else if param.is_read {
-                self.emit("read ");
+            } else if param.is_mutate {
+                self.emit("mutate ");
             }
             self.emit(&param.name);
             self.emit(": ");

@@ -209,6 +209,7 @@ impl Parser {
             TokenKind::Take => "take".to_string(),
             TokenKind::Own => "own".to_string(),
             TokenKind::ReadKw => "read".to_string(),
+            TokenKind::MutateKw => "mutate".to_string(),
             TokenKind::Unsafe => "unsafe".to_string(),
             TokenKind::Comptime => "comptime".to_string(),
             TokenKind::Native => "native".to_string(),
@@ -531,7 +532,7 @@ impl Parser {
 
         loop {
             let is_take = self.match_token(&TokenKind::Take);
-            let is_read = if !is_take { self.match_token(&TokenKind::ReadKw) } else { false };
+            let is_mutate = if !is_take { self.match_token(&TokenKind::MutateKw) } else { false };
             let name = self.expect_ident_or_keyword()?;
 
             let ty = if self.match_token(&TokenKind::Colon) {
@@ -552,7 +553,7 @@ impl Parser {
                 None
             };
 
-            params.push(Param { name, ty, is_take, is_read, default });
+            params.push(Param { name, ty, is_take, is_mutate, default });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;

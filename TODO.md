@@ -143,10 +143,10 @@ Tools that make it actually usable:
 - [x] LSP completion — type-aware completions, go-to-definition
 - [x] Test runner — `rask test` command
 - [x] Formatter — `rask fmt`
-- [ ] `rask describe` — structured module summaries (JSON) for tool consumption
+- [ ] `rask describe` — implement command (schema spec done: [specs/tooling/describe-schema.md](specs/tooling/describe-schema.md))
 - [ ] `rask explain` — compiler-generated function explanations from analysis
-- [ ] Naming convention linter — enforce `is_*`, `into_*`, `as_*`, `to_*`, `from_*`, `with_*` patterns
-- [ ] Structured error fixes — machine-parseable `fix:` blocks in diagnostics
+- [ ] `rask lint` — implement command (spec done: [specs/tooling/lint.md](specs/tooling/lint.md))
+- [x] Structured error fixes — `fix:` / `why:` fields in all diagnostics
 
 ---
 
@@ -156,20 +156,21 @@ Tools that make it actually usable:
 - [ ] Decide: `char` as a type, or just `u32` + validation?
 - [ ] Decide: `discard` keyword for wildcards on non-Copy types
 - [ ] Write guidelines: when to panic vs return error
+- [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
 - [x] Spec `Owned<T>` semantics — see [owned.md](specs/memory/owned.md)
 
 ### Medium (Should decide before Phase 3)
-- [x] Consolidate parameter modes — see [parameters.md](specs/memory/parameters.md) (borrow/read/take)
-  - [ ] Type checker: enforce `read` parameter mode (`ParamMode::Read`)
+- [x] Consolidate parameter modes — see [parameters.md](specs/memory/parameters.md) (default=read-only/mutate/take)
+  - [x] Type checker: enforce `mutate` parameter mode (`ParamMode::Mutate`)
 - [x] Design shared state primitives — `Shared<T>`, see [sync.md](specs/concurrency/sync.md)
 - [x] Decide multi-element access syntax — `with...as` binding + closure pattern
 - [ ] Design task-local storage syntax
 
 ### Machine Readability (see [specs/machine-readability.md](specs/machine-readability.md))
-- [ ] Formalize "one obvious way" principle — document canonical patterns for each operation
-- [ ] Naming convention enforcement — linter rule for stdlib method naming
-- [ ] Structured error fixes — `fix:` / `why:` sections in all error messages
-- [ ] `rask describe` JSON schema — define output format for tool consumption
+- [x] Formalize "one obvious way" principle — see [specs/canonical-patterns.md](specs/canonical-patterns.md)
+- [x] Naming convention enforcement — see [specs/tooling/lint.md](specs/tooling/lint.md)
+- [x] Structured error fixes — `fix:` / `why:` fields added to all compiler diagnostics
+- [x] `rask describe` JSON schema — see [specs/tooling/describe-schema.md](specs/tooling/describe-schema.md)
 
 ### Deferred
 - [ ] Capability-based security for dependencies (restrict filesystem/network access)

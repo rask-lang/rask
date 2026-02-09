@@ -348,13 +348,13 @@ impl<'a> TraitChecker<'a> {
         let self_str = match sig.self_param {
             SelfParam::None => "",
             SelfParam::Value => "self, ",
-            SelfParam::Read => "read self, ",
+            SelfParam::Mutate => "mutate self, ",
             SelfParam::Take => "take self, ",
         };
         let params_str: Vec<String> = sig.params.iter().map(|(t, mode)| {
             match mode {
                 ParamMode::Take => format!("take {:?}", t),
-                ParamMode::Read => format!("read {:?}", t),
+                ParamMode::Mutate => format!("mutate {:?}", t),
                 ParamMode::Default => format!("{:?}", t),
             }
         }).collect();
