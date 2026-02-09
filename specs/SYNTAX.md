@@ -1164,7 +1164,7 @@ println("{sum}")
 | Functions | `func name(params) -> Type` | Familiar |
 | Immutable binding | `const x = ...` | Cannot reassign |
 | Mutable binding | `let x = ...` | Can reassign |
-| Mutable | `mutate param` | Explicit read borrow |
+| Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
 | Result | `T or E` | Same as `Result<T, E>` |

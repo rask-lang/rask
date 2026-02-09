@@ -8,6 +8,19 @@ Keep docs short. In chat, explain things to me—I'm not a language architect ex
 - Run commands separately instead of chaining them
 - Create test scripts in `/tmp`, not the main project folder
 
+**CLI tools** (binary at `compiler/target/release/rask`):
+
+| Command | Use |
+|---------|-----|
+| `rask lint <file>` | Check .rk files for naming/style/idiom issues |
+| `rask test-specs <path>` | Verify spec code blocks parse + show staleness warnings |
+| `rask describe <file>` | Show a module's public API (structs, funcs, enums) |
+| `rask fmt <file>` | Format .rk source files |
+| `rask check <file>` | Type-check a .rk file |
+| `rask run <file>` | Execute a .rk program |
+
+Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
+
 # Rask Writing Style Guide
 
 **Core principle:** Sound like a developer with a vision, not a committee or AI. Natural flow over perfect grammar.

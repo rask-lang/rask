@@ -215,7 +215,7 @@ Output:
         {
           "name": "start",
           "self_mode": "take",
-          "params": [{ "name": "config", "type": "Config", "mode": "read" }],
+          "params": [{ "name": "config", "type": "Config", "mode": "borrow" }],
           "returns": { "ok": "()", "err": "ServerError" },
           "context": ["Pool<Connection>"]
         }

@@ -6,6 +6,7 @@
 .refinement/
 research/
 .claude
+.devcontainer/
 
 # mdBook build artifacts
 docs/build/
