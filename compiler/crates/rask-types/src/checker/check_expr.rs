@@ -176,7 +176,7 @@ impl TypeChecker {
                 let result = if let Some(last) = stmts.last() {
                     match &last.kind {
                         StmtKind::Expr(e) => self.infer_expr(e),
-                        StmtKind::Return(_) | StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {
+                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
                             Type::Never
                         }
                         _ => Type::Unit,

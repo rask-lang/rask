@@ -123,12 +123,17 @@ impl TypeChecker {
                 }
                 self.pop_scope();
             }
-            StmtKind::Break(_) | StmtKind::Continue(_) | StmtKind::Deliver { .. } => {}
-            StmtKind::Ensure { body, catch } => {
+            StmtKind::Break { value, .. } => {
+                if let Some(v) = value {
+                    self.infer_expr(v);
+                }
+            }
+            StmtKind::Continue(_) => {}
+            StmtKind::Ensure { body, else_handler } => {
                 for s in body {
                     self.check_stmt(s);
                 }
-                if let Some((_name, handler)) = catch {
+                if let Some((_name, handler)) = else_handler {
                     for s in handler {
                         self.check_stmt(s);
                     }

@@ -219,7 +219,7 @@ for (key, value) in config.iter() {
 | `Map<string, V>` key iteration | COMPILE ERROR: use `.iter()` or `.take_all()` |
 | Out-of-bounds index | PANIC |
 | Invalid handle | PANIC (generation mismatch) |
-| `deliver value` for !Copy | Requires `.clone()` |
+| `break value` for !Copy | Requires `.clone()` |
 | Infinite range (`0..`) | Works (lazy) |
 | Zero-sized types (`Vec<()>`) | Yields indices 0..len |
 

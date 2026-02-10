@@ -10,7 +10,7 @@ How do conditionals, loops, and control transfer work in Rask? What is the disti
 Context-dependent expressions. The assignment context determines whether a construct produces a value or executes for side effects. Functions require explicit `return`. Labels use `label:` syntax.
 
 ## Rationale
-Most control flow is for side effects (logging, validation, mutation). Assignment context (`const x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity. `return` always means "exit the function" — no overloading. `loop` with `deliver` provides clear syntax for value-returning loops.
+Most control flow is for side effects (logging, validation, mutation). Assignment context (`const x = match/if ...`) naturally signals value production; standalone constructs are side effects. This eliminates trailing semicolons without ambiguity. `return` always means "exit the function" — no overloading. `loop` with `break value` provides clear syntax for value-returning loops.
 
 ## Specification
 
@@ -81,7 +81,7 @@ func format_size(bytes: i64) -> string {
 | `const x = match/if ...` | Expression — arms/branches produce values |
 | Standalone `match/if ...` | Statement — side effects, produces `()` |
 | `return value` | Always exits the function |
-| `deliver value` | Always exits the loop |
+| `break value` | Exits the loop with a value (`loop` only) |
 | Block `{ }` in expression | Last expression is the value |
 | Block `{ }` in statement | Produces `()` |
 
@@ -265,7 +265,7 @@ let (a, b) = result is Ok else { return Err(e) }
 | `let v = x is P else { ... }` | Outer scope | Early exit / guard |
 
 **Rules:**
-- `else` block must diverge (`return`, `break`, `continue`, `panic`, `deliver`)
+- `else` block must diverge (`return`, `break`, `continue`, `panic`)
 - `else` doesn't diverge: compiler error "else block must diverge"
 - Linear resources: pattern doesn't match, value available in `else` for cleanup
 
@@ -304,29 +304,29 @@ loop { body }
 ```
 
 **Semantics:**
-- Repeats forever until `break` or `deliver`
-- `deliver value` exits and produces a value (expression)
-- `break` exits without a value (loop evaluates to `()`)
-- Type is determined by `deliver` expressions
+- Repeats forever until `break`
+- `break value` exits and produces a value (expression)
+- `break` (no value) exits the loop (loop evaluates to `()`)
+- Type is determined by `break value` expressions
 
 ```rask
 const input = loop {
     const x = read_input()
-    if x.is_valid() { deliver x }
+    if x.is_valid() { break x }
     println("Invalid, try again")
 }
 ```
 
 | Exit | Loop Type | Meaning |
 |------|-----------|---------|
-| `deliver value` | Type of value | Exit with result |
+| `break value` | Type of value | Exit with result |
 | `break` | `()` | Exit without result |
 | No exit reachable | `Never` | Infinite loop |
 
 **Rules:**
-- All `deliver` expressions must have the same type
-- If both `deliver` and `break` are used, `deliver` determines type and `break` is error
-- `deliver` only valid inside `loop` (not `while` or `for`)
+- All `break value` expressions must have the same type
+- If both `break value` and bare `break` are used, `break value` determines type and bare `break` is an error
+- `break value` only valid inside `loop` (not `while` or `for`)
 
 ### Conditional Loop: `while`
 
@@ -345,7 +345,7 @@ while condition { body }
 - Parentheses around condition allowed but not required
 - `break` exits loop
 - `continue` skips to next iteration
-- `deliver` not allowed (use `loop` for value-returning)
+- `break value` not allowed (use `loop` for value-returning)
 
 ```rask
 while queue.len() > 0 {
@@ -361,7 +361,7 @@ Fully specified in [Loops](loops.md) and [Iteration](../stdlib/iteration.md).
 **Key points:**
 - Produces `()` (statement, not expression)
 - `break` and `continue` supported
-- `deliver` not allowed (use `loop` for value-returning)
+- `break value` not allowed (use `loop` for value-returning)
 - Labels supported: `label: for i in coll { ... }`
 
 ### Loop Labels
@@ -390,14 +390,14 @@ outer: for i in rows {
 - Labels must be unique within function scope
 - `break label` exits labeled loop
 - `continue label` continues labeled loop
-- `deliver label value` exits labeled `loop` with value
+- `break label value` exits labeled `loop` with value
 
 | Statement | Behavior |
 |-----------|----------|
 | `break` | Exit innermost loop |
 | `break label` | Exit labeled loop |
-| `deliver value` | Exit innermost `loop` with value |
-| `deliver label value` | Exit labeled `loop` with value |
+| `break value` | Exit innermost `loop` with value |
+| `break label value` | Exit labeled `loop` with value |
 | `continue` | Next iteration of innermost loop |
 | `continue label` | Next iteration of labeled loop |
 
@@ -500,7 +500,7 @@ Some expressions never complete normally:
 |------------|------|
 | `return ...` | `Never` |
 | `break` | `Never` |
-| `deliver ...` | `Never` |
+| `break ...` | `Never` |
 | `continue` | `Never` |
 | `panic(...)` | `Never` |
 | `loop { /* no exit */ }` | `Never` |
@@ -521,7 +521,7 @@ let x: i32 = if cond { 42 } else { panic("nope") }
 | Normal block end | Yes |
 | `return` | Yes |
 | `break` | Yes |
-| `deliver` | Yes |
+| `break value` | Yes |
 | `continue` | Yes |
 | `try` propagation | Yes |
 | `panic` | Yes |
@@ -533,14 +533,14 @@ See [Ensure Cleanup](../ecosystem/ensure.md) for full specification.
 | Case | Behavior |
 |------|----------|
 | `if` without else, used as expression | Error unless consequent is `()` |
-| `deliver` in `while` or `for` | Error: use `loop` instead |
+| `break value` in `while` or `for` | Error: use `loop` instead |
 | Unlabeled `break` outside loop | Error: break outside loop |
 | `break label` with nonexistent label | Error: undefined label |
 | `return` in `ensure` body | Error: cannot return from ensure |
-| `break`/`deliver`/`continue` in `ensure` body | Error: cannot break from ensure |
+| `break`/`continue` in `ensure` body | Error: cannot break from ensure |
 | Empty `if` branches | Valid: `if c {} else {}` evaluates to `()` |
 | Nested `ensure` in loop | Each iteration registers new ensure |
-| `loop` with both `deliver` and `break` | Error: inconsistent exit types |
+| `loop` with both `break value` and bare `break` | Error: inconsistent exit types |
 | `loop` without exit | Type is `Never` (infinite loop) |
 
 ## Examples
@@ -567,12 +567,12 @@ const opts = match parse_args(args) {
 }
 ```
 
-### Loop with Deliver
+### Loop with Break Value
 ```rask
 const input = loop {
     const x = read_input()
     if x.is_valid() {
-        deliver x
+        break x
     }
     println("Invalid, try again")
 }
@@ -585,28 +585,28 @@ func find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
     let i = 0
     loop {
         if i >= items.len() {
-            deliver None
+            break None
         }
         if items[i] == target {
-            deliver Some(i)
+            break Some(i)
         }
         i += 1
     }
 }
 ```
 
-### Labeled Deliver
+### Labeled Break with Value
 ```rask
 func find_in_matrix<T: Eq>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
     search: loop {
         for i in 0..matrix.len() {
             for j in 0..matrix[i].len() {
                 if matrix[i][j] == target {
-                    deliver search Some((i, j))
+                    break search Some((i, j))
                 }
             }
         }
-        deliver None
+        break None
     }
 }
 ```
@@ -650,5 +650,5 @@ func run_server(server: Server) {
 |---------|---------|-------|
 | `return` | Exit function with value | Functions |
 | `break` | Exit loop (no value) | `loop`, `while`, `for` |
-| `deliver` | Exit loop with value | `loop` only |
+| `break value` | Exit loop with value | `loop` only |
 | `continue` | Next iteration | `loop`, `while`, `for` |

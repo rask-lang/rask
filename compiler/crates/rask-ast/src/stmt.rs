@@ -46,15 +46,13 @@ pub enum StmtKind {
     },
     /// Return statement
     Return(Option<Expr>),
-    /// Break statement
-    Break(Option<String>),
+    /// Break statement (optional label, optional value for loop-with-value)
+    Break {
+        label: Option<String>,
+        value: Option<Expr>,
+    },
     /// Continue statement
     Continue(Option<String>),
-    /// Deliver statement (loop with value)
-    Deliver {
-        label: Option<String>,
-        value: Expr,
-    },
     /// While loop
     While {
         cond: Expr,
@@ -81,8 +79,8 @@ pub enum StmtKind {
     /// Ensure block (deferred cleanup)
     Ensure {
         body: Vec<Stmt>,
-        /// Optional catch clause: (param_name, handler_body)
-        catch: Option<(String, Vec<Stmt>)>,
+        /// Optional else clause: (param_name, handler_body)
+        else_handler: Option<(String, Vec<Stmt>)>,
     },
     /// Comptime block (compile-time evaluated)
     Comptime(Vec<Stmt>),

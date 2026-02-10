@@ -652,10 +652,10 @@ The `else` block must diverge (`return`, `break`, `panic`).
 
 **Infinite loop with value:**
 ```rask
-// Loop that produces a value via 'deliver'
+// Loop that produces a value via 'break'
 const input = loop {
     const x = read_input()
-    if x.is_valid(): deliver x    // Exit loop with value
+    if x.is_valid(): break x    // Exit loop with value
     println("Invalid, try again")
 }
 ```
@@ -692,9 +692,9 @@ for (key, value) in map {
 }
 
 // Step ranges
-for i in 0..100 step 2: process_even(i)      // 0, 2, 4, ..., 98
-for i in 10..0 step -1: countdown(i)         // 10, 9, 8, ..., 1
-for x in 0.0..1.0 step 0.25: interpolate(x)  // 0.0, 0.25, 0.5, 0.75
+for i in (0..100).step(2): process_even(i)      // 0, 2, 4, ..., 98
+for i in (10..0).step(-1): countdown(i)         // 10, 9, 8, ..., 1
+for x in (0.0..1.0).step(0.25): interpolate(x)  // 0.0, 0.25, 0.5, 0.75
 ```
 
 **Labels:**
@@ -705,12 +705,12 @@ outer: for row in rows {
     }
 }
 
-// Deliver from labeled loop
+// Break with value from labeled loop
 const result = search: loop {
     for item in items {
-        if item.matches(): deliver search item
+        if item.matches(): break search item
     }
-    if no_more(): deliver search None
+    if no_more(): break search None
 }
 ```
 
@@ -722,10 +722,10 @@ const result = search: loop {
 | `return` | Exit function with `()` |
 | `break` | Exit loop |
 | `break label` | Exit labeled loop |
+| `break value` | Exit `loop` with value |
+| `break label value` | Exit labeled `loop` with value |
 | `continue` | Next iteration |
 | `continue label` | Next iteration of labeled loop |
-| `deliver value` | Exit `loop` with value |
-| `deliver label value` | Exit labeled `loop` with value |
 
 ---
 
@@ -1021,7 +1021,7 @@ println("{sum}")
 | Pattern condition | `if x is Pattern(v)` | Non-exhaustive, binds `v` |
 | Guard extraction | `let v = x is P else { }` | Binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
-| Loop value | `deliver expr` | Exit loop with value |
+| Loop value | `break expr` | Exit loop with value |
 | Attributes | `@name` | Familiar from Python/Java |
 | Omitted types | `func f(x) { x + 1 }` | Private functions only; see [gradual constraints](types/gradual-constraints.md) |
 | Generics | Implicit PascalCase | `where` for constraints |

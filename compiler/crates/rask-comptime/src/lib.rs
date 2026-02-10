@@ -624,11 +624,16 @@ impl ComptimeInterpreter {
                 Ok(ControlFlow::Return(value))
             }
 
-            StmtKind::Break(label) => {
+            StmtKind::Break { label, value } => {
                 if label.is_some() {
                     return Err(ComptimeError::NotSupported("labeled break".to_string()));
                 }
-                Ok(ControlFlow::Break(None))
+                let val = if let Some(v) = value {
+                    Some(self.eval_expr(v)?)
+                } else {
+                    None
+                };
+                Ok(ControlFlow::Break(val))
             }
 
             StmtKind::Continue(label) => {
@@ -636,11 +641,6 @@ impl ComptimeInterpreter {
                     return Err(ComptimeError::NotSupported("labeled continue".to_string()));
                 }
                 Ok(ControlFlow::Continue)
-            }
-
-            StmtKind::Deliver { value, .. } => {
-                let val = self.eval_expr(value)?;
-                Ok(ControlFlow::Break(Some(val)))
             }
 
             StmtKind::While { cond, body } => {

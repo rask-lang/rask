@@ -455,7 +455,7 @@ block_loop_exit:
     <continues>
 ```
 
-`deliver value` in a loop creates a block that assigns the value and jumps to `block_loop_exit`, where the value is available as the loop's result.
+`break value` in a loop creates a block that assigns the value and jumps to `block_loop_exit`, where the value is available as the loop's result.
 
 #### Closures
 

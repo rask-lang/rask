@@ -42,7 +42,7 @@ On by default. Suppress with `@allow(warning_name)`.
 | W0201 | `unused_import` | Import never referenced in this file |
 | W0301 | `unused_result` | `T or E` return value not checked |
 | W0901 | `unused_variable` | Binding never read after assignment |
-| W0902 | `unreachable_code` | Code after `return`, `break`, or `deliver` |
+| W0902 | `unreachable_code` | Code after `return` or `break` |
 | W0903 | `deprecated` | Calling an item marked `@deprecated` |
 
 ### `unused_variable` (W0901)
@@ -120,7 +120,7 @@ I considered making this an error, but there are rare legitimate cases — fire-
 
 ### `unreachable_code` (W0902)
 
-Fires when code follows a `return`, `break`, `deliver`, or diverging expression.
+Fires when code follows a `return`, `break`, or diverging expression.
 
 ```rask
 func check(x: i32) -> bool {
