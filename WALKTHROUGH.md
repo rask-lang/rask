@@ -1351,8 +1351,8 @@ visibility—if it's in the package, the whole package can use it.
 ### Imports
 
 ```rask
-import std.io                  // Use as: io.print()
-import std.net.http            // Use as: http.get()
+import io                      // Use as: io.print()
+import http                    // Use as: http.get()
 import mylib.Parser            // Use directly: Parser
 import mylib.{Parser, Lexer}   // Multiple items
 import mylib as ml             // Alias: ml.Parser

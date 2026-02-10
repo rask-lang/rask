@@ -28,7 +28,7 @@ Semantic hash operates on **desugared AST**—after operator desugaring but befo
 | AST node kind | Discriminant tag | `Call` vs `If` vs `Match` |
 | Control flow structure | Nesting and ordering | `if/else` arm count, `match` arm count |
 | Literal values | Exact value | `42`, `"hello"`, `true` |
-| Callee identity | Resolved name + package | `std.io.print` |
+| Callee identity | Resolved name + package | `io.print` |
 | Callee hash | Callee's own semantic hash | See Merkle Tree section |
 | Type annotations | Explicit type in source | `: i32`, `-> string` |
 | Parameter modes | Borrow vs take | `take x: File` |

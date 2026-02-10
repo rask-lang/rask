@@ -2,7 +2,7 @@
 
 ## Decision
 
-**Default: Panic on overflow.** Consistent in debug and release. Use `Wrapping<T>` or `Saturating<T>` from `std.num` for non-panicking arithmetic.
+**Default: Panic on overflow.** Consistent in debug and release. Use `Wrapping<T>` or `Saturating<T>` from `num` for non-panicking arithmetic.
 
 ## Rationale
 
@@ -16,7 +16,7 @@ I prioritize safety over silent bugs. Unlike Rust (panic-debug/wrap-release), no
 | C | Wrap (UB for signed) | Wrap | None |
 | Rust | Panic | Wrap | `.wrapping_add()` |
 | Swift | Panic | Panic | `&+` operator |
-| **Rask** | Panic | Panic | `Wrapping<T>` from `std.num` |
+| **Rask** | Panic | Panic | `Wrapping<T>` from `num` |
 
 Safer than Rust: no release-only bugs from silent wrapping.
 
@@ -24,10 +24,10 @@ Safer than Rust: no release-only bugs from silent wrapping.
 
 ### Module Location
 
-`Wrapping<T>` and `Saturating<T>` live in `std.num`, not the global prelude. They're specialized types for niche algorithms — the safe default shouldn't share namespace with opt-outs.
+`Wrapping<T>` and `Saturating<T>` live in `num`, not the global prelude. They're specialized types for niche algorithms — the safe default shouldn't share namespace with opt-outs.
 
 ```rask
-use std.num.{Wrapping, Saturating}
+import num.{Wrapping, Saturating}
 ```
 
 One-off methods (`.wrapping_add()`, `.saturating_add()`, `.checked_add()`, etc.) stay on integer types directly — no import needed.
@@ -55,7 +55,7 @@ const y = x + 1   // Panic: "integer overflow: 255 + 1 exceeds u8 range"
 For algorithms that intentionally wrap (hashing, checksums, cyclic counters):
 
 ```rask
-use std.num.Wrapping
+import num.Wrapping
 
 func hash(data: []u8) -> u32 {
     const h = Wrapping(5381u32)
@@ -81,7 +81,7 @@ func hash(data: []u8) -> u32 {
 For algorithms that clamp to bounds (audio, DSP, color):
 
 ```rask
-use std.num.Saturating
+import num.Saturating
 
 func apply_gain(samples: []Saturating<i16>, gain: i16) {
     for s in samples {
@@ -258,7 +258,7 @@ unsafe {
 **Guidance:** Start with default `+`. Profile. If overflow checks are a bottleneck:
 1. Check if compiler already elided (look at assembly)
 2. Try explicit widening or bounded loops
-3. Use `Wrapping<T>` from `std.num` for inherently wrapping algorithms
+3. Use `Wrapping<T>` from `num` for inherently wrapping algorithms
 4. Use `.wrapping_add()` for isolated operations
 5. Last resort: `unsafe unchecked_*`
 
@@ -297,7 +297,7 @@ thread 'main' panicked at 'shift amount 9 exceeds u8 bit width (8)'
 Compile-time arithmetic is always checked. Overflow is a compile error:
 
 ```rask
-use std.num.Wrapping
+import num.Wrapping
 
 const X: u8 = 200 + 100   // Compile error: overflow in constant
 const Y: u8 = Wrapping(200u8) + Wrapping(100)  // OK via wrapping type
@@ -309,7 +309,7 @@ const Z: u8 = (200u8).wrapping_add(100)        // OK via method
 Generic code uses the same operators:
 
 ```rask
-use std.num.Wrapping
+import num.Wrapping
 
 func increment<T: Integer>(x: T) -> T {
     x + T.ONE   // Checked by default
@@ -325,9 +325,9 @@ func wrapping_increment<T: Integer>(x: Wrapping<T>) -> Wrapping<T> {
 | Need | Use |
 |------|-----|
 | Safe arithmetic (default) | `+`, `-`, `*` |
-| Intentional wrapping (algorithm) | `Wrapping<T>` from `std.num` |
+| Intentional wrapping (algorithm) | `Wrapping<T>` from `num` |
 | Intentional wrapping (one-off) | `.wrapping_add()` method |
-| Clamping to bounds (algorithm) | `Saturating<T>` from `std.num` |
+| Clamping to bounds (algorithm) | `Saturating<T>` from `num` |
 | Clamping to bounds (one-off) | `.saturating_add()` method |
 | Handle overflow explicitly | `.checked_add()` |
 | Check if overflow occurred | `.overflowing_add()` |
