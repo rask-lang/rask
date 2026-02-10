@@ -121,10 +121,10 @@ impl Interpreter {
         }
     }
 
-    /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to catch handlers.
+    /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to else handlers.
     pub(super) fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeError> {
         for ensure_stmt in ensures.iter().rev() {
-            if let StmtKind::Ensure { body, catch } = &ensure_stmt.kind {
+            if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
                 let result = self.exec_ensure_body(body);
 
                 match result {
@@ -132,14 +132,14 @@ impl Interpreter {
                         if let Value::Enum { name, variant, fields } = &value {
                             if name == "Result" && variant == "Err" {
                                 let err_val = fields.first().cloned().unwrap_or(Value::Unit);
-                                self.handle_ensure_error(err_val, catch);
+                                self.handle_ensure_error(err_val, else_handler);
                             }
                         }
                     }
                     Err(RuntimeError::Panic(msg)) => return Some(RuntimeError::Panic(msg)),
                     Err(RuntimeError::Exit(code)) => return Some(RuntimeError::Exit(code)),
                     Err(RuntimeError::TryError(val)) => {
-                        self.handle_ensure_error(val, catch);
+                        self.handle_ensure_error(val, else_handler);
                     }
                     Err(_) => {}
                 }
@@ -156,8 +156,8 @@ impl Interpreter {
         Ok(last_value)
     }
 
-    fn handle_ensure_error(&mut self, error_value: Value, catch: &Option<(String, Vec<Stmt>)>) {
-        if let Some((name, handler)) = catch {
+    fn handle_ensure_error(&mut self, error_value: Value, else_handler: &Option<(String, Vec<Stmt>)>) {
+        if let Some((name, handler)) = else_handler {
             self.env.push_scope();
             self.env.define(name.clone(), error_value);
             let _ = self.exec_ensure_body(handler);

@@ -717,13 +717,16 @@ impl Resolver {
                     self.resolve_expr(v);
                 }
             }
-            StmtKind::Break(label) => {
+            StmtKind::Break { label, value } => {
                 if let Some(lbl) = label {
                     if !self.scopes.label_in_scope(lbl) {
                         self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
                     }
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_break(None, stmt.span));
+                }
+                if let Some(v) = value {
+                    self.resolve_expr(v);
                 }
             }
             StmtKind::Continue(label) => {
@@ -734,16 +737,6 @@ impl Resolver {
                 } else if !self.scopes.in_loop() {
                     self.errors.push(ResolveError::invalid_continue(None, stmt.span));
                 }
-            }
-            StmtKind::Deliver { label, value } => {
-                if let Some(lbl) = label {
-                    if !self.scopes.label_in_scope(lbl) {
-                        self.errors.push(ResolveError::invalid_break(Some(lbl.clone()), stmt.span));
-                    }
-                } else if !self.scopes.in_loop() {
-                    self.errors.push(ResolveError::invalid_break(None, stmt.span));
-                }
-                self.resolve_expr(value);
             }
             StmtKind::While { cond, body } => {
                 self.resolve_expr(cond);
@@ -787,13 +780,13 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            StmtKind::Ensure { body, catch } => {
+            StmtKind::Ensure { body, else_handler } => {
                 self.scopes.push(ScopeKind::Block);
                 for s in body {
                     self.resolve_stmt(s);
                 }
                 self.scopes.pop();
-                if let Some((name, handler)) = catch {
+                if let Some((name, handler)) = else_handler {
                     self.scopes.push(ScopeKind::Block);
                     let sym_id = self.symbols.insert(
                         name.clone(),

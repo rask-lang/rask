@@ -278,7 +278,7 @@ ensure for file in files.take_all() {
 const files: Pool<File> = Pool.new()
 ensure for file in files.take_all() {
     file.close()
-} catch |e| log("Cleanup error: {}", e)
+} else |e| log("Cleanup error: {}", e)
 ```
 
 ### Pool Helper Methods for Resource Types

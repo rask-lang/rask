@@ -12,8 +12,8 @@ Rask supports several range syntaxes for iteration:
 |--------|------|-------|-----|----------|
 | `0..n` | `Range<Int>` | 0 | n-1 | Half-open range [0, n) |
 | `0..=n` | `RangeInclusive<Int>` | 0 | n | Closed range [0, n] |
-| `0..n step s` | `StepRange<Int>` | 0 | <n | Stepped half-open range |
-| `0..=n step s` | `StepRangeInclusive<Int>` | 0 | ≤n | Stepped closed range |
+| `(0..n).step(s)` | `StepRange<Int>` | 0 | <n | Stepped half-open range |
+| `(0..=n).step(s)` | `StepRangeInclusive<Int>` | 0 | ≤n | Stepped closed range |
 | `0..` | `RangeFrom<Int>` | 0 | ∞ | Infinite range, no upper bound |
 | `..n` | `RangeTo<Int>` | N/A | n-1 | Cannot iterate (no start) |
 | `..` | `RangeFull` | N/A | N/A | Cannot iterate (unbounded) |
@@ -151,27 +151,27 @@ extend RangeInclusive<T> with Iterator<T> where T: Int {
 
 **Step Ranges:**
 
-The `step` keyword allows iteration with custom increments.
+The `.step()` method on ranges allows iteration with custom increments.
 
 ```rask
-for i in 0..100 step 2 {     // 0, 2, 4, ..., 98
+for i in (0..100).step(2) {     // 0, 2, 4, ..., 98
     process(i)
 }
 
-for i in 0..=100 step 5 {    // 0, 5, 10, ..., 100
+for i in (0..=100).step(5) {    // 0, 5, 10, ..., 100
     process(i)
 }
 
-for i in 10..0 step -1 {     // 10, 9, 8, ..., 1
+for i in (10..0).step(-1) {     // 10, 9, 8, ..., 1
     countdown(i)
 }
 
-for x in 0.0..1.0 step 0.1 { // Floats: 0.0, 0.1, 0.2, ..., 0.9
+for x in (0.0..1.0).step(0.1) { // Floats: 0.0, 0.1, 0.2, ..., 0.9
     interpolate(x)
 }
 ```
 
-**Syntax:** `start..end step increment` or `start..=end step increment`
+**Syntax:** `(start..end).step(increment)` or `(start..=end).step(increment)`
 
 **Rules:**
 
@@ -186,15 +186,15 @@ for x in 0.0..1.0 step 0.1 { // Floats: 0.0, 0.1, 0.2, ..., 0.9
 
 | Expression | Values |
 |------------|--------|
-| `0..10 step 3` | 0, 3, 6, 9 |
-| `0..=10 step 3` | 0, 3, 6, 9 (10 not included, 9+3 > 10) |
-| `10..0 step -2` | 10, 8, 6, 4, 2 |
-| `10..=0 step -2` | 10, 8, 6, 4, 2, 0 |
-| `0..10 step -1` | Empty (direction mismatch) |
+| `(0..10).step(3)` | 0, 3, 6, 9 |
+| `(0..=10).step(3)` | 0, 3, 6, 9 (10 not included, 9+3 > 10) |
+| `(10..0).step(-2)` | 10, 8, 6, 4, 2 |
+| `(10..=0).step(-2)` | 10, 8, 6, 4, 2, 0 |
+| `(0..10).step(-1)` | Empty (direction mismatch) |
 
 **Type constraints:**
 - Step type must match range type
-- Floats: beware precision: `0.0..1.0 step 0.3` yields 0.0, 0.3, 0.6, 0.9 (not exactly 0.9)
+- Floats: beware precision: `(0.0..1.0).step(0.3)` yields 0.0, 0.3, 0.6, 0.9 (not exactly 0.9)
 
 Overflow: Same rules as regular increment—debug panics, release wraps. Use `.take()` to bound.
 
@@ -228,9 +228,9 @@ for i in 0u8..10 {  // i explicitly u8
 | `0..=255` (u8) | ✅ Yes | Iterates 0..255, terminates correctly |
 | `0..256` (u8) | ❌ No | Compile error: 256 doesn't fit in u8 |
 | `0u8...take(300)` | ✅ Yes | Wraps, takes 300 values (with wrapping) |
-| `0..100 step 2` | ✅ Yes | Iterates 0, 2, 4, ..., 98 |
-| `10..0 step -1` | ✅ Yes | Iterates 10, 9, 8, ..., 1 |
-| `0..10 step 0` | ❌ No | Compile error: zero step |
+| `(0..100).step(2)` | ✅ Yes | Iterates 0, 2, 4, ..., 98 |
+| `(10..0).step(-1)` | ✅ Yes | Iterates 10, 9, 8, ..., 1 |
+| `(0..10).step(0)` | ❌ No | Compile error: zero step |
 
 ---
 

@@ -108,8 +108,8 @@ impl Desugarer {
             }
             StmtKind::Return(Some(e)) => self.desugar_expr(e),
             StmtKind::Return(None) => {}
-            StmtKind::Break(_) | StmtKind::Continue(_) => {}
-            StmtKind::Deliver { value, .. } => self.desugar_expr(value),
+            StmtKind::Break { value: Some(value), .. } => self.desugar_expr(value),
+            StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
             StmtKind::While { cond, body } => {
                 self.desugar_expr(cond);
                 for s in body {
@@ -133,11 +133,11 @@ impl Desugarer {
                     self.desugar_stmt(s);
                 }
             }
-            StmtKind::Ensure { body, catch } => {
+            StmtKind::Ensure { body, else_handler } => {
                 for s in body {
                     self.desugar_stmt(s);
                 }
-                if let Some((_name, handler)) = catch {
+                if let Some((_name, handler)) = else_handler {
                     for s in handler {
                         self.desugar_stmt(s);
                     }

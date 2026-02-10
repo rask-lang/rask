@@ -48,22 +48,14 @@ enum RawToken {
     Break,
     #[token("continue")]
     Continue,
-    #[token("deliver")]
-    Deliver,
     #[token("spawn")]
     Spawn,
-    #[token("spawn_thread")]
-    SpawnThread,
-    #[token("spawn_raw")]
-    SpawnRaw,
     #[token("select")]
     Select,
     #[token("with")]
     With,
     #[token("ensure")]
     Ensure,
-    #[token("catch")]
-    Catch,
     #[token("take")]
     Take,
     #[token("read")]
@@ -103,8 +95,6 @@ enum RawToken {
     Lazy,
     #[token("asm")]
     Asm,
-    #[token("step")]
-    Step,
     #[token("native")]
     Native,
     #[token("test")]
@@ -397,14 +387,10 @@ impl<'a> Lexer<'a> {
             RawToken::Loop => TokenKind::Loop,
             RawToken::Break => TokenKind::Break,
             RawToken::Continue => TokenKind::Continue,
-            RawToken::Deliver => TokenKind::Deliver,
             RawToken::Spawn => TokenKind::Spawn,
-            RawToken::SpawnThread => TokenKind::SpawnThread,
-            RawToken::SpawnRaw => TokenKind::SpawnRaw,
             RawToken::Select => TokenKind::Select,
             RawToken::With => TokenKind::With,
             RawToken::Ensure => TokenKind::Ensure,
-            RawToken::Catch => TokenKind::Catch,
             RawToken::Take => TokenKind::Take,
             RawToken::ReadKw => TokenKind::ReadKw,
             RawToken::MutateKw => TokenKind::MutateKw,
@@ -424,7 +410,6 @@ impl<'a> Lexer<'a> {
             RawToken::Export => TokenKind::Export,
             RawToken::Lazy => TokenKind::Lazy,
             RawToken::Asm => TokenKind::Asm,
-            RawToken::Step => TokenKind::Step,
             RawToken::Native => TokenKind::Native,
             RawToken::Test => TokenKind::Test,
             RawToken::Benchmark => TokenKind::Benchmark,

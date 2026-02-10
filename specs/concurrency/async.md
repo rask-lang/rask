@@ -18,8 +18,8 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
 | `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `spawn_thread { }` | Thread from pool | `with threading` | No |
-| `spawn_raw { }` | Raw OS thread | Nothing | No |
+| `spawn thread { }` | Thread from pool | `with threading` | No |
+| `spawn raw { }` | Raw OS thread | Nothing | No |
 
 **All return affine handles**—must be joined or detached (compile error if forgotten).
 
@@ -27,19 +27,19 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 
 - `multitasking` — describes capability (cooperative green tasks, M:N scheduling)
 - `threading` — describes capability (thread pool), consistent with `multitasking`
-- `spawn_*` — consistent spawn family:
+- `spawn` family — contextual modifiers after the keyword:
   - `spawn` — green task (requires `with multitasking`)
-  - `spawn_thread` — pooled thread (requires `with threading`)
-  - `spawn_raw` — raw OS thread (works anywhere)
+  - `spawn thread` — pooled thread (requires `with threading`)
+  - `spawn raw` — raw OS thread (works anywhere)
 
 ## Concurrency vs Parallelism
 
 | Concept | What it means | Rask construct |
 |---------|--------------|----------------|
 | **Concurrency** | Interleaved execution | Green tasks via `spawn { }` |
-| **Parallelism** | Simultaneous execution | Thread pool via `spawn_thread { }` |
+| **Parallelism** | Simultaneous execution | Thread pool via `spawn thread { }` |
 
-Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they interleave on a few OS threads. CPU-bound work needing true parallelism requires `spawn_thread { }`.
+Green tasks are **concurrent, not parallel**. 100k tasks can be in-flight, but they interleave on a few OS threads. CPU-bound work needing true parallelism requires `spawn thread { }`.
 
 ## Basic Usage
 
@@ -231,7 +231,7 @@ func main() {
     with multitasking, threading {
         try spawn {
             const data = try fetch(url)                              // I/O - pauses
-            const result = try spawn_thread { analyze(data) }.join()  // CPU on threads
+            const result = try spawn thread { analyze(data) }.join()  // CPU on threads
             try save(result)                                       // I/O - pauses
         }.join()
     }
@@ -252,7 +252,7 @@ With a thread pool:
 ```rask
 with multitasking, threading {
     spawn {
-        try spawn_thread { cpu_intensive() }.join()  // Runs on thread pool
+        try spawn thread { cpu_intensive() }.join()  // Runs on thread pool
     }.detach()
     spawn { handle_io() }.detach()                  // Runs fine
 }
@@ -263,17 +263,17 @@ with multitasking, threading {
 ```rask
 with threading {
     // Spawn on thread pool, get handle
-    const h = spawn_thread { work() }
+    const h = spawn thread { work() }
     const result = try h.join()
 
     // Fire-and-forget
-    spawn_thread { background() }.detach()
+    spawn thread { background() }.detach()
 }
 ```
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `spawn_thread { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
+| `spawn thread { expr }` | `ThreadHandle<T>` | Run on thread pool, return handle |
 
 ### Thread Pool Without Multitasking
 
@@ -283,7 +283,7 @@ Thread pool works independently for pure CPU-parallelism—CLI tools, batch proc
 func main() {
     with threading {
         const handles = files.map { |f|
-            spawn_thread { process(f) }
+            spawn thread { process(f) }
         }
         for h in handles {
             print(try h.join())
@@ -303,7 +303,7 @@ func main() {
 For code requiring thread affinity (OpenGL, thread-local FFI):
 
 ```rask
-const h = spawn_raw {
+const h = spawn raw {
     init_graphics_context()  // Needs stable thread identity
     render_loop()
 }
@@ -323,7 +323,7 @@ func main() {
 
     // Thread pool still works
     with threading {
-        const handles = files.map { |f| spawn_thread { process(f) } }
+        const handles = files.map { |f| spawn thread { process(f) } }
         for h in handles { try h.join() }
     }
 }
@@ -332,7 +332,7 @@ func main() {
 | Feature | With Multitasking | Without Multitasking (default) |
 |---------|-------------------|--------------------------------|
 | `spawn { }` | Green tasks | Compile error (no scheduler) |
-| `spawn_thread { }` | Thread pool | Thread pool (same) |
+| `spawn thread { }` | Thread pool | Thread pool (same) |
 | Stdlib I/O | Pauses task | Blocks thread |
 
 No special attribute needed. The presence of `with multitasking { }` is the opt-in.
@@ -351,7 +351,7 @@ This is consistent with all wait operations (I/O, channels, etc.).
 ```rask
 with multitasking, threading {
     spawn {
-        const h = spawn_thread { cpu_work() }
+        const h = spawn thread { cpu_work() }
         try h.join()  // YIELDS the green task, doesn't block scheduler
     }
 }
@@ -587,7 +587,7 @@ loop {
 | I/O visibility | IDE + compiler warnings | `async`/`await`, `blocking` keyword | Transparency via tooling, not syntax |
 | Green task keyword | `multitasking` | `runtime` | More intuitive |
 | Thread pool keyword | `threading` | `threads`, `pool` | Consistent with `multitasking`, avoids `threads` variable collision |
-| CPU work | Explicit `spawn_thread` | Implicit pool | Transparency (TC >= 0.90) |
+| CPU work | Explicit `spawn thread` | Implicit pool | Transparency (TC >= 0.90) |
 
 See [rejected-features.md](../rejected-features.md#asyncawait) for detailed discussion of the async/await decision.
 

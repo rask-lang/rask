@@ -280,7 +280,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
         const mesh_snap = world.meshes.freeze_ref()
 
         // Render previous frame on thread pool
-        const render_handle = spawn_thread {
+        const render_handle = spawn thread {
             for h in snapshot.handles() {
                 const entity = snapshot[h]
                 const mesh = mesh_snap[entity.mesh]
@@ -289,7 +289,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
         }
 
         // Physics on thread pool
-        const physics_handle = spawn_thread {
+        const physics_handle = spawn thread {
             world.physics.step(dt)
         }
 
@@ -309,7 +309,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
 | # | Mechanism | Why |
 |---|-----------|-----|
 | 1 | `with threading` | Thread pool declaration |
-| 2 | `spawn_thread` | Launch work on pool threads |
+| 2 | `spawn thread` | Launch work on pool threads |
 | 3 | Affine handles | Must join or detach both ThreadHandles |
 | 4 | Snapshot isolation | `snapshot()` for concurrent read/write |
 | 5 | FrozenPool semantics | Snapshot returns frozen, zero-cost reads |
@@ -321,7 +321,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
 | 11 | @resource across threads | PhysicsWorld borrowed across thread boundary |
 | 12 | Copy-on-write | First mutation after snapshot triggers O(n) copy |
 
-**Friction: Ownership partitioning across threads.** `spawn_thread` with `world.physics.step(dt)` needs mutable access to `world.physics`, while the render thread reads `world.entities`. These are disjoint fields. Field projections are specified for function parameters, but the spec doesn't cover `spawn_thread` closure captures. The developer might need to destructure the world struct manually.
+**Friction: Ownership partitioning across threads.** `spawn thread` with `world.physics.step(dt)` needs mutable access to `world.physics`, while the render thread reads `world.entities`. These are disjoint fields. Field projections are specified for function parameters, but the spec doesn't cover `spawn thread` closure captures. The developer might need to destructure the world struct manually.
 
 **Verdict: FAIL.** 12 concepts, ~5 over budget. Thread spawning + snapshot + frozen pools + field disjointness + affine handles pile up beyond what anyone can hold simultaneously.
 
@@ -450,16 +450,16 @@ world.entities.remove_with(h, |entity| {
 
 **Eliminates:** Scattered destruction logic. Collocates entity removal with its cascading cleanup.
 
-### 3. Field projections for `spawn_thread` closures
+### 3. Field projections for `spawn thread` closures
 
 Extend field projections (borrowing.md, P1-P4) to closure captures:
 
 <!-- test: skip -->
 ```rask
-const physics_handle = spawn_thread(world.{physics}) {
+const physics_handle = spawn thread(world.{physics}) {
     world.physics.step(dt)
 }
-const render_handle = spawn_thread(world.{entities, meshes}) {
+const render_handle = spawn thread(world.{entities, meshes}) {
     // read-only access
 }
 ```

@@ -146,7 +146,7 @@ impl Interpreter {
                 self.env.pop_scope();
             },
 
-            StmtKind::Break(_) => Err(RuntimeError::Break),
+            StmtKind::Break { .. } => Err(RuntimeError::Break),
 
             StmtKind::Continue(_) => Err(RuntimeError::Continue),
 

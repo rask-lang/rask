@@ -95,7 +95,6 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Guard pattern | `let v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
 | Result type | `T or E` (= `Result<T, E>`) | `Result<T, E>` |
 | Error propagation | `try expr` | `expr?` |
-| Loop with value | `deliver value` | `break value` |
 | Statement end | Newline | `;` |
 
 **Common patterns:**

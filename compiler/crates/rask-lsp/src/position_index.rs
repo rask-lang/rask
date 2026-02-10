@@ -99,7 +99,7 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
         StmtKind::Expr(e) | StmtKind::Return(Some(e)) => {
             visit_expr(e, index);
         }
-        StmtKind::Deliver { value, .. } => {
+        StmtKind::Break { value: Some(value), .. } => {
             visit_expr(value, index);
         }
         StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
@@ -135,11 +135,11 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
                 visit_stmt(stmt, index);
             }
         }
-        StmtKind::Ensure { body, catch } => {
+        StmtKind::Ensure { body, else_handler } => {
             for stmt in body {
                 visit_stmt(stmt, index);
             }
-            if let Some((_, handler)) = catch {
+            if let Some((_, handler)) = else_handler {
                 for stmt in handler {
                     visit_stmt(stmt, index);
                 }

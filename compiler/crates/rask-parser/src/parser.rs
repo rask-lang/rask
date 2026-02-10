@@ -193,7 +193,6 @@ impl Parser {
             TokenKind::Break => "break".to_string(),
             TokenKind::Continue => "continue".to_string(),
             TokenKind::Return => "return".to_string(),
-            TokenKind::Deliver => "deliver".to_string(),
             // Declarations
             TokenKind::Func => "func".to_string(),
             TokenKind::Let => "let".to_string(),
@@ -218,13 +217,10 @@ impl Parser {
             TokenKind::Lazy => "lazy".to_string(),
             // Concurrency
             TokenKind::Spawn => "spawn".to_string(),
-            TokenKind::SpawnThread => "spawn_thread".to_string(),
-            TokenKind::SpawnRaw => "spawn_raw".to_string(),
             TokenKind::Select => "select".to_string(),
             TokenKind::With => "with".to_string(),
             // Error handling
             TokenKind::Ensure => "ensure".to_string(),
-            TokenKind::Catch => "catch".to_string(),
             TokenKind::Try => "try".to_string(),
             // Testing
             TokenKind::Test => "test".to_string(),
@@ -235,7 +231,6 @@ impl Parser {
             TokenKind::As => "as".to_string(),
             TokenKind::Is => "is".to_string(),
             TokenKind::Where => "where".to_string(),
-            TokenKind::Step => "step".to_string(),
             TokenKind::Or => "or".to_string(),
             // Literals/constants
             TokenKind::Bool(true) => "true".to_string(),
@@ -1390,7 +1385,6 @@ impl Parser {
             TokenKind::Return => self.parse_return_stmt()?,
             TokenKind::Break => self.parse_break_stmt()?,
             TokenKind::Continue => self.parse_continue_stmt()?,
-            TokenKind::Deliver => self.parse_deliver_stmt()?,
             TokenKind::While => self.parse_while_stmt(label)?,
             TokenKind::Loop => self.parse_loop_stmt(label)?,
             TokenKind::For => self.parse_for_stmt(label)?,
@@ -1529,14 +1523,38 @@ impl Parser {
 
     fn parse_break_stmt(&mut self) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::Break)?;
-        let label = if let TokenKind::Ident(name) = self.current_kind().clone() {
+
+        // break              → no label, no value
+        // break label        → label, no value
+        // break expr         → no label, value
+        // break label expr   → label, value
+        if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
+            self.expect_terminator()?;
+            return Ok(StmtKind::Break { label: None, value: None });
+        }
+
+        if let TokenKind::Ident(name) = self.current_kind().clone() {
             self.advance();
-            Some(name)
+            if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
+                // `break ident` — could be label or value; treat as label (like before)
+                self.expect_terminator()?;
+                Ok(StmtKind::Break { label: Some(name), value: None })
+            } else if self.is_expr_start() {
+                // `break ident expr` — ident is label, expr is value
+                let value = self.parse_expr()?;
+                self.expect_terminator()?;
+                Ok(StmtKind::Break { label: Some(name), value: Some(value) })
+            } else {
+                // `break ident <non-expr>` — treat ident as label
+                self.expect_terminator()?;
+                Ok(StmtKind::Break { label: Some(name), value: None })
+            }
         } else {
-            None
-        };
-        self.expect_terminator()?;
-        Ok(StmtKind::Break(label))
+            // `break expr` — no label, just a value
+            let value = self.parse_expr()?;
+            self.expect_terminator()?;
+            Ok(StmtKind::Break { label: None, value: Some(value) })
+        }
     }
 
     fn parse_continue_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -1549,26 +1567,6 @@ impl Parser {
         };
         self.expect_terminator()?;
         Ok(StmtKind::Continue(label))
-    }
-
-    fn parse_deliver_stmt(&mut self) -> Result<StmtKind, ParseError> {
-        self.expect(&TokenKind::Deliver)?;
-
-        let (label, value) = if let TokenKind::Ident(name) = self.current_kind().clone() {
-            self.advance();
-            if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) {
-                (None, Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.tokens[self.pos - 1].span.clone() })
-            } else if self.is_expr_start() {
-                (Some(name), self.parse_expr()?)
-            } else {
-                (None, Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.tokens[self.pos - 1].span.clone() })
-            }
-        } else {
-            (None, self.parse_expr()?)
-        };
-
-        self.expect_terminator()?;
-        Ok(StmtKind::Deliver { label, value })
     }
 
     fn is_expr_start(&self) -> bool {
@@ -1641,7 +1639,7 @@ impl Parser {
             vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr), span }]
         };
 
-        let catch = if self.check(&TokenKind::Catch) {
+        let else_handler = if self.check(&TokenKind::Else) {
             self.advance();
             self.expect(&TokenKind::Pipe)?;
             let name = self.expect_ident()?;
@@ -1659,7 +1657,7 @@ impl Parser {
         };
 
         self.expect_terminator()?;
-        Ok(StmtKind::Ensure { body, catch })
+        Ok(StmtKind::Ensure { body, else_handler })
     }
 
     fn parse_comptime_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -1937,22 +1935,6 @@ impl Parser {
             TokenKind::With => self.parse_with_block(),
 
             TokenKind::Spawn => self.parse_spawn_expr(),
-
-            TokenKind::SpawnThread => {
-                self.advance();
-                self.skip_newlines();
-                let body = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::BlockCall { name: "spawn_thread".to_string(), body }, span: Span::new(start, end) })
-            }
-
-            TokenKind::SpawnRaw => {
-                self.advance();
-                self.skip_newlines();
-                let body = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::BlockCall { name: "spawn_raw".to_string(), body }, span: Span::new(start, end) })
-            }
 
             TokenKind::Unsafe => {
                 self.advance();
@@ -2404,13 +2386,20 @@ impl Parser {
             }
             TokenKind::Break => {
                 self.advance();
-                let label = if let TokenKind::Ident(name) = self.current_kind().clone() {
-                    if !self.check(&TokenKind::Newline) && !self.check(&TokenKind::Semi) {
-                        self.advance();
-                        Some(name)
-                    } else { None }
-                } else { None };
-                StmtKind::Break(label)
+                if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
+                    StmtKind::Break { label: None, value: None }
+                } else if let TokenKind::Ident(name) = self.current_kind().clone() {
+                    self.advance();
+                    if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) || self.at_end() {
+                        StmtKind::Break { label: Some(name), value: None }
+                    } else if self.is_expr_start() {
+                        StmtKind::Break { label: Some(name), value: Some(self.parse_expr()?) }
+                    } else {
+                        StmtKind::Break { label: Some(name), value: None }
+                    }
+                } else {
+                    StmtKind::Break { label: None, value: Some(self.parse_expr()?) }
+                }
             }
             TokenKind::Continue => {
                 self.advance();
@@ -2421,22 +2410,6 @@ impl Parser {
                     } else { None }
                 } else { None };
                 StmtKind::Continue(label)
-            }
-            TokenKind::Deliver => {
-                self.advance();
-                let (label, value) = if let TokenKind::Ident(name) = self.current_kind().clone() {
-                    self.advance();
-                    if self.check(&TokenKind::Newline) || self.check(&TokenKind::Semi) {
-                        (None, Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.tokens[self.pos - 1].span.clone() })
-                    } else if self.is_expr_start() {
-                        (Some(name), self.parse_expr()?)
-                    } else {
-                        (None, Expr { id: self.next_id(), kind: ExprKind::Ident(name), span: self.tokens[self.pos - 1].span.clone() })
-                    }
-                } else {
-                    (None, self.parse_expr()?)
-                };
-                StmtKind::Deliver { label, value }
             }
             _ => {
                 let expr = self.parse_expr()?;
@@ -2604,6 +2577,23 @@ impl Parser {
     fn parse_spawn_expr(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::Spawn)?;
+
+        // Check for contextual modifiers: `spawn thread { }` or `spawn raw { }`
+        if let TokenKind::Ident(ref name) = self.current_kind().clone() {
+            if name == "thread" || name == "raw" {
+                let variant = format!("spawn_{}", name);
+                self.advance();
+                self.skip_newlines();
+                let body = self.parse_block_body()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                return Ok(Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::BlockCall { name: variant, body },
+                    span: Span::new(start, end),
+                });
+            }
+        }
+
         self.skip_newlines();
         let body = self.parse_block_body()?;
         let end = self.tokens[self.pos - 1].span.end;

@@ -52,7 +52,7 @@ fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnosti
         StmtKind::Expr(e) => walk_expr_for_unwrap(e, source, diags),
         StmtKind::Let { init, .. }
         | StmtKind::Const { init, .. }
-        | StmtKind::Deliver { value: init, .. } => {
+        | StmtKind::Break { value: Some(init), .. } => {
             walk_expr_for_unwrap(init, source, diags);
         }
         StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
@@ -78,9 +78,9 @@ fn walk_stmt_for_unwrap(stmt: &Stmt, source: &str, diags: &mut Vec<LintDiagnosti
         StmtKind::Loop { body, .. } => {
             walk_stmts_for_unwrap(body, source, diags);
         }
-        StmtKind::Ensure { body, catch } => {
+        StmtKind::Ensure { body, else_handler } => {
             walk_stmts_for_unwrap(body, source, diags);
-            if let Some((_, handler)) = catch {
+            if let Some((_, handler)) = else_handler {
                 walk_stmts_for_unwrap(handler, source, diags);
             }
         }

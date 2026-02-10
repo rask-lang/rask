@@ -41,7 +41,7 @@ func main() {
     with multitasking, threading {
         const h = spawn {
             const data = try fetch(url)                              // I/O - pauses
-            const result = try spawn_thread { analyze(data) }.join()  // CPU on threads
+            const result = try spawn thread { analyze(data) }.join()  // CPU on threads
             try save(result)                                       // I/O - pauses
         }
         try h.join()
@@ -51,7 +51,7 @@ func main() {
 // Sync mode - CPU parallelism only
 func main() {
     with threading {
-        const handles = files.map { |f| spawn_thread { process(f) } }
+        const handles = files.map { |f| spawn thread { process(f) } }
         for h in handles { try h.join() }
     }
 }
@@ -77,7 +77,7 @@ for url in urls {
 const results = try group.join_all()
 
 // Raw OS thread (works anywhere)
-const h = spawn_raw { needs_thread_affinity() }
+const h = spawn raw { needs_thread_affinity() }
 try h.join()
 ```
 
@@ -86,8 +86,8 @@ try h.join()
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
 | `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `spawn_thread { }` | Thread from pool | `with threading` | No |
-| `spawn_raw { }` | Raw OS thread | Nothing | No |
+| `spawn thread { }` | Thread from pool | `with threading` | No |
+| `spawn raw { }` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
 
@@ -97,8 +97,8 @@ try h.join()
 | Fire-and-forget | `spawn { }.detach()` |
 | Wait for all | `join_all(spawn{}, spawn{})` |
 | Dynamic spawning | `TaskGroup` |
-| CPU parallelism | `spawn_thread { }` |
-| Raw OS thread | `spawn_raw { }` |
+| CPU parallelism | `spawn thread { }` |
+| Raw OS thread | `spawn raw { }` |
 | Unused handle | **Compile error** |
 
 ## Resource Combinations

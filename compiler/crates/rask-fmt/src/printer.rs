@@ -747,11 +747,15 @@ impl<'a> Printer<'a> {
                 self.emit("return ");
                 self.format_expr(expr);
             }
-            StmtKind::Break(label) => {
+            StmtKind::Break { label, value } => {
                 self.emit("break");
                 if let Some(ref l) = label {
                     self.emit(" ");
                     self.emit(l);
+                }
+                if let Some(ref v) = value {
+                    self.emit(" ");
+                    self.format_expr(v);
                 }
             }
             StmtKind::Continue(label) => {
@@ -760,15 +764,6 @@ impl<'a> Printer<'a> {
                     self.emit(" ");
                     self.emit(l);
                 }
-            }
-            StmtKind::Deliver { label, value } => {
-                self.emit("deliver");
-                if let Some(ref l) = label {
-                    self.emit(" ");
-                    self.emit(l);
-                }
-                self.emit(" ");
-                self.format_expr(value);
             }
             StmtKind::While { cond, body } => {
                 self.emit("while ");
@@ -824,9 +819,9 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            StmtKind::Ensure { body, catch } => {
+            StmtKind::Ensure { body, else_handler } => {
                 self.emit("ensure ");
-                if body.len() == 1 && catch.is_none() {
+                if body.len() == 1 && else_handler.is_none() {
                     self.format_stmt_inline(&body[0]);
                 } else {
                     self.emit("{");
@@ -836,10 +831,10 @@ impl<'a> Printer<'a> {
                     self.indent -= 1;
                     self.emit_indent();
                     self.emit("}");
-                    if let Some((param, handler)) = catch {
-                        self.emit(" catch ");
+                    if let Some((param, handler)) = else_handler {
+                        self.emit(" else |");
                         self.emit(param);
-                        self.emit(" {");
+                        self.emit("| {");
                         self.emit_newline();
                         self.indent += 1;
                         self.format_stmts(handler);

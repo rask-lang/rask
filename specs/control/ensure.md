@@ -84,34 +84,34 @@ func process() -> () or Error {
 
 What if the cleanup action itself fails?
 
-**Decision: Ignore by default, opt-in handling with `catch`**
+**Decision: Ignore by default, opt-in handling with `else`**
 
 <!-- test: skip -->
 ```rask
 ensure file.close()                        // Default: errors silently ignored
 
-ensure file.close() catch |e| log(e)       // Opt-in: handle the error
+ensure file.close() else |e| log(e)       // Opt-in: handle the error
 
-ensure file.close() catch |_| panic("!")   // Opt-in: panic on error
+ensure file.close() else |_| panic("!")   // Opt-in: panic on error
 ```
 
 **Rationale:**
 - Most cleanup errors are unrecoverable (what do you do when close() fails?)
 - Resource released to OS regardless
 - Silent ignore keeps simple cases simple
-- `catch` clause provides opt-in visibility when needed
+- `else` clause provides opt-in visibility when needed
 
 **Rules:**
 - `ensure` body returns `Result<T, E>` and evaluates to `Err(e)`:
-  - Without `catch`: error silently ignored
-  - With `catch |e| expr`: error passed to handler
-- `catch` handler must be infallible (no `try` inside—nowhere to propagate)
+  - Without `else`: error silently ignored
+  - With `else |e| expr`: error passed to handler
+- `else` handler must be infallible (no `try` inside—nowhere to propagate)
 - `try` inside `ensure` body forbidden
 
 <!-- test: skip -->
 ```rask
 ensure { try file.close() }                     // ❌ Error: cannot use try inside ensure
-ensure file.close() catch |e| { try fallible() }   // ❌ Error: catch handler cannot use try
+ensure file.close() else |e| { try fallible() }   // ❌ Error: else handler cannot use try
 ```
 
 **When to use explicit handling instead:**
@@ -325,10 +325,10 @@ Transaction pattern—ensure the unhappy path, explicitly handle the happy path.
 ## Integration Notes
 
 - **Linear resource types:** `ensure` counts as consumption commitment; enables `try` after ensure
-- **Error handling:** Errors ignored by default; use `catch` clause for opt-in handling
+- **Error handling:** Errors ignored by default; use `else` clause for opt-in handling
 - **Concurrency:** `ensure` runs on the task that owns the resource
 - **Compiler:** Local analysis only—ensure tracked within function scope
-- **Tooling:** IDE shows ensure execution points, cancellation status, and catch clauses
+- **Tooling:** IDE shows ensure execution points, cancellation status, and else clauses
 
 ## Alternatives Considered
 

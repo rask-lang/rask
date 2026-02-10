@@ -216,13 +216,15 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Loop { label: _, body } => {
                 self.check_block(body);
             }
-            StmtKind::Break(_) | StmtKind::Continue(_) => {}
-            StmtKind::Deliver { label: _, value } => {
-                self.check_expr(value);
+            StmtKind::Break { value, .. } => {
+                if let Some(v) = value {
+                    self.check_expr(v);
+                }
             }
-            StmtKind::Ensure { body, catch } => {
+            StmtKind::Continue(_) => {}
+            StmtKind::Ensure { body, else_handler } => {
                 self.check_block(body);
-                if let Some((_name, handler)) = catch {
+                if let Some((_name, handler)) = else_handler {
                     self.check_block(handler);
                 }
             }
