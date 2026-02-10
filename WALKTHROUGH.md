@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: (MIT OR Apache-2.0)
-
 # Rask: The Complete Walkthrough
 
 I wrote this so I could explain Rask to anyone—including myself. No jargon without

@@ -1,4 +1,3 @@
-<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
 # Net Module
 
 Networking primitives. I kept this minimal—just TCP for now, with string addresses instead of SocketAddr structs. Most servers only need listen/accept/read/write/close. More complex networking (UDP, multicast, raw sockets) can come later without breaking anything.

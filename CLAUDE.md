@@ -25,7 +25,7 @@ Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after
 
 **Core principle:** Sound like a developer with a vision, not a committee or AI. Natural flow over perfect grammar.
 
-add // SPDX-License-Identifier: (MIT OR Apache-2.0) to the top of all files
+Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code files (.rs, .rk), not docs (.md)
 
 ## Documentation (Markdown)
 

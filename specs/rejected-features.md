@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: (MIT OR Apache-2.0)
 # Design Rationale
 
 Why I made certain design choices. Mostly about what I didn't add from other languages.

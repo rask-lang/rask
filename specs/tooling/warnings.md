@@ -1,5 +1,3 @@
-// SPDX-License-Identifier: (MIT OR Apache-2.0)
-
 <!-- depends: tooling/lint.md, structure/build.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-diagnostics/ -->
 
