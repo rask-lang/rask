@@ -241,36 +241,31 @@ func render_frame(world: GameWorld) {
 }
 ```
 
-**Concepts: 7**
+**Concepts: 6**
 
 | # | Mechanism | Why |
 |---|-----------|-----|
 | 1 | Frozen pools | `freeze_ref()` for zero-cost iteration |
-| 2 | FrozenPool vs Pool | Different type, different rules |
-| 3 | Cross-pool handles | entity.mesh indexes frozen meshes |
-| 4 | Zero gen checks | Why frozen pools exist (performance) |
-| 5 | Unsafe FFI | draw call wraps Vulkan C function |
-| 6 | Read-only borrowing | world borrowed immutably |
-| 7 | Two frozen pools | Track which pool resolves which handle |
+| 2 | Cross-pool handles | entity.mesh indexes frozen meshes |
+| 3 | Zero gen checks | Why frozen pools exist (performance) |
+| 4 | Unsafe FFI | draw call wraps Vulkan C function |
+| 5 | Read-only borrowing | world borrowed immutably |
+| 6 | Two frozen pools | Track which pool resolves which handle |
 
-**Key friction: FrozenPool doesn't satisfy `with Pool<T>`.**
+~~**Key friction: FrozenPool doesn't satisfy `with Pool<T>`.**~~ **RESOLVED.** Unnamed `with Pool<T>` contexts now accept `FrozenPool<T>` (see [pools.md](../memory/pools.md#frozenpool-context-subsumption)). Helper functions written for the update phase work in the render phase without duplication:
 
-If a helper function is written as:
 <!-- test: skip -->
 ```rask
-func get_mesh_data(h: Handle<Mesh>) with Pool<Mesh> -> u64 {
+func get_mesh_data(h: Handle<Mesh>) with frozen Pool<Mesh> -> u64 {
     return h.vertex_buffer
 }
+
+// ✅ Works during render — FrozenPool satisfies frozen context
+const frozen_meshes = world.meshes.freeze_ref()
+const vb = get_mesh_data(entity.mesh)
 ```
 
-This function **cannot be called** when meshes are frozen. The context clause `with Pool<Mesh>` is not satisfied by `FrozenPool<Mesh>`. The developer must either:
-- Write duplicate helpers for frozen pools
-- Inline all access
-- Or pass the frozen pool explicitly
-
-Code that works in the update phase cannot be reused in the render phase.
-
-**Verdict: MARGINAL.** At 7, within budget. But the FrozenPool/Pool split hurts code reuse across phases.
+**Verdict: PASS.** At 6, comfortably within budget.
 
 ---
 
@@ -340,7 +335,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
 | 1: Physics step | 3 | ✓ | PASS |
 | 2: Sync physics | 8 | ~ | MARGINAL |
 | 3: Game logic/destroy | **10** | ✗ | **FAIL** |
-| 4: Render | 7 | ✓ | MARGINAL |
+| 4: Render | 6 | ✓ | PASS |
 | 5: Parallel | **12** | ✗ | **FAIL** |
 
 **Root cause:** Not any single mechanism. The problem is that ECS-with-FFI sits at the intersection of ALL mechanisms simultaneously. The 4-step destruction dance (Phase 3) and the thread+snapshot+projection pile-up (Phase 5) are where the budget breaks.
@@ -351,13 +346,11 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
 
 ## Friction Points
 
-### 1. FrozenPool doesn't satisfy `with Pool<T>` context
+### 1. ~~FrozenPool doesn't satisfy `with Pool<T>` context~~ RESOLVED
 
-**Evidence:** context-clauses.md defines auto-resolution for `Pool<T>`. pools.md defines `FrozenPool<T>` as a separate type. No spec says one satisfies the other.
+`with frozen Pool<T>` contexts accept both `Pool<T>` and `FrozenPool<T>`. Default `with Pool<T>` contexts are mutable and only accept `Pool<T>`. See [pools.md](../memory/pools.md#frozenpool-context-subsumption).
 
-**Impact:** Helper functions written with `with Pool<T>` can't be called during render (frozen). Forces code duplication or explicit pool passing.
-
-**Severity:** MEDIUM.
+**Impact:** Read-only helpers declared with `frozen` work in both update and render phases. Phase 4 (render) drops from 7 to 6 concepts.
 
 ### 2. Cross-pool handle chaining is verbose
 
@@ -422,15 +415,15 @@ Three context clauses. If it calls another helper with its own requirements, the
 
 ### 1. FrozenPool satisfies read-only context clauses
 
-Unnamed `with Pool<T>` (field access only) should accept `FrozenPool<T>` as a provider. The compiler already knows unnamed contexts only do reads.
+`with frozen Pool<T>` contexts accept both `Pool<T>` and `FrozenPool<T>`. The `frozen` keyword marks the context as read-only — writes through handles are a compile error.
 
 <!-- test: skip -->
 ```rask
-func get_health(h: Handle<Entity>) with Pool<Entity> -> i32 {
+func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
     return h.health
 }
 
-// Should work: FrozenPool<Entity> satisfies read-only Pool<Entity> context
+// Works: FrozenPool<Entity> satisfies frozen context
 const frozen = pool.freeze_ref()
 const hp = get_health(some_handle)
 ```

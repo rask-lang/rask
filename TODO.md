@@ -157,43 +157,25 @@ Tools that make it actually usable:
 
 ## Open Design Questions
 
-### Small (Can decide later)
-- [x] Decide: `char` as a type — first-class Unicode scalar value, see [primitives.md](specs/types/primitives.md)
-- [x] Decide: `discard` keyword — explicit drop for non-Copy types, see [ownership.md](specs/memory/ownership.md)
-- [x] Write guidelines: panic vs error — panic for bugs, errors for expected failures, see [error-types.md](specs/types/error-types.md)
-- [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
-- [x] Spec `Owned<T>` semantics — see [owned.md](specs/memory/owned.md)
+### Before Phase 4 (blocks codegen)
+- [x] FrozenPool should satisfy read-only `with Pool<T>` context clauses — see [pools.md](specs/memory/pools.md#frozenpool-context-subsumption)
 
-### Medium (Should decide before Phase 3)
-- [x] Consolidate parameter modes — see [parameters.md](specs/memory/parameters.md) (default=read-only/mutate/take)
-  - [x] Type checker: enforce `mutate` parameter mode (`ParamMode::Mutate`)
-- [x] Design shared state primitives — `Shared<T>`, see [sync.md](specs/concurrency/sync.md)
-- [x] Decide multi-element access syntax — `with...as` binding + closure pattern
-- [ ] Design task-local storage syntax
-
-### Machine Readability (see [specs/canonical-patterns.md](specs/canonical-patterns.md))
-- [x] Formalize "one obvious way" principle — see [specs/canonical-patterns.md](specs/canonical-patterns.md)
-- [x] Naming convention enforcement — see [specs/tooling/lint.md](specs/tooling/lint.md)
-- [x] Structured error fixes — `fix:` / `why:` fields added to all compiler diagnostics
-- [x] `rask describe` JSON schema — see [specs/tooling/describe-schema.md](specs/tooling/describe-schema.md)
-
-### Interop
-- [ ] Cross-compilation C interop behavior — `c_type` sizes per target, header re-parsing, `zig cc` backend
-- [ ] `std.reflect` — comptime reflection stdlib (local-analysis-safe) — see [reflect.md](specs/stdlib/reflect.md)
-- [ ] String interop convenience — `as_c_str()`, `string.from_c()` methods
-- [ ] Maybe: `compile_cpp()` build script support
-- [ ] Maybe: Auto Rask wrapper generation from Rust cbindgen output
-
-### Complexity Budget (from [stress test](specs/analysis/complexity-stress-test.md))
-ECS game loop with Vulkan + C physics hits 10-12 simultaneous concepts in destroy/parallel phases (budget: 7±2).
-
-- [ ] FrozenPool should satisfy read-only `with Pool<T>` context clauses — code reuse breaks at freeze boundary
-- [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
-- [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
+### During Phase 4 (doesn't block, improves quality)
 - [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code
+- [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
 - [ ] Style guideline: max 3 context clauses per function — lint, not language rule
 
-### Deferred
+### Phase 5 (after codegen works)
+- [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
+- [ ] Design task-local storage syntax
+- [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
+- [ ] String interop convenience — `as_c_str()`, `string.from_c()` methods
+
+### Deferred (no urgency)
+- [ ] Cross-compilation C interop behavior — `c_type` sizes per target, header re-parsing, `zig cc` backend
+- [ ] `std.reflect` — comptime reflection stdlib (local-analysis-safe) — see [reflect.md](specs/stdlib/reflect.md)
+- [ ] Maybe: `compile_cpp()` build script support
+- [ ] Maybe: Auto Rask wrapper generation from Rust cbindgen output
 - [ ] Capability-based security for dependencies (restrict filesystem/network access)
 - [ ] Macros / `format!` — wait until core language is solid
 - [ ] Inline assembly (`asm!`)
@@ -203,3 +185,16 @@ ECS game loop with Vulkan + C physics hits 10-12 simultaneous concepts in destro
 - [ ] Fuzzing / property-based testing
 - [ ] Code coverage tooling
 - [ ] Metrics validation (actual user studies)
+
+### Resolved
+- [x] Decide: `char` as a type — first-class Unicode scalar value, see [primitives.md](specs/types/primitives.md)
+- [x] Decide: `discard` keyword — explicit drop for non-Copy types, see [ownership.md](specs/memory/ownership.md)
+- [x] Write guidelines: panic vs error — panic for bugs, errors for expected failures, see [error-types.md](specs/types/error-types.md)
+- [x] Spec `Owned<T>` semantics — see [owned.md](specs/memory/owned.md)
+- [x] Consolidate parameter modes — see [parameters.md](specs/memory/parameters.md) (default=read-only/mutate/take)
+- [x] Design shared state primitives — `Shared<T>`, see [sync.md](specs/concurrency/sync.md)
+- [x] Decide multi-element access syntax — `with...as` binding + closure pattern
+- [x] Formalize "one obvious way" principle — see [specs/canonical-patterns.md](specs/canonical-patterns.md)
+- [x] Naming convention enforcement — see [specs/tooling/lint.md](specs/tooling/lint.md)
+- [x] Structured error fixes — `fix:` / `why:` fields added to all compiler diagnostics
+- [x] `rask describe` JSON schema — see [specs/tooling/describe-schema.md](specs/tooling/describe-schema.md)
