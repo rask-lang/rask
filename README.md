@@ -6,23 +6,13 @@
   </picture>
 </p>
 
-Safety without the pain!    
-  
+A research language exploring one question: **what if references can't be stored?**
 
+Rask sits somewhere between Rust and Go — memory safety without lifetime annotations or garbage collection, by making references temporary. They can't be stored in structs or returned from functions.
 
-Rask is a new programming language that aims to sit between Rust (compile-time safety, unergonomic) and go (runtime heavy, ergonomic).
+It's a hobby project. I'm figuring out how far this approach can go.
 
-Rask targets the 80% of "systems programming" that's actually application code: servers, tools, games, embedded apps.
-
-You get Rust's safety guarantees without lifetime annotations.  
-You get Go's simplicity without garbage collection.
-
-Can you build Linux in it? Probably not.  
-Can you build the next web server? The next game? Absolutely.
-
-No annotations. No fights. No hidden costs.
-
-**Status:** Design phase with working interpreter (grep, game loop, text editor all run). No compiler.
+**Status:** Design phase with working interpreter (grep, game loop, text editor all run). No compiler yet.
 
 ---
 
@@ -39,45 +29,39 @@ func search_file(path: string, pattern: string) -> () or IoError {
 }
 ```
 
-No lifetime annotations. No borrow checker fights. No GC pauses. Just clean code that's safe by construction.
-
 Full example: [grep_clone.rk](examples/grep_clone.rk)
 
 ---
 
 **Jump to:**
-- [Why Rask?](#why-rask) - The design choices that make this possible
-- [What This Costs](#what-this-costs) - Honest tradeoffs
+- [The Idea](#the-idea) - What I'm trying and why
+- [What This Costs](#what-this-costs) - Tradeoffs
 - [Implementation Status](#implementation-status) - What works today
 - [Design Principles](#design-principles) - Core philosophy
 - [Documentation](#documentation) - Where to look
 
 ---
 
-## Why Rask?
-
-### No Lifetime Annotations
-They're the wrong abstraction. Instead of tracking how long references live, I made references impossible to store. This eliminates use-after-free without any annotations.
+## The Idea
 
 ### No Storable References
-You can borrow a value temporarily (for a function call or expression), but you can't store that borrow in a struct or return it. This sounds limiting—and it is—but it removes entire categories of bugs by construction. For graphs and complex structures, you use handles (validated indices) instead.
-
-### No Traditional Classes
-For this memory model, composition works better. Structs hold data, traits define behavior, you extend types with methods. No inheritance hierarchies, no vtable gymnastics unless you explicitly want runtime polymorphism (`any Trait`).
+The core experiment. You can borrow a value temporarily (for a function call or expression), but you can't store that borrow in a struct or return it. This sounds limiting — and it is — but it sidesteps the need for lifetime annotations entirely. For graphs and complex structures, you use handles (validated indices) instead.
 
 ### No Garbage Collection
-Predictable performance. Every allocation is visible in the code. Cleanup happens deterministically when values go out of scope. For I/O resources, the `ensure` keyword guarantees cleanup even on early returns.
+Cleanup happens deterministically when values go out of scope. For I/O resources, the `ensure` keyword guarantees cleanup even on early returns.
 
-### The Core Ideas
+### Composition Over Inheritance
+Structs hold data, traits define behavior, you extend types with methods. No inheritance hierarchies, no vtable gymnastics unless you explicitly want runtime polymorphism (`any Trait`).
 
-Getting the ergonomics right without sacrificing transparency took a lot of iteration. Here's what I landed on:
+### What I've Landed On So Far
 
 | Concept | What It Means |
 |---------|--------------|
 | **Value semantics** | Everything is a value, no hidden sharing |
 | **Single ownership** | Every value has one owner, cleanup is deterministic |
-| **Scoped borrowing** | Temporary access that can't escape scope |
-| **Handles instead of pointers** | Collections use validated indices (pool ID + generation check) |
+| **Two-tier borrowing** | "Can it grow?" — fixed sources keep views to block end, collections release at semicolon |
+| **Handles for graphs** | Entity systems and cycles use validated indices. Regular structs stay on the stack |
+| **Context clauses** | Handle functions declare pool needs; compiler threads them implicitly |
 | **Linear resource types** | Files, sockets must be explicitly consumed—can't forget to close them |
 | **No function coloring** | I/O operations just work, no async/await split |
 
@@ -87,7 +71,7 @@ Getting the ergonomics right without sacrificing transparency took a lot of iter
 
 I'm not pretending there aren't tradeoffs. Here's what you give up:
 
-**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process.
+**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process. Compiler coalesces redundant checks; `pool.freeze()` eliminates them entirely for read-heavy phases.
 
 **Restructuring some patterns:**
 - Parent pointers → store handles
@@ -96,18 +80,17 @@ I'm not pretending there aren't tradeoffs. Here's what you give up:
 
 **More `.clone()` calls:** In string-heavy code (CLI parsing, HTTP routing) you'll see ~5% of lines with an explicit clone. I think that's better than lifetime annotations everywhere.
 
-In return, you get:
+The upside, if the approach works out:
 - No use-after-free, no dangling pointers, no data races
-- No lifetime annotation burden
+- No lifetime annotations
 - No GC pauses
-- No borrow checker fights
-- Function signatures that are actually readable
+- Readable function signatures
 
 ---
 
 ## Implementation Status
 
-**Right now:** Everything runs interpreted. The lexer, parser, type checker, and interpreter work for the core language features. Three of the five litmus test programs run (grep, game loop, text editor). It might be buggy, haven't have time testing everything.
+**Right now:** Everything runs interpreted. The lexer, parser, type checker, and interpreter work for the core language features. Three of five litmus test programs run (grep, game loop, text editor). Probably buggy — haven't had time testing everything.
 
 **What works:**
 - Memory model: ownership, moves, borrows, handles
@@ -137,7 +120,7 @@ The constant balancing act is keeping ergonomics high without hiding costs. When
 
 ## Inspiration
 
-Rask borrows ideas from across the systems language landscape:
+Rask borrows ideas from everywhere:
 
 **From Rust:** Ownership, move semantics, Result types, traits. Don't fix what isn't broken.
 
@@ -151,19 +134,19 @@ Rask borrows ideas from across the systems language landscape:
 
 **From Kotlin:** Extension methods (`extend` blocks) and `T?` syntax for optionals. I rejected the implicit scope functions though—Rask uses explicit closure parameters instead.
 
-**From Hylo:** Value semantics rather than pointer chasing. Where Hylo chooses the academic approach, Rask is pragmatic.
+**From Hylo:** Value semantics rather than pointer chasing. Hylo takes a more formal approach; I'm going for something more pragmatic, but I'm watching their work closely.
 
-**From Vale:** Vale proved that generational references are a valid memory model. I just made it less necessary to use in most code.
+**From Vale:** Vale proved that generational references are a valid memory model. I'm trying to limit them to where they're actually needed.
 
-**From Erlang:** Bitmatch and Supervision pattern. When you need it it is irreplaceable.
+**From Erlang:** Bitmatch and supervision pattern. When you need it, it's irreplaceable.
 
 
 ---
 
 ## Documentation
 
-For developers: See the [book](https://rask-lang.dev).  
-For language designers, see the lanugage specification in [specs/](specs/) directory.
+For the language guide: see the [book](https://rask-lang.dev).
+For the design specs: see [specs/](specs/).
 
 ### Project Structure
 

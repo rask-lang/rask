@@ -4,8 +4,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rask - Memory safety without lifetime annotations</title>
-    <meta name="description" content="A systems programming language with memory safety and no garbage collection. Compile-time safety without the complexity.">
+    <title>Rask - A research language exploring no-storable-references</title>
+    <meta name="description" content="A research programming language exploring memory safety without storable references, lifetime annotations, or garbage collection.">
     <link rel="icon" type="image/png" href="/book/assets/rask32.png">
     <link rel="stylesheet" href="landing.css">
 </head>
@@ -25,22 +25,22 @@
     <main class="container">
         <section class="hero">
             <img src="book/assets/rask-logo-white@3x.png" alt="Rask" class="hero-logo">
-            <p class="tagline">The Rust-Go dilemma, solved.</p>
+            <p class="tagline">What if references can't be stored?</p>
             <p class="subtitle">
-                Simpler than Rust, safer than Go.<br>
-                No lifetime annotations, no garbage collection.
+                A research language exploring memory safety<br>
+                without lifetime annotations or garbage collection.
             </p>
             <div class="cta">
-                <a href="app/" class="btn primary">→ try in browser</a>
+                <a href="app/" class="btn primary">try in browser</a>
                 <a href="book/index.html" class="btn secondary">read docs</a>
             </div>
         </section>
 
         <section class="insight">
-            <h2>The breakthrough</h2>
-            <p>Rust's complexity comes from allowing references to be stored in structs and returned from functions. Tracking those references requires lifetime annotations that spread through your entire codebase.</p>
+            <h2>The idea</h2>
+            <p>Most of Rust's complexity comes from allowing references to be stored in structs and returned from functions. Tracking those references requires lifetime annotations that spread through your codebase.</p>
 
-            <p><strong>Rask's approach:</strong> Make references temporary—they exist only within a block or expression. When you need longer-lived relationships, use handles (opaque identifiers) instead.</p>
+            <p><strong>Rask's experiment:</strong> What if references are always temporary — they exist only within a block or expression? When you need longer-lived relationships, use handles (opaque identifiers) instead.</p>
 
             <div class="tradeoff-box">
                 <div class="cost">
@@ -124,7 +124,7 @@ entities[enemy].target = player_handle</code></pre>
 
         <section class="tradeoffs">
             <h2>The tradeoffs</h2>
-            <p>Every design makes tradeoffs. Rask's are intentional:</p>
+            <p>Here's what you give up and what you get:</p>
 
             <table>
                 <tr>
@@ -145,34 +145,19 @@ entities[enemy].target = player_handle</code></pre>
                 </tr>
             </table>
 
-            <p>If you need nanosecond-precise control or pointer-level optimization, use Rust or C++. Rask targets the 80% of systems code where safety and productivity matter more than squeezing out the last 5% of performance.</p>
-        </section>
-
-        <section class="result">
-            <h2>What you get</h2>
-            <ul>
-                <li>Memory safety without lifetime annotations</li>
-                <li>No garbage collection, deterministic cleanup</li>
-                <li>Predictable performance (no GC pauses)</li>
-                <li>Fast compilation (local analysis only)</li>
-                <li>Simple mental model (values are owned, borrows are temporary)</li>
-            </ul>
+            <p>For pointer-level optimization, use Rust or C++. I'm betting that most application code can live with these tradeoffs — but that's still being tested.</p>
         </section>
 
         <section class="philosophy">
-            <h2>The goal</h2>
-            <p>Rask targets the 80% of systems code where safety and productivity matter more than squeezing out the last 5% of performance. You get memory safety without fighting the borrow checker.</p>
-
-            <p>You still manage ownership and resources—through block scopes and explicit keywords, not lifetime annotations. Major costs (allocations, locks, I/O) stay visible. Small safety checks (bounds, nulls) are implicit.</p>
-
-            <p>Rask draws from everywhere: Rust's ownership, Zig's comptime, Erlang's supervision, Vale's regions. The goal is Rust's safety with Go's approachability.</p>
+            <h2>What I'm going for</h2>
+            <p>I'm exploring whether no-storable-references can cover the 80% of systems code that's really application code — servers, tools, games — with less friction than Rust. The language draws from Rust's ownership, Zig's comptime, Erlang's supervision, and Vale's generational references. Whether it all holds together is still an open question.</p>
         </section>
 
         <section class="status-section">
             <h2>Where we are</h2>
 
-            <p class="status">Rask is in early development (pre-0.1). The design is coherent and there's a working interpreter, but expect breaking changes and bugs as the language evolves.</p>
-            <p class="contribute">The language is open for new ideas and constructive feedback. Contributions are welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
+            <p class="status">Rask is in early development (pre-0.1). There's a working interpreter but no compiler yet. Expect breaking changes, bugs, and design pivots.</p>
+            <p class="contribute">This is a hobby project, but feedback and ideas are welcome on <a href="https://github.com/rask-lang/rask/issues">GitHub issues</a>.</p>
         </section>
     </main>
 
