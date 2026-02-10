@@ -171,7 +171,7 @@ struct HardwareRegisters {
 func read_hardware_sensor(sensor_id: u8, tick: u64) -> f32 {
     // In real embedded code, this would be:
     // unsafe {
-    //     const regs = SENSOR_BASE_ADDR as *const HardwareRegisters
+    //     const regs = SENSOR_BASE_ADDR as *HardwareRegisters
     //     match sensor_id {
     //         0 => (*regs).temp_data as f32 / 100.0,
     //         1 => (*regs).pressure_data as f32 / 10.0,
