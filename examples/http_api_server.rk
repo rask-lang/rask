@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // HTTP JSON API Server
-// Demonstrates: Concurrency (spawn, channels), JSON, error handling, with multitasking
+// Demonstrates: Concurrency (spawn, channels), JSON, error handling, Multitasking
 
 import net
 import json
@@ -156,30 +156,30 @@ func main() -> () or Error {
     // Create buffered channel for request logging
     let (log_tx, log_rx) = Channel<LogEntry>.buffered(100)
 
-    with multitasking {
-        // Spawn logger task that consumes log entries
+    const scheduler = Multitasking.new()
+
+    // Spawn logger task that consumes log entries
+    spawn {
+        while log_rx.recv() is Ok(entry) {
+            const elapsed = entry.timestamp.elapsed().as_secs_f64()
+            println("[{elapsed:.3}s] {entry.method} {entry.path} -> {entry.status} ({entry.duration_ms:.2}ms)")
+        }
+    }.detach()
+
+    const listener = try net.tcp_listen("0.0.0.0:8080")
+    println("Server listening on :8080")
+
+    loop {
+        const conn = try listener.accept()
+        const db_ref = db.clone()
+        const log_tx_ref = log_tx.clone()
+
+        // Spawn a green task for each connection
         spawn {
-            while log_rx.recv() is Ok(entry) {
-                const elapsed = entry.timestamp.elapsed().as_secs_f64()
-                println("[{elapsed:.3}s] {entry.method} {entry.path} -> {entry.status} ({entry.duration_ms:.2}ms)")
+            match handle_request(conn, db_ref, log_tx_ref) {
+                Ok(()) => {}
+                Err(e) => println("Request error: {e}"),
             }
         }.detach()
-
-        const listener = try net.tcp_listen("0.0.0.0:8080")
-        println("Server listening on :8080")
-
-        loop {
-            const conn = try listener.accept()
-            const db_ref = db.clone()
-            const log_tx_ref = log_tx.clone()
-
-            // Spawn a green task for each connection
-            spawn {
-                match handle_request(conn, db_ref, log_tx_ref) {
-                    Ok(()) => {}
-                    Err(e) => println("Request error: {e}"),
-                }
-            }.detach()
-        }
     }
 }

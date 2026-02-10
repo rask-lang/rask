@@ -57,7 +57,7 @@ Right now `const value = try some_operation()` tells you it can fail. With effec
 
 ### What I chose instead
 
-Result types for errors. `with multitasking` for async I/O (tasks pause automatically). `ensure` blocks for cleanup. Function parameters or `with` blocks for context. `Shared<T>` for shared state.
+Result types for errors. `Multitasking` for async I/O (tasks pause automatically). `ensure` blocks for cleanup. Function parameters or `with` clauses for context. `Shared<T>` for shared state.
 
 More verbose in places, but every cost is visible and every path is local. Effects give you less ceremony—I chose transparency. More `try` keywords in error-heavy code, but errors should be visible.
 
@@ -107,7 +107,7 @@ sup.spawn_child("logger", || logger_task())
 sup.run()  // Monitors and restarts
 ```
 
-I considered making it a `with supervisor { }` block (like `with threading`), but supervisors typically run for the lifetime of the application. `with` blocks are for scoped resources—they cleanup on exit. Wrong model.
+I considered making it a `with supervisor { }` block, but supervisors typically run for the lifetime of the application. Scoped blocks cleanup on exit. Wrong model.
 
 Also, how would the supervisor know which spawns to monitor? All of them? That breaks explicit tracking. Same reason TaskGroup is a struct and not a `with` block—you need explicit control over which tasks join.
 
@@ -208,9 +208,8 @@ func fetch() -> Data or Error {
 const data = try fetch()
 
 // Works in async context (pauses task)
-with multitasking {
-    const data = try fetch()
-}
+const scheduler = Multitasking.new()
+const data = try fetch()
 ```
 
 Same function. Same signature. Runtime decides execution strategy.
@@ -254,9 +253,8 @@ func main() {
 
 // Async mode - pauses task
 func main() {
-    with multitasking {
-        spawn { fetch_user(42) }.detach()
-    }
+    const scheduler = Multitasking.new()
+    spawn { fetch_user(42) }.detach()
 }
 ```
 
@@ -270,7 +268,7 @@ Does this violate transparency? Yes and no.
 
 **What's hidden:** Pause points aren't in the code (unless you use IDE annotations).
 
-**What's visible:** The `with multitasking` block at the top tells you I/O will pause. You know the execution model upfront.
+**What's visible:** The `Multitasking.new()` at the top tells you I/O will pause. You know the execution model upfront.
 
 **Why I chose this:** Function coloring is worse than implicit pausing. Async/await's ecosystem split, library duplication, and ceremony tax outweigh the benefit of explicit `.await`. Transparency of cost doesn't mean every small cost needs ceremony—I want major architecture decisions visible (spawn, threading, multitasking), not every I/O call annotated.
 
@@ -391,4 +389,4 @@ Common thread: I optimize for transparency and local reasoning, but not at the c
 
 Not a judgment on other languages—Kotlin, Erlang, OCaml, Rust made different tradeoffs for different goals. Those features work well in their contexts.
 
-I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural. But "visible" doesn't mean "ceremony"—major decisions like `with multitasking` are in the code, while pause points can be shown by IDEs. The features I rejected would either add ceremony without value (async/await, lifetimes) or hide costs through magic (effects, exceptions, supervision). Rask is explicit where it matters, simple where it doesn't.
+I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural. But "visible" doesn't mean "ceremony"—major decisions like `Multitasking.new()` are in the code, while pause points can be shown by IDEs. The features I rejected would either add ceremony without value (async/await, lifetimes) or hide costs through magic (effects, exceptions, supervision). Rask is explicit where it matters, simple where it doesn't.

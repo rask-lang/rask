@@ -167,31 +167,30 @@ func main() -> () or string {
 
     print("\n")
 
-    // Thread pool with 'with threading'
+    // Thread pool
     print("=== Thread Pool ===\n\n")
 
-    with threading(4) {
-        const handles = Vec.new()
+    const pool = ThreadPool.new(workers: 4)
+    const handles = Vec.new()
 
-        for i in 0..8 {
-            const h = spawn_thread {
-                print("Pool task ")
-                print(i)
-                print(" running\n")
-                return i * i
-            }
-            handles.push(h)
+    for i in 0..8 {
+        const h = spawn thread {
+            print("Pool task ")
+            print(i)
+            print(" running\n")
+            return i * i
         }
+        handles.push(h)
+    }
 
-        print("\nWaiting for all pool tasks...\n")
+    print("\nWaiting for all pool tasks...\n")
 
-        for handle in handles.iter() {
-            const res = try handle.join()
-            print("Task result: ")
-            print(res)
-            print("\n")
-        }
-    }  // Thread pool shuts down here
+    for handle in handles.iter() {
+        const res = try handle.join()
+        print("Task result: ")
+        print(res)
+        print("\n")
+    }
 
     print("\n=== Key Points ===\n")
     print("- spawn { } creates OS threads\n")

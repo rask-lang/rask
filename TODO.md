@@ -112,7 +112,7 @@ All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 - [x] **Game loop** — ✅ **FULLY WORKING** (tested: entities, collision, spawning, scoring)
   - Fixed: Pool iteration, projection parameters, Rust syntax (.collect, .map closure), tuple enum patterns
   - Slow: ~60ms/frame in interpreter, but functionally correct
-- [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `with multitasking` ✅ (aliased to threading), `Map.from` ✅, string slicing ✅
+- [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `Multitasking` ✅ (aliased to threading), `Map.from` ✅, string slicing ✅
 - [x] **Sensor processor** — ✅ **PASSES TYPE CHECK** (resolver, type checker, SIMD, @no_alloc all fixed)
   - Fixed: comptime generic params in scope, `u64.MAX` type constants, generic struct field access, array size tracking
   - SIMD `f32x8` type: load, splat, element-wise ops, sum

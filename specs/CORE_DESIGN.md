@@ -176,7 +176,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. See [traits.md](types/traits.md), [generics.md](types/generics.md).
 
-**Concurrency.** `spawn` for green tasks (requires `with multitasking`), `spawn thread` for CPU-bound work (requires `with threading`). No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
+**Concurrency.** `spawn` for green tasks (requires `Multitasking` in scope), `spawn thread` for CPU-bound work (requires `ThreadPool` in scope). Both are context clause objects — same pattern as `Pool<T>`. No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`rask.build`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
