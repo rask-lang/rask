@@ -1,0 +1,244 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+//! Function-level checking, return analysis, and @no_alloc enforcement.
+
+use rask_ast::decl::FnDecl;
+use rask_ast::expr::{Expr, ExprKind};
+use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::Span;
+
+use super::errors::TypeError;
+use super::parse_type::parse_type_string;
+use super::TypeChecker;
+
+use crate::types::Type;
+
+impl TypeChecker {
+    pub(super) fn check_fn(&mut self, f: &FnDecl, fn_span: Span) {
+        let ret_ty = f
+            .ret_ty
+            .as_ref()
+            .map(|t| parse_type_string(t, &self.types).unwrap_or(Type::Error))
+            .unwrap_or(Type::Unit);
+        self.current_return_type = Some(ret_ty);
+
+        self.push_scope();
+        for param in &f.params {
+            if param.name == "self" {
+                if let Some(self_ty) = &self.current_self_type {
+                    self.define_local("self".to_string(), self_ty.clone());
+                }
+                continue;
+            }
+            if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+                if param.is_mutate || param.is_take {
+                    self.define_local(param.name.clone(), ty);
+                } else {
+                    // Default params are read-only
+                    self.define_local_read_only(param.name.clone(), ty);
+                }
+            }
+        }
+
+        for stmt in &f.body {
+            self.check_stmt(stmt);
+        }
+
+        let ret_ty = self.current_return_type.as_ref().unwrap();
+        let resolved_ret_ty = self.ctx.apply(ret_ty);
+
+        match &resolved_ret_ty {
+            Type::Unit | Type::Never => {
+                // No return needed
+            }
+            Type::Result { ok, err: _ } => {
+                let resolved_ok = self.ctx.apply(ok);
+                if matches!(resolved_ok, Type::Unit) {
+                    // Function is () or E - implicit Ok(()) is valid
+                } else {
+                    // Function is T or E where T != () - require explicit return
+                    if !self.has_explicit_return(&f.body) {
+                        let end_span = Span::new(fn_span.end - 1, fn_span.end);
+                        self.errors.push(TypeError::MissingReturn {
+                            function_name: f.name.clone(),
+                            expected_type: ret_ty.clone(),
+                            span: end_span,
+                        });
+                    }
+                }
+            }
+            _ => {
+                // Non-Result, non-Unit - require explicit return
+                if !self.has_explicit_return(&f.body) {
+                    let end_span = Span::new(fn_span.end - 1, fn_span.end);
+                    self.errors.push(TypeError::MissingReturn {
+                        function_name: f.name.clone(),
+                        expected_type: ret_ty.clone(),
+                        span: end_span,
+                    });
+                }
+            }
+        }
+
+        self.pop_scope();
+        self.current_return_type = None;
+
+        // @no_alloc enforcement: scan body for heap allocations
+        if f.attrs.iter().any(|a| a == "no_alloc") {
+            self.check_no_alloc(&f.name, &f.body);
+        }
+    }
+
+    /// Check that a @no_alloc function body has no heap allocations.
+    pub(super) fn check_no_alloc(&mut self, fn_name: &str, body: &[Stmt]) {
+        for stmt in body {
+            self.check_no_alloc_stmt(fn_name, stmt);
+        }
+    }
+
+    pub(super) fn check_no_alloc_stmt(&mut self, fn_name: &str, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Expr(e) => self.check_no_alloc_expr(fn_name, e),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                self.check_no_alloc_expr(fn_name, init);
+            }
+            StmtKind::Assign { value, .. } => self.check_no_alloc_expr(fn_name, value),
+            StmtKind::Return(Some(e)) => self.check_no_alloc_expr(fn_name, e),
+            StmtKind::While { cond, body, .. } => {
+                self.check_no_alloc_expr(fn_name, cond);
+                self.check_no_alloc(fn_name, body);
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.check_no_alloc_expr(fn_name, iter);
+                self.check_no_alloc(fn_name, body);
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn check_no_alloc_expr(&mut self, fn_name: &str, expr: &Expr) {
+        match &expr.kind {
+            // Vec.new(), Map.new(), string.new() — heap allocation
+            ExprKind::MethodCall { object, method, args, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "string")
+                        && method == "new"
+                    {
+                        self.errors.push(TypeError::NoAllocViolation {
+                            reason: format!("{}.new() allocates on the heap", name),
+                            function_name: fn_name.to_string(),
+                            span: expr.span,
+                        });
+                    }
+                }
+                self.check_no_alloc_expr(fn_name, object);
+                for a in args { self.check_no_alloc_expr(fn_name, a); }
+            }
+            // format() — allocates a string
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Ident(name) = &func.kind {
+                    if name == "format" {
+                        self.errors.push(TypeError::NoAllocViolation {
+                            reason: "format() allocates a new string".to_string(),
+                            function_name: fn_name.to_string(),
+                            span: expr.span,
+                        });
+                    }
+                }
+                self.check_no_alloc_expr(fn_name, func);
+                for a in args { self.check_no_alloc_expr(fn_name, a); }
+            }
+            // Recurse into subexpressions
+            ExprKind::Binary { left, right, .. } => {
+                self.check_no_alloc_expr(fn_name, left);
+                self.check_no_alloc_expr(fn_name, right);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.check_no_alloc_expr(fn_name, operand);
+            }
+            ExprKind::Field { object, .. } => {
+                self.check_no_alloc_expr(fn_name, object);
+            }
+            ExprKind::Index { object, index } => {
+                self.check_no_alloc_expr(fn_name, object);
+                self.check_no_alloc_expr(fn_name, index);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.check_no_alloc_expr(fn_name, cond);
+                self.check_no_alloc_expr(fn_name, then_branch);
+                if let Some(e) = else_branch { self.check_no_alloc_expr(fn_name, e); }
+            }
+            ExprKind::Block(stmts) => self.check_no_alloc(fn_name, stmts),
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_no_alloc_expr(fn_name, scrutinee);
+                for arm in arms { self.check_no_alloc_expr(fn_name, &arm.body); }
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn has_explicit_return(&self, body: &[Stmt]) -> bool {
+        // Any statement in the body that always returns means the function returns
+        body.iter().any(|stmt| self.stmt_always_returns(stmt))
+    }
+
+    pub(super) fn stmt_always_returns(&self, stmt: &Stmt) -> bool {
+        use rask_ast::stmt::StmtKind;
+
+        match &stmt.kind {
+            StmtKind::Return(_) => true,
+            StmtKind::Expr(expr) => self.expr_always_returns(expr),
+            _ => false,
+        }
+    }
+
+    pub(super) fn expr_always_returns(&self, expr: &rask_ast::expr::Expr) -> bool {
+        use rask_ast::expr::ExprKind;
+
+        match &expr.kind {
+            ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
+                stmts.iter().any(|s| self.stmt_always_returns(s))
+            }
+            ExprKind::Match { arms, .. } => {
+                !arms.is_empty() && arms.iter().all(|arm| self.expr_always_returns(&arm.body))
+            }
+            ExprKind::If { then_branch, else_branch, .. } => {
+                else_branch.as_ref().map_or(false, |else_br| {
+                    self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
+                })
+            }
+            ExprKind::IfLet { then_branch, else_branch, .. } => {
+                else_branch.as_ref().map_or(false, |else_br| {
+                    self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
+                })
+            }
+            _ => false,
+        }
+    }
+
+    /// Auto-wrap return value in Ok() if function returns Result.
+    /// Implements auto-Ok wrapping from spec: when function returns T or E,
+    /// returning just T auto-wraps to Ok(T).
+    pub(super) fn wrap_in_ok_if_needed(&self, ret_ty: Type, expected: &Type) -> Type {
+        let resolved_expected = self.ctx.apply(expected);
+
+        // Check if expected type is Result
+        if let Type::Result { ok: _, err } = &resolved_expected {
+            let resolved_ret = self.ctx.apply(&ret_ty);
+
+            // Don't wrap if already Result (handles explicit Ok/Err returns)
+            match &resolved_ret {
+                Type::Result { .. } => ret_ty,
+                // Don't wrap type variables - preserve inference flexibility
+                Type::Var(_) => ret_ty,
+                // Wrap concrete non-Result values
+                _ => Type::Result {
+                    ok: Box::new(ret_ty),
+                    err: err.clone(),
+                },
+            }
+        } else {
+            // Not a Result return type - no wrapping
+            ret_ty
+        }
+    }
+}

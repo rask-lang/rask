@@ -20,9 +20,7 @@ pub struct Resolver {
     errors: Vec<ResolveError>,
     current_function: Option<SymbolId>,
 
-    #[allow(dead_code)]
     current_package: Option<PackageId>,
-    #[allow(dead_code)]
     package_bindings: HashMap<String, PackageId>,
     imported_symbols: HashSet<String>,
     lazy_imports: HashMap<String, Vec<String>>,

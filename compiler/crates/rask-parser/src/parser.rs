@@ -2821,15 +2821,6 @@ impl ParseError {
         Self { span, message, hint }
     }
 
-    #[allow(dead_code)]
-    fn unexpected(span: Span) -> Self {
-        Self {
-            span,
-            message: "Unexpected syntax".to_string(),
-            hint: None,
-        }
-    }
-
     fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
         self
