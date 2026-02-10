@@ -53,7 +53,7 @@ Packages are compilation units—default package visibility keeps related code a
 | Syntax | Effect |
 |--------|--------|
 | `import pkg` | Qualified access: `pkg.Name` |
-| `import std.io` | Qualified via last segment: `io.print()` |
+| `import myapp.utils` | Qualified via last segment: `utils.helper()` |
 | `import pkg as p` | Aliased access: `p.Name` |
 | `import pkg.Name` | Unqualified: `Name` directly |
 | `import pkg.Name, pkg.Other` | Multiple unqualified |
@@ -65,22 +65,21 @@ Packages are compilation units—default package visibility keeps related code a
 **Last-segment qualifier rule:**
 For nested package imports, the **last path segment** becomes the qualifier (like Go):
 ```rask
-import std.io          // use as: io.print()
-import std.net.http    // use as: http.get()
 import myapp.utils     // use as: utils.helper()
-import std.io as sio   // explicit alias overrides: sio.print()
+import myapp.net.http  // use as: http.get()
+import myapp.utils as u  // explicit alias overrides: u.helper()
 ```
 
 **Grouped imports (brace syntax):**
 For importing multiple items from nested modules, use braces to avoid path repetition:
 ```rask
-import std.collections.{
-    HashMap,
-    HashSet,
-    Entry,
+import myapp.models.{
+    User,
+    Session,
+    Token,
 }
 
-import std.{io, fs, net}  // multiple submodules, qualified
+import myapp.{utils, config, routes}  // multiple submodules, qualified
 ```
 Rules: items in braces follow same rules as individual imports. Trailing comma allowed.
 
@@ -419,7 +418,7 @@ func log(r: Request) {
 ```rask
 // file: main.rk
 import http
-import std.net.http as nethttp        // alias for disambiguation
+import vendor.http as vendorhttp      // alias for disambiguation
 import json.{parse, stringify}        // grouped unqualified
 
 func main() {
