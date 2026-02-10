@@ -11,11 +11,6 @@
 # User Guide
 
 - [Language Guide](guide/README.md)
-  - [Basic Syntax](guide/basic-syntax.md)
-  - [Ownership and Memory](guide/ownership.md)
-  - [Collections and Handles](guide/collections.md)
-  - [Error Handling](guide/error-handling.md)
-  - [Concurrency](guide/concurrency.md)
 
 # Examples
 

@@ -36,4 +36,4 @@ The repository includes working examples:
 ## Next Steps
 
 - [Your First Program](first-program.md)
-- [Basic Syntax](../guide/basic-syntax.md)
+- [Language Guide](../guide/README.md)

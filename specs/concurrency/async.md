@@ -589,7 +589,7 @@ loop {
 | Thread pool keyword | `threading` | `threads`, `pool` | Consistent with `multitasking`, avoids `threads` variable collision |
 | CPU work | Explicit `spawn_thread` | Implicit pool | Transparency (TC >= 0.90) |
 
-See [design-rationale.md](../design-rationale.md#asyncawait) for detailed discussion of the async/await decision.
+See [rejected-features.md](../rejected-features.md#asyncawait) for detailed discussion of the async/await decision.
 
 ## Metrics Validation
 
