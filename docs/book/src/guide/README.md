@@ -1,25 +1,9 @@
 # Language Guide
 
-This guide covers the essential features of Rask.
+> **Note:** The language guide is being written. Rask is in active design — the specifications are the authoritative source for now.
 
-> **Note:** Rask is in active design. This guide covers what's currently implemented in the interpreter. For detailed specifications, see the [Formal Specifications](../reference/specs-link.md).
+## Where to Learn
 
-## Contents
-
-- [Basic Syntax](basic-syntax.md) - Variables, functions, control flow
-- [Ownership and Memory](ownership.md) - Single ownership, moves, borrows
-- [Collections and Handles](collections.md) - Vec, Map, Pool
-- [Error Handling](error-handling.md) - Result types, try operator
-- [Concurrency](concurrency.md) - Tasks, threads, channels
-
-## Learning Path
-
-1. Start with [Basic Syntax](basic-syntax.md) to understand the fundamentals
-2. Learn [Ownership](ownership.md) - this is the key insight that makes Rask work
-3. Explore [Collections and Handles](collections.md) for working with data structures
-4. Master [Error Handling](error-handling.md) for robust programs
-5. Discover [Concurrency](concurrency.md) for parallel execution
-
-## Examples
-
-Prefer learning by example? See the [Examples section](../examples/README.md) for complete working programs.
+- **[Examples](../examples/README.md)** — Complete working programs (grep clone, game loop, text editor)
+- **[Formal Specifications](../reference/specs-link.md)** — Full language specs, start with [CORE_DESIGN.md](../../../../specs/CORE_DESIGN.md)
+- **[Getting Started](../getting-started/README.md)** — Installation and first program

@@ -154,127 +154,19 @@ const file = try fs.open("data.txt")
 
 ## Core
 
-Fundamental types and traits. Everything in core is in the prelude.
-
-See:
-- [types/primitives.md](../types/primitives.md) — Primitive types
-- [types/optionals.md](../types/optionals.md) — Option<T>
-- [types/error-types.md](../types/error-types.md) — Result, Error trait
-- [types/traits.md](../types/traits.md) — Trait definitions
+Fundamental types and traits. Everything in core is in the prelude. See [types/primitives.md](../types/primitives.md), [types/optionals.md](../types/optionals.md), [types/error-types.md](../types/error-types.md), [types/traits.md](../types/traits.md).
 
 ---
 
 ## IO
 
-Traits for reading and writing byte streams. See [io.md](io.md).
-
-### Types
-
-| Type | Description | Linear? |
-|------|-------------|---------|
-| `Reader` | Trait for reading bytes | -- |
-| `Writer` | Trait for writing bytes | -- |
-| `Buffer` | In-memory byte buffer | No |
-| `BufReader<R>` | Buffered reader wrapper | Inherits from R |
-| `BufWriter<W>` | Buffered writer wrapper | Inherits from W |
-| `Stdin` | Standard input handle | Yes |
-| `Stdout` | Standard output handle | Yes |
-| `Stderr` | Standard error handle | Yes |
-
-### Core Traits
-
-```rask
-trait Reader {
-    func read(self, buf: []u8) -> usize or IoError
-    func read_all(self) -> []u8 or IoError
-    func read_text(self) -> string or IoError
-    func read_exact(self, buf: []u8) -> () or IoError
-}
-
-trait Writer {
-    func write(self, data: []u8) -> usize or IoError
-    func write_all(self, data: []u8) -> () or IoError
-    func flush(self) -> () or IoError
-}
-```
-
-### Standard Streams
-
-```rask
-import io
-
-const stdin = io.stdin()     // Stdin (@resource, implements Reader)
-const stdout = io.stdout()   // Stdout (@resource, implements Writer)
-const stderr = io.stderr()   // Stderr (@resource, implements Writer)
-```
-
-### Convenience
-
-```rask
-const line = try io.read_line()             // Read line from stdin
-const n = try io.copy(reader, writer)       // Copy all bytes between streams
-```
-
-**Status:** Specified — see [io.md](io.md). Interpreter has `io.read_line()` only.
+Reader/Writer traits, buffered I/O, standard streams. See [io.md](io.md).
 
 ---
 
 ## FS
 
-File system operations.
-
-### Types
-
-| Type | Description | Linear? |
-|------|-------------|---------|
-| `File` | Open file handle | Yes |
-| `DirEntry` | Directory entry | No |
-| `Metadata` | File metadata | No |
-| `OpenOptions` | File open configuration | No |
-
-### File Operations
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `fs.open(path)` | `(read string) -> File or IoError` | Open for reading |
-| `fs.create(path)` | `(read string) -> File or IoError` | Create/truncate |
-| `fs.open_with(path, opts)` | `(...) -> File or IoError` | Open with options |
-
-### File Handle (Linear)
-
-```rask
-// File is linear — must be closed
-const file = try fs.open("data.txt")
-ensure file.close()
-
-const data = try file.read_all()
-try process(data)
-```
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `.read(buf)` | `([]u8) -> usize or IoError` | Read bytes |
-| `.read_all()` | `() -> []u8 or IoError` | Read entire file |
-| `.write(data)` | `(read []u8) -> usize or IoError` | Write bytes |
-| `.close()` | `() -> () or IoError` | Close handle (consumes) |
-| `.metadata()` | `() -> Metadata or IoError` | Get file info |
-
-### Directory Operations
-
-| Function | Description |
-|----------|-------------|
-| `fs.read_dir(path)` | List directory contents |
-| `fs.create_dir(path)` | Create directory |
-| `fs.create_dir_all(path)` | Create directory tree |
-| `fs.remove_file(path)` | Delete file |
-| `fs.remove_dir(path)` | Delete empty directory |
-| `fs.remove_dir_all(path)` | Delete directory tree |
-| `fs.rename(from, to)` | Rename/move |
-| `fs.copy(from, to)` | Copy file |
-| `fs.exists(path)` | Check existence |
-| `fs.metadata(path)` | Get metadata without opening |
-
-**Status:** Specified — see [fs.md](fs.md).
+File operations (open, read, write, directory listing, metadata). `File` is a linear resource. See [fs.md](fs.md).
 
 ---
 
@@ -325,245 +217,43 @@ const response = try stream.read_all()
 
 ## Time
 
-Time-related types and functions.
-
-### Types
-
-| Type | Description | Size |
-|------|-------------|------|
-| `Duration` | Time span (nanoseconds) | 8 bytes |
-| `Instant` | Monotonic timestamp | 8 bytes |
-| `SystemTime` | Wall-clock timestamp | 16 bytes |
-
-### Duration
-
-```rask
-const d = Duration.seconds(5)
-const d = Duration.millis(100)
-const d = Duration.nanos(1_000_000)
-
-d.as_secs()    // -> u64
-d.as_millis()  // -> u64
-d.as_nanos()   // -> u128
-```
-
-### Instant (Monotonic Clock)
-
-```rask
-const start = time.now()
-expensive_operation()
-const elapsed = time.now() - start
-
-if elapsed > Duration.seconds(1) {
-    log("slow operation")
-}
-```
-
-### Sleep
-
-```rask
-time.sleep(Duration.millis(100))
-```
-
-**Status:** Specified — see [time.md](time.md) for full specification.
+Duration, Instant, SystemTime. See [time.md](time.md).
 
 ---
 
 ## Path
 
-Cross-platform path manipulation.
-
-### Type
-
-| Type | Description |
-|------|-------------|
-| `Path` | Immutable path (owned string internally) |
-
-### Operations
-
-```rask
-import path
-
-const p = Path.new("/home/user/file.txt")
-p.parent()      // -> Option<Path>  "/home/user"
-p.file_name()   // -> Option<string>  "file.txt"
-p.extension()   // -> Option<string>  "txt"
-p.stem()        // -> Option<string>  "file"
-p.is_absolute() // -> bool
-
-const p2 = p.join("subdir")  // "/home/user/file.txt/subdir"
-```
-
-**Status:** Specified — see [path.md](path.md) for full specification.
+Cross-platform path manipulation (parent, extension, join). See [path.md](path.md).
 
 ---
 
 ## OS
 
-Platform-specific operations.
-
-### Environment
-
-```rask
-import os
-
-os.env("HOME")              // -> Option<string>
-os.env_or("PORT", "8080")   // -> string
-os.set_env("KEY", "value")
-os.args()                   // -> []string
-```
-
-### Process
-
-```rask
-os.exit(0)
-os.getpid()  // -> u32
-```
-
-**Status:** Specified — see [os.md](os.md) for full specification.
+Environment variables, process exit, args. See [os.md](os.md).
 
 ---
 
 ## FMT
 
-String formatting.
-
-### Format Macro
-
-```rask
-const s = format!("Hello, {}!", name)
-const s = format!("{} + {} = {}", a, b, a + b)
-const s = format!("{:08x}", value)  // Hex with padding
-```
-
-### Format Specifiers
-
-| Specifier | Description |
-|-----------|-------------|
-| `{}` | Display trait |
-| `{:?}` | Debug trait |
-| `{:x}` | Hex lowercase |
-| `{:X}` | Hex uppercase |
-| `{:b}` | Binary |
-| `{:e}` | Scientific |
-| `{:>10}` | Right-align, width 10 |
-| `{:0>10}` | Zero-pad, width 10 |
-
-**Status:** Specified — see [fmt.md](fmt.md).
+String formatting with format specifiers. See [fmt.md](fmt.md).
 
 ---
 
 ## Math
 
-Mathematical functions.
-
-### Functions
-
-| Function | Description |
-|----------|-------------|
-| `math.abs(x)` | Absolute value |
-| `math.min(a, b)` | Minimum |
-| `math.max(a, b)` | Maximum |
-| `math.clamp(x, lo, hi)` | Clamp to range |
-| `math.sqrt(x)` | Square root |
-| `math.pow(x, n)` | Power |
-| `math.log(x)` | Natural log |
-| `math.sin(x)`, `cos`, `tan` | Trigonometry |
-| `math.floor(x)`, `ceil`, `round` | Rounding |
-
-### Constants
-
-| Constant | Value |
-|----------|-------|
-| `math.PI` | 3.14159... |
-| `math.E` | 2.71828... |
-| `math.INF` | Infinity |
-| `math.NAN` | Not a number |
-
-**Status:** Specified — see [math.md](math.md) for full specification.
+Mathematical functions (abs, sqrt, sin, etc.) and constants (PI, E). See [math.md](math.md).
 
 ---
 
 ## Random
 
-Random number generation.
-
-### Types
-
-| Type | Description |
-|------|-------------|
-| `Rng` | Random number generator |
-
-### Usage
-
-```rask
-import random
-
-const rng = random.new()           // System-seeded
-const rng = random.from_seed(42)   // Deterministic
-
-rng.u64()           // -> u64
-rng.range(0, 100)   // -> i64 in [0, 100)
-rng.f64()           // -> f64 in [0.0, 1.0)
-rng.bool()          // -> bool
-rng.shuffle(vec)    // In-place shuffle
-rng.choice(vec)     // -> Option<T>
-```
-
-**Status:** Specified — see [random.md](random.md) for full specification.
+Random number generation (seeded, range, shuffle). See [random.md](random.md).
 
 ---
 
 ## JSON
 
-JSON parsing and serialization (RFC 8259).
-
-### Functions
-
-| Function | Signature | Description |
-|----------|-----------|-------------|
-| `json.parse(s)` | `(read string) -> JsonValue or JsonError` | Parse JSON string |
-| `json.stringify(v)` | `(read JsonValue) -> string` | Serialize to JSON |
-| `json.stringify_pretty(v)` | `(read JsonValue) -> string` | Serialize with indentation |
-
-### Types
-
-```rask
-enum JsonValue {
-    Null,
-    Bool(bool),
-    Number(f64),
-    String(string),
-    Array(Vec<JsonValue>),
-    Object(Map<string, JsonValue>),
-}
-```
-
-### Usage
-
-```rask
-import json
-
-const data = try json.parse(input)
-match data {
-    JsonValue.Object(obj) => {
-        const name = try obj["name"]
-    }
-    _ => return Err(InvalidFormat)
-}
-
-const output = json.stringify(data)
-```
-
-### Typed Serialization
-
-```rask
-// Types implementing Serialize/Deserialize traits
-const user: User = try json.decode(input)
-const output = json.encode(user)
-```
-
-**Status:** Specified — see [json.md](json.md) for full specification.
+JSON parsing and serialization (RFC 8259), typed encode/decode. See [json.md](json.md).
 
 ---
 
@@ -680,48 +370,7 @@ loop {
 
 ## CLI
 
-Command-line argument parsing.
-
-### Basic Usage
-
-```rask
-import cli
-
-const args = cli.parse()
-
-const verbose = args.flag("verbose", "v")      // --verbose or -v
-const output = try args.option("output", "o")     // --output=file or -o file
-const files = args.positional()                // remaining args
-```
-
-### Structured Parsing
-
-```rask
-import cli
-
-struct Args {
-    verbose: bool,
-    output: Option<string>,
-    files: Vec<string>,
-}
-
-let args: Args = try cli.parse_into()
-```
-
-### Help Generation
-
-```rask
-const parser = cli.Parser.new("myapp")
-    .version("1.0.0")
-    .description("My application")
-    .flag("verbose", "v", "Enable verbose output")
-    .option("output", "o", "Output file")
-    .positional("files", "Input files")
-
-const args = try parser.parse()
-```
-
-**Status:** Specified — see [cli.md](cli.md) for full specification.
+Command-line argument parsing (flags, options, positional args, help generation). See [cli.md](cli.md).
 
 ---
 
@@ -990,29 +639,7 @@ const reader = csv.Reader.from_string(data)
 
 ## Bits
 
-Bit manipulation utilities and binary parsing helpers.
-
-See [bits.md](bits.md) for full specification.
-
-### Bit Operations
-
-Methods on integer types: `popcount()`, `leading_zeros()`, `trailing_zeros()`, `reverse_bits()`, `rotate_left(n)`, `rotate_right(n)`, `swap_bytes()`.
-
-### Byte Order
-
-Methods for endianness: `to_be_bytes()`, `to_le_bytes()`, `from_be_bytes()`, `from_le_bytes()`.
-
-### Binary Parsing
-
-For one-off parsing without `@binary` structs:
-
-```rask
-let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
-```
-
-See also [Binary Structs](../types/binary.md) for declarative binary layouts.
-
-**Status:** Specified — see [bits.md](bits.md).
+Bit manipulation, byte order, binary parsing. See [bits.md](bits.md).
 
 ---
 
@@ -1049,29 +676,3 @@ The following are **not** part of stdlib — use packages:
 
 ---
 
-## Remaining Issues
-
-### High Priority — Core Functionality
-1. **IO module** — Reader/Writer traits
-2. **FS module** — File operations
-3. **HTTP module** — Client and server
-4. **JSON module** — Parse/stringify
-
-### Medium Priority — Networking & Data
-5. **Net module** — TCP/UDP sockets
-6. **TLS module** — Secure connections
-7. **URL module** — URL parsing
-8. **CLI module** — Argument parsing
-9. **Encoding module** — Base64, hex
-
-### Lower Priority — Utilities
-10. **Time module** — Duration, Instant
-11. **Path module** — Path manipulation
-12. **Hash module** — SHA256, CRC32
-13. **Math module** — Math functions
-14. **Random module** — RNG
-15. **FMT module** — Format strings
-16. **CSV module** — Tabular data
-17. **Bits module** — Bit manipulation
-18. **Unicode module** — Unicode utilities
-19. **Terminal module** — ANSI colors

@@ -155,7 +155,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | Spec | Description |
 |------|-------------|
 | [canonical-patterns.md](canonical-patterns.md) | One obvious way: canonical patterns for every common operation |
-| [machine-readability.md](machine-readability.md) | Machine readability principles, naming conventions, error format |
+| [rejected-features.md](rejected-features.md) | Why I didn't add: async/await, algebraic effects, lifetimes, supervision |
 | [tooling/describe-schema.md](tooling/describe-schema.md) | `rask describe` JSON schema for module API summaries |
 | [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
 

@@ -67,4 +67,4 @@ func main() {
 
 ## Next: Explore the Guide
 
-[Continue to Basic Syntax →](../guide/basic-syntax.md)
+[Continue to Language Guide →](../guide/README.md)

@@ -4,7 +4,56 @@
 
 For each common operation, there should be one idiomatic way to do it. When every project follows the same patterns, developers read unfamiliar code faster, tools can pattern-match on idioms, and newcomers learn one approach instead of five.
 
-This document is the reference. The [machine-readability spec](machine-readability.md) explains _why_ one obvious way matters. This document shows _what_ that way is.
+---
+
+## Why These Patterns Matter
+
+The same properties that make code clear to developers make it clear to machines: explicit intent, consistent patterns, local reasoning. Every property here was chosen for developer ergonomics first — the fact that it also helps automated tooling is a bonus.
+
+### Local Analysis
+
+Every function can be understood in isolation. Public signatures fully describe the interface. No cross-function inference, no whole-program analysis needed.
+
+A tool can reason about one function without loading the entire codebase. Refactoring a single file doesn't require global analysis. Incremental checking is trivial.
+
+### Rich Signatures
+
+Function signatures carry a lot of information in Rask:
+
+```rask
+func process(config: Config, take data: Vec<u8>) -> ProcessResult or IoError
+    with Pool<Node>
+```
+
+From this single line, a tool can determine:
+- `config` is read-only (won't be modified)
+- `data` ownership transfers (caller loses access)
+- Can fail with `IoError` (and only `IoError`)
+- Needs a `Pool<Node>` in scope
+- Returns `ProcessResult` on success
+
+Most languages require reading the function body to learn half of this. In Rask, the signature is a specification.
+
+### Keyword-Based Semantics
+
+Rask uses words where other languages use symbols:
+
+| Concept | Rask | Alternative |
+|---------|------|------------|
+| Error propagation | `try expr` | `expr?` |
+| Ownership transfer | `own value` | implicit move |
+| Pattern check | `x is Some(v)` | `let Some(v) = x` |
+| Result type | `T or E` | `Result<T, E>` |
+
+Keywords are unambiguous tokens. `try` means one thing in Rask. `?` means different things in different languages. Tools that process multiple languages benefit from unambiguous tokens; developers benefit from readable code.
+
+### Explicit Returns
+
+Functions require explicit `return`. No ambiguity about what a function produces — find the `return` statements and you have the complete picture. Blocks use implicit last-expression, but functions don't.
+
+### No Hidden Effects
+
+No implicit async. No algebraic effects. No monkey patching. No operator overloading beyond the standard set. If a function does I/O, it shows up in the body. If it can fail, the return type says so.
 
 ---
 
@@ -41,7 +90,7 @@ See [stdlib/collections.md](stdlib/collections.md), [memory/pools.md](memory/poo
 
 ---
 
-## Conversion
+## Conversion and Naming Conventions
 
 Name encodes the cost. A developer — or a tool — knows what happens from the method name alone.
 
@@ -59,17 +108,31 @@ const owned = view.into_string()
 const vec = list.into_vec()
 ```
 
-| Prefix | Cost | Consumes source? |
-|--------|------|-----------------|
-| `as_*` | Free (view/cast) | No |
-| `to_*` | May allocate | No |
-| `into_*` | May allocate | Yes |
+### Required Naming Patterns (Stdlib)
+
+| Prefix/Suffix | Meaning | Returns | Examples |
+|---------------|---------|---------|----------|
+| `from_*` | Construction from source | `Self` or `Self or E` | `from_str(s)`, `from_bytes(b)` |
+| `into_*` | Consuming conversion | new type (takes ownership) | `into_string()`, `into_vec()` |
+| `as_*` | Cheap view or cast | reference or copy | `as_slice()`, `as_str()` |
+| `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
+| `is_*` | Boolean predicate | `bool` | `is_empty()`, `is_valid()` |
+| `with_*` | Builder-style setter | `Self` | `with_capacity(n)` |
+| `*_or(default)` | Unwrap with fallback | `T` | `unwrap_or(0)`, `env_or(k, d)` |
+| `try_*` | Fallible version | `T or E` | `try_parse()`, `try_connect()` |
+
+### Domain-Specific Patterns
+
+| Pattern | Domain | Examples |
+|---------|--------|---------|
+| `read_*` / `write_*` | Binary I/O | `read_u32be()`, `write_all()` |
+| `decode` / `encode` | Serialization | `json.decode<T>()`, `json.encode()` |
 
 **Anti-patterns:**
 - `to_*` that consumes the source — should be `into_*`.
 - `as_*` that allocates — should be `to_*`.
 
-See [machine-readability.md](machine-readability.md#naming-conventions).
+Future stdlib additions must follow these patterns; `rask lint` enforces them. See [tooling/lint.md](tooling/lint.md).
 
 ---
 
@@ -443,6 +506,39 @@ test "file cleanup" {
 - Tests without assertions — every test should verify something.
 
 See [stdlib/testing.md](stdlib/testing.md).
+
+---
+
+## Error Messages
+
+Error messages should be actionable. A developer reading an error should know exactly what to change. A tool reading an error should be able to generate the fix.
+
+Every error message has three parts:
+
+1. **What went wrong** — The symptom, with source span
+2. **How to fix it** — Concrete code change, not vague advice
+3. **Why the rule exists** — One sentence explaining the constraint
+
+```
+error[E0042]: cannot use `data` after ownership transfer
+
+  14 | process(own data)
+     |         ~~~~~~~~ ownership transferred here
+  15 | println(data.len())
+     |         ^^^^ used after transfer
+
+fix: clone before transfer
+  14 | process(own data.clone())
+
+why: `own` transfers ownership — the caller can no longer access the value.
+```
+
+**Guidelines:**
+- **Concrete fixes over vague suggestions.** "Clone before transfer" with the exact line, not "consider cloning the value."
+- **One primary fix.** Mention alternatives briefly after the main suggestion.
+- **The `fix:` section is machine-parseable.** Tools can extract the line number and replacement text for automated fixes.
+- **The `why:` section teaches.** Developers learn the rule; they don't just memorize the fix.
+- **Every new error must include `fix:` and `why:` text.** Enforced in the compiler's `ToDiagnostic` implementations.
 
 ---
 

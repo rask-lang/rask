@@ -724,222 +724,65 @@ const result = search: loop {
 
 ---
 
-## Ownership & Memory
+## Ownership & Memory Syntax
 
-### Pools and Handles
+Pool access, `ensure` cleanup, `@resource` types, and projection syntax are shown in the sections above (see [Structs](#structs), [Generics](#generics), [Parameter modes](#functions)). For full semantics, see:
 
-```rask
-let pool: Pool<Entity> = Pool.new()
-const h = try pool.insert(Entity { health: 100, x: 0, y: 0 })
-
-// Access
-pool[h].health -= 10
-
-// Handle auto-resolution
-func damage(entity: Handle<Entity>, amount: i32) {
-    entity.health -= amount    // Auto-resolves via pool registry
-}
-
-// Explicit pool for structural changes
-func kill(pool: Pool<Entity>, h: Handle<Entity>) {
-    pool.remove(h)
-}
-
-// Optimization hint for hot paths
-with pool {
-    for h in pool.cursor() {
-        h.velocity += gravity * dt
-        h.position += h.velocity * dt
-    }
-}
-```
-
-### Ensure (Deferred Cleanup)
-
-```rask
-func process(path: string) -> Data or Error {
-    const file = try File.open(path)
-    ensure file.close()               // Runs on ANY exit (return, try, panic)
-
-    const data = try file.read_all()  // May fail, ensure still runs
-    return transform(data)
-}
-```
-
-### Linear Resource Types
-
-```rask
-@resource
-struct Connection {
-    socket: Socket
-}
-
-extend Connection {
-    func open(addr: string) -> Connection or Error {
-        // ...
-    }
-
-    func close(take self) -> () or Error {
-        try self.socket.shutdown()
-    }
-}
-
-// Must consume
-const conn = try Connection.open(addr)
-// ... use conn ...
-try conn.close()    // MUST call (compiler error if not)
-```
-
-### Projections (Partial Borrows)
-
-Borrow specific fields of a struct, enabling disjoint borrows across functions:
-
-```rask
-struct Player {
-    health: i32
-    mana: i32
-    inventory: Vec<Item>
-}
-
-// Function borrows only the health field
-func heal(p: Player.{health}) {
-    p.health += 10
-    p.inventory           // ❌ ERROR: not in projection
-}
-
-// Function borrows only inventory
-func loot(p: Player.{inventory}) {
-    p.inventory.push(item)
-}
-
-// Disjoint projections can coexist
-func update(player: Player) {
-    heal(player)          // Borrows player.health
-    loot(player)          // ✅ OK: borrows player.inventory (disjoint)
-}
-
-// Multiple fields in projection
-func combat(p: Player.{health, mana}) {
-    p.health -= damage
-    p.mana -= spell_cost
-}
-```
-
-| Rule | Description |
-|------|-------------|
-| Syntax | `Type.{field1, field2}` |
-| Disjoint | Non-overlapping projections can coexist |
-| Mutability | Inferred from usage (like regular borrows) |
-| Scope | Projection is a view — only projected fields accessible |
+- [pools.md](memory/pools.md) — Handle-based access, context clauses
+- [ensure.md](control/ensure.md) — Deferred cleanup
+- [resource-types.md](memory/resource-types.md) — Must-consume types
+- [parameters.md](memory/parameters.md) — Projections (`Type.{field}`)
 
 ---
 
-## Error Handling
-
-### Result and Option
+## Error Handling Syntax
 
 ```rask
-// Option type shorthand
+// Option shorthand
 const x: i32? = Some(42)
-const y: i32? = None
-
-// Chaining
 const name = user?.profile?.name    // None if any step is None
-
-// Default
 const port = config.port ?? 8080
-
-// Force unwrap (panics if None)
 const must_exist = optional!
-const must_exist = optional! "custom panic message"
 
 // Result
-func read_file(path: string) -> string or IoError {
-    const file = try File.open(path)
-    return file.read_all()
-}
-
-// Error propagation with try
 func load_config() -> Config or (IoError | ParseError) {
-    const content = try read_file("config.json")    // IoError
-    const config = try parse_json(content)          // ParseError
+    const content = try read_file("config.json")
+    const config = try parse_json(content)
     return config                                   // Auto-wrapped in Ok
 }
 ```
 
-### Pattern Matching Errors
-
-```rask
-match load_config() {
-    Ok(cfg) => use(cfg),
-    Err(IoError.NotFound(p)) => println("missing: {p}"),
-    Err(IoError.PermissionDenied(p)) => sudo(p),
-    Err(ParseError.Syntax(line, col)) => println("syntax error at {line}:{col}"),
-    Err(e) => println("error: {e.message()}"),
-}
-```
+See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
 ---
 
-## Concurrency
-
-### Spawn and Task Groups
+## Concurrency Syntax
 
 ```rask
-// Basic spawn (must handle it)
+// Spawn and join
 const handle = spawn { compute() }
 const result = try handle.join()
-
-// Fire-and-forget (explicit detach)
 spawn { background_work() }.detach()
 
-// Spawn without handling = error
-spawn { work() }  // ERROR: unused TaskHandle
-
-// Task groups for dynamic spawning
-const group = TaskGroup.new()
-for url in urls {
-    group.spawn { fetch(url) }
-}
-const results = try group.join_all()
-```
-
-### Channels
-
-```rask
+// Channels
 const (tx, rx) = Channel<Message>.buffered(100)
-
-// Send
 try tx.send(msg)
-
-// Receive
 const msg = try rx.recv()
 
-// Select (see select.md for semantics)
+// Select
 select {
     rx1 -> msg: process1(msg),
     rx2 -> msg: process2(msg),
-    tx <- response: sent(),
     Timer.after(5.seconds) -> _: handle_timeout(),
-    _: handle_idle(),
 }
-```
 
-### Shared State
-
-```rask
+// Shared state
 const config = Shared.new(AppConfig.default())
-
-// Read (concurrent)
-const timeout = config.read(|c| c.timeout)
-
-// Write (exclusive)
+config.read(|c| c.timeout)
 config.write(|c| c.timeout = 60.seconds)
-
-// Mutex
-const queue = Mutex.new(Vec.new())
-queue.lock(|q| q.push(item))
 ```
+
+See [concurrency/](concurrency/).
 
 ---
 

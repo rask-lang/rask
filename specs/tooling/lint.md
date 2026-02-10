@@ -15,7 +15,7 @@ rask lint src/ --rule naming/*       # only naming convention rules
 
 ### Naming Conventions
 
-These enforce the naming table from [machine-readability.md](../machine-readability.md#naming-conventions). The compiler already has the type information needed to check these — the linter reads method signatures and validates that names match their behavior.
+These enforce the naming table from [canonical-patterns.md](../canonical-patterns.md#required-naming-patterns-stdlib). The compiler already has the type information needed to check these — the linter reads method signatures and validates that names match their behavior.
 
 | Rule ID | Check | Severity | Scope |
 |---------|-------|----------|-------|
