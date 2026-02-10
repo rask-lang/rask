@@ -100,13 +100,12 @@ The upside, if the approach works out:
 - Resource types: files must be closed, linear tracking works
 - Error handling: `T or E` results, `try` propagation
 - Standard types: Vec, Map, Pool, String, Option, Result
+- vscode extension with LSP
 
 **What's next:**
 - Code generation (right now it's all interpreted)
 - Network I/O (HTTP server example is blocked on this)
 - SIMD and const generics (embedded example needs this)
-- LSP completion and real IDE support
-
 ---
 
 ## Design Principles
@@ -145,7 +144,7 @@ Rask borrows ideas from everywhere:
 
 ## Documentation
 
-For the language guide: see the [book](https://rask-lang.dev).
+For the language guide: see the [book](https://rask-lang.dev/book) (work in progress).  
 For the design specs: see [specs/](specs/).
 
 ### Project Structure
