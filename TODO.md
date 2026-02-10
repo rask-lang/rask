@@ -184,6 +184,15 @@ Tools that make it actually usable:
 - [ ] Maybe: `compile_cpp()` build script support
 - [ ] Maybe: Auto Rask wrapper generation from Rust cbindgen output
 
+### Complexity Budget (from [stress test](specs/analysis/complexity-stress-test.md))
+ECS game loop with Vulkan + C physics hits 10-12 simultaneous concepts in destroy/parallel phases (budget: 7±2).
+
+- [ ] FrozenPool should satisfy read-only `with Pool<T>` context clauses — code reuse breaks at freeze boundary
+- [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
+- [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
+- [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code
+- [ ] Style guideline: max 3 context clauses per function — lint, not language rule
+
 ### Deferred
 - [ ] Capability-based security for dependencies (restrict filesystem/network access)
 - [ ] Macros / `format!` — wait until core language is solid
