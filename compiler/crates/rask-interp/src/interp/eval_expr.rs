@@ -727,7 +727,7 @@ impl Interpreter {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {
                         return Err(RuntimeError::TypeError(
-                            "spawn_thread requires `with threading { }` context".to_string(),
+                            "spawn_thread requires `ThreadPool` in scope".to_string(),
                         ))
                     }
                 };
@@ -778,7 +778,7 @@ impl Interpreter {
             }
 
             ExprKind::WithBlock { name, args, body }
-                if name == "threading" || name == "multitasking" =>
+                if name == "ThreadPool" || name == "Multitasking" || name == "threading" || name == "multitasking" =>
             {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()

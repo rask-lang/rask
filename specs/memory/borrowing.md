@@ -388,7 +388,7 @@ const health = with pool[h] as entity {
 
 | Syntax | Meaning |
 |--------|---------|
-| `with threading(n) { }` | Scoped resource context |
+| `func f() with ThreadPool` | Context clause (concurrency) |
 | `with context.allocator = arena { }` | Context override |
 | `with pool[h] as entity { }` | Element binding (has `as` keyword) |
 

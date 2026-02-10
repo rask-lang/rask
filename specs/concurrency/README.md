@@ -14,13 +14,13 @@ Concurrency model for Rask.
 
 **Affine handles.** All spawn constructs return handles that must be consumed (joined or detached). Forgetting one is a compile error.
 
-**Explicit resources.** `with multitasking { }` and `with threading { }` declare available capabilities.
+**Context clause resources.** `Multitasking` and `ThreadPool` are types you create as local variables—same pattern as `Pool<T>`. Functions declare requirements via `with` clauses.
 
 ## Specifications
 
 | Spec | Status | Purpose |
 |------|--------|---------|
-| [async.md](async.md) | Draft | **Execution model**: Multitasking, Threads, spawn, handles |
+| [async.md](async.md) | Draft | **Execution model**: Multitasking, ThreadPool, spawn, handles |
 | [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 
@@ -31,29 +31,28 @@ Concurrency model for Rask.
 ```rask
 // Async mode - green tasks for I/O
 func main() {
-    with multitasking {
-        spawn { handle_connection(conn) }.detach()
-    }
+    const scheduler = Multitasking.new()
+    spawn { handle_connection(conn) }.detach()
 }
 
 // Async + CPU work
 func main() {
-    with multitasking, threading {
-        const h = spawn {
-            const data = try fetch(url)                              // I/O - pauses
-            const result = try spawn thread { analyze(data) }.join()  // CPU on threads
-            try save(result)                                       // I/O - pauses
-        }
-        try h.join()
+    const scheduler = Multitasking.new()
+    const pool = ThreadPool.new()
+
+    const h = spawn {
+        const data = try fetch(url)                              // I/O - pauses
+        const result = try spawn thread { analyze(data) }.join()  // CPU on threads
+        try save(result)                                       // I/O - pauses
     }
+    try h.join()
 }
 
 // Sync mode - CPU parallelism only
 func main() {
-    with threading {
-        const handles = files.map { |f| spawn thread { process(f) } }
-        for h in handles { try h.join() }
-    }
+    const pool = ThreadPool.new()
+    const handles = files.map { |f| spawn thread { process(f) } }
+    for h in handles { try h.join() }
 }
 
 // Spawn and wait for result
@@ -85,8 +84,8 @@ try h.join()
 
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
-| `spawn { }` | Green task | `with multitasking` | Yes (at I/O) |
-| `spawn thread { }` | Thread from pool | `with threading` | No |
+| `spawn { }` | Green task | `Multitasking` in scope | Yes (at I/O) |
+| `spawn thread { }` | Thread from pool | `ThreadPool` in scope | No |
 | `spawn raw { }` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
@@ -105,9 +104,9 @@ try h.join()
 
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
-| `with multitasking` | Yes | No | I/O-heavy servers |
-| `with threading` | No | Yes | CLI tools, batch processing |
-| `with multitasking, threading` | Yes | Yes | Full-featured applications |
+| `Multitasking` only | Yes | No | I/O-heavy servers |
+| `ThreadPool` only | No | Yes | CLI tools, batch processing |
+| Both | Yes | Yes | Full-featured applications |
 
 ## Validation Criteria
 
@@ -119,12 +118,13 @@ try h.join()
 
 ## Key Principles
 
-- `with multitasking { }` creates M:N scheduler for green tasks
-- `with threading { }` creates thread pool for CPU work
-- Configuration via numbers: `multitasking(N)`, `threading(N)`
+- `Multitasking.new()` creates M:N scheduler for green tasks
+- `ThreadPool.new()` creates thread pool for CPU work
+- Configuration via constructor args: `Multitasking.new(workers: N)`, `ThreadPool.new(workers: N)`
+- Both are context clause objects—same pattern as `Pool<T>`
 - Affine handles must be joined or detached
 - `.join()` pauses in async mode, blocks in sync mode
 - Tasks own their data—no shared mutable state
 - Channels work everywhere—pause in async, block in sync
 - No function coloring, no async/await keywords
-- Sync mode is default—multitasking optional for CLI/embedded
+- Sync mode is default—Multitasking optional for CLI/embedded

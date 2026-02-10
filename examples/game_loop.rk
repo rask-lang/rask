@@ -217,7 +217,7 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
     let thread_handles = Vec.new()
     for chunk in handles.chunks(chunk_size) {
         let chunk = chunk.to_vec()
-        let task = spawn_thread {
+        let task = spawn thread {
             for h in chunk {
                 if !entities[h].active: continue
                 entities[h].position.x += entities[h].velocity.dx * dt
@@ -236,75 +236,74 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
 // Main game loop with fixed timestep and threading
 func main() -> () or Error {
     // Thread pool for CPU-bound physics work
-    with threading(4) {
-        let state = try GameState.new()
+    const pool = ThreadPool.new(workers: 4)
+    let state = try GameState.new()
 
-        const target_fps = 60.0f32
-        const dt = 1.0f32 / target_fps
-        const NUM_PHYSICS_THREADS: usize = 4u64
+    const target_fps = 60.0f32
+    const dt = 1.0f32 / target_fps
+    const NUM_PHYSICS_THREADS: usize = 4u64
 
-        let last_time = 0.0f32  // Simplified: track elapsed time
-        let accumulator = 0.0f32
-        let spawn_timer = 0.0f32
-        let frame_count = 0
+    let last_time = 0.0f32  // Simplified: track elapsed time
+    let accumulator = 0.0f32
+    let spawn_timer = 0.0f32
+    let frame_count = 0
 
-        println("Game started! Score: 0")
+    println("Game started! Score: 0")
 
-        // Simulate game for a few seconds
-        while !state.game_over && frame_count < 300 {
-            // Simulate frame time (16ms = ~60fps)
-            const frame_time = 0.016f32
-            last_time += frame_time
+    // Simulate game for a few seconds
+    while !state.game_over && frame_count < 300 {
+        // Simulate frame time (16ms = ~60fps)
+        const frame_time = 0.016f32
+        last_time += frame_time
 
-            accumulator += frame_time
+        accumulator += frame_time
 
-            // Fixed timestep updates
-            while accumulator >= dt {
-                // Handle input (simulated - would be real input in actual game)
-                if frame_count % 30 == 0 {
-                    // Fire projectile
-                    if state.player is Some(player_h) {
-                        const px = state.entities[player_h].position.x
-                        const py = state.entities[player_h].position.y
-                        try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
-                    }
+        // Fixed timestep updates
+        while accumulator >= dt {
+            // Handle input (simulated - would be real input in actual game)
+            if frame_count % 30 == 0 {
+                // Fire projectile
+                if state.player is Some(player_h) {
+                    const px = state.entities[player_h].position.x
+                    const py = state.entities[player_h].position.y
+                    try state.spawn_projectile(px + 20.0f32, py, 300.0f32, 0.0f32)
                 }
-
-                // Parallel physics: split entity updates across thread pool
-                // Each thread processes a batch of entities
-                parallel_movement_system(state, dt, NUM_PHYSICS_THREADS)
-
-                // Collision runs single-threaded (needs to see all entities)
-                collision_system(state)
-
-                // Game logic on main thread
-                spawn_timer = spawn_system(state, spawn_timer + dt)
-                cleanup_system(state)
-
-                accumulator -= dt
             }
 
-            // Render (simulated - just print status occasionally)
-            if frame_count % 60 == 0 {
-                const entity_count = state.entities.len()
-                let player_health = 0
-                if state.player is Some(h) {
-                    player_health = state.entities[h].health.current
-                }
-                println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
+            // Parallel physics: split entity updates across thread pool
+            // Each thread processes a batch of entities
+            parallel_movement_system(state, dt, NUM_PHYSICS_THREADS)
+
+            // Collision runs single-threaded (needs to see all entities)
+            collision_system(state)
+
+            // Game logic on main thread
+            spawn_timer = spawn_system(state, spawn_timer + dt)
+            cleanup_system(state)
+
+            accumulator -= dt
+        }
+
+        // Render (simulated - just print status occasionally)
+        if frame_count % 60 == 0 {
+            const entity_count = state.entities.len()
+            let player_health = 0
+            if state.player is Some(h) {
+                player_health = state.entities[h].health.current
             }
-
-            frame_count += 1
-
-            // In a real game, we'd sleep here to maintain frame rate
-            // time.sleep(time.Duration.from_millis(16))
+            println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
         }
 
-        if state.game_over {
-            println("Game Over! Final Score: {state.score}")
-        } else {
-            println("Demo complete! Final Score: {state.score}")
-        }
+        frame_count += 1
+
+        // In a real game, we'd sleep here to maintain frame rate
+        // time.sleep(time.Duration.from_millis(16))
+    }
+
+    if state.game_over {
+        println("Game Over! Final Score: {state.score}")
+    } else {
+        println("Demo complete! Final Score: {state.score}")
     }
 
     return Result.Ok(())

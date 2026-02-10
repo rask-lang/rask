@@ -49,8 +49,9 @@ language.
 
 Eight principles drive every design decision:
 
-1. **Safety Without Annotation** — No lifetime parameters. No borrow annotations. Safety
-   emerges from how the language is structured.
+1. **Safety Without Annotation** — No lifetime parameters (`'a` in Rust), no borrow
+   checker wrestling. You mark `mutate` and `take` on parameters—that's it. Safety
+   emerges from how the language is structured, not from proving things to the compiler.
 
 2. **Value Semantics** — All data is a value. Small things copy automatically, big things
    move. No hidden reference vs value distinction.
@@ -122,21 +123,28 @@ connections.
 if a file handle might not be closed. The `ensure` keyword schedules cleanup that runs no
 matter how the scope exits.
 
-### Rask's Approach: Eliminate by Construction
+### Rask's Approach: Eliminate or Detect
 
-Instead of catching bugs, Rask makes them impossible to write:
+Some bugs are prevented at compile time—the compiler refuses to build the program. Others
+are detected at runtime with a clear panic at the exact line, not silent corruption. Both
+are better than C's "silently do the wrong thing," but they're different:
 
-| Bug Category | How Rask Prevents It |
-|---|---|
-| Use-after-free | Single ownership: source becomes invalid after move |
-| Double free | Only one owner, drops happen automatically |
-| Dangling pointer | No storable references; handles validate on access |
-| Data race | Can't share mutable data without sync primitives |
-| Null dereference | No null; use `Option<T>` (Some or None) |
-| Buffer overflow | Array bounds checked at runtime |
-| Resource leak | Resource types must be consumed; compiler enforces |
-| Integer overflow | Arithmetic panics on overflow (debug AND release) |
-| Uninitialized memory | All variables must be initialized |
+| Bug Category | How | Compile or Runtime? |
+|---|---|---|
+| Use-after-free | Single ownership: source invalid after move | Compile error |
+| Double free | Only one owner, drops happen automatically | Compile error |
+| Dangling pointer | No storable references; handles validate on access | Compile + runtime panic |
+| Data race | Can't share mutable data without sync primitives | Compile error |
+| Null dereference | No null; use `Option<T>` (Some or None) | Compile error |
+| Buffer overflow | Array bounds checked | Runtime panic |
+| Resource leak | Resource types must be consumed; compiler enforces | Compile error |
+| Integer overflow | Arithmetic panics on overflow (debug AND release) | Runtime panic |
+| Uninitialized memory | All variables must be initialized | Compile error |
+
+The runtime panics (bounds checks, overflow, stale handles) crash with a clear message at
+the exact line. Your program stops, but it never silently corrupts data or continues with
+garbage. That matters for real-time systems—Rask won't corrupt your state, but it can
+halt on a checked error.
 
 ---
 
@@ -159,7 +167,7 @@ const b = a           // b gets a copy. a is still valid.
 use(a)                // ✓ Fine
 
 // Big (>16 bytes): moves
-const name = string.from("hello world")    // string > 16 bytes (heap allocated)
+const name = "hello world"                 // string > 16 bytes (heap allocated)
 const other = name                         // other takes ownership. name is GONE.
 use(name)                                  // ✗ Compile error: name was moved
 ```
@@ -179,7 +187,7 @@ predictable.
 If you genuinely need two copies of a big value, say so explicitly:
 
 ```rask
-const name = string.from("hello")
+const name = "hello"
 const backup = name.clone()    // Allocates new memory, copies bytes
 use(name)                      // ✓ Both are valid
 use(backup)                    // ✓ Independent copies
@@ -188,22 +196,36 @@ use(backup)                    // ✓ Independent copies
 The `.clone()` call makes the cost visible. You're asking for a heap allocation—you
 should see it in the code.
 
-### Move Semantics in Practice
+### Passing to Functions: Borrow by Default
 
-When you pass a big value to a function, it moves by default:
+When you pass a value to a function, Rask **borrows** it by default—the function gets
+read-only access, and you keep the value:
 
 ```rask
-func process(take data: Vec<i32>) {
+func display(data: Vec<i32>) {        // Default: borrows (read-only)
+    println(data.len())
+}
+
+const numbers = Vec.from([1, 2, 3])
+display(numbers)                       // numbers is borrowed, not moved
+use(numbers)                           // ✓ Still valid
+```
+
+To actually transfer ownership, both sides must be explicit—`take` on the parameter and
+`own` at the call site:
+
+```rask
+func process(take data: Vec<i32>) {    // Explicit: takes ownership
     // data is ours now
 }
 
 const numbers = Vec.from([1, 2, 3])
-process(own numbers)    // numbers moves into process
-use(numbers)            // ✗ Compile error: numbers was moved
+process(own numbers)                   // Explicit ownership transfer
+use(numbers)                           // ✗ Compile error: numbers was moved
 ```
 
-Notice the `take` keyword on the parameter and `own` at the call site. Both sides are
-explicit about ownership transfer. No surprises.
+No surprises. The default is safe (borrow), and ownership transfer is always visible on
+both ends.
 
 ### The `discard` Keyword
 
@@ -347,8 +369,11 @@ movement_system(state.{entities}, dt)
 scoring_system(state.{score}, 10)
 ```
 
-The `.{field_name}` syntax says "I only need this part." The compiler verifies you don't
-touch anything else.
+**Why `.{entities}` with braces, not just `.entities`?** Because `state.entities` is
+normal field access—it gives you the value. `state.{entities}` creates a *projection*—a
+restricted view of the struct where only that field is accessible. The braces
+disambiguate "I'm reading a field" from "I'm creating a partial view for borrowing
+purposes." The compiler verifies you don't touch anything outside the projection.
 
 ---
 
@@ -529,12 +554,13 @@ const x: i8 = 42
 const y: i32 = x as i32     // ✓ Safe: i8 always fits in i32
 ```
 
-Narrowing (big to small) needs a method—because data might be lost:
+Narrowing (big to small) uses explicit keyword operations—because data might be lost:
 
 ```rask
 const big: i32 = 300
-const small = big.truncate_to::<u8>()     // Wraps: 300 → 44
-const clamped = big.saturate_to::<u8>()   // Clamps: 300 → 255
+const small = big truncate to u8      // Wraps: 300 → 44
+const clamped = big saturate to u8    // Clamps: 300 → 255
+const checked = big try convert to u8 // Returns Option<u8>: None (300 > 255)
 ```
 
 ### Integer Overflow: Panic by Default
@@ -823,9 +849,15 @@ interact with surrounding variables:
 returned, or sent across threads:
 
 ```rask
+const multiplier = 3                       // i32 = 4 bytes, copies into closure
+const triple = |x| x * multiplier
+triple(10)    // 30
+use(multiplier)                            // ✓ Still valid (was copied)
+
 const name = "Alice"
-const greet = || println("Hello, {name}")  // Copies name into the closure
+const greet = || println("Hello, {name}")  // string > 16 bytes, MOVES into closure
 greet()    // "Hello, Alice"
+// name is INVALID here — it was moved
 ```
 
 **Immediate closures** — don't capture anything, just access outer scope directly. Must be
@@ -872,9 +904,9 @@ const result = if x > 0 {
 }
 ```
 
-**Why the difference?** `return` exits the function. If blocks used `return`, `return 5`
-inside a `comptime { }` block would exit the surrounding function, not produce the block's
-value. Different mechanisms for different scopes.
+**Why the difference?** `return` exits the entire function. But `if` and `match` blocks
+just need to produce a value — they're expressions, not exit points. The last expression
+in a block naturally becomes what that block "evaluates to."
 
 ---
 
@@ -890,12 +922,13 @@ func max<T: Comparable>(a: T, b: T) -> T {
 ```
 
 `T` is a placeholder. `T: Comparable` means "T must have a `compare` method." The
-compiler generates specialized code for each type you actually use—`max::<i32>`,
-`max::<f64>`, etc. This is called **monomorphization** and means zero runtime overhead.
+compiler generates a separate copy of the function for each concrete type you call it
+with — one for `i32`, one for `f64`, etc. This is called **monomorphization** and means
+zero runtime overhead.
 
 ### Traits: Shared Behavior
 
-A trait is a set of method signatures that types can implement:
+A trait says "any type that has these methods can be used here." It's a contract:
 
 ```rask
 trait Comparable {
@@ -943,11 +976,31 @@ extend Point {
 const p3 = p1 + p2    // Calls p1.add(p2)
 ```
 
-| Operator | Method | Trait |
-|---|---|---|
-| `+` `-` `*` `/` `%` | `add`, `sub`, `mul`, `div`, `rem` | Numeric operators |
-| `==` `!=` | `eq` | Equal |
-| `<` `>` `<=` `>=` | `compare` → `cmp` | Ordered |
+| Operator | Method | Trait | Copy Required? |
+|---|---|---|---|
+| `+` `-` `*` `/` `%` | `add`, `sub`, `mul`, `div`, `rem` | Arithmetic | Yes |
+| `+=` `-=` `*=` `/=` `%=` | `add_assign`, `sub_assign`, etc. | Compound assign | No |
+| `==` `!=` | `eq` | Equal | No |
+| `<` `>` `<=` `>=` | `cmp` | Ordered | No |
+
+**Arithmetic operators require Copy.** `a + b` looks cheap—like a register operation. If
+it secretly heap-allocates, that violates transparent cost. So arithmetic operator traits
+(`Add`, `Sub`, etc.) require the type to be Copy (≤16 bytes, no heap). This works for
+primitives, `Point`, `Complex`, `Wrapping<T>`, SIMD vectors—all small value types.
+
+**Compound assignment (`+=`) has no Copy requirement.** `a += b` mutates in place—it
+doesn't create a new value. For heap types like a hypothetical `BigInt`, `+=` can grow the
+internal buffer without allocating a temporary:
+
+```rask
+// BigInt can't use +, but += works
+let total = BigInt.from("0")
+total += amount                    // Mutates in place
+const sum = a.add(b)               // Named method for creating new values
+```
+
+This matches the string design—`string` has no `+` operator either. You use `.concat()`
+or `string_builder`. Same principle: if it allocates, the method name says so.
 
 ### Gradual Constraints: Types Optional for Private Code
 
@@ -989,17 +1042,18 @@ for w in widgets {
 }
 ```
 
-`any Widget` is a type-erased value. It stores the data plus a table of function pointers
-(called a **vtable**). When you call `w.draw()`, it looks up the right function in the
-table.
+`any Widget` means "I don't know the concrete type, but I know it can `draw()` and
+`size()`." The compiler forgets the specific type and only remembers which methods are
+available. At runtime, calling `w.draw()` does one extra lookup to find the right
+function — a tiny cost.
 
 **Trade-off:**
-- Generics (`T: Widget`): Zero overhead, but all items must be the same type.
-- `any Widget`: Small overhead (one pointer lookup per call), but items can be different
-  types.
+- Generics (`T: Widget`): No extra lookup, but every item in the list must be the same
+  type. You can't mix buttons and sliders.
+- `any Widget`: One pointer lookup per call, but items can be different types.
 
-Use `any Trait` for heterogeneous collections (HTTP handlers, plugins, UI widgets). Use
-generics for everything else.
+Use `any Trait` when you need mixed types in one collection (HTTP handlers, plugins, UI
+widgets). Use generics when everything is the same type.
 
 ---
 
@@ -1089,10 +1143,12 @@ to rollback). If any `try` fails, we return early and `ensure` rolls back.
 | Can be dropped silently | No—must be consumed | Yes |
 | Can be cloned | No | Yes (explicit `.clone()`) |
 | Implicit copy | No | No |
-| Use case | External resources (files, sockets) | Identity values (user IDs, tokens) |
+| Use case | External resources (files, sockets) | Identity values, performance control |
 
-`@unique` is for values where accidental copying would be a logic error (like duplicating
-a unique ID). `@resource` is for values where forgetting cleanup would leak a resource.
+`@unique` has two uses: preventing logic errors (like accidentally duplicating a unique
+ID or auth token) and controlling performance (opting a small struct out of implicit
+copying in hot paths where you want explicit moves instead). `@resource` is for values
+where forgetting cleanup would leak a resource.
 
 ---
 
@@ -1124,8 +1180,8 @@ where yields happen, but your code doesn't carry that burden.
 | Construct | What It Does | Overhead | Use For |
 |---|---|---|---|
 | `spawn { }` | Creates a green task (lightweight) | ~4KB per task | I/O-heavy work, thousands of concurrent operations |
-| `spawn_thread { }` | Sends work to a thread pool | OS thread cost | CPU-heavy computation |
-| `spawn_raw { }` | Creates a raw OS thread | Heaviest | Special cases (thread-local storage, specific scheduling) |
+| `spawn thread { }` | Sends work to a thread pool | OS thread cost | CPU-heavy computation |
+| `spawn raw { }` | Creates a raw OS thread | Heaviest | Special cases (thread-local storage, specific scheduling) |
 
 ### Green Tasks: Lightweight Concurrency
 
@@ -1134,19 +1190,20 @@ by the OS. You can have 100,000+ of them.
 
 ```rask
 func main() {
-    with multitasking {
-        const listener = try TcpListener.bind("0.0.0.0:8080")
+    const scheduler = Multitasking.new()
+    const listener = try TcpListener.bind("0.0.0.0:8080")
 
-        loop {
-            const conn = try listener.accept()
-            spawn { handle_connection(conn) }.detach()
-        }
+    loop {
+        const conn = try listener.accept()
+        spawn { handle_connection(conn) }.detach()
     }
 }
 ```
 
-`with multitasking { }` sets up the scheduler. Inside it, `spawn { }` creates tasks.
-Each incoming connection gets its own task—cheap enough that you don't worry about it.
+The scheduler is **opt-in**—it doesn't run by default. A plain Rask program has zero
+scheduler overhead. `Multitasking.new()` is what spins it up, and `spawn { }` only
+works when a `Multitasking` value is in scope. Each incoming connection gets its own
+task—cheap enough that you don't worry about it.
 
 ### Task Handles Are Affine
 
@@ -1173,11 +1230,12 @@ CPU-heavy work (parsing, compression, number crunching), use the thread pool:
 
 ```rask
 func main() {
-    with multitasking, threading {
-        const data = try fetch(url)                                // I/O: pauses task
-        const result = try spawn_thread { analyze(data) }.join()   // CPU: actual parallelism
-        try save(result)                                           // I/O: pauses task
-    }
+    const scheduler = Multitasking.new()
+    const pool = ThreadPool.new()
+
+    const data = try fetch(url)                                // I/O: pauses task
+    const result = try spawn thread { analyze(data) }.join()   // CPU: actual parallelism
+    try save(result)                                           // I/O: pauses task
 }
 ```
 
@@ -1545,12 +1603,12 @@ Closures scope the lock precisely: `mutex.lock(|data| { ... })`. When the closur
 returns, the lock is released. You can't hold it by accident. The compiler can also
 detect direct nested locking and flag it as an error.
 
-### Why `with multitasking { }` instead of just having async everywhere?
+### Why `Multitasking.new()` instead of just having async everywhere?
 
 Explicit resource declaration. Async runtimes aren't free—they create scheduler threads,
-allocate task queues, set up I/O polling. `with multitasking { }` makes this cost visible
-and opt-in. A CLI tool that just needs thread parallelism uses `with threading { }` and
-pays only for threads. A web server uses `with multitasking { }` and gets the full
+allocate task queues, set up I/O polling. `Multitasking.new()` makes this cost visible
+and opt-in. A CLI tool that just needs thread parallelism uses `ThreadPool.new()` and
+pays only for threads. A web server uses `Multitasking.new()` and gets the full
 scheduler.
 
 ### Why are task handles affine (must be consumed)?
@@ -1579,6 +1637,20 @@ Languages handle this differently:
 - Rust: Borrow checker refuses to compile it (but the error messages are confusing).
 - Rask: References to collection elements expire at the semicolon. Can't hold them.
   Clear rule, clear error.
+
+### Why can't `+` allocate? (Why Copy-only operators?)
+
+C++ lets `std::string a + b` silently heap-allocate. Then `a + b + c` creates an
+intermediate string that's immediately thrown away. Expression templates were invented
+specifically to work around this. Rask eliminates the problem instead.
+
+Arithmetic operators (`+` `-` `*` `/`) require the type to be Copy (≤16 bytes). This means
+`a + b` is always cheap—register-level work, no heap. Types that need heap allocation
+(strings, big integers, matrices) use named methods: `.concat()`, `.add()`, `.mul()`. The
+method name makes the allocation visible.
+
+Compound assignment (`+=`) is different—it mutates in place and may not allocate at all. So
+`+=` has no Copy requirement. A BigInt can implement `+=` even though it can't implement `+`.
 
 ### Why structural trait satisfaction (not nominal)?
 

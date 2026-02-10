@@ -336,38 +336,36 @@ See [concurrency/sync.md](concurrency/sync.md).
 
 ## Concurrency
 
-`spawn` for tasks, `with multitasking` for the runtime. No async/await.
+`spawn` for tasks, `Multitasking.new()` for the scheduler. No async/await.
 
 ```rask
 // Spawn and join
-with multitasking {
-    const handle = spawn { fetch(url) }
-    const result = try handle.join()
-}
+const scheduler = Multitasking.new()
+const handle = spawn { fetch(url) }
+const result = try handle.join()
 
 // Fire-and-forget
 spawn { log_event(event) }.detach()
 
 // Parallel work with channels
-with multitasking {
-    const ch = Channel.buffered(10)
+const scheduler = Multitasking.new()
+const ch = Channel.buffered(10)
 
-    for url in urls {
-        spawn {
-            const data = try fetch(url)
-            try ch.sender.send(data)
-        }
+for url in urls {
+    spawn {
+        const data = try fetch(url)
+        try ch.sender.send(data)
     }
+}
 
-    for _ in 0..urls.len() {
-        const data = try ch.receiver.recv()
-        process(data)
-    }
+for _ in 0..urls.len() {
+    const data = try ch.receiver.recv()
+    process(data)
 }
 ```
 
 **Anti-patterns:**
-- Spawning without `with multitasking` scope — tasks need a runtime.
+- Spawning without `Multitasking` in scope — tasks need a scheduler.
 - Ignoring join handles — either `.join()` or `.detach()` explicitly.
 
 See [concurrency/async.md](concurrency/async.md), [concurrency/sync.md](concurrency/sync.md).
@@ -554,7 +552,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `string_builder` |
 | Share state | `Shared<T>`, channels |
-| Run concurrently | `spawn`, `with multitasking` |
+| Run concurrently | `spawn`, `Multitasking.new()` |
 | Do I/O | `fs.read_file`, `fs.open` + `ensure close` |
 | Match patterns | `if x is` (single), `match` (multiple) |
 | Iterate | `for x in`, adapters (`.map`, `.filter`) |

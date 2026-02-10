@@ -273,33 +273,34 @@ const vb = get_mesh_data(entity.mesh)
 
 <!-- test: skip -->
 ```rask
-func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
-    with threading {
-        // Snapshot entities for rendering (reads old state)
-        const (snapshot, _) = world.entities.snapshot()
-        const mesh_snap = world.meshes.freeze_ref()
+func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
+    with ThreadPool
+{
+    // Snapshot entities for rendering (reads old state)
+    const (snapshot, _) = world.entities.snapshot()
+    const mesh_snap = world.meshes.freeze_ref()
 
-        // Render previous frame on thread pool
-        const render_handle = spawn thread {
-            for h in snapshot.handles() {
-                const entity = snapshot[h]
-                const mesh = mesh_snap[entity.mesh]
-                draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
-            }
+    // Render previous frame on thread pool
+    const render_handle = spawn thread {
+        for h in snapshot.handles() {
+            const entity = snapshot[h]
+            const mesh = mesh_snap[entity.mesh]
+            draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
         }
-
-        // Physics on thread pool
-        const physics_handle = spawn thread {
-            world.physics.step(dt)
-        }
-
-        try render_handle.join()
-        try physics_handle.join()
-
-        // Sync + game logic on main thread
-        sync_physics(world)
-        try update_entities(world)
     }
+
+    // Physics on thread pool
+    const physics_handle = spawn thread {
+        world.physics.step(dt)
+    }
+
+    try render_handle.join()
+    try physics_handle.join()
+
+    // Sync + game logic on main thread
+    sync_physics(world)
+    try update_entities(world)
+
     return Ok(())
 }
 ```
@@ -308,7 +309,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error {
 
 | # | Mechanism | Why |
 |---|-----------|-----|
-| 1 | `with threading` | Thread pool declaration |
+| 1 | `with ThreadPool` | Thread pool context clause |
 | 2 | `spawn thread` | Launch work on pool threads |
 | 3 | Affine handles | Must join or detach both ThreadHandles |
 | 4 | Snapshot isolation | `snapshot()` for concurrent read/write |
