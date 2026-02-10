@@ -92,8 +92,6 @@ pub enum BuiltinTypeKind {
     Shared,
     /// Owned<T> - heap-allocated owned value
     Owned,
-    /// SpscRingBuffer<T> - single-producer single-consumer lock-free queue
-    SpscRingBuffer,
     /// f32x8 - SIMD vector type (8 x f32)
     F32x8,
 }

@@ -2,7 +2,7 @@
 //! The name resolver implementation.
 
 use std::collections::{HashMap, HashSet};
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::{NodeId, Span};
@@ -26,6 +26,8 @@ pub struct Resolver {
     package_bindings: HashMap<String, PackageId>,
     imported_symbols: HashSet<String>,
     lazy_imports: HashMap<String, Vec<String>>,
+    /// Maps struct/enum base names to their type params (for extend blocks)
+    type_param_map: HashMap<String, Vec<TypeParam>>,
 }
 
 impl Resolver {
@@ -40,6 +42,7 @@ impl Resolver {
             package_bindings: HashMap::new(),
             imported_symbols: HashSet::new(),
             lazy_imports: HashMap::new(),
+            type_param_map: HashMap::new(),
         };
 
         resolver.register_builtins();
@@ -78,7 +81,6 @@ impl Resolver {
             ("Atomic", BuiltinTypeKind::Atomic),
             ("Shared", BuiltinTypeKind::Shared),
             ("Owned", BuiltinTypeKind::Owned),
-            ("SpscRingBuffer", BuiltinTypeKind::SpscRingBuffer),
             ("f32x8", BuiltinTypeKind::F32x8),
         ];
 
@@ -170,6 +172,14 @@ impl Resolver {
         if let Some(sym) = self.symbols.get_mut(enum_sym_id) {
             sym.kind = SymbolKind::Enum { variants: variant_syms };
         }
+    }
+
+    fn is_primitive_type(name: &str) -> bool {
+        matches!(name,
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" |
+            "f32" | "f64" | "bool" | "char"
+        )
     }
 
     fn is_builtin_name(&self, name: &str) -> bool {
@@ -323,8 +333,13 @@ impl Resolver {
             span,
             struct_decl.is_pub,
         );
-        if let Err(e) = self.scopes.define(base, sym_id, span) {
+        if let Err(e) = self.scopes.define(base.clone(), sym_id, span) {
             self.errors.push(e);
+        }
+
+        // Store type params for extend block resolution
+        if !struct_decl.type_params.is_empty() {
+            self.type_param_map.insert(base, struct_decl.type_params.clone());
         }
 
         let mut field_syms = Vec::new();
@@ -357,8 +372,13 @@ impl Resolver {
             span,
             enum_decl.is_pub,
         );
-        if let Err(e) = self.scopes.define(base, sym_id, span) {
+        if let Err(e) = self.scopes.define(base.clone(), sym_id, span) {
             self.errors.push(e);
+        }
+
+        // Store type params for extend block resolution
+        if !enum_decl.type_params.is_empty() {
+            self.type_param_map.insert(base, enum_decl.type_params.clone());
         }
 
         let mut variant_syms = Vec::new();
@@ -492,12 +512,12 @@ impl Resolver {
                 }
                 DeclKind::Struct(struct_decl) => {
                     for method in &struct_decl.methods {
-                        self.resolve_function(method);
+                        self.resolve_function_with_type_params(method, &struct_decl.type_params);
                     }
                 }
                 DeclKind::Enum(enum_decl) => {
                     for method in &enum_decl.methods {
-                        self.resolve_function(method);
+                        self.resolve_function_with_type_params(method, &enum_decl.type_params);
                     }
                 }
                 DeclKind::Trait(trait_decl) => {
@@ -535,6 +555,10 @@ impl Resolver {
     }
 
     fn resolve_function(&mut self, fn_decl: &FnDecl) {
+        self.resolve_function_with_type_params(fn_decl, &[]);
+    }
+
+    fn resolve_function_with_type_params(&mut self, fn_decl: &FnDecl, outer_type_params: &[TypeParam]) {
         let base = Self::base_name(&fn_decl.name);
         let fn_sym = self.scopes.lookup(base);
         self.current_function = fn_sym;
@@ -545,6 +569,34 @@ impl Resolver {
             ScopeKind::Function(SymbolId(u32::MAX))
         };
         self.scopes.push(scope_kind);
+
+        // Register comptime type params from outer context (struct/enum extend)
+        for tp in outer_type_params {
+            if tp.is_comptime {
+                let sym_id = self.symbols.insert(
+                    tp.name.clone(),
+                    SymbolKind::Variable { mutable: false },
+                    tp.comptime_type.clone(),
+                    Span::new(0, 0),
+                    false,
+                );
+                let _ = self.scopes.define(tp.name.clone(), sym_id, Span::new(0, 0));
+            }
+        }
+
+        // Register comptime type params from function's own generics
+        for tp in &fn_decl.type_params {
+            if tp.is_comptime {
+                let sym_id = self.symbols.insert(
+                    tp.name.clone(),
+                    SymbolKind::Variable { mutable: false },
+                    tp.comptime_type.clone(),
+                    Span::new(0, 0),
+                    false,
+                );
+                let _ = self.scopes.define(tp.name.clone(), sym_id, Span::new(0, 0));
+            }
+        }
 
         let mut param_syms = Vec::new();
         for param in &fn_decl.params {
@@ -582,8 +634,11 @@ impl Resolver {
     }
 
     fn resolve_impl(&mut self, impl_decl: &ImplDecl) {
+        // Look up type params from the target type's declaration
+        let base = Self::base_name(&impl_decl.target_ty).to_string();
+        let outer_params = self.type_param_map.get(&base).cloned().unwrap_or_default();
         for method in &impl_decl.methods {
-            self.resolve_function(method);
+            self.resolve_function_with_type_params(method, &outer_params);
         }
     }
 
@@ -816,6 +871,11 @@ impl Resolver {
             ExprKind::Field { object, field } => {
                 if let ExprKind::Ident(name) = &object.kind {
                     if self.imported_symbols.contains(name) {
+                        let _ = field;
+                        return;
+                    }
+                    // Skip resolution for primitive type constants (u64.MAX, etc.)
+                    if Self::is_primitive_type(name) {
                         let _ = field;
                         return;
                     }

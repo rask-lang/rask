@@ -60,6 +60,37 @@ const received = channel.recv()   // Ownership acquired
 received.process()              // ✅ OK: we own it now
 ```
 
+### Explicit Drop: `discard`
+
+For non-Copy types, simply letting a binding go out of scope drops it. But sometimes you want to explicitly signal "I'm done with this" — especially for clarity or when the compiler warns about an unused value.
+
+`discard` explicitly drops a value and invalidates its binding:
+
+<!-- test: skip -->
+```rask
+const data = load_data()
+process(data.clone())
+discard data   // Explicit: data dropped here, not at end of scope
+```
+
+**When to use `discard`:**
+
+| Scenario | Example |
+|----------|---------|
+| Resource not needed | `const _ = acquire(); discard _` — prefer `ensure` instead |
+| Clarity in long functions | Drop early to signal intent |
+| Consuming move-only types | When no consuming function exists |
+
+**Rules:**
+
+| Rule | Description |
+|------|-------------|
+| **D1: Invalidates binding** | Using the binding after `discard` is a compile error |
+| **D2: Non-Copy only** | `discard` on Copy types is a warning (they're trivially dropped) |
+| **D3: Not for linear resources** | `@resource` types must be consumed properly — `discard` on them is a compile error. Use the type's consuming method (`.close()`, `.release()`, etc.) |
+
+**Why not just `_ = value`?** `_ = value` moves into a wildcard but doesn't communicate intent. `discard` says "I know this has value and I'm deliberately dropping it." It's the ownership equivalent of `// intentionally unused`.
+
 ### Edge Cases
 
 | Case | Handling |

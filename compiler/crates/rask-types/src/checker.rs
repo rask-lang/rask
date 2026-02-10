@@ -682,6 +682,12 @@ pub enum TypeError {
         borrow_span: Span,
         mutate_span: Span,
     },
+    #[error("heap allocation in @no_alloc function: {reason}")]
+    NoAllocViolation {
+        reason: String,
+        function_name: String,
+        span: Span,
+    },
 }
 
 // ============================================================================
@@ -1044,11 +1050,22 @@ impl TypeChecker {
         } else {
             let ctx = &self.ctx;
             let types = &self.types;
-            let errors = self.errors.into_iter()
+            let errors: Vec<_> = self.errors.into_iter()
                 .map(|e| Self::apply_error_substitutions_with_ctx(e, ctx))
                 .map(|e| types.resolve_error_types(e))
+                // Filter out cascading errors where both sides resolved to <error>
+                .filter(|e| !matches!(e, TypeError::Mismatch { expected: Type::Error, found: Type::Error, .. }))
                 .collect();
-            Err(errors)
+            if errors.is_empty() {
+                Ok(TypedProgram {
+                    symbols: self.resolved.symbols,
+                    resolutions: self.resolved.resolutions,
+                    types: self.types,
+                    node_types,
+                })
+            } else {
+                Err(errors)
+            }
         }
     }
 
@@ -1112,7 +1129,8 @@ impl TypeChecker {
     }
 
     fn register_impl_methods(&mut self, i: &ImplDecl) {
-        let type_id = match self.types.get_type_id(&i.target_ty) {
+        let base_name = i.target_ty.split('<').next().unwrap_or(&i.target_ty);
+        let type_id = match self.types.get_type_id(base_name) {
             Some(id) => id,
             None => return,
         };
@@ -1244,7 +1262,7 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
-                self.current_self_type = self.types.get_type_id(&i.target_ty).map(Type::Named);
+                self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
                 for method in &i.methods {
                     self.check_fn(method, decl.span);
                 }
@@ -1591,6 +1609,10 @@ impl TypeChecker {
             Pattern::Wildcard => vec![],
 
             Pattern::Ident(name) => {
+                // Qualified enum variant (e.g., "Status.Active") — match, don't bind
+                if name.contains('.') {
+                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                }
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
@@ -1887,6 +1909,99 @@ impl TypeChecker {
 
         self.pop_scope();
         self.current_return_type = None;
+
+        // @no_alloc enforcement: scan body for heap allocations
+        if f.attrs.iter().any(|a| a == "no_alloc") {
+            self.check_no_alloc(&f.name, &f.body);
+        }
+    }
+
+    /// Check that a @no_alloc function body has no heap allocations.
+    fn check_no_alloc(&mut self, fn_name: &str, body: &[Stmt]) {
+        for stmt in body {
+            self.check_no_alloc_stmt(fn_name, stmt);
+        }
+    }
+
+    fn check_no_alloc_stmt(&mut self, fn_name: &str, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Expr(e) => self.check_no_alloc_expr(fn_name, e),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                self.check_no_alloc_expr(fn_name, init);
+            }
+            StmtKind::Assign { value, .. } => self.check_no_alloc_expr(fn_name, value),
+            StmtKind::Return(Some(e)) => self.check_no_alloc_expr(fn_name, e),
+            StmtKind::While { cond, body, .. } => {
+                self.check_no_alloc_expr(fn_name, cond);
+                self.check_no_alloc(fn_name, body);
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.check_no_alloc_expr(fn_name, iter);
+                self.check_no_alloc(fn_name, body);
+            }
+            _ => {}
+        }
+    }
+
+    fn check_no_alloc_expr(&mut self, fn_name: &str, expr: &Expr) {
+        match &expr.kind {
+            // Vec.new(), Map.new(), string.new() — heap allocation
+            ExprKind::MethodCall { object, method, args, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "string")
+                        && method == "new"
+                    {
+                        self.errors.push(TypeError::NoAllocViolation {
+                            reason: format!("{}.new() allocates on the heap", name),
+                            function_name: fn_name.to_string(),
+                            span: expr.span,
+                        });
+                    }
+                }
+                self.check_no_alloc_expr(fn_name, object);
+                for a in args { self.check_no_alloc_expr(fn_name, a); }
+            }
+            // format() — allocates a string
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Ident(name) = &func.kind {
+                    if name == "format" {
+                        self.errors.push(TypeError::NoAllocViolation {
+                            reason: "format() allocates a new string".to_string(),
+                            function_name: fn_name.to_string(),
+                            span: expr.span,
+                        });
+                    }
+                }
+                self.check_no_alloc_expr(fn_name, func);
+                for a in args { self.check_no_alloc_expr(fn_name, a); }
+            }
+            // Recurse into subexpressions
+            ExprKind::Binary { left, right, .. } => {
+                self.check_no_alloc_expr(fn_name, left);
+                self.check_no_alloc_expr(fn_name, right);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.check_no_alloc_expr(fn_name, operand);
+            }
+            ExprKind::Field { object, .. } => {
+                self.check_no_alloc_expr(fn_name, object);
+            }
+            ExprKind::Index { object, index } => {
+                self.check_no_alloc_expr(fn_name, object);
+                self.check_no_alloc_expr(fn_name, index);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.check_no_alloc_expr(fn_name, cond);
+                self.check_no_alloc_expr(fn_name, then_branch);
+                if let Some(e) = else_branch { self.check_no_alloc_expr(fn_name, e); }
+            }
+            ExprKind::Block(stmts) => self.check_no_alloc(fn_name, stmts),
+            ExprKind::Match { scrutinee, arms } => {
+                self.check_no_alloc_expr(fn_name, scrutinee);
+                for arm in arms { self.check_no_alloc_expr(fn_name, &arm.body); }
+            }
+            _ => {}
+        }
     }
 
     fn has_explicit_return(&self, body: &[Stmt]) -> bool {
@@ -2581,9 +2696,14 @@ impl TypeChecker {
             ExprKind::ArrayRepeat { value, count } => {
                 let elem_ty = self.infer_expr(value);
                 self.infer_expr(count);
+                // Extract literal size when available, otherwise use 0 as placeholder
+                let len = match &count.kind {
+                    ExprKind::Int(n, _) => *n as usize,
+                    _ => 0,
+                };
                 Type::Array {
                     elem: Box::new(elem_ty),
-                    len: 0,
+                    len,
                 }
             }
 
@@ -2831,6 +2951,13 @@ impl TypeChecker {
     }
 
     fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {
+        // Primitive type constants: u64.MAX, i32.MIN, etc.
+        if let ExprKind::Ident(name) = &object.kind {
+            if let Some(ty) = Self::primitive_type_constant(name, field) {
+                return ty;
+            }
+        }
+
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let field_ty = self.ctx.fresh_var();
@@ -2843,6 +2970,18 @@ impl TypeChecker {
         });
 
         field_ty
+    }
+
+    fn primitive_type_constant(type_name: &str, field: &str) -> Option<Type> {
+        if !matches!(field, "MAX" | "MIN" | "EPSILON" | "NAN" | "INFINITY") {
+            return None;
+        }
+        match type_name {
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => Some(Type::UnresolvedNamed(type_name.to_string())),
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => Some(Type::UnresolvedNamed(type_name.to_string())),
+            "f32" | "f64" => Some(Type::UnresolvedNamed(type_name.to_string())),
+            _ => None,
+        }
     }
 
     fn get_symbol_type(&mut self, sym_id: SymbolId) -> Type {
@@ -3128,7 +3267,8 @@ impl TypeChecker {
                     len: l2,
                 },
             ) => {
-                if l1 != l2 {
+                // len 0 is a placeholder for comptime-dependent sizes
+                if l1 != l2 && *l1 != 0 && *l2 != 0 {
                     return Err(TypeError::Mismatch {
                         expected: t1,
                         found: t2,
@@ -3201,6 +3341,40 @@ impl TypeChecker {
                 found: Type::Error,
                 span,
             }),
+        }
+    }
+
+    /// Resolve the self type for an extend block, handling generic params.
+    /// "SpscRingBuffer<T, N>" → Type::Generic { base, args: [T, N] }
+    /// "TimingStats" → Type::Named(id)
+    fn resolve_impl_self_type(&self, target_ty: &str) -> Option<Type> {
+        let base_name = target_ty.split('<').next().unwrap_or(target_ty);
+        let type_id = self.types.get_type_id(base_name)?;
+
+        // Check if the struct/enum has type params
+        let has_type_params = self.types.get(type_id).map_or(false, |def| {
+            match def {
+                TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => {
+                    !type_params.is_empty()
+                }
+                _ => false,
+            }
+        });
+
+        if has_type_params {
+            // Build generic args from the struct's type params
+            let args = self.types.get(type_id).and_then(|def| {
+                let type_params = match def {
+                    TypeDef::Struct { type_params, .. } | TypeDef::Enum { type_params, .. } => type_params,
+                    _ => return None,
+                };
+                Some(type_params.iter().map(|p| {
+                    GenericArg::Type(Box::new(Type::UnresolvedNamed(p.clone())))
+                }).collect::<Vec<_>>())
+            }).unwrap_or_default();
+            Some(Type::Generic { base: type_id, args })
+        } else {
+            Some(Type::Named(type_id))
         }
     }
 

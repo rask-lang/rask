@@ -6,5 +6,7 @@ edition.workspace = true
 
 [dependencies]
 rask-ast = { path = "../rask-ast" }
+rask-lexer = { path = "../rask-lexer" }
+rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
 thiserror.workspace = true

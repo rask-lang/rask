@@ -277,13 +277,98 @@ match result {
 
 ---
 
+## Panic vs Error: When to Use Which
+
+I want a simple rule: **panic for programmer errors, return errors for expected failures.**
+
+### The Rule
+
+| Situation | Mechanism | Rationale |
+|-----------|-----------|-----------|
+| **Bug in the code** | `panic` | Continuing is meaningless — the program is wrong |
+| **Bad input / environment** | `return Err(...)` | Caller can recover, retry, or report |
+
+### Panic (programmer error)
+
+Panic when the program has a bug — a violated invariant, impossible state, or broken contract between functions.
+
+<!-- test: skip -->
+```rask
+// Array out of bounds — programmer miscalculated
+const item = arr[arr.len()]   // panic: index out of bounds
+
+// Invariant violated — internal state is corrupt
+func withdraw(self, amount: u64) {
+    if amount > self.balance {
+        panic("withdraw called with amount > balance — caller must check")
+    }
+    self.balance = self.balance - amount
+}
+
+// Unwrap on None/Err — programmer asserted it can't fail
+const config = load_config()!   // panic if None/Err
+```
+
+### Return Error (expected failure)
+
+Return an error when the failure is a normal part of operation — the caller should handle it.
+
+<!-- test: skip -->
+```rask
+// File might not exist — that's not a bug
+func read_config(path: string) -> Config or IoError {
+    const content = try fs.read(path)   // IoError propagated
+    return try parse(content)
+}
+
+// Network might be down — expected in production
+func fetch(url: string) -> Response or (IoError | HttpError) {
+    const conn = try net.connect(url)
+    return try conn.get("/")
+}
+
+// User input might be invalid — not our bug
+func parse_age(input: string) -> u32 or ParseError {
+    const n = try input.parse_int()
+    if n < 0 || n > 150: return Err(ParseError.OutOfRange)
+    return n as u32
+}
+```
+
+### The Grey Area
+
+Some cases aren't obvious. Here's how I'd decide:
+
+| Case | Choice | Why |
+|------|--------|-----|
+| Division by zero | Panic | Caller should have checked — this is a logic error |
+| Integer overflow | Panic (debug), wrap (release) | See [integer-overflow.md](integer-overflow.md) |
+| Stack overflow | Panic | Can't meaningfully recover |
+| Out of memory | Panic | Allocation failure is nearly unrecoverable |
+| Missing required config | Error if loading, panic if already validated | Depends on where you are |
+| Unreachable match arm | Panic | If it's reached, the code is wrong |
+
+**Rule of thumb:** If adding error handling makes the caller's code strictly worse (more complex, no meaningful recovery), the callee should panic. If the caller has a reasonable recovery path, return an error.
+
+### Panic Messages
+
+Panic messages should explain the invariant that was violated:
+
+<!-- test: skip -->
+```rask
+// Good: explains what went wrong
+panic("buffer.len() must be >= header_size, got {buffer.len()}")
+
+// Bad: unhelpful
+panic("invalid state")
+```
+
+---
+
 ## Remaining Issues
 
-### Medium Priority
-1. **Panic vs Error** — Guidelines for when to panic vs return Result
-
 ### Low Priority
-2. **Stack traces** — Debug builds could capture (not specified)
+1. **Stack traces** — Debug builds could capture (not specified)
 
 ### Dependencies
 - **Union types** — See [Union Types](union-types.md) (TODO: create spec)

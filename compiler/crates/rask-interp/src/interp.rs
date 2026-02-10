@@ -941,8 +941,14 @@ impl Interpreter {
                 Ok(Value::Unit)
             }
 
-            StmtKind::Let { name, init, .. } => {
+            StmtKind::Let { name, ty, init } => {
                 let value = self.eval_expr(init)?;
+                // Coerce Vec to SimdF32x8 when type annotation says f32x8
+                let value = if ty.as_deref() == Some("f32x8") {
+                    Self::coerce_to_simd_f32x8(value)?
+                } else {
+                    value
+                };
                 if let Some(id) = self.get_resource_id(&value) {
                     self.resource_tracker.set_var_name(id, name.clone());
                 }
@@ -1453,6 +1459,7 @@ impl Interpreter {
                         kind: TypeConstructorKind::Ordering,
                         type_param,
                     }),
+                    "f32x8" => return Ok(Value::Type("f32x8".to_string())),
                     _ => {}
                 }
                 Err(RuntimeError::UndefinedVariable(name.clone()))
@@ -1611,10 +1618,11 @@ impl Interpreter {
                     }
                 }
                 _ => {
-                    Err(RuntimeError::TypeError(format!(
-                        "unexpected binary op {:?} - should be desugared to method call",
-                        op
-                    )))
+                    // Arithmetic ops: handle directly (needed for string interpolation
+                    // expressions which bypass the desugaring pass)
+                    let l = self.eval_expr(left)?;
+                    let r = self.eval_expr(right)?;
+                    self.eval_binop(*op, l, r)
                 }
             },
 
@@ -1895,6 +1903,18 @@ impl Interpreter {
                     .iter()
                     .map(|e| self.eval_expr(e))
                     .collect::<Result<_, _>>()?;
+                Ok(Value::Vec(Arc::new(Mutex::new(values))))
+            }
+
+            ExprKind::ArrayRepeat { value, count } => {
+                let val = self.eval_expr(value)?;
+                let n = match self.eval_expr(count)? {
+                    Value::Int(n) => n as usize,
+                    other => return Err(RuntimeError::TypeError(format!(
+                        "array repeat count must be integer, found {}", other.type_name()
+                    ))),
+                };
+                let values: Vec<Value> = (0..n).map(|_| val.clone()).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
             }
 
@@ -2914,7 +2934,7 @@ impl Interpreter {
         }
     }
 
-    fn interpolate_string(&self, s: &str) -> Result<String, RuntimeError> {
+    fn interpolate_string(&mut self, s: &str) -> Result<String, RuntimeError> {
         let mut result = String::new();
         let mut chars = s.chars().peekable();
 
@@ -2963,60 +2983,25 @@ impl Interpreter {
         Ok(result)
     }
 
-    /// Evaluate a simple expression inside string interpolation.
-    /// Supports: variable, dotted field access, and simple binary ops (+, -, *, /).
-    fn eval_interpolation_expr(&self, expr: &str) -> Result<Value, RuntimeError> {
-        let expr = expr.trim();
-        // Try binary operators (lowest precedence first)
-        for op_str in &[" + ", " - ", " * ", " / "] {
-            if let Some(pos) = expr.find(op_str) {
-                let left = self.eval_interpolation_expr(&expr[..pos])?;
-                let right = self.eval_interpolation_expr(&expr[pos + op_str.len()..])?;
-                return match (*op_str, &left, &right) {
-                    (" + ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
-                    (" - ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
-                    (" * ", Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
-                    (" / ", Value::Int(a), Value::Int(b)) => {
-                        if *b == 0 { return Err(RuntimeError::DivisionByZero); }
-                        Ok(Value::Int(a / b))
-                    }
-                    (" + ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
-                    (" - ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
-                    (" * ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
-                    (" / ", Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "unsupported interpolation operation: {} {:?} {}", left.type_name(), op_str.trim(), right.type_name()
-                    ))),
-                };
-            }
+    /// Evaluate an expression inside string interpolation using the real parser.
+    fn eval_interpolation_expr(&mut self, expr_str: &str) -> Result<Value, RuntimeError> {
+        let expr_str = expr_str.trim();
+
+        let lex_result = rask_lexer::Lexer::new(expr_str).tokenize();
+        if !lex_result.errors.is_empty() {
+            return Err(RuntimeError::TypeError(format!(
+                "invalid interpolation expression: {}", expr_str
+            )));
         }
-        if let Ok(n) = expr.parse::<i64>() {
-            return Ok(Value::Int(n));
-        }
-        if let Ok(f) = expr.parse::<f64>() {
-            return Ok(Value::Float(f));
-        }
-        let parts: Vec<&str> = expr.split('.').collect();
-        if let Some(val) = self.env.get(parts[0]) {
-            let mut current = val.clone();
-            for &part in &parts[1..] {
-                match current {
-                    Value::Struct { fields, .. } => {
-                        current = fields.get(part).cloned().unwrap_or(Value::Unit);
-                    }
-                    _ => {
-                        return Err(RuntimeError::TypeError(format!(
-                            "cannot access field '{}' on {}",
-                            part,
-                            current.type_name()
-                        )));
-                    }
-                }
-            }
-            Ok(current)
-        } else {
-            Err(RuntimeError::UndefinedVariable(parts[0].to_string()))
-        }
+
+        let mut parser = rask_parser::Parser::new(lex_result.tokens);
+        let expr = parser.parse_expr().map_err(|e| {
+            RuntimeError::TypeError(format!(
+                "cannot parse interpolation '{}': {}", expr_str, e.message
+            ))
+        })?;
+
+        self.eval_expr(&expr)
     }
 
     /// Format a value with a format specifier like :.2, :.1, :b, :x, etc.
@@ -3041,6 +3026,91 @@ impl Interpreter {
                 }
             }
             _ => format!("{}", value),
+        }
+    }
+
+    /// Coerce a Vec value to SimdF32x8 (used for `let x: f32x8 = [0.0; 8]`).
+    fn coerce_to_simd_f32x8(value: Value) -> Result<Value, RuntimeError> {
+        match value {
+            Value::SimdF32x8(_) => Ok(value),
+            Value::Vec(v) => {
+                let vec = v.lock().unwrap();
+                let mut arr = [0.0f32; 8];
+                for (i, val) in vec.iter().take(8).enumerate() {
+                    arr[i] = match val {
+                        Value::Float(f) => *f as f32,
+                        Value::Int(n) => *n as f32,
+                        _ => 0.0,
+                    };
+                }
+                Ok(Value::SimdF32x8(arr))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "cannot coerce {} to f32x8", value.type_name()
+            ))),
+        }
+    }
+
+    /// Evaluate a binary operation directly (bypasses desugaring).
+    fn eval_binop(&self, op: BinOp, l: Value, r: Value) -> Result<Value, RuntimeError> {
+        match (op, &l, &r) {
+            (BinOp::Add, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a + b)),
+            (BinOp::Sub, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a - b)),
+            (BinOp::Mul, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a * b)),
+            (BinOp::Div, Value::Int(a), Value::Int(b)) => {
+                if *b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Int(a / b))
+            }
+            (BinOp::Mod, Value::Int(a), Value::Int(b)) => {
+                if *b == 0 { return Err(RuntimeError::DivisionByZero); }
+                Ok(Value::Int(a % b))
+            }
+            (BinOp::Add, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a + b)),
+            (BinOp::Sub, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a - b)),
+            (BinOp::Mul, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a * b)),
+            (BinOp::Div, Value::Float(a), Value::Float(b)) => Ok(Value::Float(a / b)),
+            (BinOp::Add, Value::SimdF32x8(a), Value::SimdF32x8(b)) => {
+                let mut r = [0.0f32; 8];
+                for i in 0..8 { r[i] = a[i] + b[i]; }
+                Ok(Value::SimdF32x8(r))
+            }
+            (BinOp::Sub, Value::SimdF32x8(a), Value::SimdF32x8(b)) => {
+                let mut r = [0.0f32; 8];
+                for i in 0..8 { r[i] = a[i] - b[i]; }
+                Ok(Value::SimdF32x8(r))
+            }
+            (BinOp::Mul, Value::SimdF32x8(a), Value::SimdF32x8(b)) => {
+                let mut r = [0.0f32; 8];
+                for i in 0..8 { r[i] = a[i] * b[i]; }
+                Ok(Value::SimdF32x8(r))
+            }
+            (BinOp::Div, Value::SimdF32x8(a), Value::SimdF32x8(b)) => {
+                let mut r = [0.0f32; 8];
+                for i in 0..8 { r[i] = a[i] / b[i]; }
+                Ok(Value::SimdF32x8(r))
+            }
+            (BinOp::Add, Value::String(a), Value::String(b)) => {
+                let s = format!("{}{}", a.lock().unwrap(), b.lock().unwrap());
+                Ok(Value::String(std::sync::Arc::new(std::sync::Mutex::new(s))))
+            }
+            (BinOp::Eq, _, _) => Ok(Value::Bool(Self::value_eq(&l, &r))),
+            (BinOp::Ne, _, _) => Ok(Value::Bool(!Self::value_eq(&l, &r))),
+            (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::Le, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::Ge, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a >= b)),
+            (BinOp::Lt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a < b)),
+            (BinOp::Gt, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a > b)),
+            (BinOp::Le, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a <= b)),
+            (BinOp::Ge, Value::Float(a), Value::Float(b)) => Ok(Value::Bool(a >= b)),
+            (BinOp::BitAnd, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a & b)),
+            (BinOp::BitOr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a | b)),
+            (BinOp::BitXor, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a ^ b)),
+            (BinOp::Shl, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a << b)),
+            (BinOp::Shr, Value::Int(a), Value::Int(b)) => Ok(Value::Int(a >> b)),
+            _ => Err(RuntimeError::TypeError(format!(
+                "unsupported binary op {:?} on {} and {}", op, l.type_name(), r.type_name()
+            ))),
         }
     }
 
@@ -3069,6 +3139,37 @@ impl Interpreter {
             Value::Enum { name, variant, fields } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
+            Value::SimdF32x8(data) => match method {
+                "sum" => {
+                    let sum: f32 = data.iter().sum();
+                    Ok(Value::Float(sum as f64))
+                }
+                "add" | "sub" | "mul" | "div" => {
+                    if args.is_empty() {
+                        return Err(RuntimeError::TypeError(format!("f32x8.{} requires an argument", method)));
+                    }
+                    let other = match &args[0] {
+                        Value::SimdF32x8(d) => d,
+                        _ => return Err(RuntimeError::TypeError(format!(
+                            "f32x8.{} expects f32x8, found {}", method, args[0].type_name()
+                        ))),
+                    };
+                    let mut r = [0.0f32; 8];
+                    for i in 0..8 {
+                        r[i] = match method {
+                            "add" => data[i] + other[i],
+                            "sub" => data[i] - other[i],
+                            "mul" => data[i] * other[i],
+                            "div" => data[i] / other[i],
+                            _ => unreachable!(),
+                        };
+                    }
+                    Ok(Value::SimdF32x8(r))
+                }
+                _ => Err(RuntimeError::TypeError(format!(
+                    "f32x8 has no method '{}'", method
+                ))),
+            },
             _ => self.call_builtin_method(receiver, method, args),
         }
     }

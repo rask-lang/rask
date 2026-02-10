@@ -18,7 +18,7 @@ struct SpscRingBuffer<T, comptime N: usize> {
 
 extend SpscRingBuffer<T, N> {
     func new(default: T) -> SpscRingBuffer<T, N> {
-        SpscRingBuffer {
+        return SpscRingBuffer {
             data: [default; N],
             write_idx: Atomic.new(0),
             read_idx: Atomic.new(0),
@@ -38,7 +38,7 @@ extend SpscRingBuffer<T, N> {
 
         self.data[write] = value
         self.write_idx.store(next_write, Ordering.Release)
-        true
+        return true
     }
 
     // Called from main loop - allocation-free for real-time safety
@@ -53,13 +53,13 @@ extend SpscRingBuffer<T, N> {
 
         const value = self.data[rd]
         self.read_idx.store((rd + 1) % N, Ordering.Release)
-        Some(value)
+        return Some(value)
     }
 
     func len(self) -> usize {
         const write = self.write_idx.load(Ordering.Acquire)
         const rd = self.read_idx.load(Ordering.Acquire)
-        if write >= rd { write - rd } else { N - rd + write }
+        return if write >= rd { write - rd } else { N - rd + write }
     }
 }
 
@@ -99,7 +99,7 @@ comptime func build_crc8_table() -> [u8; 256] {
         }
         table[i] = crc
     }
-    table
+    return table
 }
 
 const CRC8_TABLE: [u8; 256] = comptime build_crc8_table()
@@ -114,7 +114,7 @@ comptime func build_temp_calibration() -> [i16; 1024] {
         const temp_centidegrees = -4000 + (adc * 16500) / 1023
         table[adc] = temp_centidegrees as i16
     }
-    table
+    return table
 }
 
 const TEMP_CALIBRATION: [i16; 1024] = comptime build_temp_calibration()
@@ -132,7 +132,7 @@ comptime func build_command_table() -> [u8; 256] {
     table['x' as usize] = 3
     table['C' as usize] = 4  // Calibrate
     table['c' as usize] = 4
-    table
+    return table
 }
 
 const COMMAND_OPCODES: [u8; 256] = comptime build_command_table()
@@ -190,7 +190,7 @@ func read_hardware_sensor(sensor_id: u8, tick: u64) -> f32 {
 
     // Deterministic "noise" based on tick (simulates ADC noise)
     const noise = ((tick * 7 + sensor_id as u64 * 13) % 100) as i32 - 50
-    (base + noise) as f32 / 100.0
+    return (base + noise) as f32 / 100.0
 }
 
 // ============================================================================
@@ -210,7 +210,7 @@ struct TimingStats {
 
 extend TimingStats {
     func new() -> TimingStats {
-        TimingStats {
+        return TimingStats {
             samples: [0u64; 256],
             sample_idx: 0,
             sample_count: 0,
@@ -245,7 +245,7 @@ extend TimingStats {
 
     func mean_ns(self) -> u64 {
         if self.sample_count == 0: return 0
-        self.sum_ns / self.sample_count as u64
+        return self.sum_ns / self.sample_count as u64
     }
 
     // Jitter = standard deviation of cycle times
@@ -255,7 +255,7 @@ extend TimingStats {
         const mean = self.sum_ns as u128 / n
         const variance = (self.sum_squared_ns / n) - (mean * mean)
         // Integer sqrt approximation
-        isqrt(variance) as u64
+        return isqrt(variance) as u64
     }
 }
 
@@ -340,7 +340,7 @@ struct ProcessorState {
 
 extend ProcessorState {
     func new() -> ProcessorState {
-        ProcessorState {
+        return ProcessorState {
             temp_history: [0.0f32; 64],
             pressure_history: [0.0f32; 64],
             humidity_history: [0.0f32; 64],

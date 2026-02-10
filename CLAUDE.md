@@ -1,6 +1,6 @@
-# Rask Design Objectives
-
 Keep docs short. In chat, explain things to me—I'm not a language architect expert.
+
+Be critical, test all assumptions, scrutinize the design choices.
 
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs

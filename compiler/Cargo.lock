@@ -632,6 +632,8 @@ name = "rask-interp"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-lexer",
+ "rask-parser",
  "rask-types",
  "thiserror",
 ]

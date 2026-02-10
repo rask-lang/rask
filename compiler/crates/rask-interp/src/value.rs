@@ -288,6 +288,8 @@ pub enum Value {
     TcpListener(Arc<Mutex<Option<std::net::TcpListener>>>),
     /// TCP connection (Option allows close to invalidate)
     TcpConnection(Arc<Mutex<Option<std::net::TcpStream>>>),
+    /// SIMD f32x8 (8-wide f32 vector for SIMD operations)
+    SimdF32x8([f32; 8]),
 }
 
 impl Value {
@@ -329,6 +331,7 @@ impl Value {
             Value::Shared(_) => "Shared",
             Value::TcpListener(_) => "TcpListener",
             Value::TcpConnection(_) => "TcpConnection",
+            Value::SimdF32x8(_) => "f32x8",
         }
     }
 
@@ -598,6 +601,14 @@ impl fmt::Display for Value {
                 } else {
                     write!(f, "<closed TcpConnection>")
                 }
+            }
+            Value::SimdF32x8(v) => {
+                write!(f, "f32x8(")?;
+                for (i, x) in v.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", x)?;
+                }
+                write!(f, ")")
             }
         }
     }
