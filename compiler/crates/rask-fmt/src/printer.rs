@@ -120,7 +120,7 @@ impl<'a> Printer<'a> {
             if c.span.start > content_end && c.span.start < self.source.len() {
                 let gap = &self.source[content_end..c.span.start];
                 if !gap.contains('\n') {
-                    let c = self.comments.advance().unwrap();
+                    let Some(c) = self.comments.advance() else { return false; };
                     // Preserve original spacing or use standard 2-space gap
                     let spaces = gap.len().max(2);
                     for _ in 0..spaces {
@@ -160,7 +160,7 @@ impl<'a> Printer<'a> {
             if comment_indent < min_indent {
                 break;
             }
-            let c = self.comments.advance().unwrap();
+            let Some(c) = self.comments.advance() else { break; };
             if self.has_blank_line_before(c.span.start) {
                 self.emit_blank_line();
             }

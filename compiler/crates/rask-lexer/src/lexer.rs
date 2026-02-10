@@ -688,15 +688,6 @@ impl LexError {
         }
     }
 
-    #[allow(dead_code)]
-    fn unterminated_string(start: usize, end: usize) -> Self {
-        Self {
-            span: Span::new(start, end),
-            message: "unterminated string".to_string(),
-            hint: Some("add a closing '\"'".to_string()),
-        }
-    }
-
     fn invalid_escape(pos: usize) -> Self {
         Self {
             span: Span::new(pos, pos + 1),
