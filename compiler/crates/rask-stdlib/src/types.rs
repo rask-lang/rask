@@ -69,8 +69,8 @@ pub fn vec_methods() -> &'static [MethodDef] {
         MethodDef { name: "push_with", takes_self: true, params: &[("f", "func(T)")], ret_ty: "Result<usize, AllocError>" },
 
         // FFI (unsafe)
-        MethodDef { name: "as_ptr", takes_self: true, params: &[], ret_ty: "*const T" },
-        MethodDef { name: "as_mut_ptr", takes_self: true, params: &[], ret_ty: "*mut T" },
+        MethodDef { name: "as_ptr", takes_self: true, params: &[], ret_ty: "*T" },
+        MethodDef { name: "as_mut_ptr", takes_self: true, params: &[], ret_ty: "*T" },
 
         // Comptime
         MethodDef { name: "freeze", takes_self: true, params: &[], ret_ty: "[T; N]" },

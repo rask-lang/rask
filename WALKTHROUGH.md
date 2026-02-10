@@ -1190,19 +1190,20 @@ by the OS. You can have 100,000+ of them.
 
 ```rask
 func main() {
-    const scheduler = Multitasking.new()
-    const listener = try TcpListener.bind("0.0.0.0:8080")
+    with Multitasking {
+        const listener = try TcpListener.bind("0.0.0.0:8080")
 
-    loop {
-        const conn = try listener.accept()
-        spawn { handle_connection(conn) }.detach()
+        loop {
+            const conn = try listener.accept()
+            spawn { handle_connection(conn) }.detach()
+        }
     }
 }
 ```
 
 The scheduler is **opt-in**—it doesn't run by default. A plain Rask program has zero
-scheduler overhead. `Multitasking.new()` is what spins it up, and `spawn { }` only
-works when a `Multitasking` value is in scope. Each incoming connection gets its own
+scheduler overhead. `with Multitasking { }` is what spins it up, and `spawn { }` only
+works within that block. Each incoming connection gets its own
 task—cheap enough that you don't worry about it.
 
 ### Task Handles Are Affine
@@ -1230,12 +1231,11 @@ CPU-heavy work (parsing, compression, number crunching), use the thread pool:
 
 ```rask
 func main() {
-    const scheduler = Multitasking.new()
-    const pool = ThreadPool.new()
-
-    const data = try fetch(url)                                // I/O: pauses task
-    const result = try spawn thread { analyze(data) }.join()   // CPU: actual parallelism
-    try save(result)                                           // I/O: pauses task
+    with Multitasking, ThreadPool {
+        const data = try fetch(url)                                // I/O: pauses task
+        const result = try spawn thread { analyze(data) }.join()   // CPU: actual parallelism
+        try save(result)                                           // I/O: pauses task
+    }
 }
 ```
 
@@ -1493,11 +1493,11 @@ This is pragmatic: catch bugs during development, run fast in production.
 
 | Type | Description |
 |---|---|
-| `*T` | Immutable raw pointer |
-| `*mut T` | Mutable raw pointer |
+| `*T` | Raw pointer (read/write access) |
 
 Unlike handles, raw pointers have no validation. They can be null, dangling, or
-misaligned. That's why they require `unsafe`.
+misaligned. That's why they require `unsafe`. Operations on the pointer (reading
+vs writing) determine whether it's used immutably or mutably.
 
 ---
 
@@ -1603,12 +1603,12 @@ Closures scope the lock precisely: `mutex.lock(|data| { ... })`. When the closur
 returns, the lock is released. You can't hold it by accident. The compiler can also
 detect direct nested locking and flag it as an error.
 
-### Why `Multitasking.new()` instead of just having async everywhere?
+### Why `with Multitasking { }` instead of just having async everywhere?
 
 Explicit resource declaration. Async runtimes aren't free—they create scheduler threads,
-allocate task queues, set up I/O polling. `Multitasking.new()` makes this cost visible
-and opt-in. A CLI tool that just needs thread parallelism uses `ThreadPool.new()` and
-pays only for threads. A web server uses `Multitasking.new()` and gets the full
+allocate task queues, set up I/O polling. `with Multitasking { }` makes this cost visible
+and opt-in. A CLI tool that just needs thread parallelism uses `with ThreadPool { }` and
+pays only for threads. A web server uses `with Multitasking { }` and gets the full
 scheduler.
 
 ### Why are task handles affine (must be consumed)?

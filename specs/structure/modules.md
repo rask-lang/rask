@@ -488,6 +488,26 @@ func walk_up(pool: Pool<Node>, node: Handle<Node>) {
 - **C Interop**: See [C Interop](c-interop.md) for full specification
 - **Tooling Contract**: IDEs MUST show ghost `public` on extend when inferred (both trait and type are public); SHOULD show ghost annotations for qualified names, and monomorphization (code generation) locations
 
+## Open Questions
+
+### Package Granularity (deferred until Phase 5)
+
+**Current design:** Package = directory (folder), Go-style
+
+**Alternative:** Package = file (Zig-style)
+
+**Key tension:**
+- **Folder = package** → nested directory hierarchies, 3-8 files per folder, hierarchical organization (http/client/, http/server/)
+- **File = package** → flat directories with many files, file names provide structure (http/client_conn.rk, http/server_handler.rk)
+
+**Decision:** Defer until validation programs (HTTP server, text editor, game loop) exist. Evaluate which model feels better for organizing real Rask code. Both models affect:
+- Project structure conventions
+- Import ceremony (folder boundaries vs file boundaries)
+- Team organization (ownership boundaries)
+- Refactoring friction (splitting/merging modules)
+
+See [TODO.md](../../TODO.md) Phase 5 for tracking.
+
 ## Implementation Status
 
 | Feature | Status | Notes |

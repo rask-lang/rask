@@ -272,7 +272,7 @@ const iter = s.chars()  // Compile error
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
 | `s.to_cstring()` | `Result<cstring, null_byte_error>` (fails if string contains `\0`) |
-| `cstring.as_ptr()` | `*const u8` (unsafe context only) |
+| `cstring.as_ptr()` | `*u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
 | `cstring.to_string()` | `Result<string, utf8_error>` |
 

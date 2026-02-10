@@ -6,10 +6,10 @@
 // See examples/README.md for status.
 
 // External C functions must be declared
-extern "C" func strlen(ptr: *const u8) -> i32
-extern "C" func memcpy(dest: *mut u8, src: *const u8, n: i32)
-extern "C" func malloc(size: i32) -> *mut u8
-extern "C" func free(ptr: *mut u8)
+extern "C" func strlen(ptr: *u8) -> i32
+extern "C" func memcpy(dest: *u8, src: *u8, n: i32)
+extern "C" func malloc(size: i32) -> *u8
+extern "C" func free(ptr: *u8)
 
 // Wrapper for C strlen
 func c_string_length(s: string) -> i32 {

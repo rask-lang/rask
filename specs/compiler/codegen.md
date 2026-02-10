@@ -478,13 +478,13 @@ Runtime is Rust, compiled to static library. Compiled Rask programs link against
 
 | Component | API | Notes |
 |-----------|-----|-------|
-| **Allocator** | `rask_alloc(size, align) -> *mut u8`, `rask_dealloc(ptr, size, align)` | Wraps system allocator. Rask collections use this for all heap allocation. |
-| **Panic** | `rask_panic(msg: *const u8, len: usize, file: *const u8, line: u32) -> !` | Prints message, runs registered ensure handlers (LIFO), exits process. |
-| **String** | `RaskString` struct: `{ ptr: *mut u8, len: usize, cap: usize }` | Heap-allocated UTF-8. Methods: `new`, `from_static`, `push_str`, `len`, `clone`, `drop`, `eq`, all string methods from the spec. |
+| **Allocator** | `rask_alloc(size, align) -> *u8`, `rask_dealloc(ptr, size, align)` | Wraps system allocator. Rask collections use this for all heap allocation. |
+| **Panic** | `rask_panic(msg: *u8, len: usize, file: *u8, line: u32) -> !` | Prints message, runs registered ensure handlers (LIFO), exits process. |
+| **String** | `RaskString` struct: `{ ptr: *u8, len: usize, cap: usize }` | Heap-allocated UTF-8. Methods: `new`, `from_static`, `push_str`, `len`, `clone`, `drop`, `eq`, all string methods from the spec. |
 | **Vec** | `RaskVec<T>` (monomorphized per element type) | Standard growable array. `push`, `pop`, `get`, `len`, `drop`. Allocation is fallible (returns Result). |
 | **Map** | `RaskMap<K,V>` | Hash map. Robin Hood or Swiss Table implementation. |
 | **Pool** | `RaskPool<T>` | Generational sparse storage. `insert`, `get`, `remove`, handle validation. |
-| **IO** | `rask_print(s: *const u8, len: usize)`, `rask_println(...)`, file wrappers | Wraps OS file descriptors. |
+| **IO** | `rask_print(s: *u8, len: usize)`, `rask_println(...)`, file wrappers | Wraps OS file descriptors. |
 | **Ensure stack** | `rask_ensure_push(handler: fn())`, `rask_ensure_pop()`, `rask_ensure_run_all()` | LIFO cleanup handler registration. Panic handler calls `rask_ensure_run_all()`. |
 | **Resource tracker** | `rask_resource_register(type_name, scope) -> u64`, `rask_resource_consume(id)`, `rask_resource_check_scope(scope)` | Runtime enforcement of linear resource consumption. Panics on leak at scope exit. |
 

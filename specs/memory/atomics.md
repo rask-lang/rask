@@ -327,7 +327,7 @@ Getting the inner value when you have exclusive ownership:
 
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
-| `get_mut()` | `self -> *mut T` | Get raw pointer to inner value (unsafe to dereference) |
+| `get_mut()` | `self -> *T` | Get raw pointer to inner value (unsafe to dereference) |
 | `into_inner()` | `take self -> T` | Consume atomic, return inner value |
 
 ```rask
@@ -407,7 +407,7 @@ func arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
 }
 
 // Drop decrements count, frees if zero
-func arc_drop<T>(ptr: *mut ArcInner<T>) {
+func arc_drop<T>(ptr: *ArcInner<T>) {
     unsafe {
         // AcqRel: synchronize with other drops
         if (*ptr).count.fetch_sub(1, AcqRel) == 1 {

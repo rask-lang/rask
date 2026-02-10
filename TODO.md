@@ -7,7 +7,7 @@ I've specified all core language semantics:
 - **Types:** primitives, structs, enums, generics, traits, unions, optionals, error types, SIMD
 - **Memory:** ownership, borrowing, value semantics, closures, pools/handles, resource types, atomics, unsafe
 - **Control:** if/else, loops, match, ensure, comptime, explicit returns
-- **Concurrency:** spawn/join/detach, channels, select, threading, multitasking, no function coloring
+- **Concurrency:** spawn/join/detach, channels, select, ThreadPool, Multitasking, no function coloring
 - **Structure:** modules, packages, targets, C interop, Rust interop (via C ABI + build system)
 - **Stdlib specs:** collections, strings, iteration, bits, testing
 
@@ -112,7 +112,7 @@ All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 - [x] **Game loop** — ✅ **FULLY WORKING** (tested: entities, collision, spawning, scoring)
   - Fixed: Pool iteration, projection parameters, Rust syntax (.collect, .map closure), tuple enum patterns
   - Slow: ~60ms/frame in interpreter, but functionally correct
-- [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `Multitasking` ✅ (aliased to threading), `Map.from` ✅, string slicing ✅
+- [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `Multitasking` ✅, `Map.from` ✅, string slicing ✅
 - [x] **Sensor processor** — ✅ **PASSES TYPE CHECK** (resolver, type checker, SIMD, @no_alloc all fixed)
   - Fixed: comptime generic params in scope, `u64.MAX` type constants, generic struct field access, array size tracking
   - SIMD `f32x8` type: load, splat, element-wise ops, sum
@@ -166,6 +166,7 @@ Tools that make it actually usable:
 - [ ] Style guideline: max 3 context clauses per function — lint, not language rule
 
 ### Phase 5 (after codegen works)
+- [ ] **Package granularity decision** — folder = package (current, Go-style nested hierarchy) vs file = package (Zig-style flat with many files). Defer until validation programs exist to evaluate which feels better. Key tension: nested folders vs flat with descriptive filenames.
 - [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
 - [ ] Design task-local storage syntax
 - [ ] Design `Projectable` trait — let custom containers define `with...as` behavior

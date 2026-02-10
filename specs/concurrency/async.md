@@ -1,6 +1,6 @@
 # Execution Model
 
-Green tasks with affine handles. No function coloring. Context clause resource declaration.
+Green tasks with affine handles. No function coloring. Explicit resource declaration.
 
 ## Overview
 
@@ -17,20 +17,19 @@ Rask uses **green tasks** (lightweight coroutines) for concurrent I/O-bound work
 
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
-| `spawn { }` | Green task | `Multitasking` in scope | Yes (at I/O) |
-| `spawn thread { }` | Thread from pool | `ThreadPool` in scope | No |
+| `spawn { }` | Green task | `with Multitasking` | Yes (at I/O) |
+| `spawn thread { }` | Thread from pool | `with ThreadPool` | No |
 | `spawn raw { }` | Raw OS thread | Nothing | No |
 
 **All return affine handles**—must be joined or detached (compile error if forgotten).
 
 ### Naming Rationale
 
-- `Multitasking` — plain English type name, describes the capability (cooperative green tasks, M:N scheduling)
-- `ThreadPool` — concrete type name, describes the resource (a pool of worker threads)
-- Both work as context clause objects, same pattern as `Pool<T>`
+- `Multitasking` — scoped resource type providing M:N green task scheduler
+- `ThreadPool` — scoped resource type providing thread pool for CPU-bound work
 - `spawn` family — contextual modifiers after the keyword:
-  - `spawn` — green task (requires `Multitasking` in scope)
-  - `spawn thread` — pooled thread (requires `ThreadPool` in scope)
+  - `spawn` — green task (requires `with Multitasking`)
+  - `spawn thread` — pooled thread (requires `with ThreadPool`)
   - `spawn raw` — raw OS thread (works anywhere)
 
 ## Concurrency vs Parallelism
@@ -51,12 +50,13 @@ func fetch_user(id: u64) -> User or Error {
 }
 
 func main() -> () or Error {
-    const scheduler = Multitasking.new()
-    const listener = try TcpListener.bind("0.0.0.0:8080")
+    with Multitasking {
+        const listener = try TcpListener.bind("0.0.0.0:8080")
 
-    loop {
-        const conn = try listener.accept()
-        spawn { handle_connection(conn) }.detach()  // Fire-and-forget
+        loop {
+            const conn = try listener.accept()
+            spawn { handle_connection(conn) }.detach()  // Fire-and-forget
+        }
     }
 }
 
@@ -68,7 +68,7 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 ```
 
 **Key points:**
-- `Multitasking.new()` creates the scheduler; `spawn` resolves it from scope
+- `with Multitasking { }` enables green tasks
 - `spawn { }` returns `TaskHandle` (affine type)
 - `.detach()` opts out of tracking (fire-and-forget)
 - No `.await`, no `async` keywords
@@ -146,32 +146,22 @@ extend TaskHandle<T> {
 
 ### Setup
 
-`Multitasking` is a type you create as a local variable—same pattern as `Pool<T>`. The compiler resolves it from scope when `spawn { }` is used.
-
 ```rask
 func main() {
-    const scheduler = Multitasking.new()
-    run_server()
-}
-```
-
-Configuration via named constructor args:
-
-```rask
-const scheduler = Multitasking.new()            // default: workers = num_cpus
-const scheduler = Multitasking.new(workers: 4)  // explicit
-```
-
-Functions that need to spawn declare the requirement as a context clause:
-
-```rask
-func run_server() with Multitasking {
-    const listener = try TcpListener.bind("0.0.0.0:8080")
-    loop {
-        const conn = try listener.accept()
-        spawn { handle_connection(conn) }.detach()
+    with Multitasking {
+        run_server()
     }
 }
+```
+
+The `with` block creates and scopes the multitasking scheduler. No explicit construction needed.
+
+Configuration:
+
+```rask
+with Multitasking(workers: 4) { }                  // 4 scheduler threads
+with ThreadPool(workers: 8) { }                    // 8 pool threads
+with Multitasking(workers: 4), ThreadPool(workers: 8) { }  // Both
 ```
 
 ### What Multitasking Provides
@@ -198,10 +188,10 @@ func run_server() with Multitasking {
 
 ### Lifecycle
 
-1. `Multitasking.new()` creates scheduler (threads start lazily)
-2. Scheduler is available to any code that can resolve it from scope
-3. `spawn { }` uses the resolved scheduler
-4. When `Multitasking` drops, waits for non-detached tasks
+1. `with Multitasking { }` creates scheduler (threads start lazily)
+2. Multitasking is ambient within the block
+3. `spawn { }` uses the ambient scheduler
+4. Block exit waits for non-detached tasks
 
 ## How I/O Works
 
@@ -238,14 +228,13 @@ For CPU-bound work that needs true parallelism, use a `ThreadPool`:
 
 ```rask
 func main() {
-    const scheduler = Multitasking.new()
-    const pool = ThreadPool.new()
-
-    try spawn {
-        const data = try fetch(url)                              // I/O - pauses
-        const result = try spawn thread { analyze(data) }.join()  // CPU on threads
-        try save(result)                                       // I/O - pauses
-    }.join()
+    with Multitasking, ThreadPool {
+        try spawn {
+            const data = try fetch(url)                              // I/O - pauses
+            const result = try spawn thread { analyze(data) }.join()  // CPU on threads
+            try save(result)                                       // I/O - pauses
+        }.join()
+    }
 }
 ```
 
@@ -261,26 +250,25 @@ spawn { handle_io() }.detach()       // Starved!
 With a thread pool:
 
 ```rask
-const scheduler = Multitasking.new()
-const pool = ThreadPool.new()
-
-spawn {
-    try spawn thread { cpu_intensive() }.join()  // Runs on thread pool
-}.detach()
-spawn { handle_io() }.detach()                  // Runs fine
+with Multitasking, ThreadPool {
+    spawn {
+        try spawn thread { cpu_intensive() }.join()  // Runs on thread pool
+    }.detach()
+    spawn { handle_io() }.detach()                  // Runs fine
+}
 ```
 
 ### Threads API
 
 ```rask
-const pool = ThreadPool.new()
+with ThreadPool {
+    // Spawn on thread pool, get handle
+    const h = spawn thread { work() }
+    const result = try h.join()
 
-// Spawn on thread pool, get handle
-const h = spawn thread { work() }
-const result = try h.join()
-
-// Fire-and-forget
-spawn thread { background() }.detach()
+    // Fire-and-forget
+    spawn thread { background() }.detach()
+}
 ```
 
 | Method | Returns | Description |
@@ -293,21 +281,22 @@ Thread pool works independently for pure CPU-parallelism—CLI tools, batch proc
 
 ```rask
 func main() {
-    const pool = ThreadPool.new()
-    const handles = files.map { |f|
-        spawn thread { process(f) }
-    }
-    for h in handles {
-        print(try h.join())
+    with ThreadPool {
+        const handles = files.map { |f|
+            spawn thread { process(f) }
+        }
+        for h in handles {
+            print(try h.join())
+        }
     }
 }
 ```
 
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
-| `Multitasking` only | Yes | No | I/O-heavy servers |
-| `ThreadPool` only | No | Yes | CLI tools, batch processing |
-| Both | Yes | Yes | Full-featured applications |
+| `with Multitasking` | Yes | No | I/O-heavy servers |
+| `with ThreadPool` | No | Yes | CLI tools, batch processing |
+| `with Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
 
 ## Raw OS Thread
 
@@ -333,9 +322,10 @@ func main() {
     const data = try file.read()  // Blocks thread
 
     // Thread pool still works
-    const pool = ThreadPool.new()
-    const handles = files.map { |f| spawn thread { process(f) } }
-    for h in handles { try h.join() }
+    with ThreadPool {
+        const handles = files.map { |f| spawn thread { process(f) } }
+        for h in handles { try h.join() }
+    }
 }
 ```
 
@@ -345,7 +335,7 @@ func main() {
 | `spawn thread { }` | Thread pool | Thread pool (same) |
 | Stdlib I/O | Pauses task | Blocks thread |
 
-No special attribute needed. Creating a `Multitasking` value is the opt-in.
+No special attribute needed. The presence of `with Multitasking { }` is the opt-in.
 
 ## Join Semantics
 
@@ -359,12 +349,11 @@ No special attribute needed. Creating a `Multitasking` value is the opt-in.
 This is consistent with all wait operations (I/O, channels, etc.).
 
 ```rask
-const scheduler = Multitasking.new()
-const pool = ThreadPool.new()
-
-spawn {
-    const h = spawn thread { cpu_work() }
-    try h.join()  // YIELDS the green task, doesn't block scheduler
+with Multitasking, ThreadPool {
+    spawn {
+        const h = spawn thread { cpu_work() }
+        try h.join()  // YIELDS the green task, doesn't block scheduler
+    }
 }
 ```
 
@@ -596,9 +585,8 @@ loop {
 | Fire-and-forget | Explicit `.detach()` | Implicit (Go-style) | Safety (MC >= 0.90) |
 | Function coloring | None | async/await keywords | No ecosystem split, same function works everywhere |
 | I/O visibility | IDE + compiler warnings | `async`/`await`, `blocking` keyword | Transparency via tooling, not syntax |
-| Green task type | `Multitasking` | `Runtime`, `Scheduler` | Plain English, non-jargon |
-| Thread pool type | `ThreadPool` | `Threading` | Concrete—describes the resource, not an abstract capability |
-| Resource model | Context clause objects | Magic keyword capabilities | Consistent with `Pool<T>`, configurable, testable |
+| Green task type | `Multitasking` | `Runtime`, `multitasking` | Proper type name, less jargon |
+| Thread pool type | `ThreadPool` | `threading`, `threads`, `pool` | Clear type name, consistent with `Multitasking` |
 | CPU work | Explicit `spawn thread` | Implicit pool | Transparency (TC >= 0.90) |
 
 See [rejected-features.md](../rejected-features.md#asyncawait) for detailed discussion of the async/await decision.
@@ -607,7 +595,7 @@ See [rejected-features.md](../rejected-features.md#asyncawait) for detailed disc
 
 | Metric | Target | This Design |
 |--------|--------|-------------|
-| TC (Transparency) | >= 0.90 | `Multitasking`, `ThreadPool` visible as objects, spawns all visible |
+| TC (Transparency) | >= 0.90 | `with Multitasking`, `with ThreadPool`, spawns all visible |
 | ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
 | SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
 | MC (Mechanical Correctness) | >= 0.90 | Affine handles catch forgotten tasks |

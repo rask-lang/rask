@@ -272,7 +272,7 @@ pub enum Value {
     Sender(Arc<Mutex<mpsc::SyncSender<Value>>>),
     /// Channel receiver
     Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
-    /// Thread pool (from `ThreadPool.new(workers: n)`)
+    /// Thread pool (from `with ThreadPool(workers: n) { }`)
     ThreadPool(Arc<ThreadPoolInner>),
     /// Map (key-value storage with Value keys)
     Map(Arc<Mutex<Vec<(Value, Value)>>>),
