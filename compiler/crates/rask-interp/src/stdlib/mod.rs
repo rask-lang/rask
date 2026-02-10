@@ -79,6 +79,57 @@ impl Interpreter {
     }
 
     /// Dispatch a type static method (e.g., Instant.now(), Duration.seconds(5), Path.new()).
+    /// SIMD f32x8 type methods (e.g., f32x8.load(slice)).
+    fn call_simd_type_method(
+        &self,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "load" => {
+                // f32x8.load(array_slice) — load 8 f32s from a Vec slice
+                if args.is_empty() {
+                    return Err(RuntimeError::TypeError("f32x8.load requires an argument".to_string()));
+                }
+                let data = match &args[0] {
+                    Value::Vec(v) => {
+                        let vec = v.lock().unwrap();
+                        let mut arr = [0.0f32; 8];
+                        for (i, val) in vec.iter().take(8).enumerate() {
+                            arr[i] = match val {
+                                Value::Float(f) => *f as f32,
+                                Value::Int(n) => *n as f32,
+                                _ => 0.0,
+                            };
+                        }
+                        arr
+                    }
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "f32x8.load expects a Vec, found {}", args[0].type_name()
+                    ))),
+                };
+                Ok(Value::SimdF32x8(data))
+            }
+            "splat" => {
+                // f32x8.splat(value) — fill all 8 lanes with the same value
+                if args.is_empty() {
+                    return Err(RuntimeError::TypeError("f32x8.splat requires an argument".to_string()));
+                }
+                let val = match &args[0] {
+                    Value::Float(f) => *f as f32,
+                    Value::Int(n) => *n as f32,
+                    _ => return Err(RuntimeError::TypeError(format!(
+                        "f32x8.splat expects a number, found {}", args[0].type_name()
+                    ))),
+                };
+                Ok(Value::SimdF32x8([val; 8]))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "f32x8 has no static method '{}'", method
+            ))),
+        }
+    }
+
     pub(crate) fn call_type_method(
         &self,
         type_name: &str,
@@ -88,6 +139,7 @@ impl Interpreter {
         match type_name {
             "Instant" | "Duration" => self.call_time_type_method(type_name, method, args),
             "Path" => self.call_path_type_method(method, args),
+            "f32x8" => self.call_simd_type_method(method, args),
             "Rng" => Err(RuntimeError::TypeError(format!(
                 "Rng.{} is not yet implemented", method
             ))),

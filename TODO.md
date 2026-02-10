@@ -15,7 +15,7 @@ I've specified all core language semantics:
 - **Lexer** — tokenizes Rask source
 - **Parser** — full AST for current syntax (const/let, try, func, match, enums, structs, etc.)
 - **Name resolution** — scope tree, symbol table
-- **Type checker** — type inference, missing return detection (works on simple programs, gaps on complex ones)
+- **Type checker** — type inference, missing return detection, generic struct fields, `@no_alloc` enforcement
 - **Ownership checker** — move tracking, borrow scopes (works on simple programs)
 - **Interpreter** — runs real programs: I/O, threading, channels, linear resources, string methods, Vec operations
 - **LSP** — skeleton exists
@@ -27,8 +27,8 @@ I've specified all core language semantics:
 
 ## Roadmap
 
-### Phase 1: Consolidate (Current Focus)
-Close the gap between "demos work" and "actually reliable."
+### Phase 1: Consolidate (COMPLETE)
+Closed the gap between "demos work" and "actually reliable."
 
 - [x] Fix compiler warnings (dead code, unused imports) — new `rask-diagnostics` crate, unified error display
 - [x] Fix type checker gaps—right now it fails on `own` keyword and some complex enum patterns
@@ -49,7 +49,7 @@ Close the gap between "demos work" and "actually reliable."
   - [x] Auto-Ok wrapping for `T or E` return types
   - [x] Generic struct field resolution — `09_generics` passes type checker
   - [x] `Owned<T>` coercion in recursive enum fields — `cli_calculator` passes type checker
-- [ ] Fix parser gaps
+- [x] Fix parser gaps
   - [x] Closure types in type positions: `f: |i32| -> i32`
   - [x] Struct-style enum variants: `Move { x: i32, y: i32 }`
   - [x] Struct variant patterns: `Enum.Variant { field }` in match
@@ -60,14 +60,14 @@ Close the gap between "demos work" and "actually reliable."
   - [x] Const generics: `<comptime N: usize>` — parser supports this, resolver needs to register params
 - [x] Fix ownership checker gaps
   - [x] False borrow errors in chained closure params (`.filter(|n| ...).map(|n| ...)`)
-- [ ] Fix resolver gaps
+- [x] Fix resolver gaps
   - [x] Generic type constructors `Type<T>.method()` → base name fallback
   - [x] Generic function/struct/enum declarations → strip `<...>` from name
   - [x] Qualified struct variant literals `Enum.Variant { ... }`
   - [x] `null` builtin constant
   - [x] `HttpResponse`/`HttpRequest`/`TcpListener`/`TcpConnection` net types
-  - [ ] Register comptime generic params (`N`) in scope — blocks `sensor_processor`
-  - [ ] Type-level constants (`u64.MAX`) — blocks `sensor_processor`
+  - [x] Register comptime generic params (`N`) in scope
+  - [x] Type-level constants (`u64.MAX`)
 - [x] Add `fmt` / string interpolation to interpreter — `format()`, `{name}` interpolation, format specifiers
 - [x] Spec `io` — Reader/Writer traits — see [io.md](specs/stdlib/io.md)
 - [x] Spec `fs` — File operations — see [fs.md](specs/stdlib/fs.md)
@@ -84,8 +84,8 @@ Spec and implement the modules needed for validation programs.
 - [x] `random` — Random number generation — see [random.md](specs/stdlib/random.md)
 - [x] `os` — Environment variables, process exit — see [os.md](specs/stdlib/os.md)
 
-### Phase 3: Validation Programs (IN PROGRESS - 2026-02-07)
-Run the 5 validation programs for real. Each one surfaces design gaps that need fixing.
+### Phase 3: Validation Programs (COMPLETE - 2026-02-10)
+All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 
 **Interpreter Enhancements Completed:**
 - String/Enum `.eq()` for `==` operator, Vec `.eq()`/`.ne()`
@@ -113,21 +113,21 @@ Run the 5 validation programs for real. Each one surfaces design gaps that need 
   - Fixed: Pool iteration, projection parameters, Rust syntax (.collect, .map closure), tuple enum patterns
   - Slow: ~60ms/frame in interpreter, but functionally correct
 - [x] **HTTP JSON API server** — `net` module ✅, `json.decode<T>` ✅, `Shared<T>` ✅, `with multitasking` ✅ (aliased to threading), `Map.from` ✅, string slicing ✅
-- [ ] **Sensor processor** — **BLOCKED** on: resolver (comptime params, `u64.MAX`), SIMD `f32x8`, `@no_alloc` enforcement
-  - ~~`u128` type~~ — already supported in type system + interpreter
-  - ~~const generics parser~~ — parser handles `<comptime N: usize>`, resolver needs scope registration
-  - ~~fixed arrays~~ — parser handles `[T; N]`, interpreter needs array creation/access
+- [x] **Sensor processor** — ✅ **PASSES TYPE CHECK** (resolver, type checker, SIMD, @no_alloc all fixed)
+  - Fixed: comptime generic params in scope, `u64.MAX` type constants, generic struct field access, array size tracking
+  - SIMD `f32x8` type: load, splat, element-wise ops, sum
+  - `@no_alloc` enforcement: flags Vec.new(), Map.new(), string.new(), format() in annotated functions
 
 **Additional Interpreter Enhancements (2026-02-07):**
 - Pool direct iteration (`for h in pool` = `for h in pool.cursor()`)
 - Vec.pop() returns Option (was returning raw value)
 - Implicit Ok() wrapping for `return ()` in `() or E` functions
 
-**Design Gaps Found:**
-- String interpolation doesn't support complex expressions (`{vec[i].field}`, `{x.method()}`)
-- Tuple patterns can't use qualified enum paths (`(Enum.Variant, ...)` - parser limitation)
+**Design Gaps Found and Fixed:**
+- ~~String interpolation doesn't support complex expressions~~ — **FIXED:** uses real parser for `{vec[i].field}`, `{x.method()}`
+- ~~Tuple patterns can't use qualified enum paths~~ — **FIXED:** `(Enum.Variant, ...)` now works in patterns
 - ~~Closures not implemented~~ — **FIXED:** full closure support with captured environments
-- CLI module passes `--` delimiter as an argument (needs spec)
+- CLI module `--` delimiter — already handled correctly (documented)
 - Examples had Rust syntax remnants (`.collect<Vec<_>>()`, `.map(|x| ...)`, implicit returns)
 - ~~Vec.`take(n)` method name conflicts with `take` keyword~~ — **FIXED:** renamed to `limit(n)`
 
@@ -149,7 +149,7 @@ Tools that make it actually usable:
 - [x] Test runner — `rask test` command
 - [x] Formatter — `rask fmt`
 - [x] `rask describe` — implement command (schema spec done: [specs/tooling/describe-schema.md](specs/tooling/describe-schema.md))
-- [] `rask explain` — compiler-generated function explanations from analysis
+- [x] `rask explain` — real explanations + examples for all 43 error codes
 - [x] `rask lint` — implement command (spec done: [specs/tooling/lint.md](specs/tooling/lint.md))
 - [x] Structured error fixes — `fix:` / `why:` fields in all diagnostics
 
@@ -158,9 +158,9 @@ Tools that make it actually usable:
 ## Open Design Questions
 
 ### Small (Can decide later)
-- [ ] Decide: `char` as a type, or just `u32` + validation?
-- [ ] Decide: `discard` keyword for wildcards on non-Copy types
-- [ ] Write guidelines: when to panic vs return error
+- [x] Decide: `char` as a type — first-class Unicode scalar value, see [primitives.md](specs/types/primitives.md)
+- [x] Decide: `discard` keyword — explicit drop for non-Copy types, see [ownership.md](specs/memory/ownership.md)
+- [x] Write guidelines: panic vs error — panic for bugs, errors for expected failures, see [error-types.md](specs/types/error-types.md)
 - [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
 - [x] Spec `Owned<T>` semantics — see [owned.md](specs/memory/owned.md)
 

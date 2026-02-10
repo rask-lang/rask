@@ -358,6 +358,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix(format!("use {}.clone() to create an independent copy", view_var))
                     .with_why("mutating a source can invalidate views into it")
             }
+
+            NoAllocViolation { reason, function_name, span } => {
+                Diagnostic::error(format!("heap allocation in @no_alloc function `{}`", function_name))
+                    .with_code("E0324")
+                    .with_primary(*span, reason.clone())
+                    .with_help("use stack-allocated alternatives or pre-allocated buffers")
+                    .with_fix("remove the allocation or move it outside the @no_alloc function")
+                    .with_why("@no_alloc functions run in real-time contexts where heap allocation causes unpredictable latency")
+            }
         }
     }
 }
