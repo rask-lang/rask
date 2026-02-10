@@ -346,7 +346,7 @@ func spawn_enemy(pos: Vec3) with enemies: Pool<Enemy> -> Handle<Enemy> {
 **Field access only — unnamed context:**
 
 ```rask
-func validate_email(user: Handle<User>) with Pool<User> -> bool {
+func validate_email(user: Handle<User>) with frozen Pool<User> -> bool {
     !user.email.is_empty()
 }
 
@@ -680,6 +680,65 @@ pool.with_frozen(|frozen| {
 | Valid handle | Access succeeds | Access succeeds |
 
 **Important:** Only use handles valid at freeze time.
+
+### FrozenPool Context Subsumption
+
+Context clauses are mutable by default — `with Pool<T>` allows reads and writes through handles. Add `frozen` to mark a context as read-only, allowing both `Pool<T>` and `FrozenPool<T>` to satisfy it.
+
+The `frozen` keyword matches the existing pool vocabulary (`pool.freeze()`, `FrozenPool<T>`). Nothing moves in a frozen pool — you can look but not touch.
+
+```rask
+// Default — mutable, only Pool<T>
+func damage(h: Handle<Entity>, amount: i32) with Pool<Entity> {
+    h.health -= amount
+}
+
+// Frozen — read-only, accepts both Pool<T> and FrozenPool<T>
+func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
+    return h.health
+}
+
+// Named mutable — structural ops
+func kill(h: Handle<Entity>) with entities: Pool<Entity> {
+    entities.remove(h)
+}
+
+// Named frozen — read-only with pool binding
+func count_alive() with frozen entities: Pool<Entity> -> i32 {
+    let count = 0
+    for h in entities.handles() {
+        if h.health > 0 { count += 1 }
+    }
+    return count
+}
+```
+
+**Call sites:**
+```rask
+const frozen = pool.freeze_ref()
+const hp = get_health(some_handle)    // ✅ FrozenPool satisfies frozen context
+damage(some_handle, 10)               // ❌ FrozenPool can't satisfy mutable context
+```
+
+**Compiler enforces:** Writing through handles in a `frozen` context is a compile error:
+```
+error: cannot write through handle in frozen context
+  --> example.rask:2:5
+   |
+ 1 | func bad(h: Handle<Entity>) with frozen Pool<Entity> {
+   |                                   ------ context is frozen
+ 2 |     h.health -= 10
+   |     ^^^^^^^^^^^^^^ cannot write in frozen context
+```
+
+| Context | `Pool<T>` | `FrozenPool<T>` |
+|---------|-----------|-----------------|
+| `with Pool<T>` | Accepted | Rejected |
+| `with frozen Pool<T>` | Accepted | Accepted |
+| `with name: Pool<T>` | Accepted | Rejected |
+| `with frozen name: Pool<T>` | Accepted | Accepted |
+
+**Private functions:** The compiler infers `frozen` when the body only reads through handles. Public functions must declare it explicitly.
 
 ---
 

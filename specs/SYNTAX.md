@@ -439,9 +439,14 @@ func sort(items: Vec<T>) {
 
 **Context clauses with `with`:**
 ```rask
-// Unnamed context (auto-resolution only)
+// Unnamed context (mutable by default)
 func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
     h.health -= amount
+}
+
+// Frozen context (read-only, accepts FrozenPool too)
+func get_health(h: Handle<Player>) with frozen Pool<Player> -> i32 {
+    return h.health
 }
 
 // Named context (auto-resolution + structural operations)

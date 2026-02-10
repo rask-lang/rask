@@ -79,11 +79,31 @@ func function_name(params)
 }
 ```
 
+### Frozen Context
+
+Add `frozen` to mark a context as read-only. Frozen contexts accept both `Pool<T>` and `FrozenPool<T>`:
+
+```rask
+// Read-only — accepts Pool or FrozenPool
+func get_health(h: Handle<Player>) with frozen Pool<Player> -> i32 {
+    return h.health
+}
+
+// Named frozen — read-only with pool binding
+func count_all() with frozen players: Pool<Player> -> i32 {
+    return players.len()
+}
+```
+
+Without `frozen`, contexts are mutable by default — writes through handles are allowed, but only `Pool<T>` satisfies the context (not `FrozenPool<T>`).
+
+See [pools.md](pools.md#frozenpool-context-subsumption) for the full subsumption rule.
+
 ### Full Signature Grammar
 
 ```rask
 [public] func name<Generics>(params) -> ReturnType
-    with context_name: ContextType, ...
+    with [frozen] context_name: ContextType, ...
     where TraitBounds
 { body }
 ```
@@ -515,6 +535,25 @@ Context clauses reduce visual noise and match the "handles are first-class" ment
 | Debugging | Opaque | Clear from signature |
 
 Context clauses turn runtime errors into compile errors while eliminating overhead.
+
+## FrozenPool Subsumption
+
+`FrozenPool<T>` satisfies `frozen` context clauses. Without `frozen`, only `Pool<T>` is accepted.
+
+```rask
+func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
+    return h.health
+}
+
+func render_all(entities: FrozenPool<Entity>) {
+    for h in entities.handles() {
+        const hp = get_health(h)    // ✅ FrozenPool satisfies frozen context
+        draw_health_bar(hp)
+    }
+}
+```
+
+See [pools.md](pools.md#frozenpool-context-subsumption) for the full rule.
 
 ## Design Rationale
 
