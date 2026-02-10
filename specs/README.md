@@ -128,7 +128,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | Spec | Description |
 |------|-------------|
 | [sync.md](concurrency/sync.md) | OS threads, channels, synchronization |
-| [async.md](concurrency/async.md) | Green tasks, multitasking |
+| [async.md](concurrency/async.md) | Green tasks, Multitasking |
 | [select.md](concurrency/select.md) | Select statement, multiplexing |
 
 ## Structure — How code is organized

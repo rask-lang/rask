@@ -209,7 +209,9 @@ func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
 }
 
 // Parallel movement update - processes entity batches across threads
-func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threads: usize) {
+func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threads: usize)
+    with ThreadPool
+{
     let handles = entities.handles()
     let chunk_size = (handles.len() + num_threads - 1) / num_threads
 
@@ -235,8 +237,6 @@ func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threa
 
 // Main game loop with fixed timestep and threading
 func main() -> () or Error {
-    // Thread pool for CPU-bound physics work
-    const pool = ThreadPool.new(workers: 4)
     let state = try GameState.new()
 
     const target_fps = 60.0f32
@@ -250,8 +250,10 @@ func main() -> () or Error {
 
     println("Game started! Score: 0")
 
-    // Simulate game for a few seconds
-    while !state.game_over && frame_count < 300 {
+    // Thread pool for CPU-bound physics work
+    with ThreadPool(workers: 4) {
+        // Simulate game for a few seconds
+        while !state.game_over && frame_count < 300 {
         // Simulate frame time (16ms = ~60fps)
         const frame_time = 0.016f32
         last_time += frame_time
@@ -294,10 +296,11 @@ func main() -> () or Error {
             println("Frame {frame_count}: Entities={entity_count}, Health={player_health}, Score={state.score}")
         }
 
-        frame_count += 1
+            frame_count += 1
 
-        // In a real game, we'd sleep here to maintain frame rate
-        // time.sleep(time.Duration.from_millis(16))
+            // In a real game, we'd sleep here to maintain frame rate
+            // time.sleep(time.Duration.from_millis(16))
+        }
     }
 
     if state.game_over {

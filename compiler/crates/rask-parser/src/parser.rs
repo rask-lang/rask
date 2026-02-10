@@ -582,24 +582,11 @@ impl Parser {
             ));
         }
 
-        // Handle raw pointer types: *const T, *mut T
+        // Handle raw pointer types: *T
         if self.check(&TokenKind::Star) {
             self.advance();
-            let mutability = if self.check(&TokenKind::Const) {
-                self.advance();
-                "const"
-            } else if matches!(self.current_kind(), TokenKind::Ident(s) if s == "mut") {
-                self.advance();
-                "mut"
-            } else {
-                return Err(ParseError::expected(
-                    "'const' or 'mut' after '*' in pointer type",
-                    self.current_kind(),
-                    self.current().span,
-                ));
-            };
             let pointee_ty = self.parse_type_name()?;
-            return Ok(format!("*{} {}", mutability, pointee_ty));
+            return Ok(format!("*{}", pointee_ty));
         }
 
         if self.check(&TokenKind::LParen) {

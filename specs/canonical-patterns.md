@@ -336,36 +336,40 @@ See [concurrency/sync.md](concurrency/sync.md).
 
 ## Concurrency
 
-`spawn` for tasks, `Multitasking.new()` for the scheduler. No async/await.
+`spawn` for tasks, `with Multitasking { }` for the scheduler. No async/await.
 
 ```rask
 // Spawn and join
-const scheduler = Multitasking.new()
-const handle = spawn { fetch(url) }
-const result = try handle.join()
-
-// Fire-and-forget
-spawn { log_event(event) }.detach()
-
-// Parallel work with channels
-const scheduler = Multitasking.new()
-const ch = Channel.buffered(10)
-
-for url in urls {
-    spawn {
-        const data = try fetch(url)
-        try ch.sender.send(data)
-    }
+with Multitasking {
+    const handle = spawn { fetch(url) }
+    const result = try handle.join()
 }
 
-for _ in 0..urls.len() {
-    const data = try ch.receiver.recv()
-    process(data)
+// Fire-and-forget
+with Multitasking {
+    spawn { log_event(event) }.detach()
+}
+
+// Parallel work with channels
+with Multitasking {
+    const ch = Channel.buffered(10)
+
+    for url in urls {
+        spawn {
+            const data = try fetch(url)
+            try ch.sender.send(data)
+        }
+    }
+
+    for _ in 0..urls.len() {
+        const data = try ch.receiver.recv()
+        process(data)
+    }
 }
 ```
 
 **Anti-patterns:**
-- Spawning without `Multitasking` in scope — tasks need a scheduler.
+- Spawning without `with Multitasking` — tasks need a scheduler.
 - Ignoring join handles — either `.join()` or `.detach()` explicitly.
 
 See [concurrency/async.md](concurrency/async.md), [concurrency/sync.md](concurrency/sync.md).
@@ -552,7 +556,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `string_builder` |
 | Share state | `Shared<T>`, channels |
-| Run concurrently | `spawn`, `Multitasking.new()` |
+| Run concurrently | `spawn`, `with Multitasking { }` |
 | Do I/O | `fs.read_file`, `fs.open` + `ensure close` |
 | Match patterns | `if x is` (single), `match` (multiple) |
 | Iterate | `for x in`, adapters (`.map`, `.filter`) |

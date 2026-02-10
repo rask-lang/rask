@@ -57,12 +57,11 @@ unsafe {
 
 ### Raw Pointer Types
 
-**Types:**
+**Type:**
 
 | Type | Description |
 |------|-------------|
-| `*T` | Immutable raw pointer to T |
-| `*mut T` | Mutable raw pointer to T |
+| `*T` | Raw pointer to T (read or write access) |
 
 **Properties:**
 
@@ -78,15 +77,15 @@ unsafe {
 ```rask
 const x = 42
 let ptr: *i32 = &x as *i32           // From reference
-let mut_ptr: *mut i32 = &mut x       // From mutable reference
+let mut_ptr: *i32 = &mut x           // From mutable reference (same type)
 let null: *i32 = null                // Null pointer literal
 ```
 
 **Using raw pointers (unsafe):**
 ```rask
 unsafe {
-    const value = *ptr                  // Dereference
-    *mut_ptr = 100                    // Write through pointer
+    const value = *ptr                  // Read dereference
+    *ptr = 100                        // Write dereference
     const next = ptr.add(1)             // Pointer arithmetic
     let ref_back: &i32 = &*ptr        // Pointer to reference
 }
@@ -100,7 +99,7 @@ unsafe {
 |-----------|-----------|-------------|
 | `*ptr` | Read/write | Dereference (undefined if invalid) |
 | `ptr.read()` | `*T -> T` | Copy value from pointer |
-| `ptr.write(v)` | `*mut T, T -> ()` | Write value to pointer |
+| `ptr.write(v)` | `*T, T -> ()` | Write value to pointer |
 | `ptr.add(n)` | `*T, usize -> *T` | Offset by n elements |
 | `ptr.sub(n)` | `*T, usize -> *T` | Offset back by n elements |
 | `ptr.offset(n)` | `*T, isize -> *T` | Signed offset |
@@ -120,13 +119,13 @@ unsafe {
 Functions that require unsafe to call:
 
 ```rask
-unsafe func dangerous_operation(ptr: *mut i32) {
+unsafe func dangerous_operation(ptr: *i32) {
     // Body is implicitly unsafe
     *ptr = 42
 }
 
 func caller() {
-    const x = 0
+    let x = 0
     unsafe {
         dangerous_operation(&mut x)    // Must be in unsafe block
     }
@@ -165,7 +164,7 @@ unsafe trait Sync {}      // Safe to share reference across threads
 
 **Implementing:**
 ```rask
-struct MyType { ptr: *mut i32 }
+struct MyType { ptr: *i32 }
 
 // Implementer asserts: MyType can safely cross thread boundaries
 unsafe extend MyType with Send {}
@@ -204,7 +203,7 @@ unsafe extend MyType with Send {}
 **Safe wrapper pattern:**
 ```rask
 public struct SafeBuffer {
-    ptr: *mut u8,
+    ptr: *u8,
     len: usize,
 }
 
@@ -585,7 +584,7 @@ For safety-critical code that needs low-level access but can afford overhead:
 
 ```rask
 @checked_unsafe
-func memory_copy(dst: *mut u8, src: *u8, len: usize) {
+func memory_copy(dst: *u8, src: *u8, len: usize) {
     // All pointer operations have runtime checks, even in release
     for i in 0..len {
         *dst.add(i) = *src.add(i)  // Each add/deref is checked
@@ -635,7 +634,7 @@ const ptr = unsafe { alloc(size) }
 ### Safe Wrapper for C String
 ```rask
 public struct CString {
-    ptr: *mut u8,
+    ptr: *u8,
     len: usize,
 }
 
@@ -663,7 +662,7 @@ extend CString {
 ### Unchecked Array Access
 ```rask
 struct FastBuffer<T> {
-    data: *mut T,
+    data: *T,
     len: usize,
 }
 

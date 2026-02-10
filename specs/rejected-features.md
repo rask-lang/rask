@@ -57,7 +57,7 @@ Right now `const value = try some_operation()` tells you it can fail. With effec
 
 ### What I chose instead
 
-Result types for errors. `Multitasking` for async I/O (tasks pause automatically). `ensure` blocks for cleanup. Function parameters or `with` clauses for context. `Shared<T>` for shared state.
+Result types for errors. `with Multitasking { }` for async I/O (tasks pause automatically). `ensure` blocks for cleanup. Function parameters or `with` clauses for context. `Shared<T>` for shared state.
 
 More verbose in places, but every cost is visible and every path is local. Effects give you less ceremony—I chose transparency. More `try` keywords in error-heavy code, but errors should be visible.
 
@@ -208,8 +208,9 @@ func fetch() -> Data or Error {
 const data = try fetch()
 
 // Works in async context (pauses task)
-const scheduler = Multitasking.new()
-const data = try fetch()
+with Multitasking {
+    const data = try fetch()
+}
 ```
 
 Same function. Same signature. Runtime decides execution strategy.
@@ -253,12 +254,13 @@ func main() {
 
 // Async mode - pauses task
 func main() {
-    const scheduler = Multitasking.new()
-    spawn { fetch_user(42) }.detach()
+    with Multitasking {
+        spawn { fetch_user(42) }.detach()
+    }
 }
 ```
 
-`http_get()` checks the runtime context internally. If we're in a multitasking context, it issues non-blocking I/O and yields the task. Otherwise, it blocks. The function signature doesn't change—the execution strategy does.
+`http_get()` checks the runtime context internally. If we're in a `Multitasking` context, it issues non-blocking I/O and yields the task. Otherwise, it blocks. The function signature doesn't change—the execution strategy does.
 
 ### The Transparency Tradeoff
 
@@ -268,9 +270,9 @@ Does this violate transparency? Yes and no.
 
 **What's hidden:** Pause points aren't in the code (unless you use IDE annotations).
 
-**What's visible:** The `Multitasking.new()` at the top tells you I/O will pause. You know the execution model upfront.
+**What's visible:** The `with Multitasking { }` at the top tells you I/O will pause. You know the execution model upfront.
 
-**Why I chose this:** Function coloring is worse than implicit pausing. Async/await's ecosystem split, library duplication, and ceremony tax outweigh the benefit of explicit `.await`. Transparency of cost doesn't mean every small cost needs ceremony—I want major architecture decisions visible (spawn, threading, multitasking), not every I/O call annotated.
+**Why I chose this:** Function coloring is worse than implicit pausing. Async/await's ecosystem split, library duplication, and ceremony tax outweigh the benefit of explicit `.await`. Transparency of cost doesn't mean every small cost needs ceremony—I want major architecture decisions visible (spawn, threading, `Multitasking`), not every I/O call annotated.
 
 Plus, IDEs can show pause points as ghost annotations. The information is available without syntax.
 
@@ -298,7 +300,7 @@ const result = parse(data)           // (no marker)
 func main() {
     for i in 0..10000 {
         const data = try http_get(url)
-        // ⚠️ I/O in loop without multitasking (will block thread 10k times)
+        // ⚠️ I/O in loop without Multitasking (will block thread 10k times)
     }
 }
 ```
@@ -389,4 +391,4 @@ Common thread: I optimize for transparency and local reasoning, but not at the c
 
 Not a judgment on other languages—Kotlin, Erlang, OCaml, Rust made different tradeoffs for different goals. Those features work well in their contexts.
 
-I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural. But "visible" doesn't mean "ceremony"—major decisions like `Multitasking.new()` are in the code, while pause points can be shown by IDEs. The features I rejected would either add ceremony without value (async/await, lifetimes) or hide costs through magic (effects, exceptions, supervision). Rask is explicit where it matters, simple where it doesn't.
+I'm targeting systems programming where costs must be visible, analysis must be local, safety must be structural. But "visible" doesn't mean "ceremony"—major decisions like `with Multitasking { }` are in the code, while pause points can be shown by IDEs. The features I rejected would either add ceremony without value (async/await, lifetimes) or hide costs through magic (effects, exceptions, supervision). Rask is explicit where it matters, simple where it doesn't.

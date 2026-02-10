@@ -137,7 +137,7 @@ impl Resolver {
         let null_sym = self.symbols.insert(
             "null".to_string(),
             SymbolKind::Variable { mutable: false },
-            Some("*mut ()".to_string()),
+            Some("*()".to_string()),
             Span::new(0, 0),
             true,
         );

@@ -62,7 +62,7 @@ extern "C" struct sqlite3
 extern "C" {
     func open(path: *u8, flags: c_int) -> c_int
     func close(fd: c_int) -> c_int
-    func read(fd: c_int, buf: *mut void, count: c_size) -> c_ssize
+    func read(fd: c_int, buf: *void, count: c_size) -> c_ssize
 }
 ```
 
@@ -223,7 +223,7 @@ warning: skipping macro `CONTAINER_OF` (uses token pasting)
 **C-compatible types:**
 - Primitives: `i8`-`i64`, `u8`-`u64`, `f32`, `f64`, `bool`
 - C-specific: `c_int`, `c_long`, `c_size`, `c_char` (platform-dependent sizes)
-- Pointers: `*T`, `*mut T`
+- Pointers: `*T` (read/write access)
 - `extern "C" struct` with only C-compatible fields
 
 **Not C-compatible:**

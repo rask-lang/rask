@@ -295,8 +295,8 @@ with strings {
 
 **Vec ↔ C:**
 ```rask
-vec.as_ptr() -> *const T       // unsafe
-vec.as_mut_ptr() -> *mut T     // unsafe
+vec.as_ptr() -> *T             // unsafe (immutable access)
+vec.as_mut_ptr() -> *T         // unsafe (mutable access)
 Vec.from_raw_parts(ptr, len, cap) -> Vec<T>  // unsafe
 ```
 

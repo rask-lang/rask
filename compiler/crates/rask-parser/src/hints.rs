@@ -60,7 +60,6 @@ pub fn for_expected(expected: &str, found: &TokenKind) -> Option<&'static str> {
 
         // Array/pointer type hints
         ("array size (number or name)", _) => Some("array size must be a number or const name"),
-        ("'const' or 'mut' after '*' in pointer type", _) => Some("raw pointers need *const or *mut"),
 
         // Statement terminator
         ("newline or ';'", _) => Some("end statements with a newline or ';'"),
