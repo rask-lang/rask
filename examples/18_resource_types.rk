@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Linear resources with @resource and ensure
+import fs
 
 // Linear resource must be explicitly consumed
 @resource
@@ -127,9 +128,11 @@ func manual_close() {
 
 func demonstrate_file_resources() -> () or string {
     // File handles are also linear resources
-    const file = try fs.open("test.txt")
-    ensure file.close()
-
+    const file = try fs.open("test.txt", "w+")
+    ensure {
+        file.close()
+        fs.delete("test.txt")  // Clean up the file after use
+    }
     // Use the file
     const content = try file.read_text()
     print("File content: ")
