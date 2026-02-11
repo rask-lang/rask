@@ -1,70 +1,208 @@
-# Solution: Atomics and Memory Ordering
+<!-- id: mem.atomics -->
+<!-- status: decided -->
+<!-- summary: Safe atomic types with explicit memory ordering; no unsafe needed for atomic operations -->
+<!-- depends: memory/unsafe.md, concurrency/sync.md -->
+<!-- implemented-by: compiler/crates/rask-types/ -->
 
-## The Question
-How does Rask provide low-level synchronization primitives for lock-free data structures, concurrent counters, and hardware interaction—while maintaining safety and transparency?
+# Atomics
 
-## Decision
-Atomic types provide safe, data-race-free shared memory access with explicit memory ordering. Operations are **safe** (no `unsafe` needed) because atomics handle synchronization internally. Memory orderings follow C11/C++11—well-understood, maps efficiently to all major CPUs.
+Atomic types provide safe, data-race-free shared memory access with explicit memory ordering.
 
-## Rationale
-1. **Mechanical Correctness:** Atomics eliminate data races by construction—the type system prevents non-atomic access.
+## Core Rules
 
-2. **Transparency:** Memory orderings are explicit in every operation. No hidden costs. You see what you pay for.
+| Rule | Description |
+|------|-------------|
+| **AT1: Safe operations** | All atomic load/store/swap/CAS/fetch operations are safe — no `unsafe` needed |
+| **AT2: Explicit ordering** | Every operation requires a memory ordering parameter |
+| **AT3: Not Copy** | Atomic types are not `Copy` or `Clone` (prevents accidental non-atomic copies) |
+| **AT4: Interior mutability** | Operations through shared reference (`&AtomicT`) — the atomic handles synchronization |
+| **AT5: Wrapping arithmetic** | Fetch operations wrap on overflow. No panic, no undefined behavior |
+| **AT6: Ordering constraints** | CAS failure ordering must be no stronger than success ordering, and must not be `Release` or `AcqRel` |
+| **AT7: Platform-dependent types** | 128-bit and float atomics require hardware support; code must not compile on unsupported platforms |
 
-3. **Use Case Coverage:** Lock-free algorithms, reference counting, metrics, flags, spin locks—essential for embedded, kernels, high-performance servers.
-
-4. **Safe by default:** Unlike raw pointers, atomics can't cause data races when used correctly. Danger is in logic, not memory safety.
-
-5. **Explicit escape hatch:** CORE_DESIGN says "no shared mutable memory between tasks"—atomics are the explicit, transparent mechanism when you genuinely need it. Cost is visible: every operation needs an ordering parameter.
-
-## Specification
-
-### Atomic Types
+## Atomic Types
 
 | Type | Size | Description |
 |------|------|-------------|
 | `AtomicBool` | 1 byte | Boolean flag |
-| `AtomicI8` | 1 byte | Signed 8-bit |
-| `AtomicI16` | 2 bytes | Signed 16-bit |
-| `AtomicI32` | 4 bytes | Signed 32-bit |
-| `AtomicI64` | 8 bytes | Signed 64-bit |
-| `AtomicU8` | 1 byte | Unsigned 8-bit |
-| `AtomicU16` | 2 bytes | Unsigned 16-bit |
-| `AtomicU32` | 4 bytes | Unsigned 32-bit |
-| `AtomicU64` | 8 bytes | Unsigned 64-bit |
-| `AtomicUsize` | Pointer-size | Unsigned pointer-sized |
-| `AtomicIsize` | Pointer-size | Signed pointer-sized |
+| `AtomicI8` / `AtomicU8` | 1 byte | 8-bit integer |
+| `AtomicI16` / `AtomicU16` | 2 bytes | 16-bit integer |
+| `AtomicI32` / `AtomicU32` | 4 bytes | 32-bit integer |
+| `AtomicI64` / `AtomicU64` | 8 bytes | 64-bit integer |
+| `AtomicUsize` / `AtomicIsize` | Pointer-size | Pointer-sized integer |
 | `AtomicPtr<T>` | Pointer-size | Raw pointer to T |
 
-**Type properties:**
+**Properties:**
 
 | Property | Value |
 |----------|-------|
-| `Sync` | All atomic types implement `Sync` (safe to share across threads) |
-| `Send` | All atomic types implement `Send` (safe to transfer across threads) |
-| Copy | Atomic types are NOT `Copy` (prevent accidental non-atomic copies) |
-| Clone | Atomic types do NOT implement `Clone` |
-| Interior mutability | Atomic operations through shared reference (`&AtomicT`) |
+| `Sync` | Yes — safe to share across threads |
+| `Send` | Yes — safe to transfer across threads |
+| `Copy` / `Clone` | No (AT3) |
+| Interior mutability | Yes (AT4) |
+| Alignment | Aligned to type size (e.g. `AtomicI32` = 4-byte aligned) |
 
-**Platform support:**
+`AtomicI64` / `AtomicU64` may be emulated (slower) on 32-bit platforms. All others are native everywhere.
 
-| Type | 32-bit platforms | 64-bit platforms |
-|------|------------------|------------------|
-| `AtomicI64`, `AtomicU64` | May be emulated (slower) | Native |
-| All others | Native | Native |
+## Memory Orderings
 
-**Alignment:** Atomic types are aligned to their size (e.g., `AtomicI32` is 4-byte aligned).
+| Ordering | Description | Use Case |
+|----------|-------------|----------|
+| `Relaxed` | No synchronization. Only atomicity guaranteed. | Counters, statistics |
+| `Acquire` | Subsequent reads/writes cannot be reordered before this load. | Lock acquisition |
+| `Release` | Previous reads/writes cannot be reordered after this store. | Lock release, publishing data |
+| `AcqRel` | Both Acquire and Release. | Read-modify-write in lock |
+| `SeqCst` | Total ordering across all SeqCst operations. | When in doubt |
 
-### Extended Atomic Types (Platform-Dependent)
+**Valid orderings per operation type:**
 
-These types are only available on platforms with native hardware support. Code using them MUST NOT compile on unsupported platforms.
+| Operation Type | Valid Orderings |
+|----------------|-----------------|
+| Load | `Relaxed`, `Acquire`, `SeqCst` |
+| Store | `Relaxed`, `Release`, `SeqCst` |
+| Read-modify-write | All orderings |
+| Compare-exchange | Success and failure orderings (AT6: failure ≤ success) |
+
+**Mental model:** Release-Acquire forms a "happens-before" relationship. All writes before the Release are visible after the Acquire.
+
+<!-- test: skip -->
+```rask
+// Thread A (producer):          Thread B (consumer):
+//   data = 42                     while !ready.load(Acquire) {}
+//   ready.store(true, Release)    print(data)  // guaranteed to see 42
+```
+
+## Operations
+
+### Construction
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `new(v)` | `T -> AtomicT` | Create atomic with initial value |
+| `default()` | `() -> AtomicT` | Create atomic with default value (0, false, null) |
+
+<!-- test: skip -->
+```rask
+const counter = AtomicU64.new(0)
+const flag = AtomicBool.default()  // false
+```
+
+### Load, Store, Swap
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `load(order)` | `self, Ordering -> T` | Atomically read the value |
+| `store(v, order)` | `self, T, Ordering -> ()` | Atomically write the value |
+| `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
+
+`store` takes `self` (not `mutate self`) because atomics use interior mutability (AT4).
+
+<!-- test: skip -->
+```rask
+const value = counter.load(Relaxed)
+counter.store(100, Release)
+const old = counter.swap(new_value, AcqRel)
+```
+
+### Compare-and-Exchange
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or T` | If value == current, set to new. Ok(old) on success, Err(actual) on failure |
+| `compare_exchange_weak(current, new, success, fail)` | Same | May spuriously fail. Use in loops |
+
+- `compare_exchange`: Must succeed if value matches. Use for single-attempt operations.
+- `compare_exchange_weak`: May fail spuriously even if value matches. More efficient in loops on some architectures.
+
+<!-- test: skip -->
+```rask
+loop {
+    const current = counter.load(Relaxed)
+    if current >= threshold {
+        break
+    }
+    match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
+        Ok(_) => break,
+        Err(_) => continue,
+    }
+}
+```
+
+### Fetch Operations (Integers Only)
+
+All fetch operations return the OLD value (AT5: wrapping on overflow).
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `fetch_add(v, order)` | `self, T, Ordering -> T` | Add |
+| `fetch_sub(v, order)` | `self, T, Ordering -> T` | Subtract |
+| `fetch_and(v, order)` | `self, T, Ordering -> T` | Bitwise AND |
+| `fetch_or(v, order)` | `self, T, Ordering -> T` | Bitwise OR |
+| `fetch_xor(v, order)` | `self, T, Ordering -> T` | Bitwise XOR |
+| `fetch_nand(v, order)` | `self, T, Ordering -> T` | Bitwise NAND |
+| `fetch_max(v, order)` | `self, T, Ordering -> T` | Max |
+| `fetch_min(v, order)` | `self, T, Ordering -> T` | Min |
+
+`AtomicBool` supports `fetch_and`, `fetch_or`, `fetch_xor`, `fetch_nand` with `bool` operands.
+
+### AtomicPtr Operations
+
+`AtomicPtr<T>` stores a raw pointer `*T`. Supports `new`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`.
+
+Dereferencing the loaded pointer requires `unsafe` (AT1 applies to the atomic operation itself, not the pointer):
+
+<!-- test: skip -->
+```rask
+const ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
+unsafe {
+    const value = *ptr  // Unsafe: dereferencing raw pointer
+}
+```
+
+### Non-Atomic Access
+
+| Operation | Signature | Description |
+|-----------|-----------|-------------|
+| `get_mut()` | `self -> *T` | Get raw pointer to inner value (unsafe to dereference) |
+| `into_inner()` | `take self -> T` | Consume atomic, return inner value |
+
+`into_inner` is safe because `take self` guarantees exclusive ownership.
+
+<!-- test: skip -->
+```rask
+let counter = AtomicU64.new(0)
+const final_value = counter.into_inner()
+```
+
+## Memory Fences
+
+Fences enforce ordering without an atomic variable.
+
+| Operation | Description |
+|-----------|-------------|
+| `fence(Acquire)` | All subsequent reads/writes cannot be reordered before this fence |
+| `fence(Release)` | All previous reads/writes cannot be reordered after this fence |
+| `fence(AcqRel)` | Both Acquire and Release |
+| `fence(SeqCst)` | Full memory barrier |
+| `compiler_fence(order)` | Prevents compiler reordering only (no CPU barrier) |
+
+`compiler_fence` is for signal handlers, memory-mapped I/O, or when hardware provides ordering guarantees.
+
+<!-- test: skip -->
+```rask
+data = 42
+fence(Release)
+ready.store(true, Relaxed)  // Relaxed is sufficient after fence
+```
+
+## Extended Atomic Types (Platform-Dependent)
+
+Per AT7, these only compile on platforms with native hardware support.
 
 | Type | Size | Availability |
 |------|------|--------------|
-| `AtomicI128` | 16 bytes | x86-64, ARM64 |
-| `AtomicU128` | 16 bytes | x86-64, ARM64 |
-| `AtomicF32` | 4 bytes | Most platforms |
-| `AtomicF64` | 8 bytes | Most platforms |
+| `AtomicI128` / `AtomicU128` | 16 bytes | x86-64, ARM64 |
+| `AtomicF32` / `AtomicF64` | 4 / 8 bytes | Most platforms |
 
 **Platform detection:**
 
@@ -73,34 +211,26 @@ These types are only available on platforms with native hardware support. Code u
 | `target.has_atomic128` | `comptime bool` | 128-bit atomics available |
 | `target.has_atomic_float` | `comptime bool` | Floating-point atomics available |
 
-**Conditional usage:**
-
+<!-- test: skip -->
 ```rask
 comptime if target.has_atomic128 {
     static TAGGED_PTR: AtomicU128 = AtomicU128.new(0)
 } else {
-    // Alternative implementation using locks
     static TAGGED_PTR: Mutex<u128> = Mutex.new(0)
 }
 ```
 
-**Rationale:** Lock-based emulation of 128-bit atomics is 10x slower than native support. Hiding this cost would violate Transparency (TC >= 0.90). Compile-time detection allows library authors to provide both paths explicitly.
+### AtomicU128 / AtomicI128
 
-#### AtomicU128 / AtomicI128
-
-**Alignment:** MUST be 16-byte aligned. Unaligned access is UB on x86-64 (`CMPXCHG16B` requirement).
-
-**Operations:** Same as integer atomics—`new`, `default`, `load`, `store`, `swap`, `compare_exchange`, `compare_exchange_weak`, `fetch_add`, `fetch_sub`, `fetch_and`, `fetch_or`, `fetch_xor`, `fetch_nand`, `fetch_max`, `fetch_min`, `into_inner`.
-
-**Platform implementation:**
+Must be 16-byte aligned (unaligned access is UB on x86-64 `CMPXCHG16B`). Same operations as integer atomics.
 
 | Platform | Implementation |
 |----------|----------------|
-| x86-64 | `CMPXCHG16B` (requires `cx16` CPU feature, standard since ~2008) |
-| ARM64 | `LDXP`/`STXP` pair or `CASP` (ARMv8.1+) |
+| x86-64 | `CMPXCHG16B` (requires `cx16`, standard since ~2008) |
+| ARM64 | `LDXP`/`STXP` or `CASP` (ARMv8.1+) |
 | Others | Compile error |
 
-#### AtomicF32 / AtomicF64
+### AtomicF32 / AtomicF64
 
 Floating-point atomics support a subset of operations:
 
@@ -111,186 +241,73 @@ Floating-point atomics support a subset of operations:
 | `fetch_add`, `fetch_sub` | Yes | Floating-point arithmetic |
 | `fetch_max`, `fetch_min` | Yes | IEEE comparison |
 | Bitwise operations | No | No `fetch_and`, `fetch_or`, etc. |
-| `into_inner` | Yes | |
 
-**Comparison semantics:** `compare_exchange` uses **bitwise equality**, not IEEE equality:
-- `NaN == NaN` is true (same bit pattern)
-- `+0.0 != -0.0` (different bit patterns)
+`compare_exchange` uses **bitwise equality**: `NaN == NaN` (same bit pattern), `+0.0 != -0.0` (different bit patterns). This matches C++20 `atomic<float>` and is required for correctness in CAS loops.
 
-This matches C++20 `atomic<float>` and is required for correctness in CAS loops.
+## Error Messages
 
-### Memory Orderings
+```
+ERROR [mem.atomics/AT2]: missing memory ordering
+   |
+12 |  counter.fetch_add(1)
+   |  ^^^^^^^^^^^^^^^^^^^^ atomic operations require an explicit ordering parameter
 
-Memory orderings control how atomic operations synchronize with other memory accesses:
-
-| Ordering | Description | Use Case |
-|----------|-------------|----------|
-| `Relaxed` | No synchronization. Only atomicity guaranteed. | Counters, statistics |
-| `Acquire` | Subsequent reads/writes cannot be reordered before this load. | Lock acquisition |
-| `Release` | Previous reads/writes cannot be reordered after this store. | Lock release, publishing data |
-| `AcqRel` | Both Acquire and Release. | Read-modify-write in lock |
-| `SeqCst` | Total ordering across all SeqCst operations. | When in doubt, simple mental model |
-
-**Ordering rules:**
-
-| Operation Type | Valid Orderings |
-|----------------|-----------------|
-| Load | `Relaxed`, `Acquire`, `SeqCst` |
-| Store | `Relaxed`, `Release`, `SeqCst` |
-| Read-modify-write | All orderings |
-| Compare-exchange | Success and failure orderings (failure ≤ success) |
-
-**Mental model:**
-
-```rask
-Thread A (producer):         Thread B (consumer):
-  data = 42                    while !ready.load(Acquire) {}
-  ready.store(true, Release)   print(data)  // guaranteed to see 42
+FIX: counter.fetch_add(1, Relaxed)
 ```
 
-Release-Acquire forms a "happens-before" relationship. All writes before the Release are visible after the Acquire.
+```
+ERROR [mem.atomics/AT6]: invalid failure ordering for compare_exchange
+   |
+8  |  x.compare_exchange(old, new, Acquire, AcqRel)
+   |                                        ^^^^^^ failure ordering must be ≤ success ordering
 
-### Atomic Operations
+WHY: Failure ordering cannot be Release or AcqRel, and cannot be stronger than success ordering.
 
-#### Construction
-
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `new(v)` | `T -> AtomicT` | Create atomic with initial value |
-| `default()` | `() -> AtomicT` | Create atomic with default value (0, false, null) |
-
-```rask
-const counter = AtomicU64.new(0)
-const flag = AtomicBool.default()  // false
+FIX: x.compare_exchange(old, new, Acquire, Relaxed)
 ```
 
-#### Load and Store
+```
+ERROR [mem.atomics/AT7]: AtomicU128 not available on this platform
+   |
+3  |  static COUNTER: AtomicU128 = AtomicU128.new(0)
+   |                  ^^^^^^^^^^ requires native 128-bit atomic support
 
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `load(order)` | `self, Ordering -> T` | Atomically read the value |
-| `store(v, order)` | `self, T, Ordering -> ()` | Atomically write the value |
+WHY: Lock-based emulation would hide a 10x cost, violating transparency.
 
-**Note:** `store` takes `self` because atomics use interior mutability—the atomic handles synchronization internally.
-
-```rask
-const value = counter.load(Relaxed)
-counter.store(100, Release)
+FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 ```
 
-#### Exchange
+## Edge Cases
 
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `swap(v, order)` | `self, T, Ordering -> T` | Atomically replace, return old value |
+| Case | Rule | Handling |
+|------|------|----------|
+| CAS failure ordering > success ordering | AT6 | Compile error |
+| `Release` ordering on load | AT2 | Compile error (invalid for loads) |
+| `Acquire` ordering on store | AT2 | Compile error (invalid for stores) |
+| Mixing atomic and non-atomic access to same location | — | Undefined behavior |
+| Overflow on `fetch_add` | AT5 | Wraps (no panic) |
+| `AtomicPtr.load` then deref | AT1 | Load is safe; deref requires `unsafe` |
+| `into_inner` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
+| Atomics at comptime | — | Not available (no meaningful semantics without threads) |
+| Atomic statics | AT1 | Safe to access from multiple threads without `unsafe` |
 
-```rask
-const old = counter.swap(new_value, AcqRel)
-```
+---
 
-#### Compare-and-Exchange
+## Appendix (non-normative)
 
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `compare_exchange(current, new, success, fail)` | `self, T, T, Ordering, Ordering -> T or T` | If value == current, set to new. Returns Ok(old) on success, Err(actual) on failure. |
-| `compare_exchange_weak(current, new, success, fail)` | Same | MAY spuriously fail. Use in loops. |
+### Rationale
 
-**Compare-exchange ordering constraint:** `failure_order` MUST be no stronger than `success_order`, and MUST NOT be `Release` or `AcqRel`.
+**AT1 (safe operations):** Atomic operations can't cause data races — the hardware guarantees atomicity. The type system prevents mixing atomic and non-atomic access. Logical errors (ABA, incorrect ordering) are possible but don't violate memory safety.
 
-```rask
-// Increment if below threshold
-loop {
-    const current = counter.load(Relaxed)
-    if current >= threshold {
-        break
-    }
-    match counter.compare_exchange_weak(current, current + 1, AcqRel, Relaxed) {
-        Ok(_) => break,
-        Err(_) => continue,  // Retry
-    }
-}
-```
+**AT2 (explicit ordering):** CORE_DESIGN says "no shared mutable memory between tasks" — atomics are the explicit escape hatch when you genuinely need it. Making ordering explicit keeps the cost visible.
 
-**Strong vs Weak:**
-- `compare_exchange`: MUST succeed if value matches. Use for single-attempt operations.
-- `compare_exchange_weak`: MAY fail spuriously even if value matches. More efficient in loops on some architectures.
+**AT7 (platform-dependent):** Lock-based emulation of 128-bit atomics is 10x slower than native support. Hiding this cost would violate transparency. Compile-time detection lets library authors provide both paths.
 
-#### Fetch Operations (Integers Only)
+**C interop:** Atomic types are ABI-compatible with C11 `_Atomic` types and C++ `std::atomic`.
 
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `fetch_add(v, order)` | `self, T, Ordering -> T` | Add and return OLD value |
-| `fetch_sub(v, order)` | `self, T, Ordering -> T` | Subtract and return OLD value |
-| `fetch_and(v, order)` | `self, T, Ordering -> T` | Bitwise AND and return OLD value |
-| `fetch_or(v, order)` | `self, T, Ordering -> T` | Bitwise OR and return OLD value |
-| `fetch_xor(v, order)` | `self, T, Ordering -> T` | Bitwise XOR and return OLD value |
-| `fetch_nand(v, order)` | `self, T, Ordering -> T` | Bitwise NAND and return OLD value |
-| `fetch_max(v, order)` | `self, T, Ordering -> T` | Max and return OLD value |
-| `fetch_min(v, order)` | `self, T, Ordering -> T` | Min and return OLD value |
+### Patterns & Guidance
 
-```rask
-const old_count = counter.fetch_add(1, Relaxed)
-```
-
-**Wrapping:** Fetch operations MUST wrap on overflow (like `Wrapping<T>` arithmetic). No panic, no undefined behavior.
-
-#### AtomicBool Operations
-
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `fetch_and(v, order)` | `self, bool, Ordering -> bool` | AND and return OLD |
-| `fetch_or(v, order)` | `self, bool, Ordering -> bool` | OR and return OLD |
-| `fetch_xor(v, order)` | `self, bool, Ordering -> bool` | XOR and return OLD |
-| `fetch_nand(v, order)` | `self, bool, Ordering -> bool` | NAND and return OLD |
-
-#### AtomicPtr Operations
-
-`AtomicPtr<T>` stores a raw pointer `*T`:
-
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `new(ptr)` | `*T -> AtomicPtr<T>` | Create from raw pointer |
-| `load(order)` | `self, Ordering -> *T` | Load pointer |
-| `store(ptr, order)` | `self, *T, Ordering -> ()` | Store pointer |
-| `swap(ptr, order)` | `self, *T, Ordering -> *T` | Swap pointer |
-| `compare_exchange(...)` | Same as integers | CAS on pointer |
-
-**Dereferencing the loaded pointer requires unsafe:**
-
-```rask
-const ptr = atomic_ptr.load(Acquire)  // Safe: just a pointer value
-unsafe {
-    const value = *ptr  // Unsafe: dereferencing raw pointer
-}
-```
-
-### Memory Fences
-
-Fences enforce ordering without an atomic variable:
-
-| Operation | Description |
-|-----------|-------------|
-| `fence(Acquire)` | All subsequent reads/writes cannot be reordered before this fence |
-| `fence(Release)` | All previous reads/writes cannot be reordered after this fence |
-| `fence(AcqRel)` | Both Acquire and Release |
-| `fence(SeqCst)` | Full memory barrier |
-
-```rask
-// Using fence instead of Release store
-data = 42
-fence(Release)
-ready.store(true, Relaxed)  // Relaxed is now sufficient
-```
-
-**Compiler fence (no CPU barrier):**
-
-| Operation | Description |
-|-----------|-------------|
-| `compiler_fence(order)` | Prevents compiler reordering only |
-
-Use for signal handlers, memory-mapped I/O, or when you know hardware provides ordering.
-
-### Ordering Guidelines
+**Ordering selection:**
 
 | Scenario | Recommended Ordering |
 |----------|---------------------|
@@ -303,59 +320,35 @@ Use for signal handlers, memory-mapped I/O, or when you know hardware provides o
 | Unknown / unsure | `SeqCst` (safest, may be slower) |
 
 **Performance hierarchy (fastest to slowest):**
+
+<!-- test: skip -->
 ```rask
-Relaxed < Acquire = Release < AcqRel < SeqCst
+// Relaxed < Acquire = Release < AcqRel < SeqCst
 ```
 
 On x86, `Relaxed`, `Acquire`, and `Release` are typically free (x86 has strong ordering). On ARM/RISC-V, weaker orderings can be significantly faster.
 
-### Safe vs Unsafe
+### Examples
 
-**Safe operations (no `unsafe` required):**
-- All atomic type operations (load, store, swap, CAS, fetch_*)
-- Memory fences
+**Simple counter:**
 
-**Unsafe operations:**
-- Dereferencing `AtomicPtr<T>.load()` result REQUIRES unsafe
-- Converting raw pointers to/from `AtomicPtr` values REQUIRES unsafe for the pointer operations
-
-**Rationale:** Atomic operations CANNOT cause data races—the hardware guarantees atomicity. The type system prevents mixing atomic and non-atomic access to atomic values. Logical errors (ABA problem, incorrect ordering) are possible but do NOT violate memory safety.
-
-### Non-Atomic Access
-
-Getting the inner value when you have exclusive ownership:
-
-| Operation | Signature | Description |
-|-----------|-----------|-------------|
-| `get_mut()` | `self -> *T` | Get raw pointer to inner value (unsafe to dereference) |
-| `into_inner()` | `take self -> T` | Consume atomic, return inner value |
-
-```rask
-letcounter = AtomicU64.new(0)
-const final_value = counter.into_inner()  // Consume and extract
-```
-
-`into_inner` is safe because `take self` guarantees exclusive ownership—no other tasks can access the atomic.
-
-## Examples
-
-### Simple Counter
-
+<!-- test: skip -->
 ```rask
 static REQUESTS: AtomicU64 = AtomicU64.new(0)
 
 func handle_request(req: Request) {
-    REQUESTS.fetch_add(1, Relaxed)  // No ordering needed for stats
+    REQUESTS.fetch_add(1, Relaxed)
     // ... process request
 }
 
 func get_stats() -> u64 {
-    REQUESTS.load(Relaxed)
+    return REQUESTS.load(Relaxed)
 }
 ```
 
-### Flag for Signaling
+**Flag for signaling:**
 
+<!-- test: skip -->
 ```rask
 static SHUTDOWN: AtomicBool = AtomicBool.new(false)
 
@@ -370,8 +363,9 @@ func request_shutdown() {
 }
 ```
 
-### Bounded Counter (CAS Loop)
+**Bounded counter (CAS loop):**
 
+<!-- test: skip -->
 ```rask
 func increment_if_below(counter: AtomicU64, max: u64) -> bool {
     loop {
@@ -387,48 +381,42 @@ func increment_if_below(counter: AtomicU64, max: u64) -> bool {
 }
 ```
 
-### Reference Counting Pattern
+**Reference counting (sketch):**
 
-This sketch shows how atomics enable reference counting. Actual `Arc<T>` implementation uses raw pointers internally:
-
+<!-- test: skip -->
 ```rask
-// Conceptual structure (uses raw pointers internally)
 struct ArcInner<T> {
     count: AtomicUsize,
     value: T,
 }
 
-// Clone increments count
 func arc_clone<T>(ptr: *ArcInner<T>) -> *ArcInner<T> {
     unsafe {
-        (*ptr).count.fetch_add(1, Relaxed)  // Relaxed: already have access
+        (*ptr).count.fetch_add(1, Relaxed)
     }
-    ptr
+    return ptr
 }
 
-// Drop decrements count, frees if zero
 func arc_drop<T>(ptr: *ArcInner<T>) {
     unsafe {
-        // AcqRel: synchronize with other drops
         if (*ptr).count.fetch_sub(1, AcqRel) == 1 {
-            fence(Acquire)  // See all writes before freeing
+            fence(Acquire)
             dealloc(ptr)
         }
     }
 }
 ```
 
-### Spin Lock Pattern
+**Spin lock (sketch):**
 
-This sketch shows how atomics enable spin locks. The actual stdlib implementation wraps this in a safe API:
-
+<!-- test: skip -->
 ```rask
 struct SpinLockInner<T> {
     locked: AtomicBool,
-    data: T,  // Access requires holding lock
+    data: T,
 }
 
-func spin_acquire(lock: *SpinLockInner<T>) {
+func spin_acquire<T>(lock: *SpinLockInner<T>) {
     unsafe {
         while (*lock).locked.compare_exchange_weak(
             false, true, Acquire, Relaxed
@@ -440,40 +428,17 @@ func spin_acquire(lock: *SpinLockInner<T>) {
     }
 }
 
-func spin_release(lock: *SpinLockInner<T>) {
+func spin_release<T>(lock: *SpinLockInner<T>) {
     unsafe {
         (*lock).locked.store(false, Release)
     }
 }
 ```
 
-**Note:** These patterns use raw pointers and unsafe blocks. The stdlib provides safe wrappers (e.g., `Mutex<T>`, `Arc<T>`) that encapsulate the unsafe implementation.
+These patterns use raw pointers and unsafe blocks. The stdlib provides safe wrappers (`Mutex<T>`, `Arc<T>`) that encapsulate the unsafe implementation.
 
-## Integration Notes
+### See Also
 
-- **Unsafe:** Atomic operations are safe. Dereferencing `AtomicPtr` results REQUIRES unsafe.
-- **Concurrency:** Atomics are the primitive for building higher-level synchronization (Mutex, RwLock, channels use atomics internally). Per CORE_DESIGN "No shared mutable memory between tasks"—atomics are the explicit escape hatch when cross-task state is genuinely needed.
-- **Memory Model:** Data races on non-atomic locations are UB. Atomics provide defined behavior for concurrent access. Mixing atomic and non-atomic access to the same location is UB.
-- **Statics:** Atomic statics (`static COUNTER: AtomicU64`) MAY be safely accessed from multiple threads without `unsafe`.
-- **Comptime:** Atomics are NOT available at compile time (no meaningful semantics without threads).
-- **Generics:** Generic code MAY require `T: Sync` to accept atomic types.
-- **C Interop:** Atomic types are ABI-compatible with C11 `_Atomic` types and C++ `std::atomic`.
-- **No Storable References:** Rask's "no storable references" principle still applies. Lock guards and similar patterns use expression-scoped access or closure-based APIs, not stored references to lock state.
-
----
-
-## Remaining Issues
-
-### Low Priority
-
-1. **Wait/wake primitives** — Futex-like operations (`wait`, `wake`) for efficient blocking. Currently must use OS primitives. Could be standardized.
-
-2. **Consume ordering** — C11 has `memory_order_consume` but compilers treat it as `Acquire`. Omitted for now.
-
-3. **Seqlock pattern** — Common read-heavy pattern. Consider library support or documentation.
-
-## See Also
-
-- [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data
-- [Concurrency](../concurrency/async.md) — Channels and task spawning
-- [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results
+- [Synchronization Primitives](../concurrency/sync.md) — `Mutex<T>`, `Shared<T>` for compound data (`conc.sync`)
+- [Concurrency](../concurrency/async.md) — Channels and task spawning (`conc.async`)
+- [Unsafe](unsafe.md) — Raw pointer dereferencing for `AtomicPtr` results (`mem.unsafe`)
