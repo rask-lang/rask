@@ -154,7 +154,7 @@ func render_frame(world: GameWorld) {
 <!-- test: skip -->
 ```rask
 func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
-    with ThreadPool
+    using ThreadPool
 {
     const (snapshot, _) = world.entities.snapshot()
     const mesh_snap = world.meshes.freeze_ref()

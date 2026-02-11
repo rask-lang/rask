@@ -185,14 +185,6 @@ with pool[h1] as e1, pool[h2] as e2 {
 | **W5: Mutable bindings** | Bindings are mutable (can assign to fields) |
 | **W6: Value production** | Block can produce a value (last expression) |
 
-**Disambiguation from other `with` forms:**
-
-| Syntax | Meaning |
-|--------|---------|
-| `func f() with ThreadPool` | Context clause (concurrency) |
-| `with context.allocator = arena { }` | Context override |
-| `with pool[h] as entity { }` | Element binding (has `as` keyword) |
-
 ## Field Projections for Partial Borrowing
 
 Borrowing a struct borrows all of it. Field projections (`Type.{field1, field2}`) borrow only specific fields.

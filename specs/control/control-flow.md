@@ -67,11 +67,21 @@ if error {
 | **CF9: Not exhaustive** | Unmatched patterns skip the block (not an error) |
 | **CF10: Combined conditions** | Bindings from `is` available after `&&` in same condition |
 | **CF11: Linear resources** | Non-Copy values moved into pattern; must handle both match/no-match paths |
+| **CF12: Implicit unwrap** | `if expr is Variant` (no binding) unwraps single-payload variant, reusing outer name |
 
 ```rask
-// Pattern match with binding
+// Pattern match with explicit binding
 if state is Connected(sock) {
     sock.send(data)
+}
+
+// Implicit unwrap for single-payload variants
+if user is Some {
+    process(user)  // user unwrapped, same name
+}
+
+if result is Ok {
+    use(result)  // result unwrapped
 }
 
 // Loop while pattern matches
@@ -89,9 +99,9 @@ if state is Connected(sock) && sock.is_ready() {
 
 | Rule | Description |
 |------|-------------|
-| **CF12: Diverging else** | `else` block must diverge (`return`, `break`, `panic`, etc.) |
-| **CF13: Binding escapes** | Successful match binds value to outer scope |
-| **CF14: Linear in else** | Pattern fails, value available in `else` for cleanup |
+| **CF13: Diverging else** | `else` block must diverge (`return`, `break`, `panic`, etc.) |
+| **CF14: Binding escapes** | Successful match binds value to outer scope |
+| **CF15: Linear in else** | Pattern fails, value available in `else` for cleanup |
 
 ```rask
 // Early return on error
@@ -290,9 +300,9 @@ FIX: Ensure all break expressions match:
   }
 ```
 
-**else block doesn't diverge [CF12]:**
+**else block doesn't diverge [CF13]:**
 ```
-ERROR [ctrl.flow/CF12]: else block must diverge
+ERROR [ctrl.flow/CF13]: else block must diverge
    |
 3  |  const x = opt is Some else { None }
    |                               ^^^^ doesn't diverge
@@ -307,7 +317,7 @@ FIX: Use if is instead:
 
 **Linear resource consumed only in one branch [CF11]:**
 ```
-ERROR [ctrl.flow/CF11]: linear resource may not be consumed
+ERROR [ctrl.flow/CF15]: linear resource may not be consumed
    |
 3  |  const file = open("data.txt")
    |               ---------------- resource created here
@@ -345,11 +355,13 @@ FIX: Consume in both branches or use ensure:
 
 **CF15 (break value):** `loop` with `break value` provides clear syntax for value-returning loops. The alternative (while with mutation, implicit last expression) is ambiguous and error-prone.
 
-**CF8/CF12 (pattern binding):** Two forms for two use cases:
+**CF8/CF13 (pattern binding):** Two forms for two use cases:
 - `if expr is Pattern(v) { ... }` — binding scoped to block, for conditional execution
-- `let v = expr is Pattern else { ... }` — binding escapes to outer scope, for early exit
+- `const v = expr is Pattern else { ... }` — binding escapes to outer scope, for early exit
 
-The diverging `else` requirement (CF12) ensures the binding is always valid after the statement.
+The diverging `else` requirement (CF13) ensures the binding is always valid after the statement.
+
+**CF12 (implicit unwrap):** For single-payload variants like `Some(T)` or `Ok(T)`, omitting the binding in `if x is Some` unwraps using the outer variable name. Reduces friction for the common case. Multi-field variants require explicit destructuring.
 
 **CF22-25 (labels):** Labels enable breaking/continuing outer loops without extra flags or state. The `label:` syntax is clear and unambiguous.
 
@@ -363,8 +375,7 @@ The diverging `else` requirement (CF12) ensures the binding is always valid afte
 | Value from multi-case enum | `const x = match e { ... }` | Exhaustive |
 | Value from repeated checks | `const x = loop { break ... }` | Clear exit |
 | Side effect conditional | `if c { f() }` | No value needed |
-| Check Option | `if opt?` | Concise |
-| Check other enum variant | `if x is Variant(v)` | Pattern match |
+| Check other enum variant | `if x is Variant` | Pattern match |
 | Early exit on error | `let v = x is Ok else { return }` | Guard |
 | Loop over iterator | `for x in iter` | Standard |
 | Loop until condition | `while cond { ... }` | Clear intent |

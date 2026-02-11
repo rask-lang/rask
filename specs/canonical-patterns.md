@@ -22,7 +22,7 @@ Function signatures carry a lot of information in Rask:
 
 ```rask
 func process(config: Config, take data: Vec<u8>) -> ProcessResult or IoError
-    with Pool<Node>
+    using Pool<Node>
 ```
 
 From this single line, a tool can determine:
@@ -336,22 +336,22 @@ See [concurrency/sync.md](concurrency/sync.md).
 
 ## Concurrency
 
-`spawn` for tasks, `with Multitasking { }` for the scheduler. No async/await.
+`spawn` for tasks, `using Multitasking { }` for the scheduler. No async/await.
 
 ```rask
 // Spawn and join
-with Multitasking {
+using Multitasking {
     const handle = spawn { fetch(url) }
     const result = try handle.join()
 }
 
 // Fire-and-forget
-with Multitasking {
+using Multitasking {
     spawn { log_event(event) }.detach()
 }
 
 // Parallel work with channels
-with Multitasking {
+using Multitasking {
     const ch = Channel.buffered(10)
 
     for url in urls {
@@ -369,7 +369,7 @@ with Multitasking {
 ```
 
 **Anti-patterns:**
-- Spawning without `with Multitasking` — tasks need a scheduler.
+- Spawning without `using Multitasking` — tasks need a scheduler.
 - Ignoring join handles — either `.join()` or `.detach()` explicitly.
 
 See [concurrency/async.md](concurrency/async.md), [concurrency/sync.md](concurrency/sync.md).
@@ -419,8 +419,9 @@ See [stdlib/fs.md](stdlib/fs.md), [stdlib/io.md](stdlib/io.md).
 
 ```rask
 // Single pattern check
-if result is Ok(value) {
-    use(value)
+// result is impliclty unwrapped
+if result is Ok {
+    use(result)
 }
 
 // Multiple branches
@@ -556,7 +557,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |
 | Build strings | `format()`, `string_builder` |
 | Share state | `Shared<T>`, channels |
-| Run concurrently | `spawn`, `with Multitasking { }` |
+| Run concurrently | `spawn`, `using Multitasking { }` |
 | Do I/O | `fs.read_file`, `fs.open` + `ensure close` |
 | Match patterns | `if x is` (single), `match` (multiple) |
 | Iterate | `for x in`, adapters (`.map`, `.filter`) |

@@ -95,11 +95,11 @@ for i in 0..n {
 
 | Rule | Description |
 |------|-------------|
-| **AP1: With blocks** | `with pool { }` enables more aggressive coalescing within scope |
+| **AP1: With blocks** | `using pool { }` enables more aggressive coalescing within scope |
 
 <!-- test: skip -->
 ```rask
-with pool {
+using pool {
     h.x = 1         // Check once at first access
     h.y = 2         // Coalesced
     h.z = 3         // Coalesced

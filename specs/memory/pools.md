@@ -204,7 +204,7 @@ Context clauses (`mem.context`) default to mutable. Add `frozen` for read-only �
 
 ```rask
 // Default — mutable, only Pool<T>
-func damage(h: Handle<Entity>, amount: i32) with Pool<Entity> {
+func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
     h.health -= amount
 }
 
@@ -216,7 +216,7 @@ func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
 
 | Context | `Pool<T>` | `FrozenPool<T>` |
 |---------|-----------|-----------------|
-| `with Pool<T>` | Accepted | Rejected |
+| `using Pool<T>` | Accepted | Rejected |
 | `with frozen Pool<T>` | Accepted | Accepted |
 | `with name: Pool<T>` | Accepted | Rejected |
 | `with frozen name: Pool<T>` | Accepted | Accepted |
@@ -246,7 +246,7 @@ pool[h].z = 3    // Same check as above — coalesced
 Handles auto-resolve fields without explicitly naming the pool. See `mem.context` for full specification.
 
 ```rask
-func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount    // Auto-resolves via Pool<Player> context
 }
 

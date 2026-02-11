@@ -14,7 +14,7 @@ Concurrency model for Rask.
 
 **Affine handles.** All spawn constructs return handles that must be consumed (joined or detached). Forgetting one is a compile error.
 
-**Explicit resources.** `with Multitasking { }` and `with ThreadPool { }` declare available capabilities.
+**Explicit resources.** `using Multitasking { }` and `using ThreadPool { }` declare available capabilities.
 
 ## Specifications
 
@@ -31,14 +31,14 @@ Concurrency model for Rask.
 ```rask
 // Async mode - green tasks for I/O
 func main() {
-    with Multitasking {
+    using Multitasking {
         spawn { handle_connection(conn) }.detach()
     }
 }
 
 // Async + CPU work
 func main() {
-    with Multitasking, ThreadPool {
+    using Multitasking, ThreadPool {
         const h = spawn {
             const data = try fetch(url)                              // I/O - pauses
             const result = try spawn thread { analyze(data) }.join()  // CPU on threads
@@ -50,7 +50,7 @@ func main() {
 
 // Sync mode - CPU parallelism only
 func main() {
-    with ThreadPool {
+    using ThreadPool {
         const handles = files.map { |f| spawn thread { process(f) } }
         for h in handles { try h.join() }
     }
@@ -85,8 +85,8 @@ try h.join()
 
 | Construct | Purpose | Requires | Pauses? |
 |-----------|---------|----------|---------|
-| `spawn { }` | Green task | `with Multitasking` | Yes (at I/O) |
-| `spawn thread { }` | Thread from pool | `with ThreadPool` | No |
+| `spawn { }` | Green task | `using Multitasking` | Yes (at I/O) |
+| `spawn thread { }` | Thread from pool | `using ThreadPool` | No |
 | `spawn raw { }` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
@@ -105,9 +105,9 @@ try h.join()
 
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
-| `with Multitasking` | Yes | No | I/O-heavy servers |
-| `with ThreadPool` | No | Yes | CLI tools, batch processing |
-| `with Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
+| `using Multitasking` | Yes | No | I/O-heavy servers |
+| `using ThreadPool` | No | Yes | CLI tools, batch processing |
+| `using Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
 
 ## Validation Criteria
 
@@ -119,8 +119,8 @@ try h.join()
 
 ## Key Principles
 
-- `with Multitasking { }` creates M:N scheduler for green tasks
-- `with ThreadPool { }` creates thread pool for CPU work
+- `using Multitasking { }` creates M:N scheduler for green tasks
+- `using ThreadPool { }` creates thread pool for CPU work
 - Configuration via numbers: `Multitasking(workers: N)`, `ThreadPool(workers: N)`
 - Affine handles must be joined or detached
 - `.join()` pauses in async mode, blocks in sync mode

@@ -164,7 +164,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 
-**Context clauses.** Functions using handles declare pool requirements with `with Pool<T>` clauses. The compiler threads pools as hidden parameters — no runtime registry. Private functions can omit these (inferred from body). See [context-clauses.md](memory/context-clauses.md).
+**Context clauses.** Functions using handles declare pool requirements with `using Pool<T>` clauses. The compiler threads pools as hidden parameters — no runtime registry. Private functions can omit these (inferred from body). See [context-clauses.md](memory/context-clauses.md).
 
 **Error handling.** Errors are values: `T or E` result type, `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
@@ -176,7 +176,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. See [traits.md](types/traits.md), [generics.md](types/generics.md).
 
-**Concurrency.** `spawn` for green tasks (requires `with Multitasking`), `spawn thread` for CPU-bound work (requires `with ThreadPool`). No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
+**Concurrency.** `spawn` for green tasks (requires `using Multitasking`), `spawn thread` for CPU-bound work (requires `using ThreadPool`). No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`rask.build`) handle full-language code generation. See [comptime.md](control/comptime.md).
 

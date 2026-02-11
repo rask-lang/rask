@@ -1,12 +1,12 @@
 <!-- id: type.optionals -->
 <!-- status: decided -->
-<!-- summary: Option<T> enum with T?, none, ?., ??, and if x? sugar -->
+<!-- summary: Option<T> enum with T?, none, ?., ?? sugar -->
 <!-- depends: types/enums.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
 
 # Optionals
 
-`Option<T>` is a standard enum with syntax sugar: `T?` for type, `none` for absence, `?.` for chaining, `??` for defaults, `if x?` for smart unwrap.
+`Option<T>` is a standard enum with syntax sugar: `T?` for type, `none` for absence, `?.` for chaining, `??` for defaults.
 
 ## The Option Type
 
@@ -31,14 +31,13 @@ enum Option<T> {
 | **OPT5: Optional chaining** | `x?.field` | Access field if present, else `none` |
 | **OPT6: Nil-coalescing** | `x ?? y` | `x` if present, else `y` (short-circuits) |
 | **OPT7: Force unwrap** | `x!` | Extract value or panic if `none` |
-| **OPT8: Smart unwrap** | `if x?` | Check + unwrap `x` inside block |
 
 ## Auto-wrapping
 
 | Rule | Description |
 |------|-------------|
-| **OPT9: T to Option coercion** | `T` coerces to `Option<T>` automatically |
-| **OPT10: No reverse coercion** | `Option<T>` does NOT coerce to `T` — must unwrap explicitly |
+| **OPT8: T to Option coercion** | `T` coerces to `Option<T>` automatically |
+| **OPT9: No reverse coercion** | `Option<T>` does NOT coerce to `T` — must unwrap explicitly |
 
 ```rask
 let user: User? = load_user()    // wraps to Some(user)
@@ -83,28 +82,7 @@ Short-circuits: `y` evaluated only if `x` is none.
 const user = get_user()!    // panics if none
 ```
 
-Use sparingly. Prefer `??` or `if x?`.
-
-## Conditional Check: `if x?`
-
-```rask
-let user: User? = get_user(id)
-
-if user? {
-    // user is User here (smart unwrapped)
-    process(user)
-}
-// user is User? again
-```
-
-**Combined conditions:**
-```rask
-if user? && user.active {
-    // user unwrapped, active checked
-}
-```
-
-**Negation:** `if !x?` doesn't smart-unwrap in else (too error-prone).
+Use sparingly. Prefer `??` or pattern matching.
 
 ## Methods
 
@@ -129,7 +107,26 @@ match user {
 }
 ```
 
-Rarely needed — prefer `if x?` and `??`.
+Single-variant check with `if is`:
+
+```rask
+// Explicit binding
+if user is Some(u) {
+    process(u)
+}
+
+// Implicit unwrap (reuses outer name)
+if user is Some {
+    process(user)  // user unwrapped automatically
+}
+```
+
+Guard pattern for early exit:
+
+```rask
+const user = get_user(id) is Some else { return None }
+// user available here (unwrapped)
+```
 
 ## Linear Resources
 
@@ -139,8 +136,8 @@ Rarely needed — prefer `if x?` and `??`.
 
 ```rask
 let file: File? = open("data.txt")
-if file? {
-    file.close()
+if file is Some(f) {
+    f.close()
 }
 ```
 
@@ -171,8 +168,8 @@ x == y          // compare inner values or both none
 
 | Case | Rule | Handling |
 |------|------|----------|
-| `T` auto-wraps to `Option<T>` | OPT9 | Implicit coercion |
-| `Option<T>` cannot auto-unwrap | OPT10 | Must use `??`, `if x?`, or pattern match |
+| `T` auto-wraps to `Option<T>` | OPT8 | Implicit coercion |
+| `Option<T>` cannot auto-unwrap | OPT9 | Must use `??` or pattern match |
 | `??` on Result | — | Not supported — use `.on_err(default)` |
 | Linear `T` in `Option` | OPT11 | Both `Some` and `None` paths must be handled |
 | `try` in non-Option function | OPT13 | Compile error |
@@ -188,11 +185,11 @@ ERROR [type.optionals/OPT7]: force unwrap on none value
 
 WHY: Force unwrap panics when the value is absent.
 
-FIX: Use ?? for a default, or if x? for conditional access:
+FIX: Use ?? for a default, or if x is Some for conditional access:
 
   const user = get_user() ?? default_user()
 
-  if user? {
+  if user is Some {
       process(user)
   }
 ```
@@ -224,9 +221,9 @@ FIX: Convert to Result, or change the return type:
 
 **OPT6 vs Result:** `??` doesn't work on Result because silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
 
-**OPT8 (smart unwrap):** `if x?` is the primary way to handle optionals. It avoids nested `match` and keeps the happy path at the same indentation level.
+**OPT8 (auto-wrapping):** Returning `T` from a function that returns `T?` should just work. The reverse is intentionally forbidden — unwrapping must be explicit.
 
-**OPT9 (auto-wrapping):** Returning `T` from a function that returns `T?` should just work. The reverse is intentionally forbidden — unwrapping must be explicit.
+**Pattern matching:** Use `if x is Some` for conditional checks with implicit unwrap, or `if x is Some(v)` for explicit binding. Uniform syntax across all sum types.
 
 ### Patterns & Guidance
 
@@ -236,7 +233,7 @@ FIX: Convert to Result, or change the return type:
 |--------|----------|---------|
 | `T?` | Types | `Option<T>` |
 | `x?.field` | Option | Access if present |
-| `if x?` | Option | Smart unwrap in block |
+| `x ?? y` | Option | Value or default |
 
 `?` is for Option sugar only — never for propagation. `try` handles propagation for both Option and Result.
 
@@ -246,7 +243,9 @@ FIX: Convert to Result, or change the return type:
 |----------|-----|
 | Provide a default | `x ?? default` |
 | Access a field | `x?.field` |
-| Conditional logic | `if x?` |
+| Conditional logic (same name) | `if x is Some { ... }` |
+| Conditional logic (new name) | `if x is Some(v) { ... }` |
+| Early exit if absent | `const v = x is Some else { return }` |
 | Transform the value | `x.map(f)` |
 | Convert to Result | `x.ok_or(err)` |
 | You're sure it's present | `x!` (use sparingly) |
@@ -257,4 +256,4 @@ FIX: Convert to Result, or change the return type:
 - [Error Types](error-types.md) — Result handling and `try` propagation (`type.error-types`)
 - [Union Types](union-types.md) — Error composition (`type.union-types`)
 - [Enums](enums.md) — Underlying enum type (`type.enums`)
-- [Control Flow - Pattern Matching with `is`](../control/control-flow.md#pattern-matching-in-conditions-is) — `if opt is Some(x)` works for Option (and all enums), though `if opt?` is preferred
+- [Control Flow - Pattern Matching with `is`](../control/control-flow.md) — `if opt is Some(x)` for conditional checks (`ctrl.flow`)

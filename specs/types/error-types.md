@@ -87,7 +87,7 @@ func process() -> Data or IoError {
 }
 ```
 
-`try` works on both `Result` and `Option`—uniformly means "propagate failure." `?` reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default, `if x?` smart unwrap).
+`try` works on both `Result` and `Option`—uniformly means "propagate failure." `?` reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default).
 
 Use parens for chaining after: `(try file.read()).trim()`.
 
@@ -275,7 +275,7 @@ match result {
 
 `??` doesn't work on Result — silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
 
-Optional sugar (`T?`, `x?.field`, `x ?? y`, `if x?`) is distinct from `try` propagation — `?` is never used for propagation.
+Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation — `?` is never used for propagation.
 
 ## Edge Cases
 
@@ -399,6 +399,6 @@ IDE shows `→ returns Err` as ghost text after `try` for visibility.
 
 ### See Also
 
-- [Optionals](optionals.md) — `T?` sugar, `??` default, `if x?` smart unwrap (`type.optionals`)
+- [Optionals](optionals.md) — `T?` sugar, `??` default (`type.optionals`)
 - [Enums](enums.md) — Enum definitions and pattern matching (`type.enums`)
 - [Union Types](union-types.md) — Union type semantics for error composition
