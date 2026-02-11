@@ -1,68 +1,45 @@
+<!-- id: std.bits -->
+<!-- status: decided -->
+<!-- summary: Bit manipulation, byte order conversion, binary parsing and building -->
+
 # Bits Module
 
-## Overview
-
-Bit manipulation utilities, byte order conversion, and binary data parsing/building helpers.
+Bit manipulation utilities, byte order conversion, and binary data parsing/building on integer types and byte slices.
 
 ## Bit Operations
 
-Methods available on all integer types:
+Methods on all integer types.
 
-| Method | Description |
-|--------|-------------|
-| `x.popcount()` | Count set bits (population count) |
-| `x.leading_zeros()` | Count leading zero bits |
-| `x.trailing_zeros()` | Count trailing zero bits |
-| `x.leading_ones()` | Count leading one bits |
-| `x.trailing_ones()` | Count trailing one bits |
-| `x.reverse_bits()` | Reverse bit order |
-| `x.rotate_left(n)` | Rotate bits left by n positions |
-| `x.rotate_right(n)` | Rotate bits right by n positions |
-| `x.swap_bytes()` | Reverse byte order |
+| Rule | Description |
+|------|-------------|
+| **B1: Integer methods** | `popcount`, `leading_zeros`, `trailing_zeros`, `leading_ones`, `trailing_ones`, `reverse_bits`, `rotate_left`, `rotate_right`, `swap_bytes` are methods on all integer types |
 
+<!-- test: skip -->
 ```rask
-let x: u32 = 0b1100_0000_0000_0000_0000_0000_0000_0011
+const x: u32 = 0b1100_0000_0000_0000_0000_0000_0000_0011
 
 x.popcount()        // 4
 x.leading_zeros()   // 0
 x.trailing_zeros()  // 0
-x.leading_ones()    // 2
-x.trailing_ones()   // 2
-x.reverse_bits()    // 0b1100_0000...0011 (reversed)
+x.reverse_bits()    // bit-reversed value
 ```
 
 ## Byte Order Conversion
 
-Methods for explicit endianness conversion:
+| Rule | Description |
+|------|-------------|
+| **B2: Endian methods** | `to_be`, `to_le`, `from_be`, `from_le` convert integer byte order |
+| **B3: Byte array methods** | `to_be_bytes`, `to_le_bytes`, `to_ne_bytes` produce byte arrays; `T.from_be_bytes`, `T.from_le_bytes`, `T.from_ne_bytes` parse them |
+| **B4: Network aliases** | `bits.hton_*` and `bits.ntoh_*` are aliases for big-endian conversion |
 
-| Method | Description |
-|--------|-------------|
-| `x.to_be()` | Convert to big-endian byte order |
-| `x.to_le()` | Convert to little-endian byte order |
-| `x.from_be()` | Convert from big-endian byte order |
-| `x.from_le()` | Convert from little-endian byte order |
-| `x.to_be_bytes()` | Convert to big-endian byte array |
-| `x.to_le_bytes()` | Convert to little-endian byte array |
-| `x.to_ne_bytes()` | Convert to native-endian byte array |
-| `T.from_be_bytes(b)` | Parse from big-endian bytes |
-| `T.from_le_bytes(b)` | Parse from little-endian bytes |
-| `T.from_ne_bytes(b)` | Parse from native-endian bytes |
-
+<!-- test: skip -->
 ```rask
-let port: u16 = 8080
-
-// To bytes
+const port: u16 = 8080
 const be_bytes = port.to_be_bytes()   // [0x1F, 0x90]
-const le_bytes = port.to_le_bytes()   // [0x90, 0x1F]
-
-// From bytes
 const p1 = u16.from_be_bytes([0x1F, 0x90])  // 8080
-const p2 = u16.from_le_bytes([0x90, 0x1F])  // 8080
 ```
 
-### Network Byte Order
-
-Aliases for network programming (big-endian):
+Network byte order aliases:
 
 | Function | Equivalent |
 |----------|------------|
@@ -73,99 +50,60 @@ Aliases for network programming (big-endian):
 
 ## Binary Parsing
 
-For parsing binary data without defining a `@binary` struct:
+| Rule | Description |
+|------|-------------|
+| **P1: unpack** | `data.unpack(types...)` parses multiple values from a byte slice, returns `(T..., []u8) or ParseError` |
+| **P2: Type specifiers** | Specifiers encode type and endianness: `u8`, `u16be`, `u32le`, `f64be`, etc. |
+| **P3: Slice read methods** | `data.read_u8()`, `data.read_u16be()`, etc. return `(T, []u8) or ParseError` |
+| **P4: take** | `data.take(n)` splits off first n bytes: `([]u8, []u8)` |
 
-### `unpack`
-
-Parse multiple values from a byte slice:
-
+<!-- test: skip -->
 ```rask
-// Signature (variadic generic)
-func unpack<T...>(data: []u8, types: T...) -> (T..., []u8) or ParseError
+// Variadic unpack
+const (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 
-// Usage
-let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
-
-// With match
-match data.unpack(u32be, u8, u16be) {
-    Ok(0xCAFEBABE, 1, len, rest): process(len, rest)
-    Ok(_, _, _, _): Err(BadHeader)
-    Err(e): Err(e)
-}
+// Incremental read
+const (magic, rest) = try data.read_u32be()
+const (length, rest) = try rest.read_u16be()
+const (payload, rest) = try rest.take(length as usize)
 ```
 
-Type specifiers for `unpack`:
-- `u8`, `i8` — single byte
-- `u16be`, `u16le`, `i16be`, `i16le` — 16-bit with endianness
-- `u32be`, `u32le`, `i32be`, `i32le` — 32-bit with endianness
-- `u64be`, `u64le`, `i64be`, `i64le` — 64-bit with endianness
-- `f32be`, `f32le`, `f64be`, `f64le` — floats with endianness
-
-### Slice Methods
-
-Methods on `[]u8` for binary parsing:
-
-| Method | Description |
-|--------|-------------|
-| `data.take(n)` | Split off first n bytes: `([]u8, []u8)` |
-| `data.read_u8()` | Read u8, return `(u8, []u8)` |
-| `data.read_u16be()` | Read big-endian u16 |
-| `data.read_u16le()` | Read little-endian u16 |
-| `data.read_u32be()` | Read big-endian u32 |
-| `data.read_u32le()` | Read little-endian u32 |
-| `data.read_u64be()` | Read big-endian u64 |
-| `data.read_u64le()` | Read little-endian u64 |
-
-All read methods return `Result<(T, []u8), ParseError>`.
-
-```rask
-let (magic, rest) = try data.read_u32be()
-let (length, rest) = try rest.read_u16be()
-let (payload, rest) = try rest.take(length as usize)
-```
+Type specifiers for `unpack`: `u8`, `i8`, `u16be`, `u16le`, `i16be`, `i16le`, `u32be`, `u32le`, `i32be`, `i32le`, `u64be`, `u64le`, `i64be`, `i64le`, `f32be`, `f32le`, `f64be`, `f64le`.
 
 ## Binary Building
 
-### `pack`
+| Rule | Description |
+|------|-------------|
+| **K1: pack** | `pack(values...)` builds a `Vec<u8>` from typed values |
+| **K2: BinaryBuilder** | Builder pattern for incremental construction via `write_*` methods |
+| **K3: Buffer write** | `buffer[cursor..].write_*(value)` for zero-allocation building, returns bytes written |
 
-Build binary data from values:
-
+<!-- test: skip -->
 ```rask
-// Signature (variadic generic)
-func pack<T...>(values: T...) -> Vec<u8>
-
-// Usage
+// pack
 const header = pack(u32be(0xCAFEBABE), u8(1), u16be(payload.len()))
-```
 
-### Builder Pattern
-
-For incremental construction:
-
-```rask
+// Builder
 const data = BinaryBuilder.new()
     .write_u32be(0xCAFEBABE)
     .write_u8(1)
-    .write_u16be(payload.len())
     .write_bytes(payload)
     .build()
-```
 
-### Write to Buffer
-
-For zero-allocation building:
-
-```rask
+// Zero-alloc buffer write
 const buffer: [u8; 64] = [0; 64]
 let cursor = 0
-
 cursor += buffer[cursor..].write_u32be(0xCAFEBABE)
 cursor += buffer[cursor..].write_u8(1)
-cursor += buffer[cursor..].write_u16be(length)
 ```
 
 ## Error Types
 
+| Rule | Description |
+|------|-------------|
+| **E1: ParseError** | Parsing operations return `T or ParseError` |
+
+<!-- test: skip -->
 ```rask
 enum ParseError {
     UnexpectedEnd { expected: usize, actual: usize }
@@ -173,29 +111,68 @@ enum ParseError {
 }
 ```
 
-## Integration with @binary Structs
+## Error Messages
 
-`bits` complements `@binary` structs:
+```
+ERROR [std.bits/P1]: unexpected end of data
+   |
+5  |  const (magic, ver, rest) = try data.unpack(u32be, u8)
+   |                                 ^^^^ expected 5 bytes, got 3
 
-- `@binary struct` for reusable, documented layouts
-- `bits.unpack` for one-off inline parsing
-- Slice methods for streaming/incremental parsing
+WHY: unpack validates all lengths upfront before parsing.
 
-```rask
-// Struct for well-known format
-@binary
-struct TcpHeader { ... }
-
-// Inline for quick one-off
-let (type, len, rest) = try data.unpack(u8, u16be)
-
-// Streaming for variable data
-let (header, rest) = try TcpHeader.parse(data)
-let (options, rest) = try rest.take(header.data_offset * 4 - 20)
+FIX: Check data length before unpacking.
 ```
 
-## Performance Notes
+```
+ERROR [std.bits/P3]: unexpected end of data
+   |
+3  |  const (val, rest) = try data.read_u32be()
+   |                            ^^^^ need 4 bytes, have 2
+
+WHY: Read methods require enough bytes for the target type.
+
+FIX: Verify slice length or handle the error with try/match.
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Empty slice to `unpack` | P1 | Returns `ParseError.UnexpectedEnd` |
+| Zero-length `take(0)` | P4 | Returns `(empty_slice, original)` |
+| `pack()` with no args | K1 | Returns empty `Vec<u8>` |
+| Buffer too small for write | K3 | Panics (bounds check) |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**P1 (unpack):** Variadic unpack covers the common case of parsing a fixed header without defining a full `@binary` struct. Single bounds check upfront avoids per-field error handling.
+
+**K3 (buffer write):** Embedded and network code often needs zero-allocation binary building. Cursor-based writes into a stack buffer avoid heap allocation entirely.
+
+### Patterns & Guidance
+
+**Choosing between approaches:**
+
+| Need | Use |
+|------|-----|
+| Reusable, documented binary layout | `@binary struct` |
+| One-off inline parse | `bits.unpack` |
+| Streaming/incremental parse | Slice `read_*` methods |
+| Build fixed-size packets | `pack` or buffer writes |
+| Build variable-size data | `BinaryBuilder` |
+
+### Performance
 
 - Parsing is zero-copy where possible (returns slices into original data)
 - `unpack` validates all lengths upfront (single bounds check)
 - Builder pre-allocates when total size is known at comptime
+
+### See Also
+
+- `std.collections` — Vec used by pack/BinaryBuilder
+- `type.structs` — `@binary` struct attribute for reusable layouts

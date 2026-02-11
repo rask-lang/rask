@@ -1,33 +1,30 @@
+<!-- id: std.reflect -->
+<!-- status: decided -->
+<!-- summary: Compile-time type introspection via stdlib module -->
+<!-- depends: control/comptime.md -->
+
 # Reflect Module
 
-## Overview
+Compile-time type introspection through `std.reflect`. All reflection resolves at compile time with zero runtime cost.
 
-Compile-time type introspection. `std.reflect` provides functions that inspect types during compilation—struct fields, method signatures, trait implementations, size/alignment. No runtime cost; all reflection resolves at compile time.
+## Core Rules
 
-I chose a stdlib module over language-level syntax because it keeps the language small. The compiler provides the intrinsics; the stdlib wraps them in a stable API.
+| Rule | Description |
+|------|-------------|
+| **R1: Comptime only** | All `std.reflect` functions require `comptime` context. Runtime use is a compile error |
+| **R2: Local analysis** | Reflection operates on types already in scope. No whole-program type discovery |
+| **R3: No mutation** | Cannot add fields or methods to existing types through reflection |
+| **R4: Visibility respected** | Reflection shows private fields exist (name, type, size) but generated code respects visibility |
+| **R5: Concrete types** | Reflection on generic types reflects the monomorphized type, not the generic template |
 
-## Local Analysis Constraint
-
-Every function in `std.reflect` operates on types already in scope—function parameters, local variables, imported types. You cannot discover types you haven't imported.
-
-**This preserves [Principle 5](../CORE_DESIGN.md) (Local Analysis Only):**
-- Reflecting on `MyStruct` works if `MyStruct` is imported or defined locally
-- "Find all types implementing Trait X" is not supported—that requires whole-program knowledge
-- Reflection results depend only on the type definition, not on how it's used elsewhere
-
-## Usage
-
-All `std.reflect` functions are only callable inside `comptime` blocks or `comptime func`. Using them at runtime is a compile error.
-
+<!-- test: skip -->
 ```rask
 import std.reflect
 
 const FIELD_COUNT = comptime reflect.fields(MyStruct).len
 ```
 
-## API
-
-### Type Info
+## Type Info
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
@@ -37,6 +34,7 @@ const FIELD_COUNT = comptime reflect.fields(MyStruct).len
 | `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes, all fields Copy) |
 | `is_resource<T>()` | `-> bool` | Whether T is a linear resource type |
 
+<!-- test: skip -->
 ```rask
 comptime {
     const size = reflect.size_of<Point>()       // 8
@@ -45,13 +43,14 @@ comptime {
 }
 ```
 
-### Struct Fields
+## Struct Fields
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `fields<T>()` | `-> []FieldInfo` | All fields of a struct (compile error if T is not a struct) |
+| `fields<T>()` | `-> []FieldInfo` | All fields of a struct (compile error if not a struct) |
 | `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name |
 
+<!-- test: skip -->
 ```rask
 struct FieldInfo {
     name: string
@@ -62,32 +61,14 @@ struct FieldInfo {
 }
 ```
 
-**Example — serialization codegen:**
-```rask
-import std.reflect
-
-comptime func gen_to_json<T>() -> string {
-    const code = string.new()
-    code.push_str("func to_json(self: T) -> string {\n")
-    code.push_str("    const parts = Vec<string>.new()\n")
-
-    for field in reflect.fields<T>() {
-        code.push_str("    parts.push(\"\\\"{field.name}\\\": \" + self.{field.name}.to_string())\n")
-    }
-
-    code.push_str("    return \"{\" + parts.join(\", \") + \"}\"\n")
-    code.push_str("}\n")
-    return code.freeze()
-}
-```
-
-### Methods
+## Methods
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `methods<T>()` | `-> []MethodInfo` | All methods of a type |
 | `has_method<T>(name: string)` | `-> bool` | Whether type has a method with this name |
 
+<!-- test: skip -->
 ```rask
 struct MethodInfo {
     name: string
@@ -97,27 +78,22 @@ struct MethodInfo {
 }
 ```
 
-### Trait Checking
+## Trait Checking
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | `implements<T, Trait>()` | `-> bool` | Whether T satisfies Trait (structural or explicit) |
 | `traits<T>()` | `-> []string` | Names of traits T explicitly extends |
 
-```rask
-comptime if reflect.implements<T, Display>() {
-    // T has a display() method — generate pretty-print code
-}
-```
+`implements` checks whether T has the required methods. Does NOT scan the codebase for all implementors (R2).
 
-**Note:** `implements` checks whether T has the required methods. It does NOT scan the codebase for all implementors of a trait—that would break local analysis.
-
-### Enum Variants
+## Enum Variants
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `variants<T>()` | `-> []VariantInfo` | All variants of an enum (compile error if T is not an enum) |
+| `variants<T>()` | `-> []VariantInfo` | All variants of an enum (compile error if not an enum) |
 
+<!-- test: skip -->
 ```rask
 struct VariantInfo {
     name: string
@@ -126,16 +102,58 @@ struct VariantInfo {
 }
 ```
 
-## Patterns
+## Error Messages
 
-### Derive-Style Code Generation
+```
+ERROR [std.reflect/R1]: reflect function used outside comptime context
+   |
+5  |  const fields = reflect.fields<Point>()
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^ reflect requires comptime
 
-The primary use case: generating repetitive implementations from type structure.
+WHY: Reflection resolves at compile time. No runtime introspection.
 
+FIX: Wrap in comptime block:
+
+  const fields = comptime reflect.fields<Point>()
+```
+
+```
+ERROR [std.reflect/R2]: cannot discover types not in scope
+   |
+3  |  const impls = reflect.implementors<Display>()
+   |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ whole-program query
+
+WHY: Reflection operates on imported types only. Type discovery requires whole-program analysis.
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Reflect on non-struct with `fields<T>()` | — | Compile error |
+| Reflect on non-enum with `variants<T>()` | — | Compile error |
+| Private fields in `fields<T>()` | R4 | Visible in metadata, access respects visibility |
+| Generic type `T` in comptime func | R5 | Reflects concrete monomorphized type |
+| `implements<T, Trait>()` | R2 | Checks T's methods, not codebase-wide |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**R1 (comptime only):** No runtime reflection keeps binaries small and avoids the metadata bloat of languages like Java/C#.
+
+**R2 (local analysis):** I chose a stdlib module over language-level syntax because it keeps the language small. The compiler provides the intrinsics; the stdlib wraps them in a stable API. "Find all types implementing Trait X" would require whole-program knowledge, breaking local analysis (`CORE_DESIGN.md` Principle 5).
+
+### Patterns & Guidance
+
+**Derive-style code generation** — the primary use case:
+
+<!-- test: skip -->
 ```rask
 import std.reflect
 
-// In a build script or comptime block, generate Display for any struct
 comptime func gen_display<T>() -> string {
     const code = string.new()
     code.push_str("extend {reflect.name_of<T>()} {\n")
@@ -153,8 +171,9 @@ comptime func gen_display<T>() -> string {
 }
 ```
 
-### Comptime Assertions on Type Shape
+**Comptime assertions on type shape:**
 
+<!-- test: skip -->
 ```rask
 comptime func assert_serializable<T>() {
     for field in reflect.fields<T>() {
@@ -166,30 +185,25 @@ comptime func assert_serializable<T>() {
 }
 ```
 
-### Conditional Logic Based on Type Properties
+**Conditional logic based on type properties:**
 
+<!-- test: skip -->
 ```rask
 func serialize<T>(value: T) -> []u8 {
     comptime if reflect.is_copy<T>() && reflect.size_of<T>() <= 8 {
-        // Fast path: memcpy for small copy types
         return unsafe { mem_as_bytes(value) }
     } else {
-        // General path: field-by-field
         return serialize_fields(value)
     }
 }
 ```
 
-## What This Does NOT Do
+### IDE Integration
 
-- **No runtime reflection.** All `std.reflect` calls resolve at compile time. There's no `reflect.fields(some_runtime_value)`.
-- **No type discovery.** You cannot ask "what types implement Serializable?" That requires whole-program analysis.
-- **No type modification.** You cannot add fields or methods to existing types through reflection.
-- **No private field access.** Reflection shows private fields exist (name, type, size) but cannot bypass visibility for access. Code generation using field names still respects visibility rules.
+Ghost annotations show reflected values on hover (e.g., hovering `reflect.fields<Point>()` shows `[{name: "x", ...}, {name: "y", ...}]`).
 
-## Integration Notes
+### See Also
 
-- **Comptime:** All reflection functions are comptime-only. Using them outside `comptime` is a compile error.
-- **Generics:** Reflection on generic types reflects the concrete monomorphized type, not the generic template.
-- **Local Analysis:** Reflection results depend only on the type definition. Changing code elsewhere cannot change what `reflect.fields<T>()` returns.
-- **IDE:** Ghost annotations should show reflected values on hover (e.g., hovering `reflect.fields<Point>()` shows `[{name: "x", ...}, {name: "y", ...}]`).
+- `ctrl.comptime` — Compile-time execution context
+- `type.traits` — Trait definitions and structural typing
+- `type.structs` — Struct field layout and visibility

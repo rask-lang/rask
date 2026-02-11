@@ -1,47 +1,35 @@
-# Solution: Gradual Constraints
+<!-- id: type.gradual -->
+<!-- status: decided -->
+<!-- summary: Non-public functions may omit types and bounds; compiler infers from body -->
+<!-- depends: types/traits.md, types/generics.md -->
 
-## The Question
+# Gradual Constraints
 
-Must every function fully specify types, returns, and trait bounds? Or can the compiler infer from the body?
+Non-public functions may omit parameter types, return types, and bounds. Compiler infers from body using constraint solving. Public functions require full explicit signatures.
 
-## Decision
+## Core Rules
 
-Non-public functions may omit parameter types, return types, and bounds. Compiler infers from body using constraint solving. Public functions must have full explicit signatures—types and bounds are API contract. Explicit annotations are additive: they merge with inferred constraints.
-
-Prototype-to-production pipeline:
-1. **Prototype:** `func process(data, handler) { ... }` — all inferred
-2. **Solidify:** `func process(data: Vec<Record>, handler) { ... }` — partial
-3. **Publish:** `public func process<T: Ord>(data: Vec<T>, handler: Handler<T>) -> T` — explicit
-
-Fully statically checked at every stage. Not dynamic typing.
-
-## Rationale
-
-**Prototyping friction.** When sketching, focus is logic, not types. Requiring explicit signatures on private helpers adds ceremony that slows exploration without improving safety—compiler checks inferred types identically.
-
-**Ergonomic Delta.** Without gradual constraints, Rask private code needs more annotation than Go or Kotlin. With them, private code matches or beats ceremony of dynamically-typed languages while keeping full static checking.
-
-**Body-local inference.** Compiler examines one function at a time, collects constraints, solves them. Never looks at callers, never whole-program analysis, never crosses modules. Preserves compilation speed (CS ≥ 5× Rust target).
-
-**Public boundary as contract.** `public` means "visible to external consumers." Explicit types at this boundary are natural—API contracts should be spelled out. Private functions are implementation details where inference reduces noise.
-
-## Specification
-
-### Core Principles
+| Rule | Description |
+|------|-------------|
+| **GC1: Parameter inference** | Compiler examines all parameter uses; single concrete type inferred as concrete, only trait constraints inferred as generic with bounds |
+| **GC2: Return inference** | Return type is unified type of all return expressions; incompatible types are a compile error |
+| **GC3: Bound inference** | Type parameter used with methods/operators produces structural trait constraints |
+| **GC4: Additive annotations** | Explicit types/bounds merge with inferred; conflict is a compile error |
+| **GC5: Public enforcement** | `public` functions must have full type annotations and trait bounds |
+| **GC6: Module-local scope** | Inference examines only function body — no callers, no cross-module analysis |
 
 | Principle | Rule |
 |-----------|------|
 | Public = explicit | `public` functions MUST have full type annotations and trait bounds |
 | Private = flexible | Non-public functions MAY omit parameter types, return types, and/or bounds |
-| Inference is body-local | Compiler infers from function body only, never from callers |
-| Annotations are additive | Explicit types/bounds merge with inferred ones; conflict is a compile error |
+| Annotations are additive | Explicit types/bounds merge with inferred ones |
 | Structural traits apply | Inferred bounds use structural matching, same as explicit bounds |
-| IDE shows all | Ghost text displays inferred types, bounds, and return types (Principle 7) |
 
-### Inference Levels
+## Inference Levels
 
 **Level 1 — Fully inferred (prototyping):**
 
+<!-- test: skip -->
 ```rask
 func find_best(items, score_fn) {
     let best = items[0]
@@ -50,18 +38,14 @@ func find_best(items, score_fn) {
             best = items[i]
         }
     }
-    best
+    return best
 }
+// Inferred: <T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T
 ```
-
-Compiler infers:
-- `items`: `Vec<T>` (indexed, has `.len()`)
-- `score_fn`: `func(T) -> U` (called with element, compared with `>`)
-- Return: `T`
-- Bounds: `T: Copy` (assigned in loop), `U: Comparable` (compared)
 
 **Level 2 — Partially annotated (solidifying):**
 
+<!-- test: skip -->
 ```rask
 func find_best(items: Vec<Record>, score_fn) -> Record {
     let best = items[0]
@@ -70,14 +54,13 @@ func find_best(items: Vec<Record>, score_fn) -> Record {
             best = items[i]
         }
     }
-    best
+    return best
 }
 ```
 
-`items` and return type are explicit. `score_fn` type is still inferred from usage.
-
 **Level 3 — Fully explicit (publishing):**
 
+<!-- test: skip -->
 ```rask
 public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T {
     let best = items[0]
@@ -86,202 +69,131 @@ public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U)
             best = items[i]
         }
     }
-    best
+    return best
 }
 ```
 
-All types, bounds, and return type explicit. Required for `public`. The function body is unchanged across all three levels.
+## Concrete vs Generic Inference
 
-### Concrete vs Generic Inference
-
-Compiler prefers **most general type that satisfies constraints:**
+| Rule | Description |
+|------|-------------|
+| **IN1: Generic preference** | Compiler infers most general type satisfying constraints |
+| **IN2: Literal default** | If only info is literal default with no trait-method usage, infer concrete |
+| **IN3: Trait triggers generic** | Constraints from trait methods, operators, or calls needing bounds produce generic |
 
 | Example | Inferred As | Why |
 |---------|-------------|-----|
-| `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to trait method `.mul()` |
-| `func get_port() { 8080 }` | `() -> i32` | Literal with default type, no trait-method usage |
-| `func add(a, b) { a + b }` | `<T: Numeric>(a: T, b: T) -> T` | `+` desugars to `.add()` |
-| `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains to `string` |
-| `func len(items) { items.len() }` | `<T>(items: Vec<T>) -> usize` | `.len()` doesn't constrain `T` |
+| `func double(x) { x * 2 }` | `<T: Numeric>(x: T) -> T` | `*` desugars to `.mul()` |
+| `func get_port() { 8080 }` | `() -> i32` | Literal default, no trait usage |
+| `func greet(name) { println("Hi, {name}") }` | `(name: string)` | String interpolation constrains type |
+| `func len(items) { items.len() }` | `<T>(items: Vec<T>) -> usize` | `.len()` doesn't constrain T |
 
-**Rule:** If only info is literal default type with no trait-method usage on params, infer concrete. If constraints from trait methods, operators, or calls needing bounds, infer generic.
+## Interaction with PascalCase Generics
 
-### Inference Rules
+| Rule | Description |
+|------|-------------|
+| **PC1: Coexistence** | PascalCase names auto-generic (existing); gradual constraints omit type entirely |
 
-**GC1: Parameter inference.** Compiler examines all param uses. Each use constrains:
-- `param.len()` — has `.len()` method
-- `param + 1` — satisfies `Numeric` (via desugaring)
-- Pass to `known_func(x: Vec<i32>)` — is `Vec<i32>`
-
-Single concrete type → inferred as that. Only trait constraints → generic with bounds.
-
-**GC2: Return inference.** Compiler examines all `return` expressions. Return type is unified type of all returns. Incompatible types → compile error.
-
+<!-- test: skip -->
 ```rask
-// OK: both branches return the same type
-func abs(x) { if x < 0: -x else: x }
+// PascalCase: explicitly name the type parameter
+func identity(x: T) -> T { return x }
 
-// ERROR: branches return incompatible types
-func bad(x) { if x > 0: x else: "negative" }
+// Gradual: omit type, let compiler decide
+func identity(x) { return x }
+// Inferred: func identity<T>(x: T) -> T
 ```
 
-**GC3: Bound inference.** Type parameter used with methods/operators → compiler collects required methods into structural trait constraints:
-
-```rask
-func sort_and_print(items) {
-    items.sort()                 // requires Comparable on element type
-    for i in items {
-        println(items[i].display())   // requires Display on element type
-    }
-}
-// Compiler infers: items: Vec<T> where T: Comparable + Display
-```
-
-**GC4: Additive annotations.** Explicit annotations are additional constraints merged with inferred. Compiler checks explicit satisfies inferred:
-
-```rask
-// OK: Vec<Record> satisfies all inferred constraints
-func process(data: Vec<Record>, handler) {
-    handler(data)
-}
-
-// ERROR: explicit type conflicts with body usage
-func transform(x: i32) {
-    x.display()        // i32 does not have method 'display'
-}
-```
-
-**GC5: Public enforcement.** `public` without full annotations → compile error. Compiler suggests inferred signature:
+## Error Messages
 
 ```
-error: public function 'process' requires explicit type annotations
-  --> utils.rk:1
-  | public func process(data, handler) {
-  |                     ^^^^  ^^^^^^^ add type annotations
+ERROR [type.gradual/GC5]: public function requires explicit type annotations
+   |
+1  |  public func process(data, handler) {
+   |                       ^^^^  ^^^^^^^ add type annotations
 
-  Inferred signature:
-    public func process<T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
+   Inferred signature:
+     public func process<T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
 
-  hint: apply suggested signature? (IDE quick action)
+   hint: apply suggested signature? (IDE quick action)
 ```
 
-**GC6: Module-local scope.** Inference examines only function body. No callers, no whole-program analysis, no cross-module. Algorithm:
-1. Walk body AST
-2. Collect constraints from expressions
-3. Solve via unification
-4. Produce concrete types or bounds
-5. Check explicit against inferred
-
-### Smart Error Messages
-
-When inferred bounds change, compiler reports what changed, which line caused it, which callers break.
-
-**Error 1: New bound required**
-
 ```
-error: function 'helper' now requires Display on its parameter
+ERROR [type.gradual/GC4]: explicit annotation conflicts with body usage
+   |
+3  |  func transform(x: i32) {
+   |                     ^^^ annotated as i32
+5  |      x.display()
+   |        ^^^^^^^^^ i32 does not have method 'display'
 
-  6 | func helper(item) {
-  7 |     println(item.display())    // <-- requires Display (NEW)
-                  ^^^^^^^^^^^^^^^
-  8 |     item.hash()                // <-- requires Hashable (existing)
-  9 | }
-
-  Previous bounds: Hashable
-  Current bounds:  Hashable + Display
-
-  Callers that no longer match:
-    utils.rk:20  helper(my_key)    // Key has Hashable but not Display
+FIX: Change parameter type, or remove the .display() call.
 ```
 
-**Error 2: Inferred type changed**
-
 ```
-error: inferred return type of 'compute' changed
+ERROR [type.gradual/GC2]: inferred return type changed
+   |
+   Before: func compute(data: Vec<i32>) -> i32
+   After:  func compute(data: Vec<i32>) -> f64
 
-  Before: func compute(data: Vec<i32>) -> i32
-  After:  func compute(data: Vec<i32>) -> f64
-
-  Caused by:
-  12 | data.sum() / 2.5
+   Caused by:
+12 |  data.sum() / 2.5
                     ^^^ f64 literal changed inferred return type
 
-  Callers that break:
-    main.rk:45  const result: i32 = compute(items)
-                        ^^^^^^^^^^^ expected i32, got f64
+   Callers that break:
+     main.rk:45  const result: i32 = compute(items)
 ```
 
-**Error 3: Additive conflict**
+## Edge Cases
 
-```
-error: explicit annotation conflicts with body usage
+| Case | Rule | Handling |
+|------|------|----------|
+| Recursive functions | GC2 | Inferred from base case + recursive structure; ambiguous requires return type annotation |
+| Mutual recursion | GC6 | Both analyzed together (SCC); unresolvable requires annotation on at least one |
+| Closures | GC1 | Closure params already inferred from context; gradual applies to enclosing function |
+| `any Trait` | GC3 | Cannot be inferred — dynamic dispatch must be explicit |
+| `comptime` parameters | GC5 | Must be explicit — compilation requires them upfront |
+| Empty function body | GC1 | Parameters are unconstrained generics, return type is `()` |
+| Multiple return types | GC2 | Incompatible branch types produce compile error |
+| `extern` functions | GC5 | Must have full explicit signatures (C ABI requires it) |
 
-  3 | func transform(x: i32) {
-                        ^^^   annotated as i32
-  5 |     x.display()
-           ^^^^^^^^^ i32 does not have method 'display'
+---
 
-  hint: change parameter type, or remove the .display() call
-```
+## Appendix (non-normative)
 
-### Interaction with Implicit PascalCase Generics
+### Rationale
 
-SYNTAX.md: unknown PascalCase names become type parameters. Gradual constraints extend this—when param has no type at all, compiler infers concrete or generic.
+**GC1 (parameter inference):** When sketching, focus is logic, not types. Requiring explicit signatures on private helpers adds ceremony that slows exploration without improving safety — compiler checks inferred types identically.
 
-```rask
-// Existing: T is auto-generic because it is PascalCase and unknown
-func identity(x: T) -> T { x }
+**GC5 (public enforcement):** `public` means "visible to external consumers." Explicit types at this boundary are natural — API contracts should be spelled out. Private functions are implementation details where inference reduces noise.
 
-// New with gradual constraints: type entirely omitted
-func identity(x) { x }
-// Compiler infers: func identity<T>(x: T) -> T
-```
+**GC6 (module-local scope):** Compiler examines one function at a time, collects constraints, solves them. Never looks at callers, never does whole-program analysis, never crosses modules. Preserves compilation speed.
 
-Both coexist. PascalCase: explicitly name param. Gradual: omit type, let compiler decide.
+**Ergonomic Delta:** Without gradual constraints, Rask private code needs more annotation than Go or Kotlin. With them, private code matches or beats ceremony of dynamically-typed languages while keeping full static checking.
 
-### Interaction with Structural Traits
+### Patterns & Guidance
 
-Inferred bounds use structural matching—same mechanism as explicit. Body calls `.hash()` and `.eq()` → compiler infers bound requiring those. IDE maps structural bounds to named traits for display:
+**Prototype-to-production pipeline:**
 
-```rask
-func lookup(table, key) {
-    const idx = key.hash() % table.len()
-    table[idx]
-}
-// Compiler infers structural bounds:
-//   key needs: hash(self) -> u64
-//   table needs: indexed access, .len()
-// IDE displays: func lookup<K: Hashable>(table: Vec<K>, key: K) -> K
-```
+1. **Prototype:** `func process(data, handler) { ... }` — all inferred
+2. **Solidify:** `func process(data: Vec<Record>, handler) { ... }` — partial
+3. **Publish:** `public func process<T: Ord>(data: Vec<T>, handler: Handler<T>) -> T` — explicit
 
-### Edge Cases
+Fully statically checked at every stage. Not dynamic typing.
 
-| Case | Handling |
-|------|----------|
-| Recursive functions | Inferred from base case + recursive structure. If ambiguous, compiler requires annotation on at least the return type |
-| Mutual recursion | Both functions analyzed together (SCC). If cycle cannot resolve, compiler error requiring annotation on at least one function |
-| Closures | Closure parameter types already inferred from context (unchanged). Gradual constraints apply to the enclosing function's signature |
-| `any Trait` | Cannot be inferred from structural usage — if dynamic dispatch is needed, it must be explicit |
-| `comptime` parameters | Must be explicit — compilation requires knowing them upfront |
-| Empty function body | No constraints inferred. Parameters are unconstrained generics. Return type is `()` |
-| Multiple return types | If different branches return incompatible types, compile error (same as with explicit types) |
-| `extern` functions | Must have full explicit signatures (C ABI requires it) |
+**Interaction with structural traits:** Inferred bounds use structural matching. Body calls `.hash()` and `.eq()` — compiler infers bound requiring those. IDE maps structural bounds to named traits for display.
 
-### Monomorphization
+**Monomorphization:** Inference doesn't change monomorphization. Compiler infers bounds, then monomorphization proceeds as with explicit: each call site generates specialized code. Inferred signature is semantically identical to equivalent explicit.
 
-Inference doesn't change monomorphization. Compiler infers bounds, then monomorphization proceeds as with explicit: each call site generates specialized code, trait satisfaction checked at monomorphization site.
+### IDE Integration
 
-**Guarantee:** Inferred signature semantically identical to equivalent explicit. Changing inferred to explicit (same types) produces identical output.
+Ghost text displays inferred types, bounds, and return types:
 
-### IDE Integration (Principle 7)
-
-The IDE displays inferred information as ghost text:
-
+<!-- test: skip -->
 ```rask
 func process(data, handler) {           // ghost: <T: Validatable>(data: Vec<T>, handler: |Vec<T>| -> T) -> T
     const result = handler(data)
     result.validate()
-    result
+    return result
 }
 ```
 
@@ -291,108 +203,8 @@ Quick actions:
 
 Hover on a parameter shows its full inferred type. Hover on the function name shows the complete inferred signature.
 
-### Metrics Impact
+### See Also
 
-| Metric | Impact | Notes |
-|--------|--------|-------|
-| ED (Ergonomic Delta) | Improved | Private code matches Python/Go ceremony level |
-| CS (Compilation Speed) | Slight decrease | Per-function constraint solving adds work, but no whole-program analysis |
-| SN (Syntactic Noise) | Reduced | Fewer ceremony tokens in private code |
-| PI (Predictability Index) | Maintained | IDE ghost text ensures inferred info is always visible |
-| TC (Transparency Coefficient) | Unchanged | Cost transparency is about operations, not type annotations |
-
-## Examples
-
-### Data Pipeline Prototyping
-
-```rask
-func extract(source) {
-    source.read_all()
-}
-
-func transform(data) {
-    data.lines().filter(|line| line.len() > 0).collect()
-}
-
-func load(dest, records) {
-    for r in records {
-        dest.write(r)
-    }
-}
-
-// Later: solidify the public interface
-public func run_pipeline(source: FileReader, dest: FileWriter) -> () or IoError {
-    const raw = try extract(source)
-    const records = transform(raw)
-    load(dest, records)
-}
-```
-
-### Private Helpers
-
-```rask
-// Bounds inferred — compiler derives: <T: Comparable>(val: T, min_val: T, max_val: T) -> T
-func clamp(val, min_val, max_val) {
-    if val < min_val: min_val
-    else if val > max_val: max_val
-    else: val
-}
-
-// Bounds inferred — compiler derives: <T>(items: Vec<T>, predicate: |T| -> bool) -> Option<usize>
-func find_first(items, predicate) {
-    for i in 0..items.len() {
-        if predicate(items[i]): return Some(i)
-    }
-    None
-}
-```
-
-### Partial Annotations
-
-```rask
-func format_table(headers: Vec<string>, rows) -> string {
-    // headers is explicit, rows is inferred from usage
-    const widths = headers.iter().map(|h| h.len()).collect()
-    let output = string.new()
-    for row in rows {
-        for (i, cell) in row.iter().enumerate() {
-            output.push_str(cell.display().pad_right(widths[i]))
-        }
-        output.push('\n')
-    }
-    output
-}
-// Compiler infers: rows: Vec<Vec<T>> where T: Display
-```
-
-### Gradual Solidification
-
-```rask
-// Step 1: Prototyping — logic first, types later
-func parse(input) {
-    const parts = input.split(",")
-    Record.new(parts[0], parts[1].parse_i32())
-}
-
-// Step 2: Add the type you know, leave the rest
-func parse(input: string) {
-    const parts = input.split(",")
-    Record.new(parts[0], parts[1].parse_i32())
-}
-
-// Step 3: Ready for public API
-public func parse(input: string) -> Record or ParseError {
-    const parts = input.split(",")
-    Record.new(parts[0], try parts[1].parse_i32())
-}
-```
-
-## Integration Notes
-
-- **Memory model:** Inference does not change ownership semantics. Parameter modes (borrow, mutate, take) are inferred from body usage, same as with explicit types.
-- **Type system:** Inferred bounds are structural (same as explicit structural bounds). If an `explicit trait` is required, the programmer must annotate it.
-- **Concurrency:** Closures captured for `spawn` must own their data — inference cannot relax this requirement.
-- **Compiler:** Constraint solving is per-function, per-module. No cross-module inference. Incremental compilation preserved.
-- **C interop:** `extern` functions always require full signatures (C ABI demands it).
-- **Error handling:** `try` propagation in inferred functions works normally — the error type is inferred as part of the return type (`Result<T, E>` where `E` is the union of propagated errors).
-- **Generics spec:** The rule "ALL generic functions MUST declare trait constraints" is softened to "ALL *public* generic functions MUST declare trait constraints" with a reference to this spec.
+- `type.traits` — Trait definitions and structural matching
+- `type.generics` — Generic type parameters and bounds
+- `ctrl.comptime` — Compile-time parameters

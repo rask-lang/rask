@@ -1,43 +1,42 @@
-# OS — Process and Platform Interface
+<!-- id: std.os -->
+<!-- status: decided -->
+<!-- summary: Process control, environment variables, platform info -->
 
-Single `os` module for all process and platform interaction. One import gives you env vars, args, exit, pid, platform info.
+# OS
 
-## Specification
+Single `os` module for process and platform interaction: env vars, args, exit, pid, platform info.
 
-### Environment Variables
+## Environment Variables
 
-```rask
-os.env(key: string) -> string?                       // get env var
-os.env_or(key: string, default: string) -> string     // get with default
-os.set_env(key: string, value: string)                // set env var
-os.remove_env(key: string)                            // unset env var
-os.vars() -> Vec<(string, string)>                    // all env vars
-```
+| Rule | Description |
+|------|-------------|
+| **E1: Get** | `os.env(key)` returns `string?` |
+| **E2: Get with default** | `os.env_or(key, default)` returns `string` |
+| **E3: Set** | `os.set_env(key, value)` sets an env var |
+| **E4: Remove** | `os.remove_env(key)` unsets an env var |
+| **E5: List all** | `os.vars()` returns `Vec<(string, string)>` |
 
-### Command-Line Arguments
+## Command-Line Arguments
 
-```rask
-os.args() -> Vec<string>    // raw args including program name at index 0
-```
+| Rule | Description |
+|------|-------------|
+| **A1: Raw args** | `os.args()` returns `Vec<string>` including program name at index 0 |
 
-For structured argument parsing, see the `cli` module.
+## Process Control
 
-### Process Control
+| Rule | Description |
+|------|-------------|
+| **P1: Exit** | `os.exit(code: i32)` exits the process; return type is `!` (never) |
+| **P2: PID** | `os.getpid()` returns `u32` |
 
-```rask
-os.exit(code: i32) -> !     // exit process, never returns
-os.getpid() -> u32          // process ID
-```
+## Platform Info
 
-### Platform Info
+| Rule | Description |
+|------|-------------|
+| **I1: Platform** | `os.platform()` returns `"linux"`, `"macos"`, `"windows"`, or `"wasm"` |
+| **I2: Architecture** | `os.arch()` returns `"x86_64"`, `"aarch64"`, or `"wasm32"` |
 
-```rask
-os.platform() -> string     // "linux", "macos", "windows", "wasm"
-os.arch() -> string          // "x86_64", "aarch64", "wasm32"
-```
-
-### Access Pattern
-
+<!-- test: skip -->
 ```rask
 import os
 
@@ -51,17 +50,47 @@ func main() {
     }
 
     println("Running on {os.platform()}/{os.arch()}")
-    println("PID: {os.getpid()}")
 }
 ```
 
-## Examples
+## Error Messages
 
-### Environment-Based Configuration
+```
+ERROR [std.os/P1]: unreachable code after os.exit()
+   |
+5  |  os.exit(1)
+6  |  println("done")
+   |  ^^^^^^^^^^^^^^^ unreachable — os.exit() never returns
 
+WHY: os.exit() has return type ! (never), so subsequent code is dead.
+
+FIX: Remove unreachable code or move os.exit() to end of block.
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| `os.env("MISSING")` | E1 | Returns `None` |
+| `os.args()` with no args | A1 | Vec contains at least program name |
+| `os.exit(0)` in defer | P1 | Exits immediately, remaining defers skipped |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**Single module:** Previous design split env vars, args, and exit across `env`, `cli`, and `std` modules. One `os` import is simpler — these are all process-level operations.
+
+**E1 (returns optional):** Env vars may or may not exist. Returning `string?` forces handling the missing case. `env_or` covers the common "default value" pattern.
+
+### Patterns & Guidance
+
+**Environment-based configuration:**
+
+<!-- test: skip -->
 ```rask
-import os
-
 struct Config {
     host: string
     port: i64
@@ -77,11 +106,10 @@ func load_config() -> Config {
 }
 ```
 
-### Platform-Specific Behavior
+**Platform-specific paths:**
 
+<!-- test: skip -->
 ```rask
-import os
-
 func default_config_dir() -> string {
     return match os.platform() {
         "linux" => os.env_or("XDG_CONFIG_HOME", "{os.env_or("HOME", "/tmp")}/.config"),
@@ -92,23 +120,7 @@ func default_config_dir() -> string {
 }
 ```
 
-### Graceful Shutdown
-
-```rask
-import os
-
-func main() {
-    const result = run_server()
-    if result is Err(e) {
-        println("Error: {e}")
-        os.exit(1)
-    }
-}
-```
-
-## Migration from env/std/cli
-
-Previous interpreter modules are now consolidated:
+### Migration
 
 | Old | New | Notes |
 |-----|-----|-------|
@@ -119,11 +131,6 @@ Previous interpreter modules are now consolidated:
 
 Old import names (`env`, `std`, `cli`) remain as aliases during transition.
 
-## References
+### See Also
 
-- specs/stdlib/cli.md — Structured argument parsing (builds on `os.args()`)
-- CORE_DESIGN.md — Transparent cost (env lookups are syscalls)
-
-## Status
-
-**Specified** — ready for implementation in interpreter.
+- `std.cli` — Structured argument parsing (builds on `os.args()`)

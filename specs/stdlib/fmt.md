@@ -1,71 +1,55 @@
-# Formatting — format(), Display, Debug
+<!-- id: std.fmt -->
+<!-- status: decided -->
+<!-- summary: String formatting via format(), Display/Debug traits, println interpolation -->
 
-`format(template, args...)` builtin function with standard placeholder syntax: `{}`, `{0}`, `{name}`, `{:spec}`. `Display` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit interpolation of `{name}` in string arguments.
+# Formatting
 
-## Specification
+`format(template, args...)` with `{}`, `{0}`, `{name}`, `{:spec}` placeholders. `Display` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit `{name}` interpolation.
 
-### format() Function
+## format() Function
 
+| Rule | Description |
+|------|-------------|
+| **F1: Signature** | `format(template: string, args...) -> string` |
+| **F2: Positional** | `{}` uses next arg; `{0}`, `{1}` use explicit index. Cannot mix auto and explicit |
+| **F3: Named** | `{name}` captures variable from scope. Cannot mix with positional |
+| **F4: Escape** | `{{` and `}}` produce literal `{` and `}` |
+
+## Format Specifiers
+
+| Rule | Description |
+|------|-------------|
+| **S1: Grammar** | `{[arg_id][:[[fill]align][width][.precision][type]]}` |
+| **S2: Align** | `<` left, `>` right, `^` center; fill char defaults to space |
+| **S3: Types** | `?` debug, `x`/`X` hex, `b` binary, `o` octal, `e` scientific |
+
+| Specifier | Example | Result |
+|-----------|---------|--------|
+| `{}` | `format("{}", 42)` | `"42"` |
+| `{:?}` | `format("{:?}", vec)` | `"[1, 2, 3]"` |
+| `{:x}` | `format("{:x}", 255)` | `"ff"` |
+| `{:X}` | `format("{:X}", 255)` | `"FF"` |
+| `{:b}` | `format("{:b}", 10)` | `"1010"` |
+| `{:>10}` | `format("{:>10}", "hi")` | `"        hi"` |
+| `{:0>10}` | `format("{:0>10}", 42)` | `"0000000042"` |
+| `{:.3}` | `format("{:.3}", 3.14159)` | `"3.142"` |
+
+<!-- test: skip -->
 ```rask
-format(template: string, args...) -> string
+const hex = format("0x{:08X}", 0xDEAD)
+const table = format("{:<10} {:>8}", "Name", "Score")
 ```
 
-Builds a string by replacing placeholders in `template` with formatted arguments.
+## Display Trait
 
-**Placeholder types:**
+| Rule | Description |
+|------|-------------|
+| **D1: Trait** | `trait Display { func to_string(self) -> string }` |
+| **D2: Primitives** | All primitive types implement `Display` by default |
+| **D3: Structs opt-in** | Structs do NOT auto-implement `Display` — must add via `extend Type with Display` |
+| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Display` not implemented |
 
-| Syntax | Meaning |
-|--------|---------|
-| `{}` | Next positional arg, Display |
-| `{0}`, `{1}` | Explicit positional arg |
-| `{name}` | Variable `name` from scope |
-| `{:spec}` | Next arg with format specifier |
-| `{0:spec}` | Positional arg with specifier |
-| `{name:spec}` | Named arg with specifier |
-| `{{`, `}}` | Literal `{` and `}` |
-
-Positional and named placeholders cannot be mixed in one template. Positional auto-indexing (`{}`) and explicit indexing (`{0}`) cannot be mixed either.
-
-### Format Specifiers
-
-| Specifier | Description | Example |
-|-----------|-------------|---------|
-| `{}` | Display (default) | `format("{}", 42)` -> `"42"` |
-| `{:?}` | Debug representation | `format("{:?}", vec)` -> `"[1, 2, 3]"` |
-| `{:x}` | Hex lowercase | `format("{:x}", 255)` -> `"ff"` |
-| `{:X}` | Hex uppercase | `format("{:X}", 255)` -> `"FF"` |
-| `{:b}` | Binary | `format("{:b}", 10)` -> `"1010"` |
-| `{:o}` | Octal | `format("{:o}", 8)` -> `"10"` |
-| `{:e}` | Scientific notation | `format("{:e}", 1000.0)` -> `"1e3"` |
-| `{:>10}` | Right-align, width 10 | `format("{:>10}", "hi")` -> `"        hi"` |
-| `{:<10}` | Left-align, width 10 | `format("{:<10}", "hi")` -> `"hi        "` |
-| `{:^10}` | Center, width 10 | `format("{:^10}", "hi")` -> `"    hi    "` |
-| `{:0>10}` | Zero-pad, right-align | `format("{:0>10}", 42)` -> `"0000000042"` |
-| `{:.3}` | Precision (floats) | `format("{:.3}", 3.14159)` -> `"3.142"` |
-
-**Full spec grammar:**
-
-```
-{[arg_id][:[[fill]align][width][.precision][type]]}
-```
-
-- `arg_id` -- positional index or name
-- `fill` -- any single character (default space)
-- `align` -- `<` (left), `>` (right), `^` (center)
-- `width` -- integer minimum width
-- `precision` -- `.` followed by integer
-- `type` -- `?` (debug), `x`/`X` (hex), `b` (binary), `o` (octal), `e` (scientific)
-
-### Display Trait
-
-```rask
-trait Display {
-    func to_string(self) -> string
-}
-```
-
-All primitive types (`i32`, `i64`, `f64`, `bool`, `string`, `char`, etc.) implement `Display` by default. Structs do NOT auto-implement `Display` — you must add it:
-
+<!-- test: skip -->
 ```rask
 struct Point { x: f64, y: f64 }
 
@@ -76,18 +60,16 @@ extend Point with Display {
 }
 ```
 
-When `format()` encounters `{}`, it calls `to_string()` on the argument. If the type does not implement `Display`, the compiler reports an error.
+## Debug Trait
 
-### Debug Trait
+| Rule | Description |
+|------|-------------|
+| **G1: Trait** | `trait Debug { func debug_string(self) -> string }` |
+| **G2: Auto-derive** | All types auto-derive `Debug` by default |
+| **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
+| **G4: Debug format** | `format("{:?}", x)` calls `debug_string()` |
 
-```rask
-trait Debug {
-    func debug_string(self) -> string
-}
-```
-
-All types auto-derive `Debug` by default. The auto-derived output shows struct fields and enum variants:
-
+<!-- test: skip -->
 ```rask
 struct Point { x: f64, y: f64 }
 
@@ -95,102 +77,95 @@ const p = Point { x: 1.0, y: 2.0 }
 println(format("{:?}", p))    // Point { x: 1.0, y: 2.0 }
 ```
 
-Auto-derived `Debug` can be overridden:
+## println / print Interpolation
 
-```rask
-extend Point with Debug {
-    func debug_string(self) -> string {
-        return format("P({}, {})", self.x, self.y)
-    }
-}
-```
+| Rule | Description |
+|------|-------------|
+| **I1: Variable capture** | `println("Hello, {name}!")` interpolates `name` from scope |
+| **I2: Field access** | `{point.x}` works for dotted field access |
+| **I3: No expressions** | `{x + y}` is an error — use `format()` for expressions |
 
-When `format()` encounters `{:?}`, it calls `debug_string()` on the argument.
-
-### println / print Interpolation
-
-`println` and `print` perform implicit variable interpolation on string arguments:
-
+<!-- test: skip -->
 ```rask
 const name = "world"
 println("Hello, {name}!")              // Hello, world!
-```
 
-Dotted field access works:
-
-```rask
 const point = Point { x: 1.0, y: 2.0 }
 println("Position: {point.x}, {point.y}")
 ```
 
-Only simple names and field access are supported. Expressions inside `{}` are not allowed:
+## Error Messages
 
-```rask
-println("{x + y}")     // ERROR: expressions not supported, use format()
+```
+ERROR [std.fmt/D4]: type does not implement Display
+   |
+5  |  println(format("{}", my_struct))
+   |                       ^^^^^^^^^ `MyStruct` does not implement Display
+
+WHY: {} calls to_string(), which requires the Display trait.
+
+FIX: Add Display implementation:
+  extend MyStruct with Display {
+      func to_string(self) -> string { ... }
+  }
 ```
 
-For format specifiers or complex expressions, use `format()`:
+```
+ERROR [std.fmt/I3]: expression not supported in string interpolation
+   |
+3  |  println("{x + y}")
+   |           ^^^^^^^ expressions not allowed in interpolation
 
-```rask
-println(format("{:08x}", value))
-println(format("{} + {} = {}", x, y, x + y))
+WHY: println interpolation only supports names and field access.
+
+FIX: Use format():
+  println(format("{} + {} = {}", x, y, x + y))
 ```
 
-### Relationship to string_builder
+```
+ERROR [std.fmt/F2]: cannot mix auto and explicit positional args
+   |
+3  |  format("{} {0}", a, b)
+   |          ^^ ^^^ mixed auto ({}) and explicit ({0})
 
-`format()` allocates a new string. For repeated formatting in a loop, prefer `string_builder`:
+WHY: Mixing auto-index and explicit index is ambiguous.
 
-```rask
-const b = string_builder.with_capacity(1024)
-for item in items.iter() {
-    b.append(format("{}: {}\n", item.name, item.value))
-}
-const report = b.build()
+FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 ```
 
-Keeps allocation visible and predictable per Rask's transparency principle.
+## Edge Cases
 
-## Examples
+| Case | Rule | Handling |
+|------|------|----------|
+| Missing arg for `{2}` | F2 | Compile-time error (when possible) or runtime panic |
+| Type without Display in `{}` | D4 | Compile-time error |
+| `{{` in template | F4 | Literal `{` |
+| Empty template | F1 | Returns empty string |
+| `format("{:?}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
 
-### Basic Formatting
+---
 
-```rask
-const msg = format("Hello, {}!", "world")
-const hex = format("0x{:08X}", 0xDEAD)
-const table = format("{:<10} {:>8}", "Name", "Score")
-```
+## Appendix (non-normative)
 
-### Named Placeholders
+### Rationale
 
-```rask
-const name = "Alice"
-const age = 30
-println("Name: {name}, Age: {age}")
+**D3 (structs opt-in):** Auto-deriving Display would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Display is for users, so you write it.
 
-// Equivalent using format():
-const msg = format("Name: {name}, Age: {age}")
-```
+**I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
 
-### Debug Output
+### Patterns & Guidance
 
-```rask
-const items = Vec.from([1, 2, 3])
-println(format("items = {:?}", items))    // items = [1, 2, 3]
+**Tabular output:**
 
-const map = Map.from([("a", 1), ("b", 2)])
-println(format("map = {:?}", map))        // map = {"a": 1, "b": 2}
-```
-
-### Tabular Output
-
+<!-- test: skip -->
 ```rask
 println(format("{:<20} {:>10} {:>10}", "Item", "Qty", "Price"))
 println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
-println(format("{:<20} {:>10} {:>10.2}", "Gadget", 12, 24.50))
 ```
 
-### Custom Display
+**Custom Display with hex:**
 
+<!-- test: skip -->
 ```rask
 struct Color { r: u8, g: u8, b: u8 }
 
@@ -199,27 +174,26 @@ extend Color with Display {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
 }
-
-const red = Color { r: 255, g: 0, b: 0 }
-println(format("Color: {}", red))    // Color: #FF0000
 ```
 
-## Integration Notes
+**string_builder for loops:** `format()` allocates a new string each call. For repeated formatting, use `string_builder`:
 
-- **strings.md:** `format()` returns a `string`. Uses `string_builder` internally.
-- **Error handling:** `format()` does not return errors. Missing args or type mismatches are compile-time errors (when possible) or panics at runtime.
-- **Compile-time execution:** `format()` on comptime-known args produces a static string.
-- **Concurrency:** `format()` is pure -- no shared state, safe to call from any thread.
-- **Future:** When macros land, `format!(...)` can validate the template at compile time and eliminate runtime parsing overhead.
+<!-- test: skip -->
+```rask
+const b = string_builder.with_capacity(1024)
+for item in items.iter() {
+    b.append(format("{}: {}\n", item.name, item.value))
+}
+const report = b.build()
+```
 
-## Status
+### Integration
 
-| Feature | Interpreter | Type Checker |
-|---------|-------------|--------------|
-| `format()` with `{}` | Planned | -- |
-| Named `{name}` in println | Done | -- |
-| Format specifiers | Planned | -- |
-| Display trait | Not yet | Not yet |
-| Debug trait | Not yet | Not yet |
+- `format()` does not return errors. Missing args or type mismatches are compile-time errors or runtime panics.
+- `format()` on comptime-known args produces a static string.
+- `format()` is pure -- no shared state, safe from any thread.
 
-**Specified** -- ready for implementation in interpreter and type system.
+### See Also
+
+- `std.strings` — `format()` returns a `string`, uses `string_builder` internally
+- `type.traits` — Display and Debug are standard traits

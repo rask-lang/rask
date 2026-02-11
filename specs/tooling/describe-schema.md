@@ -1,52 +1,69 @@
-# `rask describe` — JSON Schema
+<!-- id: tool.describe -->
+<!-- status: decided -->
+<!-- summary: JSON schema for rask describe module API output -->
 
-`rask describe` emits a structured summary of a module's public interface. IDE plugins, documentation generators, and AI assistants all consume the same format.
+# Describe Schema
 
+`rask describe` emits a structured summary of a module's public interface in JSON (v1) or human-readable text.
+
+## CLI
+
+| Flag | Effect |
+|------|--------|
+| **C1: Default** | `rask describe <file>` — human-readable text output |
+| **C2: JSON** | `--format json` — machine-readable JSON |
+| **C3: Private** | `--all` — include private items (`"public": false`) |
+
+<!-- test: skip -->
+```rask
+// rask describe src/server.rk
+// rask describe src/server.rk --format json
+// rask describe src/server.rk --all
 ```
-rask describe src/server.rk                  # human-readable text
-rask describe src/server.rk --format json    # machine-readable JSON
-rask describe src/server.rk --all            # include private items
-```
 
----
+## Top-Level Schema
 
-## Schema (v1)
-
-The JSON output follows this structure. All arrays default to `[]` when empty. Optional fields are omitted when absent.
-
-### Top Level
+| Rule | Description |
+|------|-------------|
+| **S1: Version field** | Always `1` for this spec; consumers check `version` and ignore unknown fields |
+| **S2: Empty arrays** | All arrays default to `[]` when empty |
+| **S3: Absent optionals** | Optional fields omitted when absent, never `null` |
 
 ```json
 {
   "version": 1,
   "module": "server",
   "file": "src/server.rk",
-  "imports": [ ... ],
-  "types": [ ... ],
-  "enums": [ ... ],
-  "traits": [ ... ],
-  "functions": [ ... ],
-  "constants": [ ... ],
-  "externs": [ ... ]
+  "imports": [],
+  "types": [],
+  "enums": [],
+  "traits": [],
+  "functions": [],
+  "constants": [],
+  "externs": []
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `version` | `integer` | Schema version. Always `1` for this spec. |
-| `module` | `string` | Module name (derived from file name). |
-| `file` | `string` | Source file path. |
-| `imports` | `Import[]` | Module imports. |
-| `types` | `StructType[]` | Struct definitions. |
-| `enums` | `EnumType[]` | Enum definitions. |
-| `traits` | `TraitType[]` | Trait definitions. |
-| `functions` | `Function[]` | Top-level functions. |
-| `constants` | `Constant[]` | Top-level constants. |
-| `externs` | `ExternFunc[]` | External function declarations. |
+| `version` | `integer` | Schema version (always `1`) |
+| `module` | `string` | Module name (from file name) |
+| `file` | `string` | Source file path |
+| `imports` | `Import[]` | Module imports |
+| `types` | `StructType[]` | Struct definitions |
+| `enums` | `EnumType[]` | Enum definitions |
+| `traits` | `TraitType[]` | Trait definitions |
+| `functions` | `Function[]` | Top-level functions |
+| `constants` | `Constant[]` | Top-level constants |
+| `externs` | `ExternFunc[]` | External function declarations |
 
----
+## Function
 
-### Function
+| Rule | Description |
+|------|-------------|
+| **F1: Self mode** | `self_mode` is `"self"`, `"mutate"`, or `"take"`; absent for standalone functions |
+| **F2: Result split** | Return type split into `ok`/`err` for `T or E` types |
+| **F3: Optional fields** | `type_params`, `context`, `attrs`, `unsafe`, `comptime` omitted when absent/false |
 
 ```json
 {
@@ -67,54 +84,43 @@ The JSON output follows this structure. All arrays default to `[]` when empty. O
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Function name. |
-| `public` | `bool` | Whether the function is `public`. |
-| `params` | `Param[]` | Parameters (excluding self). |
-| `returns` | `Returns` | Return type, split into ok/err for Result types. |
-| `self_mode` | `string?` | `"self"`, `"mutate"`, or `"take"`. Absent for standalone functions. |
-| `type_params` | `string[]?` | Generic type parameter names. |
-| `context` | `string[]?` | Context clause requirements (`with` clauses). |
-| `attrs` | `string[]?` | Attributes (`@inline`, `@entry`, etc.). |
-| `unsafe` | `bool?` | True if `unsafe func`. |
-| `comptime` | `bool?` | True if `comptime func`. |
+| `name` | `string` | Function name |
+| `public` | `bool` | Whether the function is `public` |
+| `params` | `Param[]` | Parameters (excluding self) |
+| `returns` | `Returns` | Return type |
+| `self_mode` | `string?` | `"self"`, `"mutate"`, or `"take"` |
+| `type_params` | `string[]?` | Generic type parameter names |
+| `context` | `string[]?` | Context clause requirements (`with` clauses) |
+| `attrs` | `string[]?` | Attributes (`@inline`, `@entry`, etc.) |
+| `unsafe` | `bool?` | True if `unsafe func` |
+| `comptime` | `bool?` | True if `comptime func` |
 
 ### Param
 
-```json
-{ "name": "data", "type": "Vec<u8>", "mode": "take" }
-```
-
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Parameter name. |
-| `type` | `string` | Type as written in source. |
-| `mode` | `string` | `"borrow"` (default), `"mutate"`, or `"take"`. |
+| `name` | `string` | Parameter name |
+| `type` | `string` | Type as written in source |
+| `mode` | `string` | `"borrow"` (default), `"mutate"`, or `"take"` |
 
 ### Returns
 
-For plain return types:
+| Field | Type | Description |
+|-------|------|-------------|
+| `ok` | `string` | Success type; `"()"` for void |
+| `err` | `string?` | Error type; absent for non-Result returns |
+
 ```json
 { "ok": "i32" }
-```
-
-For `T or E` result types:
-```json
 { "ok": "ProcessResult", "err": "IoError" }
-```
-
-For void functions:
-```json
 { "ok": "()" }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `ok` | `string` | Success type. `"()"` for void. |
-| `err` | `string?` | Error type. Absent for non-Result returns. |
+## StructType
 
----
-
-### StructType
+| Rule | Description |
+|------|-------------|
+| **T1: Methods merged** | Methods from struct body and `extend` blocks appear in one `methods` array |
 
 ```json
 {
@@ -126,28 +132,25 @@ For void functions:
     { "name": "port", "type": "u16", "public": true },
     { "name": "connections", "type": "Vec<Connection>", "public": false }
   ],
-  "methods": [ ... ]
+  "methods": []
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Struct name. |
-| `public` | `bool` | Whether the struct is `public`. |
-| `type_params` | `string[]?` | Generic type parameter names. |
-| `attrs` | `string[]?` | Attributes (`@resource`, etc.). |
-| `fields` | `Field[]` | Struct fields. |
-| `methods` | `Function[]` | Methods defined in the struct body and extend blocks. |
+| `name` | `string` | Struct name |
+| `public` | `bool` | Whether the struct is `public` |
+| `type_params` | `string[]?` | Generic type parameter names |
+| `attrs` | `string[]?` | Attributes (`@resource`, etc.) |
+| `fields` | `Field[]` | Struct fields |
+| `methods` | `Function[]` | Methods from struct body and extend blocks |
 
-### Field
+## EnumType
 
-```json
-{ "name": "port", "type": "u16", "public": true }
-```
-
----
-
-### EnumType
+| Rule | Description |
+|------|-------------|
+| **E1: Positional fields** | Tuple variants use `"0"`, `"1"`, ... as field names |
+| **E2: Unit variants** | Unit variants have an empty `fields` array |
 
 ```json
 {
@@ -156,36 +159,21 @@ For void functions:
   "type_params": [],
   "variants": [
     { "name": "BindFailed", "fields": [{ "name": "0", "type": "string", "public": true }] },
-    { "name": "ConfigInvalid", "fields": [{ "name": "0", "type": "string", "public": true }] }
+    { "name": "Quit", "fields": [] }
   ],
-  "methods": [ ... ]
+  "methods": []
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Enum name. |
-| `public` | `bool` | Whether the enum is `public`. |
-| `type_params` | `string[]?` | Generic type parameter names. |
-| `variants` | `Variant[]` | Enum variants. |
-| `methods` | `Function[]` | Methods from extend blocks. |
+| `name` | `string` | Enum name |
+| `public` | `bool` | Whether the enum is `public` |
+| `type_params` | `string[]?` | Generic type parameter names |
+| `variants` | `Variant[]` | Enum variants |
+| `methods` | `Function[]` | Methods from extend blocks |
 
-### Variant
-
-Tuple variants use positional field names (`"0"`, `"1"`, ...). Struct variants use named fields.
-
-```json
-{ "name": "Move", "fields": [{ "name": "x", "type": "i32", "public": true }, { "name": "y", "type": "i32", "public": true }] }
-```
-
-Unit variants have an empty fields array:
-```json
-{ "name": "Quit", "fields": [] }
-```
-
----
-
-### TraitType
+## TraitType
 
 ```json
 {
@@ -203,35 +191,22 @@ Unit variants have an empty fields array:
 }
 ```
 
----
-
-### Import
+## Import
 
 ```json
 { "path": ["net"], "alias": null, "is_glob": false, "is_lazy": false }
-```
-
-```json
 { "path": ["http", "Request"], "alias": "HttpReq", "is_glob": false, "is_lazy": false }
 ```
 
----
-
-### Constant
-
-```json
-{ "name": "MAX_CONNECTIONS", "type": "u32", "public": true }
-```
+## Constant
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `name` | `string` | Constant name. |
-| `type` | `string?` | Type annotation if present. |
-| `public` | `bool` | Whether the constant is `public`. |
+| `name` | `string` | Constant name |
+| `type` | `string?` | Type annotation if present |
+| `public` | `bool` | Whether the constant is `public` |
 
----
-
-### ExternFunc
+## ExternFunc
 
 ```json
 {
@@ -245,11 +220,31 @@ Unit variants have an empty fields array:
 }
 ```
 
----
+## Visibility Filtering
+
+| Rule | Description |
+|------|-------------|
+| **V1: Public default** | Only `public` items appear by default |
+| **V2: All flag** | `--all` includes private items, marked `"public": false` |
+
+## Versioning
+
+| Rule | Description |
+|------|-------------|
+| **VR1: Minor additions** | Adding optional fields keeps version at `1`; consumers ignore unknown keys |
+| **VR2: Breaking changes** | Changing field semantics or removing fields bumps to `v2` |
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| No public items | V1 | All arrays empty |
+| Extend block in different file | T1 | Methods merged into defining type |
+| No return type annotation | F2 | `"ok": "()"` |
+| Type-inferred constant | — | `type` field omitted |
+| No explicit type on param | — | Type as written in source |
 
 ## Full Example
-
-Given this source:
 
 ```rask
 import net
@@ -334,11 +329,7 @@ extend Server {
 }
 ```
 
----
-
-## Human-Readable Output
-
-Without `--format json`, `rask describe` outputs a compact text summary:
+Human-readable output (without `--format json`):
 
 ```
 server (src/server.rk)
@@ -357,35 +348,26 @@ server (src/server.rk)
 
 ---
 
-## Visibility Filtering
+## Appendix (non-normative)
 
-By default, only `public` items appear. Use `--all` to include private items. Private items are marked in JSON with `"public": false`.
+### Rationale
 
----
+**S3 (absent optionals):** Omitting absent fields rather than emitting `null` keeps the JSON compact and avoids consumers needing null-checks for every optional.
 
-## Versioning
+**F2 (result split):** Splitting `T or E` into `ok`/`err` fields makes it trivial for tools to detect error-returning functions without parsing type strings.
 
-The `version` field enables forward compatibility. Consumers should check `version` and handle unknown fields gracefully. Schema changes:
+**T1 (methods merged):** Consumers don't care whether a method was in the struct body or an `extend` block. Merging them gives one place to look.
 
-- **Adding optional fields** — minor bump (still v1), consumers ignore unknown keys.
-- **Changing field semantics or removing fields** — major bump (v2).
+### What's Not Included
 
----
+- Function bodies, expressions, or implementation details
+- Type inference results — only explicitly written types
+- Private items (unless `--all`)
+- Documentation comments (future: add `doc` field)
 
-## What's Not Included
+### See Also
 
-- Function bodies, expressions, or implementation details.
-- Type inference results — only explicitly written types.
-- Private items (unless `--all`).
-- Documentation comments (future: add `doc` field).
-
----
-
-## Relationship to Other Tools
-
-| Tool | Purpose |
-|------|---------|
-| `rask describe` | Public API surface (types, signatures) |
-| `rask explain` | Deep analysis of a single function (call graph, resources) |
-| `rask check --json` | Compilation errors with structured diagnostics |
-| `rask lint --json` | Convention violations |
+- `tool.lint` — convention violations
+- `tool.warnings` — compiler warnings
+- `rask explain` — deep analysis of a single function (call graph, resources)
+- `rask check --json` — compilation errors with structured diagnostics

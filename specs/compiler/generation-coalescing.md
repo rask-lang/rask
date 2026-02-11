@@ -1,94 +1,81 @@
+<!-- id: comp.gen-coalesce -->
+<!-- status: decided -->
+<!-- summary: Eliminate redundant generation checks on same handle within basic blocks -->
+<!-- depends: memory/pools.md, compiler/codegen.md -->
+
 # Generation Check Coalescing
 
-## The Question
-How to eliminate redundant generation checks when same handle gets accessed multiple times?
+Compiler performs local dataflow analysis to coalesce multiple generation checks on same handle into a single check, when no intervening pool mutations invalidate the handle.
 
-## Decision
-Compiler performs local dataflow analysis to coalesce multiple generation checks on same handle into single check, when no intervening pool mutations invalidate the handle.
-
-## Rationale
-Expression-scoped borrowing means each `pool[h]` access performs generation check. Sequential accesses to same handle repeat unnecessarily:
-
-```rask
-pool[h].health -= damage        // Check 1
-if pool[h].health <= 0 {        // Check 2 (redundant)
-    pool[h].status = Dead       // Check 3 (redundant)
-}
-```
-
-Affects RO ≤ 1.10 (runtime overhead). Generation coalescing is pure compiler optimization—eliminates redundant checks without changing semantics.
-
-## Specification
-
-### Performance Guarantees
-
-Generation check coalescing is **best-effort**. Compiler applies strong heuristics (GC1-GC4) but may conservatively retain checks when analysis is uncertain (GC5).
-
-| Guarantee Level | Mechanism | Checks | Use Case |
-|-----------------|-----------|--------|----------|
-| **Guaranteed zero** | Frozen pool | 0 | Read-only hot paths |
-| **Guaranteed 1** | `with_valid(h, f)` | 1 | Write hot paths (safe) |
-| **Guaranteed zero** | `get_unchecked(h)` (unsafe) | 0 | Caller-validated handles |
-| **Expected ≤1/handle** | Coalescing | ≤1 | General code |
-| **Worst case** | No coalescing | 1/access | Compiler can't prove safety |
-
-**Why best-effort?** Guaranteeing coalescing requires proving no aliasing between handles and no intervening mutations. Analysis may require inter-procedural reasoning (violates local analysis). Corner cases need conservative choice.
-
-**Escape hatches:** Hot paths where coalescing insufficient: use `with_valid` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See [pools.md](../memory/pools.md).
-
-### Basic Coalescing
-
-```rask
-// Source code
-pool[h].x = 1
-pool[h].y = 2
-pool[h].z = 3
-
-// Compiler transformation
-let _checked = &mut pool.slots[h.index]  // One generation check
-assert!(_checked.generation == h.generation)
-_checked.value.x = 1
-_checked.value.y = 2
-_checked.value.z = 3
-```
-
-### Coalescing Rules
+## Coalescing Rules
 
 | Rule | Description |
 |------|-------------|
 | **GC1: Same handle** | Only coalesce accesses to the same handle variable |
 | **GC2: No intervening mutation** | No `pool.insert()`, `pool.remove()`, or `pool.clear()` between accesses |
 | **GC3: No reassignment** | Handle variable not reassigned between accesses |
-| **GC4: Local analysis** | Coalescing within function scope only |
-| **GC5: Conservative** | When in doubt, keep the check |
+| **GC4: Local analysis** | Coalescing within function scope only; no inter-procedural reasoning |
+| **GC5: Conservative default** | When analysis is uncertain, keep the check |
 
-### What Breaks Coalescing
-
+<!-- test: skip -->
 ```rask
-// Coalesced (no mutation)
-pool[h].a = 1
-pool[h].b = 2    // Same check as above
-
-// NOT coalesced (intervening mutation)
-pool[h].a = 1
-pool.remove(other_h)  // Mutation invalidates assumption
-pool[h].b = 2    // Fresh check required
-
-// NOT coalesced (function call may mutate)
-pool[h].a = 1
-unknown_function(&mut pool)  // May mutate pool
-pool[h].b = 2    // Fresh check required
-
-// NOT coalesced (handle reassignment)
-pool[h].a = 1
-h = get_new_handle()
-pool[h].b = 2    // Different handle, fresh check
+// Three accesses, one check
+pool[h].x = 1
+pool[h].y = 2
+pool[h].z = 3
+// Compiler transforms to single checked dereference + three stores
 ```
 
-### Control Flow
+## Performance Guarantees
 
-Coalescing works across simple control flow:
+| Rule | Description |
+|------|-------------|
+| **PG1: Best-effort** | Coalescing is best-effort; may conservatively retain checks |
+| **PG2: Semantics-preserving** | Only removes checks that would have succeeded; safe in debug and release |
+| **PG3: Escape hatches** | `with_valid(h, f)` guarantees 1 check; `get_unchecked(h)` (unsafe) guarantees 0 |
 
+| Guarantee Level | Mechanism | Checks | Use Case |
+|-----------------|-----------|--------|----------|
+| Guaranteed zero | Frozen pool | 0 | Read-only hot paths |
+| Guaranteed 1 | `with_valid(h, f)` | 1 | Write hot paths (safe) |
+| Guaranteed zero | `get_unchecked(h)` (unsafe) | 0 | Caller-validated handles |
+| Expected 1 or fewer per handle | Coalescing | 1 or fewer | General code |
+| Worst case | No coalescing | 1/access | Compiler can't prove safety |
+
+## Mutation Tracking
+
+Compiler tracks which operations invalidate coalescing.
+
+| Rule | Description |
+|------|-------------|
+| **MT1: Structural mutation breaks** | `pool.insert()`, `pool.remove()`, `pool.clear()` invalidate all coalesced checks |
+| **MT2: Field writes safe** | `pool[h].field = x` does not break coalescing |
+| **MT3: Mutable borrows break** | Function calls receiving `Pool` as mutable break coalescing |
+| **MT4: Immutable borrows safe** | Function calls receiving `Pool` as immutable do not break coalescing |
+| **MT5: modify safe** | `pool.modify(h, f)` does not break (f cannot remove) |
+
+| Operation | Invalidates Coalescing? |
+|-----------|------------------------|
+| `pool[h].field = x` | No (field write, not structural) |
+| `pool.insert(x)` | Yes (may reallocate) |
+| `pool.remove(h2)` | Yes (changes generation) |
+| `pool.clear()` | Yes (invalidates all) |
+| `pool.modify(h, f)` | No (f cannot remove) |
+| Function call with `Pool` (read) | No (immutable borrow) |
+| Function call with `Pool` (mutate) | Yes (may mutate) |
+| `pool.cursor()` iteration | Per-iteration checks |
+
+## Control Flow
+
+| Rule | Description |
+|------|-------------|
+| **CF1: Basic block** | Full coalescing within a basic block |
+| **CF2: Branches** | Coalesced across if/else if both paths check same handle |
+| **CF3: Loop boundary** | Fresh check per loop iteration |
+| **CF4: Function call boundary** | Fresh check after calls that may mutate pool |
+| **CF5: Await boundary** | Fresh check after await points |
+
+<!-- test: skip -->
 ```rask
 // Coalesced across if-else
 pool[h].x = 1        // Check here
@@ -98,16 +85,19 @@ if condition {
     pool[h].z = 3    // No check (same path)
 }
 
-// NOT coalesced across loop iterations
+// NOT coalesced across loop
 for i in 0..n {
-    pool[h].x = i    // Check on EACH iteration (loop may have mutations)
+    pool[h].x = i    // Check on EACH iteration
 }
 ```
 
-### Ambient Pools
+## Ambient Pools
 
-`with` blocks enable more aggressive coalescing:
+| Rule | Description |
+|------|-------------|
+| **AP1: With blocks** | `with pool { }` enables more aggressive coalescing within scope |
 
+<!-- test: skip -->
 ```rask
 with pool {
     h.x = 1         // Check once at first access
@@ -117,75 +107,78 @@ with pool {
 }
 ```
 
-### Analysis Scope
+## Frozen Pools
 
-| Scope | Coalescing |
-|-------|-----------|
-| Within basic block | Full coalescing |
-| Across branches (if/else) | Coalesced if both paths check same handle |
-| Across loops | Fresh check per iteration |
-| Across function calls | Fresh check after calls that may mutate |
-| Across await points | Fresh check after await |
+| Rule | Description |
+|------|-------------|
+| **FP1: No checks** | Frozen pools skip all generation checks; coalescing irrelevant |
 
-### Known Mutations
+## Debug vs Release
 
-Compiler tracks which operations may invalidate handles:
+| Rule | Description |
+|------|-------------|
+| **DR1: Always applied** | Coalescing applies in both debug and release (semantics-preserving) |
+| **DR2: Release more aggressive** | Release mode may inline functions, enabling wider coalescing scope |
+| **DR3: Disable flag** | `rask build --no-generation-coalescing` disables for debugging stale handle issues |
 
-| Operation | Invalidates Coalescing? |
-|-----------|------------------------|
-| `pool[h].field = x` | No (read/write, not structural) |
-| `pool.insert(x)` | Yes (may reallocate) |
-| `pool.remove(h2)` | Yes (changes generation) |
-| `pool.clear()` | Yes (invalidates all) |
-| `pool.modify(h, f)` | No (f cannot remove) |
-| Function call with `Pool` (read) | No (immutable borrow) |
-| Function call with `Pool` (mutate) | Yes (may mutate) |
-| `pool.cursor()` iteration | Per-iteration checks |
+## Compiler IR
 
-### Debug vs Release
+Coalesced access represented as single `pool_checked_access` in MIR.
 
-| Mode | Behavior |
-|------|----------|
-| Debug | Coalescing still applies (optimization is semantics-preserving) |
-| Release | More aggressive coalescing with inlining |
-
-Coalescing always safe—only removes checks that would have succeeded anyway.
-
-### Interaction with Frozen Pools
-
-Frozen pools skip ALL generation checks (not just coalescing):
-
-```rask
-let frozen = pool.freeze()
-frozen[h].x = 1    // No check (frozen)
-frozen[h].y = 2    // No check (frozen)
 ```
-
-Coalescing irrelevant for frozen pools—no checks to coalesce.
-
-### Compiler IR
-
-Compiler represents coalesced access as single checked dereference:
-
-```rask
-// IR (simplified)
-%slot = pool_checked_access(pool, handle)  // Generation check
+// Coalesced (1 check, 3 stores)
+%slot = pool_checked_access(pool, handle)
 store %slot.x, 1
 store %slot.y, 2
 store %slot.z, 3
-```
 
-vs non-coalesced:
-
-```rask
-// IR (simplified)
-%slot1 = pool_checked_access(pool, handle)  // Check
+// Non-coalesced (2 checks)
+%slot1 = pool_checked_access(pool, handle)
 store %slot1.x, 1
-%slot2 = pool_checked_access(pool, handle)  // Check (redundant)
+%slot2 = pool_checked_access(pool, handle)
 store %slot2.y, 2
 ```
 
-### Benchmarks (Expected)
+## Edge Cases
+
+| Case | Handling | Rule |
+|------|---------|------|
+| Indirect handles (`pool[get_handle()]`) | Check on each call (can't prove same handle) | GC1 |
+| Collections of handles (`for h in handles { pool[h] }`) | Check per handle (different handles) | GC1, CF3 |
+| Handle reassignment mid-block | Fresh check after reassignment | GC3 |
+| Mutation between accesses | Fresh check after mutation | GC2, MT1 |
+| Unknown function with `&mut pool` | Fresh check after call | MT3 |
+| Async: after await point | Fresh check | CF5 |
+| Frozen pool accesses | No checks at all (coalescing irrelevant) | FP1 |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**GC1-GC5 (coalescing strategy):** Expression-scoped borrowing means each `pool[h]` access performs a generation check. Sequential accesses to the same handle repeat unnecessarily. Coalescing eliminates redundant checks without changing semantics. Affects runtime overhead metric (RO <= 1.10).
+
+**PG1 (best-effort):** Guaranteeing coalescing requires proving no aliasing between handles and no intervening mutations. That may require inter-procedural reasoning, which violates local analysis (GC4). Corner cases need the conservative choice.
+
+**PG3 (escape hatches):** Hot paths where coalescing is insufficient can use `with_valid` (safe, 1 check) or `get_unchecked` (unsafe, 0 checks). See `mem.pools`.
+
+### Patterns & Guidance
+
+**Entity update pattern:**
+
+<!-- test: skip -->
+```rask
+// Source
+func update_entity(pool: Pool<Entity>, h: Handle<Entity>, dt: f32) {
+    pool[h].velocity += pool[h].acceleration * dt
+    pool[h].position += pool[h].velocity * dt
+    pool[h].age += dt
+}
+// After coalescing: single check, then direct field access
+```
+
+**Expected improvements:**
 
 | Pattern | Without Coalescing | With Coalescing |
 |---------|-------------------|-----------------|
@@ -193,29 +186,13 @@ store %slot2.y, 2
 | Loop body, 5 accesses | 5 checks/iteration | 1 check/iteration |
 | `with` block, 10 accesses | 10 checks | 1 check |
 
-**Expected improvement:** 5-15% for access-heavy code paths.
+Expected 5-15% improvement for access-heavy code paths.
 
-### Limitations
-
-1. **Cross-function:** Coalescing doesn't cross function boundaries (local analysis)
-2. **Indirect handles:** `pool[get_handle()]` checks on each call
-3. **Collections of handles:** `for h in handles { pool[h] }` checks per handle
-4. **Async:** Checks required after await points
-
-### Debugging
-
-Compiler flag to disable coalescing:
-
-```
-rask build --no-generation-coalescing
-```
-
-Every access performs its check. Useful for debugging stale handle issues.
-
-### IDE Support
+### IDE Integration
 
 IDE should show coalesced regions:
 
+<!-- test: skip -->
 ```rask
 pool[h].x = 1    // IDE: [generation check]
 pool[h].y = 2    // IDE: [coalesced]
@@ -224,58 +201,13 @@ pool.remove(other)
 pool[h].w = 4    // IDE: [generation check]
 ```
 
-## Examples
+### Open Issues
 
-### Entity Update
-
-```rask
-// Source
-func update_entity(pool: Pool<Entity>, h: Handle<Entity>, dt: f32) {
-    pool[h].velocity += pool[h].acceleration * dt
-    pool[h].position += pool[h].velocity * dt
-    pool[h].age += dt
-}
-
-// After coalescing (conceptual)
-func update_entity(pool: Pool<Entity>, h: Handle<Entity>, dt: f32) {
-    let e = pool.checked_get_mut(h)  // Single check
-    e.velocity += e.acceleration * dt
-    e.position += e.velocity * dt
-    e.age += dt
-}
-```
-
-### With Ambient Pool
-
-```rask
-with pool {
-    // All these coalesce to one check
-    h.health = 100
-    h.mana = 50
-    h.stamina = 75
-    h.position = spawn_point
-    h.rotation = default_rotation
-}
-```
-
-### Non-Coalesced (Mutation Between)
-
-```rask
-pool[h1].x = 1        // Check for h1
-pool.remove(h2)       // Invalidates coalescing
-pool[h1].y = 2        // Fresh check for h1 (h1 might be h2!)
-```
-
-## Integration Notes
-
-- **Memory Model:** No semantic change. Optimization invisible to user.
-- **Type System:** No impact.
-- **Generics:** Works for all `Pool<T>`.
-- **Concurrency:** Each task optimizes independently.
-- **Compiler:** Implemented as MIR optimization pass.
-
-## Remaining Issues
-
-### Low Priority
 1. **Inter-procedural coalescing** — With inlining, could coalesce across function boundaries.
 2. **Guaranteed coalescing for `with` blocks** — Could strengthen guarantee within ambient pool scope.
+
+### See Also
+
+- `comp.codegen` — MIR optimization pipeline where coalescing runs
+- `mem.pools` — Pool and Handle design, `with_valid`, `get_unchecked`
+- `mem.borrowing` — Expression-scoped borrowing that motivates per-access checks

@@ -1,84 +1,72 @@
-# Math — Mathematical Functions and Constants
+<!-- id: std.math -->
+<!-- status: decided -->
+<!-- summary: Mathematical functions (trig, log, multi-arg) and constants in the math module -->
 
-Dedicated `math` module for functions that don't naturally attach to single value (trig, logarithms, multi-argument functions) plus constants. Common single-value operations (`abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max`) remain as methods on `f64`/`i64`.
+# Math
 
-## Specification
+Dedicated `math` module for functions that don't attach to a single value (trig, logarithms, multi-argument). Common single-value operations (`abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max`) are methods on `f64`/`i64`.
 
-### Constants
+## Constants
 
-All constants are `f64`:
+| Rule | Description |
+|------|-------------|
+| **C1: Float constants** | `math.PI`, `math.E`, `math.TAU`, `math.INF`, `math.NEG_INF`, `math.NAN` are `f64` |
 
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `math.PI` | 3.14159265358979... | Circle ratio |
-| `math.E` | 2.71828182845904... | Euler's number |
-| `math.TAU` | 6.28318530717958... | 2 * PI |
-| `math.INF` | +∞ | Positive infinity |
-| `math.NEG_INF` | -∞ | Negative infinity |
-| `math.NAN` | NaN | Not a number |
+| Constant | Value |
+|----------|-------|
+| `math.PI` | 3.14159265358979... |
+| `math.E` | 2.71828182845904... |
+| `math.TAU` | 6.28318530717958... (2 * PI) |
+| `math.INF` | +infinity |
+| `math.NEG_INF` | -infinity |
+| `math.NAN` | Not a number |
 
-### Trigonometric Functions
+## Trigonometric Functions
 
-All operate on `f64`, angles in radians:
+| Rule | Description |
+|------|-------------|
+| **T1: Trig** | `math.sin`, `math.cos`, `math.tan` take `f64` radians, return `f64` |
+| **T2: Inverse trig** | `math.asin`, `math.acos`, `math.atan` return radians |
+| **T3: atan2** | `math.atan2(y, x)` — two-argument arc tangent |
 
-```rask
-math.sin(x: f64) -> f64
-math.cos(x: f64) -> f64
-math.tan(x: f64) -> f64
-math.asin(x: f64) -> f64       // arc sine, result in [-PI/2, PI/2]
-math.acos(x: f64) -> f64       // arc cosine, result in [0, PI]
-math.atan(x: f64) -> f64       // arc tangent, result in [-PI/2, PI/2]
-math.atan2(y: f64, x: f64) -> f64  // two-argument arc tangent
-```
+## Exponential and Logarithmic Functions
 
-### Exponential and Logarithmic Functions
+| Rule | Description |
+|------|-------------|
+| **L1: exp** | `math.exp(x)` computes e^x |
+| **L2: ln** | `math.ln(x)` is natural log (not `log` — avoids base ambiguity) |
+| **L3: Explicit base** | `math.log2(x)` and `math.log10(x)` for base-2 and base-10 |
 
-```rask
-math.exp(x: f64) -> f64        // e^x
-math.ln(x: f64) -> f64         // natural log (not "log" — avoids base ambiguity)
-math.log2(x: f64) -> f64       // base-2 log
-math.log10(x: f64) -> f64      // base-10 log
-```
+## Multi-Argument Functions
 
-**Why `ln` not `log`?** `log` is ambiguous — is it base-e, base-2, or base-10? `ln` is unambiguous (natural log). `log2` and `log10` are explicit.
+| Rule | Description |
+|------|-------------|
+| **M1: hypot** | `math.hypot(x, y)` computes sqrt(x^2 + y^2) without overflow |
+| **M2: clamp** | `math.clamp(x, lo, hi)` clamps to [lo, hi]; generic over ordered numeric types |
 
-### Multi-Argument Functions
+## Conversion and Classification
 
-```rask
-math.hypot(x: f64, y: f64) -> f64          // sqrt(x² + y²) without overflow
-math.clamp(x: f64, lo: f64, hi: f64) -> f64  // clamp x to [lo, hi]
-```
+| Rule | Description |
+|------|-------------|
+| **V1: Angle conversion** | `math.to_radians(degrees)` and `math.to_degrees(radians)` |
+| **V2: Classification** | `math.is_nan(x)`, `math.is_inf(x)`, `math.is_finite(x)` return `bool` |
 
-`clamp` also works for integers — it's generic over ordered numeric types.
-
-### Conversion Functions
-
-```rask
-math.to_radians(degrees: f64) -> f64
-math.to_degrees(radians: f64) -> f64
-```
-
-### Classification Functions
-
-```rask
-math.is_nan(x: f64) -> bool
-math.is_inf(x: f64) -> bool
-math.is_finite(x: f64) -> bool
-```
-
-### Access Pattern
-
+<!-- test: skip -->
 ```rask
 import math
 
 const angle = math.PI / 4.0
 const result = math.sin(angle)
 const dist = math.hypot(3.0, 4.0)   // 5.0
+const clamped = math.clamp(150.0, 0.0, 100.0)  // 100.0
 ```
 
-### Relationship to Methods
+## Value Methods (not in math module)
 
-These operations are methods on `f64` / `i64` and are NOT in the `math` module:
+| Rule | Description |
+|------|-------------|
+| **N1: f64 methods** | `abs`, `sqrt`, `pow`, `floor`, `ceil`, `round`, `min`, `max` are methods on `f64` |
+| **N2: i64 methods** | `abs`, `min`, `max` are methods on `i64` |
 
 | Method | Available on | Example |
 |--------|-------------|---------|
@@ -91,85 +79,62 @@ These operations are methods on `f64` / `i64` and are NOT in the `math` module:
 | `min(y)` | f64, i64 | `x.min(y)` |
 | `max(y)` | f64, i64 | `x.max(y)` |
 
-## Examples
+## Error Messages
 
-### Distance Calculation
+```
+ERROR [std.math/N1]: no method `sin` on type f64
+   |
+5  |  const r = x.sin()
+   |              ^^^ f64 does not have a sin method
 
+WHY: Trig functions are in the math module, not on f64.
+
+FIX: Use math.sin(x) instead.
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| `math.ln(0.0)` | L2 | Returns `NEG_INF` |
+| `math.ln(-1.0)` | L2 | Returns `NAN` |
+| `math.sqrt(-1.0)` | N1 | Returns `NAN` |
+| `math.sin(NAN)` | T1 | Returns `NAN` (NaN propagates) |
+| `math.clamp(NAN, 0.0, 1.0)` | M2 | Returns `NAN` |
+| `math.INF + math.NEG_INF` | C1 | Returns `NAN` |
+| `math.is_nan(math.NAN)` | V2 | Returns `true` |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**L2 (ln not log):** `log` is ambiguous — base-e, base-2, or base-10? `ln` is unambiguous. `log2` and `log10` are explicit.
+
+**N1 (methods vs module):** Single-value operations (`x.abs()`, `x.sqrt()`) read naturally as methods. Multi-argument or transcendental functions (`math.atan2(y, x)`, `math.sin(x)`) don't attach to one value, so they live in the module.
+
+### Patterns & Guidance
+
+**Distance and angle:**
+
+<!-- test: skip -->
 ```rask
 import math
 
 func distance(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     return math.hypot(x2 - x1, y2 - y1)
 }
-```
-
-### Angle Between Points
-
-```rask
-import math
 
 func angle_between(x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
     return math.atan2(y2 - y1, x2 - x1)
 }
-
-func main() {
-    const angle = angle_between(0.0, 0.0, 1.0, 1.0)
-    const degrees = math.to_degrees(angle)
-    println("Angle: {degrees} degrees")  // ~45 degrees
-}
 ```
 
-### Clamping Values
+### Implementation
 
-```rask
-import math
+All functions map directly to platform `libm` or hardware FPU instructions. No allocation, no error returns -- pure numeric operations following IEEE 754 semantics.
 
-func apply_damage(health: f64, damage: f64) -> f64 {
-    return math.clamp(health - damage, 0.0, 100.0)
-}
-```
+### See Also
 
-### Sensor Processing
-
-```rask
-import math
-
-func moving_average(samples: Vec<f64>, window: i64) -> Vec<f64> {
-    const result = Vec.new()
-    for i in 0..samples.len() {
-        let sum = 0.0
-        let count = 0
-        for j in (i - window + 1)..=i {
-            if j >= 0 && j < samples.len() {
-                sum += samples[j]
-                count += 1
-            }
-        }
-        try result.push(sum / count.to_float())
-    }
-    return result
-}
-```
-
-## Edge Cases
-
-- `math.ln(0.0)` returns `NEG_INF`
-- `math.ln(-1.0)` returns `NAN`
-- `math.sqrt(-1.0)` returns `NAN`
-- NaN propagates: `math.sin(NAN)` returns `NAN`
-- `math.clamp(NAN, 0.0, 1.0)` returns `NAN`
-- `math.is_nan(math.NAN)` returns `true`
-- `math.INF + math.NEG_INF` returns `NAN`
-
-## Implementation Notes
-
-All functions map directly to platform `libm` or hardware FPU instructions. No allocation, no error returns — pure numeric operations following IEEE 754 semantics.
-
-## References
-
-- specs/stdlib/time.md — Uses Duration arithmetic
-- CORE_DESIGN.md — Transparent cost (all operations are O(1), no allocation)
-
-## Status
-
-**Specified** — ready for implementation in interpreter.
+- `std.time` — Duration arithmetic

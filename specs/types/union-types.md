@@ -1,23 +1,22 @@
+<!-- id: type.unions -->
+<!-- status: decided -->
+<!-- summary: Error unions (A | B) for type-safe error composition, restricted to error position -->
+<!-- depends: types/error-types.md, types/enums.md -->
+
 # Union Types
 
-## Overview
+Union types (`A | B`) provide type-safe error composition. Restricted to error position in `T or E` — use explicit enums for data modeling.
 
-Union types (`A | B`) provide type-safe error composition. **Restricted to error position** in `Result<T, E>`—use explicit enums for data modeling.
+## Union Syntax and Semantics
 
-## Decision
+| Rule | Description |
+|------|-------------|
+| **U1: Error position only** | Union types valid only in error position of `T or E` |
+| **U2: Anonymous enum** | `A \| B \| C` compiles to a compiler-generated anonymous enum |
+| **U3: Canonical ordering** | Union types normalized alphabetically; duplicates deduplicated |
+| **U4: Equality** | Two union types equal if their canonical forms are equal |
 
-Error unions are compiler-generated anonymous enums. Ergonomic error composition without manual wrappers. General union types not supported—use explicit enums.
-
-## Rationale
-
-Error composition extremely common. Requiring explicit error enums for every combination violates Ergonomic Simplicity. But general union types add significant complexity (subtyping, variance, method resolution). Restricting to error position gives benefit where it matters while keeping type system simple.
-
-## Specification
-
-### Syntax
-
-Union types are only valid in error position of `Result<T, E>`:
-
+<!-- test: skip -->
 ```rask
 // Valid: error unions
 func load() -> Config or (IoError | ParseError)
@@ -25,38 +24,15 @@ func process() -> Output or (IoError | ParseError | ValidationError)
 
 // Invalid: general unions not allowed
 let x: int | string = ...              // Compile error
-func foo(input: A | B) -> C              // Compile error
+func foo(input: A | B) -> C           // Compile error
 ```
 
-### Semantics
+## Subtyping and Propagation
 
-`A | B | C` compiles to anonymous enum:
-
-```rask
-// IoError | ParseError compiles to:
-enum __ErrorUnion_IoError_ParseError {
-    IoError(IoError),
-    ParseError(ParseError),
-}
-```
-
-Generated name internal—users interact via union syntax.
-
-### Canonical Ordering
-
-Union types are normalized alphabetically:
-
-| Written | Canonical Form |
-|---------|----------------|
-| `ParseError \| IoError` | `IoError \| ParseError` |
-| `C \| A \| B` | `A \| B \| C` |
-| `IoError \| IoError` | `IoError` (deduplicated) |
-
-Two union types are equal if their canonical forms are equal.
-
-### Subtyping
-
-For `try` propagation, error types widen automatically:
+| Rule | Description |
+|------|-------------|
+| **S1: Subset widening** | `try` succeeds if expression error type is a subset of the return error union |
+| **S2: Auto-widen** | Error types widen automatically during `try` propagation |
 
 | Expression Error | Return Error | Valid? |
 |------------------|--------------|--------|
@@ -64,115 +40,134 @@ For `try` propagation, error types widen automatically:
 | `IoError \| ParseError` | `IoError \| ParseError \| ValidationError` | Yes |
 | `IoError \| ParseError` | `IoError` | No (ParseError not in target) |
 
-**Rule:** `try` succeeds if expression error type ⊆ return error union.
-
+<!-- test: skip -->
 ```rask
 func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError ⊆ union: OK
     const config = try parse(content)     // ParseError ⊆ union: OK
-    config
-}
-
-func process() -> Output or (IoError | ParseError | ValidationError) {
-    const config = try load()             // IoError | ParseError ⊆ union: OK
-    try validate(config)
+    return config
 }
 ```
 
-### Memory Layout
+## Memory Layout
 
-| Component | Size |
-|-----------|------|
-| Discriminant | u8 (supports up to 256 error types) |
-| Payload | max(sizeof(A), sizeof(B), ...) |
-| Alignment | max alignment of all members |
+| Rule | Description |
+|------|-------------|
+| **L1: Inline storage** | Union errors stored inline, no heap allocation |
+| **L2: Discriminant** | u8 discriminant (up to 256 error types) |
+| **L3: Payload** | Payload sized to max(sizeof(A), sizeof(B), ...) |
+| **L4: Alignment** | Max alignment of all members |
 
-Storage is inline (no heap allocation).
+## Pattern Matching
 
-### Pattern Matching
+| Rule | Description |
+|------|-------------|
+| **M1: Match by type** | Match union errors by type name |
+| **M2: Exhaustiveness** | All variants known from definition — exhaustiveness checked |
 
-Match union errors by type name:
-
+<!-- test: skip -->
 ```rask
 match result {
     Ok(config) => use(config),
     Err(IoError.NotFound(p)) => println("not found: {}", p),
-    Err(IoError.PermissionDenied(p)) => retry_elevated(p),
     Err(ParseError.Syntax(l, c)) => println("syntax error at {}:{}", l, c),
     Err(_) => println("other error"),
 }
 ```
 
-Exhaustiveness checking works—all variants known from definition.
+## Generics
 
-### Interaction with Generics
+| Rule | Description |
+|------|-------------|
+| **G1: Extend generic errors** | Unions can extend generic error types: `U or (E \| TransformError)` |
 
-Unions can extend generic errors:
-
+<!-- test: skip -->
 ```rask
-func transform<T, E>(result: Result<T, E>) -> U or (E | TransformError)
+func transform<T, E>(result: T or E) -> U or (E | TransformError)
 ```
 
-Union extends E with additional variants.
+## Error Messages
 
-### No General Union Types
+```
+ERROR [type.unions/U1]: union types only allowed in error position
+   |
+3  |  let x: int | string = ...
+   |         ^^^^^^^^^^^^ use an explicit enum for data modeling
 
-For data modeling, use explicit enums:
+WHY: General union types add subtyping complexity. Use enums instead.
 
-```rask
-// Instead of: let value: int | string = ...
-// Use:
-enum IntOrString { Int(i32), String(string) }
-let value: IntOrString = IntOrString.Int(42)
+FIX: enum IntOrString { Int(i32), String(string) }
 ```
 
-Explicit enums are:
-- Self-documenting (meaningful variant names)
-- Extensible (add methods)
-- Clear at call sites
+```
+ERROR [type.unions/S1]: error type not subset of return union
+   |
+5  |  const config = try load()
+   |                 ^^^ load() can return ParseError
+6  |  // but this function returns IoError only
 
-## Examples
+WHY: All error types from try must be covered by the return union.
 
-### Layered Error Handling
+FIX: Add ParseError to the return type:
+  func process() -> Output or (IoError | ParseError)
+```
 
+## Edge Cases
+
+| Case | Rule | Behavior |
+|------|------|----------|
+| Duplicate types in union | U3 | Deduplicated (`IoError \| IoError` = `IoError`) |
+| Single type in union | U3 | Equivalent to bare error type |
+| Order differences | U3 | Normalized alphabetically |
+| Union in non-error position | U1 | Compile error |
+| Generic error extension | G1 | Union extends E with additional variants |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**U1 (error position only):** Error composition is extremely common. Requiring explicit error enums for every combination violates Ergonomic Simplicity. But general union types add significant complexity (subtyping, variance, method resolution). Restricting to error position gives the benefit where it matters while keeping the type system simple.
+
+**U2 (anonymous enum):** The generated name is internal — users interact via union syntax. This avoids polluting the namespace with boilerplate error enum definitions.
+
+### Patterns & Guidance
+
+**Layered error handling:**
+
+<!-- test: skip -->
 ```rask
 // Low-level
 func read_file(path: string) -> string or IoError
 
-// Mid-level
+// Mid-level: composes errors from lower layers
 func parse_config(path: string) -> Config or (IoError | ParseError) {
     const content = try read_file(path)
-    try parse(content)
+    return try parse(content)
 }
 
-// High-level
+// High-level: composes further
 func load_app() -> App or (IoError | ParseError | ValidationError) {
     const config = try parse_config("app.toml")
     const valid = try validate(config)
-    App.new(valid)
+    return App.new(valid)
 }
 ```
 
-### Handling Specific Errors
+**For data modeling, use explicit enums:**
 
+<!-- test: skip -->
 ```rask
-match load_app() {
-    Ok(app) => app.run(),
-    Err(IoError.NotFound(_)) => create_default_config(),
-    Err(ParseError.Syntax(l, c)) => {
-        println("Fix syntax error at line {}", l)
-        exit(1)
-    }
-    Err(e) => {
-        println("Error: {}", e.message())
-        exit(1)
-    }
-}
+// Instead of: let value: int | string = ...
+enum IntOrString { Int(i32), String(string) }
+let value: IntOrString = IntOrString.Int(42)
 ```
 
-## Integration
+Explicit enums are self-documenting (meaningful variant names), extensible (add methods), and clear at call sites.
 
-- **Propagation:** `try` auto-widens to return union
-- **Matching:** By type name, exhaustiveness checked
-- **Enums:** Members typically enums with `message()`
-- **Methods:** `.map_err()` transforms union errors
+### See Also
+
+- `type.enums` — Enum definitions
+- `type.errors` — Error types and `try` propagation
+- `type.generics` — Generic type parameters

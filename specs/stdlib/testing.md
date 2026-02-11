@@ -1,12 +1,19 @@
-# Testing Framework
+<!-- id: std.testing -->
+<!-- status: decided -->
+<!-- summary: Test blocks, assertions, table-driven tests, benchmarks, parallel execution -->
 
-Built-in test framework with `test` blocks, `@test` functions, `assert`/`check` assertions, `ensure` cleanup, parallel execution, seeded random, and comptime tests.
+# Testing
+
+Built-in test framework with `test` blocks, `@test` functions, assertions, parallel execution, and benchmarks.
 
 ## Test Declaration
 
-Two forms: `test` blocks for standalone tests, and `@test` on functions for callable tests.
-
-### Test Blocks
+| Rule | Description |
+|------|-------------|
+| **T1: Test blocks** | `test "name" { body }` — standalone, not exported, stripped in release builds |
+| **T2: @test functions** | `@test` on a function makes it both a test and a callable function |
+| **T3: Location** | Tests may appear inline in any `.rk` file or in separate `*_test.rk` files |
+| **T4: Private access** | Inline and same-package `*_test.rk` tests can access private members; external test files see `public` only |
 
 ```rask
 test "addition works" {
@@ -14,17 +21,7 @@ test "addition works" {
 }
 ```
 
-| Property | Value |
-|----------|-------|
-| Syntax | `test "description" { body }` |
-| Location | Anywhere a statement is valid |
-| Visibility | Not exported, not callable |
-| Compilation | Stripped in release builds |
-
-### `@test` Functions
-
-The `@test` attribute marks a function as a test. Unlike `test` blocks, these are regular functions that can also be called from other code.
-
+<!-- test: skip -->
 ```rask
 @test
 func config_defaults_are_valid() -> bool {
@@ -34,70 +31,28 @@ func config_defaults_are_valid() -> bool {
 }
 ```
 
-| Property | Value |
-|----------|-------|
-| Syntax | `@test` before `func` declaration |
-| Location | Anywhere a function is valid |
-| Visibility | Normal function visibility rules apply |
-| Callable | Yes — works as a regular function AND as a test |
-| Compilation | Function always compiled; test runner invokes it during `rask test` |
-
-**When to use which:**
-
-| Form | Use for |
-|------|---------|
-| `test "name" { }` | Standalone tests, quick assertions, table-driven tests |
-| `@test func name()` | Functions that double as tests — validation helpers, self-checking utilities |
-
-Both coexist. A file can have `test` blocks and `@test` functions side by side.
-
-## Test Location
-
-Tests MAY appear:
-1. **Inline** — In any `.rk` file, near the code they test
-2. **Separate files** — In `*_test.rk` files in the same directory
-
-| Location | Private access | Use case |
-|----------|---------------|----------|
-| Inline | Yes | Unit tests near implementation |
-| `*_test.rk` (same package) | Yes | Larger test suites |
-| `*_test.rk` (external) | No (`public` only) | Integration tests |
-
 ## Assertions
 
-| Assertion | On Failure | Use Case |
-|-----------|------------|----------|
-| `assert expr` | Test stops immediately | Critical invariant |
-| `check expr` | Test continues, marked failed | Gather all failures |
+| Rule | Description |
+|------|-------------|
+| **A1: assert** | `assert expr` — test stops immediately on failure |
+| **A2: check** | `check expr` — test continues, marked failed |
+| **A3: Messages** | Both accept optional message: `assert expr, "message"` |
+| **A4: Rich comparison** | `assert_eq(got, expected)` pretty-prints diff on failure |
 
 ```rask
 test "multiple checks" {
-    check 1 + 1 == 2      // if fails, continue
-    check 2 + 2 == 4      // runs even if above failed
-    assert initialized()  // if fails, stop here
+    check 1 + 1 == 2
+    check 2 + 2 == 4
+    assert initialized()
 }
-```
-
-**Messages:**
-```rask
-assert a == b, "expected equal"
-check x > 0, "x must be positive, got {x}"
-```
-
-**Output on failure:**
-- File and line number
-- Expression that failed
-- Values of each side (if comparison)
-- Optional message
-
-**Rich comparison:**
-```rask
-assert_eq(got, expected)  // Pretty-prints diff on failure
 ```
 
 ## Table-Driven Tests
 
-Native support via tuple iteration:
+| Rule | Description |
+|------|-------------|
+| **T5: Tuple iteration** | Loop over tuple arrays for table-driven tests |
 
 ```rask
 test "add cases" {
@@ -107,22 +62,16 @@ test "add cases" {
 }
 ```
 
-Named cases for clearer output:
-```rask
-test "parse" {
-    for (name, input, expected) in [
-        ("empty", "", none),
-        ("single", "5", some(5)),
-    ] {
-        check parse(input) == expected, "case: {name}"
-    }
-}
-```
+## Test Execution
 
-## Test Cleanup
+| Rule | Description |
+|------|-------------|
+| **T6: Isolation** | Each test runs in isolation with no shared state |
+| **T7: Parallel** | Tests run in parallel by default; opt-out with `--sequential` |
+| **T8: Seeded random** | Random uses per-test seed; reproduce with `--seed X` |
+| **T9: Cleanup** | Tests use `ensure` for cleanup (same semantics as regular code) |
 
-Tests use `ensure` for cleanup (same semantics as regular code):
-
+<!-- test: skip -->
 ```rask
 test "file processing" {
     const file = try open("test.txt")
@@ -131,43 +80,11 @@ test "file processing" {
 }
 ```
 
-## Test Isolation
-
-| Property | Behavior |
-|----------|----------|
-| Execution | Each test runs in isolation |
-| Shared state | None between tests |
-| Parallelism | Default on, opt-out with `--sequential` |
-| Determinism | Random uses per-test seed |
-
-**Seeded random:**
-```rask
-test "deterministic" {
-    const rng = Random.from_seed(test.seed())
-}
-```
-
-Re-run with same seed: `rask test --seed 0xDEADBEEF`
-
-## Comptime Tests
-
-Tests that verify compile-time functions:
-
-```rask
-comptime test "factorial" {
-    assert factorial(5) == 120
-}
-```
-
-| Property | Comptime Test | Runtime Test |
-|----------|--------------|--------------|
-| Execution | During compilation | After compilation |
-| Available ops | Comptime subset | Full language |
-| Failure | Compile error | Test failure |
-
 ## Subtests
 
-Nested `test` blocks for grouping:
+| Rule | Description |
+|------|-------------|
+| **T10: Nested blocks** | `test` blocks nest for grouping. Output: `PASS: parent > child` |
 
 ```rask
 test "parser" {
@@ -180,14 +97,29 @@ test "parser" {
 }
 ```
 
-Output: `PASS: parser > numbers`
+## Comptime Tests
+
+| Rule | Description |
+|------|-------------|
+| **T11: Comptime** | `comptime test` runs during compilation; failure is a compile error |
+
+```rask
+comptime test "factorial" {
+    assert factorial(5) == 120
+}
+```
 
 ## Skipping and Expected Failures
 
+| Rule | Description |
+|------|-------------|
+| **T12: Skip** | `skip("reason")` skips the rest of the test |
+| **T13: Expected failure** | `expect_fail()` inverts pass/fail — passing is a failure |
+
+<!-- test: skip -->
 ```rask
 test "platform specific" {
     if !platform.is_linux() { skip("linux only") }
-    // ...
 }
 
 test "known issue #123" {
@@ -198,8 +130,12 @@ test "known issue #123" {
 
 ## Doc Tests
 
-Code blocks in doc comments are extracted and run as tests:
+| Rule | Description |
+|------|-------------|
+| **T14: Doc extraction** | Code blocks in doc comments are extracted and run as tests |
+| **T15: Block tags** | ` ``` ` or ` ```rask ` = compiled and run; ` ```no_run ` = compiled only; ` ```ignore ` = skipped |
 
+<!-- test: skip -->
 ```rask
 /// Adds two numbers.
 ///
@@ -209,17 +145,12 @@ Code blocks in doc comments are extracted and run as tests:
 public func add(a: i32, b: i32) -> i32 { return a + b }
 ```
 
-| Block | Behavior |
-|-------|----------|
-| ` ``` ` or ` ```rask ` | Compiled and run |
-| ` ```no_run ` | Compiled, not run |
-| ` ```ignore ` | Not compiled |
+## Benchmarks
 
-## Benchmarking
-
-### Benchmark Blocks
-
-Benchmarks use `benchmark` blocks, mirroring `test` blocks:
+| Rule | Description |
+|------|-------------|
+| **B1: Benchmark blocks** | `benchmark "name" { body }` — stripped unless `rask benchmark` |
+| **B2: Auto-calibrated** | Runner handles warmup, iteration count, and statistics (min, median, mean, max, ops/sec) |
 
 ```rask
 benchmark "vec push" {
@@ -230,40 +161,15 @@ benchmark "vec push" {
 }
 ```
 
-| Property | Value |
-|----------|-------|
-| Syntax | `benchmark "description" { body }` |
-| Location | Same rules as `test` blocks |
-| Compilation | Stripped unless `rask benchmark` |
-| Optimization | Release optimizations when run |
-
-### Measurement
-
-The runner handles iteration and statistics:
-- Warmup (discarded)
-- Auto-calibrated iterations
-- Reports: min, median, mean, max, ops/sec
-
-Entire block is timed. For setup, use helper functions.
-
-### Benchmark CLI
-
-```
-rask benchmark              # Run all benchmarks
-rask benchmark -f "vec"     # Filter by pattern
-rask benchmark --json       # Machine-readable output
-```
-
 ## Mocking
 
-Trait-based injection (no magic frameworks):
+| Rule | Description |
+|------|-------------|
+| **T16: Trait injection** | Mocking via trait-based dependency injection — no magic frameworks |
 
+<!-- test: skip -->
 ```rask
 trait Clock { func now() -> Timestamp }
-
-func schedule<C: Clock>(clock: C, delay: Duration) -> Timestamp {
-    return clock.now() + delay
-}
 
 test "schedule" {
     const fake = FakeClock { current: Timestamp(1000) }
@@ -271,22 +177,71 @@ test "schedule" {
 }
 ```
 
-## Test Runner CLI
+## CLI
 
 ```
-rask test              # Run all tests
-rask test math         # Run tests in module
-rask test -f "parser"  # Filter by pattern
-rask test --sequential # Force sequential
-rask test --seed X     # Reproducible run
-rask test --verbose    # Show all names
+rask test              # all tests
+rask test math         # module filter
+rask test -f "parser"  # pattern filter
+rask test --sequential # force sequential
+rask test --seed X     # reproducible run
+rask test --verbose    # show all names
+rask benchmark         # all benchmarks
+rask benchmark -f "vec"    # filter benchmarks
+rask benchmark --json      # machine-readable output
 ```
+
+## Error Messages
+
+```
+ERROR [std.testing/A1]: assertion failed
+   |
+5  |      assert count == 3
+   |             ^^^^^^^^^^ left: 2, right: 3
+
+WHY: assert stops the test immediately when the expression is false.
+```
+
+```
+ERROR [std.testing/T11]: comptime test failed
+   |
+2  |      assert factorial(5) == 120
+   |             ^^^^^^^^^^^^^^^^^^^^ left: 0, right: 120
+
+WHY: Comptime tests run during compilation; failures are compile errors.
+```
+
+## Edge Cases
+
+| Case | Behavior | Rule |
+|------|----------|------|
+| `test` block in release build | Stripped entirely | T1 |
+| `@test` function in release build | Function compiled; not invoked by runner | T2 |
+| Nested `test` inside `@test` function | Allowed | T10 |
+| `check` failure in table loop | All iterations run; test marked failed | A2 |
+| `assert` failure in table loop | Test stops at failing iteration | A1 |
+| `comptime test` uses I/O | Compile error (comptime subset only) | T11 |
+| `benchmark` in debug build | Stripped | B1 |
 
 ---
 
-## Remaining Issues
+## Appendix (non-normative)
 
-### Low Priority
-1. **Fuzzing** — Property-based / fuzz testing built-in?
-2. **Coverage** — Code coverage reporting approach?
-3. **Fixtures** — Setup/teardown beyond `ensure`?
+### Rationale
+
+**T1 vs T2:** `test` blocks are for standalone assertions. `@test` functions let you write validation helpers that double as tests — useful for self-checking config defaults or parser invariants.
+
+**A1 vs A2:** `assert` for invariants that make the rest of the test meaningless. `check` for collecting multiple failures in one run (especially table-driven tests).
+
+**T16 (trait injection):** No runtime mocking or monkey-patching. Dependency injection through traits keeps tests explicit and avoids hidden magic.
+
+### Open Issues
+
+- **Fuzzing** — Property-based / fuzz testing built-in?
+- **Coverage** — Code coverage reporting approach?
+- **Fixtures** — Setup/teardown beyond `ensure`?
+
+### See Also
+
+- `ctrl.comptime` — Compile-time execution model
+- `mem.resource-types` — `ensure` cleanup semantics
