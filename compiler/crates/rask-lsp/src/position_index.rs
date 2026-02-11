@@ -261,7 +261,7 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_stmt(stmt, index);
             }
         }
-        ExprKind::WithBlock { body, .. } => {
+        ExprKind::UsingBlock { body, .. } => {
             for stmt in body {
                 visit_stmt(stmt, index);
             }

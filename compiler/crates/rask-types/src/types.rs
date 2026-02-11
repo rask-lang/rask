@@ -82,6 +82,9 @@ pub enum Type {
         ok: Box<Type>,
         err: Box<Type>,
     },
+    /// Union type (error position only): `IoError | ParseError`
+    /// Canonical form: sorted alphabetically, deduplicated.
+    Union(Vec<Type>),
     /// Type variable (for inference)
     Var(TypeVarId),
     /// Never type (for return, panic, etc.)
@@ -98,6 +101,40 @@ impl Type {
             Type::Named(_) => Type::UnresolvedNamed(name),
             other => other,
         }
+    }
+
+    /// Build a canonical union type: sorted by Display name, deduplicated.
+    /// Single-element unions collapse to the inner type.
+    /// Nested unions are flattened.
+    pub fn union(types: Vec<Type>) -> Type {
+        let mut flat = Vec::new();
+        for ty in types {
+            match ty {
+                Type::Union(inner) => flat.extend(inner),
+                other => flat.push(other),
+            }
+        }
+        // Sort by display name for canonical ordering
+        flat.sort_by(|a, b| format!("{}", a).cmp(&format!("{}", b)));
+        flat.dedup();
+        match flat.len() {
+            0 => Type::Unit,
+            1 => flat.into_iter().next().unwrap(),
+            _ => Type::Union(flat),
+        }
+    }
+
+    /// Check if this type is a subset of another union type.
+    pub fn is_subset_of(&self, other: &Type) -> bool {
+        let self_types = match self {
+            Type::Union(types) => types.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        let other_types = match other {
+            Type::Union(types) => types.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        self_types.iter().all(|t| other_types.contains(t))
     }
 }
 
@@ -168,6 +205,13 @@ impl fmt::Display for Type {
             Type::Slice(elem) => write!(f, "[{}]", elem),
             Type::Option(inner) => write!(f, "{}?", inner),
             Type::Result { ok, err } => write!(f, "{} or {}", ok, err),
+            Type::Union(types) => {
+                for (i, ty) in types.iter().enumerate() {
+                    if i > 0 { write!(f, " | ")?; }
+                    write!(f, "{}", ty)?;
+                }
+                Ok(())
+            }
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),
             Type::Error => write!(f, "<error>"),

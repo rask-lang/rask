@@ -9,7 +9,7 @@ struct Player {
     team_id: i32,
 }
 
-public func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+public func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 

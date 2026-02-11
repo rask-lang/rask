@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, Decl, DeclKind, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
-use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, UnaryOp};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -485,11 +485,19 @@ impl Parser {
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
 
+        // Parse `using` clauses and `->` return type (either order accepted)
+        let mut context_clauses = self.parse_using_clauses()?;
+
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
             None
         };
+
+        // Also accept `using` after return type
+        if context_clauses.is_empty() {
+            context_clauses = self.parse_using_clauses()?;
+        }
 
         let body = if self.check(&TokenKind::LBrace) {
             self.parse_block_body()?
@@ -514,7 +522,66 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, body, is_pub, is_comptime, is_unsafe, attrs }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, attrs }))
+    }
+
+    fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
+        // Skip newlines that might appear between return type and `using`
+        if self.check(&TokenKind::Newline) {
+            // Peek past newlines to see if `using` follows
+            let saved = self.pos;
+            self.skip_newlines();
+            if !self.check(&TokenKind::Using) {
+                self.pos = saved;
+                return Ok(vec![]);
+            }
+        }
+
+        if !self.match_token(&TokenKind::Using) {
+            return Ok(vec![]);
+        }
+
+        let mut clauses = Vec::new();
+        loop {
+            self.skip_newlines();
+
+            // Check for `frozen` modifier
+            let is_frozen = if let TokenKind::Ident(ref name) = self.current_kind().clone() {
+                if name == "frozen" {
+                    self.advance();
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            // Peek: Ident Colon means named context, otherwise unnamed
+            let name = if let TokenKind::Ident(ref ident) = self.current_kind().clone() {
+                // Look ahead for `name:`
+                if self.pos + 1 < self.tokens.len() && self.tokens[self.pos + 1].kind == TokenKind::Colon {
+                    let n = ident.clone();
+                    self.advance(); // consume name
+                    self.advance(); // consume colon
+                    Some(n)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let ty = self.parse_type_name()?;
+
+            clauses.push(ContextClause { name, ty, is_frozen });
+
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
+
+        Ok(clauses)
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, ParseError> {
@@ -564,11 +631,39 @@ impl Parser {
 
         if self.check(&TokenKind::Or) {
             self.advance();
-            let error_ty = self.parse_type_name()?;
+            let error_ty = self.parse_error_type()?;
             return Ok(format!("Result<{}, {}>", base, error_ty));
         }
 
         Ok(base)
+    }
+
+    /// Parse an error type, which may be a union: `E` or `(E1 | E2 | E3)` or `E1 | E2`.
+    fn parse_error_type(&mut self) -> Result<String, ParseError> {
+        // Check for parenthesized union: (E1 | E2)
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            let mut types = vec![self.parse_base_type()?];
+            while self.match_token(&TokenKind::Pipe) {
+                types.push(self.parse_base_type()?);
+            }
+            self.expect(&TokenKind::RParen)?;
+            if types.len() == 1 {
+                return Ok(types.into_iter().next().unwrap());
+            }
+            return Ok(types.join("|"));
+        }
+
+        // Single error type, possibly followed by | for bare union
+        let first = self.parse_base_type()?;
+        if self.check(&TokenKind::Pipe) {
+            let mut types = vec![first];
+            while self.match_token(&TokenKind::Pipe) {
+                types.push(self.parse_base_type()?);
+            }
+            return Ok(types.join("|"));
+        }
+        Ok(first)
     }
 
     fn parse_base_type(&mut self) -> Result<String, ParseError> {
@@ -991,6 +1086,18 @@ impl Parser {
             self.expect(&TokenKind::Gt)?;
         }
 
+        // Super-traits: trait Display: ToString, Debug { ... }
+        let mut super_traits = Vec::new();
+        if self.match_token(&TokenKind::Colon) {
+            loop {
+                self.skip_newlines();
+                super_traits.push(self.parse_type_name()?);
+                if !self.match_token(&TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
         self.skip_newlines();
         self.expect(&TokenKind::LBrace)?;
         self.skip_newlines();
@@ -1009,7 +1116,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, methods, is_pub }))
+        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub }))
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
@@ -1028,11 +1135,17 @@ impl Parser {
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
 
+        let mut context_clauses = self.parse_using_clauses()?;
+
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
             None
         };
+
+        if context_clauses.is_empty() {
+            context_clauses = self.parse_using_clauses()?;
+        }
 
         if self.check(&TokenKind::Newline) {
             self.skip_newlines();
@@ -1048,6 +1161,7 @@ impl Parser {
             type_params,
             params,
             ret_ty,
+            context_clauses,
             body,
             is_pub: false,
             is_comptime: false,
@@ -1387,6 +1501,16 @@ impl Parser {
                 self.expect_terminator()?;
                 StmtKind::Expr(expr)
             }
+            TokenKind::Using => {
+                let expr = self.parse_using_block()?;
+                self.expect_terminator()?;
+                StmtKind::Expr(expr)
+            }
+            TokenKind::With => {
+                let expr = self.parse_with_binding()?;
+                self.expect_terminator()?;
+                StmtKind::Expr(expr)
+            }
             _ => {
                 let expr = self.parse_expr()?;
 
@@ -1565,6 +1689,7 @@ impl Parser {
             TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(_) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
                 | TokenKind::If | TokenKind::Match | TokenKind::With | TokenKind::Spawn
+                | TokenKind::Select | TokenKind::SelectPriority
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
                 | TokenKind::None | TokenKind::Null
@@ -1922,9 +2047,15 @@ impl Parser {
 
             TokenKind::Match => self.parse_match_expr(),
 
-            TokenKind::With => self.parse_with_block(),
+            TokenKind::Using => self.parse_using_block(),
+
+            TokenKind::With => self.parse_with_binding(),
 
             TokenKind::Spawn => self.parse_spawn_expr(),
+
+            TokenKind::Select => self.parse_select_expr(false),
+
+            TokenKind::SelectPriority => self.parse_select_expr(true),
 
             TokenKind::Unsafe => {
                 self.advance();
@@ -2470,16 +2601,10 @@ impl Parser {
         Ok(Expr { id: self.next_id(), kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span: Span::new(start, end) })
     }
 
-    fn parse_with_block(&mut self) -> Result<Expr, ParseError> {
+    fn parse_using_block(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
-        self.expect(&TokenKind::With)?;
+        self.expect(&TokenKind::Using)?;
         let name = self.expect_ident()?;
-
-        // Disambiguate: with...as (element binding) vs with...{ } (resource scoping)
-        // If ident is followed by [ or ., it's an expression → with...as mode
-        if self.check(&TokenKind::LBracket) || self.check(&TokenKind::Dot) {
-            return self.parse_with_as(start, name);
-        }
 
         let args = if self.match_token(&TokenKind::LParen) {
             let args = self.parse_args()?;
@@ -2494,13 +2619,16 @@ impl Parser {
         let end = self.tokens[self.pos - 1].span.end;
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::WithBlock { name, args, body },
+            kind: ExprKind::UsingBlock { name, args, body },
             span: Span::new(start, end),
         })
     }
 
-    /// Parse with...as element binding: with expr as name, ... { body }
-    fn parse_with_as(&mut self, start: usize, first_ident: String) -> Result<Expr, ParseError> {
+    fn parse_with_binding(&mut self) -> Result<Expr, ParseError> {
+        let start = self.current().span.start;
+        self.expect(&TokenKind::With)?;
+        let first_ident = self.expect_ident()?;
+
         let mut bindings = Vec::new();
 
         // Parse first binding (ident already consumed)
@@ -2527,6 +2655,7 @@ impl Parser {
             span: Span::new(start, end),
         })
     }
+
 
     /// Build an expression from an already-consumed ident, parsing postfix [index] and .field
     /// until we reach the `as` keyword.
@@ -2594,6 +2723,102 @@ impl Parser {
             kind: ExprKind::Spawn { body },
             span: Span::new(start, end),
         })
+    }
+
+    fn parse_select_expr(&mut self, is_priority: bool) -> Result<Expr, ParseError> {
+        let start = self.current().span.start;
+        if is_priority {
+            self.expect(&TokenKind::SelectPriority)?;
+        } else {
+            self.expect(&TokenKind::Select)?;
+        }
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut arms = Vec::new();
+
+        while !self.check(&TokenKind::RBrace) && !self.check(&TokenKind::Eof) {
+            let arm = self.parse_select_arm()?;
+            arms.push(arm);
+
+            // Arms separated by commas or newlines
+            if self.match_token(&TokenKind::Comma) {
+                self.skip_newlines();
+            } else {
+                self.skip_newlines();
+            }
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+        let end = self.tokens[self.pos - 1].span.end;
+
+        if arms.is_empty() {
+            return Err(ParseError {
+                span: Span::new(start, end),
+                message: "select requires at least one arm".to_string(),
+                hint: None,
+            });
+        }
+
+        Ok(Expr {
+            id: self.next_id(),
+            kind: ExprKind::Select { arms, is_priority },
+            span: Span::new(start, end),
+        })
+    }
+
+    fn parse_select_arm(&mut self) -> Result<SelectArm, ParseError> {
+        // Default arm: `_: body`
+        if let TokenKind::Ident(ref name) = self.current_kind().clone() {
+            if name == "_" {
+                self.advance();
+                self.expect(&TokenKind::Colon)?;
+                self.skip_newlines();
+                let body = self.parse_expr()?;
+                return Ok(SelectArm {
+                    kind: SelectArmKind::Default,
+                    body: Box::new(body),
+                });
+            }
+        }
+
+        // Parse channel expression at bp 9 (above comparison, so `<` isn't consumed)
+        let old = self.allow_brace_expr;
+        self.allow_brace_expr = false;
+        let channel = self.parse_expr_bp(9)?;
+        self.allow_brace_expr = old;
+
+        if self.match_token(&TokenKind::Arrow) {
+            // Recv arm: `channel -> binding: body`
+            let binding = self.expect_ident()?;
+            self.expect(&TokenKind::Colon)?;
+            self.skip_newlines();
+            let body = self.parse_expr()?;
+            Ok(SelectArm {
+                kind: SelectArmKind::Recv { channel, binding },
+                body: Box::new(body),
+            })
+        } else if self.check(&TokenKind::Lt) {
+            // Send arm: `channel <- value: body`
+            // `<` then `-` as two tokens to avoid breaking `x < -y` elsewhere
+            self.advance(); // consume `<`
+            self.expect(&TokenKind::Minus)?;
+            let value = self.parse_expr_no_braces()?;
+            self.expect(&TokenKind::Colon)?;
+            self.skip_newlines();
+            let body = self.parse_expr()?;
+            Ok(SelectArm {
+                kind: SelectArmKind::Send { channel, value },
+                body: Box::new(body),
+            })
+        } else {
+            Err(ParseError::expected(
+                "'->' or '<-'",
+                self.current_kind(),
+                self.current().span,
+            ))
+        }
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {

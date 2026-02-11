@@ -249,14 +249,6 @@ impl Desugarer {
                     self.desugar_expr(e);
                 }
             }
-            ExprKind::WithBlock { args, body, .. } => {
-                for arg in args {
-                    self.desugar_expr(arg);
-                }
-                for s in body {
-                    self.desugar_stmt(s);
-                }
-            }
             ExprKind::WithAs { bindings, body } => {
                 for (expr, _) in bindings {
                     self.desugar_expr(expr);
@@ -280,6 +272,29 @@ impl Desugarer {
                 self.desugar_expr(condition);
                 if let Some(msg) = message {
                     self.desugar_expr(msg);
+                }
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    match &mut arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
+                            self.desugar_expr(channel);
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.desugar_expr(channel);
+                            self.desugar_expr(value);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {}
+                    }
+                    self.desugar_expr(&mut arm.body);
+                }
+            }
+            ExprKind::UsingBlock { args, body, .. } => {
+                for arg in args {
+                    self.desugar_expr(arg);
+                }
+                for s in body {
+                    self.desugar_stmt(s);
                 }
             }
             // Literals and identifiers don't need desugaring

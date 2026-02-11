@@ -11,7 +11,7 @@ pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
     typecheck, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, InferenceContext, TypeConstraint, MethodSig, SelfParam,
-    parse_type_string,
+    parse_type_string, extract_projection,
 };
 pub use traits::{
     TraitBound, TraitChecker, TraitError,

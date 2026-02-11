@@ -10,7 +10,7 @@ struct Enemy {
 }
 
 // This function requires Pool<Enemy> context
-public func damage(h: Handle<Enemy>, amount: i32) with Pool<Enemy> {
+public func damage(h: Handle<Enemy>, amount: i32) using Pool<Enemy> {
     h.health -= amount
 }
 
@@ -31,13 +31,13 @@ func process_damage(h: Handle<Enemy>) {
 //    |      -------------- no Pool<Enemy> in scope
 //    |
 //    help: add Pool<Enemy> to process_damage's signature:
-//          func process_damage(h: Handle<Enemy>) with Pool<Enemy>
+//          func process_damage(h: Handle<Enemy>) using Pool<Enemy>
 //
 //    help: or pass pool explicitly:
 //          func process_damage(enemies: Pool<Enemy>, h: Handle<Enemy>)
 
 // FIX 1: Propagate context requirement
-func process_damage_fixed(h: Handle<Enemy>) with Pool<Enemy> {
+func process_damage_fixed(h: Handle<Enemy>) using Pool<Enemy> {
     damage(h, 10)    // ✅ Context propagates
 }
 

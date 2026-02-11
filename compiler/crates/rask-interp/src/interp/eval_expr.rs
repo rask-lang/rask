@@ -781,7 +781,7 @@ impl Interpreter {
                 })))
             }
 
-            ExprKind::WithBlock { name, args, body }
+            ExprKind::UsingBlock { name, args, body }
                 if name == "ThreadPool" || name == "Multitasking" || name == "threading" || name == "multitasking" =>
             {
                 let num_threads = if args.is_empty() {

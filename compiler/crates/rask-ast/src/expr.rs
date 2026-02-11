@@ -113,8 +113,8 @@ pub enum ExprKind {
     },
     /// Tuple literal ((a, b, c))
     Tuple(Vec<Expr>),
-    /// With block expression (with name { body } or with name(args) { body })
-    WithBlock {
+    /// Using block expression (using name { body } or using name(args) { body })
+    UsingBlock {
         name: String,
         args: Vec<Expr>,
         body: Vec<super::stmt::Stmt>,
@@ -150,6 +150,11 @@ pub enum ExprKind {
     /// Comptime expression (computed at compile time)
     Comptime {
         body: Vec<super::stmt::Stmt>,
+    },
+    /// Select expression (channel multiplexing)
+    Select {
+        arms: Vec<SelectArm>,
+        is_priority: bool,
     },
     /// Assert expression (assert condition, "message")
     Assert {
@@ -217,6 +222,24 @@ pub enum UnaryOp {
     Ref,
     /// Dereference (*)
     Deref,
+}
+
+/// A select arm for channel multiplexing.
+#[derive(Debug, Clone)]
+pub struct SelectArm {
+    pub kind: SelectArmKind,
+    pub body: Box<Expr>,
+}
+
+/// The kind of select arm.
+#[derive(Debug, Clone)]
+pub enum SelectArmKind {
+    /// Receive: `rx -> v`
+    Recv { channel: Expr, binding: String },
+    /// Send: `tx <- val`
+    Send { channel: Expr, value: Expr },
+    /// Default: `_`
+    Default,
 }
 
 /// A match arm.

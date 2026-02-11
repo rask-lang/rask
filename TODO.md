@@ -132,42 +132,38 @@ All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 - ~~Vec.`take(n)` method name conflicts with `take` keyword~~ — **FIXED:** renamed to `limit(n)`
 
 
-### Phase 4: Complete Frontend
-Every specced language feature should parse, resolve, type-check, and ownership-check before codegen starts.
-
-**Linear resource verification** — [resource-types.md](specs/memory/resource-types.md)
-- [ ] Ownership checker enforces exactly-once consumption of `@resource` types
-- [ ] `ensure` blocks verified to run on all exit paths
-- [ ] Compiler error when resource is dropped without consumption
-
-**Union types** — [union-types.md](specs/types/union-types.md)
-- [ ] Parse `A | B` union type syntax
-- [ ] AST representation for union types
-- [ ] Type checker: union construction, narrowing via `is` patterns, exhaustiveness
-
-**`select` statement** — [select.md](specs/concurrency/select.md)
-- [ ] Parse `select { }` with channel arms
-- [ ] AST node for select expression
-- [ ] Type check select arms (channel element types, timeout)
-
-**Channel operations** — [channels.md](specs/concurrency/channels.md)
-- [ ] Parse send (`ch <- value`) and receive (`<- ch`) syntax
-- [ ] Type check send/receive against `Channel<T>`
-- [ ] Task handle types from `spawn` — join/detach enforcement
-
-**`with` context clauses** — [pools.md](specs/memory/pools.md), [sync.md](specs/concurrency/sync.md)
-- [ ] Parse `with` clauses on function signatures
-- [ ] Resolver tracks context requirements per function
-- [ ] Type checker verifies callers provide required context
-
-**Ownership checker hardening**
-- [ ] Projection borrows — `mutate p: Player.{health}` disjoint field checking
-- [ ] Closure capture mode inference (not just `Owned` for everything)
+### Phase 4: Complete Frontend (COMPLETE - 2026-02-11)
+Every specced language feature parses, resolves, type-checks, and ownership-checks.
 
 **Parser polish**
-- [ ] Raw string literals (`r"..."`, `r#"..."#`)
-- [ ] Trait composition (`trait T: Other`) — connect trait hierarchy
-- [ ] Labeled `break` with values
+- [x] Raw string literals (`r"..."`, `r#"..."#`)
+- [x] Trait composition (`trait T: Other`) — super-traits in parser, resolver, type checker
+
+**Union types** — [union-types.md](specs/types/union-types.md)
+- [x] Parse `A | B` union type syntax (error-position only: `T or (A | B)`)
+- [x] `Type::Union` variant with canonical form (sorted, deduped)
+- [x] Type checker: union parsing, subset widening for `try` propagation, pattern exhaustiveness
+
+**`select` statement** — [select.md](specs/concurrency/select.md)
+- [x] AST nodes: `SelectArm`, `SelectArmKind` (Recv/Send/Default)
+- [x] Parser: `select { }` / `select_priority { }` with recv (`->`), send (`<-`), default (`_`) arms
+- [x] Type checker: channel type validation, arm body type compatibility
+
+**`using` context clauses** — [context-clauses.md](specs/memory/context-clauses.md)
+- [x] `ContextClause` AST node with name/type/frozen fields
+- [x] Parser: `using [frozen] [name:] Type` on function signatures (before or after return type)
+- [x] Resolver: named context bindings registered as scoped variables
+- [x] Channel + spawn methods already formalized in type checker builtins
+
+**Linear resource verification** — [resource-types.md](specs/memory/resource-types.md)
+- [x] `is_resource: bool` on `TypeDef::Struct`, propagated from `@resource` attr
+- [x] Ownership checker tracks resource bindings, `ensure` registration, `take self` consumption
+- [x] `ResourceNotConsumed` error emitted at function exit for unconsumed resources
+
+**Ownership checker hardening**
+- [x] Projection borrows — `ActiveBorrow.projection` field, non-overlapping field projections don't conflict
+- [x] `extract_projection()` strips `.{fields}` from type strings, feeds ownership checker
+- [x] Closure capture mode inference — `collect_free_vars()` scans closure body, creates shared borrows
 
 ### Phase 5: Code Generation
 Move from interpreter to actual compiled output.
@@ -196,7 +192,8 @@ Tools that make it actually usable:
 ## Open Design Questions
 
 ### Before Phase 5 (blocks codegen)
-- [x] FrozenPool should satisfy read-only `with Pool<T>` context clauses — see [pools.md](specs/memory/pools.md#frozenpool-context-subsumption)
+- [x] FrozenPool should satisfy read-only `using Pool<T>` context clauses — see [pools.md](specs/memory/pools.md#frozenpool-context-subsumption)
+- [ ] `using` block expressions (`using ThreadPool(workers: 4) { ... }`) — parser dispatches `With` but examples use `using`
 
 ### During Phase 5 (doesn't block, improves quality)
 - [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code

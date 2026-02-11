@@ -129,6 +129,16 @@ impl TypeTable {
         self.type_names.get(name).copied()
     }
 
+    /// Check if a type name refers to a `@resource` struct.
+    pub fn is_resource_type(&self, name: &str) -> bool {
+        if let Some(&id) = self.type_names.get(name) {
+            if let Some(TypeDef::Struct { is_resource, .. }) = self.types.get(id.0 as usize) {
+                return *is_resource;
+            }
+        }
+        false
+    }
+
     /// Get TypeId for the builtin Option<T> enum.
     pub fn get_option_type_id(&self) -> Option<TypeId> {
         self.option_type_id

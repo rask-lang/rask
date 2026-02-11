@@ -18,6 +18,7 @@ pub enum TypeDef {
         type_params: Vec<String>,
         fields: Vec<(String, Type)>,
         methods: Vec<MethodSig>,
+        is_resource: bool,
     },
     Enum {
         name: String,
@@ -27,6 +28,7 @@ pub enum TypeDef {
     },
     Trait {
         name: String,
+        super_traits: Vec<String>,
         methods: Vec<MethodSig>,
     },
 }

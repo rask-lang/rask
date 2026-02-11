@@ -29,7 +29,7 @@ pub use type_defs::{TypeDef, MethodSig, SelfParam, ParamMode, TypedProgram};
 pub use type_table::TypeTable;
 pub use inference::{TypeConstraint, InferenceContext};
 pub use errors::TypeError;
-pub use parse_type::parse_type_string;
+pub use parse_type::{parse_type_string, extract_projection};
 
 use borrow::{ActiveBorrow, PersistentBorrow};
 

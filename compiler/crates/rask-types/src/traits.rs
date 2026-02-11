@@ -100,14 +100,36 @@ impl<'a> TraitChecker<'a> {
 
     /// Collect all methods from traits (including composed traits).
     fn collect_trait_methods(&mut self) {
+        // First pass: collect direct methods
+        let mut super_map: Vec<(String, Vec<String>)> = Vec::new();
         for def in self.types.iter() {
-            if let TypeDef::Trait { name, methods } = def {
+            if let TypeDef::Trait { name, super_traits, methods } = def {
                 self.trait_methods.insert(name.clone(), methods.clone());
+                if !super_traits.is_empty() {
+                    super_map.push((name.clone(), super_traits.clone()));
+                }
             }
         }
-        // Note: Trait composition (`: SuperTrait`) would require parsing the
-        // trait definition and collecting supertraits. For now, we just
-        // collect direct methods.
+        // Second pass: add inherited methods from super-traits
+        for (trait_name, supers) in &super_map {
+            let mut inherited = Vec::new();
+            for parent in supers {
+                if let Some(parent_methods) = self.trait_methods.get(parent) {
+                    for m in parent_methods {
+                        // Don't duplicate methods already defined directly
+                        if !self.trait_methods.get(trait_name)
+                            .map_or(false, |ms| ms.iter().any(|existing| existing.name == m.name))
+                            && !inherited.iter().any(|im: &MethodSig| im.name == m.name)
+                        {
+                            inherited.push(m.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(methods) = self.trait_methods.get_mut(trait_name) {
+                methods.extend(inherited);
+            }
+        }
     }
 
     /// Check if a type satisfies a trait bound.

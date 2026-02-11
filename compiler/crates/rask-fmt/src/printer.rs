@@ -1084,7 +1084,7 @@ impl<'a> Printer<'a> {
                 }
                 self.emit(")");
             }
-            ExprKind::WithBlock { name, args, body } => {
+            ExprKind::UsingBlock { name, args, body } => {
                 self.emit("with ");
                 self.emit(name);
                 if !args.is_empty() {
@@ -1195,6 +1195,38 @@ impl<'a> Printer<'a> {
                     self.emit(", ");
                     self.format_expr(msg);
                 }
+            }
+            ExprKind::Select { arms, is_priority } => {
+                if *is_priority {
+                    self.emit("select_priority {");
+                } else {
+                    self.emit("select {");
+                }
+                self.indent += 1;
+                for arm in arms {
+                    self.emit_newline();
+                    match &arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
+                            self.format_expr(channel);
+                            self.emit(" -> ");
+                            self.emit(binding);
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.format_expr(channel);
+                            self.emit(" <- ");
+                            self.format_expr(value);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {
+                            self.emit("_");
+                        }
+                    }
+                    self.emit(": ");
+                    self.format_expr(&arm.body);
+                    self.emit(",");
+                }
+                self.indent -= 1;
+                self.emit_newline();
+                self.emit("}");
             }
         }
     }

@@ -516,7 +516,7 @@ If a function always needs access to a specific pool, context clauses thread it
 automatically:
 
 ```rask
-func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount    // Compiler resolves which Pool<Player> to use
 }
 
@@ -525,7 +525,7 @@ const h = try players.insert(Player { health: 100 })
 damage(h, 10)    // Compiler passes `players` automatically
 ```
 
-The `with Pool<Player>` clause says "this function needs access to a player pool." The
+The `using Pool<Player>` clause says "this function needs access to a player pool." The
 compiler finds it in the caller's scope and passes it implicitly. The caller doesn't need
 to thread it through manually.
 
@@ -698,9 +698,9 @@ const user = get_user()!    // Panics if None
 **Safe unwrap with `if`:**
 
 ```rask
-if user? {
+if user is Some(u) {
     // user is unwrapped here—it's a User, not User?
-    process(user)
+    process(u)
 }
 ```
 
@@ -1190,7 +1190,7 @@ by the OS. You can have 100,000+ of them.
 
 ```rask
 func main() {
-    with Multitasking {
+    using Multitasking {
         const listener = try TcpListener.bind("0.0.0.0:8080")
 
         loop {
@@ -1202,7 +1202,7 @@ func main() {
 ```
 
 The scheduler is **opt-in**—it doesn't run by default. A plain Rask program has zero
-scheduler overhead. `with Multitasking { }` is what spins it up, and `spawn { }` only
+scheduler overhead. `using Multitasking { }` is what spins it up, and `spawn { }` only
 works within that block. Each incoming connection gets its own
 task—cheap enough that you don't worry about it.
 
@@ -1231,7 +1231,7 @@ CPU-heavy work (parsing, compression, number crunching), use the thread pool:
 
 ```rask
 func main() {
-    with Multitasking, ThreadPool {
+    using Multitasking, ThreadPool {
         const data = try fetch(url)                                // I/O: pauses task
         const result = try spawn thread { analyze(data) }.join()   // CPU: actual parallelism
         try save(result)                                           // I/O: pauses task
@@ -1603,12 +1603,12 @@ Closures scope the lock precisely: `mutex.lock(|data| { ... })`. When the closur
 returns, the lock is released. You can't hold it by accident. The compiler can also
 detect direct nested locking and flag it as an error.
 
-### Why `with Multitasking { }` instead of just having async everywhere?
+### Why `using Multitasking { }` instead of just having async everywhere?
 
 Explicit resource declaration. Async runtimes aren't free—they create scheduler threads,
-allocate task queues, set up I/O polling. `with Multitasking { }` makes this cost visible
-and opt-in. A CLI tool that just needs thread parallelism uses `with ThreadPool { }` and
-pays only for threads. A web server uses `with Multitasking { }` and gets the full
+allocate task queues, set up I/O polling. `using Multitasking { }` makes this cost visible
+and opt-in. A CLI tool that just needs thread parallelism uses `using ThreadPool { }` and
+pays only for threads. A web server uses `using Multitasking { }` and gets the full
 scheduler.
 
 ### Why are task handles affine (must be consumed)?
