@@ -1,32 +1,38 @@
+<!-- id: type.generics -->
+<!-- status: decided -->
+<!-- summary: Structural traits, operator desugaring, compiler-verified clone, full monomorphization -->
 <!-- depends: types/structs.md, types/enums.md, types/traits.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
-# Solution: Generics and Traits
+# Generics and Traits
 
-## The Question
-How do generic types and functions work in Rask?
-
-## Decision
 Structural traits with local verification, operator-to-method desugaring, compiler-verified clone, full monomorphization, opt-in runtime polymorphism via `any Trait`.
 
-## Rationale
-Explicit constraints catch errors early without whole-program analysis. Structural satisfaction avoids global coherence complexity. Operator desugaring makes numeric code ergonomic. Compiler-verified clone prevents aliasing bugs. Full monomorphization keeps costs transparent and compilation fast. `explicit trait` provides library stability when needed.
+## Core Principles
 
-## Specification
+| Rule | Description |
+|------|-------------|
+| **G1: Structural satisfaction** | Type satisfies trait if it has all required methods with matching signatures |
+| **G2: Local verification** | Compiler checks satisfaction at each monomorphization site only |
+| **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
+| **G4: Operator desugaring** | `a + b` becomes `a.add(b)` before trait checking |
+| **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
+| **G6: Full monomorphization** | Each `<T>` instantiation produces specialized code |
+| **G7: Runtime polymorphism opt-in** | `any Trait` for heterogeneous collections; vtable dispatch |
 
-### Core Principles
+## Trait Definition
 
-| Principle | Rule |
-|-----------|------|
-| Traits are structural | Type satisfies trait if it has all required methods with matching signatures |
-| Verification is local | Compiler checks satisfaction at each monomorphization (code generation) site only |
-| Inference is body-local | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
-| Operators desugar | `a + b` becomes `a.add(b)` before trait checking |
-| Clone is verified | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
-| Monomorphization is full | Each `<T>` instantiation produces specialized code |
-| Runtime polymorphism opt-in | `any Trait` for heterogeneous collections; vtable dispatch |
+| Rule | Description |
+|------|-------------|
+| **TD1: Module-scoped** | Traits must be module-scoped |
+| **TD2: Default methods** | Traits may contain default implementations |
+| **TD3: Composition** | Traits may compose using `:` syntax |
 
-### Trait Definition
+| Trait Form | Meaning |
+|------------|---------|
+| `trait Comparable<T>` | Structural matching allowed |
+| `explicit trait Serializable<T>` | Requires explicit `extend` (for library stability) |
+| `trait HashKey<T>: Hashable<T>` | Composition (requires all methods from Hashable plus HashKey's own) |
 
 ```rask
 trait Name<T> {
@@ -40,28 +46,15 @@ trait Name<T> {
 }
 ```
 
-Traits MUST be module-scoped.
-Traits MAY contain default implementations.
-Traits MAY compose using `:` syntax.
+When a trait is marked `explicit`, types must provide an explicit `extend` block. This protects library APIs from accidental breakage when method signatures change.
 
-| Trait Form | Meaning |
-|------------|---------|
-| `trait Comparable<T>` | Structural matching allowed |
-| `explicit trait Serializable<T>` | Requires explicit `extend` (for library stability) |
-| `trait HashKey<T>: Hashable<T>` | Composition (requires all methods from Hashable plus HashKey's own) |
+## Generic Functions
 
-**Explicit traits:** When a trait is marked `explicit`, types must provide an explicit `extend` block. This protects library APIs from accidental breakage when method signatures change.
-
-### Generic Functions
-
-```rask
-public func max<T: Comparable>(a: T, b: T) -> T {
-    if a.compare(b) == Greater { a } else { b }
-}
-```
-
-**Public** generic functions must declare constraints explicitly.
-Non-public functions may omit them—compiler infers from body. See [Gradual Constraints](gradual-constraints.md).
+| Rule | Description |
+|------|-------------|
+| **GF1: Public bounds explicit** | Public generic functions must declare trait constraints explicitly |
+| **GF2: Private bounds inferred** | Non-public functions may omit constraints; compiler infers from body |
+| **GF3: Caller constraints** | Calling a constrained function requires same or stronger constraints (explicit or inferred) |
 
 ```rask
 // Public: bounds MUST be explicit
@@ -72,21 +65,23 @@ func helper(item) { item.hash() }
 // Compiler infers: func helper<T: Hashable>(item: T)
 ```
 
-### Structural Satisfaction
+See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
 
-| Type has | Trait requires | Satisfied |
-|----------|----------------|-----------|
-| `func compare(self, other: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ✅ Yes |
-| `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | ❌ No (return type mismatch) |
-| `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | ❌ No (free function, not method) |
+## Structural Satisfaction
 
-Compiler checks:
+Compiler checks (G1):
 1. Method exists on type (not free function)
 2. Parameter types match exactly
 3. Return type matches exactly
 4. Self parameter matches (value/mut/none)
 
-**Explicit extend:** Types can provide explicit implementations to override defaults or satisfy `explicit trait`:
+| Type has | Trait requires | Satisfied |
+|----------|----------------|-----------|
+| `func compare(self, other: T) -> Ordering` | `compare(self, other: T) -> Ordering` | Yes |
+| `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | No (return type mismatch) |
+| `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | No (free function, not method) |
+
+Types can provide explicit implementations to override defaults or satisfy `explicit trait`:
 
 ```rask
 extend Point with Comparable {
@@ -96,7 +91,9 @@ extend Point with Comparable {
 }
 ```
 
-### Operator Desugaring
+## Operator Desugaring
+
+Compiler desugars operators before type checking (G4), then verifies method exists in trait bound.
 
 | Operator | Desugars To | Trait Requirement |
 |----------|-------------|-------------------|
@@ -107,19 +104,20 @@ extend Point with Comparable {
 | `a == b` | `a.eq(b)` | `eq(self, other: T) -> bool` |
 | `a < b` | `a.compare(b) == Less` | `compare(self, other: T) -> Ordering` |
 
-Compiler desugars operators before type checking, then verifies method exists in trait bound.
+## Compiler-Verified Clone
 
-### Compiler-Verified Clone
+Compiler auto-derives Clone where all fields implement Clone and no raw pointers exist (G5).
+
+| Rule | Description |
+|------|-------------|
+| **CL1: Auto-derive** | Primitives, structs with all Clone fields, arrays/Vec of Clone, handles: auto-derived |
+| **CL2: Pointer block** | Struct with raw pointer is NOT Clone unless `unsafe extend` |
 
 ```rask
 trait Clone<T> {
     clone(self) -> T
 }
 ```
-
-Compiler auto-derives Clone where:
-1. All fields implement Clone
-2. No raw pointers
 
 | Type | Clone Status |
 |------|--------------|
@@ -129,9 +127,7 @@ Compiler auto-derives Clone where:
 | Array/Vec of Clone | Auto-derived (element-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
 
-Unsafe extend Clone must be explicit and marked unsafe.
-
-### Comptime Generics
+## Comptime Generics
 
 ```rask
 func dot<comptime N: usize>(a: [f32; N], b: [f32; N]) -> f32
@@ -141,19 +137,22 @@ Compiler infers `N` from array literals (`N = 2`) or known types (`arr: [f32; 5]
 
 Errors if lengths differ, inference ambiguous, or non-literal const without explicit parameter.
 
-### Linear Types in Traits
+## Linear Types in Traits
 
-Linear resource types may be generic parameters.
-Pattern matching on `Option<Linear>` must bind the value (wildcards forbidden).
+Linear resource types may be generic parameters. Pattern matching on `Option<Linear>` must bind the value (wildcards forbidden).
 
 | Pattern | Linear Content | Valid |
 |---------|----------------|-------|
-| `Some(f)` | Binds f | ✅ f must be consumed |
-| `Some(_)` | Wildcard | ❌ Compile error |
-| `None` | No value | ✅ Nothing to consume |
-| `Ok(f)` | Binds f | ✅ f must be consumed |
+| `Some(f)` | Binds f | Yes, f must be consumed |
+| `Some(_)` | Wildcard | No, compile error |
+| `None` | No value | Yes, nothing to consume |
+| `Ok(f)` | Binds f | Yes, f must be consumed |
 
-### Trait Composition
+## Trait Composition
+
+Composition via `:` is additive (TD3). `T: HashKey` requires `hash`, `eq`, AND `clone`.
+
+Compiler collects all methods, deduplicates identical requirements, errors on conflicts.
 
 ```rask
 trait Hashable<T> {
@@ -166,13 +165,9 @@ trait HashKey<T>: Hashable<T> {
 }
 ```
 
-Composition via `:` is additive. `T: HashKey` requires `hash`, `eq`, AND `clone`.
+## Monomorphization
 
-Compiler collects all methods, deduplicates identical requirements, errors on conflicts.
-
-### Monomorphization
-
-Each instantiation produces specialized code. Compiler verifies trait satisfaction at instantiation site. No whole-program analysis.
+Each instantiation produces specialized code (G6). Compiler verifies trait satisfaction at instantiation site. No whole-program analysis.
 
 | Aspect | Behavior |
 |--------|----------|
@@ -181,48 +176,7 @@ Each instantiation produces specialized code. Compiler verifies trait satisfacti
 | Error location | Reported at instantiation site |
 | Compilation | Incremental per compilation unit |
 
-### Edge Cases
-
-| Case | Handling |
-|------|----------|
-| Zero instantiations | Function body syntax-checked; type errors may be deferred |
-| Recursive generics | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
-| Trait visibility | Public by default; `priv trait` for module-private |
-| Generic struct fields | `struct Foo<T: Comparable>` requires T: Comparable at every instantiation |
-| Negative constraints | Not in MVP; workaround via naming convention or separate functions |
-| Associated types | Not in MVP; deferred |
-| More than 2 type params | Not in MVP; traits limited to 1-2 parameters |
-| Omitted bounds (private) | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |
-
-### Bounds Requirements
-
-| Function | Requirement |
-|----------|-------------|
-| Public generic | Must declare trait constraints explicitly |
-| Private generic | May omit trait constraints (compiler infers from body) |
-| Calling a constrained function | Caller must have same or stronger constraints (explicit or inferred) |
-
-See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
-
-```rask
-// Private: bounds inferred from body
-func helper(item) { item.hash() }
-// Compiler infers: func helper<T: Hashable>(item: T)
-
-// Public: bounds MUST be explicit
-public func process<T: Hashable>(items: []T) {
-    for item in items { helper(item) }  // OK: T: Hashable satisfies inferred bound
-}
-
-// Still an error in public context:
-public func bad<T>(items: []T) {
-    for item in items { helper(item) }  // ERROR: T not bounded (public requires explicit)
-}
-```
-
-Note: Methods on containers (like `[]T.len()`) don't require constraints on T.
-
-### Numeric Literals in Generics
+## Numeric Literals in Generics
 
 Integer literals auto-coerce to T when `T: Numeric`. Compiler inserts `T.from_int()`. IDE shows ghost text.
 
@@ -237,15 +191,41 @@ trait Numeric<T> {
 func increment<T: Numeric>(val: T) -> T {
     val + 1  // Compiler inserts: val + T.from_int(1)
 }
-
-func lerp<T: Numeric>(a: T, b: T, t: T) -> T {
-    a * (1 - t) + b * t  // Clean, IDE shows conversions
-}
 ```
 
-## Examples
+## Edge Cases
 
-### Generic Sorting
+| Case | Rule | Handling |
+|------|------|----------|
+| Zero instantiations | G2 | Function body syntax-checked; type errors may be deferred |
+| Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
+| Trait visibility | TD1 | Public by default; `priv trait` for module-private |
+| Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every instantiation |
+| Negative constraints | — | Not in MVP; workaround via naming convention or separate functions |
+| Associated types | — | Not in MVP; deferred |
+| More than 2 type params | — | Not in MVP; traits limited to 1-2 parameters |
+| Omitted bounds (private) | GF2 | Inferred from body; see [Gradual Constraints](gradual-constraints.md) |
+| Container method access | GF1 | Methods on containers (like `[]T.len()`) don't require constraints on T |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**G1 (structural satisfaction):** Explicit constraints catch errors early without whole-program analysis. Structural satisfaction avoids global coherence complexity.
+
+**G4 (operator desugaring):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
+
+**G5 (verified clone):** Compiler-verified clone prevents aliasing bugs. Types with raw pointers can't silently claim to be cloneable.
+
+**G6 (full monomorphization):** Keeps costs transparent and compilation fast. Each instantiation is specialized — no hidden vtable overhead.
+
+**`explicit trait`:** Provides library stability when needed. Prevents accidental structural matches from breaking when method signatures evolve.
+
+### Patterns & Guidance
+
+**Generic sorting:**
 
 ```rask
 trait Comparable<T> {
@@ -263,14 +243,9 @@ public func sort<T: Comparable>(items: []T) {
 }
 ```
 
-### HashMap with Verified Clone
+**HashMap with verified clone:**
 
 ```rask
-trait Hashable<T> {
-    hash(self) -> u64
-    eq(self, other: T) -> bool
-}
-
 trait HashKey<T>: Hashable<T> + Clone<T> {}
 
 public struct HashMap<K: HashKey, V> {
@@ -283,18 +258,18 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 }
 ```
 
-## Integration Notes
+### Integration Notes
 
 - **Memory model**: Generic ownership rules same as non-generic; move/copy determined per instantiation
 - **Type system**: Traits checked structurally at use site; no global coherence required (unless `explicit trait`)
 - **Concurrency**: Generic tasks can send owned generic values; traits verified per instantiation
 - **Compiler**: Monomorphization happens per compilation unit; no cross-unit analysis
 - **C interop**: Generic functions cannot be exported to C (no stable ABI); monomorphized wrappers required
-- **Error handling**: Generic functions with Result<T, E> work normally; linearity tracked per instantiation
+- **Error handling**: Generic functions with `T or E` work normally; linearity tracked per instantiation
 - **Closures**: Generics in closures capture by value; traits verified at closure instantiation
-- **Runtime polymorphism**: `any Trait` enables heterogeneous collections; see [traits.md](traits.md)
+- **Runtime polymorphism**: `any Trait` enables heterogeneous collections; see `type.traits`
 
-## Standard Library Traits
+### Standard Library Traits
 
 | Trait | Methods |
 |-------|---------|
@@ -305,3 +280,11 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Numeric<T>` | `add, sub, mul, div, neg, zero, one, from_int` |
 | `Default<T>` | `default() -> T` |
 | `Convert<From, Into>` | `convert(self: From) -> Into` |
+
+### See Also
+
+- [Traits](traits.md) — Trait definitions and `any Trait` polymorphism (`type.traits`)
+- [Structs](structs.md) — Struct definitions and methods (`type.structs`)
+- [Enums](enums.md) — Enum types (`type.enums`)
+- [Gradual Constraints](gradual-constraints.md) — Bound inference for private generics
+- [Resource Types](../memory/resource-types.md) — Linear types (`mem.resource-types`)
