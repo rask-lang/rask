@@ -136,9 +136,9 @@ Iterators borrow for expression scope only. Cannot be stored.
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `string.concat(a, b)` | `string` | Allocates new string |
-| `format!(template, args...)` | `string` | Macro expands to builder calls, allocates |
+| `"hello {name}"` | `string` | String interpolation, desugars to builder calls, allocates |
 
-No `+` operator. Allocation must be visible via method name or macro.
+No `+` operator. Allocation must be visible via method name or interpolation.
 
 ## In-Place Mutation
 
@@ -334,7 +334,7 @@ for (i, c) in text.char_indices() {
 - `string` implements `Clone`, `Display`, `Hash`, `Ord` traits
 - All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
-- String literals and `format!` at comptime produce static strings
+- String literals and interpolation at comptime produce static strings
 
 ### See Also
 
