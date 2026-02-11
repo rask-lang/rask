@@ -11,3 +11,6 @@ mod builtins;
 mod stdlib;
 
 pub use interp::{BenchmarkResult, Interpreter, RuntimeError, TestResult};
+
+#[cfg(test)]
+mod drift;

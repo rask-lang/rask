@@ -286,3 +286,28 @@ impl Interpreter {
     }
 }
 
+#[cfg(test)]
+impl Interpreter {
+    /// Check if a method dispatches (doesn't return NoSuchMethod).
+    /// A panic from inside a match arm counts as "implemented" — the method
+    /// was dispatched, it just has a bug with arg handling.
+    pub(crate) fn has_method_dispatch(&mut self, value: Value, method: &str) -> bool {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.call_method(value, method, vec![])
+        }));
+        !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
+    }
+
+    /// Check if a module method dispatches.
+    pub(crate) fn has_module_dispatch(
+        &mut self,
+        module: &crate::value::ModuleKind,
+        method: &str,
+    ) -> bool {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.call_module_method(module, method, vec![])
+        }));
+        !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
+    }
+}
+
