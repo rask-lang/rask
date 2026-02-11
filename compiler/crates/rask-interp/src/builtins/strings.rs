@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on the string type.
+//!
+//! Layer: PURE — no OS access, can be compiled from Rask.
 
 use std::sync::{Arc, Mutex};
 

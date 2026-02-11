@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Filesystem module methods (fs.*) and File/Metadata instance methods.
+//!
+//! Layer: RUNTIME — all operations require filesystem access.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -95,7 +97,17 @@ impl Interpreter {
             }
             "open" => {
                 let path = self.expect_string(&args, 0)?;
-                match std::fs::File::open(&path) {
+                let mode = args.get(1)
+                    .and_then(|v| if let Value::String(s) = v { Some(s.lock().unwrap().clone()) } else { None })
+                    .unwrap_or_default();
+                let result = match mode.as_str() {
+                    "w" => std::fs::File::create(&path),
+                    "w+" => std::fs::OpenOptions::new().create(true).read(true).write(true).open(&path),
+                    "a" => std::fs::OpenOptions::new().create(true).append(true).open(&path),
+                    "a+" => std::fs::OpenOptions::new().create(true).read(true).append(true).open(&path),
+                    _ => std::fs::File::open(&path),
+                };
+                match result {
                     Ok(file) => {
                         let arc = Arc::new(Mutex::new(Some(file)));
                         let ptr = Arc::as_ptr(&arc) as usize;
@@ -183,7 +195,7 @@ impl Interpreter {
                     }),
                 }
             }
-            "remove" => {
+            "delete" | "remove" => {
                 let path = self.expect_string(&args, 0)?;
                 match std::fs::remove_file(&path) {
                     Ok(()) => Ok(Value::Enum {

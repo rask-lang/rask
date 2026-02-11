@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! I/O module methods (io.*).
+//!
+//! Layer: RUNTIME — reads from stdin.
 
 use std::sync::{Arc, Mutex};
 

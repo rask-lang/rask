@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 //! JSON module methods (json.*).
 //!
+//! Layer: PURE — custom recursive-descent parser, no OS access.
+//!
 //! Provides: json.parse(), json.stringify(), json.stringify_pretty(),
 //! json.encode(struct), json.decode<T>(string).
 

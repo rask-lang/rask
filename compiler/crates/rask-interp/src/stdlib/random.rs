@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Random module methods (random.*).
+//!
+//! Layer: HYBRID — seed from system time, computation is pure PRNG.
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;

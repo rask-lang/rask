@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on Result and Option enum types.
+//!
+//! Layer: PURE — no OS access, can be compiled from Rask.
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;

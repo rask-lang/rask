@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! OS module methods (os.*).
 //!
+//! Layer: RUNTIME — env vars, process control, and platform detection.
+//!
 //! Consolidates process/platform operations: env vars, args, exit, pid, platform info.
 //! Legacy modules (env, std, cli) forward here.
 

@@ -12,6 +12,7 @@ pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodDef, has_method, lookup_method};
 pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,
+    StdlibLayer, type_layer, module_layer,
 };
 
 /// Information about a built-in function for the resolver

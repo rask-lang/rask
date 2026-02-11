@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 #![allow(dead_code)]
 //! Math module methods (math.*).
+//!
+//! Layer: PURE — mathematical functions, no OS access.
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;

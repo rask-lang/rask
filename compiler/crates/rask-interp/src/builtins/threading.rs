@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on threading types: ThreadHandle, Sender, Receiver.
+//!
+//! Layer: RUNTIME — thread join/detach and channel ops need OS primitives.
 
 use std::sync::{Arc, Mutex, mpsc};
 

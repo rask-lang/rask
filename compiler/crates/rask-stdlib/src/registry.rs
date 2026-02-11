@@ -1,12 +1,55 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Implementation method registry for drift detection.
+//! Implementation method registry for drift detection and layer classification.
 //!
 //! Lists methods the interpreter actually handles, per type and module.
 //! The drift test in rask-interp exercises the interpreter against these
 //! lists to catch registered-but-unimplemented methods.
 //!
+//! Also classifies each type and module by layer — codegen uses this to
+//! decide what needs FFI stubs (Runtime) vs what can compile from Rask (Pure).
+//!
 //! Separate from the spec MethodDefs in types.rs — the spec defines
 //! the planned API, this tracks what's implemented today.
+
+/// Where a stdlib type or module lives in the compilation pipeline.
+///
+/// - `Runtime`: needs OS access — stays in Rust as part of `rask-rt`
+/// - `Pure`: no OS access — can be rewritten in Rask once codegen works
+/// - `Hybrid`: mix of both (e.g., Duration is pure, Instant needs OS)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StdlibLayer {
+    Runtime,
+    Pure,
+    Hybrid,
+}
+
+/// Classify a builtin type by its runtime requirements.
+pub fn type_layer(type_name: &str) -> StdlibLayer {
+    match type_name {
+        "i64" | "i128" | "u128" | "f64" | "bool" | "char" | "string"
+        | "Vec" | "Map" | "Pool" | "Handle"
+        | "Result" | "Option"
+        | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
+
+        "ThreadHandle" | "Sender" | "Receiver" | "Shared"
+        | "AtomicBool" | "AtomicUsize" | "AtomicU64"
+        | "File" | "Metadata"
+        | "TcpListener" | "TcpConnection"
+        | "Instant" => StdlibLayer::Runtime,
+
+        _ => StdlibLayer::Runtime,
+    }
+}
+
+/// Classify a stdlib module by its runtime requirements.
+pub fn module_layer(module: &str) -> StdlibLayer {
+    match module {
+        "json" | "math" | "path" => StdlibLayer::Pure,
+        "fs" | "io" | "net" | "os" | "cli" => StdlibLayer::Runtime,
+        "time" | "random" => StdlibLayer::Hybrid,
+        _ => StdlibLayer::Runtime,
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Instance methods by type

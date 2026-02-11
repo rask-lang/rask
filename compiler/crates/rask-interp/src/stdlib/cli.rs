@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 //! CLI module methods (cli.*).
 //!
+//! Layer: RUNTIME — reads process arguments from the OS.
+//!
 //! Provides argument parsing: quick API (cli.parse()) and builder (cli.Parser).
 
 use std::collections::HashMap;
