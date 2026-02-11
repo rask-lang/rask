@@ -440,7 +440,7 @@ func sort(items: Vec<T>) {
 **Context clauses with `with`:**
 ```rask
 // Unnamed context (mutable by default)
-func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 
@@ -487,7 +487,7 @@ func debug_sort(items: Vec<T>) where T: Ord + Debug {
 **Combined `with` and `where`:**
 ```rask
 func process_all(handles: Vec<Handle<T>>)
-    with Pool<T>
+    using Pool<T>
     where T: Processable
 {
     for h in handles {
@@ -625,9 +625,8 @@ if state is Connected(sock) && sock.is_ready() {
 
 | Use Case | Recommended |
 |----------|-------------|
-| Check Option presence | `if opt?` (sugar) |
-| Check Option with binding | `if opt?` or `if opt is Some(x)` |
-| Check other enum variant | `if x is Variant(v)` |
+| Check Option with binding | `if opt is Some` |
+| Check other enum variant | `if x is Variant` |
 | Exhaustive handling | `match` |
 | Loop over iterator | `for x in iter` |
 
@@ -1018,7 +1017,7 @@ println("{sum}")
 | Result | `T or E` | Same as `Result<T, E>` |
 | Error prop | `try expr` | Prefix keyword |
 | Match | `match x { ... }` | Expression with `=>` arms |
-| Pattern condition | `if x is Pattern(v)` | Non-exhaustive, binds `v` |
+| Pattern condition | `if x is Pattern` | Non-exhaustive, binds `v` |
 | Guard extraction | `let v = x is P else { }` | Binds to outer scope |
 | Loops | `for x in xs: ...` | Inline or braced |
 | Loop value | `break expr` | Exit loop with value |

@@ -1,20 +1,20 @@
 <!-- id: mem.context -->
 <!-- status: decided -->
-<!-- summary: with clauses declare pool dependencies; compiler threads as hidden parameters -->
+<!-- summary: using clauses declare pool dependencies; compiler threads as hidden parameters -->
 <!-- depends: memory/pools.md, memory/borrowing.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Context Clauses
 
-`with` clauses declare a function's pool dependencies without explicit passing. Compiler threads contexts as hidden parameters — zero overhead, compile-time checked.
+`using` clauses declare a function's pool dependencies without explicit passing. Compiler threads contexts as hidden parameters — zero overhead, compile-time checked.
 
 ## Syntax
 
 | Rule | Form | Syntax | Effect |
 |------|------|--------|--------|
-| **CC1: Named context** | `with name: Pool<T>` | `func f() with players: Pool<Player>` | Creates binding `players` + enables auto-resolution for `Handle<Player>` |
-| **CC2: Unnamed context** | `with Pool<T>` | `func f() with Pool<Player>` | Auto-resolution only, no binding for structural ops |
-| **CC3: Frozen context** | `with frozen Pool<T>` | `func f() with frozen Pool<Player>` | Read-only, accepts both `Pool<T>` and `FrozenPool<T>` |
+| **CC1: Named context** | `using name: Pool<T>` | `func f() using players: Pool<Player>` | Creates binding `players` + enables auto-resolution for `Handle<Player>` |
+| **CC2: Unnamed context** | `using Pool<T>` | `func f() using Pool<Player>` | Auto-resolution only, no binding for structural ops |
+| **CC3: Frozen context** | `using frozen Pool<T>` | `func f() using frozen Pool<Player>` | Read-only, accepts both `Pool<T>` and `FrozenPool<T>` |
 
 Without `frozen`, contexts are mutable by default — writes through handles are allowed, but only `Pool<T>` satisfies the context (not `FrozenPool<T>`). See `mem.pools` for the full subsumption rule.
 
@@ -22,20 +22,20 @@ Without `frozen`, contexts are mutable by default — writes through handles are
 ```rask
 // Named — binding + auto-resolution
 func award_bonus(h: Handle<Player>, amount: i32)
-    with players: Pool<Player>
+    using players: Pool<Player>
 {
     h.score += amount              // Auto-resolves via players context
     players.mark_dirty(h)          // Named binding for structural op
 }
 
 // Unnamed — auto-resolution only
-func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount        // Auto-resolves
     // players.remove(h)      // ERROR: 'players' not in scope
 }
 
 // Frozen — read-only
-func get_health(h: Handle<Player>) with frozen Pool<Player> -> i32 {
+func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
     return h.health
 }
 
@@ -43,7 +43,7 @@ func get_health(h: Handle<Player>) with frozen Pool<Player> -> i32 {
 func transfer_item(
     player_h: Handle<Player>,
     item_h: Handle<Item>
-) with players: Pool<Player>, items: Pool<Item> {
+) using players: Pool<Player>, items: Pool<Item> {
     player_h.inventory.push(item_h)
     item_h.owner = Some(player_h)
 }
@@ -54,19 +54,19 @@ func transfer_item(
 <!-- test: skip -->
 ```rask
 [public] func name<Generics>(params) -> ReturnType
-    with [frozen] [context_name:] ContextType, ...
+    using [frozen] [context_name:] ContextType, ...
     where TraitBounds
 { body }
 ```
 
-Order: generics, parameters, return type, `with` clause, `where` clause, body.
+Order: generics, parameters, return type, `using` clause, `where` clause, body.
 
 ## Resolution
 
 | Rule | Description |
 |------|-------------|
-| **CC4: Resolution order** | At call sites, compiler searches: local variables, function parameters, fields of `self`, own `with` clause |
-| **CC5: Propagation** | A function's `with` clause satisfies callees requiring the same context type |
+| **CC4: Resolution order** | At call sites, compiler searches: local variables, function parameters, fields of `self`, own `using` clause |
+| **CC5: Propagation** | A function's `using` clause satisfies callees requiring the same context type |
 | **CC8: Ambiguity error** | Multiple pools of the same type in scope is a compile error — pass explicitly |
 
 <!-- test: skip -->
@@ -90,16 +90,16 @@ extend Game {
 }
 
 // CC5: context propagates through call chain
-func update_player(h: Handle<Player>) with Pool<Player> {
+func update_player(h: Handle<Player>) using Pool<Player> {
     take_damage(h, 5)        // Propagates Pool<Player> context
     check_death(h)           // Propagates Pool<Player> context
 }
 
-func take_damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+func take_damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 
-func check_death(h: Handle<Player>) with players: Pool<Player> {
+func check_death(h: Handle<Player>) using players: Pool<Player> {
     if h.health <= 0 {
         players.remove(h)
     }
@@ -113,7 +113,7 @@ Both named and unnamed contexts satisfy context requirements — the name is loc
 <!-- test: skip -->
 ```rask
 // What you write:
-func damage(h: Handle<Player>, amount: i32) with players: Pool<Player> {
+func damage(h: Handle<Player>, amount: i32) using players: Pool<Player> {
     h.health -= amount
 }
 
@@ -129,7 +129,7 @@ Call sites automatically pass the pool as a hidden argument. No runtime lookups,
 
 | Rule | Description |
 |------|-------------|
-| **CC6: Public declaration required** | Public functions must declare `with` clauses — part of API contract |
+| **CC6: Public declaration required** | Public functions must declare `using` clauses — part of API contract |
 | **CC7: Private inference** | Private functions can have unnamed contexts inferred from handle field access |
 
 The compiler can infer an unnamed context from field access, but cannot infer a name. If the body uses a pool for structural operations, the name must be declared.
@@ -142,17 +142,17 @@ public func damage(h: Handle<Player>, amount: i32) {
 }
 
 // OK: context declared
-public func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+public func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 
-// Private: compiler infers `with Pool<Player>` from h.health usage
+// Private: compiler infers `using Pool<Player>` from h.health usage
 func damage(h: Handle<Player>, amount: i32) {
     h.health -= amount
 }
 
 // But structural operations need explicit name:
-func kill(h: Handle<Player>) with players: Pool<Player> {
+func kill(h: Handle<Player>) using players: Pool<Player> {
     h.on_death()
     players.remove(h)
 }
@@ -168,7 +168,7 @@ func kill(h: Handle<Player>) with players: Pool<Player> {
 <!-- test: skip -->
 ```rask
 // CC9: expression-scoped inherits context
-func process_all(handles: Vec<Handle<Player>>) with Pool<Player> {
+func process_all(handles: Vec<Handle<Player>>) using Pool<Player> {
     handles.iter().for_each(|h| {
         h.score += 10    // Pool<Player> context inherited
     })
@@ -192,7 +192,7 @@ Context clauses work with generics:
 <!-- test: skip -->
 ```rask
 public func process_all<T>(handles: Vec<Handle<T>>)
-    with Pool<T>
+    using Pool<T>
     where T: Processable
 {
     for h in handles {
@@ -210,9 +210,9 @@ ERROR [mem.context/CC6]: public function with Handle parameter needs context
 1  |  public func damage(h: Handle<Player>, amount: i32) {
    |                      ^^^^^^^^^^^^^^^^ Handle<Player> requires pool context
    |
-FIX: Add a with clause:
+FIX: Add a using clause:
 
-  public func damage(h: Handle<Player>, amount: i32) with Pool<Player> {
+  public func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
 ```
 
 **Ambiguous context [CC8]:**
@@ -274,6 +274,8 @@ FIX: Pass the pool as an explicit parameter to the closure.
 
 **Why compile-time threading instead of runtime registry?** Eliminates overhead, turns runtime panics into compile errors, and makes dependencies explicit in signatures.
 
+**Why `using` not `with`?** Reserves `with` for block-scoped constructs (element binding, runtime context blocks). `using` is for function-level declarations only — clean separation.
+
 ### Patterns & Guidance
 
 **Call chain propagation:**
@@ -288,13 +290,13 @@ func game_loop() {
 }
 
 // Mid-level: propagates context
-func update_player(h: Handle<Player>, dt: f32) with Pool<Player> {
+func update_player(h: Handle<Player>, dt: f32) using Pool<Player> {
     apply_physics(h, dt)
     check_collisions(h)
 }
 
 // Low-level: uses context
-func apply_physics(h: Handle<Player>, dt: f32) with Pool<Player> {
+func apply_physics(h: Handle<Player>, dt: f32) using Pool<Player> {
     h.velocity.y -= 9.8 * dt
     h.position += h.velocity * dt
 }
@@ -336,16 +338,17 @@ The IDE displays inferred contexts as ghost text:
 
 <!-- test: skip -->
 ```rask
-func damage(h: Handle<Player>, amount: i32) {    // ghost: with Pool<Player>
+func damage(h: Handle<Player>, amount: i32) {    // ghost: using Pool<Player>
     h.health -= amount
 }
 ```
 
-Quick action: "Make context explicit" fills in the inferred `with` clause.
+Quick action: "Make context explicit" fills in the inferred `using` clause.
 
 ### See Also
 
 - [Pools](pools.md) — Handle-based sparse storage (`mem.pools`)
-- [Borrowing](borrowing.md) — Expression-scoped views for growable sources (`mem.borrowing`)
+- [Borrowing](borrowing.md) — Expression-scoped views, `with` element binding (`mem.borrowing`)
 - [Resource Types](resource-types.md) — Must-consume types (`mem.resources`)
 - [Closures](closures.md) — Closure capture semantics (`mem.closures`)
+- [Async](../concurrency/async.md) — `using Multitasking` runtime contexts (`conc.async`)

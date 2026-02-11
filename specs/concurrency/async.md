@@ -11,14 +11,14 @@ Green tasks with affine handles. No function coloring. Explicit resource declara
 
 | Rule | Description |
 |------|-------------|
-| **S1: Green task** | `spawn { }` creates a green task; requires `with Multitasking` |
-| **S2: Pooled thread** | `spawn thread { }` runs on thread pool; requires `with ThreadPool` |
+| **S1: Green task** | `spawn { }` creates a green task; requires `using Multitasking` |
+| **S2: Pooled thread** | `spawn thread { }` runs on thread pool; requires `using ThreadPool` |
 | **S3: Raw thread** | `spawn raw { }` creates OS thread; no context required |
 | **S4: Affine handle** | All spawn forms return affine handles — must be joined or detached |
 
 ```rask
 func main() -> () or Error {
-    with Multitasking {
+    using Multitasking {
         const listener = try TcpListener.bind("0.0.0.0:8080")
 
         loop {
@@ -93,30 +93,30 @@ const results = try group.join_all()
 
 | Rule | Description |
 |------|-------------|
-| **C1: Multitasking** | `with Multitasking { }` provides M:N green task scheduler + I/O event loop |
-| **C2: ThreadPool** | `with ThreadPool { }` provides thread pool for CPU-bound work |
-| **C3: Composable** | `with Multitasking, ThreadPool { }` enables both |
-| **C4: Block exit** | Exiting a `with` block waits for non-detached tasks |
+| **C1: Multitasking** | `using Multitasking { }` provides M:N green task scheduler + I/O event loop |
+| **C2: ThreadPool** | `using ThreadPool { }` provides thread pool for CPU-bound work |
+| **C3: Composable** | `using Multitasking, ThreadPool { }` enables both |
+| **C4: Block exit** | Exiting a `using` block waits for non-detached tasks |
 
 <!-- test: skip -->
 ```rask
-with Multitasking(workers: 4) { }
-with ThreadPool(workers: 8) { }
-with Multitasking, ThreadPool { }
+using Multitasking(workers: 4) { }
+using ThreadPool(workers: 8) { }
+using Multitasking, ThreadPool { }
 ```
 
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|
-| `with Multitasking` | Yes | No | I/O-heavy servers |
-| `with ThreadPool` | No | Yes | CLI tools, batch processing |
-| `with Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
+| `using Multitasking` | Yes | No | I/O-heavy servers |
+| `using ThreadPool` | No | Yes | CLI tools, batch processing |
+| `using Multitasking, ThreadPool` | Yes | Yes | Full-featured applications |
 
 ## I/O Model
 
 | Rule | Description |
 |------|-------------|
 | **IO1: Transparent pausing** | Stdlib I/O pauses the task, not the thread — no `.await` needed |
-| **IO2: Sync fallback** | Without `with Multitasking`, I/O blocks the calling thread |
+| **IO2: Sync fallback** | Without `using Multitasking`, I/O blocks the calling thread |
 
 ```rask
 func process_file(path: string) -> Data or Error {
@@ -224,20 +224,20 @@ ERROR [conc.async/H1]: unused TaskHandle
 ERROR [conc.async/S1]: spawn requires Multitasking context
    |
 5  |  spawn { fetch(url) }
-   |  ^^^^^ no `with Multitasking` in scope
+   |  ^^^^^ no `using Multitasking` in scope
 
-FIX: with Multitasking { spawn { fetch(url) }.detach() }
+FIX: using Multitasking { spawn { fetch(url) }.detach() }
 ```
 
 ## Edge Cases
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Spawn outside `with Multitasking` | S1 | Compile error |
+| Spawn outside `using Multitasking` | S1 | Compile error |
 | `.join()` on cancelled task | H2, CN1 | Returns `Err(Cancelled)` |
 | Channel send after all receivers dropped | CH3 | Returns `Err(Closed)` |
-| Nested `with Multitasking` blocks | C1 | Compile error — one scheduler per program |
-| Detached task outlives `with` block | C4 | Detached tasks run to completion independently |
+| Nested `using Multitasking` blocks | C1 | Compile error — one scheduler per program |
+| Detached task outlives `using` block | C4 | Detached tasks run to completion independently |
 
 ---
 
@@ -288,7 +288,7 @@ enum TryRecvError { Empty, Closed }
 
 | Metric | Target | This Design |
 |--------|--------|-------------|
-| TC (Transparency) | >= 0.90 | `with Multitasking`, `with ThreadPool`, spawns all visible |
+| TC (Transparency) | >= 0.90 | `using Multitasking`, `using ThreadPool`, spawns all visible |
 | ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
 | SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
 | MC (Mechanical Correctness) | >= 0.90 | Affine handles catch forgotten tasks |
@@ -297,5 +297,5 @@ enum TryRecvError { Empty, Closed }
 
 - `conc.select` — select and multiplex
 - `conc.sync` — synchronization primitives
-- `mem.context` — `with` clauses and context resources
+- `mem.context` — `using` clauses for pool contexts
 - `mem.resources` — `@resource` types and `ensure` cleanup

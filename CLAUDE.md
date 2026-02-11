@@ -99,10 +99,13 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Take ownership | `func f(take x: T)` | implicit move |
 | Pass owned | `f(own value)` | implicit move |
 | Return value | `return expr` (explicit) | `expr` (implicit) |
-| Pattern match | `if x is Some(v)` | `if let Some(v) = x` |
-| Guard pattern | `let v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
+| Pattern match | `if x is Some` | `if let Some(v) = x` |
+| Guard pattern | `const v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
 | Result type | `T or E` (= `Result<T, E>`) | `Result<T, E>` |
 | Error propagation | `try expr` | `expr?` |
+| Pool context | `func f() using Pool<T>` | N/A |
+| Runtime context | `using Multitasking { }` | N/A |
+| Element binding | `with pool[h] as x { }` | N/A |
 | Statement end | Newline | `;` |
 
 **Common patterns:**
@@ -135,8 +138,21 @@ match event {
     Key(k) => process(k),
 }
 
-if result is Ok(v): use(v)                // pattern match
-let v = opt is Some else { return None }  // guard pattern
+if user is Some: process(user)               // implicit unwrap (single-payload)
+if result is Ok(v): use(v)                   // explicit binding
+const v = opt is Some else { return None }   // guard pattern
+
+func damage(h: Handle<Player>) using Pool<Player> {  // pool context
+    h.health -= 10
+}
+
+using Multitasking {                         // runtime executor
+    spawn { work() }.detach()
+}
+
+with pool[h] as entity {                     // element binding
+    entity.health -= 10
+}
 ```
 
 **Return semantics:**

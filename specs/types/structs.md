@@ -294,7 +294,7 @@ func update(state: GameState, dt: f32) {
 | Empty struct | S1 | Valid (unit struct), size 0 |
 | Single field | S1 | Valid, no special treatment |
 | Recursive field | S2 | MUST use `Owned<T>` or `Handle<T>` for indirection |
-| Self-referential | S2 | Use `Handle<Self>` with Pool |
+| Self-referential | S2 | Use `Handle<Self>` using Pool |
 | Large struct (>16 bytes) | — | Move semantics; explicit `.clone()` for copy |
 | Struct in Vec | — | Allowed if non-linear |
 | Linear field | — | Struct becomes linear; must be consumed |

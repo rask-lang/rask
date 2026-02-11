@@ -128,7 +128,20 @@ FIX: Add ParseError to the return type:
 
 ### Rationale
 
-**U1 (error position only):** Error composition is extremely common. Requiring explicit error enums for every combination violates Ergonomic Simplicity. But general union types add significant complexity (subtyping, variance, method resolution). Restricting to error position gives the benefit where it matters while keeping the type system simple.
+**U1 (error position only):** The actual need for ad-hoc unions is almost entirely error composition — calling `read_file()` then `parse()` means expressing "fails with IoError or ParseError" without a boilerplate enum every time. That's a real, frequent pain point.
+
+For data modeling, enums are strictly better. `i32 | string` is anonymous — it tells you *what* the possibilities are but not *why*. `enum ConfigValue { Int(i32), Text(string) }` is self-documenting, extensible, and forces you to name the concept.
+
+General unions would significantly complicate the type system:
+
+- **Subtyping.** Is `i32 | string` a subtype of `i32 | string | bool`? Now you need variance rules everywhere, not just in error position.
+- **Method resolution.** What methods exist on `A | B`? Intersection? That requires cross-type analysis and gets weird fast.
+- **Type narrowing.** TypeScript needs an entire flow-typing system (`typeof`, type guards) to make general unions usable. That's a massive complexity budget.
+- **Local analysis.** Subtyping makes type inference harder and can push toward whole-program reasoning.
+
+Rask already covers the common "general union" cases: `T?` for nullable, `T or (A | B)` for error composition, and explicit enums for data variants. The one case where general unions feel lighter — throwaway "X or Y" types — is exactly where an explicit enum forces you to name the concept, which makes the code better.
+
+I chose to restrict unions to error position because it gives the benefit where it matters while avoiding the subtyping complexity that would undermine local analysis and simplicity.
 
 **U2 (anonymous enum):** The generated name is internal — users interact via union syntax. This avoids polluting the namespace with boilerplate error enum definitions.
 

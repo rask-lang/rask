@@ -262,7 +262,7 @@ public enum ServerError {
 
 extend Server {
     public func start(take self, config: Config) -> () or ServerError
-        with Pool<Connection>
+        using Pool<Connection>
     {
         // ...
     }
@@ -338,7 +338,7 @@ server (src/server.rk)
     public port: u16
     connections: Vec<Connection>
 
-    public func start(take self, config: Config) -> () or ServerError  with Pool<Connection>
+    public func start(take self, config: Config) -> () or ServerError  using Pool<Connection>
     public func stop(take self)
 
   public enum ServerError
