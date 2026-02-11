@@ -1,13 +1,18 @@
+<!-- id: type.errors -->
+<!-- status: decided -->
+<!-- summary: Errors are values with try propagation, union composition, and auto-Ok wrapping -->
 <!-- depends: types/enums.md, types/optionals.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
 
-# Error Types Specification
-
-## Overview
+# Error Types
 
 Errors are values. Any type with `message()` can be an error. Composition uses union types for type-safe propagation.
 
-## The Error Trait
+## Error Trait
+
+| Rule | Description |
+|------|-------------|
+| **ER1: Structural matching** | Any type with `func message(self) -> string` satisfies the Error trait |
 
 <!-- test: parse -->
 ```rask
@@ -16,9 +21,12 @@ trait Error {
 }
 ```
 
-Structural matching—any type with `message(self) -> string` satisfies it.
-
 ## Result Type
+
+| Rule | Description |
+|------|-------------|
+| **ER2: Result enum** | `Result<T, E>` is a built-in enum with `Ok(T)` and `Err(E)` variants |
+| **ER3: Shorthand** | `T or E` is identical to `Result<T, E>` |
 
 <!-- test: parse -->
 ```rask
@@ -27,10 +35,6 @@ enum Result<T, E> {
     Err(E),
 }
 ```
-
-### Result Shorthand: `T or E`
-
-`T or E` is `Result<T, E>`—same type, shorter. Consistent with `T?` being `Option<T>`.
 
 | Shorthand | Full type | Meaning |
 |-----------|-----------|---------|
@@ -59,16 +63,20 @@ For `Option<T>`, see [Optionals](optionals.md).
 | `err` | `func(take self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
 | `is_ok` | `func(self) -> bool` | True if Ok |
 | `is_err` | `func(self) -> bool` | True if Err |
-| `map` | `func<U>(take self, f: |T| -> U) -> Result<U, E>` | Transform Ok value |
-| `map_err` | `func<F>(take self, f: |E| -> F) -> Result<T, F>` | Transform Err value |
+| `map` | `func<U>(take self, f: \|T\| -> U) -> Result<U, E>` | Transform Ok value |
+| `map_err` | `func<F>(take self, f: \|E\| -> F) -> Result<T, F>` | Transform Err value |
 
 Force unwrap uses operators, not methods:
 - `x!` — panic with auto message (includes error info)
 - `x! "msg"` — panic with custom message
 
-## Error Propagation: `try`
+## Error Propagation
 
-Extracts `Ok` or returns early with `Err`. Prefix.
+| Rule | Description |
+|------|-------------|
+| **ER4: try extracts** | `try` extracts `Ok` or returns early with `Err` |
+| **ER5: try binding** | `try` binds to full following expression including chains |
+| **ER6: try on Option** | `try` also works on `Option` — propagates `None` |
 
 <!-- test: skip -->
 ```rask
@@ -81,13 +89,14 @@ func process() -> Data or IoError {
 
 `try` works on both `Result` and `Option`—uniformly means "propagate failure." `?` reserved for Option sugar only (`T?` type, `x?.field` chaining, `x ?? y` default, `if x?` smart unwrap).
 
-**Binding:** `try` binds to full following expression including chains. Use parens for chaining after: `(try file.read()).trim()`.
+Use parens for chaining after: `(try file.read()).trim()`.
 
-**IDE support:** IDE shows `→ returns Err` as ghost text after `try` for visibility.
+## Auto-Ok Wrapping
 
-### Auto-Ok Wrapping
-
-When a function signature is `T or E`, returning a value of type `T` is automatically wrapped in `Ok`:
+| Rule | Description |
+|------|-------------|
+| **ER7: Auto-wrap T** | When return type is `T or E`, returning a value of type `T` is automatically wrapped in `Ok` |
+| **ER8: Implicit unit Ok** | When return type is `() or E` and execution reaches end, returns `Ok(())` |
 
 <!-- test: skip -->
 ```rask
@@ -103,10 +112,6 @@ func might_fail() -> i32 or Error {
     return 42  // Auto-wrapped to Ok(42)
 }
 ```
-
-### Implicit Ok(()) for Unit Results
-
-When a function returns `() or E` and reaches the end without an explicit return, it automatically returns `Ok(())`:
 
 <!-- test: skip -->
 ```rask
@@ -124,11 +129,11 @@ func main() -> () or Error {
 }
 ```
 
-**Rationale:** If you wanted an error, you'd use `return Err(...)` or `try`. Reaching the end means success. Eliminates noisy `Ok(())` at function ends.
+## Error Type Widening
 
-### Error Type Widening
-
-When return type is union, `try` auto-widens:
+| Rule | Description |
+|------|-------------|
+| **ER9: Auto-widen** | `try` auto-widens when return type is a union — succeeds if expression error type ⊆ return error union |
 
 <!-- test: skip -->
 ```rask
@@ -139,13 +144,13 @@ func load() -> Config or (IoError | ParseError) {
 }
 ```
 
-**Rule:** `try` succeeds if expression error type ⊆ return error union.
-
 See [Union Types](union-types.md) for union type semantics.
 
 ## Custom Error Types
 
-Define errors as enums:
+| Rule | Description |
+|------|-------------|
+| **ER10: Enum errors** | Errors are defined as enums with a `message()` method |
 
 <!-- test: parse -->
 ```rask
@@ -166,7 +171,7 @@ extend AppError {
 }
 ```
 
-## Built-in IoError
+### Built-in IoError
 
 <!-- test: skip -->
 ```rask
@@ -185,6 +190,12 @@ extend IoError {
 ```
 
 ## Error Composition
+
+| Rule | Description |
+|------|-------------|
+| **ER11: Same type** | Same error type propagates directly |
+| **ER12: Union** | Different error types compose via union (`A \| B`) |
+| **ER13: Union compose** | Union return types accept any subset union via `try` |
 
 ### Same error type — direct propagation
 
@@ -234,7 +245,9 @@ match load() {
 
 ## Linear Resources in Errors
 
-Errors can contain linear resources. Wildcards on linear payloads are compile errors.
+| Rule | Description |
+|------|-------------|
+| **ER14: Linear payloads** | Errors can contain linear resources; wildcard on linear payloads is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -251,18 +264,7 @@ match result {
 }
 ```
 
-## Summary
-
-| Feature | Mechanism |
-|---------|-----------|
-| Error trait | `func message(self) -> string` |
-| Result/Option | Built-in enums |
-| Propagation | `try` keyword (works on both) |
-| Composition | Union types (`A | B`) |
-| Custom errors | Enums with `message()` |
-| Auto-Ok | Final expression auto-wrapped |
-
-### The Operator Family
+## Operator Family
 
 | Syntax | Option | Result |
 |--------|--------|--------|
@@ -271,26 +273,50 @@ match result {
 | `x!` | Force (panic) | Force (panic with error info) |
 | `x! "msg"` | Force (panic with message) | Force (panic with message) |
 
-**Why `??` doesn't work on Result:** Silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
+`??` doesn't work on Result — silently discarding errors masks real problems. Use `.on_err(default)` to explicitly acknowledge you're ignoring the error.
 
-**Optional sugar** (`T?`, `x?.field`, `x ?? y`, `if x?`) is distinct from `try` propagation — `?` is never used for propagation.
+Optional sugar (`T?`, `x?.field`, `x ?? y`, `if x?`) is distinct from `try` propagation — `?` is never used for propagation.
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Return `T` from `T or E` function | ER7 | Auto-wrapped to `Ok(T)` |
+| Reach end of `() or E` function | ER8 | Implicit `Ok(())` |
+| `try` on error type not in return union | ER9 | Compile error — type not subset |
+| `try` on `Option` in `Result` function | ER6 | `None` maps to `Err` (types must align) |
+| Wildcard on linear error payload | ER14 | Compile error — must consume |
+| Nested `try` in closures | ER4 | Propagates to closure's return, not enclosing function |
+| `try` binding with method chain | ER5 | Binds to full expression; use parens to chain after |
 
 ---
 
-## Panic vs Error: When to Use Which
+## Appendix (non-normative)
 
-I want a simple rule: **panic for programmer errors, return errors for expected failures.**
+### Rationale
 
-### The Rule
+**ER1 (structural matching):** Structural matching means you don't need to import a trait to make your type an error. If it has `message()`, it works.
+
+**ER7/ER8 (auto-Ok):** If you wanted an error, you'd use `return Err(...)` or `try`. Reaching the end means success. Eliminates noisy `Ok(())` at function ends.
+
+**ER9 (auto-widen):** Without auto-widening, every `try` on a narrower error type would need an explicit conversion. The subset check keeps it type-safe without boilerplate.
+
+**Operator split (`try` vs `?`):** `try` is for propagation (both Result and Option). `?` is reserved for Option sugar only — type suffix, chaining, defaults, smart unwrap. This avoids Rust's overloading where `?` means different things in different contexts.
+
+**`??` not on Result:** Silently discarding errors masks real problems. `.on_err(default)` makes the intent explicit.
+
+### Patterns & Guidance
+
+#### Panic vs Error: When to Use Which
+
+Simple rule: **panic for programmer errors, return errors for expected failures.**
 
 | Situation | Mechanism | Rationale |
 |-----------|-----------|-----------|
 | **Bug in the code** | `panic` | Continuing is meaningless — the program is wrong |
 | **Bad input / environment** | `return Err(...)` | Caller can recover, retry, or report |
 
-### Panic (programmer error)
-
-Panic when the program has a bug — a violated invariant, impossible state, or broken contract between functions.
+**Panic (programmer error):**
 
 <!-- test: skip -->
 ```rask
@@ -309,9 +335,7 @@ func withdraw(self, amount: u64) {
 const config = load_config()!   // panic if None/Err
 ```
 
-### Return Error (expected failure)
-
-Return an error when the failure is a normal part of operation — the caller should handle it.
+**Return Error (expected failure):**
 
 <!-- test: skip -->
 ```rask
@@ -335,9 +359,7 @@ func parse_age(input: string) -> u32 or ParseError {
 }
 ```
 
-### The Grey Area
-
-Some cases aren't obvious. Here's how I'd decide:
+#### The Grey Area
 
 | Case | Choice | Why |
 |------|--------|-----|
@@ -348,9 +370,9 @@ Some cases aren't obvious. Here's how I'd decide:
 | Missing required config | Error if loading, panic if already validated | Depends on where you are |
 | Unreachable match arm | Panic | If it's reached, the code is wrong |
 
-**Rule of thumb:** If adding error handling makes the caller's code strictly worse (more complex, no meaningful recovery), the callee should panic. If the caller has a reasonable recovery path, return an error.
+Rule of thumb: If adding error handling makes the caller's code strictly worse (more complex, no meaningful recovery), the callee should panic. If the caller has a reasonable recovery path, return an error.
 
-### Panic Messages
+#### Panic Messages
 
 Panic messages should explain the invariant that was violated:
 
@@ -363,12 +385,20 @@ panic("buffer.len() must be >= header_size, got {buffer.len()}")
 panic("invalid state")
 ```
 
----
+#### IDE Integration
 
-## Remaining Issues
+IDE shows `→ returns Err` as ghost text after `try` for visibility.
 
-### Low Priority
+### Remaining Issues
+
+#### Low Priority
 1. **Stack traces** — Debug builds could capture (not specified)
 
-### Dependencies
+#### Dependencies
 - **Union types** — See [Union Types](union-types.md) (TODO: create spec)
+
+### See Also
+
+- [Optionals](optionals.md) — `T?` sugar, `??` default, `if x?` smart unwrap (`type.optionals`)
+- [Enums](enums.md) — Enum definitions and pattern matching (`type.enums`)
+- [Union Types](union-types.md) — Union type semantics for error composition

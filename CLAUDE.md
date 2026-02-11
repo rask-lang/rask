@@ -2,6 +2,14 @@ Keep docs short. In chat, explain things to me—I'm not a language architect ex
 
 Be critical, test all assumptions, scrutinize the design choices.
 
+# Working relationship
+
+- No sycophancy.
+- Be direct, matter-of-fact, and concise.
+- Be critical; challenge my reasoning.
+- Don’t include timeline estimates in plans.
+- Don’t add yourself as a co-author to git commits.
+
 **Tool usage:**
 - Use `Write` tool for creating test files, not `Bash` with cat/heredocs
 - Avoid pipes (`|`), redirects (`2>&1`), and command chaining (`&&`) in Bash commands - they break permission matching
@@ -170,7 +178,9 @@ See [METRICS.md](specs/METRICS.md) for scoring methodology.
 
 ## Design Status
 
-Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](specs/README.md).
+Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](specs/README.md). For spec ID conventions and citation format: [specs/CONVENTIONS.md](specs/CONVENTIONS.md).
+
+**Citing spec rules:** `spec-id/rule-id` — e.g., `mem.ownership/O1`, `type.structs/M3`. See CONVENTIONS.md for the full ID scheme.
 
 ### Decided
 

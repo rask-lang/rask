@@ -1,59 +1,66 @@
+<!-- id: type.enums -->
+<!-- status: decided -->
+<!-- summary: Tagged unions with inline payloads, inferred binding modes, exhaustive matching -->
 <!-- depends: types/structs.md -->
 <!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
 
-# Solution: Sum Types and Pattern Matching
+# Enums
 
-## The Question
-How do algebraic data types work in Rask?
-
-## Decision
 Tagged unions with inline payloads. Compiler infers binding modes. Exhaustiveness checked at compile time. One `match` keyword, no mode annotations.
 
-## Rationale
-Enums follow the same ownership rules as structs. Compiler infers whether bindings are borrowed or taken based on usage in each arm. For borrows, compiler infers read vs mutate. IDE shows these as ghost annotations (Principle 7). Exhaustiveness checked locally—all variants known from definition. Linear resources tracked through match arms, no silent drops.
-
-## Specification
-
-### Enum Definition
-
-Enums are tagged unions with inline variant storage.
+## Enum Definition
 
 <!-- test: parse -->
 ```rask
 enum Name { A, B }                    // Simple tag-only
-enum Name { A(T), B(U, V) }           // Variants with payloads  
+enum Name { A(T), B(U, V) }           // Variants with payloads
 enum Name<T> { Some(T), None }        // Generic enum
 ```
 
-**Rules:**
-- Inline storage for largest variant
-- Discriminant auto-sized: u8 (≤256 variants), u16 (≤65536 variants)
-- Max 65536 variants
-- IDE shows discriminant size and total size as ghost text
+| Rule | Description |
+|------|-------------|
+| **E1: Inline storage** | Variant payloads stored inline (no heap except `Owned<T>`) |
+| **E2: Discriminant sizing** | Auto-sized: u8 (≤256 variants), u16 (≤65536 variants) |
+| **E3: Max variants** | Maximum 65536 variants per enum |
 
-### Value Semantics
+## Value Semantics
 
-| Property | Rule |
-|----------|------|
-| Inline storage | Variant payloads stored inline (no heap except `Owned<T>`) |
-| Copy eligibility | Enum is Copy if total size ≤16 bytes AND all variants are Copy |
-| Move semantics | Non-Copy enums move on assignment; source invalidated |
-| Clone | Derived automatically if all variants implement Clone |
+| Rule | Description |
+|------|-------------|
+| **E4: Copy eligibility** | Enum is Copy if total size ≤16 bytes AND all variants are Copy |
+| **E5: Move semantics** | Non-Copy enums move on assignment; source invalidated |
 
-**Copy vs Move in Patterns:**
+Clone derived automatically if all variants implement Clone.
+
+**Copy vs Move in patterns:**
 
 | Enum Type | `match x` Behavior | After Match |
 |-----------|-------------------|-------------|
 | Copy | Copies x into binding | x still valid |
 | Non-Copy | Moves x into binding | x consumed |
 
-IDE SHOULD show move vs copy at each match site.
-
-### Pattern Matching
+## Pattern Matching
 
 One keyword: `match`. The compiler infers binding modes from usage.
 
-**Borrow (inferred when bindings only borrowed) =>**
+| Rule | Description |
+|------|-------------|
+| **PM1: Mode inference** | Compiler infers binding mode from usage; highest mode wins across all arms |
+| **PM2: Exhaustiveness** | All variants must be handled; compiler reports specific unhandled variants |
+| **PM3: Pattern guards** | Guarded variant must have unguarded fallback arm or wildcard after |
+| **PM4: Or-patterns** | Multiple patterns share an arm with `\|`; all must bind same names with compatible types |
+
+**Binding mode summary:**
+
+| Binding Usage | Inferred Mode | Source After |
+|---------------|---------------|--------------|
+| Only reads | Borrow (immutable) | Valid |
+| Any mutation | Borrow (mutable) | Valid, may be modified |
+| Any `take` parameter | Taken (moved) | Consumed |
+
+No mode annotations in source. IDE shows inferred mode as ghost text.
+
+**Borrow (inferred when bindings only borrowed):**
 ```rask
 match result {                      // IDE ghost: [borrows]
     Ok(value) => println(value),    // value: borrowed (inferred read)
@@ -62,7 +69,7 @@ match result {                      // IDE ghost: [borrows]
 // result still valid
 ```
 
-**Borrow + mutate (inferred when any binding mutated) =>**
+**Borrow + mutate (inferred when any binding mutated):**
 ```rask
 match connection {                          // IDE ghost: [mutates]
     Connected(sock) => sock.set_timeout(30),  // sock: borrowed (inferred mutate)
@@ -71,7 +78,7 @@ match connection {                          // IDE ghost: [mutates]
 // connection still valid, possibly modified
 ```
 
-**Take (inferred when any binding passed to `take` parameter) =>**
+**Take (inferred when any binding passed to `take` parameter):**
 ```rask
 match result {                      // IDE ghost: [takes]
     Ok(value) => consume(value),    // value: taken (inferred)
@@ -80,34 +87,18 @@ match result {                      // IDE ghost: [takes]
 // result is consumed, invalid here
 ```
 
-| Binding Usage | Inferred Mode | Source After |
-|---------------|---------------|--------------|
-| Only reads | Borrow (immutable) | Valid |
-| Any mutation | Borrow (mutable) | Valid, may be modified |
-| Any `take` parameter | Taken (moved) | Consumed |
-
-**Mode inference rule:** Highest mode wins across all arms. If any arm takes, the whole match consumes. If any arm mutates (and none take), the match borrows mutably. Otherwise, immutable borrow.
-
-**Rules:**
-- Compiler infers binding mode from usage
-- Highest mode wins across all arms
-- IDE shows inferred mode as ghost text
-- No mode annotations in source
-
-### Exhaustiveness Checking
-
-Compiler verifies all variants handled. Local analysis only—enum definition has complete variant list.
+## Exhaustiveness Checking
 
 | Condition | Compiler Behavior |
 |-----------|-------------------|
-| All variants matched | ✅ Valid |
-| Missing variant, no wildcard | ❌ Error: "non-exhaustive match, missing `VariantName`" |
-| Wildcard `_` present | ✅ Valid |
-| Unreachable pattern | ⚠️ Warning: "unreachable pattern" |
+| All variants matched | Valid |
+| Missing variant, no wildcard | Error: "non-exhaustive match, missing `VariantName`" |
+| Wildcard `_` present | Valid |
+| Unreachable pattern | Warning: "unreachable pattern" |
 
 Compiler reports which specific variants are unhandled.
 
-### Pattern Guards
+## Pattern Guards
 
 Conditional matching requires explicit catch-all. No hidden gaps.
 
@@ -119,10 +110,10 @@ match response {
 }
 ```
 
-| Rule | Enforcement |
-|------|-------------|
+| Guard Condition | Enforcement |
+|-----------------|-------------|
 | Guard on variant V | Must have unguarded V arm OR wildcard after |
-| No catch-all for guarded variant | ❌ Error: "pattern `V(_)` may not match when guard fails" |
+| No catch-all for guarded variant | Error: "pattern `V(_)` may not match when guard fails" |
 
 ```rask
 // ❌ INVALID: guard may fail with no fallback
@@ -132,9 +123,9 @@ match response {
 }
 ```
 
-### Or-Patterns
+## Or-Patterns
 
-Multiple patterns can share a single arm using `|` (or).
+Multiple patterns share a single arm using `|` (or).
 
 ```rask
 match input {
@@ -150,21 +141,17 @@ match token {
 }
 ```
 
-**Rules:**
-- All alternatives must have the same type
-- All alternatives must bind the same names with compatible types
-- Or-patterns can be nested within other patterns
-- Or-patterns work with guards: `A(x) | B(x) if x > 0 => ...`
-
 | Pattern | Valid | Notes |
 |---------|-------|-------|
-| `A \| B => ...` | ✅ | Simple alternatives |
-| `A(x) \| B(x) => use(x)` | ✅ | Both bind `x` with same type |
-| `A(x) \| B(y) => ...` | ❌ | Different binding names |
-| `A(x: i32) \| B(x: string) => ...` | ❌ | Incompatible types for `x` |
-| `(A \| B, C \| D) => ...` | ✅ | Nested or-patterns |
+| `A \| B => ...` | Yes | Simple alternatives |
+| `A(x) \| B(x) => use(x)` | Yes | Both bind `x` with same type |
+| `A(x) \| B(y) => ...` | No | Different binding names |
+| `A(x: i32) \| B(x: string) => ...` | No | Incompatible types for `x` |
+| `(A \| B, C \| D) => ...` | Yes | Nested or-patterns |
 
-**With Payloads:**
+Or-patterns can be nested and work with guards: `A(x) | B(x) if x > 0 => ...`
+
+**With payloads:**
 ```rask
 match result {
     Ok(0) | Err(0) => println("zero"),
@@ -172,26 +159,14 @@ match result {
 }
 ```
 
-**Linear Resources:**
-Or-patterns with linear payloads follow the same rules—all alternatives must bind the linear value, and it must be consumed:
-
-```rask
-match file_result {
-    Ok(file) | Recovered(file) => file.close(),
-    Err(e) => log(e)
-}
-```
-
-### Linear Resources in Enums
+## Linear Resources in Enums
 
 Enums may contain linear payloads (File, Socket, etc.).
 
-| Rule | Enforcement |
+| Rule | Description |
 |------|-------------|
-| Wildcards forbidden | `_` on linear payload is compile error |
-| All arms must bind | Each arm must name linear values |
-| Bound value must be consumed | Standard linear tracking applies per arm |
-| Must transfer | Compiler enforces consuming usage; read-only usage is compile error |
+| **PM5: Wildcards forbidden for linear** | `_` on linear payload is compile error |
+| **PM6: All arms must bind** | Each arm must name linear values; bound value must be consumed |
 
 ```rask
 // ✅ VALID: linear value consumed in each arm
@@ -215,9 +190,16 @@ match file_result {
 // Error: "linear resource `file` must be consumed, not just read"
 ```
 
-### Guards with Linear Resources
+**Or-patterns with linear payloads** follow the same rules—all alternatives must bind the linear value, and it must be consumed:
 
-When using pattern guards on variants containing linear resources, the catch-all arm must also bind and consume the resource:
+```rask
+match file_result {
+    Ok(file) | Recovered(file) => file.close(),
+    Err(e) => log(e)
+}
+```
+
+**Guards with linear resources** — catch-all arm must also bind and consume:
 
 ```rask
 // ✅ VALID: guard with linear resource — both arms consume
@@ -235,23 +217,41 @@ match file_result {
 }
 ```
 
-### Wildcard Warnings for Large Payloads
+## Error Propagation and Linear Resources
 
-| Payload Type | Wildcard Behavior |
-|--------------|-------------------|
-| Copy type | Allowed silently |
-| Non-Copy, ≤64 bytes | Allowed silently |
-| Non-Copy, >64 bytes | ⚠️ Warning: "wildcard discards large value (N bytes)" |
+`try` extracts Ok or returns early with Err.
 
-Use explicit `discard` to silence:
+**Rule:** All linear resources in scope must be resolved before `try`.
+
 ```rask
-match result {
-    Ok(discard) => {},  // Explicit acknowledgment
-    Err(e) => handle(e)
+// ❌ INVALID: file2 may leak on early return
+func process(file1: File, file2: File) -> () or Error {
+    const data = try file1.read()  // file2 not consumed!
+    try file2.close()
+}
+// Error: "linear resource `file2` may leak on early return at `try`"
+
+// ✅ VALID: all linear resources resolved before `try`
+func process(file1: File, file2: File) -> () or Error {
+    const result1 = file1.read()
+    const result2 = file2.close()
+    const data = try result1
+    try result2
+    Ok(())
 }
 ```
 
-### Enum Methods
+Alternative: use `ensure` for guaranteed cleanup:
+```rask
+func process(file1: File, file2: File) -> () or Error {
+    ensure file1.close()  // Guaranteed at scope exit
+    ensure file2.close()  // Runs on any exit
+    const data = try file1.read()  // ✅ Safe: ensure registered
+    Ok(())
+}
+```
+
+## Enum Methods
 
 Methods in `extend` blocks, separate from definition. Default to non-consuming (borrow `self`).
 
@@ -286,7 +286,7 @@ extend Option<T> {
 | `self` (default) | Borrow (compiler infers read vs mutate) |
 | `take self` | Consumes enum |
 
-### Recursive Enums
+## Recursive Enums
 
 Self-referential enums need explicit `Owned<T>` indirection. See [owned.md](../memory/owned.md).
 
@@ -300,18 +300,23 @@ enum Tree<T> {
 const tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 ```
 
+| Rule | Description |
+|------|-------------|
+| **E6: Indirection required** | Recursive enum without `Owned<T>` indirection is rejected |
+
 | Syntax | Meaning |
 |--------|---------|
 | `own expr` | Heap-allocate expr, return `Owned<T>` |
 | `Owned<T>` | Owning heap pointer (linear) |
 
-**Rules:**
-- `own` makes allocation visible
-- `Owned<T>` is linear—must consume exactly once
-- Drop deallocates automatically
-- Recursive enum without indirection rejected
+`Owned<T>` is linear—must consume exactly once. Drop deallocates automatically.
 
-### Discriminant Access
+## Discriminant Access
+
+| Rule | Description |
+|------|-------------|
+| **E7: Discriminant access** | `discriminant(e)` returns zero-indexed variant index as `u16` |
+| **E8: Null-pointer optimization** | Compiler applies niche optimization automatically; `@layout(C)` disables it |
 
 ```rask
 enum Status { Pending, Done, Failed }
@@ -320,36 +325,34 @@ const s = Done
 const d = discriminant(s)  // 1 (zero-indexed)
 ```
 
+**Function signature:**
+```rask
+func discriminant(e: T) -> u16 where T: Enum
+```
+
 | Attribute | Behavior |
 |-----------|----------|
 | None | Compiler MAY reorder variants for size optimization |
 | `@layout(ordered)` | Discriminant values locked to declaration order |
 | `@layout(C)` | C-compatible layout, no niche optimization |
 
-Discriminant values assigned 0, 1, 2, ... in declaration order unless reordered.
-
-**Function signature:**
-```rask
-func discriminant(e: T) -> u16 where T: Enum
-```
-
-### Null-Pointer Optimization
-
-Compiler applies niche optimization automatically where possible.
+**Null-pointer optimization:**
 
 | Type | Representation |
 |------|----------------|
 | `Option<Owned<T>>` | Null = None, non-null = Some |
 | `Option<Handle<T>>` | generation=0 = None, else Some |
 
-`@layout(C)` disables niche optimization for ABI stability.
-
-### Empty Enum (Never Type)
+## Empty Enum (Never Type)
 
 <!-- test: parse -->
 ```rask
 enum Never {}  // Cannot be constructed
 ```
+
+| Rule | Description |
+|------|-------------|
+| **E9: Empty enum** | Zero-size, uninhabited; cannot be constructed; match needs no arms |
 
 | Property | Behavior |
 |----------|----------|
@@ -364,54 +367,20 @@ func infallible() -> i32 or Never { Ok(42) }
 const value = infallible().unwrap()  // Cannot panic (compiler knows)
 ```
 
-### Error Propagation and Linear Resources
+## Edge Cases
 
-`try` extracts Ok or returns early with Err.
-
-**Rule:** All linear resources in scope must be resolved before `try`.
-
-```rask
-// ❌ INVALID: file2 may leak on early return
-func process(file1: File, file2: File) -> () or Error {
-    const data = try file1.read()  // file2 not consumed!
-    try file2.close()
-}
-// Error: "linear resource `file2` may leak on early return at `try`"
-
-// ✅ VALID: all linear resources resolved before `?`
-func process(file1: File, file2: File) -> () or Error {
-    const result1 = file1.read()
-    const result2 = file2.close()
-    const data = try result1
-    try result2
-    Ok(())
-}
-```
-
-Alternative: use `ensure` for guaranteed cleanup:
-```rask
-func process(file1: File, file2: File) -> () or Error {
-    ensure file1.close()  // Guaranteed at scope exit
-    ensure file2.close()  // Runs on any exit
-    const data = try file1.read()  // ✅ Safe: ensure registered
-    Ok(())
-}
-```
-
-### Edge Cases
-
-| Case | Handling |
-|------|----------|
-| Empty enum | Zero-size, uninhabited, match needs no arms |
-| Single-variant enum | Valid, discriminant may be optimized away |
-| Zero-sized payload | `enum Foo { A(()), B }` — unit optimized to `{ A, B }` |
-| >65536 variants | ❌ Compile error: "enum exceeds variant limit" |
-| Nested linear | `Result<File, Error(File)>` — both arms bind linear, both must consume |
-| Enum in Vec | Allowed if non-linear |
-| Enum in Pool | Allowed; linear payloads require explicit `remove()` + consume |
-| Option<File> in Pool | ❌ Error: "Pool cannot contain linear payloads" |
-| Generic constraints | `enum Foo<T: Clone>` — constraint applies to ALL variants uniformly |
-| Match on Copy type | Copies enum, mutations in arm affect copy not original |
+| Case | Rule | Handling |
+|------|------|----------|
+| Empty enum | E9 | Zero-size, uninhabited, match needs no arms |
+| Single-variant enum | E2 | Valid, discriminant may be optimized away |
+| Zero-sized payload | E1 | `enum Foo { A(()), B }` — unit optimized to `{ A, B }` |
+| >65536 variants | E3 | Compile error: "enum exceeds variant limit" |
+| Nested linear | PM6 | `Result<File, Error(File)>` — both arms bind linear, both must consume |
+| Enum in Vec | E5 | Allowed if non-linear |
+| Enum in Pool | E5 | Allowed; linear payloads require explicit `remove()` + consume |
+| Option\<File\> in Pool | PM5 | Error: "Pool cannot contain linear payloads" |
+| Generic constraints | E4 | `enum Foo<T: Clone>` — constraint applies to ALL variants uniformly |
+| Match on Copy type | E4 | Copies enum, mutations in arm affect copy not original |
 
 ## Examples
 
@@ -458,7 +427,45 @@ if opt.is_some() {          // ✅ opt still valid (borrows self)
 }
 ```
 
-## Verified Examples
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+Enums follow the same ownership rules as structs. Compiler infers whether bindings are borrowed or taken based on usage in each arm. For borrows, compiler infers read vs mutate. IDE shows these as ghost annotations. Exhaustiveness checked locally—all variants known from definition. Linear resources tracked through match arms, no silent drops.
+
+**PM1 (mode inference):** Highest mode wins across all arms. If any arm takes, the whole match consumes. If any arm mutates (and none take), the match borrows mutably. Otherwise, immutable borrow. No mode annotations needed—the compiler figures it out.
+
+**PM5 (wildcards forbidden for linear):** Wildcards on non-linear large payloads get a warning instead of an error:
+
+| Payload Type | Wildcard Behavior |
+|--------------|-------------------|
+| Copy type | Allowed silently |
+| Non-Copy, ≤64 bytes | Allowed silently |
+| Non-Copy, >64 bytes | Warning: "wildcard discards large value (N bytes)" |
+
+Use explicit `discard` to silence:
+```rask
+match result {
+    Ok(discard) => {},  // Explicit acknowledgment
+    Err(e) => handle(e)
+}
+```
+
+### Patterns & Guidance
+
+**Integration notes:**
+- **Type system:** Enum variants participate in structural trait matching; explicit `extend` optional
+- **Generics:** Bounds on `enum Foo<T: Bound>` checked at instantiation, applied to all variants
+- **Collections:** Vec\<Enum\> and Map\<K, Enum\> allowed if enum is non-linear; Pool\<Enum\> allowed with manual linear cleanup
+- **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked
+- **C interop:** `@layout(C)` disables optimizations; discriminant size stable
+- **Compiler:** Exhaustiveness checking and binding mode inference are local analysis only (no whole-program tracing)
+- **Error handling:** `try` keyword requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
+- **Tooling:** IDE displays inferred match modes, binding modes, discriminant values, enum sizes, and move/copy decisions as ghost annotations
+
+### Verified Examples
 
 <!-- test: run | 0\n1\n2 -->
 ```rask
@@ -467,13 +474,9 @@ for i in 0..3 {
 }
 ```
 
-## Integration Notes
+### See Also
 
-- **Type system:** Enum variants participate in structural trait matching; explicit `extend` optional
-- **Generics:** Bounds on `enum Foo<T: Bound>` checked at instantiation, applied to all variants
-- **Collections:** Vec<Enum> and Map<K, Enum> allowed if enum is non-linear; Pool<Enum> allowed with manual linear cleanup
-- **Concurrency:** Enums sent across channels transfer ownership; linear payloads remain tracked
-- **C interop:** `@layout(C)` disables optimizations; discriminant size stable
-- **Compiler:** Exhaustiveness checking and binding mode inference are local analysis only (no whole-program tracing)
-- **Error handling:** `try` keyword requires linear resources resolved first; `ensure` provides cleanup guarantee (see [ensure.md](../control/ensure.md))
-- **Tooling:** IDE displays inferred match modes, binding modes, discriminant values, enum sizes, and move/copy decisions as ghost annotations
+- `type.structs` — product types, `extend` blocks, value semantics
+- `mem.ownership` — Copy/move rules, single-owner model
+- `mem.resource-types` — linear resources, `ensure` cleanup
+- `type.error-types` — `T or E`, `try` propagation
