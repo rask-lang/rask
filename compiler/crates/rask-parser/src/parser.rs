@@ -1536,11 +1536,14 @@ impl Parser {
                 self.expect_terminator()?;
                 Ok(StmtKind::Break { label: Some(name), value: None })
             }
-        } else {
+        } else if self.is_expr_start() {
             // `break expr` — no label, just a value
             let value = self.parse_expr()?;
             self.expect_terminator()?;
             Ok(StmtKind::Break { label: None, value: Some(value) })
+        } else {
+            // `break` followed by non-expr token (e.g., comma in match arms)
+            Ok(StmtKind::Break { label: None, value: None })
         }
     }
 
@@ -2384,8 +2387,10 @@ impl Parser {
                     } else {
                         StmtKind::Break { label: Some(name), value: None }
                     }
-                } else {
+                } else if self.is_expr_start() {
                     StmtKind::Break { label: None, value: Some(self.parse_expr()?) }
+                } else {
+                    StmtKind::Break { label: None, value: None }
                 }
             }
             TokenKind::Continue => {

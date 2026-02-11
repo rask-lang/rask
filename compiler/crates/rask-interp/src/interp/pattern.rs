@@ -15,6 +15,22 @@ impl Interpreter {
             Pattern::Wildcard => Some(HashMap::new()),
 
             Pattern::Ident(name) => {
+                // Qualified name: "Message.Quit" → match enum "Message" variant "Quit"
+                if let Some(dot) = name.find('.') {
+                    let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
+                    return match value {
+                        Value::Enum { name: en, variant, fields }
+                            if en == pat_enum && variant == pat_variant && fields.is_empty() =>
+                        {
+                            Some(HashMap::new())
+                        }
+                        // Unit struct variant: Value::Struct { name: "Shape.Circle" } with no fields
+                        Value::Struct { name: sn, fields, .. } if sn == name && fields.is_empty() => {
+                            Some(HashMap::new())
+                        }
+                        _ => None,
+                    };
+                }
                 if let Value::Enum {
                     variant,
                     fields,
@@ -47,12 +63,19 @@ impl Interpreter {
 
             Pattern::Constructor { name, fields } => {
                 if let Value::Enum {
+                    name: enum_name,
                     variant,
                     fields: enum_fields,
-                    ..
                 } = value
                 {
-                    if variant == name && fields.len() == enum_fields.len() {
+                    // Handle qualified: "Message.Text" → enum "Message", variant "Text"
+                    let matches = if let Some(dot) = name.find('.') {
+                        let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
+                        enum_name == pat_enum && variant == pat_variant
+                    } else {
+                        variant == name
+                    };
+                    if matches && fields.len() == enum_fields.len() {
                         let mut bindings = HashMap::new();
                         for (pat, val) in fields.iter().zip(enum_fields.iter()) {
                             if let Some(sub_bindings) = self.match_pattern(pat, val) {

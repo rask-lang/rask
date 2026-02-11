@@ -131,7 +131,7 @@ impl Interpreter {
     }
 
     pub(crate) fn call_type_method(
-        &self,
+        &mut self,
         type_name: &str,
         method: &str,
         args: Vec<Value>,
@@ -143,10 +143,25 @@ impl Interpreter {
             "Rng" => Err(RuntimeError::TypeError(format!(
                 "Rng.{} is not yet implemented", method
             ))),
-            _ => Err(RuntimeError::TypeError(format!(
-                "type {} has no method '{}'",
-                type_name, method
-            ))),
+            _ => {
+                // User-defined static methods from extend blocks
+                if let Some(type_methods) = self.methods.get(type_name).cloned() {
+                    if let Some(method_fn) = type_methods.get(method) {
+                        let is_static = method_fn
+                            .params
+                            .first()
+                            .map(|p| p.name != "self")
+                            .unwrap_or(true);
+                        if is_static {
+                            return self.call_function(&method_fn, args);
+                        }
+                    }
+                }
+                Err(RuntimeError::TypeError(format!(
+                    "type {} has no method '{}'",
+                    type_name, method
+                )))
+            }
         }
     }
 }

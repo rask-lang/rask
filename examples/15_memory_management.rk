@@ -31,25 +31,25 @@ func main() {
 
     print("Creating linked list with handles:\n")
 
-    // Allocate nodes in the pool
+    // Allocate nodes in the pool — alloc returns Result<Handle>
     const first = node_pool.alloc(Node {
         value: 1,
         next: None,
-    })
+    }).unwrap()
 
     const second = node_pool.alloc(Node {
         value: 2,
         next: None,
-    })
+    }).unwrap()
 
     const third = node_pool.alloc(Node {
         value: 3,
         next: None,
-    })
+    }).unwrap()
 
-    // Link nodes using handles
-    node_pool.get_mut(first).next = Some(second)
-    node_pool.get_mut(second).next = Some(third)
+    // Link nodes using handles (pool indexing with handle)
+    node_pool[first].next = Some(second)
+    node_pool[second].next = Some(third)
 
     // Traverse the list using handles
     print("List values: ")
@@ -57,13 +57,13 @@ func main() {
 
     loop {
         if current is Some(handle) {
-            const node = node_pool.get(handle)
+            const node = node_pool.get(handle).unwrap()
             print(node.value)
             print(" -> ")
             current = node.next
         } else {
             print("end\n\n")
-            deliver ()
+            break
         }
     }
 
@@ -77,62 +77,62 @@ func main() {
         name: "Player",
         health: 100,
         target: None,
-    })
+    }).unwrap()
 
     const enemy1 = entities.alloc(Entity {
         id: 2,
         name: "Goblin",
         health: 50,
         target: Some(player),  // Enemy targets player
-    })
+    }).unwrap()
 
     const enemy2 = entities.alloc(Entity {
         id: 3,
         name: "Orc",
         health: 80,
         target: Some(player),
-    })
+    }).unwrap()
 
     // Player targets first enemy
-    entities.get_mut(player).target = Some(enemy1)
+    entities[player].target = Some(enemy1)
 
     // Display entity relationships
     print("\nEntity relationships:\n")
 
-    const player_ent = entities.get(player)
+    const player_ent = entities.get(player).unwrap()
     print(player_ent.name)
     print(" (HP: ")
     print(player_ent.health)
     print(")")
 
     if player_ent.target is Some(target_handle) {
-        const target = entities.get(target_handle)
+        const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e1 = entities.get(enemy1)
+    const e1 = entities.get(enemy1).unwrap()
     print(e1.name)
     print(" (HP: ")
     print(e1.health)
     print(")")
 
     if e1.target is Some(target_handle) {
-        const target = entities.get(target_handle)
+        const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
     }
     print("\n")
 
-    const e2 = entities.get(enemy2)
+    const e2 = entities.get(enemy2).unwrap()
     print(e2.name)
     print(" (HP: ")
     print(e2.health)
     print(")")
 
     if e2.target is Some(target_handle) {
-        const target = entities.get(target_handle)
+        const target = entities.get(target_handle).unwrap()
         print(" -> targets ")
         print(target.name)
     }
@@ -141,20 +141,20 @@ func main() {
     // Modify entities through handles
     print("Applying damage:\n")
 
-    entities.get_mut(enemy1).health = entities.get(enemy1).health - 20
+    entities[enemy1].health = entities.get(enemy1).unwrap().health - 20
     print("Goblin health: ")
-    print(entities.get(enemy1).health)
+    print(entities.get(enemy1).unwrap().health)
     print("\n")
 
-    entities.get_mut(player).health = entities.get(player).health - 10
+    entities[player].health = entities.get(player).unwrap().health - 10
     print("Player health: ")
-    print(entities.get(player).health)
+    print(entities.get(player).unwrap().health)
     print("\n\n")
 
     // Handle invalidation - removing entities
     print("Removing defeated enemy:\n")
 
-    entities.free(enemy1)  // Free the goblin
+    entities.remove(enemy1)  // Free the goblin
 
     // Player's target handle is now invalid
     // In a real system, you'd clear dangling handles

@@ -74,7 +74,8 @@ extend Document {
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> () or Error {
         const h = try self.lines.insert(Line { text: text.clone() })
-        const insert_pos = (after + 1) as usize
+        const raw_pos = (after + 1) as usize
+        const insert_pos = if raw_pos > self.line_order.len(): self.line_order.len() else: raw_pos
         try self.line_order.insert(insert_pos, h)
 
         // Record for undo

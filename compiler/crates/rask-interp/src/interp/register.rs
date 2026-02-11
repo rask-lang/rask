@@ -9,6 +9,15 @@ use crate::value::{BuiltinKind, ModuleKind, Value};
 
 use super::{Interpreter, RegisteredProgram, RuntimeError, TestResult, BenchmarkResult};
 
+/// Strip generic type parameters from a type name.
+/// "Box<T>" → "Box", "SpscRingBuffer<T, N>" → "SpscRingBuffer", "Point" → "Point"
+fn strip_generics(name: &str) -> &str {
+    match name.find('<') {
+        Some(pos) => &name[..pos],
+        None => name,
+    }
+}
+
 impl Interpreter {
     pub(super) fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
@@ -30,13 +39,15 @@ impl Interpreter {
                     if f.attrs.iter().any(|a| a == "test") {
                         test_fns.push(f.clone());
                     }
-                    self.functions.insert(f.name.clone(), f.clone());
+                    let fn_name = strip_generics(&f.name).to_string();
+                    self.functions.insert(fn_name, f.clone());
                 }
                 DeclKind::Enum(e) => {
                     self.enums.insert(e.name.clone(), e.clone());
                 }
                 DeclKind::Impl(impl_decl) => {
-                    let type_methods = self.methods.entry(impl_decl.target_ty.clone()).or_default();
+                    let base_name = strip_generics(&impl_decl.target_ty).to_string();
+                    let type_methods = self.methods.entry(base_name).or_default();
                     for method in &impl_decl.methods {
                         type_methods.insert(method.name.clone(), method.clone());
                     }
@@ -65,9 +76,10 @@ impl Interpreter {
                     }
                 }
                 DeclKind::Struct(s) => {
-                    self.struct_decls.insert(s.name.clone(), s.clone());
+                    let base_name = strip_generics(&s.name).to_string();
+                    self.struct_decls.insert(base_name.clone(), s.clone());
                     if !s.methods.is_empty() {
-                        let type_methods = self.methods.entry(s.name.clone()).or_default();
+                        let type_methods = self.methods.entry(base_name).or_default();
                         for method in &s.methods {
                             type_methods.insert(method.name.clone(), method.clone());
                         }
