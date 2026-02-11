@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Networking module methods (net.*) and TCP connection instance methods.
+//!
+//! Layer: RUNTIME — socket operations require OS access.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

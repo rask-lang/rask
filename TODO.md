@@ -131,26 +131,45 @@ All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 - Examples had Rust syntax remnants (`.collect<Vec<_>>()`, `.map(|x| ...)`, implicit returns)
 - ~~Vec.`take(n)` method name conflicts with `take` keyword~~ — **FIXED:** renamed to `limit(n)`
 
-- fix examples
-Generics:
-- Runtime error: undefined variable `print_description` in generic functionm
-- Runtime error: undefined variable `Box`
-Enums advanced:
-- Runtime error: no method `describe` on type `Shape.Circle`
-memory management
-- Runtime error: invalid assignment target; assign to a variable, field, or index
-Resource types
-- Runtime error: panic: resource already consumed: Transaction 'tx'
-unsafe
-- Runtime error: undefined variable `ptr`
-cli error
-- break comma, is not allowed, should be allowed
-Sensor processor
-- Runtime error: index must be integer
-Text editor
-- Runtime error: index 1 out of bounds (length is 0)
 
-### Phase 4: Code Generation
+### Phase 4: Complete Frontend
+Every specced language feature should parse, resolve, type-check, and ownership-check before codegen starts.
+
+**Linear resource verification** — [resource-types.md](specs/memory/resource-types.md)
+- [ ] Ownership checker enforces exactly-once consumption of `@resource` types
+- [ ] `ensure` blocks verified to run on all exit paths
+- [ ] Compiler error when resource is dropped without consumption
+
+**Union types** — [union-types.md](specs/types/union-types.md)
+- [ ] Parse `A | B` union type syntax
+- [ ] AST representation for union types
+- [ ] Type checker: union construction, narrowing via `is` patterns, exhaustiveness
+
+**`select` statement** — [select.md](specs/concurrency/select.md)
+- [ ] Parse `select { }` with channel arms
+- [ ] AST node for select expression
+- [ ] Type check select arms (channel element types, timeout)
+
+**Channel operations** — [channels.md](specs/concurrency/channels.md)
+- [ ] Parse send (`ch <- value`) and receive (`<- ch`) syntax
+- [ ] Type check send/receive against `Channel<T>`
+- [ ] Task handle types from `spawn` — join/detach enforcement
+
+**`with` context clauses** — [pools.md](specs/memory/pools.md), [sync.md](specs/concurrency/sync.md)
+- [ ] Parse `with` clauses on function signatures
+- [ ] Resolver tracks context requirements per function
+- [ ] Type checker verifies callers provide required context
+
+**Ownership checker hardening**
+- [ ] Projection borrows — `mutate p: Player.{health}` disjoint field checking
+- [ ] Closure capture mode inference (not just `Owned` for everything)
+
+**Parser polish**
+- [ ] Raw string literals (`r"..."`, `r#"..."#`)
+- [ ] Trait composition (`trait T: Other`) — connect trait hierarchy
+- [ ] Labeled `break` with values
+
+### Phase 5: Code Generation
 Move from interpreter to actual compiled output.
 
 - [x] Choose backend (LLVM vs Cranelift) - I use Cranelift for now
@@ -160,7 +179,7 @@ Move from interpreter to actual compiled output.
 - [ ] Runtime — allocator, panic handler, thread startup
 - [ ] Self-hosting bootstrap path
 
-### Phase 5: Ecosystem
+### Phase 6: Ecosystem
 Tools that make it actually usable:
 - [ ] Build system (`rask.build`) — syntax, relationship to comptime
 - [ ] Package manager — dependency resolution, registry
@@ -176,15 +195,15 @@ Tools that make it actually usable:
 
 ## Open Design Questions
 
-### Before Phase 4 (blocks codegen)
+### Before Phase 5 (blocks codegen)
 - [x] FrozenPool should satisfy read-only `with Pool<T>` context clauses — see [pools.md](specs/memory/pools.md#frozenpool-context-subsumption)
 
-### During Phase 4 (doesn't block, improves quality)
+### During Phase 5 (doesn't block, improves quality)
 - [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code
 - [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
 - [ ] Style guideline: max 3 context clauses per function — lint, not language rule
 
-### Phase 5 (after codegen works)
+### Phase 6 (after codegen works)
 - [ ] **Package granularity decision** — folder = package (current, Go-style nested hierarchy) vs file = package (Zig-style flat with many files). Defer until validation programs exist to evaluate which feels better. Key tension: nested folders vs flat with descriptive filenames.
 - [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
 - [ ] Design task-local storage syntax

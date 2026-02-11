@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Methods on collection types: Vec, Pool, Handle, and type constructors.
+//!
+//! Layer: PURE — no OS access, can be compiled from Rask.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};

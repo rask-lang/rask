@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 #![allow(dead_code)]
 //! Path module — Path type constructor and methods.
+//!
+//! Layer: PURE — path manipulation via std::path, no filesystem access.
 
 use std::collections::HashMap;
 use std::path::Path as StdPath;

@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Time module methods, Duration/Instant instance and static methods.
+//!
+//! Layer: HYBRID — Duration is pure arithmetic, Instant/sleep need OS.
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
 impl Interpreter {
+    // === RUNTIME: module-level functions (sleep) ===
+
     /// Handle time module methods.
     pub(crate) fn call_time_module_method(
         &self,
@@ -32,6 +36,8 @@ impl Interpreter {
         }
     }
 
+    // === PURE: Duration instance methods (can be Rask) ===
+
     /// Handle Duration instance methods.
     pub(crate) fn call_duration_method(
         &self,
@@ -51,6 +57,8 @@ impl Interpreter {
             }),
         }
     }
+
+    // === RUNTIME: Instant instance methods (needs OS clock) ===
 
     /// Handle Instant instance methods.
     pub(crate) fn call_instant_method(
@@ -78,6 +86,8 @@ impl Interpreter {
             }),
         }
     }
+
+    // === HYBRID: static constructors (Duration pure, Instant.now runtime) ===
 
     /// Handle Duration/Instant static methods (type methods).
     pub(crate) fn call_time_type_method(

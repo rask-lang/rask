@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Shared<T> methods — closure-based RwLock wrapper.
+//!
+//! Layer: RUNTIME — RwLock requires OS synchronization primitives.
 
 use std::sync::{Arc, RwLock};
 
