@@ -1,91 +1,56 @@
+<!-- id: std.strings -->
+<!-- status: decided -->
+<!-- summary: Owned string, expression-scoped slicing, string_view, StringPool, string_builder, C interop -->
+<!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
+
 # String Handling
 
-Single owned `string` type with UTF-8 validation, expression-scoped slicing for zero-copy reads, plain index-based `string_view` for lightweight stored references, and `StringPool` for validated handle-based access when safety is needed.
+Single owned `string` type with UTF-8 validation, expression-scoped slicing for zero-copy reads, `string_view` for lightweight stored indices, and `StringPool` for validated handle-based access.
 
-## Specification
+## Type Categories
 
-### Type Categories
+| Rule | Description |
+|------|-------------|
+| **S1: Owned string** | `string` is the default. UTF-8 validated, move on assignment |
+| **S2: Expression slicing** | `s[i..j]` creates a temporary view valid only within the expression |
+| **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
+| **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
+| **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
 
-| Type | Description | Ownership | Layout | Storable? |
-|------|-------------|-----------|--------|-----------|
-| `string` | UTF-8 validated, owned | Move on assignment | (ptr, len, capacity) | Yes |
-| `string_view` | Plain indices into a string | Copy (2 words) | (start, end) | Yes |
-| `string_builder` | Growable mutable buffer | Move on assignment | (ptr, len, capacity) | Yes |
-| `StringPool` | Pool of strings with validated handles | Move on assignment | (see Pool<T>) | Yes |
-| `StringSlice` | Handle + indices into StringPool | Copy (4 words) | (handle, start, end) | Yes |
-| `cstring` | Null-terminated for C FFI | Move on assignment | (ptr) | Yes (unsafe only) |
+| Type | Description | Ownership | Storable? |
+|------|-------------|-----------|-----------|
+| `string` | UTF-8 validated, owned | Move on assignment | Yes |
+| `string_view` | Plain indices into a string | Copy (2 words) | Yes |
+| `string_builder` | Growable mutable buffer | Move on assignment | Yes |
+| `StringPool` | Pool of strings with validated handles | Move on assignment | Yes |
+| `StringSlice` | Handle + indices into StringPool | Copy (4 words) | Yes |
+| `cstring` | Null-terminated for C FFI | Move on assignment | Yes (unsafe only) |
 
-**When to use which:**
-- `string` — Default for owned text data
-- `string_view` — Lightweight stored indices, user ensures source validity (like storing an index into a Vec)
-- `StringPool` + `StringSlice` — When you need validated access to stored substrings (parsers, tokenizers)
+## Ownership Rules
 
-### API Boundaries
+| Rule | Description |
+|------|-------------|
+| **O1: Move on assign** | `const s2 = s1` moves; `s1` becomes invalid |
+| **O2: Explicit clone** | `s1.clone()` creates independent copy (visible allocation) |
+| **O3: Borrow inferred** | `func foo(s: string)` borrows for call duration (compiler infers mode) |
+| **O4: Explicit take** | `func foo(take s: string)` transfers ownership |
 
-**Public APIs always use `string`:**
+## Expression-Scoped Slicing
 
-| Parameter | Meaning |
-|-----------|---------|
-| `func foo(s: string)` | Compiler infers borrow mode from usage |
-| `func foo(take s: string)` | Explicit ownership transfer |
-
-**Never use `string_view` or `StringSlice` in public APIs.** They are internal storage tools.
-
-```rask
-// Library defines:
-func search(text: string, pattern: string) -> Option<usize>
-
-// All of these work - no conversion needed:
-search(my_string, "foo")           // owned strings
-search(my_string[10..50], "foo")   // expression slice
-search(my_string[view], "foo")     // string_view converted via indexing
-```
-
-### Ownership Rules
-
-| Operation | Behavior |
-|-----------|----------|
-| `const s2 = s1` | MOVE: `s1` becomes invalid, `s2` owns the data |
-| `const s2 = s1.clone()` | CLONE: both valid, visible allocation |
-| `func foo(s: string)` | Borrow for call duration (compiler infers read vs mutable) |
-| `func foo(take s: string)` | Transfer ownership to callee |
-
-### Expression-Scoped Slicing
-
-Slicing syntax `s[i..j]` creates a temporary view valid ONLY within the expression. Cannot be assigned to variables or stored.
+`s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned.
 
 | Context | Example | Valid? |
 |---------|---------|--------|
-| Function argument | `process(s[0..5])` | ✅ |
-| Method receiver | `s[0..5].len()` | ✅ |
-| Chained expression | `s[0..5].to_uppercase()` | ✅ |
-| Variable assignment | `const x = s[0..5]` | ❌ Compile error |
-| Struct field | `Foo { field: s[0..5] }` | ❌ Compile error |
-| Return value | `return s[0..5]` | ❌ Compile error |
+| Function argument | `process(s[0..5])` | Yes |
+| Method receiver | `s[0..5].len()` | Yes |
+| Chained expression | `s[0..5].to_uppercase()` | Yes |
+| Variable assignment | `const x = s[0..5]` | Compile error |
+| Struct field | `Foo { field: s[0..5] }` | Compile error |
+| Return value | `return s[0..5]` | Compile error |
 
-**Implementation:** Compiler creates stack-local (ptr, len) view, passes to callee as borrowed parameter, invalidates after expression completes.
+## The `string_view` Type
 
-### Parameter Passing with Slicing
-
-| Declaration | Accepts | What callee receives |
-|-------------|---------|---------------------|
-| `func foo(s: string)` | `string`, `s[i..j]`, `view.as_slice(src)` | Borrow (compiler infers mode) |
-| `func foo(take s: string)` | `string` only | Ownership transfer |
-
-Slicing syntax `s[i..j]` is only valid when passing to borrowed parameters (not `take`).
-
-### The `string_view` Type
-
-Plain indices for lightweight stored references. No validation—user ensures the source string is still valid and unchanged (like storing an index into a Vec).
-
-```rask
-// Create view (just stores indices)
-const view = string_view(0, 5)
-
-// Access via source string
-process(source[view])           // equivalent to source[view.start..view.end]
-const sub = try source.substr(view)  // bounds-checked, returns Option
-```
+Plain indices for lightweight stored references. No validation -- user ensures source string validity (like storing a Vec index).
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
@@ -96,32 +61,9 @@ const sub = try source.substr(view)  // bounds-checked, returns Option
 | `view.start`, `view.end` | `usize` | Read indices |
 | `view.len()` | `usize` | `end - start` |
 
-**No validation:** `string_view` is just two integers. If the source string is modified or freed, using the view is undefined behavior. For validated access, use `StringPool`.
+## The `StringPool` Type
 
-### The `StringPool` Type
-
-For validated stored references (parsers, tokenizers, ASTs). Follows the `Pool<T>` pattern from dynamic data structures.
-
-```rask
-const pool = StringPool.new()
-
-// Insert strings, get handles
-const h = try pool.insert("hello world")  // Handle<string>
-
-// Create slices (handle + indices)
-const slice = try pool.slice(h, 0, 5)  // StringSlice
-
-// Access - validates handle, then expression-scoped
-pool[slice]                      // panics if invalid handle
-pool.get(slice)                  // Option<expression-scoped slice>
-pool.read(slice, |s| s.len())    // closure pattern
-
-// StringSlice is freely storable
-struct Token {
-    text: StringSlice,
-    kind: TokenKind,
-}
-```
+Validated stored references using handles (parsers, tokenizers, ASTs). Follows `Pool<T>` pattern.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
@@ -133,11 +75,9 @@ struct Token {
 | `pool.read(slice, \|s\| R)` | `Option<R>` | Closure-based access |
 | `pool.remove(h)` | `Option<string>` | Remove and return ownership |
 
-**Handle validation:** Same as `Pool<T>`—pool_id + index + generation. Wrong pool, stale handle, or invalid index returns `None`.
+Handle validation: pool_id + index + generation. Wrong pool or stale handle returns `None`.
 
-### UTF-8 Validation
-
-Strings MUST contain valid UTF-8. Validation occurs at construction.
+## UTF-8 Validation
 
 | Operation | Return Type | Validation Cost |
 |-----------|-------------|-----------------|
@@ -145,30 +85,9 @@ Strings MUST contain valid UTF-8. Validation occurs at construction.
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Runtime O(n), one-time |
 | `string.from_utf8_unchecked(bytes)` | `string` | None (unsafe block only) |
 
-### Byte Slicing and UTF-8 Boundaries
-
-Slicing uses **byte indices**. Slicing mid-codepoint MUST panic at runtime.
-
-| Operation | Return | Notes |
-|-----------|--------|-------|
-| `s[i..j]` | Expression-scoped slice | Panics if not on char boundaries |
-| `s.is_char_boundary(i)` | `bool` | O(1) check |
-| `s.char_indices()` | Iterator of `(usize, char)` | Use to find safe boundaries |
-
-### Iteration
+## Iteration
 
 Iterators borrow for expression scope only. Cannot be stored.
-
-```rask
-// Valid: immediate use
-for c in s.chars() { ... }
-
-// Valid: chained
-const count = s.chars().filter(is_vowel).count()
-
-// Invalid: cannot store iterator
-const iter = s.chars()  // Compile error
-```
 
 | Method | Yields | Notes |
 |--------|--------|-------|
@@ -176,29 +95,29 @@ const iter = s.chars()  // Compile error
 | `s.bytes()` | `u8` | Raw byte iterator |
 | `s.char_indices()` | `(usize, char)` | Index + char pairs |
 | `s.lines()` | Expression-scoped slices | Split on newlines |
-| `s.split(pat)` | Expression-scoped slices | Split on pattern (string literal) |
-| `s.split_whitespace()` | Expression-scoped slices | Split on any Unicode whitespace, skip empty |
+| `s.split(pat)` | Expression-scoped slices | Split on pattern |
+| `s.split_whitespace()` | Expression-scoped slices | Split on Unicode whitespace, skip empty |
 
-### String Length and Properties
+## Length and Properties
 
 | Operation | Return | Cost |
 |-----------|--------|------|
-| `s.len()` | `usize` | O(1), byte length (cached) |
+| `s.len()` | `usize` | O(1), byte length |
 | `s.char_count()` | `usize` | O(n), count Unicode scalars |
 | `s.is_empty()` | `bool` | O(1) |
 | `s.is_ascii()` | `bool` | O(n) first call, cached |
 
-### String Construction
+## Construction
 
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
 | `"literal"` | `string` | Static storage, compile-time validated |
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
-| `string.from_char(c)` | `string` | Allocates single-char string |
-| `string.repeat(s, n)` | `string` | Allocates `s` repeated `n` times |
-| `slice.to_owned()` | `string` | Convert expression slice to owned string (allocates) |
+| `string.from_char(c)` | `string` | Single-char string |
+| `string.repeat(s, n)` | `string` | `s` repeated `n` times |
+| `slice.to_owned()` | `string` | Convert expression slice to owned (allocates) |
 
-### String Builder
+## String Builder
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
@@ -210,18 +129,18 @@ const iter = s.chars()  // Compile error
 | `b.clear()` | `(self)` | Clear contents, keep capacity |
 | `b.len()` | `(self) -> usize` | Current byte length |
 
-**`build()` consumes the builder.** To reuse: call `clear()` after building.
+`build()` consumes the builder. To reuse: call `clear()` after building.
 
-### Concatenation and Formatting
+## Concatenation and Formatting
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `string.concat(a, b)` | `string` | Allocates new string |
 | `format!(template, args...)` | `string` | Macro expands to builder calls, allocates |
 
-**No `+` operator.** Allocation MUST be visible via method name or macro.
+No `+` operator. Allocation must be visible via method name or macro.
 
-### In-Place Mutation
+## In-Place Mutation
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
@@ -230,7 +149,7 @@ const iter = s.chars()  // Compile error
 | `s.truncate(len)` | `(self, len: usize)` | Truncate to `len` bytes |
 | `s.clear()` | `(self)` | Clear contents, keep capacity |
 
-### Searching
+## Searching
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
@@ -240,43 +159,42 @@ const iter = s.chars()  // Compile error
 | `s.starts_with(pat)` | `bool` | Prefix check |
 | `s.ends_with(pat)` | `bool` | Suffix check |
 
-### Trimming
+## Trimming
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.trim()` | Expression-scoped slice | Zero-copy, removes leading and trailing whitespace |
-| `s.trim_start()` | Expression-scoped slice | Zero-copy, removes leading whitespace only |
-| `s.trim_end()` | Expression-scoped slice | Zero-copy, removes trailing whitespace only |
-| `s.trim_bounds()` | `(usize, usize)` | Returns (start, end) indices, O(n) |
-| Use with slicing | `s[bounds.0..bounds.1]` | Zero-copy trim via expression slice |
+| `s.trim()` | Expression-scoped slice | Zero-copy, removes leading/trailing whitespace |
+| `s.trim_start()` | Expression-scoped slice | Leading whitespace only |
+| `s.trim_end()` | Expression-scoped slice | Trailing whitespace only |
+| `s.trim_bounds()` | `(usize, usize)` | Returns (start, end) indices |
 
-### Case Conversion
+## Case Conversion
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
 | `s.to_uppercase()` | `string` | Allocates new string |
 | `s.to_lowercase()` | `string` | Allocates new string |
 
-### Equality and Comparison
+## Equality and Comparison
 
 | Operation | Cost | Notes |
 |-----------|------|-------|
-| `s1 == s2` | O(n) | Byte-wise comparison (length check first) |
-| `s1 < s2` | O(n) | Lexicographic comparison |
+| `s1 == s2` | O(n) | Byte-wise (length check first) |
+| `s1 < s2` | O(n) | Lexicographic |
 | `s.hash()` | O(n) | Not cached |
 
-### C Interop
+## C Interop
 
 | Type/Operation | Description |
 |----------------|-------------|
 | `cstring` | Owned null-terminated string |
 | `c"literal"` | Null-terminated string literal |
-| `s.to_cstring()` | `Result<cstring, null_byte_error>` (fails if string contains `\0`) |
+| `s.to_cstring()` | `Result<cstring, null_byte_error>` (fails if `\0` present) |
 | `cstring.as_ptr()` | `*u8` (unsafe context only) |
 | `cstring.from_ptr(ptr)` | `cstring` (unsafe, takes ownership) |
 | `cstring.to_string()` | `Result<string, utf8_error>` |
 
-**Example:**
+<!-- test: skip -->
 ```rask
 unsafe {
     const c_path = try path.to_cstring()
@@ -284,40 +202,97 @@ unsafe {
 }
 ```
 
-### Edge Cases
+## Error Messages
 
-| Case | Handling |
-|------|----------|
-| Empty string `""` | Valid, `len() == 0` |
-| Out-of-bounds slice `s[0..999]` | Panic at runtime |
-| Slice not on char boundary | Panic at runtime |
-| String with embedded `\0` | Valid in `string`; `to_cstring()` returns error |
-| Allocation failure | Returns `Result` error (consistent with collections) |
-| String literal moved | Semantic move, memory never freed (static storage) |
-| `string_view` of freed/modified source | Undefined behavior (user's responsibility) |
-| `string_view` out of bounds | Panic on `s[view]`, `None` on `s.substr(view)` |
-| `StringSlice` with stale handle | `pool.get(slice)` returns `None` |
-| `StringSlice` wrong pool | `pool.get(slice)` returns `None` |
-| Mutation during iteration | Compile error (iterator holds borrow) |
-| Multiple simultaneous iterators | Allowed for read-only iteration |
+```
+ERROR [std.strings/S2]: cannot store expression-scoped slice
+   |
+3  |  const x = s[0..5]
+   |            ^^^^^^^ expression-scoped slice cannot be assigned
 
-## Examples
+WHY: Slices are temporary views valid only within the expression.
 
-### Basic Usage
+FIX: Copy to owned string, or use string_view for stored indices:
+
+  const x = s[0..5].to_owned()   // allocate copy
+  const v = string_view(0, 5)    // store indices
+```
+
+```
+ERROR [std.strings/S5]: slice not on character boundary
+   |
+5  |  const x = text[0..2]
+   |                 ^^^^ byte index 2 is not a char boundary
+
+WHY: Slicing uses byte indices. Index must land on a UTF-8 character boundary.
+
+FIX: Use char_indices() to find safe boundaries:
+
+  for (i, c) in text.char_indices() { ... }
+```
+
+```
+ERROR [std.strings/S3]: string_view in public API
+   |
+3  |  public func parse(s: string_view) -> Token
+   |                       ^^^^^^^^^^^ use string instead
+
+WHY: Public APIs always use string. string_view is an internal storage tool.
+
+FIX: Accept string and let the compiler infer borrow mode:
+
+  public func parse(s: string) -> Token
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Empty string `""` | — | Valid, `len() == 0` |
+| Out-of-bounds slice `s[0..999]` | S5 | Panic at runtime |
+| Slice not on char boundary | S5 | Panic at runtime |
+| Embedded `\0` in string | — | Valid; `to_cstring()` returns error |
+| Allocation failure | — | Returns `Result` error |
+| String literal moved | O1 | Semantic move, memory never freed (static storage) |
+| `string_view` of freed source | — | Undefined behavior (user's responsibility) |
+| `string_view` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
+| `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
+| `StringSlice` wrong pool | — | `pool.get(slice)` returns `None` |
+| Mutation during iteration | — | Compile error (iterator holds borrow) |
+| Multiple simultaneous iterators | — | Allowed for read-only |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**S1 (single owned type):** One string type covers the common case. `string_view` and `StringPool` handle the uncommon stored-reference case without polluting the default API.
+
+**S2 (expression-scoped slicing):** The cost is more `.to_owned()` calls. I think that's better than lifetime annotations on string slices leaking into function signatures.
+
+**S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
+
+**S5 (byte indices):** Byte indexing matches the underlying UTF-8 representation. Character indexing would be O(n) and misleading for multi-byte characters.
+
+### Patterns & Guidance
+
+**Basic usage:**
+
+<!-- test: skip -->
 ```rask
-// Owned strings
 const s1 = "hello"
 const s2 = s1  // MOVE: s1 invalid
 
-// Expression slicing (zero-copy)
-process(s2[0..3])  // passes "hel" as read borrow
+process(s2[0..3])  // passes "hel" as expression-scoped borrow
 
-// Plain string_view (no validation)
 const view = string_view(0, 3)
 process(s2[view])  // user ensures s2 is still valid
 ```
 
-### Building Strings
+**Building strings:**
+
+<!-- test: skip -->
 ```rask
 const builder = string_builder.with_capacity(100)
 builder.append("User: ")
@@ -326,29 +301,9 @@ builder.append_char('\n')
 const msg = builder.build()
 ```
 
-### Formatting
-```rask
-const msg = format!("User {} logged in at {}", name, time)
-```
+**Parsing with StringPool (validated access):**
 
-### Parsing with Plain Views (User Manages Validity)
-```rask
-const line = "field1,field2,field3"
-const fields: Vec<string_view> = Vec.new()
-
-for (start, end) in find_field_boundaries(line) {
-    try fields.push(string_view(start, end))
-}
-
-// Later: access via original string (user ensures line unchanged)
-for view in fields.iter() {
-    if line[view].starts_with("field") {
-        process(line[view])
-    }
-}
-```
-
-### Parsing with StringPool (Validated Access)
+<!-- test: skip -->
 ```rask
 func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
     const pool = StringPool.new()
@@ -360,50 +315,30 @@ func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
         try tokens.push(Token { text: slice, kind })
     }
 
-    Ok((pool, tokens))
-}
-
-// Later: safe access even if token is stored/passed around
-func print_token(pool: StringPool, token: Token) {
-    match pool.get(token.text) {
-        Some(s) => print(s),
-        None => print("<invalid>"),
-    }
+    return Ok((pool, tokens))
 }
 ```
 
-### Safe Character-Boundary Access
+**Safe character-boundary access:**
+
+<!-- test: skip -->
 ```rask
 const text = "日本語"
 for (i, c) in text.char_indices() {
-    // i is guaranteed safe boundary
     process(text[i..i+c.len_utf8()])
 }
 ```
 
-### Command Parsing with Whitespace Splitting
-```rask
-// Parse command line input
-const input = "  insert  5  hello world  "
-const parts: Vec<string> = Vec.new()
+### Integration
 
-// Split on whitespace, automatically skips empty strings
-for part in input.trim().split_whitespace() {
-    try parts.push(part.to_owned())  // Allocate owned copy of expression slice
-}
+- `string` implements `Clone`, `Display`, `Hash`, `Ord` traits
+- All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
+- String builders can contain linear resources; `build()` consumes builder to preserve linearity
+- String literals and `format!` at comptime produce static strings
 
-// Result: ["insert", "5", "hello", "world"]
-```
+### See Also
 
-## Integration Notes
-
-- **Memory model:** Strings are plain value types with no runtime tracking. `StringPool` follows `Pool<T>` pattern for validated access.
-- **Dynamic data structures:** `StringPool` uses same handle mechanism as `Pool<T>` (pool_id + index + generation). Allocation returns `Result`.
-- **Concurrency:** `string` is sendable (owned value). `string_view` is just indices (user ensures source accessible). `StringSlice` requires its `StringPool` to be accessible.
-- **Generics:** `string` implements `Clone`, `Display`, `Hash`, `Ord` traits
-- **Error handling:** `from_utf8`, `to_cstring`, pool operations return `Result` or `Option`
-- **Linear resources:** String builders can contain linear resources; `build()` must consume builder to preserve linearity
-- **Compile-time execution:** String literals and `format!` at comptime produce static strings
-- **Module system:** `string`, `string_view`, `string_builder`, `StringPool`, `StringSlice` are in core prelude
-- **C interop boundary:** Unsafe blocks required for `cstring.as_ptr()` and raw pointer operations
-- **Iteration:** String iteration follows the general iteration design (see [Iteration](iteration.md))
+- `mem.borrowing` — Expression-scoped vs block-scoped view rules
+- `mem.pools` — Pool/Handle pattern used by StringPool
+- `std.iteration` — General iteration design
+- `std.path` — Path type wraps string

@@ -1,107 +1,78 @@
-# `rask lint` — Convention Enforcement
+<!-- id: tool.lint -->
+<!-- status: decided -->
+<!-- summary: Convention enforcement for naming, idioms, and style -->
+<!-- depends: tooling/warnings.md -->
 
-`rask lint` checks that code follows Rask's naming conventions and idiomatic patterns. It operates on the AST after parsing and type checking — this isn't formatting (that's `rask fmt`), it's semantic checking.
+# Lint
 
-```
-rask lint src/server.rk              # lint one file
-rask lint src/                       # lint all .rk files recursively
-rask lint src/ --format json         # JSON output for IDE integration
-rask lint src/ --rule naming/*       # only naming convention rules
-```
+`rask lint` checks naming conventions, idiomatic patterns, and style rules. Operates on the AST after parsing and type checking — not formatting (that's `rask fmt`), but semantic checking.
 
----
+## Naming Conventions
 
-## Rules
+Enforce the naming table from [canonical-patterns.md](../canonical-patterns.md#required-naming-patterns-stdlib). The linter reads method signatures and validates names match behavior.
 
-### Naming Conventions
+| Rule | Check | Severity | Scope |
+|------|-------|----------|-------|
+| **N1: from** | `from_*` returns `Self` or `Self or E` | warning | extend blocks |
+| **N2: into** | `into_*` has `take self` (consuming) | warning | extend blocks |
+| **N3: as** | `as_*` doesn't allocate (heuristic: returns reference or primitive) | warning | extend blocks |
+| **N4: to** | `to_*` returns a different type than `Self` | warning | extend blocks |
+| **N5: is** | `is_*` returns `bool` | error | extend blocks, standalone funcs |
+| **N6: with** | `with_*` returns `Self` | warning | extend blocks |
+| **N7: try** | `try_*` returns `T or E` | error | extend blocks, standalone funcs |
+| **N8: or_suffix** | `*_or(default)` returns unwrapped `T` (not `T?` or `T or E`) | warning | extend blocks |
 
-These enforce the naming table from [canonical-patterns.md](../canonical-patterns.md#required-naming-patterns-stdlib). The compiler already has the type information needed to check these — the linter reads method signatures and validates that names match their behavior.
-
-| Rule ID | Check | Severity | Scope |
-|---------|-------|----------|-------|
-| `naming/from` | `from_*` returns `Self` or `Self or E` | warning | extend blocks |
-| `naming/into` | `into_*` has `take self` (consuming) | warning | extend blocks |
-| `naming/as` | `as_*` doesn't allocate (heuristic: return type is a reference or primitive) | warning | extend blocks |
-| `naming/to` | `to_*` returns a different type than `Self` | warning | extend blocks |
-| `naming/is` | `is_*` returns `bool` | error | extend blocks, standalone funcs |
-| `naming/with` | `with_*` returns `Self` | warning | extend blocks |
-| `naming/try` | `try_*` returns `T or E` | error | extend blocks, standalone funcs |
-| `naming/or_suffix` | `*_or(default)` returns unwrapped `T` (not `T?` or `T or E`) | warning | extend blocks |
-
-**Example violations:**
-
+<!-- test: skip -->
 ```rask
 extend User {
-    // naming/is: `is_valid` returns i32, expected bool
+    // N5 violation: is_valid returns i32, expected bool
     func is_valid(self) -> i32 {
         return self.score
     }
 
-    // naming/into: `into_string` doesn't take self
+    // N2 violation: into_string doesn't take self
     func into_string(self) -> string {
         return self.name.to_string()
     }
 
-    // naming/try: `try_parse` returns string, expected T or E
+    // N7 violation: try_parse returns string, expected T or E
     func try_parse(s: string) -> string {
         return s
     }
 }
 ```
 
-**Output:**
+## Idiomatic Patterns
 
-```
-warning[naming/into]: `into_string` should take ownership of self
-  --> src/user.rk:8:5
-   |
- 8 |     func into_string(self) -> string {
-   |          ^^^^^^^^^^^ `into_*` methods consume the value
-   |
-   = fix: change `self` to `take self`, or rename to `to_string`
+Common mistakes the canonical patterns address.
 
-error[naming/is]: `is_valid` must return `bool`
-  --> src/user.rk:3:5
-   |
- 3 |     func is_valid(self) -> i32 {
-   |          ^^^^^^^^ returns `i32`, expected `bool`
-   |
-   = fix: change return type to `bool`, or rename to remove the `is_` prefix
-```
+| Rule | Check | Severity |
+|------|-------|----------|
+| **I1: unwrap-production** | `unwrap()` call outside `test` blocks | warning |
+| **I2: missing-ensure** | `@resource` type created without matching `ensure` in same scope | warning |
 
-### Idiomatic Patterns
+## Style
 
-These check for common mistakes that the canonical patterns address. See [canonical-patterns.md](../canonical-patterns.md).
-
-| Rule ID | Check | Severity |
-|---------|-------|----------|
-| `idiom/unwrap-production` | `unwrap()` call outside `test` blocks | warning |
-| `idiom/missing-ensure` | `@resource` type created without matching `ensure` in same scope | warning |
-
-### Style
-
-| Rule ID | Check | Severity |
-|---------|-------|----------|
-| `style/snake-case-func` | Function names are `snake_case` | warning |
-| `style/pascal-case-type` | Type/enum/trait names are `PascalCase` | warning |
-| `style/public-return-type` | Public functions have explicit return type annotations | error |
-
----
+| Rule | Check | Severity |
+|------|-------|----------|
+| **ST1: snake-case-func** | Function names are `snake_case` | warning |
+| **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase` | warning |
+| **ST3: public-return-type** | Public functions have explicit return type annotations | error |
 
 ## Suppression
 
-Suppress individual rules with `@allow`:
+| Rule | Description |
+|------|-------------|
+| **SU1: Item suppress** | `@allow(rule_id)` on any item suppresses that rule for the item |
+| **SU2: Block suppress** | `@allow(rule_id)` on an `extend` block suppresses for all methods inside |
 
+<!-- test: skip -->
 ```rask
 @allow(naming/is)
 func is_custom_check() -> i32 {
     return 42
 }
-```
 
-Suppress for an entire extend block:
-
-```rask
 @allow(naming/into)
 extend LegacyAdapter {
     func into_string(self) -> string {
@@ -110,11 +81,36 @@ extend LegacyAdapter {
 }
 ```
 
----
+## Rule Selection
+
+| Rule | Description |
+|------|-------------|
+| **RS1: Filter** | `--rule <pattern>` runs only matching rules (e.g., `naming/*`, `naming/is`) |
+| **RS2: Exclude** | `--exclude <rule_id>` skips specific rules |
+
+## Error Messages
+
+```
+ERROR [tool.lint/N5]: `is_valid` must return `bool`
+   |
+3  |     func is_valid(self) -> i32 {
+   |          ^^^^^^^^ returns `i32`, expected `bool`
+
+FIX: change return type to `bool`, or rename to remove the `is_` prefix
+```
+
+```
+WARNING [tool.lint/N2]: `into_string` should take ownership of self
+   |
+8  |     func into_string(self) -> string {
+   |          ^^^^^^^^^^^ `into_*` methods consume the value
+
+FIX: change `self` to `take self`, or rename to `to_string`
+```
 
 ## JSON Output
 
-`rask lint --format json` produces structured output matching the diagnostic format:
+`rask lint --format json` produces structured diagnostics:
 
 ```json
 {
@@ -139,41 +135,48 @@ extend LegacyAdapter {
 }
 ```
 
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| `is_*` on standalone func | N5 | Still checked (not just extend blocks) |
+| `try_*` on standalone func | N7 | Still checked |
+| `@allow` on item overrides block | SU1 | Item-level wins over block-level |
+| Private `from_*` method | N1 | Still checked — conventions apply regardless of visibility |
+| `into_*` with `mutate self` | N2 | Violation — must be `take self` |
+
 ---
 
-## Rule Selection
+## Appendix (non-normative)
 
-Run specific rules with `--rule`:
+### Rationale
 
+**N2 (into consumes):** `into_*` implies conversion that destroys the original. If it borrows `self`, the caller might think the original is consumed when it isn't. Flagging this prevents subtle ownership confusion.
+
+**N5/N7 as errors, not warnings:** `is_*` returning non-bool and `try_*` not returning a Result are strong enough contract violations that they should block — callers rely on these naming conventions for correctness assumptions.
+
+**ST3 (public return type):** Public API signatures are documentation. Forcing explicit return types makes the API surface readable without hovering or inference.
+
+### Patterns & Guidance
+
+**Lint vs warnings:** Lint rules (`naming/is`, `idiom/unwrap-production`) enforce conventions. Compiler warnings (`unused_result`, `unreachable_code`) flag likely bugs. Both use `@allow` for suppression but different ID namespaces.
+
+**CI usage:**
 ```
-rask lint src/ --rule naming/*          # all naming rules
-rask lint src/ --rule naming/is         # just is_* checks
-rask lint src/ --rule idiom/*           # idiomatic patterns
-rask lint src/ --rule style/*           # style checks
-```
-
-Exclude rules with `--exclude`:
-
-```
+rask lint src/                        # all rules
+rask lint src/ --rule naming/*        # naming only
+rask lint src/ --rule naming/is       # single rule
 rask lint src/ --exclude idiom/unwrap-production
 ```
 
----
+### Future
 
-## Relationship to Other Tools
+- **Custom rules** — project-level lint configuration in `rask.build`
+- **Auto-fix** — `rask lint --fix` for rules with unambiguous fixes
+- **CI integration** — exit code 1 on errors, 0 on warnings-only
 
-| Tool | What it checks |
-|------|---------------|
-| `rask fmt` | Whitespace, indentation, line breaks — purely visual |
-| `rask lint` | Naming conventions, idiomatic patterns, style — semantic |
-| `rask check` | Type safety, ownership, borrowing — correctness; also emits [compiler warnings](warnings.md) for suspicious-but-valid code |
+### See Also
 
-`rask lint` sits between formatting and type checking. It doesn't affect correctness — the code compiles fine — but it enforces conventions that make code consistent across projects. Both lint rules and compiler warnings use the `@allow` attribute for suppression, but they use different ID namespaces (lint: `naming/is`, warnings: `unused_result`).
-
----
-
-## Future
-
-- **Custom rules** — project-level lint configuration in `rask.build`.
-- **Auto-fix** — `rask lint --fix` for rules with unambiguous fixes (e.g., rename `is_valid` return type).
-- **CI integration** — exit code 1 on errors, 0 on warnings-only.
+- `tool.warnings` — compiler warnings (`rask check`)
+- `tool.describe` — module API schema
+- [canonical-patterns.md](../canonical-patterns.md) — naming convention source

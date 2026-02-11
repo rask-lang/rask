@@ -1,174 +1,118 @@
-# Random — Random Number Generation
+<!-- id: std.random -->
+<!-- status: decided -->
+<!-- summary: Pseudo-random number generation via Rng type and module convenience functions -->
 
-One `Rng` type plus module-level convenience functions. Explicit generator for reproducible sequences, quick module functions for when you just need a random number.
+# Random
 
-## Specification
+One `Rng` type plus module-level convenience functions. Explicit generator for reproducible sequences, module functions for quick usage.
 
-### Types
+## Types
 
-| Type | Description | Size | Copy? |
-|------|-------------|------|-------|
-| `Rng` | Pseudo-random number generator | 32 bytes | No (stateful) |
+| Rule | Description |
+|------|-------------|
+| **R1: Rng type** | `Rng` is a 32-byte stateful PRNG; not Copy |
+| **R2: System seed** | `Rng.new()` seeds from system entropy (time + thread ID) |
+| **R3: Deterministic seed** | `Rng.from_seed(seed: u64)` produces identical sequences for identical seeds |
 
-### Rng Constructors
+## Instance Methods
 
+| Rule | Description |
+|------|-------------|
+| **M1: Typed generation** | `rng.u64()`, `rng.i64()`, `rng.f64()`, `rng.f32()`, `rng.bool()` generate typed random values |
+| **M2: Range** | `rng.range(lo, hi)` returns value in `[lo, hi)` — panics if `lo >= hi` |
+| **M3: Collections** | `rng.shuffle(vec)` does in-place Fisher-Yates; `rng.choice(vec)` returns `T?` (None if empty) |
+
+<!-- test: skip -->
 ```rask
-Rng.new() -> Rng                // system-seeded (time + thread ID)
-Rng.from_seed(seed: u64) -> Rng // deterministic — same seed = same sequence
+const rng = Rng.from_seed(42)
+const a = rng.range(0, 100)       // deterministic for seed 42
+const b = rng.f64()               // [0.0, 1.0)
+rng.shuffle(items)
 ```
 
-### Rng Instance Methods
+## Module Convenience Functions
 
-```rask
-rng.u64() -> u64                    // full u64 range
-rng.i64() -> i64                    // full i64 range
-rng.range(lo: i64, hi: i64) -> i64  // [lo, hi) — lo inclusive, hi exclusive
-rng.f64() -> f64                    // [0.0, 1.0)
-rng.f32() -> f32                    // [0.0, 1.0)
-rng.bool() -> bool                  // 50/50
-rng.shuffle(vec: Vec<T>)            // in-place Fisher-Yates shuffle
-rng.choice(vec: Vec<T>) -> T?       // random element, None if empty
-```
+| Rule | Description |
+|------|-------------|
+| **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Rng |
+| **C2: Same API** | `random.u64()`, `random.range(lo, hi)`, `random.f64()`, `random.bool()`, `random.shuffle(vec)`, `random.choice(vec)` mirror instance methods |
 
-### Module Convenience Functions
-
-These use a thread-local system-seeded Rng:
-
-```rask
-random.u64() -> u64
-random.i64() -> i64
-random.range(lo: i64, hi: i64) -> i64
-random.f64() -> f64
-random.f32() -> f32
-random.bool() -> bool
-random.shuffle(vec: Vec<T>)
-random.choice(vec: Vec<T>) -> T?
-```
-
-### Access Pattern
-
+<!-- test: skip -->
 ```rask
 import random
 
-// Quick usage — module functions
 const roll = random.range(1, 7)   // dice roll [1, 6]
 const coin = random.bool()
-
-// Reproducible — explicit Rng
-const rng = Rng.from_seed(42)
-const a = rng.range(0, 100)       // always same value for seed 42
-const b = rng.range(0, 100)       // always same second value
 ```
 
-## Examples
+## Error Messages
 
-### Game — Random Enemy Spawning
+```
+ERROR [std.random/M2]: empty range in random.range()
+   |
+5  |  const x = rng.range(5, 5)
+   |                      ^^^^ lo must be less than hi
 
-```rask
-import random
-import time
+WHY: Half-open range [lo, hi) is empty when lo >= hi.
 
-func spawn_enemies(count: i64, area_width: f64, area_height: f64) -> Vec<Enemy> {
-    const enemies = Vec.new()
-    for _ in 0..count {
-        const enemy = Enemy {
-            x: random.f64() * area_width,
-            y: random.f64() * area_height,
-            health: random.range(50, 101),
-        }
-        try enemies.push(enemy)
-    }
-    return enemies
-}
+FIX: Use rng.range(5, 6) for a single value.
 ```
 
-### Deterministic Tests
+## Edge Cases
 
+| Case | Rule | Handling |
+|------|------|----------|
+| `range(5, 5)` | M2 | Panics (empty range) |
+| `choice(empty_vec)` | M3 | Returns `None` |
+| `shuffle(single_element)` | M3 | No-op |
+| `Rng.from_seed(0)` | R3 | Valid, deterministic (seed 0 not special) |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**R1 (not Copy):** Rng is stateful — copying would fork the sequence silently, leading to duplicate values. Move semantics make sequence ownership explicit.
+
+**C1 (thread-local):** Module functions cover the "just give me a random number" case without requiring Rng construction. Thread-local avoids synchronization cost.
+
+### Patterns & Guidance
+
+**Deterministic tests:**
+
+<!-- test: skip -->
 ```rask
-import random
-
 test "shuffle is deterministic with seed" {
     const rng = Rng.from_seed(12345)
     const items = Vec.from([1, 2, 3, 4, 5])
     rng.shuffle(items)
-
-    // Same seed always produces same shuffle
     assert items[0] == 3
-    assert items[1] == 1
 }
 ```
 
-### Weighted Random Selection
+**Weighted random selection:**
 
+<!-- test: skip -->
 ```rask
-import random
-
 func weighted_choice(weights: Vec<f64>) -> i64 {
-    let total = 0.0
-    for w in weights.iter() {
-        total += w
-    }
-
-    let r = random.f64() * total
+    let r = random.f64() * weights.iter().sum()
     for i in 0..weights.len() {
         r -= weights[i]
-        if r <= 0.0 {
-            return i
-        }
+        if r <= 0.0 { return i }
     }
     return weights.len() - 1
 }
 ```
 
-### Shuffle a Deck
+### Security
 
-```rask
-import random
+`Rng` and `random.*` are NOT cryptographically secure. Do not use for passwords, tokens, keys, or any security-sensitive random. A future `crypto.random_bytes(n)` will provide cryptographic randomness.
 
-func new_deck() -> Vec<string> {
-    const suits = ["Hearts", "Diamonds", "Clubs", "Spades"]
-    const ranks = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
-    const deck = Vec.new()
-    for suit in suits {
-        for rank in ranks {
-            try deck.push("{rank} of {suit}")
-        }
-    }
-    random.shuffle(deck)
-    return deck
-}
-```
+### Algorithm
 
-## Edge Cases
+xoshiro256++ (Blackman & Vigna, 2019): 4 x u64 state (32 bytes), period 2^256 - 1, passes BigCrush and PractRand, ~4 cycles per u64.
 
-- `random.range(5, 5)` — panics (empty range). Use `random.range(5, 6)` for a single value
-- `random.choice(empty_vec)` — returns `None`
-- `random.shuffle(single_element_vec)` — no-op
-- `Rng.from_seed(0)` — valid, produces deterministic sequence (seed 0 is not special)
+### See Also
 
-## Security Note
-
-`Rng` and `random.*` are NOT cryptographically secure. Do not use for:
-- Password generation
-- Session tokens
-- Encryption keys
-- Any security-sensitive random
-
-A future `crypto.random_bytes(n)` will provide cryptographic randomness. For now, use platform APIs via unsafe if needed.
-
-## Algorithm
-
-xoshiro256++ (Blackman & Vigna, 2019):
-- State: 4 × u64 = 32 bytes
-- Period: 2^256 - 1
-- Passes BigCrush and PractRand statistical tests
-- ~4 CPU cycles per 64-bit number
-
-## References
-
-- specs/stdlib/testing.md — Seeded random per-test for reproducibility
-- CORE_DESIGN.md — Transparent cost (RNG is pure computation, no syscall after init)
-
-## Status
-
-**Specified** — ready for implementation in interpreter.
+- `std.testing` — Seeded random per-test for reproducibility

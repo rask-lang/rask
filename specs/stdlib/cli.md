@@ -1,35 +1,28 @@
-# CLI — Command-Line Argument Parsing
+<!-- id: std.cli -->
+<!-- status: decided -->
+<!-- summary: Command-line argument parsing with quick and builder APIs -->
+<!-- depends: stdlib/os.md -->
+
+# CLI
 
 Two-level API: quick ad-hoc parsing for scripts, builder API for tools needing help text and validation.
 
-## Specification
+## Quick API
 
-### Quick API
+| Rule | Description |
+|------|-------------|
+| **Q1: Parse** | `cli.parse()` returns an `Args` struct from `os.args()` |
+| **Q2: Flags** | `args.flag(long, short)` returns `bool` |
+| **Q3: Options** | `args.option(long, short)` returns `string?`; `args.option_or(long, short, default)` returns `string` |
+| **Q4: Positional** | `args.positional()` returns `Vec<string>` of remaining non-flag args |
+| **Q5: Program name** | `args.program()` returns `string` (args[0]) |
 
-For scripts and simple tools — parse `os.args()` into a queryable `Args` struct:
-
-```rask
-cli.parse() -> Args
-```
-
-### Args Methods
-
-```rask
-args.flag(long: string, short: string) -> bool       // --verbose or -v
-args.option(long: string, short: string) -> string?   // --output=file or -o file
-args.option_or(long: string, short: string, default: string) -> string
-args.positional() -> Vec<string>                      // remaining non-flag args
-args.program() -> string                              // program name (args[0])
-```
-
-### Quick API Usage
-
+<!-- test: skip -->
 ```rask
 import cli
 
 func main() -> () or string {
     const args = cli.parse()
-
     const verbose = args.flag("verbose", "v")
     const output = args.option_or("output", "o", "out.txt")
     const files = args.positional()
@@ -38,35 +31,19 @@ func main() -> () or string {
         println("Usage: {args.program()} [options] <files...>")
         os.exit(1)
     }
-
-    for file in files {
-        process(file, output, verbose)
-    }
 }
 ```
 
-### Builder API
+## Builder API
 
-For tools that need help text, validation, and `--help` auto-generation:
+| Rule | Description |
+|------|-------------|
+| **B1: Parser** | `cli.Parser.new(name)` returns a builder for structured parsing |
+| **B2: Builder methods** | `.version()`, `.description()`, `.flag()`, `.option()`, `.option_required()`, `.positional()` configure the parser |
+| **B3: Parse result** | `.parse()` returns `Args or CliError` |
+| **B4: Auto help** | Builder auto-generates `--help` and `--version` output |
 
-```rask
-cli.Parser.new(name: string) -> Parser
-```
-
-### Parser Methods (Builder Pattern)
-
-```rask
-parser.version(v: string) -> Parser
-parser.description(d: string) -> Parser
-parser.flag(long: string, short: string, help: string) -> Parser
-parser.option(long: string, short: string, help: string) -> Parser
-parser.option_required(long: string, short: string, help: string) -> Parser
-parser.positional(name: string, help: string) -> Parser
-parser.parse() -> Args or CliError
-```
-
-### Builder API Usage
-
+<!-- test: skip -->
 ```rask
 import cli
 
@@ -75,35 +52,85 @@ func main() -> () or CliError {
         .version("1.0.0")
         .description("Search for patterns in files")
         .flag("ignore-case", "i", "Case-insensitive matching")
-        .flag("count", "c", "Print match count only")
-        .flag("line-number", "n", "Show line numbers")
-        .flag("invert", "v", "Invert match")
         .option("max-count", "m", "Stop after N matches")
         .positional("pattern", "Search pattern")
         .positional("files", "Files to search")
         .parse()
-
-    const ignore_case = args.flag("ignore-case", "i")
-    const pattern = args.positional()[0]
-    const files = args.positional()[1..]
-    // ...
 }
 ```
 
-### Error Type
+## Argument Syntax
 
+| Rule | Description |
+|------|-------------|
+| **S1: Flag formats** | `--verbose`, `-v`, combined `-vn` (= `-v -n`) |
+| **S2: Option formats** | `--output file`, `--output=file`, `-o file`, `-o=file` |
+| **S3: Positional** | Non-flag arguments |
+| **S4: End of flags** | `--` makes everything after positional |
+
+## Error Type
+
+| Rule | Description |
+|------|-------------|
+| **E1: CliError** | Builder `.parse()` returns `CliError` on invalid input |
+
+<!-- test: skip -->
 ```rask
 enum CliError {
     MissingRequired(string)    // required option not provided
     UnknownFlag(string)        // unrecognized --flag
     MissingValue(string)       // --option without value
-    InvalidValue(string)       // value doesn't parse (future: typed options)
+    InvalidValue(string)       // value doesn't parse
 }
 ```
 
-### Auto-Generated Help
+## Error Messages
 
-Builder auto-generates `--help` and `--version`:
+```
+ERROR [std.cli/E1]: missing required option
+   |
+   $ mygrep --ignore-case
+   ^^^^^^^^ missing required option: --pattern
+
+WHY: option_required() options must be provided.
+
+FIX: Add the missing option: mygrep --pattern "search term"
+```
+
+```
+ERROR [std.cli/E1]: unknown flag
+   |
+   $ mygrep --colour
+   ^^^^^^^^ unknown flag: --colour
+
+WHY: Builder rejects flags not registered via .flag() or .option().
+
+FIX: Check --help for valid options.
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| No args | Q4 | `positional()` returns empty Vec |
+| Unknown flag (quick API) | Q2 | Silently ignored (no schema) |
+| Unknown flag (builder API) | E1 | Returns `CliError.UnknownFlag` |
+| `--` followed by `--flag` | S4 | Treated as positional string `"--flag"` |
+| `-` alone | S3 | Treated as positional |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**Q1-Q5 (quick API):** Scripts shouldn't need a builder to check a flag. `cli.parse()` covers 80% of CLI needs in 3 lines.
+
+**B1-B4 (builder API):** Real tools need help text and validation. The builder generates `--help` from the same source of truth used for parsing.
+
+### Patterns & Guidance
+
+**Auto-generated help output:**
 
 ```
 $ mygrep --help
@@ -114,122 +141,19 @@ Usage: mygrep [options] <pattern> <files>
 
 Options:
   -i, --ignore-case    Case-insensitive matching
-  -c, --count          Print match count only
-  -n, --line-number    Show line numbers
-  -v, --invert         Invert match
   -m, --max-count <value>  Stop after N matches
   -h, --help           Show this help
       --version        Show version
 ```
 
-### Argument Syntax
+### Deferred
 
-Supported formats:
+- **Subcommands:** `parser.subcommand("init", ...)`
+- **Typed options:** `args.option_int("port", "p")`
+- **Struct derivation:** `cli.parse_into<Args>()`
+- **Completion scripts:** Generate bash/zsh/fish completions
 
-| Format | Example | Meaning |
-|--------|---------|---------|
-| Long flag | `--verbose` | Boolean flag |
-| Short flag | `-v` | Boolean flag |
-| Combined short | `-vn` | Multiple flags: `-v -n` |
-| Long option | `--output file` | Option with space |
-| Long option = | `--output=file` | Option with equals |
-| Short option | `-o file` | Option with space |
-| Short option = | `-o=file` | Option with equals |
-| Positional | `file.txt` | Non-flag argument |
-| End of flags | `--` | Everything after is positional |
+### See Also
 
-## Examples
-
-### Grep Clone
-
-```rask
-import cli
-import fs
-import os
-
-func main() -> () or string {
-    const args = cli.parse()
-
-    const ignore_case = args.flag("ignore-case", "i")
-    const show_line_num = args.flag("line-number", "n")
-    const count_only = args.flag("count", "c")
-    const invert = args.flag("invert-match", "v")
-
-    const positional = args.positional()
-    if positional.len() < 2 {
-        println("Usage: grep [options] <pattern> <file...>")
-        os.exit(1)
-    }
-
-    const pattern = positional[0]
-    const files = positional[1..]
-
-    for file in files {
-        const lines = try fs.read_lines(file)
-        let match_count = 0
-
-        for i in 0..lines.len() {
-            const line = lines[i]
-            let matches = line.contains(pattern)
-            if ignore_case {
-                matches = line.to_lowercase().contains(pattern.to_lowercase())
-            }
-            if invert {
-                matches = !matches
-            }
-
-            if matches {
-                match_count += 1
-                if !count_only {
-                    if show_line_num {
-                        println("{i + 1}:{line}")
-                    } else {
-                        println(line)
-                    }
-                }
-            }
-        }
-
-        if count_only {
-            println("{match_count}")
-        }
-    }
-}
-```
-
-### Simple Script
-
-```rask
-import cli
-import os
-
-func main() {
-    const args = cli.parse()
-
-    if args.flag("help", "h") {
-        println("Usage: deploy [--env staging|prod] [--dry-run]")
-        os.exit(0)
-    }
-
-    const env = args.option_or("env", "e", "staging")
-    const dry_run = args.flag("dry-run", "n")
-
-    println("Deploying to {env}{if dry_run: " (dry run)" else: ""}")
-}
-```
-
-## Deferred
-
-- **Subcommands**: `parser.subcommand("init", ...)` — not needed for Phase 2 litmus tests
-- **Typed options**: `args.option_int("port", "p")`, `args.option_float(...)` — parse to typed values
-- **Struct derivation**: `cli.parse_into<Args>()` — auto-map struct fields to CLI args
-- **Completion scripts**: Generate bash/zsh/fish completions from Parser definition
-
-## References
-
-- specs/stdlib/os.md — `os.args()` provides raw args, `os.exit()` for exit codes
-- specs/types/error-types.md — `CliError` uses standard error pattern
-
-## Status
-
-**Specified** — ready for implementation in interpreter.
+- `std.os` — `os.args()` provides raw args, `os.exit()` for exit codes
+- `type.error-types` — `CliError` uses standard error pattern

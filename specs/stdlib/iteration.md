@@ -1,98 +1,72 @@
+<!-- id: std.iteration -->
+<!-- status: decided -->
+<!-- summary: Iteration modes for Vec, Pool, and Map collections -->
+<!-- depends: stdlib/collections.md, memory/pools.md, control/loops.md, types/iterator-protocol.md -->
+
 # Collection Iteration Patterns
 
-This spec covers how to iterate over standard library collections (Vec, Pool, Map).
-
-For loop syntax and desugaring, see [control/loops.md](../control/loops.md).
-For the Iterator trait, see [types/iterator-protocol.md](../types/iterator-protocol.md).
-
----
+Three iteration modes per collection: index/handle, ref, and take-all. Mode determines ownership and mutation rights.
 
 ## Iteration Modes
 
-Collections support multiple iteration modes depending on access needs:
+| Rule | Description |
+|------|-------------|
+| **I1: Index mode** | Default `for x in collection` yields index/handle/key. Allows mutation via indexing |
+| **I2: Ref mode** | `.iter()` yields borrowed elements. Collection mutation forbidden (except in-place field writes) |
+| **I3: Take-all mode** | `.take_all()` consumes the collection, yields owned values |
 
 | Collection | Index/Handle Mode | Ref Mode | Take All Mode |
 |------------|-------------------|----------|--------------|
-| `Vec<T>` | `for i in vec` → `usize` | `for item in vec.iter()` → borrowed `T` | `for item in vec.take_all()` → `T` |
-| `Pool<T>` | `for h in pool` → `Handle<T>` | `for (h, item) in pool.iter()` → `(Handle<T>, borrowed T)` | `for item in pool.take_all()` → `T` |
-| `Map<K,V>` | `for k in map` → `K` (K: Copy) | `for (k, v) in map.iter()` → `(borrowed K, borrowed V)` | `for (k,v) in map.take_all()` → `(K, V)` |
-
-**When to use each mode:**
-
-| Mode | Use When |
-|------|----------|
-| Index/Handle | Need to mutate or remove during iteration |
-| Ref | Read-only access, avoid cloning large items |
-| Take All | Consuming all items, transferring ownership |
-
----
+| `Vec<T>` | `for i in vec` -> `usize` | `for item in vec.iter()` -> borrowed `T` | `for item in vec.take_all()` -> `T` |
+| `Pool<T>` | `for h in pool` -> `Handle<T>` | `for (h, item) in pool.iter()` -> `(Handle<T>, borrowed T)` | `for item in pool.take_all()` -> `T` |
+| `Map<K,V>` | `for k in map` -> `K` (K: Copy) | `for (k, v) in map.iter()` -> `(borrowed K, borrowed V)` | `for (k,v) in map.take_all()` -> `(K, V)` |
 
 ## Value Access
 
-Access follows expression-scoped collection rules:
-
-| Expression | Behavior | Constraint |
-|------------|----------|------------|
-| `vec[i]` where T: Copy (≤16 bytes) | Copies out T | T: Copy |
-| `vec[i].field` where field: Copy | Copies out field | field: Copy |
-| `vec[i].method()` | Borrows for call, releases at `;` | Expression-scoped |
-| `vec[i]` passed to function | Borrows for call duration | Cannot store in callee |
-| `vec[i] = value` | Mutates in place | - |
-| `vec[i]` where T: !Copy | **ERROR**: cannot move | Use `.clone()` or `.take_all()` |
-
-**Rule:** Each `collection[index]` access is independent. Borrow released at statement end (semicolon).
-
----
-
-## Ref Mode
-
-Ref mode (`for (h, item) in collection.iter()`) provides ergonomic read-only access.
-
-**Enforcement:** Compiler forbids all mutation operations within ref loop blocks:
-
-| Operation | In Ref Mode Loop | Error |
-|-----------|------------------|-------|
-| `pool.remove(h)` | Forbidden | "cannot mutate `pool` during ref iteration" |
-| `pool.insert(item)` | Forbidden | "cannot mutate `pool` during ref iteration" |
-| `pool[h].field = x` | Allowed | Mutates item in place, doesn't invalidate iteration |
-
-**Function calls:**
-
-| Parameter Mode | In Ref Loop | Reason |
-|----------------|-------------|--------|
-| borrow (read-only) | Allowed | Cannot mutate by definition |
-| borrow (mutable) | Forbidden | Would allow mutation |
-| `take` | Forbidden | Ownership transfer impossible |
-
----
-
-## Take All Iteration
-
-**Syntax:** `collection.take_all()`
-
-Yields owned values, consuming the collection:
+| Rule | Description |
+|------|-------------|
+| **A1: Copy out** | `collection[i]` copies T when T: Copy (≤16 bytes) |
+| **A2: Field copy** | `collection[i].field` copies field when field: Copy |
+| **A3: Expression borrow** | `collection[i].method()` borrows for call, released at `;` |
+| **A4: No move** | `collection[i]` where T: !Copy is a compile error. Use `.clone()` or `.take_all()` |
 
 <!-- test: skip -->
 ```rask
-for item in vec.take_all() {
-    process(item)  // item is owned T
-}
-// vec is now empty
+vec[i].field              // Copy out field (A2)
+vec[i].method()           // Expression-scoped borrow (A3)
+vec[i] = value            // Mutate in place
 ```
 
-| Collection | Method | Yields | Returns |
-|------------|--------|--------|---------|
-| `Vec<T>` | `.take_all()` | `T` | `VecTakeAll<T>` |
-| `Pool<T>` | `.take_all()` | `T` | `PoolTakeAll<T>` |
-| `Map<K,V>` | `.take_all()` | `(K, V)` | `MapTakeAll<K,V>` |
+## Ref Mode Constraints
 
-**Key Properties:**
-1. `.take_all()` takes ownership of collection (`take self`)
-2. Collection's internal buffer transferred to take_all iterator
-3. Original collection left in valid empty state
-4. When take_all iterator drops, remaining items dropped in LIFO order
+| Rule | Description |
+|------|-------------|
+| **R1: No structural mutation** | `pool.remove(h)`, `pool.insert(x)` forbidden inside ref loops |
+| **R2: In-place mutation OK** | `pool[h].field = x` allowed (doesn't invalidate iteration) |
+| **R3: No take parameters** | Cannot pass borrowed items to `take` parameters |
 
-**Early Exit:**
+| Operation | In Ref Loop | Reason |
+|-----------|-------------|--------|
+| `pool.remove(h)` | Forbidden | Structural mutation |
+| `pool.insert(item)` | Forbidden | Structural mutation |
+| `pool[h].field = x` | Allowed | In-place, no invalidation |
+| Borrow (read-only) param | Allowed | Cannot mutate |
+| Borrow (mutable) param | Forbidden | Would allow mutation |
+| `take` param | Forbidden | Ownership transfer impossible |
+
+## Take-All Iteration
+
+| Rule | Description |
+|------|-------------|
+| **T1: Consumes collection** | `.take_all()` takes ownership (`take self`). Collection left empty |
+| **T2: Buffer transfer** | Collection's internal buffer transferred to iterator |
+| **T3: Early exit drops** | On `break`/`return`/`try`, remaining items dropped in LIFO order |
+
+| Collection | Method | Yields |
+|------------|--------|--------|
+| `Vec<T>` | `.take_all()` | `T` |
+| `Pool<T>` | `.take_all()` | `T` |
+| `Map<K,V>` | `.take_all()` | `(K, V)` |
 
 <!-- test: skip -->
 ```rask
@@ -104,56 +78,56 @@ for file in files.take_all() {
 }
 ```
 
----
-
 ## Mutation During Iteration
 
-**Allowed but programmer responsibility** (index/handle mode only):
+Index/handle mode only. Programmer responsibility.
 
-| Pattern | Safety | Notes |
-|---------|--------|-------|
-| `for i in vec { vec[i].field = x }` | Safe | In-place mutation doesn't invalidate index |
-| `for i in vec { try vec.push(x) }` | Unsafe | New elements not visited; length captured at start |
-| `for i in vec { vec.swap_remove(i) }` | Unsafe | Later indices refer to wrong elements |
+| Rule | Description |
+|------|-------------|
+| **M1: In-place safe** | `vec[i].field = x` doesn't invalidate indices |
+| **M2: Growth unsafe** | `vec.push(x)` inside loop: new elements not visited, length captured at start |
+| **M3: Removal unsafe** | `vec.swap_remove(i)` inside loop: later indices refer to wrong elements |
 
-**Safe Patterns:**
+## Linear Types
 
-1. **Reverse iteration for removal:**
-   <!-- test: skip -->
-   ```rask
-   for i in (0..vec.len()).rev() {
-       if vec[i].expired { vec.swap_remove(i) }
-   }
-   ```
+| Rule | Description |
+|------|-------------|
+| **L1: No index iteration** | `Vec<Linear>` forbids index iteration. Use `.take_all()` |
+| **L2: Pool handles OK** | Pool handles are Copy, so handle iteration works for linear pool elements |
 
-2. **Collect indices, then mutate:**
-   <!-- test: skip -->
-   ```rask
-   const to_remove = Vec.new()
-   for i in vec { if vec[i].expired { to_remove.push(i) } }
-   for i in to_remove.rev() { vec.swap_remove(i) }
-   ```
+<!-- test: skip -->
+```rask
+// COMPILE ERROR: index iteration on Vec<Linear>
+for i in files { try files[i].close() }
 
-3. **Filter via take_all:**
-   <!-- test: skip -->
-   ```rask
-   const vec = vec.take_all().filter(|item| !item.expired).collect()
-   ```
+// Required: take_all consumes each element
+for file in files.take_all() { try file.close() }
+```
 
----
+## Map Key Constraints
+
+| Rule | Description |
+|------|-------------|
+| **K1: Copy keys required** | `for k in map` requires K: Copy. Non-Copy keys: use `.iter()` or `.take_all()` |
+
+<!-- test: skip -->
+```rask
+// OK: u64 is Copy
+for id in counts { print(counts[id]) }
+
+// ERROR: string is not Copy — use .iter()
+for (key, value) in config.iter() {
+    print(key, value)
+}
+```
 
 ## Error Propagation (`try`)
 
-When `try` exits a loop:
-
 | Loop Type | Original Collection | Remaining Items |
 |-----------|---------------------|-----------------|
-| Index mode | Intact | N/A |
-| Handle mode | Intact | N/A |
-| Ref mode | Intact | N/A |
-| Take all mode | Already taken | Dropped (LIFO) |
+| Index/Handle/Ref mode | Intact | N/A |
+| Take-all mode | Already taken | Dropped (LIFO) |
 
-**Take all + ensure:**
 <!-- test: skip -->
 ```rask
 for file in files.take_all() {
@@ -162,65 +136,95 @@ for file in files.take_all() {
 }
 ```
 
----
+## Error Messages
 
-## Linear Types
+```
+ERROR [std.iteration/L1]: cannot use index iteration on Vec<Linear>
+   |
+3  |  for i in files { try files[i].close() }
+   |           ^^^^^ Linear types must be consumed via .take_all()
 
-**Index iteration forbidden for `Vec<Linear>`:**
+WHY: Index access cannot transfer ownership of linear resources.
 
-<!-- test: skip -->
-```rask
-// COMPILE ERROR:
-for i in files { try files[i].close() }
+FIX: Use take_all:
 
-// Required:
-for file in files.take_all() { try file.close() }
+  for file in files.take_all() { try file.close() }
 ```
 
-**Pool iteration works** (handles are Copy):
-<!-- test: skip -->
-```rask
-for h in pool {
-    const removed = try pool.remove(h)
-    try removed.close()
-}
+```
+ERROR [std.iteration/K1]: map key iteration requires Copy keys
+   |
+3  |  for key in config { ... }
+   |             ^^^^^^ string is not Copy
+
+FIX: Use .iter() or .take_all():
+
+  for (key, value) in config.iter() { ... }
 ```
 
----
-
-## Map Iteration
-
-**Key mode requires Copy keys:**
-<!-- test: skip -->
-```rask
-// OK: u64 is Copy
-for id in counts { print(counts[id]) }
-
-// ERROR: string is not Copy
-for key in config { ... }  // Use .iter() or .take_all()
 ```
+ERROR [std.iteration/R1]: cannot mutate collection during ref iteration
+   |
+3  |  for (h, item) in pool.iter() {
+   |                   ^^^^^^^^^^^ ref iteration borrows pool
+4  |      pool.remove(h)
+   |      ^^^^^^^^^^^^^^ cannot mutate
 
-**Ref mode for all key types:**
-<!-- test: skip -->
-```rask
-for (key, value) in config.iter() {
-    print(key, value)
-}
+FIX: Collect handles first, then mutate:
+
+  const to_remove: Vec<Handle<T>> = Vec.new()
+  for (h, item) in pool.iter() { if item.expired { to_remove.push(h) } }
+  for h in to_remove { pool.remove(h) }
 ```
-
----
 
 ## Edge Cases
 
-| Case | Handling |
-|------|----------|
-| Empty collection | Loop body never executes |
-| `Vec<Linear>` index iteration | COMPILE ERROR: use `.take_all()` |
-| `Map<string, V>` key iteration | COMPILE ERROR: use `.iter()` or `.take_all()` |
-| Out-of-bounds index | PANIC |
-| Invalid handle | PANIC (generation mismatch) |
-| `break value` for !Copy | Requires `.clone()` |
-| Infinite range (`0..`) | Works (lazy) |
-| Zero-sized types (`Vec<()>`) | Yields indices 0..len |
+| Case | Rule | Handling |
+|------|------|----------|
+| Empty collection | — | Loop body never executes |
+| `Vec<Linear>` index iteration | L1 | Compile error |
+| `Map<string, V>` key iteration | K1 | Compile error |
+| Out-of-bounds index | — | Panic |
+| Invalid handle | — | Panic (generation mismatch) |
+| `break value` for !Copy | A4 | Requires `.clone()` |
+| Infinite range (`0..`) | — | Works (lazy) |
+| Zero-sized types (`Vec<()>`) | — | Yields indices 0..len |
 
-**ZST Iteration:** Allowed for generic code uniformity. ZST collections iterate indices, not values.
+---
+
+## Appendix (non-normative)
+
+### Patterns & Guidance
+
+**When to use each mode:**
+
+| Mode | Use When |
+|------|----------|
+| Index/Handle | Need to mutate or remove during iteration |
+| Ref | Read-only access, avoid cloning large items |
+| Take All | Consuming all items, transferring ownership |
+
+**Safe removal patterns:**
+
+<!-- test: skip -->
+```rask
+// 1. Reverse iteration for removal
+for i in (0..vec.len()).rev() {
+    if vec[i].expired { vec.swap_remove(i) }
+}
+
+// 2. Collect indices, then mutate
+const to_remove = Vec.new()
+for i in vec { if vec[i].expired { to_remove.push(i) } }
+for i in to_remove.rev() { vec.swap_remove(i) }
+
+// 3. Filter via take_all
+const vec = vec.take_all().filter(|item| !item.expired).collect()
+```
+
+### See Also
+
+- `std.collections` — Vec, Map APIs
+- `mem.pools` — Pool and Handle types
+- `ctrl.loops` — Loop syntax and desugaring
+- `type.iterator-protocol` — Iterator trait

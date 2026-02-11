@@ -1,27 +1,22 @@
+<!-- id: type.binary -->
+<!-- status: decided -->
+<!-- summary: @binary attribute for struct-based binary parsing and building -->
+<!-- depends: types/structs.md, control/comptime.md -->
+
 # Binary Structs
 
-## The Question
+`@binary` attribute on structs defines bit-level wire format. Compiler generates `.parse()` and `.build()` methods.
 
-How do we parse and build binary data (network protocols, file formats, embedded systems) with Erlang's power but without new syntax?
+## Attribute and Layout
 
-## Decision
+| Rule | Description |
+|------|-------------|
+| **B1: Declaration order** | Field order is the bit layout. No reordering |
+| **B2: Sequential packing** | Fields packed sequentially, no padding |
+| **B3: MSB-first** | Bits packed MSB-first (network byte order) |
+| **B4: Final byte** | Unused bits in final byte zeroed on build, ignored on parse |
 
-Use `@binary` attribute on structs. Field "types" specify bit layout. Numbers mean bit widths. Compiler generates `.parse()` and `.build()` methods.
-
-## Rationale
-
-Erlang's bit syntax is powerful but requires special syntax (`<<>>`, `/` specifiers). I make binary layout a struct property:
-- No new syntax
-- Layouts are reusable
-- Works with existing `match`
-- IDE support comes free
-
-## Specification
-
-### The `@binary` Attribute
-
-**Note:** `@binary` structs use declaration order for wire format. No reordering. Field order is the bit layout.
-
+<!-- test: skip -->
 ```rask
 @binary
 struct IpHeader {
@@ -41,34 +36,31 @@ struct IpHeader {
 }
 ```
 
-### Field Specifiers
+## Field Specifiers
+
+| Rule | Description |
+|------|-------------|
+| **F1: Bare number** | `N` means N bits, becomes smallest fitting uint |
+| **F2: Endian required** | Multi-byte fields must specify `be` or `le` — no default |
+| **F3: Byte alignment** | Multi-byte endian types must start at byte boundaries |
+| **F4: Nesting** | Binary structs can contain other binary structs (inlined, no indirection) |
 
 | Specifier | Bits | Runtime Type | Description |
 |-----------|------|--------------|-------------|
 | `N` | N | smallest fitting uint | Bare number = N bits |
 | `u8` | 8 | u8 | Unsigned byte |
 | `i8` | 8 | i8 | Signed byte |
-| `u16be` | 16 | u16 | Big-endian unsigned |
-| `u16le` | 16 | u16 | Little-endian unsigned |
-| `i16be` | 16 | i16 | Big-endian signed |
-| `i16le` | 16 | i16 | Little-endian signed |
-| `u32be` | 32 | u32 | Big-endian unsigned |
-| `u32le` | 32 | u32 | Little-endian unsigned |
-| `i32be` | 32 | i32 | Big-endian signed |
-| `i32le` | 32 | i32 | Little-endian signed |
-| `u64be` | 64 | u64 | Big-endian unsigned |
-| `u64le` | 64 | u64 | Little-endian unsigned |
-| `i64be` | 64 | i64 | Big-endian signed |
-| `i64le` | 64 | i64 | Little-endian signed |
-| `f32be` | 32 | f32 | Big-endian float |
-| `f32le` | 32 | f32 | Little-endian float |
-| `f64be` | 64 | f64 | Big-endian double |
-| `f64le` | 64 | f64 | Little-endian double |
+| `u16be`/`u16le` | 16 | u16 | Big/little-endian unsigned |
+| `i16be`/`i16le` | 16 | i16 | Big/little-endian signed |
+| `u32be`/`u32le` | 32 | u32 | Big/little-endian unsigned |
+| `i32be`/`i32le` | 32 | i32 | Big/little-endian signed |
+| `u64be`/`u64le` | 64 | u64 | Big/little-endian unsigned |
+| `i64be`/`i64le` | 64 | i64 | Big/little-endian signed |
+| `f32be`/`f32le` | 32 | f32 | Big/little-endian float |
+| `f64be`/`f64le` | 64 | f64 | Big/little-endian double |
 | `[N]u8` | N×8 | [u8; N] | Fixed byte array |
 
-### Runtime Types
-
-Bare number `N` becomes the smallest unsigned integer that fits:
+**Runtime type mapping for bare number `N`:**
 
 | Bits | Runtime Type |
 |------|--------------|
@@ -77,103 +69,106 @@ Bare number `N` becomes the smallest unsigned integer that fits:
 | 17-32 | u32 |
 | 33-64 | u64 |
 
-### Generated Methods
+## Generated API
 
-For any `@binary struct T`:
+| Rule | Description |
+|------|-------------|
+| **G1: Parse** | `.parse(data)` returns `(T, []u8) or ParseError` |
+| **G2: Build** | `.build()` returns `Vec<u8>` |
+| **G3: Build into** | `.build_into(buffer)` returns `usize or BuildError` |
+| **G4: Size constants** | `T.SIZE` (bytes, rounded up) and `T.SIZE_BITS` (bits) are comptime constants |
 
+<!-- test: skip -->
 ```rask
 extend T {
-    /// Parse from byte slice, return (value, remaining_bytes)
     func parse(data: []u8) -> (T, []u8) or ParseError
-
-    /// Build into new byte vector
     func build(self) -> Vec<u8>
-
-    /// Build into existing buffer, return bytes written
     func build_into(self, buffer: []u8) -> usize or BuildError
-
-    /// Total size in bytes (rounded up)
     const SIZE: usize
-
-    /// Total size in bits
     const SIZE_BITS: usize
 }
 ```
 
-### Packing Rules
+## Compile-Time Validation
 
-1. Fields packed sequentially, no padding
-2. Bits packed MSB-first (network byte order)
-3. Total size = sum of field bits, rounded up
-4. Unused bits in final byte are zero on build, ignored on parse
+| Rule | Description |
+|------|-------------|
+| **V1: Bit count range** | Fields must be 1-64 bits |
+| **V2: Endian alignment** | Endian types must be byte-aligned within the struct |
+| **V3: Size limit** | Total must not exceed 65535 bits (8KB) |
+| **V4: Type fit** | Field values must fit in declared bit width |
 
-### Example: IP Header
+## Inline Parsing
 
+For one-off parsing without a struct, use `unpack`:
+
+<!-- test: skip -->
 ```rask
-@binary
-struct IpHeader {
-    version: 4
-    ihl: 4
-    dscp: 6
-    ecn: 2
-    total_length: u16be
-    identification: u16be
-    flags: 3
-    fragment_offset: 13
-    ttl: u8
-    protocol: u8
-    checksum: u16be
-    src: u32be
-    dst: u32be
-}
-
-// SIZE = 20 bytes (160 bits)
-
-func handle_packet(data: []u8) -> () or Error {
-    let (header, payload) = try IpHeader.parse(data)
-
-    match header.version {
-        4: handle_ipv4(header, payload)
-        6: handle_ipv6(header, payload)
-        _: Err(UnsupportedVersion)
-    }
-}
+let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
 ```
 
-### Example: TCP Header
+See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functions.
 
-```rask
-@binary
-struct TcpHeader {
-    src_port: u16be
-    dst_port: u16be
-    seq: u32be
-    ack: u32be
-    data_offset: 4       // Header length in 32-bit words
-    reserved: 3
-    flags: 9             // NS, CWR, ECE, URG, ACK, PSH, RST, SYN, FIN
-    window: u16be
-    checksum: u16be
-    urgent_ptr: u16be
-}
+## Error Messages
 
-// SIZE = 20 bytes (160 bits)
+```
+ERROR [type.binary/F2]: multi-byte field must specify endianness
+   |
+5  |  port: u16
+   |        ^^^ must be u16be or u16le
 
-// Flag constants
-const TCP_FIN: u16 = 0x001
-const TCP_SYN: u16 = 0x002
-const TCP_RST: u16 = 0x004
-const TCP_PSH: u16 = 0x008
-const TCP_ACK: u16 = 0x010
-const TCP_URG: u16 = 0x020
+WHY: Implicit endianness causes bugs. Explicit is required.
 
-func is_syn(header: TcpHeader) -> bool {
-    header.flags & TCP_SYN != 0
-}
+FIX: port: u16be    // or u16le
 ```
 
-### Construction
+```
+ERROR [type.binary/F3]: endian type not byte-aligned
+   |
+4  |  flags: 4
+5  |  length: u16be
+   |          ^^^^^ starts at bit 4, not byte-aligned
 
+WHY: Unaligned multi-byte reads are complex and slow.
+
+FIX: Pad to byte boundary before multi-byte fields.
+```
+
+```
+ERROR [type.binary/V1]: invalid bit count
+   |
+3  |  x: 0
+   |     ^ bit count must be >= 1 and <= 64
+```
+
+## Edge Cases
+
+| Case | Rule | Behavior |
+|------|------|----------|
+| Empty struct | B1 | Valid, SIZE = 0 |
+| Single field | B1 | Valid |
+| > 64 bit field | V1 | Compile error |
+| 0 bit field | V1 | Compile error |
+| Total > 65535 bits | V3 | Compile error (8KB limit) |
+| Non-binary struct in @binary | F4 | Error unless also @binary |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**B1 (declaration order):** Erlang's bit syntax is powerful but requires special syntax (`<<>>`, `/` specifiers). Making binary layout a struct property gives reusable layouts, works with existing `match`, and gets IDE support for free — all without new syntax.
+
+**F2 (endian required):** Implicit endianness causes bugs in protocol code. Explicit `be`/`le` on every multi-byte field eliminates an entire class of mistakes.
+
+**F3 (byte alignment):** Unaligned multi-byte reads add complexity and hurt performance. Requiring alignment keeps the generated code simple.
+
+### Patterns & Guidance
+
+**Construction:**
+
+<!-- test: skip -->
 ```rask
 const header = IpHeader {
     version: 4,
@@ -194,67 +189,9 @@ const header = IpHeader {
 const bytes = header.build()  // Vec<u8> of 20 bytes
 ```
 
-### Compile-Time Validation
+**Nested binary structs:**
 
-The compiler validates:
-
-1. **Bit count**: All fields must have valid bit counts (1-64 for integers)
-2. **Alignment**: Endian types must be byte-aligned within the struct
-3. **Total size**: Must not exceed reasonable limits
-4. **Type compatibility**: Field values must fit in declared bit width
-
-```rask
-@binary
-struct Invalid {
-    x: 0        // Error: bit count must be >= 1
-    y: 65       // Error: bit count must be <= 64
-    z: u16be    // Error: u16be at bit offset 65, not byte-aligned
-}
-```
-
-### Alignment Requirement
-
-Multi-byte endian types (`u16be`, `u32le`, etc.) must start at byte boundaries:
-
-```rask
-@binary
-struct Valid {
-    flags: 8        // 8 bits = 1 byte
-    length: u16be   // Starts at byte 1, OK
-}
-
-@binary
-struct Invalid {
-    flags: 4        // 4 bits
-    length: u16be   // Error: starts at bit 4, not byte-aligned
-}
-```
-
-**Rationale:** Unaligned multi-byte reads are complex and slow.
-
-### Endianness Default
-
-No default. Multi-byte fields must specify `be` or `le`:
-
-```rask
-@binary
-struct Explicit {
-    port: u16be     // OK: big-endian
-    addr: u32le     // OK: little-endian
-}
-
-@binary
-struct Ambiguous {
-    port: u16       // Error: must specify u16be or u16le
-}
-```
-
-**Rationale:** Implicit endianness causes bugs. Explicit is better.
-
-### Nested Binary Structs
-
-Binary structs can contain other binary structs:
-
+<!-- test: skip -->
 ```rask
 @binary
 struct MacHeader {
@@ -270,40 +207,9 @@ struct EthernetFrame {
 }
 ```
 
-The nested struct is inlined (no indirection).
+**Comptime integration:**
 
-## Inline Parsing
-
-For one-off parsing without defining a struct, use `unpack`:
-
-```rask
-let (magic, version, length, rest) = try data.unpack(u32be, u8, u16be)
-```
-
-See [stdlib/bits.md](../stdlib/bits.md) for `unpack`, `pack`, and related functions.
-
-## Edge Cases
-
-| Case | Behavior |
-|------|----------|
-| Empty struct | Valid, SIZE = 0 |
-| Single field | Valid |
-| > 64 bit field | Error |
-| 0 bit field | Error |
-| Total > 65535 bits | Error (8KB limit) |
-| Non-binary struct in @binary | Inline if also @binary, error otherwise |
-
-## Integration
-
-- **Match**: Works with normal pattern matching via `.parse()`
-- **Error handling**: Parse returns `Result`, integrates with `try`
-- **Comptime**: `SIZE` and `SIZE_BITS` are comptime constants
-- **Generics**: Binary structs can be generic (rare)
-
-### Comptime Integration
-
-Binary structs work at compile time for building constant binary data:
-
+<!-- test: skip -->
 ```rask
 const MAGIC_HEADER: [u8; 8] = comptime {
     @binary
@@ -321,15 +227,9 @@ const MAGIC_HEADER: [u8; 8] = comptime {
 }
 ```
 
-**Comptime capabilities:**
-- `T.SIZE` and `T.SIZE_BITS` available
-- `.build()` works (returns `Vec<u8>`, must `.freeze()`)
-- `.parse()` validates embedded data
-- Pattern matching works
+**Performance:** Parse is single-pass with no allocations (bounds check once upfront). Build is direct memory writes. Field access is zero-cost after parse.
 
-See [comptime.md](../control/comptime.md).
-
-### Relationship to Other Attributes
+**Relationship to other attributes:**
 
 | Attribute | Purpose | Field types |
 |-----------|---------|-------------|
@@ -337,19 +237,10 @@ See [comptime.md](../control/comptime.md).
 | `@layout(C)` | C ABI compatibility | C-compatible types |
 | `@packed` | Remove padding | Any types |
 
-`@binary` is for **network/file formats**. `@layout(C)` is for **C FFI**. They serve different purposes and should not be combined.
+`@binary` is for network/file formats. `@layout(C)` is for C FFI. Don't combine them.
 
-## Performance
+### See Also
 
-- **Parse**: Single pass, no allocations, bounds check once upfront
-- **Build**: Direct memory writes, no intermediate buffers
-- **Field access**: Zero-cost after parse (fields stored as runtime types)
-
-## Comparison with Erlang
-
-| Erlang | Rask |
-|--------|------|
-| `<<Ver:4, IHL:4, ...>>` | `@binary struct { version: 4, ihl: 4, ... }` |
-| Inline patterns | Named, reusable structs |
-| Special syntax | Standard attribute |
-| Runtime matching | Compile-time layout |
+- `ctrl.comptime` — Compile-time execution
+- `type.structs` — Struct definitions and methods
+- `std.bits` — `unpack`, `pack`, and related functions

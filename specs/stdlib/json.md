@@ -1,11 +1,21 @@
-# JSON — Parsing and Serialization
+<!-- id: std.json -->
+<!-- status: decided -->
+<!-- summary: Untyped JsonValue enum plus zero-ceremony struct encoding/decoding -->
+<!-- depends: stdlib/collections.md, types/error-types.md -->
 
-Built-in `json` module with two layers: untyped `JsonValue` enum for dynamic JSON, zero-ceremony struct encoding/decoding where compiler auto-generates conversion code.
+# JSON
 
-## Specification
+Two layers: untyped `JsonValue` enum for dynamic JSON, compiler-generated struct encoding/decoding for known schemas.
 
-### Types
+## Types
 
+| Rule | Description |
+|------|-------------|
+| **J1: JsonValue** | All JSON values represented as a six-variant enum: Null, Bool, Number, String, Array, Object |
+| **J2: f64 numbers** | All JSON numbers stored as `f64`. Integers up to 2^53 are exact; larger lose precision |
+| **J3: JsonError** | Parse, type, and missing-field errors reported via `JsonError` enum |
+
+<!-- test: skip -->
 ```rask
 enum JsonValue {
     Null
@@ -17,100 +27,62 @@ enum JsonValue {
 }
 
 enum JsonError {
-    ParseError(string)         // malformed JSON
-    TypeError(string)          // wrong type (expected string, got number)
-    MissingField(string)       // required field not in object
+    ParseError(string)
+    TypeError(string)
+    MissingField(string)
 }
 ```
 
-### Parsing — String to JsonValue
+## Parsing and Serialization
 
+| Rule | Description |
+|------|-------------|
+| **J4: RFC 8259** | `json.parse` accepts any valid RFC 8259 JSON string |
+| **J5: Duplicate keys** | Last value wins (matches JavaScript behavior) |
+
+<!-- test: skip -->
 ```rask
 json.parse(input: string) -> JsonValue or JsonError
+json.stringify(value: JsonValue) -> string
+json.stringify_pretty(value: JsonValue) -> string
 ```
 
-Parses an RFC 8259 JSON string into a `JsonValue` tree.
+## JsonValue Access
 
-### Serialization — JsonValue to String
+| Method | Returns |
+|--------|---------|
+| `value.is_null()` | `bool` |
+| `value.as_bool()` | `bool?` |
+| `value.as_number()` | `f64?` |
+| `value.as_string()` | `string?` |
+| `value.as_array()` | `Vec<JsonValue>?` |
+| `value.as_object()` | `Map<string, JsonValue>?` |
+| `value["key"]` | `JsonValue?` (object index) |
+| `value[index]` | `JsonValue?` (array index) |
 
+## Typed Encoding/Decoding
+
+| Rule | Description |
+|------|-------------|
+| **J6: Auto-encode** | Any struct with JSON-compatible fields can be encoded without manual implementation |
+| **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
+| **J8: Field mapping** | Struct field name = JSON key (snake_case preserved) |
+| **J9: Optional fields** | `T?` fields decode `null` or missing as `None`; missing required fields produce `MissingField` |
+| **J10: Extra keys ignored** | JSON keys not matching any struct field are silently skipped |
+
+<!-- test: skip -->
 ```rask
-json.stringify(value: JsonValue) -> string            // compact, no whitespace
-json.stringify_pretty(value: JsonValue) -> string     // indented with 2 spaces
+json.encode(value: T) -> string
+json.encode_pretty(value: T) -> string
+json.to_value(value: T) -> JsonValue
+json.decode<T>(input: string) -> T or JsonError
+json.from_value<T>(value: JsonValue) -> T or JsonError
 ```
 
-### JsonValue Access Methods
-
-```rask
-value.is_null() -> bool
-value.as_bool() -> bool?
-value.as_number() -> f64?
-value.as_string() -> string?
-value.as_array() -> Vec<JsonValue>?
-value.as_object() -> Map<string, JsonValue>?
-```
-
-### JsonValue Indexing
-
-```rask
-value["key"]    // index by string key (for objects), returns JsonValue?
-value[index]    // index by integer (for arrays), returns JsonValue?
-```
-
-### JsonValue Construction
-
-```rask
-// Enum constructors
-JsonValue.Null
-JsonValue.Bool(true)
-JsonValue.Number(42.0)
-JsonValue.String("hello")
-JsonValue.Array(vec)
-JsonValue.Object(map)
-```
-
-### Typed Encoding — Struct to JSON String
-
-```rask
-json.encode(value: T) -> string                    // struct -> JSON string
-json.encode_pretty(value: T) -> string             // struct -> pretty JSON string
-json.to_value(value: T) -> JsonValue               // struct -> JsonValue tree
-```
-
-Works for any struct where all fields are JSON-compatible types:
-- Primitives: `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`
-- Collections: `Vec<T>`, `Map<string, T>` where T is JSON-compatible
-- Optionals: `T?` — `None` becomes `null` (or field omitted)
-- Nested structs: recursively encoded as JSON objects
-
-### Typed Decoding — JSON String to Struct
-
-```rask
-json.decode<T>(input: string) -> T or JsonError    // JSON string -> struct
-json.from_value<T>(value: JsonValue) -> T or JsonError  // JsonValue -> struct
-```
-
-Field mapping:
-- Struct field name = JSON object key (snake_case preserved)
-- Missing field with type `T?` → `None`
-- Missing required field → `JsonError.MissingField`
-- Wrong type → `JsonError.TypeError`
-
-### Access Pattern
-
+<!-- test: skip -->
 ```rask
 import json
 
-// Untyped — explore unknown JSON
-const data = try json.parse(input)
-match data {
-    JsonValue.Object(obj) => {
-        const name = obj["name"]?.as_string() ?? "unknown"
-        println("Name: {name}")
-    }
-    _ => println("Expected object")
-}
-
-// Typed — known schema
 struct User {
     name: string
     age: i64
@@ -118,132 +90,64 @@ struct User {
 }
 
 const user = try json.decode<User>(input)
-println("Hello, {user.name}")
-
 const output = json.encode(user)
 ```
 
-## Examples
+## Error Messages
 
-### HTTP API Server — JSON Request/Response
+```
+ERROR [std.json/J3]: missing required field
+   |
+5  |  const user = try json.decode<User>(body)
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^ field "email" not found in JSON object
 
-```rask
-import json
+WHY: Required (non-optional) struct fields must be present in the JSON input.
 
-struct CreateUserRequest {
-    name: string
-    email: string
-}
-
-struct UserResponse {
-    id: i64
-    name: string
-    email: string
-    created: bool
-}
-
-func handle_create_user(body: string) -> string or JsonError {
-    const req = try json.decode<CreateUserRequest>(body)
-
-    const resp = UserResponse {
-        id: 42,
-        name: req.name,
-        email: req.email,
-        created: true,
-    }
-
-    return json.encode(resp)
-}
+FIX: Add the field to the JSON, or change the struct field to `email: string?`.
 ```
 
-### Config File Parsing
-
-```rask
-import json
-import fs
-
-struct Config {
-    host: string
-    port: i64
-    workers: i64?
-    debug: bool
-}
-
-func load_config(path: string) -> Config or string {
-    const content = try fs.read_file(path)
-    const config = json.decode<Config>(content).map_err(|e| e.to_string())
-    return try config
-}
 ```
+ERROR [std.json/J7]: incompatible type for JSON encoding
+   |
+3  |  json.encode(my_struct)
+   |              ^^^^^^^^^ field `data` has type `File` which is not JSON-compatible
 
-### Dynamic JSON Manipulation
-
-```rask
-import json
-
-func add_timestamp(input: string) -> string or JsonError {
-    const value = try json.parse(input)
-    const obj = value.as_object() ?? return Err(JsonError.TypeError("expected object"))
-
-    obj["timestamp"] = JsonValue.Number(1234567890.0)
-
-    return json.stringify(JsonValue.Object(obj))
-}
-```
-
-### Building JSON from Scratch
-
-```rask
-import json
-
-func build_response(status: string, data: Vec<string>) -> string {
-    const items = Vec.new()
-    for item in data {
-        try items.push(JsonValue.String(item))
-    }
-
-    const obj = Map.new()
-    obj["status"] = JsonValue.String(status)
-    obj["count"] = JsonValue.Number(data.len().to_float())
-    obj["items"] = JsonValue.Array(items)
-
-    return json.stringify(JsonValue.Object(obj))
-}
+WHY: Only primitive, collection, optional, and nested-struct types can be encoded.
 ```
 
 ## Edge Cases
 
-- `json.parse("")` → `JsonError.ParseError`
-- `json.parse("null")` → `JsonValue.Null`
-- `json.parse("123")` → `JsonValue.Number(123.0)` (all JSON numbers are f64)
-- Large integers (>2^53) lose precision when stored as f64 — this is a JSON limitation
-- Duplicate keys: last value wins (matches JavaScript behavior)
-- `json.decode<T>` where T has extra fields not in JSON: extra fields get default/zero values
-- `json.decode<T>` where JSON has extra keys not in T: extra keys are ignored
+| Case | Behavior | Rule |
+|------|----------|------|
+| `json.parse("")` | `JsonError.ParseError` | J4 |
+| `json.parse("null")` | `JsonValue.Null` | J4 |
+| `json.parse("123")` | `JsonValue.Number(123.0)` | J2 |
+| Large integers (>2^53) | Precision loss in f64 | J2 |
+| Duplicate keys in object | Last value wins | J5 |
+| JSON has extra keys not in struct | Ignored | J10 |
+| Struct has extra fields not in JSON | Required fields error; optional fields get `None` | J9 |
 
-## JSON Number Precision
+---
 
-All JSON numbers stored as `f64`:
-- Integers up to 2^53 (9,007,199,254,740,992) are exact
-- Larger integers lose precision
-- Matches JavaScript's `JSON.parse()` behavior
+## Appendix (non-normative)
 
-Need exact large integer handling? Use `json.parse()` and extract number strings manually (future: `JsonValue.NumberStr(string)` variant).
+### Rationale
 
-## Deferred
+**J2 (f64 numbers):** Matches JavaScript's `JSON.parse()` behavior. Exact large integers would need a `JsonValue.Integer(i64)` variant — deferred until there's a real use case.
 
-- **Field renaming**: `@json(rename = "fieldName")` attribute for non-snake_case JSON keys
-- **Custom serialization**: `JsonEncodable` / `JsonDecodable` traits for manual control
-- **Streaming parser**: `json.Parser` for large files without loading into memory
-- **Integer preservation**: `JsonValue.Integer(i64)` variant for lossless integer round-trips
-- **Date/time**: No special handling — dates are strings, parse with `time` module
+**J6 (auto-encode):** Compiler generates conversion code for any struct with compatible fields. No derive macro or trait implementation needed.
 
-## References
+**J8 (snake_case):** Field renaming attributes (`@json(rename = "fieldName")`) deferred. Snake_case is the default; most JSON APIs use it.
 
-- specs/stdlib/collections.md — `Vec`, `Map` used in JsonValue
-- specs/types/error-types.md — `JsonError` follows standard error pattern
-- examples/http_api_server.rk — Primary consumer of json module
+### Deferred
 
-## Status
+- `@json(rename = "fieldName")` — field renaming attributes
+- `JsonEncodable` / `JsonDecodable` — custom serialization traits
+- `json.Parser` — streaming parser for large files
+- `JsonValue.Integer(i64)` — lossless integer round-trips
+- Date/time handling — dates are strings, parse with `time` module
 
-**Specified** — ready for implementation in interpreter.
+### See Also
+
+- `std.collections` — `Vec`, `Map` used in JsonValue
+- `type.errors` — `JsonError` follows standard error pattern

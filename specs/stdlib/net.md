@@ -1,25 +1,42 @@
-# Net Module
+<!-- id: std.net -->
+<!-- status: decided -->
+<!-- summary: TCP networking with linear resource handles and string addresses -->
+<!-- depends: stdlib/io.md, memory/resource-types.md -->
 
-Networking primitives. I kept this minimal—just TCP for now, with string addresses instead of SocketAddr structs. Most servers only need listen/accept/read/write/close. More complex networking (UDP, multicast, raw sockets) can come later without breaking anything.
+# Net
 
-**Design Metrics:**
-
-**Transparency of Cost (TC ≥ 0.80).** Every network operation returns `Result` — errors are visible. TCP connections are linear resources — forgetting to close is a compile-time error.
-
-**Ergonomic Delta (ED ≤ 1.2).** Comparable to Go's `net` package. String addresses, no builder patterns, no trait bounds.
-
-**Use Case Coverage (UCC ≥ 0.80).** Covers TCP servers, TCP clients, HTTP request/response. Enough for the HTTP JSON API server validation program.
+TCP networking with minimal API. String addresses, linear resource handles, built-in HTTP/1.1 convenience methods.
 
 ## Types
 
-| Type | Description | Linear? |
-|------|-------------|---------|
-| `TcpListener` | TCP server socket | Yes — must close |
-| `TcpConnection` | TCP connection (read/write) | Yes — must close |
+| Rule | Description |
+|------|-------------|
+| **N1: TcpListener** | TCP server socket. Linear resource — must close |
+| **N2: TcpConnection** | TCP read/write connection. Linear resource — must close |
+| **N3: String addresses** | All addresses are plain strings (e.g. `"0.0.0.0:8080"`). No `SocketAddr` type |
 
-No `SocketAddr` or `IpAddr` types — addresses are strings. Simpler, and you can always parse later if needed.
+## Module Functions
 
-## TCP Server
+| Rule | Description |
+|------|-------------|
+| **N4: Listen** | `net.tcp_listen(addr)` binds and listens on a TCP address |
+| **N5: Connect** | `net.tcp_connect(addr)` connects to a remote TCP address |
+
+<!-- test: skip -->
+```rask
+net.tcp_listen(addr: string) -> TcpListener or IoError
+net.tcp_connect(addr: string) -> TcpConnection or IoError
+```
+
+## TcpListener
+
+<!-- test: skip -->
+```rask
+extend TcpListener {
+    func accept(self) -> TcpConnection or IoError
+    func close(take self)
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -37,7 +54,17 @@ loop {
 }
 ```
 
-## TCP Client
+## TcpConnection
+
+<!-- test: skip -->
+```rask
+extend TcpConnection {
+    func read_all(self) -> string or IoError
+    func write_all(self, data: string) -> () or IoError
+    func remote_addr(self) -> string
+    func close(take self)
+}
+```
 
 <!-- test: skip -->
 ```rask
@@ -45,97 +72,106 @@ import net
 
 const conn = try net.tcp_connect("example.com:80")
 ensure conn.close()
-
 try conn.write_all("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 const response = try conn.read_all()
 ```
 
-## API
+## HTTP Convenience
 
-### Module Functions
-
-<!-- test: skip -->
-```rask
-// Bind and listen on a TCP address.
-net.tcp_listen(addr: string) -> TcpListener or IoError
-
-// Connect to a remote TCP address.
-net.tcp_connect(addr: string) -> TcpConnection or IoError
-```
-
-### TcpListener
-
-<!-- test: skip -->
-```rask
-extend TcpListener {
-    // Accept a new connection. Blocks until one arrives.
-    func accept(self) -> TcpConnection or IoError
-
-    // Close the listener. Required — TcpListener is a linear resource.
-    func close(take self)
-}
-```
-
-### TcpConnection
+| Rule | Description |
+|------|-------------|
+| **N6: HTTP on connection** | `read_http_request` and `write_http_response` are methods on `TcpConnection` — no separate HTTP module |
 
 <!-- test: skip -->
 ```rask
 extend TcpConnection {
-    // Read all available data as a string.
-    func read_all(self) -> string or IoError
-
-    // Write data to the connection.
-    func write_all(self, data: string) -> () or IoError
-
-    // Get the remote address as a string (e.g. "192.168.1.1:4321").
-    func remote_addr(self) -> string
-
-    // Close the connection. Required — TcpConnection is a linear resource.
-    func close(take self)
-}
-```
-
-### HTTP Convenience Methods
-
-These are on `TcpConnection` directly — no separate HTTP module needed for basic use.
-
-<!-- test: skip -->
-```rask
-extend TcpConnection {
-    // Read and parse an HTTP/1.1 request from the connection.
     func read_http_request(self) -> HttpRequest or IoError
-
-    // Write an HTTP/1.1 response to the connection.
     func write_http_response(self, response: HttpResponse) -> () or IoError
 }
 
 struct HttpRequest {
-    public method: string    // "GET", "POST", etc.
-    public path: string      // "/users/42"
+    public method: string
+    public path: string
     public headers: Map<string, string>
     public body: string
 }
 
 struct HttpResponse {
-    public status: i32       // 200, 404, etc.
+    public status: i32
     public headers: Map<string, string>
     public body: string
 }
 ```
 
-I put HTTP methods on TcpConnection rather than a separate module because the common case is "accept connection, read request, write response, close." A separate `http` module would add ceremony without benefit for simple servers. If someone needs HTTP/2 or websockets, that's a different library.
-
 ## Resource Safety
 
-Both `TcpListener` and `TcpConnection` are linear resources. The compiler enforces that they must be consumed (closed) before going out of scope:
+| Rule | Description |
+|------|-------------|
+| **N7: Must consume** | Both `TcpListener` and `TcpConnection` must be closed before scope exit. Compiler rejects unconsumed handles |
+| **N8: Double close** | `close()` on already-closed handle is a no-op (supports ensure + explicit close) |
 
 <!-- test: skip -->
 ```rask
-func handle(conn: TcpConnection) -> () or Error {
-    ensure conn.close()    // guaranteed cleanup
+func handle(conn: TcpConnection) -> () or IoError {
+    ensure conn.close()
     const req = try conn.read_http_request()
     try conn.write_http_response(response)
 }
 ```
 
-Calling `.close()` on an already-closed connection is a no-op — this supports the `ensure` + explicit close pattern.
+## Error Messages
+
+```
+ERROR [std.net/N7]: connection not consumed
+   |
+3  |  const conn = try listener.accept()
+   |        ^^^^ `TcpConnection` is a @resource that must be closed
+
+WHY: Network connections are linear resources to prevent socket leaks.
+
+FIX: Add `ensure conn.close()` after accepting.
+```
+
+```
+ERROR [std.net/N4]: bind failed
+   |
+2  |  const listener = try net.tcp_listen("0.0.0.0:8080")
+   |                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ IoError.Other("address in use")
+
+WHY: Another process is already listening on this address.
+```
+
+## Edge Cases
+
+| Case | Behavior | Rule |
+|------|----------|------|
+| `close()` on already-closed handle | No-op | N8 |
+| Connection not closed | Compile error | N7 |
+| Invalid address string | `IoError.Other` | N4, N5 |
+| Remote closes during read | `IoError.ConnectionReset` or empty result | N2 |
+| Accept on closed listener | `IoError.Other("listener closed")` | N1 |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
+
+**N6 (HTTP on TcpConnection):** The common case is "accept, read request, write response, close." A separate `http` module adds ceremony without benefit for simple servers. HTTP/2 or websockets would be a different library.
+
+### Deferred
+
+- UDP sockets
+- Multicast
+- Raw sockets
+- `SocketAddr` / `IpAddr` types
+- TLS / HTTPS
+- HTTP/2, websockets
+
+### See Also
+
+- `std.io` — `IoError`, `Reader`/`Writer` traits
+- `std.json` — JSON encoding for HTTP request/response bodies
+- `mem.resource-types` — `@resource` and `ensure` semantics
