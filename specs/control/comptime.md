@@ -1,92 +1,23 @@
+<!-- id: ctrl.comptime -->
+<!-- status: decided -->
+<!-- summary: Explicit comptime keyword for compile-time evaluation; restricted subset, no I/O -->
+<!-- depends: types/generics.md -->
+<!-- implemented-by: compiler/crates/rask-interp/ -->
+
 # Compile-Time Execution
 
-## The Question
-What subset of Rask can execute at compile time? How is compile-time execution requested? What restrictions apply? How does it integrate with the type system and build process?
+Explicit `comptime` keyword marks compile-time evaluation. Restricted subset: pure computation, no I/O, no runtime-only features. Used for constants, generic specialization, conditional compilation.
 
-## Decision
-Explicit `comptime` keyword marks compile-time evaluation. Restricted subset: pure computation, no I/O, no runtime-only features. Used for constants, generic specialization, conditional compilation. Separate from build scripts (separate programs before compilation).
+## Comptime Forms
 
-## Rationale
-Explicit marking: `comptime` clarifies when code runs at compile time vs runtime. Follows Zig's proven approach. I restrict to pure computation to keep the comptime interpreter simple and avoid full-language interpretation complexity (see Rust's limited `const fn`). Rask's runtime-heavy features (pools, linear resources, concurrency) don't make sense at compile time. Separating comptime (in-compiler) from build scripts (separate programs) gives flexibility without complexity.
+| Rule | Form | Syntax | Meaning |
+|------|------|--------|---------|
+| **CT1: Comptime variable** | Variable | `comptime let x = expr` | Expression evaluated at compile time |
+| **CT2: Comptime constant** | Constant | `const X = comptime expr` | Constant initialized at compile time |
+| **CT3: Comptime function** | Function | `comptime func name() -> T { ... }` | Function can only be called at compile time |
+| **CT4: Comptime parameter** | Parameter | `func f<comptime N: usize>() { ... }` | Generic parameter must be compile-time known |
+| **CT5: Comptime block** | Block | `comptime { ... }` | Block evaluated at compile time |
 
-## Specification
-
-### The `comptime` Keyword
-
-Explicitly marks code that must execute at compile time.
-
-**Forms:**
-
-| Usage | Syntax | Meaning |
-|-------|--------|---------|
-| Comptime variable | `comptime let x = expr` | Expression evaluated at compile time |
-| Comptime constant | `const X = comptime expr` | Constant initialized at compile time |
-| Comptime function | `comptime func name() -> T { ... }` | Function can only be called at compile time |
-| Comptime parameter | `func f<comptime N: usize>() { ... }` | Generic parameter must be compile-time known |
-| Comptime block | `comptime { ... }` | Block evaluated at compile time |
-
-**Semantics:**
-- Forces evaluation at compile time
-- Expressions must be evaluable with only compile-time-known inputs
-- Functions can only call other comptime functions or pure operations
-- Using runtime values in comptime context is a compile error
-
-### Comptime Constants
-
-**Declaration:**
-```rask
-const LOOKUP_TABLE: [u8; 256] = comptime build_table()
-const MAX_SIZE: usize = comptime calculate_max()
-const VERSION_STRING: string = comptime format_version(MAJOR, MINOR, PATCH)
-```
-
-**Rules:**
-- `const` declarations are implicitly comptime-evaluated
-- Explicit `comptime` is optional but clarifies intent
-- The initializer expression must be comptime-evaluable
-- All dependencies must be comptime-known
-
-**Error cases:**
-
-| Case | Handling |
-|------|----------|
-| Runtime function in const | Compile error: "Cannot call runtime function in const initializer" |
-| Non-comptime dependency | Compile error: "Value not known at compile time" |
-| Comptime evaluation fails | Compile error with backtrace of comptime call stack |
-
-### Return Semantics in Comptime
-
-**Comptime functions require explicit `return`** (same rule as regular functions):
-
-```rask
-comptime func factorial(n: u32) -> u32 {
-    if n <= 1 {
-        return 1  // ✓ Explicit return required
-    }
-    return n * factorial(n - 1)  // ✓ Explicit return required
-}
-```
-
-**Comptime blocks use implicit last expression** (expression context):
-
-```rask
-const SQUARES = comptime {
-    const arr = Vec.new()
-    for i in 0..20 {
-        arr.push(i * i)
-    }
-    arr  // ✓ Last expression becomes the value (not a function!)
-}
-```
-
-**Why different?**
-- `return` exits the **function**, not blocks
-- Using `return` in a block would exit the enclosing function
-- Blocks in expression context naturally produce their last expression's value
-
-### Comptime Functions
-
-**Declaration:**
 <!-- test: parse -->
 ```rask
 comptime func factorial(n: u32) -> u32 {
@@ -96,6 +27,26 @@ comptime func factorial(n: u32) -> u32 {
     return n * factorial(n - 1)
 }
 
+const LOOKUP_TABLE: [u8; 256] = comptime build_table()
+const MAX_SIZE: usize = comptime calculate_max()
+
+func fixed_array<comptime N: usize>() -> [u8; N] {
+    return [0u8; N]
+}
+
+const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
+```
+
+## Comptime Function Restrictions
+
+| Rule | Description |
+|------|-------------|
+| **CT6: Comptime-only calls** | Comptime functions can only call other comptime functions |
+| **CT7: No I/O** | Cannot perform I/O (exception: `@embed_file`), spawn tasks, allocate from runtime pools |
+| **CT8: No runtime values** | All inputs must be comptime-known; using runtime values in comptime context is a compile error |
+
+<!-- test: parse -->
+```rask
 comptime func build_lookup_table() -> [u8; 256] {
     const table = [0u8; 256]
     for i in 0..256 {
@@ -103,109 +54,50 @@ comptime func build_lookup_table() -> [u8; 256] {
     }
     return table
 }
-```
 
-**Restrictions:**
-- Can only call other `comptime` functions
-- Can only use comptime-allowed features (see Allowed Features section)
-- Cannot perform I/O, allocate from heap pools, spawn tasks
-- All inputs must be comptime-known
-- Return value becomes comptime-known
-
-**Use at runtime:**
-- Comptime functions CANNOT be called at runtime
-- If runtime use needed, write a separate runtime function
-- Or make the function generic over comptime/runtime (see below)
-
-### Generic Comptime Parameters
-
-**Type parameters** use regular generics (types are inherently compile-time):
-<!-- test: parse -->
-```rask
-func make_buffer<T>() -> T {
-    return T.default()
-}
-```
-
-**Value parameters** use `comptime` modifier:
-<!-- test: parse -->
-```rask
-func fixed_array<comptime N: usize>() -> [u8; N] {
-    return [0u8; N]
-}
-```
-
-**Combined:**
-<!-- test: parse -->
-```rask
-func repeat<comptime N: usize>(value: u8) -> [u8; N] {
-    const arr = [0u8; N]
-    for i in 0..N {
-        arr[i] = value
-    }
-    return arr
-}
-
-// Usage
-const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
-const n = read_config()
-const buf = repeat<n>(0xff)   // ❌ ERROR: n is runtime value
-```
-
-**Rules:**
-- `comptime` generic parameters must be known at monomorphization time
-- The type or value is substituted at compile time
-- Enables array sizes, buffer capacities, algorithm selection based on comptime constants
-
-### Comptime Blocks
-
-**Conditional compilation:**
-```rask
-func process(data: []u8) {
-    // Runtime code
-    for byte in data {
-        comptime if cfg.features.contains("validation") {
-            validate(byte)  // Included only if "validation" feature is enabled
-        }
-        process_byte(byte)
-    }
-}
-```
-
-**Comptime variables in runtime context:**
-```rask
 func example() {
-    comptime let iterations = if cfg.debug { 100 } else { 10 }
-
-    // Use comptime value in runtime loop
-    for i in 0..iterations {  // Loop unrolled at compile time if small
-        println(i)
-    }
+    const n = read_config()
+    const buf = repeat<n>(0xff)   // ERROR: n is runtime value
 }
 ```
 
-**Rules:**
-- `comptime { ... }` executes at compile time, result affects compilation
-- `comptime if` conditionally compiles code
-- Comptime variables can be used in runtime code (their values are known)
+## Return Semantics
 
-### The `cfg` Constant
+| Rule | Description |
+|------|-------------|
+| **CT9: Function returns** | Comptime functions require explicit `return` (same as regular functions) |
+| **CT10: Block values** | Comptime blocks use implicit last expression (expression context) |
 
-The compiler provides a `cfg` constant for conditional compilation. It's available in any `comptime if` or `comptime { }` context.
+<!-- test: parse -->
+```rask
+comptime func factorial(n: u32) -> u32 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)  // Explicit return required
+}
 
-**Fields:**
+const SQUARES = comptime {
+    const arr = Vec.new()
+    for i in 0..20 {
+        arr.push(i * i)
+    }
+    arr  // Implicit - last expression is the value
+}
+```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `cfg.os` | `string` | Target OS: `"linux"`, `"macos"`, `"windows"` |
-| `cfg.arch` | `string` | Target architecture: `"x86_64"`, `"aarch64"`, `"riscv64"` |
-| `cfg.env` | `string` | Target environment: `"gnu"`, `"musl"`, `"msvc"` |
-| `cfg.profile` | `string` | Build profile: `"debug"`, `"release"`, or custom profile name |
-| `cfg.debug` | `bool` | Shorthand for `cfg.profile == "debug"` |
-| `cfg.features` | `Set<string>` | Features enabled for this build |
+## Conditional Compilation
 
-**Usage in code:**
+The compiler provides a `cfg` constant for conditional compilation.
 
+| Rule | Field | Type | Description |
+|------|-------|------|-------------|
+| **CT11: cfg.os** | `cfg.os` | `string` | Target OS: `"linux"`, `"macos"`, `"windows"` |
+| **CT12: cfg.arch** | `cfg.arch` | `string` | Target architecture: `"x86_64"`, `"aarch64"`, `"riscv64"` |
+| **CT13: cfg.env** | `cfg.env` | `string` | Target environment: `"gnu"`, `"musl"`, `"msvc"` |
+| **CT14: cfg.profile** | `cfg.profile` | `string` | Build profile: `"debug"`, `"release"`, or custom |
+| **CT15: cfg.debug** | `cfg.debug` | `bool` | Shorthand for `cfg.profile == "debug"` |
+| **CT16: cfg.features** | `cfg.features` | `Set<string>` | Features enabled for this build |
+
+<!-- test: skip -->
 ```rask
 func get_backend() -> Backend {
     comptime if cfg.features.contains("ssl") {
@@ -224,46 +116,17 @@ func default_path() -> string {
 }
 ```
 
-**Feature flags come from two sources:**
+## Collections with Freeze
 
-1. **`rask.build` package block** — features declared with `feature` keyword:
-   ```rask
-   package "myapp" "1.0.0" {
-       feature "ssl" {
-           dep "openssl" "^3.0"
-       }
-       feature "verbose"
-   }
-   ```
+Comptime supports collections (`Vec`, `Map`, `string`) with a compiler-managed allocator. Collections must be frozen to escape comptime as const data.
 
-2. **CLI flags** — enabled at build time:
-   ```bash
-   rask build --features ssl,verbose
-   rask build --all-features
-   rask build --no-default-features
-   ```
+| Rule | Description |
+|------|-------------|
+| **CT17: Compiler allocator** | At comptime, collections use compiler-managed scratch heap (256MB limit) |
+| **CT18: Freeze to escape** | Collections call `.freeze()` to become const: `Vec<T>` → `[T; N]`, `Map<K,V>` → static map, `string` → `str` |
+| **CT19: Cannot escape unfrozen** | Compile error if comptime returns unfrozen collection |
 
-**Important:** `comptime if` is NOT valid inside `package` blocks. The package block is purely declarative—platform-specific dependencies use `{ target: "linux" }` modifiers instead. See [build.md](../structure/build.md).
-
-### Comptime Collections with Freeze
-
-Comptime supports standard collections (`Vec`, `Map`, `string`) with a compiler-managed allocator. Collections must be frozen to escape comptime as const data.
-
-**How it works:**
-
-1. **Compiler-managed allocator** — At comptime, collections use an internal scratch heap
-   - Subject to existing 256MB limit
-   - Deterministic: same source produces same result across all machines (fixed allocation strategy, not system allocator)
-
-2. **Freeze to escape** — Collections call `.freeze()` to become const
-   - `Vec<T>.freeze()` → `[T; N]` (size inferred from length)
-   - `Map<K,V>.freeze()` → static map (perfect hash or similar)
-   - `string.freeze()` → `str` (string literal)
-
-3. **Cannot escape unfrozen** — Compile error if comptime returns unfrozen collection
-
-**Examples:**
-
+<!-- test: skip -->
 ```rask
 // Array generation - unknown size
 const PRIMES: [u32; _] = comptime {
@@ -279,377 +142,57 @@ const KEYWORDS: Map<str, TokenKind> = comptime {
     const m = Map<str, TokenKind>.new()
     m.insert("if", TokenKind.If)
     m.insert("else", TokenKind.Else)
-    m.insert("for", TokenKind.For)
     m.freeze()  // → perfect hash or static map
 }
 
-// string building
-const GREETING: str = comptime {
-    const s = string.new()
-    s.push_str("Hello, ")
-    s.push_str(USERNAME)
-    s.push_str("!")
-    s.freeze()  // → string literal
-}
-```
-
-**Error case:**
-```rask
 const BAD = comptime {
     const v = Vec<u32>.new()
     v.push(1)
-    v  // ❌ ERROR: cannot return unfrozen Vec from comptime
+    v  // ERROR: cannot return unfrozen Vec from comptime
 }
 ```
 
-**Why freeze?**
-
-Makes the boundary explicit. Compiler-managed scratch heap is bounded (256MB), deterministic (no allocator variance), frozen means immutable. Normal collection APIs work. `.freeze()` makes materialization explicit.
-
-**Comparison with Zig:**
-
-| Capability | Zig | Rask |
-|------------|-----|------|
-| Comptime allocation | Arena-based | Compiler-managed with freeze |
-| Dynamic arrays | Implicit materialization | Explicit `.freeze()` |
-| Comptime I/O | Full | `@embed_file` only |
-| Build scripts | Separate | Separate (for complex codegen) |
-
-### Allowed Features in Comptime
-
-**Full support (works identically to runtime):**
-
-| Feature | Comptime Support | Notes |
-|---------|------------------|-------|
-| Arithmetic operations | ✅ Full | `+`, `-`, `*`, `/`, `%`, bitwise, etc. |
-| Comparison, logic | ✅ Full | `==`, `<`, `&&`, `||`, etc. |
-| Control flow | ✅ Full | `if`, `match`, `while`, `for` |
-| Function calls | ✅ Comptime only | Can only call other `comptime` functions |
-| Structs | ✅ Full | Construction, field access, methods |
-| Arrays | ✅ Full | Fixed-size arrays, indexing, iteration |
-| Tuples | ✅ Full | Construction, destructuring |
-| Enums | ✅ Full | Variant construction, pattern matching |
-| Strings | ✅ Limited | Literals, concatenation (see below) |
-| Type operations | ✅ Full | `sizeof`, `alignof`, type checks |
-| File embedding | ✅ `@embed_file` | Read-only, compile-time path (see below) |
-
-**Partial support (restricted):**
-
-| Feature | Restriction | Rationale |
-|---------|-------------|-----------|
-| String operations | No heap allocation | Use fixed-size buffers or comptime-known sizes |
-| Recursion | Depth limited | Prevent infinite loops at compile time |
-| Loops | Iteration limit | Prevent infinite loops (configurable, default 10,000) |
-| Stack depth | Limited | Prevent stack overflow in comptime interpreter |
-
-**Not allowed (compile error if used):**
-
-| Feature | Why Not Allowed |
-|---------|-----------------|
-| **General I/O** | Network, sockets, file writes require runtime (exception: `@embed_file`) |
-| **Pools and handles** | Require runtime generation tracking |
-| **Linear resources** | Files, sockets, cleanup tracking is runtime |
-| **Tasks and channels** | Concurrency doesn't exist at compile time |
-| **Ensure blocks** | Scope-based cleanup is runtime concept |
-| **Unsafe blocks** | Raw pointers don't exist at compile time |
-
-**Allowed with restrictions:**
-
-| Feature | Restriction |
-|---------|-------------|
-| **Vec, Map, string** | Must call `.freeze()` to escape comptime (see Comptime Collections with Freeze) |
-
-### string Handling at Comptime
-
-**Allowed:**
-```rask
-comptime func make_greeting(name: string) -> string {
-    // String literals are comptime-known
-    const prefix = "Hello, "
-
-    // Concatenation works if result size is comptime-known
-    // This is a compiler intrinsic, not heap allocation
-    return concat(prefix, name, "!")
-}
-
-const GREETING = comptime make_greeting("World")  // "Hello, World!"
-```
-
-**Not allowed:**
-```rask
-comptime func read_file(path: string) -> string {
-    // ❌ ERROR: I/O not allowed at comptime
-    file.read(path)
-}
-```
-
-**Implementation:**
-- Comptime strings are stored in compiler memory, not runtime heap
-- String operations are compiler intrinsics (concat, slice, etc.)
-- Result must fit in comptime string limit (1 MB, same as comptime limits table)
-
-### File Embedding at Comptime
-
-**The `@embed_file` intrinsic:**
-
-```rask
-// Embed file contents as byte array
-const SCHEMA: []u8 = comptime @embed_file("schema.json")
-
-// Embed as string (file must be valid UTF-8)
-const VERSION: string = comptime @embed_file("VERSION")
-
-// Use in comptime computation
-const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
-```
-
-**Constraints:**
-
-| Constraint | Rationale |
-|------------|-----------|
-| Path MUST be a string literal | No runtime path injection |
-| Path is relative to package root | Reproducible across machines |
-| Read-only operation | No side effects |
-| File read at compile time | Contents embedded in binary |
-| File size limit (16 MB default) | Prevent memory issues |
-
-**Error cases:**
-
-| Case | Handling |
-|------|----------|
-| File not found | Compile error with path |
-| File not readable | Compile error with OS error |
-| Path is runtime value | Compile error: "Path must be string literal" |
-| File too large | Compile error: "File exceeds embed limit" |
-| Invalid UTF-8 (for string) | Compile error: "File is not valid UTF-8" |
-
-**Why this is safe:**
-- No arbitrary I/O—only reads files at known paths
-- Deterministic—same source always embeds same content
-- Sandboxed—cannot read outside package directory
-- Auditable—embedded files listed in build output
-
-**Use cases:**
-- Embedding version strings, build info
-- Bundling static assets (small icons, schemas)
-- Including configuration templates
-- Embedding test fixtures
-
-For complex codegen (parsing schemas, calling external tools), use build scripts instead.
-
-### Error Handling at Comptime
-
-**Comptime functions can use Result:**
-```rask
-comptime func safe_divide(a: i32, b: i32) -> i32 or string {
-    if b == 0 {
-        return Err("Division by zero")
-    }
-    return Ok(a / b)
-}
-
-const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
-const Y = try comptime safe_divide(10, 0)  // ❌ Compile error: "Division by zero"
-```
-
-**Panic at comptime:**
-```rask
-comptime func get_value(i: usize) -> u8 {
-    const table = [1u8, 2, 3]
-    return table[i]  // Panics if i >= 3
-}
-
-const A = comptime get_value(1)  // OK: 2
-const B = comptime get_value(5)  // ❌ Compile error: "Index out of bounds: 5 >= 3"
-```
-
-**Rules:**
-- Comptime panics become compile errors
-- Error messages include comptime call stack
-- `Result` and `try` work at comptime
-- Errors propagate to compile error with context
-
-### Debugging Comptime Code
-
-Comptime errors occur during compilation. No traditional debugger (gdb/lldb). Errors can be far from source, call stacks confusing.
-
-**Debugging tools:**
-
-#### 1. Comptime Print
-
-Output during compilation for debugging:
-
-```rask
-comptime func build_table() -> [u8; 256] {
-    @comptime_print("Building lookup table...")
-
-    const table = [0u8; 256]
-    for i in 0..256 {
-        table[i] = compute(i)
-
-        if i % 64 == 0 {
-            @comptime_print("Progress: {}/256", i)
-        }
-    }
-
-    @comptime_print("Done!")
-    return table
-}
-```
-
-**Build output:**
-```bash
-$ raskc --comptime-verbose main.rk
-Compiling main.rk...
-  [comptime] Building lookup table...
-  [comptime] Progress: 0/256
-  [comptime] Progress: 64/256
-  [comptime] Progress: 128/256
-  [comptime] Progress: 192/256
-  [comptime] Done!
-Done.
-
-$ raskc main.rk  # Without flag: silent
-```
-
-**Rules:**
-- `@comptime_print(fmt, args...)` only works in comptime context
-- Output shown only with `--comptime-verbose` flag
-- Prints to stderr (doesn't pollute build output)
-
-#### 2. Comptime Assertions
-
-Explicit checks with clear error messages:
-
-```rask
-comptime func safe_factorial(n: u32) -> u32 {
-    @comptime_assert(n <= 20, "Factorial input too large: {} (max 20)", n)
-
-    if n <= 1 { return 1 }
-    return n * safe_factorial(n - 1)
-}
-
-const F = comptime safe_factorial(25)
-// ❌ Compile error: "Comptime assertion failed: Factorial input too large: 25 (max 20)"
-```
-
-**Usage:**
-```rask
-@comptime_assert(condition, message, args...)
-```
-
-Fails with formatted message if condition is false.
-
-#### 3. Enhanced Error Messages
-
-**Call stack collapsing for recursion:**
-
-```rask
-comptime func factorial(n: u32) -> u32 {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
-}
-
-const F = comptime factorial(1000)
-```
-
-**Error output:**
-```
-error: Comptime evaluation exceeded backwards branch quota (1,000)
-
-Comptime call stack:
-  → factorial(1000) at math.rk:5:9
-  → factorial(999)  at math.rk:5:9
-    ... [repeated 996 more times]
-  → factorial(0)    at math.rk:5:9
-
-Triggered by:
-  const F = comptime factorial(1000) at main.rk:10:11
-           ^^^^^^^^^^^^^^^^^^^^^^^^^
-
-note: Add @comptime_quota(N) to increase limit
-note: Or rewrite using iteration instead of recursion
-```
-
-**For panics:**
-```
-error: Comptime panic: Division by zero
-
-Comptime call stack:
-  → divide(10, 0) at math.rk:3:9
-    panic("Division by zero")
-    ^^^^^^^^^^^^^^^^^^^^^^^^^
-
-Triggered by:
-  const X = comptime divide(10, 0) at main.rk:15:11
-```
-
-#### 4. Testing Pattern
-
-Test comptime logic at runtime first:
-
-```rask
-// The comptime function
-comptime func factorial(n: u32) -> u32 {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)
-}
-
-// Runtime tests (can use debugger!)
-@test
-func test_factorial() {
-    // These run at runtime - full debugging available
-    assert_eq(factorial(0), 1)
-    assert_eq(factorial(1), 1)
-    assert_eq(factorial(5), 120)
-    assert_eq(factorial(10), 3628800)
-}
-
-// Once tests pass, use at comptime with confidence
-const F5 = comptime factorial(5)
-```
-
-**Workflow:**
-1. Write comptime function
-2. Test at runtime with full debugging tools
-3. Fix bugs using gdb/lldb/prints
-4. Apply to comptime once working
-
-#### 5. IDE Integration
-
-IDEs should provide:
-
-- **Hover for comptime values:**
-  ```rask
-  const F10 = comptime factorial(10)
-          ^^^^^^^^^^^^^^^^^^^^^^ // IDE shows: 3628800
-  ```
-
-- **Navigate comptime errors:** Click error → jump to source, clickable call stack
-
-- **Inline results:**
-  ```rask
-  const TABLE = comptime build_table()
-                ^^^^^^^^^^^^^^^^^^^^^^ // Ghost: [0, 2, 4, 6, ...]
-  ```
-
-- **On-demand evaluation:** Right-click → "Evaluate at comptime"
-
-### Comptime Limits
-
-To prevent infinite compilation:
-
-| Limit | Default | Override | Purpose |
-|-------|---------|----------|---------|
-| **Backwards branches** | 1,000 | `@comptime_quota(N)` | Prevent infinite loops/recursion |
-| Execution time | 10 seconds | `--comptime-timeout=N` | Prevent build hangs |
-| Memory per evaluation | 256 MB | `--comptime-max-memory=N` | Prevent OOM |
-| String size | 1 MB | - | Prevent memory issues |
-| Array size | 16 MB | - | Prevent memory issues |
-
-**Backwards branches** (Zig-style): Counts loop iterations + recursive calls combined.
-
-**Exceeding branch quota:**
+## Allowed Features
+
+| Feature | Comptime Support | Rule |
+|---------|------------------|------|
+| **CT20: Arithmetic** | Arithmetic operations | ✅ Full: `+`, `-`, `*`, `/`, `%`, bitwise |
+| **CT21: Logic** | Comparison, logic | ✅ Full: `==`, `<`, `&&`, `||` |
+| **CT22: Control flow** | Control flow | ✅ Full: `if`, `match`, `while`, `for` |
+| **CT23: Structs** | Structs | ✅ Full: construction, field access, methods |
+| **CT24: Arrays** | Arrays | ✅ Full: fixed-size arrays, indexing, iteration |
+| **CT25: Enums** | Enums | ✅ Full: variant construction, pattern matching |
+| **CT26: Collections** | Vec, Map, string | ✅ With freeze: must call `.freeze()` to escape |
+
+## Restricted Features
+
+| Feature | Restriction | Rule |
+|---------|-------------|------|
+| **CT27: Recursion** | Depth limited | Prevent infinite loops (backwards branch quota) |
+| **CT28: Loops** | Iteration limit | Default 1,000 backwards branches (configurable) |
+| **CT29: Stack depth** | Limited | Prevent stack overflow in comptime interpreter |
+
+## Forbidden Features
+
+| Feature | Why Not Allowed | Rule |
+|---------|-----------------|------|
+| **CT30: General I/O** | Network, file writes | Require runtime (exception: `@embed_file`) |
+| **CT31: Pools** | Pools and handles | Require runtime generation tracking |
+| **CT32: Linear resources** | Files, sockets | Cleanup tracking is runtime concept |
+| **CT33: Concurrency** | Tasks and channels | Concurrency doesn't exist at compile time |
+| **CT34: Unsafe** | Unsafe blocks | Raw pointers don't exist at compile time |
+
+## Comptime Limits
+
+| Limit | Default | Override | Rule |
+|-------|---------|----------|------|
+| **CT35: Backwards branches** | 1,000 | `@comptime_quota(N)` | Prevent infinite loops/recursion |
+| **CT36: Execution time** | 10 seconds | `--comptime-timeout=N` | Prevent build hangs |
+| **CT37: Memory** | 256 MB | `--comptime-max-memory=N` | Prevent OOM |
+| **CT38: String size** | 1 MB | - | Prevent memory issues |
+| **CT39: Array size** | 16 MB | - | Prevent memory issues |
+
+<!-- test: skip -->
 ```rask
 comptime func slow() {
     let i = 0
@@ -659,12 +202,8 @@ comptime func slow() {
 }
 
 const X = comptime slow()
-// ❌ Compile error: "Comptime evaluation exceeded backwards branch quota (1,000)"
-//     Add @comptime_quota(N) to increase limit
-```
+// ERROR: Comptime evaluation exceeded backwards branch quota (1,000)
 
-**Override per-scope:**
-```rask
 comptime func large_computation() -> [u8; 10000] {
     @comptime_quota(20000)  // Allow 20,000 backwards branches
 
@@ -676,171 +215,160 @@ comptime func large_computation() -> [u8; 10000] {
 }
 ```
 
-### Integration with Type System
+## File Embedding
 
-**Comptime in generic constraints:**
+| Rule | Description |
+|------|-------------|
+| **CT40: Literal path** | Path MUST be a string literal; no runtime path injection |
+| **CT41: Relative to package root** | Path is relative to package root for reproducibility |
+| **CT42: Read-only** | Read-only operation; no side effects |
+| **CT43: Compile-time read** | File read at compile time; contents embedded in binary |
+| **CT44: Size limit** | File size limit (16 MB default) prevents memory issues |
+
+<!-- test: skip -->
 ```rask
-func process<T, comptime N: usize>(items: [T; N])
-where T: Copy {
-    // N known at compile time, T substituted
-    for i in 0..N {
-        handle(items[i])
+// Embed file contents as byte array
+const SCHEMA: []u8 = comptime @embed_file("schema.json")
+
+// Embed as string (file must be valid UTF-8)
+const VERSION: string = comptime @embed_file("VERSION")
+
+// Use in comptime computation
+const CONFIG: Config = comptime parse_config(@embed_file("config.toml"))
+```
+
+## Error Handling
+
+| Rule | Description |
+|------|-------------|
+| **CT45: Result support** | Comptime functions can use `Result` and `try` |
+| **CT46: Panics as compile errors** | Comptime panics become compile errors with call stack |
+| **CT47: Error propagation** | Errors propagate to compile error with context |
+
+<!-- test: skip -->
+```rask
+comptime func safe_divide(a: i32, b: i32) -> i32 or string {
+    if b == 0 {
+        return Err("Division by zero")
     }
+    return Ok(a / b)
 }
+
+const X = try comptime safe_divide(10, 2)  // OK: unwraps to 5
+const Y = try comptime safe_divide(10, 0)  // Compile error: "Division by zero"
+
+comptime func get_value(i: usize) -> u8 {
+    const table = [1u8, 2, 3]
+    return table[i]  // Panics if i >= 3
+}
+
+const A = comptime get_value(1)  // OK: 2
+const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 ```
 
-**Comptime-dependent types:**
-```rask
-comptime func select_type(use_large: bool) -> type {
-    if use_large {
-        return u64
-    } else {
-        return u32
-    }
-}
+## Edge Cases
 
-const SIZE_TYPE = comptime select_type(LARGE_MODE)
+| Case | Rule | Handling |
+|------|------|----------|
+| Comptime function calls runtime function | CT6 | Compile error: "Cannot call runtime function from comptime" |
+| Runtime value in comptime context | CT8 | Compile error: "Value not known at compile time" |
+| Infinite loop at comptime | CT35 | Compile error after iteration limit: "Exceeded max iterations (1,000)" |
+| Comptime panic | CT46 | Compile error with message and call stack |
+| Comptime I/O attempt | CT7 | Compile error: "I/O not allowed at compile time" |
+| Comptime pool creation | CT31 | Compile error: "Pools not allowed at compile time" |
+| Comptime task spawn | CT33 | Compile error: "Concurrency not allowed at compile time" |
+| Exceeding comptime memory limit | CT37 | Compile error: "Comptime execution exceeded memory limit" |
+| Comptime string concat (bounded) | CT20 | Works via compiler intrinsic (up to size limit) |
+| Comptime Result propagation | CT45 | Works; error becomes compile error |
+| Comptime array out of bounds | CT46 | Compile error: "Index out of bounds" |
+| Recursive comptime (within limit) | CT35 | Works; memoized to avoid recomputation |
+| Comptime type mismatch | - | Regular type error (type checking still applies) |
+| Unfrozen collection escape | CT19 | Compile error: "cannot return unfrozen Vec from comptime" |
 
-struct Config {
-    size: SIZE_TYPE  // Type selected at compile time
-}
+## Error Messages
+
+**Exceeding branch quota [CT35]:**
+```
+ERROR [ctrl.comptime/CT35]: Comptime evaluation exceeded backwards branch quota (1,000)
+
+Comptime call stack:
+  → factorial(1000) at math.rk:5:9
+  → factorial(999)  at math.rk:5:9
+    ... [repeated 996 more times]
+  → factorial(0)    at math.rk:5:9
+
+Triggered by:
+  const F = comptime factorial(1000) at main.rk:10:11
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+WHY: Backwards branch quota prevents infinite loops and unbounded recursion.
+
+FIX: Add @comptime_quota(N) to increase limit, or rewrite using iteration:
+
+  comptime func factorial(n: u32) -> u32 {
+      @comptime_quota(2000)
+      // ... or use iterative approach
+  }
 ```
 
-**Type-level computation:**
-```rask
-comptime func max(a: usize, b: usize) -> usize {
-    return if a > b { a } else { b }
-}
+**Runtime value in comptime context [CT8]:**
+```
+ERROR [ctrl.comptime/CT8]: Value not known at compile time
+   |
+5  |  const n = read_config()
+6  |  const buf = repeat<n>(0xff)
+   |                     ^ runtime value cannot be used as comptime parameter
 
-func buffer<comptime A: usize, comptime B: usize>() -> [u8; comptime max(A, B)] {
-    [0u8; comptime max(A, B)]
-}
+WHY: Comptime parameters must be compile-time known constants.
+
+FIX: Use a compile-time constant instead:
+
+  const buf = repeat<16>(0xff)  // OK: literal is comptime-known
 ```
 
-### Comptime vs Build Scripts
-
-Two separate mechanisms:
-
-| Aspect | Comptime | Build Scripts |
-|--------|----------|---------------|
-| **When runs** | During compilation | Before compilation |
-| **Language** | Restricted Rask subset | Full Rask |
-| **Purpose** | Constants, generic specialization, embedding | Build orchestration, codegen |
-| **Can read files?** | ✅ `@embed_file` only | ✅ Yes (full I/O) |
-| **Can write files?** | ❌ No | ✅ Yes |
-| **Can call C code?** | ❌ No | ✅ Yes |
-| **Can spawn tasks?** | ❌ No | ✅ Yes |
-| **File** | In source files (comptime keyword) | `rask.build` |
-| **Executed by** | Compiler's comptime interpreter | Separate compiled program |
-
-**Use comptime for:**
-- Compile-time constants
-- Array sizes, buffer capacities
-- Generic specialization
-- Conditional compilation
-- Type-level computation
-- Embedding files (`@embed_file`)
-
-**Use build scripts for:**
-- Code generation from schemas (protobuf, etc.)
-- Asset bundling
-- Calling external build tools (C compiler, etc.)
-- Complex dependency resolution logic
-- Pre-build validation
-
-### Choosing Between Comptime and Build Scripts
-
-**Decision tree:**
-
+**Comptime panic [CT46]:**
 ```
-Need to transform/process files (not just embed)?
-  YES → Build script
-  NO  → Need network or environment?
-          YES → Build script
-          NO  → Just embedding file contents?
-                  YES → Comptime (@embed_file)
-                  NO  → Result fits in 256MB comptime limit?
-                          YES → Comptime (use collections with freeze)
-                          NO  → Build script
+ERROR [ctrl.comptime/CT46]: Comptime panic: Division by zero
+
+Comptime call stack:
+  → divide(10, 0) at math.rk:3:9
+    panic("Division by zero")
+    ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Triggered by:
+  const X = comptime divide(10, 0) at main.rk:15:11
+
+WHY: Comptime panics become compile errors to prevent invalid constants.
+
+FIX: Fix the comptime logic or use a valid input value.
 ```
 
-**Examples:**
+**Unfrozen collection escape [CT19]:**
+```
+ERROR [ctrl.comptime/CT19]: cannot return unfrozen Vec from comptime
+   |
+3  |  const BAD = comptime {
+4  |      const v = Vec<u32>.new()
+5  |      v.push(1)
+6  |      v  // cannot escape unfrozen
+   |      ^ collection must be frozen with .freeze()
 
-| Task | Approach | Why |
-|------|----------|-----|
-| CRC lookup table (256 entries) | Comptime | Size known, fixed array |
-| Primes up to N | Comptime (Vec + freeze) | Unknown size, use collection |
-| Keyword lookup map | Comptime (Map + freeze) | Build map, freeze to static |
-| Embed version string | Comptime (`@embed_file`) | Simple file read |
-| Embed small config file | Comptime (`@embed_file`) | No transform needed |
-| Parse embedded JSON | Comptime (collections) | `@embed_file` + parse + freeze |
-| Types from JSON schema | Build script | Needs to generate source files |
-| Protobuf codegen | Build script | Needs external tool |
+WHY: Comptime collections use compiler-managed memory and must be
+     materialized as const data to be embedded in the binary.
 
-### Patterns for Dynamic-Size Results
+FIX: Call .freeze() to convert to const data:
 
-**Preferred: Use Collections with Freeze**
-
-For unknown-size results, use `Vec`, `Map`, or `string` with `.freeze()`. Simpler than the legacy two-pass pattern:
-
-```rask
-const PRIMES: [u32; _] = comptime {
-    const v = Vec<u32>.new()
-    for n in 2..100 {
-        if is_prime(n) { v.push(n) }
-    }
-    v.freeze()
-}
+  const GOOD = comptime {
+      const v = Vec<u32>.new()
+      v.push(1)
+      v.freeze()  // → [1u32; 1]
+  }
 ```
 
-**Alternative: Two-Pass Computation**
+## Examples
 
-When you want to avoid collections:
-
-```rask
-// Step 1: Count
-comptime func count_primes(max: u32) -> usize {
-    let count = 0
-    for i in 2..max {
-        if is_prime(i) { count += 1 }
-    }
-    return count
-}
-
-// Step 2: Fill
-comptime func fill_primes<comptime N: usize>(max: u32) -> [u32; N] {
-    const result = [0u32; N]
-    let idx = 0
-    for i in 2..max {
-        if is_prime(i) {
-            result[idx] = i
-            idx += 1
-        }
-    }
-    return result
-}
-
-const PRIME_COUNT: usize = comptime count_primes(100)
-const PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
-```
-
-**Build Script for Complex Codegen**
-
-For codegen requiring external tools or extensive I/O:
-
-```rask
-// rask.build
-func main() -> () or Error {
-    const schema = try fs.read_file("schema.json")
-    const code = generate_types_from_schema(schema)
-    try fs.write_file("generated/types.rk", code)
-}
-```
-
-### Examples
-
-#### Lookup Table Generation
-
+### Lookup Table Generation
+<!-- test: skip -->
 ```rask
 comptime func crc8_table() -> [u8; 256] {
     const table = [0u8; 256]
@@ -869,8 +397,8 @@ func crc8(data: []u8) -> u8 {
 }
 ```
 
-#### Generic Buffer Size
-
+### Generic Buffer Size
+<!-- test: skip -->
 ```rask
 func read_packet<comptime MAX_SIZE: usize>(socket: Socket) -> [u8; MAX_SIZE] or Error {
     const buffer = [0u8; MAX_SIZE]
@@ -886,8 +414,8 @@ const small = try read_packet<64>(socket1)
 const large = try read_packet<4096>(socket2)
 ```
 
-#### Conditional Compilation
-
+### Conditional Compilation
+<!-- test: skip -->
 ```rask
 const DEBUG_MODE: bool = comptime cfg.debug
 const LOGGING_ENABLED: bool = comptime cfg.features.contains("logging")
@@ -910,87 +438,201 @@ func process(data: []u8) -> () or Error {
 }
 ```
 
-#### Fibonacci at Compile Time
+---
 
+## Appendix (non-normative)
+
+### Rationale
+
+**CT1-CT5 (Explicit comptime):** I chose explicit `comptime` marking to clarify when code runs at compile time vs runtime. Follows Zig's proven approach. Makes the boundary between compile-time and runtime visible in the code.
+
+**CT6-CT8 (Restrictions):** I restrict to pure computation to keep the comptime interpreter simple and avoid full-language interpretation complexity (see Rust's limited `const fn`). Rask's runtime-heavy features (pools, linear resources, concurrency) don't make sense at compile time.
+
+**CT17-CT19 (Freeze pattern):** Makes the boundary explicit. Compiler-managed scratch heap is bounded (256MB), deterministic (no allocator variance). Normal collection APIs work at comptime. `.freeze()` makes materialization into const data explicit.
+
+**CT35-CT39 (Limits):** Prevent infinite compilation. Backwards branches (Zig-style) count loop iterations + recursive calls combined. Keeps build times predictable.
+
+**CT40-CT44 (@embed_file):** Safe subset of I/O — no arbitrary I/O, only reads files at known paths. Deterministic, sandboxed, auditable. For complex codegen (parsing schemas, calling external tools), use build scripts instead.
+
+**Separating comptime from build scripts:** Comptime (in-compiler, limited) vs build scripts (separate programs, unlimited) gives flexibility without complexity. Comptime for constants and specialization; build scripts for codegen and orchestration.
+
+### Patterns & Guidance
+
+**When to use comptime vs build scripts:**
+
+```
+Need to transform/process files (not just embed)?
+  YES → Build script
+  NO  → Need network or environment?
+          YES → Build script
+          NO  → Just embedding file contents?
+                  YES → Comptime (@embed_file)
+                  NO  → Result fits in 256MB comptime limit?
+                          YES → Comptime (use collections with freeze)
+                          NO  → Build script
+```
+
+| Task | Approach | Why |
+|------|----------|-----|
+| CRC lookup table (256 entries) | Comptime | Size known, fixed array |
+| Primes up to N | Comptime (Vec + freeze) | Unknown size, use collection |
+| Keyword lookup map | Comptime (Map + freeze) | Build map, freeze to static |
+| Embed version string | Comptime (`@embed_file`) | Simple file read |
+| Embed small config file | Comptime (`@embed_file`) | No transform needed |
+| Parse embedded JSON | Comptime (collections) | `@embed_file` + parse + freeze |
+| Types from JSON schema | Build script | Needs to generate source files |
+| Protobuf codegen | Build script | Needs external tool |
+
+**Dynamic-size results:**
+
+Use collections with freeze:
 ```rask
-comptime func fib(n: u32) -> u32 {
-    if n <= 1 {
-        return n
+const PRIMES: [u32; _] = comptime {
+    const v = Vec<u32>.new()
+    for n in 2..100 {
+        if is_prime(n) { v.push(n) }
     }
-    return fib(n - 1) + fib(n - 2)
-}
-
-const FIB_10: u32 = comptime fib(10)  // Computed at compile time: 55
-
-func example() {
-    // Comptime value used at runtime
-    println("Fibonacci(10) = {}", FIB_10)
+    v.freeze()
 }
 ```
 
-#### Type Selection
-
+Alternative two-pass pattern (when avoiding collections):
 ```rask
-comptime func size_type(bits: usize) -> type {
-    return match bits {
-        8 => u8,
-        16 => u16,
-        32 => u32,
-        64 => u64,
-        _ => panic("Invalid bit size"),
-    }
-}
+// Step 1: Count
+comptime func count_primes(max: u32) -> usize { ... }
 
-struct Register<comptime BITS: usize> {
-    value: comptime size_type(BITS)
-}
+// Step 2: Fill
+comptime func fill_primes<comptime N: usize>(max: u32) -> [u32; N] { ... }
 
-const reg8 = Register<8> { value: 0u8 }
-const reg32 = Register<32> { value: 0u32 }
+const PRIME_COUNT: usize = comptime count_primes(100)
+const PRIMES: [u32; PRIME_COUNT] = comptime fill_primes<PRIME_COUNT>(100)
 ```
 
-### Edge Cases
+### Debugging Tools
 
-| Case | Handling |
-|------|----------|
-| Comptime function calls runtime function | Compile error: "Cannot call runtime function from comptime" |
-| Runtime value in comptime context | Compile error: "Value not known at compile time" |
-| Infinite loop at comptime | Compile error after iteration limit: "Exceeded max iterations (10,000)" |
-| Comptime panic | Compile error with message and call stack |
-| Comptime I/O attempt | Compile error: "I/O not allowed at compile time" |
-| Comptime pool creation | Compile error: "Pools not allowed at compile time" |
-| Comptime task spawn | Compile error: "Concurrency not allowed at compile time" |
-| Exceeding comptime memory limit | Compile error: "Comptime execution exceeded memory limit" |
-| Comptime string concat (bounded) | Works via compiler intrinsic (up to size limit) |
-| Comptime Result propagation | Works; error becomes compile error |
-| Comptime array out of bounds | Compile error: "Index out of bounds" |
-| Recursive comptime (within limit) | Works; memoized to avoid recomputation |
-| Comptime type mismatch | Regular type error (type checking still applies) |
+**1. Comptime Print**
 
-## Integration Notes
+Output during compilation:
+```rask
+comptime func build_table() -> [u8; 256] {
+    @comptime_print("Building lookup table...")
+    const table = [0u8; 256]
+    for i in 0..256 {
+        table[i] = compute(i)
+        if i % 64 == 0 {
+            @comptime_print("Progress: {}/256", i)
+        }
+    }
+    @comptime_print("Done!")
+    return table
+}
+```
 
-- **Type System:** Comptime enables type-level computation (selecting types, computing sizes). Generic parameters can be `comptime` to require compile-time-known values.
-- **Memory Model:** Comptime has no runtime heap, pools, or handles. All data lives in compiler memory. Move/copy semantics still apply.
-- **Error Handling:** `Result` and `try` work at comptime. Errors become compile errors with full context.
-- **Generics:** `comptime` parameters enable array sizes, algorithm selection, conditional feature inclusion. Monomorphization sees comptime-known values as constants.
-- **Compilation Model:** Comptime evaluation happens during type checking, before codegen. Results are constants embedded in binary. Comptime limits ensure bounded compilation time.
-- **Build System:** Comptime orthogonal to build scripts. Comptime runs in-compiler (limited); build scripts run as separate programs (unlimited).
-- **Module System:** Comptime constants can be `public` and exported. Can import comptime constants from other packages. Comptime functions callable across package boundaries.
-- **Tooling Contract:** IDEs should show comptime values as ghost annotations. Comptime errors include clickable links to source locations in call stack.
+Build output with `--comptime-verbose`:
+```bash
+$ raskc --comptime-verbose main.rk
+Compiling main.rk...
+  [comptime] Building lookup table...
+  [comptime] Progress: 0/256
+  [comptime] Progress: 64/256
+  [comptime] Done!
+```
 
-## Remaining Issues
+**2. Comptime Assertions**
 
-### High Priority
-None identified.
+Explicit checks with clear error messages:
+```rask
+comptime func safe_factorial(n: u32) -> u32 {
+    @comptime_assert(n <= 20, "Factorial input too large: {} (max 20)", n)
+    if n <= 1 { return 1 }
+    return n * safe_factorial(n - 1)
+}
+```
 
-### Medium Priority
-1. **Step-through debugger** — Should IDEs support stepping through comptime interpreter? Complex but valuable for debugging.
-2. **Comptime standard library** — Which stdlib functions should be `comptime` compatible? (e.g., string formatting, math)
+**3. Testing Pattern**
 
-### Low Priority
-4. **Comptime imports** — Can comptime code import modules? Or only use built-in types?
-5. **Comptime error recovery** — Should comptime support try/catch for better error messages? Or just panic → compile error?
+Test comptime logic at runtime first:
+```rask
+// The comptime function
+comptime func factorial(n: u32) -> u32 {
+    if n <= 1 { return 1 }
+    return n * factorial(n - 1)
+}
 
-### Resolved
-5. ~~**Comptime memoization**~~ — Resolved. Pure comptime functions cached by `(function, arguments, body_hash)`. See [Semantic Hash Caching](../compiler/semantic-hash-caching.md).
-6. ~~**Comptime heap allocation**~~ — Resolved via "Collections with Freeze" pattern. `Vec`, `Map`, `string` work at comptime with compiler-managed allocator; `.freeze()` materializes to const data.
+// Runtime tests (can use debugger!)
+@test
+func test_factorial() {
+    assert_eq(factorial(0), 1)
+    assert_eq(factorial(5), 120)
+    assert_eq(factorial(10), 3628800)
+}
+
+// Once tests pass, use at comptime
+const F5 = comptime factorial(5)
+```
+
+Workflow: write comptime function → test at runtime with full debugging tools → fix bugs using gdb/lldb/prints → apply to comptime once working.
+
+### IDE Integration
+
+IDEs should provide:
+
+- **Hover for comptime values:**
+  ```rask
+  const F10 = comptime factorial(10)
+          ^^^^^^^^^^^^^^^^^^^^^^ // IDE shows: 3628800
+  ```
+
+- **Navigate comptime errors:** Click error → jump to source, clickable call stack
+
+- **Inline results:**
+  ```rask
+  const TABLE = comptime build_table()
+                ^^^^^^^^^^^^^^^^^^^^^^ // Ghost: [0, 2, 4, 6, ...]
+  ```
+
+- **On-demand evaluation:** Right-click → "Evaluate at comptime"
+
+### Comptime vs Build Scripts
+
+| Aspect | Comptime | Build Scripts |
+|--------|----------|---------------|
+| **When runs** | During compilation | Before compilation |
+| **Language** | Restricted Rask subset | Full Rask |
+| **Purpose** | Constants, generic specialization, embedding | Build orchestration, codegen |
+| **Can read files?** | ✅ `@embed_file` only | ✅ Yes (full I/O) |
+| **Can write files?** | ❌ No | ✅ Yes |
+| **Can call C code?** | ❌ No | ✅ Yes |
+| **Can spawn tasks?** | ❌ No | ✅ Yes |
+| **File** | In source files (comptime keyword) | `rask.build` |
+| **Executed by** | Compiler's comptime interpreter | Separate compiled program |
+
+**Use comptime for:**
+- Compile-time constants
+- Array sizes, buffer capacities
+- Generic specialization
+- Conditional compilation
+- Type-level computation
+- Embedding files (`@embed_file`)
+
+**Use build scripts for:**
+- Code generation from schemas (protobuf, etc.)
+- Asset bundling
+- Calling external build tools (C compiler, etc.)
+- Complex dependency resolution logic
+- Pre-build validation
+
+### Comparison with Zig
+
+| Capability | Zig | Rask |
+|------------|-----|------|
+| Comptime allocation | Arena-based | Compiler-managed with freeze |
+| Dynamic arrays | Implicit materialization | Explicit `.freeze()` |
+| Comptime I/O | Full | `@embed_file` only |
+| Build scripts | Separate | Separate (for complex codegen) |
+
+### See Also
+
+- [Generics](../types/generics.md) — Generic parameters and specialization (`type.generics`)
+- [Build System](../structure/build.md) — Build scripts and package configuration (`struct.build`)
+- [Error Types](../types/error-types.md) — Result and error handling (`type.errors`)
