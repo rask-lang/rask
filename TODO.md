@@ -131,6 +131,25 @@ All 5 validation programs pass type checking. 4 of 5 run in the interpreter.
 - Examples had Rust syntax remnants (`.collect<Vec<_>>()`, `.map(|x| ...)`, implicit returns)
 - ~~Vec.`take(n)` method name conflicts with `take` keyword~~ — **FIXED:** renamed to `limit(n)`
 
+- fix examples
+Generics:
+- Runtime error: undefined variable `print_description` in generic functionm
+- Runtime error: undefined variable `Box`
+Enums advanced:
+- Runtime error: no method `describe` on type `Shape.Circle`
+memory management
+- Runtime error: invalid assignment target; assign to a variable, field, or index
+Resource types
+- Runtime error: panic: resource already consumed: Transaction 'tx'
+unsafe
+- Runtime error: undefined variable `ptr`
+cli error
+- break comma, is not allowed, should be allowed
+Sensor processor
+- Runtime error: index must be integer
+Text editor
+- Runtime error: index 1 out of bounds (length is 0)
+
 ### Phase 4: Code Generation
 Move from interpreter to actual compiled output.
 

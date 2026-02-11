@@ -182,7 +182,7 @@ extend Parser {
             const op = match self.current {
                 Plus => BinaryOp.Add,
                 Minus => BinaryOp.Sub,
-                _ => break,
+                _ => break
             }
             try self.advance()
             const right = try self.parse_term()
@@ -201,7 +201,7 @@ extend Parser {
                 Star => BinaryOp.Mul,
                 Slash => BinaryOp.Div,
                 Percent => BinaryOp.Mod,
-                _ => break,
+                _ => break
             }
             try self.advance()
             const right = try self.parse_power()
