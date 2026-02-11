@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// Learn: Memory management with Pool and Handle
+// Learn: Memory management using Pool and Handle
 //
 // NOTE: This is a SPEC EXAMPLE showing intended syntax.
 // Generic Pool and Handle types not fully implemented yet.

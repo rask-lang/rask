@@ -170,7 +170,7 @@ func main() -> () or string {
     // Thread pool
     print("=== Thread Pool ===\n\n")
 
-    with ThreadPool(workers: 4) {
+    using ThreadPool(workers: 4) {
         const handles = Vec.new()
 
         for i in 0..8 {
@@ -195,7 +195,7 @@ func main() -> () or string {
 
     print("\n=== Key Points ===\n")
     print("- spawn raw { } creates raw OS threads\n")
-    print("- spawn thread { } uses thread pool (needs with ThreadPool)\n")
+    print("- spawn thread { } uses thread pool (needs using ThreadPool)\n")
     print("- handle.join() waits for completion\n")
     print("- handle.detach() runs in background\n")
     print("- Channels enable message passing\n")

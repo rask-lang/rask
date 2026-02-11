@@ -452,7 +452,7 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::WithBlock { args, body, .. } => {
+            ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
                     self.infer_expr(arg);
                 }
@@ -517,6 +517,36 @@ impl TypeChecker {
                     span: expr.span,
                 });
                 Type::Option(Box::new(field_ty))
+            }
+
+            ExprKind::Select { arms, .. } => {
+                if arms.is_empty() {
+                    self.errors.push(TypeError::GenericError(
+                        "select must have at least one arm".to_string(),
+                        expr.span,
+                    ));
+                    return Type::Unit;
+                }
+                let mut result_ty: Option<Type> = None;
+                for arm in arms {
+                    match &arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, binding: _ } => {
+                            self.infer_expr(channel);
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.infer_expr(channel);
+                            self.infer_expr(value);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {}
+                    }
+                    let body_ty = self.infer_expr(&arm.body);
+                    if let Some(ref prev) = result_ty {
+                        let _ = self.unify(prev, &body_ty, arm.body.span);
+                    } else {
+                        result_ty = Some(body_ty);
+                    }
+                }
+                result_ty.unwrap_or(Type::Unit)
             }
 
             ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {

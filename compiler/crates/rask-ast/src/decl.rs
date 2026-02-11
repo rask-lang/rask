@@ -84,12 +84,21 @@ pub struct FnDecl {
     pub type_params: Vec<TypeParam>,
     pub params: Vec<Param>,
     pub ret_ty: Option<String>,
+    pub context_clauses: Vec<ContextClause>,
     pub body: Vec<Stmt>,
     pub is_pub: bool,
     pub is_comptime: bool,
     pub is_unsafe: bool,
     /// Attributes like `@entry`, `@inline`, etc.
     pub attrs: Vec<String>,
+}
+
+/// A `using` context clause on a function signature.
+#[derive(Debug, Clone)]
+pub struct ContextClause {
+    pub name: Option<String>,
+    pub ty: String,
+    pub is_frozen: bool,
 }
 
 /// A function parameter.
@@ -154,6 +163,8 @@ pub struct Variant {
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
     pub name: String,
+    /// Super-traits: `trait Display: ToString, Debug`
+    pub super_traits: Vec<String>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
 }

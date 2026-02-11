@@ -21,19 +21,19 @@ func damage(h: Handle<Player>, amount: i32) {
 //   --> context_missing.rk:13
 //    |
 // 13 | func damage(h: Handle<Player>, amount: i32) {
-//    |      ^^^^^^ add `with Pool<Player>` to signature
+//    |      ^^^^^^ add `using Pool<Player>` to signature
 // 14 |     h.health -= amount
 //    |     -------- requires access to Pool<Player>
 //    |
 //    hint: add context clause:
-//          func damage(h: Handle<Player>, amount: i32) with Pool<Player>
+//          func damage(h: Handle<Player>, amount: i32) using Pool<Player>
 //
 // Note: This error only occurs for public functions or when called across
 // module boundaries. Private functions in the same module have contexts
 // inferred automatically.
 
 // FIX 1: Add unnamed context (field access only)
-func damage_fixed(h: Handle<Player>, amount: i32) with Pool<Player> {
+func damage_fixed(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 

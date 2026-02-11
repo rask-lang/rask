@@ -60,11 +60,13 @@ impl TypeChecker {
         let methods = s.methods.iter().map(|m| self.method_signature(m)).collect();
 
         let type_params: Vec<String> = s.type_params.iter().map(|p| p.name.clone()).collect();
+        let is_resource = s.attrs.iter().any(|a| a == "resource");
         self.types.register_type(TypeDef::Struct {
             name: s.name.clone(),
             type_params,
             fields,
             methods,
+            is_resource,
         });
     }
 
@@ -98,6 +100,7 @@ impl TypeChecker {
 
         self.types.register_type(TypeDef::Trait {
             name: t.name.clone(),
+            super_traits: t.super_traits.clone(),
             methods,
         });
     }

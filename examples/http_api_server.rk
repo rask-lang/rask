@@ -156,7 +156,7 @@ func main() -> () or Error {
     // Create buffered channel for request logging
     let (log_tx, log_rx) = Channel<LogEntry>.buffered(100)
 
-    with Multitasking {
+    using Multitasking {
         // Spawn logger task that consumes log entries
         spawn {
             while log_rx.recv() is Ok(entry) {

@@ -281,7 +281,7 @@ impl Resolver {
                     // Declare extern functions in symbol table
                     let sym_id = self.symbols.insert(
                         extern_decl.name.clone(),
-                        SymbolKind::Function { params: vec![], ret_ty: extern_decl.ret_ty.clone() },
+                        SymbolKind::Function { params: vec![], ret_ty: extern_decl.ret_ty.clone(), context_clauses: vec![] },
                         None,
                         decl.span,
                         false, // Extern functions are not pub-exported from module
@@ -307,7 +307,7 @@ impl Resolver {
 
         let sym_id = self.symbols.insert(
             base.clone(),
-            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone() },
+            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), context_clauses: fn_decl.context_clauses.clone() },
             None,
             span,
             is_pub,
@@ -406,7 +406,10 @@ impl Resolver {
 
         let sym_id = self.symbols.insert(
             trait_decl.name.clone(),
-            SymbolKind::Trait { methods: vec![] },
+            SymbolKind::Trait {
+                methods: vec![],
+                super_traits: trait_decl.super_traits.clone(),
+            },
             None,
             span,
             trait_decl.is_pub,
@@ -619,6 +622,22 @@ impl Resolver {
             if let Some(sym) = self.symbols.get_mut(sym_id) {
                 if let SymbolKind::Function { params, .. } = &mut sym.kind {
                     *params = param_syms;
+                }
+            }
+        }
+
+        // Register named context clauses as bindings
+        for clause in &fn_decl.context_clauses {
+            if let Some(name) = &clause.name {
+                let ctx_sym = self.symbols.insert(
+                    name.clone(),
+                    SymbolKind::Variable { mutable: !clause.is_frozen },
+                    Some(clause.ty.clone()),
+                    Span::new(0, 0),
+                    false,
+                );
+                if let Err(e) = self.scopes.define(name.clone(), ctx_sym, Span::new(0, 0)) {
+                    self.errors.push(e);
                 }
             }
         }
@@ -976,7 +995,7 @@ impl Resolver {
                     self.resolve_expr(elem);
                 }
             }
-            ExprKind::WithBlock { args, body, .. } => {
+            ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
                     self.resolve_expr(arg);
                 }
@@ -1060,6 +1079,37 @@ impl Resolver {
                 self.resolve_expr(condition);
                 if let Some(msg) = message {
                     self.resolve_expr(msg);
+                }
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    match &arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, binding } => {
+                            self.resolve_expr(channel);
+                            // The binding is a new variable in the arm body scope
+                            let sym_id = self.symbols.insert(
+                                binding.clone(),
+                                SymbolKind::Variable { mutable: false },
+                                None,
+                                arm.body.span,
+                                false,
+                            );
+                            self.scopes.push(ScopeKind::Block);
+                            if let Err(e) = self.scopes.define(binding.clone(), sym_id, arm.body.span) {
+                                self.errors.push(e);
+                            }
+                            self.resolve_expr(&arm.body);
+                            self.scopes.pop();
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.resolve_expr(channel);
+                            self.resolve_expr(value);
+                            self.resolve_expr(&arm.body);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {
+                            self.resolve_expr(&arm.body);
+                        }
+                    }
                 }
             }
         }
@@ -1190,6 +1240,7 @@ mod tests {
                 type_params: vec![],
                 params: vec![],
                 ret_ty: None,
+                context_clauses: vec![],
                 body: vec![],
                 is_pub: false,
                 is_comptime: false,

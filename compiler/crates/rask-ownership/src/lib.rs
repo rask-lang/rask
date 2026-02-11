@@ -12,13 +12,13 @@ mod error;
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
 pub use error::{OwnershipError, OwnershipErrorKind, AccessKind};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
-use rask_types::{Type, TypedProgram};
+use rask_types::{Type, TypedProgram, extract_projection};
 
 /// Result of ownership analysis.
 #[derive(Debug)]
@@ -46,6 +46,12 @@ pub struct OwnershipChecker<'a> {
     current_block: u32,
     /// Current statement ID for instant borrows.
     current_stmt: u32,
+    /// Bindings that are @resource types (must be consumed).
+    resource_bindings: HashSet<String>,
+    /// Resource bindings registered with `ensure` (consumption committed).
+    ensure_registered: HashSet<String>,
+    /// True when inside an `ensure` body (defer moves).
+    in_ensure: bool,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -58,6 +64,9 @@ impl<'a> OwnershipChecker<'a> {
             borrows: Vec::new(),
             current_block: 0,
             current_stmt: 0,
+            resource_bindings: HashSet::new(),
+            ensure_registered: HashSet::new(),
+            in_ensure: false,
             errors: Vec::new(),
         }
     }
@@ -115,6 +124,8 @@ impl<'a> OwnershipChecker<'a> {
         // Reset state for each function (local analysis only)
         self.bindings.clear();
         self.borrows.clear();
+        self.resource_bindings.clear();
+        self.ensure_registered.clear();
         self.current_block = 0;
         self.current_stmt = 0;
 
@@ -123,20 +134,40 @@ impl<'a> OwnershipChecker<'a> {
             if param.is_take {
                 // `take` parameter: owned
                 self.bindings.insert(param.name.clone(), BindingState::Owned);
+                // Check if it's a resource type
+                if self.is_resource_type_name(&param.ty) {
+                    self.resource_bindings.insert(param.name.clone());
+                }
             } else {
+                let mode = if param.is_mutate { BorrowMode::Exclusive } else { BorrowMode::Shared };
                 // Default: borrowed (persistent for call duration)
                 self.bindings.insert(
                     param.name.clone(),
                     BindingState::Borrowed {
-                        mode: BorrowMode::Shared, // Will be upgraded if mutated
+                        mode,
                         scope: BorrowScope::Persistent { block_id: 0 },
                     },
                 );
+                // Track field projection if parameter has one (e.g., `state: GameState.{entities}`)
+                let projection = extract_projection(&param.ty);
+                let mut borrow = ActiveBorrow::new(
+                    param.name.clone(),
+                    mode,
+                    BorrowScope::Persistent { block_id: 0 },
+                    Span::new(0, 0),
+                );
+                if let Some(fields) = projection {
+                    borrow = borrow.with_projection(fields);
+                }
+                self.borrows.push(borrow);
             }
         }
 
         // Check function body
         self.check_block(&fn_decl.body);
+
+        // Check for unconsumed resources at function exit
+        self.check_resource_consumption(fn_decl.body.last().map(|s| s.span).unwrap_or(Span::new(0, 0)));
     }
 
     fn check_block(&mut self, stmts: &[Stmt]) {
@@ -158,11 +189,19 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Let { name, ty: _, init } => {
+            StmtKind::Let { name, ty, init } => {
                 self.check_expr(init);
                 // let creates mutable binding - moves the value
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                // Track resource types
+                if let Some(ty_str) = ty {
+                    if self.is_resource_type_name(ty_str) {
+                        self.resource_bindings.insert(name.clone());
+                    }
+                } else if self.expr_is_resource_type(init) {
+                    self.resource_bindings.insert(name.clone());
+                }
             }
             StmtKind::LetTuple { names, init } => {
                 self.check_expr(init);
@@ -171,11 +210,19 @@ impl<'a> OwnershipChecker<'a> {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                 }
             }
-            StmtKind::Const { name, ty: _, init } => {
+            StmtKind::Const { name, ty, init } => {
                 self.check_expr(init);
                 // const creates immutable binding - borrows the value
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                // Track resource types
+                if let Some(ty_str) = ty {
+                    if self.is_resource_type_name(ty_str) {
+                        self.resource_bindings.insert(name.clone());
+                    }
+                } else if self.expr_is_resource_type(init) {
+                    self.resource_bindings.insert(name.clone());
+                }
             }
             StmtKind::ConstTuple { names, init } => {
                 self.check_expr(init);
@@ -223,7 +270,14 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Continue(_) => {}
             StmtKind::Ensure { body, else_handler } => {
+                // Mark resources referenced in ensure body as consumption-committed
+                for s in body {
+                    self.mark_ensure_resources(s);
+                }
+                let prev = self.in_ensure;
+                self.in_ensure = true;
                 self.check_block(body);
+                self.in_ensure = prev;
                 if let Some((_name, handler)) = else_handler {
                     self.check_block(handler);
                 }
@@ -266,10 +320,17 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(arg);
                 }
             }
-            ExprKind::MethodCall { object, method: _, type_args: _, args } => {
+            ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
                 for arg in args {
                     self.check_expr(arg);
+                }
+                // If this is a `take self` method, mark the object as moved
+                // (skip in ensure bodies — ensure defers execution)
+                if !self.in_ensure && self.is_take_self_method(object, method) {
+                    if let ExprKind::Ident(name) = &object.kind {
+                        self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                    }
                 }
             }
             ExprKind::Field { object, field: _ } => {
@@ -314,7 +375,25 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Closure { params, body } => {
-                // Save state — closure params are fresh bindings, not borrows of outer vars
+                // Collect names from closure params (these shadow outer bindings)
+                let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+
+                // Scan body for free variables and create borrows in enclosing scope
+                let mut captures = Vec::new();
+                self.collect_free_vars(body, &param_names, &mut captures);
+                for name in &captures {
+                    if self.bindings.contains_key(name) {
+                        // Create a shared borrow for each captured variable
+                        self.borrows.push(ActiveBorrow::new(
+                            name.clone(),
+                            BorrowMode::Shared,
+                            BorrowScope::Persistent { block_id: self.current_block },
+                            expr.span,
+                        ));
+                    }
+                }
+
+                // Check the closure body with its own bindings
                 let saved_bindings = self.bindings.clone();
                 let saved_borrows = self.borrows.clone();
                 for p in params {
@@ -362,7 +441,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Cast { expr: inner, ty: _ } => {
                 self.check_expr(inner);
             }
-            ExprKind::WithBlock { name: _, args, body } => {
+            ExprKind::UsingBlock { name: _, args, body } => {
                 for arg in args {
                     self.check_expr(arg);
                 }
@@ -390,6 +469,21 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(condition);
                 if let Some(msg) = message {
                     self.check_expr(msg);
+                }
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    match &arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
+                            self.check_expr(channel);
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.check_expr(channel);
+                            self.check_expr(value);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {}
+                    }
+                    self.check_expr(&arm.body);
                 }
             }
         }
@@ -440,8 +534,18 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Create a borrow of a binding.
+    /// Create a borrow of a binding, optionally projected to specific fields.
     fn create_borrow(&mut self, source_name: String, mode: BorrowMode, span: Span) {
+        self.create_borrow_with_projection(source_name, mode, span, None);
+    }
+
+    fn create_borrow_with_projection(
+        &mut self,
+        source_name: String,
+        mode: BorrowMode,
+        span: Span,
+        projection: Option<Vec<String>>,
+    ) {
         if let Some(state) = self.bindings.get(&source_name) {
             match state {
                 BindingState::Owned => {
@@ -452,22 +556,28 @@ impl<'a> OwnershipChecker<'a> {
                             scope: BorrowScope::Persistent { block_id: self.current_block },
                         },
                     );
-                    self.borrows.push(ActiveBorrow::new(
+                    let mut borrow = ActiveBorrow::new(
                         source_name,
                         mode,
                         BorrowScope::Persistent { block_id: self.current_block },
                         span,
-                    ));
+                    );
+                    if let Some(fields) = projection {
+                        borrow = borrow.with_projection(fields);
+                    }
+                    self.borrows.push(borrow);
                 }
                 BindingState::Borrowed { mode: existing_mode, .. } => {
-                    if *existing_mode == BorrowMode::Shared && mode == BorrowMode::Shared {
-                        self.borrows.push(ActiveBorrow::new(
-                            source_name,
-                            mode,
-                            BorrowScope::Persistent { block_id: self.current_block },
-                            span,
-                        ));
-                    } else {
+                    // Check if there's an actual conflict considering projections.
+                    // Non-overlapping projections on the same binding don't conflict.
+                    let has_conflict = self.borrows.iter().any(|b| {
+                        b.source == source_name && b.overlaps(&projection) && (
+                            *existing_mode == BorrowMode::Exclusive
+                            || mode == BorrowMode::Exclusive
+                        )
+                    });
+
+                    if has_conflict {
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::BorrowConflict {
                                 name: source_name,
@@ -477,6 +587,17 @@ impl<'a> OwnershipChecker<'a> {
                             },
                             span,
                         });
+                    } else {
+                        let mut borrow = ActiveBorrow::new(
+                            source_name,
+                            mode,
+                            BorrowScope::Persistent { block_id: self.current_block },
+                            span,
+                        );
+                        if let Some(fields) = projection {
+                            borrow = borrow.with_projection(fields);
+                        }
+                        self.borrows.push(borrow);
                     }
                 }
                 BindingState::Moved { at } => {
@@ -525,6 +646,9 @@ impl<'a> OwnershipChecker<'a> {
 
             // Result: NOT Copy (usually contains error info)
             Type::Result { .. } => false,
+
+            // Union: NOT Copy (error union types)
+            Type::Union(_) => false,
 
             // User-defined types: need to check size and fields
             Type::Named(type_id) => {
@@ -608,8 +732,6 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Release persistent borrows that end at the given block.
     fn release_persistent_borrows(&mut self, block_id: u32) {
-        use std::collections::HashSet;
-
         let mut released_bindings = HashSet::new();
 
         // Remove borrows for this block
@@ -664,6 +786,174 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
+    /// Collect free variables referenced in an expression (excluding local bindings).
+    fn collect_free_vars(&self, expr: &Expr, locals: &HashSet<String>, out: &mut Vec<String>) {
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if !locals.contains(name) && self.bindings.contains_key(name) {
+                    if !out.contains(name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.collect_free_vars(left, locals, out);
+                self.collect_free_vars(right, locals, out);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.collect_free_vars(operand, locals, out);
+            }
+            ExprKind::Call { func, args } => {
+                self.collect_free_vars(func, locals, out);
+                for arg in args { self.collect_free_vars(arg, locals, out); }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                self.collect_free_vars(object, locals, out);
+                for arg in args { self.collect_free_vars(arg, locals, out); }
+            }
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                self.collect_free_vars(object, locals, out);
+            }
+            ExprKind::Index { object, index } => {
+                self.collect_free_vars(object, locals, out);
+                self.collect_free_vars(index, locals, out);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.collect_free_vars(cond, locals, out);
+                self.collect_free_vars(then_branch, locals, out);
+                if let Some(e) = else_branch { self.collect_free_vars(e, locals, out); }
+            }
+            ExprKind::Block(stmts) => {
+                for s in stmts { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            ExprKind::Closure { params, body } => {
+                let mut inner_locals = locals.clone();
+                for p in params { inner_locals.insert(p.name.clone()); }
+                self.collect_free_vars(body, &inner_locals, out);
+            }
+            _ => {
+                // For other expressions, recurse into sub-expressions
+            }
+        }
+    }
+
+    fn collect_free_vars_stmt(&self, stmt: &Stmt, locals: &HashSet<String>, out: &mut Vec<String>) {
+        match &stmt.kind {
+            StmtKind::Expr(e) => self.collect_free_vars(e, locals, out),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                self.collect_free_vars(init, locals, out);
+            }
+            StmtKind::Return(Some(e)) => self.collect_free_vars(e, locals, out),
+            _ => {}
+        }
+    }
+
+    /// Check if a method call uses `take self`.
+    fn is_take_self_method(&self, object: &Expr, method_name: &str) -> bool {
+        // Look up the type of the object expression
+        if let Some(ty) = self.program.node_types.get(&object.id) {
+            let type_id = match ty {
+                Type::Named(id) => Some(*id),
+                _ => None,
+            };
+            if let Some(id) = type_id {
+                if let Some(def) = self.program.types.get(id) {
+                    let methods = match def {
+                        rask_types::TypeDef::Struct { methods, .. } => methods,
+                        rask_types::TypeDef::Enum { methods, .. } => methods,
+                        _ => return false,
+                    };
+                    for m in methods {
+                        if m.name == method_name {
+                            return m.self_param == rask_types::SelfParam::Take;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Check if a type name refers to a @resource struct.
+    fn is_resource_type_name(&self, ty_name: &str) -> bool {
+        // Strip generic args: "File<T>" -> "File"
+        let base = ty_name.split('<').next().unwrap_or(ty_name);
+        self.program.types.is_resource_type(base)
+    }
+
+    /// Check if an expression's inferred type is a @resource type.
+    fn expr_is_resource_type(&self, expr: &Expr) -> bool {
+        if let Some(ty) = self.program.node_types.get(&expr.id) {
+            if let Type::Named(type_id) = ty {
+                if let Some(def) = self.program.types.get(*type_id) {
+                    if let rask_types::TypeDef::Struct { is_resource, .. } = def {
+                        return *is_resource;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Scan ensure body for resource references and mark them.
+    fn mark_ensure_resources(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Expr(expr) => {
+                self.mark_ensure_expr(expr);
+            }
+            _ => {}
+        }
+    }
+
+    /// Extract resource names from ensure expressions (e.g., `file.close()`).
+    fn mark_ensure_expr(&mut self, expr: &Expr) {
+        match &expr.kind {
+            ExprKind::MethodCall { object, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if self.resource_bindings.contains(name) {
+                        self.ensure_registered.insert(name.clone());
+                    }
+                }
+            }
+            ExprKind::Call { func, args } => {
+                // Check args for resource identifiers
+                for arg in args {
+                    if let ExprKind::Ident(name) = &arg.kind {
+                        if self.resource_bindings.contains(name) {
+                            self.ensure_registered.insert(name.clone());
+                        }
+                    }
+                }
+                self.mark_ensure_expr(func);
+            }
+            _ => {}
+        }
+    }
+
+    /// At function exit, emit errors for unconsumed @resource bindings.
+    fn check_resource_consumption(&mut self, span: Span) {
+        let unconsumed: Vec<String> = self.resource_bindings.iter()
+            .filter(|name| {
+                // Not moved (consumed) and not registered with ensure
+                if self.ensure_registered.contains(*name) {
+                    return false;
+                }
+                match self.bindings.get(*name) {
+                    Some(BindingState::Moved { .. }) => false, // consumed
+                    _ => true, // still owned = not consumed
+                }
+            })
+            .cloned()
+            .collect();
+
+        for name in unconsumed {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ResourceNotConsumed { name },
+                span,
+            });
         }
     }
 }

@@ -161,7 +161,7 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             }
         }
         ExprKind::Block(stmts)
-        | ExprKind::WithBlock { body: stmts, .. }
+        | ExprKind::UsingBlock { body: stmts, .. }
         | ExprKind::Spawn { body: stmts }
         | ExprKind::Unsafe { body: stmts }
         | ExprKind::Comptime { body: stmts }

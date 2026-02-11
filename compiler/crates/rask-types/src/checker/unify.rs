@@ -158,6 +158,10 @@ impl TypeChecker {
                 Type::Result { ok: o2, err: e2 },
             ) => {
                 let p1 = self.unify(o1, o2, span)?;
+                // Allow subset widening: Result<T, A> ⊆ Result<T, A|B>
+                if e1.is_subset_of(e2) {
+                    return Ok(p1);
+                }
                 let p2 = self.unify(e1, e2, span)?;
                 Ok(p1 || p2)
             }
@@ -184,6 +188,37 @@ impl TypeChecker {
             }
 
             (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
+
+            // Union types: unify element-wise if same length
+            (Type::Union(types1), Type::Union(types2)) => {
+                if types1.len() != types2.len() {
+                    return Err(TypeError::Mismatch {
+                        expected: t1,
+                        found: t2,
+                        span,
+                    });
+                }
+                let mut progress = false;
+                for (a, b) in types1.iter().zip(types2.iter()) {
+                    if self.unify(a, b, span)? {
+                        progress = true;
+                    }
+                }
+                Ok(progress)
+            }
+
+            // Single type is a subset of a union containing it (for try propagation)
+            (single, Type::Union(types)) if !matches!(single, Type::Union(_)) => {
+                if types.iter().any(|t| t == single) {
+                    Ok(false) // compatible
+                } else {
+                    Err(TypeError::Mismatch {
+                        expected: t2,
+                        found: t1,
+                        span,
+                    })
+                }
+            }
 
             (Type::Error, _) | (_, Type::Error) => Ok(false),
 

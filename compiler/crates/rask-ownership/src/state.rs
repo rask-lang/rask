@@ -49,10 +49,27 @@ pub struct ActiveBorrow {
     pub scope: BorrowScope,
     /// Where the borrow was created.
     pub span: Span,
+    /// Field projection — `None` means whole-object borrow,
+    /// `Some(fields)` means only those fields are borrowed.
+    pub projection: Option<Vec<String>>,
 }
 
 impl ActiveBorrow {
     pub fn new(source: String, mode: BorrowMode, scope: BorrowScope, span: Span) -> Self {
-        Self { source, mode, scope, span }
+        Self { source, mode, scope, span, projection: None }
+    }
+
+    pub fn with_projection(mut self, projection: Vec<String>) -> Self {
+        self.projection = Some(projection);
+        self
+    }
+
+    /// Check if this borrow overlaps with a given projection.
+    /// Two borrows overlap if either is whole-object or they share fields.
+    pub fn overlaps(&self, other_projection: &Option<Vec<String>>) -> bool {
+        match (&self.projection, other_projection) {
+            (None, _) | (_, None) => true, // whole-object overlaps everything
+            (Some(a), Some(b)) => a.iter().any(|f| b.contains(f)),
+        }
     }
 }

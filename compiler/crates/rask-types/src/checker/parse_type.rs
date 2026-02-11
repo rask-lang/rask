@@ -12,12 +12,26 @@ use crate::types::{GenericArg, Type};
 pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let s = s.trim();
 
+    // Strip field projection syntax: `Type.{field1, field2}` → `Type`
+    // Projections affect borrowing, not the type itself.
+    let s = strip_projection(s);
+    let s = s.as_ref();
+
     if s.is_empty() || s == "()" {
         return Ok(Type::Unit);
     }
 
     if s == "!" {
         return Ok(Type::Never);
+    }
+
+    // Union type: "IoError|ParseError" (pipe-separated at depth 0)
+    if contains_pipe_at_depth_0(s) {
+        let parts = split_at_pipe(s);
+        let types_vec: Result<Vec<_>, _> = parts.iter()
+            .map(|p| parse_type_string(p, types))
+            .collect();
+        return Ok(Type::union(types_vec?));
     }
 
     if s.ends_with('?') && !s.starts_with('(') {
@@ -176,6 +190,48 @@ fn split_type_args(s: &str) -> Vec<&str> {
     result
 }
 
+/// Check if `|` appears at depth 0 (not inside `<>` or `()`).
+fn contains_pipe_at_depth_0(s: &str) -> bool {
+    let mut angle = 0;
+    let mut paren = 0;
+    for c in s.chars() {
+        match c {
+            '<' => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            '(' => paren += 1,
+            ')' if paren > 0 => paren -= 1,
+            '|' if angle == 0 && paren == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Split a type string at `|` at depth 0.
+fn split_at_pipe(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut angle = 0;
+    let mut paren = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => angle += 1,
+            '>' if angle > 0 => angle -= 1,
+            '(' => paren += 1,
+            ')' if paren > 0 => paren -= 1,
+            '|' if angle == 0 && paren == 0 => {
+                result.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    if start < s.len() {
+        result.push(s[start..].trim());
+    }
+    result
+}
+
 fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let prefix = if s.starts_with("func(") {
         "func("
@@ -224,4 +280,37 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
         params,
         ret: Box::new(ret),
     })
+}
+
+/// Strip field projection suffix from a type string.
+/// `"GameState.{entities, score}"` → `"GameState"`
+/// `"Vec<i32>"` → `"Vec<i32>"` (unchanged)
+fn strip_projection(s: &str) -> std::borrow::Cow<'_, str> {
+    if let Some(pos) = s.find(".{") {
+        // Verify it ends with `}`
+        if s.ends_with('}') {
+            return std::borrow::Cow::Owned(s[..pos].to_string());
+        }
+    }
+    std::borrow::Cow::Borrowed(s)
+}
+
+/// Extract projection fields from a type string, if any.
+/// `"GameState.{entities, score}"` → `Some(vec!["entities", "score"])`
+/// `"Vec<i32>"` → `None`
+pub fn extract_projection(s: &str) -> Option<Vec<String>> {
+    if let Some(pos) = s.find(".{") {
+        if s.ends_with('}') {
+            let fields_str = &s[pos + 2..s.len() - 1];
+            let fields: Vec<String> = fields_str
+                .split(',')
+                .map(|f| f.trim().to_string())
+                .filter(|f| !f.is_empty())
+                .collect();
+            if !fields.is_empty() {
+                return Some(fields);
+            }
+        }
+    }
+    None
 }

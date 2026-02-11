@@ -2,6 +2,7 @@
 //! Symbol definitions and symbol table.
 
 use rask_ast::Span;
+use rask_ast::decl::ContextClause;
 
 /// Unique identifier for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +27,8 @@ pub enum SymbolKind {
         params: Vec<SymbolId>,
         /// Return type as a string (for now).
         ret_ty: Option<String>,
+        /// `using` context clauses.
+        context_clauses: Vec<ContextClause>,
     },
     /// A struct type.
     Struct {
@@ -46,6 +49,8 @@ pub enum SymbolKind {
     Trait {
         /// Method SymbolIds.
         methods: Vec<SymbolId>,
+        /// Super-trait names.
+        super_traits: Vec<String>,
     },
     /// A struct field.
     Field {

@@ -10,7 +10,7 @@ struct Entity {
 }
 
 // ERROR: Can't do structural operations with unnamed context
-func cleanup(h: Handle<Entity>) with Pool<Entity> {
+func cleanup(h: Handle<Entity>) using Pool<Entity> {
     h.active = false       // ✅ Field access works
 
     if h.health <= 0 {
@@ -26,13 +26,13 @@ func cleanup(h: Handle<Entity>) with Pool<Entity> {
 // 15 |         pool.remove(h)
 //    |         ^^^^ not found in this scope
 //    |
-// 11 | func cleanup(h: Handle<Entity>) with Pool<Entity> {
+// 11 | func cleanup(h: Handle<Entity>) using Pool<Entity> {
 //    |                                      ------------ unnamed context provides auto-resolution only
 //    |
 //    help: use a named context to access the pool:
 //          func cleanup(h: Handle<Entity>) with entities: Pool<Entity>
 //
-//    note: unnamed contexts (`with Pool<T>`) enable auto-resolution for handle
+//    note: unnamed contexts (`using Pool<T>`) enable auto-resolution for handle
 //          field access (h.field), but do not provide a binding for structural
 //          operations (insert/remove/cursor). Use a named context if you need
 //          both.

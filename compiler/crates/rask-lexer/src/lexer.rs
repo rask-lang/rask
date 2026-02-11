@@ -50,6 +50,8 @@ enum RawToken {
     Continue,
     #[token("spawn")]
     Spawn,
+    #[token("select_priority")]
+    SelectPriority,
     #[token("select")]
     Select,
     #[token("with")]
@@ -261,6 +263,14 @@ enum RawToken {
     #[regex(r#""""([^"\\]|\\.|"[^"]|""[^"])*""""#)]
     MultiLineString,
 
+    // Raw string literal (r"..." — no escape processing)
+    #[regex(r#"r"[^"]*""#)]
+    RawString,
+
+    // Raw string literal with hash delimiters (r#"..."# — handles embedded quotes)
+    #[token("r#", raw_hash_string)]
+    RawHashString,
+
     // Regular string (handles basic escapes and \u{XXXX} unicode escapes)
     #[regex(r#""([^"\\]|\\.|\\u\{[0-9a-fA-F]{1,6}\})*""#)]
     String,
@@ -268,6 +278,48 @@ enum RawToken {
     // === Identifier (must come after keywords) ===
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Ident,
+}
+
+/// Lex a raw hash string: r#"..."#, r##"..."##, etc.
+/// The `r#` prefix is already consumed by logos. We count additional `#` chars,
+/// expect `"`, then scan for the matching `"` + same number of `#`.
+fn raw_hash_string(lexer: &mut logos::Lexer<RawToken>) -> bool {
+    let bytes = lexer.remainder().as_bytes();
+    let mut pos = 0;
+
+    // Count additional # symbols (we already consumed r#, so start at 1)
+    let mut hash_count = 1;
+    while pos < bytes.len() && bytes[pos] == b'#' {
+        hash_count += 1;
+        pos += 1;
+    }
+
+    // Expect opening "
+    if pos >= bytes.len() || bytes[pos] != b'"' {
+        return false;
+    }
+    pos += 1;
+
+    // Scan for closing " followed by hash_count # symbols
+    while pos < bytes.len() {
+        if bytes[pos] == b'"' {
+            let mut count = 0;
+            while pos + 1 + count < bytes.len()
+                && bytes[pos + 1 + count] == b'#'
+                && count < hash_count
+            {
+                count += 1;
+            }
+            if count == hash_count {
+                pos += 1 + hash_count; // skip " and all #s
+                lexer.bump(pos);
+                return true;
+            }
+        }
+        pos += 1;
+    }
+
+    false
 }
 
 /// Skip block comments, handling nesting.
@@ -388,6 +440,7 @@ impl<'a> Lexer<'a> {
             RawToken::Break => TokenKind::Break,
             RawToken::Continue => TokenKind::Continue,
             RawToken::Spawn => TokenKind::Spawn,
+            RawToken::SelectPriority => TokenKind::SelectPriority,
             RawToken::Select => TokenKind::Select,
             RawToken::With => TokenKind::With,
             RawToken::Ensure => TokenKind::Ensure,
@@ -536,6 +589,20 @@ impl<'a> Lexer<'a> {
             RawToken::MultiLineString => {
                 let inner = &slice[3..slice.len() - 3]; // Remove triple quotes
                 // Multi-line strings don't process escapes (raw)
+                TokenKind::String(inner.to_string())
+            }
+            RawToken::RawString => {
+                // r"content" — strip r" prefix and " suffix, no escape processing
+                let inner = &slice[2..slice.len() - 1];
+                TokenKind::String(inner.to_string())
+            }
+            RawToken::RawHashString => {
+                // r#"content"# or r##"content"## etc.
+                let after_r = &slice[1..]; // skip 'r'
+                let hash_count = after_r.bytes().take_while(|b| *b == b'#').count();
+                let content_start = 1 + hash_count + 1; // r + #*n + "
+                let content_end = slice.len() - 1 - hash_count; // " + #*n
+                let inner = &slice[content_start..content_end];
                 TokenKind::String(inner.to_string())
             }
             RawToken::Ident => TokenKind::Ident(slice.to_string()),

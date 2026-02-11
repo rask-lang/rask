@@ -109,7 +109,7 @@ extend GameState {
 // System: Update positions based on velocities
 // here we only use the entities pool from GameState, so we can use a projection
 // This allows us to avoid borrowing the entire GameState
-func movement_system(entities: GameState.{entities}, dt: f32) {
+func movement_system(mutate entities: GameState.{entities}, dt: f32) {
     for h in entities {
         if !entities[h].active: continue
 
@@ -119,7 +119,7 @@ func movement_system(entities: GameState.{entities}, dt: f32) {
 }
 
 // System: Check collisions between entities
-func collision_system(state: GameState) {
+func collision_system(mutate state: GameState) {
     let to_check = state.entities.handles()
 
     for i in 0..to_check.len() {
@@ -145,7 +145,7 @@ func collision_system(state: GameState) {
     }
 }
 
-func handle_collision(state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) {
+func handle_collision(mutate state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) {
     const type1 = state.entities[h1].entity_type
     const type2 = state.entities[h2].entity_type
 
@@ -180,7 +180,7 @@ func handle_collision(state: GameState, h1: Handle<Entity>, h2: Handle<Entity>) 
 }
 
 // System: Remove inactive entities
-func cleanup_system(state: GameState) {
+func cleanup_system(mutate state: GameState) {
     let to_remove = Vec.new()
 
     for h in state.entities {
@@ -195,7 +195,7 @@ func cleanup_system(state: GameState) {
 }
 
 // System: Spawn enemies periodically
-func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
+func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
     const spawn_interval = 2.0f32
 
     if time_since_last_spawn >= spawn_interval {
@@ -209,8 +209,8 @@ func spawn_system(state: GameState, time_since_last_spawn: f32) -> f32 {
 }
 
 // Parallel movement update - processes entity batches across threads
-func parallel_movement_system(entities: GameState.{entities}, dt: f32, num_threads: usize)
-    with ThreadPool
+func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, num_threads: usize)
+    using ThreadPool
 {
     let handles = entities.handles()
     let chunk_size = (handles.len() + num_threads - 1) / num_threads
@@ -251,7 +251,7 @@ func main() -> () or Error {
     println("Game started! Score: 0")
 
     // Thread pool for CPU-bound physics work
-    with ThreadPool(workers: 4) {
+    using ThreadPool(workers: 4) {
         // Simulate game for a few seconds
         while !state.game_over && frame_count < 300 {
         // Simulate frame time (16ms = ~60fps)
