@@ -10,3 +10,6 @@ rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
 thiserror.workspace = true
+
+[dev-dependencies]
+rask-stdlib = { path = "../rask-stdlib" }

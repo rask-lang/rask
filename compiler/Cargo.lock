@@ -634,6 +634,7 @@ dependencies = [
  "rask-ast",
  "rask-lexer",
  "rask-parser",
+ "rask-stdlib",
  "rask-types",
  "thiserror",
 ]
