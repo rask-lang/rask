@@ -79,6 +79,13 @@ impl ResourceTracker {
         }
     }
 
+    /// Check if a resource has already been consumed.
+    pub fn is_consumed(&self, id: u64) -> bool {
+        self.entries.get(&id)
+            .map(|e| e.state == ResourceState::Consumed)
+            .unwrap_or(false)
+    }
+
     /// Mark a resource as consumed. Returns Err if already consumed.
     pub fn mark_consumed(&mut self, id: u64) -> Result<(), String> {
         if let Some(entry) = self.entries.get_mut(&id) {

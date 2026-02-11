@@ -100,21 +100,29 @@ impl Interpreter {
             _ => receiver.type_name().to_string(),
         };
 
-        if let Some(type_methods) = self.methods.get(&type_name) {
-            if let Some(method_fn) = type_methods.get(method).cloned() {
-                let consumes_self = method_fn.params.first()
-                    .map(|p| p.name == "self" && p.is_take)
-                    .unwrap_or(false);
-                if consumes_self {
-                    if let Some(id) = self.get_resource_id(&receiver) {
-                        self.resource_tracker.mark_consumed(id)
-                            .map_err(|msg| RuntimeError::Panic(msg))?;
-                    }
+        // Enum struct variants store name as "Shape.Circle" — strip variant to find methods under "Shape"
+        let resolved_method = self.methods.get(&type_name)
+            .and_then(|m| m.get(method).cloned())
+            .or_else(|| {
+                type_name.find('.').and_then(|pos| {
+                    self.methods.get(&type_name[..pos])
+                        .and_then(|m| m.get(method).cloned())
+                })
+            });
+
+        if let Some(method_fn) = resolved_method {
+            let consumes_self = method_fn.params.first()
+                .map(|p| p.name == "self" && p.is_take)
+                .unwrap_or(false);
+            if consumes_self {
+                if let Some(id) = self.get_resource_id(&receiver) {
+                    self.resource_tracker.mark_consumed(id)
+                        .map_err(|msg| RuntimeError::Panic(msg))?;
                 }
-                let mut all_args = vec![receiver];
-                all_args.extend(args);
-                return self.call_function(&method_fn, all_args);
             }
+            let mut all_args = vec![receiver];
+            all_args.extend(args);
+            return self.call_function(&method_fn, all_args);
         }
 
         Err(RuntimeError::NoSuchMethod {

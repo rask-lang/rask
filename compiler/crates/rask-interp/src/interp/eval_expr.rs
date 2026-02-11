@@ -89,6 +89,10 @@ impl Interpreter {
                     "f32x8" => return Ok(Value::Type("f32x8".to_string())),
                     _ => {}
                 }
+                // User-defined struct types (e.g., Box, Pair)
+                if self.struct_decls.contains_key(base_name) {
+                    return Ok(Value::Type(base_name.to_string()));
+                }
                 Err(RuntimeError::UndefinedVariable(name.clone()))
             }
 
@@ -653,7 +657,7 @@ impl Interpreter {
                     (Value::Float(n), "string") => {
                         Ok(Value::String(Arc::new(Mutex::new(n.to_string()))))
                     }
-                    (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8") => {
+                    (Value::Char(c), "i32" | "i64" | "int" | "u32" | "u8" | "u64" | "usize") => {
                         Ok(Value::Int(c as i64))
                     }
                     (Value::Int(n), "char") => {
@@ -957,6 +961,14 @@ impl Interpreter {
             }
 
             ExprKind::Comptime { body } => {
+                self.env.push_scope();
+                let result = self.exec_stmts(body);
+                self.env.pop_scope();
+                result
+            }
+
+            ExprKind::Unsafe { body } => {
+                // Unsafe relaxes static checks — the interpreter has none, so evaluate as block
                 self.env.push_scope();
                 let result = self.exec_stmts(body);
                 self.env.pop_scope();

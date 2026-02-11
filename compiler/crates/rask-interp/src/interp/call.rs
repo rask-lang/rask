@@ -2,6 +2,7 @@
 //! Function calling and ensure blocks.
 
 use rask_ast::decl::FnDecl;
+use rask_ast::expr::ExprKind;
 use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::value::Value;
@@ -122,9 +123,16 @@ impl Interpreter {
     }
 
     /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to else handlers.
+    /// Skips ensure clauses whose receiver resource was already consumed.
     pub(super) fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeError> {
         for ensure_stmt in ensures.iter().rev() {
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
+                // Check if the ensure body's receiver is a consumed resource.
+                // If so, skip — explicit consumption cancels ensure.
+                if self.ensure_receiver_consumed(body) {
+                    continue;
+                }
+
                 let result = self.exec_ensure_body(body);
 
                 match result {
@@ -146,6 +154,33 @@ impl Interpreter {
             }
         }
         None
+    }
+
+    /// Check if the ensure body's receiver variable refers to a consumed resource.
+    /// Handles `ensure var.method()` patterns.
+    fn ensure_receiver_consumed(&self, body: &[Stmt]) -> bool {
+        if let Some(first) = body.first() {
+            if let StmtKind::Expr(expr) = &first.kind {
+                let receiver_name = match &expr.kind {
+                    ExprKind::MethodCall { object, .. } => {
+                        if let ExprKind::Ident(name) = &object.kind {
+                            Some(name.as_str())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+                if let Some(name) = receiver_name {
+                    if let Some(value) = self.env.get(name) {
+                        if let Some(id) = self.get_resource_id(value) {
+                            return self.resource_tracker.is_consumed(id);
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
