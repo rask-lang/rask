@@ -1,617 +1,169 @@
+<!-- id: struct.packages -->
+<!-- status: decided -->
+<!-- summary: Semver with MVS resolution, lock files, registry, local cache -->
+<!-- depends: structure/build.md -->
+
 # Package Versioning and Dependencies
 
-## The Question
-How are external dependencies managed? What versioning scheme is used? How is dependency resolution performed? How are reproducible builds guaranteed?
+Semantic versioning with minimal version selection (MVS), `rask.build` package block for dependencies, generated lock file for reproducibility.
 
-## Decision
-Semantic versioning with minimal version selection (MVS), `rask.build` package block for dependencies (see [build.md](build.md)), generated lock file for reproducibility, local cache for downloaded packages, zero-config for standalone packages.
+## Versioning
 
-## Rationale
-Semantic versioning is well-understood and widely adopted. MVS (like Go modules) is simpler than SAT-solving (like npm/Cargo) and produces predictable, deterministic results without exponential search spaces. Dependencies are declared in `rask.build` using keyword syntax—no separate TOML manifest. Zero-config for packages without external dependencies. Lock files ensure reproducible builds. Local cache eliminates redundant downloads while keeping packages immutable.
+| Rule | Description |
+|------|-------------|
+| **VR1: Semver** | `MAJOR.MINOR.PATCH` — breaking.features.fixes |
+| **VR2: Pre-release** | `MAJOR.MINOR.PATCH-LABEL.N` (e.g., `1.0.0-beta.3`) — not stable, exact match only |
+| **VR3: 0.x unstable** | MINOR bump in `0.x` may be breaking — treated conservatively |
 
-## Specification
+## Version Constraints
 
-### Versioning Scheme
+| Constraint | Meaning |
+|------------|---------|
+| `"1.2.3"` or `"^1.2.3"` | Compatible: `>=1.2.3, <2.0.0` |
+| `"~1.2.3"` | Tilde: `>=1.2.3, <1.3.0` (patch only) |
+| `"=1.2.3"` | Exact version |
+| `"1.2"` | Compatible: `>=1.2.0, <2.0.0` |
 
-**Semantic Versioning (semver):**
-- Format: `MAJOR.MINOR.PATCH` (e.g., `1.4.2`)
-- Version components must be non-negative integers
-- MAJOR: breaking changes (incompatible API)
-- MINOR: new features (backward-compatible)
-- PATCH: bug fixes (backward-compatible)
+Default: bare version → `^` (compatible). For `0.x`: bare → `~` (patch only, since MINOR may break).
 
-**Pre-release versions:**
-- Format: `MAJOR.MINOR.PATCH-LABEL.N` (e.g., `1.0.0-beta.3`, `2.0.0-rc.1`)
-- Labels: `alpha`, `beta`, `rc` (release candidate)
-- N: sequential number starting from 1
-- Pre-release versions aren't considered stable
-- Pre-release `1.0.0-beta.1` < `1.0.0`
+## Dependency Resolution (MVS)
 
-**Version ordering:**
-```rask
-0.1.0 < 0.1.1 < 0.2.0 < 1.0.0-alpha.1 < 1.0.0-beta.1 < 1.0.0-rc.1 < 1.0.0 < 1.0.1 < 1.1.0 < 2.0.0
-```
+| Rule | Description |
+|------|-------------|
+| **MV1: Minimum version** | Select the minimum version satisfying all constraints |
+| **MV2: Deterministic** | Same inputs → same outputs, no backtracking |
+| **MV3: Upgrade-stable** | Adding a dependency cannot downgrade existing deps |
+| **MV4: Conflict error** | Incompatible constraints produce a clear error |
 
-**Special semantics for 0.x versions:**
-- `0.x.y` versions are considered unstable
-- MINOR bump in `0.x` may be breaking (treat as MAJOR)
-- Dependency resolution treats `0.x` versions conservatively
+Algorithm: build transitive dependency graph → collect all version constraints per package → select minimum satisfying version → verify → generate lock file.
 
-### Package Declaration
+## Lock File
 
-Dependencies and metadata are declared in `rask.build` using the `package` block. See [build.md](build.md) for the full package block specification.
-
-**No `rask.build` needed** for packages without external dependencies. Package name inferred from directory, version 0.0.0.
-
-**Minimal example:**
-```rask
-// rask.build
-package "myapp" "1.0.0" {
-    dep "http" "^2.1.0"
-    dep "json" "^1.3"
-}
-```
-
-**Full example:**
-```rask
-// rask.build
-package "mylib" "1.4.2" {
-    description: "A helpful library"
-    license: "MIT"
-    repository: "https://github.com/alice/mylib"
-
-    dep "http" "^2.1.0"
-    dep "json" "^1.0"
-    dep "crypto" "^3.2" {
-        git: "https://crypto.example.com/crypto.git"
-    }
-
-    scope "dev" {
-        dep "testing" "^1.0"
-    }
-}
-```
-
-### Version Constraint Syntax
-
-| Constraint | Meaning | Example |
-|------------|---------|---------|
-| `"1.2.3"` | Compatible: `≥1.2.3, <2.0.0` | `dep "http" "2.1.5"` → allows `2.1.5`–`2.999.999` |
-| `"1.2"` | Compatible: `≥1.2.0, <2.0.0` | `dep "json" "1.2"` → allows `1.2.0`–`1.999.999` |
-| `"1"` | Compatible: `≥1.0.0, <2.0.0` | `dep "crypto" "3"` → allows `3.0.0`–`3.999.999` |
-| `"^1.2.3"` | Compatible (explicit): `≥1.2.3, <2.0.0` | Same as bare — caret allows MINOR+PATCH bumps |
-| `"~1.2.3"` | Tilde: `≥1.2.3, <1.3.0` | Tilde allows PATCH bumps only |
-| `"=1.2.3"` | Exact: only `1.2.3` | Pin to specific version |
-| `"1.2.3-beta.1"` | Pre-release: exact version | Pre-release MUST match exactly |
-
-**Default behavior:**
-- `"1.2.3"` (no prefix) → `^1.2.3` (compatible updates — MINOR and PATCH bumps allowed)
-- For `0.x` versions: `"0.3.1"` → `~0.3.1` (only patch updates, because MINOR may break in 0.x)
-
-**Dependency source types:**
-
-```rask
-// Registry (default)
-dep "http" "^2.1"
-
-// Git source
-dep "parser" {
-    git: "https://github.com/author/parser.git"
-    branch: "main"
-}
-
-// Path dependency (for local development)
-dep "mylib" { path: "../mylib" }
-
-// Path + version (path for dev, version for publishing)
-dep "mylib" "^1.0" { path: "../mylib" }
-```
-
-**Path dependencies:**
-- Can't be published (registry rejects packages with path deps)
-- Used for local development and monorepos
-- Version ignored for path dependencies (always uses source from path)
-
-### Lock File (`rask.lock`)
-
-**Purpose:** Guarantee reproducible builds by recording exact versions of all transitive dependencies.
-
-**Location:** Root of package directory, alongside `rask.build`.
-
-**Generated by:** `rask build` or `rask fetch` (auto-generated, don't hand-edit).
-
-**Format (TOML):**
-```toml
-# This file is auto-generated by rask. Do not edit manually.
-
-[[package]]
-name = "http"
-version = "2.1.5"
-source = "https://packages.rk-lang.org/http"
-checksum = "sha256:abc123def456..."
-
-[[package]]
-name = "json"
-version = "1.3.2"
-source = "https://packages.rk-lang.org/json"
-checksum = "sha256:789xyz123abc..."
-dependencies = ["string-utils"]
-
-[[package]]
-name = "string-utils"
-version = "0.5.1"
-source = "https://packages.rk-lang.org/string-utils"
-checksum = "sha256:def456abc789..."
-```
-
-**Fields:**
-
-| Field | Description |
-|-------|-------------|
-| `name` | Package name |
-| `version` | Exact resolved version |
-| `source` | URL where package was fetched |
-| `checksum` | SHA-256 hash of package contents |
-| `dependencies` | List of direct dependencies (names only) |
-
-**Lock file semantics:**
-
-| Scenario | Behavior |
-|----------|----------|
-| `rask.lock` exists | Use exact versions from lock file |
-| `rask.lock` missing | Resolve dependencies, generate lock file |
-| Dependency version mismatch | Error: lock file out of sync with rask.build, run `rask update` |
-| Lock file in version control | RECOMMENDED (ensures reproducibility) |
-| Library vs application | Applications SHOULD commit lock; libraries MAY omit |
-
-**Updating dependencies:**
+| Rule | Description |
+|------|-------------|
+| **LK1: Reproducibility** | `rask.lock` records exact versions of all transitive dependencies |
+| **LK2: Auto-generated** | Generated by `rask build` or `rask fetch` — don't hand-edit |
+| **LK3: Checksum** | SHA-256 hash per package for integrity verification |
+| **LK4: Sync required** | Out-of-date lock file errors with "run `rask update`" |
 
 | Command | Effect |
 |---------|--------|
 | `rask build` | Use lock file if exists, generate if missing |
 | `rask fetch` | Download dependencies, update lock file |
 | `rask update` | Resolve latest compatible versions, update lock |
-| `rask update <pkg>` | Update specific package to latest compatible |
+| `rask update <pkg>` | Update specific package |
 
-### Dependency Resolution (MVS Algorithm)
+## Package Registry
 
-**Minimal Version Selection (MVS):**
-- Select the **minimum** version that satisfies all constraints
-- Predictable: same inputs → same outputs (no backtracking)
-- Fast: O(dependencies) time, no exponential search
-- Upgrade-stable: adding a dependency cannot downgrade existing deps
-
-**Algorithm:**
-
-1. **Build dependency graph:**
-   - Start with root package's direct dependencies
-   - For each dependency, fetch its `rask.build` and read its dependencies
-   - Recursively build full transitive closure
-
-2. **Select minimum satisfying version:**
-   - For each package name, collect all version constraints
-   - Find minimum version that satisfies ALL constraints
-   - If no such version exists → dependency conflict error
-
-3. **Verify constraints:**
-   - Check selected versions against all constraints
-   - Detect cycles (error if cycle found)
-
-4. **Generate lock file:**
-   - Record exact selected versions
-   - Compute checksums for each package
-   - Write to `rask.lock`
-
-**Example:**
-
-```rask
-Root depends on: http ^2.1.0, json ^1.3.0
-http 2.1.0 depends on: string-utils ^0.5.0
-json 1.3.0 depends on: string-utils ^0.5.1
-
-Resolution:
-- http: minimum of {≥2.1.0, <3.0.0} → select 2.1.0
-- json: minimum of {≥1.3.0, <2.0.0} → select 1.3.0
-- string-utils: minimum of {≥0.5.0 (from http), ≥0.5.1 (from json)} → select 0.5.1
-
-Result: http@2.1.0, json@1.3.0, string-utils@0.5.1
-```
-
-**Conflict resolution:**
-
-| Case | Handling |
-|------|----------|
-| Compatible constraints | Select minimum satisfying version |
-| Incompatible constraints | Error: "Cannot resolve: pkg A requires foo ^1.0, pkg B requires foo ^2.0" |
-| Diamond dependency (same package, different versions) | Select minimum that satisfies all |
-| Circular dependency | Error: "Circular dependency detected: A → B → C → A" |
-
-**0.x version handling:**
-
-For `0.x` versions, MINOR bumps may break compatibility:
-- `0.3.5` and `0.4.0` are treated as incompatible MAJOR versions
-- Constraint `^0.3.1` → `≥0.3.1, <0.4.0` (not `<1.0.0`)
-- Once version reaches `1.0.0`, normal semver rules apply
-
-### Package Registry
-
-**Default registry:** `https://packages.rk-lang.org` (official Rask package index).
-
-**Registry protocol:**
+| Rule | Description |
+|------|-------------|
+| **RG1: Default** | `https://packages.rk-lang.org` is the official registry |
+| **RG2: Immutable** | Once published, versions can't be changed or deleted |
+| **RG3: No path deps** | Packages with path dependencies can't be published |
+| **RG4: Alternative registries** | Per-package or per-project registry override |
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/pkg/<name>` | GET | Get package metadata (all versions) |
+| `/pkg/<name>` | GET | Package metadata (all versions) |
 | `/pkg/<name>/<version>` | GET | Download specific version (tarball) |
-| `/pkg/<name>/versions` | GET | List all available versions |
-| `/publish` | POST | Publish new package version |
+| `/publish` | POST | Publish new version |
 
-**Metadata format (JSON):**
-```json
-{
-  "name": "http",
-  "versions": [
-    {
-      "version": "2.1.5",
-      "checksum": "sha256:abc123...",
-      "dependencies": {
-        "string-utils": "^0.5.0"
-      },
-      "published_at": "2026-01-15T10:30:00Z"
-    },
-    {
-      "version": "2.1.4",
-      "checksum": "sha256:def456...",
-      "dependencies": {
-        "string-utils": "^0.5.0"
-      },
-      "published_at": "2026-01-10T14:20:00Z"
-    }
-  ]
-}
-```
+## Dependency Cache
 
-**Package format (tarball):**
-- `<name>-<version>.tar.gz`
-- Contains package directory with all `.rk` files
-- Includes `rask.build` manifest
-- Excludes: tests, examples, `.git`, build artifacts
-
-**Publishing:**
-
-| Rule | Enforcement |
+| Rule | Description |
 |------|-------------|
-| Version immutability | Once published, version can't be changed or deleted |
-| Semver compliance | Version must follow semver format |
-| No path dependencies | Packages with `path = "..."` dependencies can't be published |
-| Checksum verification | Registry computes and stores SHA-256 hash |
-| Name uniqueness | First publisher owns the name (no takeover) |
+| **CA1: Location** | `~/.rk/cache/deps/` (Linux/macOS), `%USERPROFILE%\.rk\cache\deps\` (Windows), `RASK_CACHE` override |
+| **CA2: Checksum verified** | Verified on every read; corrupted entries re-downloaded |
+| **CA3: Concurrent-safe** | Cache is read-only after population |
 
-**Alternative registries:**
+## Workspaces
+
+| Rule | Description |
+|------|-------------|
+| **WS1: Members** | `members: ["app", "lib1", "lib2"]` in workspace root `rask.build` |
+| **WS2: Shared lock** | Single `rask.lock` at workspace root |
+| **WS3: Path deps** | Members reference each other via path dependencies |
+
+## Error Messages
+
+```
+ERROR [struct.packages/MV4]: dependency conflict
+  Cannot resolve: X requires foo ^1.0, Y requires foo ^2.0
+
+FIX: Check if X or Y has a newer version compatible with the other.
+```
+
+```
+ERROR [struct.packages/LK4]: lock file out of sync
+  rask.lock doesn't match rask.build dependencies
+
+FIX: rask update
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Missing `rask.build` | — | No external deps, version 0.0.0 |
+| Lock file out of date | LK4 | Error: run `rask update` |
+| Network unavailable | CA1 | Error: check network or cache |
+| Checksum mismatch | CA2 | Error: possible tampering |
+| Circular dependency | MV1 | Error with cycle path shown |
+| 0.x MINOR bump | VR3 | Treated as breaking |
+| Pre-release in constraint | VR2 | Must use exact: `=1.0.0-beta.1` |
+| Path dep in publish | RG3 | Error |
+| Dev-dependency conflict | MV1 | Dev-deps don't affect transitive resolution |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**MV1 (MVS):** MVS is simpler than SAT-solving (npm/Cargo) and produces predictable, deterministic results without exponential search. Same inputs always produce same outputs.
+
+**LK1 (lock files):** Applications should commit `rask.lock` for reproducibility. Libraries may omit it (consumers resolve their own versions).
+
+### Dependency Sources
+
+<!-- test: skip -->
+```rask
+dep "http" "^2.1"                        // Registry (default)
+dep "parser" { git: "https://github.com/author/parser.git", branch: "main" }
+dep "mylib" { path: "../mylib" }         // Local
+dep "mylib" "^1.0" { path: "../mylib" }  // Path for dev, version for publishing
+```
+
+### Best Practices
+
+**Library authors:**
+- Start at `0.1.0`, bump to `1.0.0` when stable
+- MAJOR for breaking, MINOR for features, PATCH for fixes
+
+**Application authors:**
+- Commit `rask.lock`
+- Use `^` constraints (allow compatible updates)
+- Pin critical deps with `=` for security-critical libs
+
+### Deprecation
 
 ```rask
-// In rask.build
-package "my-app" "1.0.0" {
-    registry: "https://my-registry.example.com"
-
-    dep "private-lib" "^1.0" { registry: "https://company.internal/registry" }
-}
-```
-
-### Dependency Cache
-
-**Location:**
-- Linux/macOS: `~/.rk/cache/deps/`
-- Windows: `%USERPROFILE%\.rk\cache\deps\`
-- Override: `RASK_CACHE` environment variable
-
-**Structure:**
-```rask
-~/.rk/cache/deps/
-├── http-2.1.5/
-│   ├── rask.build
-│   ├── request.rk
-│   ├── response.rk
-│   └── ...
-├── json-1.3.2/
-│   ├── rask.build
-│   ├── parser.rk
-│   └── ...
-└── checksums.db  # SQLite DB mapping name+version → checksum
-```
-
-**Cache behavior:**
-
-| Operation | Cache behavior |
-|-----------|----------------|
-| Fetch dependency | Check cache first; download if missing |
-| Checksum mismatch | Error: "Checksum mismatch for pkg@version, cache corrupted" |
-| Cache miss | Download from registry, verify checksum, store in cache |
-| Cache invalidation | Manual: `rask cache clean` |
-| Concurrent builds | Safe: cache is read-only after population |
-
-**Cache integrity:**
-- Each package stored with `<name>-<version>/` directory structure
-- Checksums verified on every cache read
-- Corrupted cache entries automatically re-downloaded
-
-### Build Integration
-
-**Compilation order:**
-1. Resolve dependencies (use lock file if exists)
-2. Fetch missing packages into cache
-3. Build dependency graph (topological sort)
-4. Compile packages in dependency order (independent packages in parallel)
-5. Link application
-
-**Import resolution with dependencies:**
-
-```rask
-// In source code
-import http
-
-// Compiler resolution:
-// 1. Check if "http" is local package (in workspace)
-// 2. If not, check dependencies in rask.build package block
-// 3. Look up "http" in cache at ~/.rk/cache/deps/http-<resolved-version>/
-// 4. Import http package from cache
-```
-
-**Workspace support (monorepos):**
-
-```
-workspace/
-├── rask.build          # Workspace root (has members: [...])
-├── app/
-│   ├── rask.build      # App package
-│   └── main.rk
-├── lib1/
-│   ├── rask.build      # Library package
-│   └── lib.rk
-└── lib2/
-    ├── rask.build      # Library package
-    └── lib.rk
-```
-
-**Workspace root:**
-```rask
-// workspace/rask.build
-package "my-workspace" "1.0.0" {
-    members: ["app", "lib1", "lib2"]
-}
-```
-
-**Member package:**
-```rask
-// workspace/app/rask.build
-package "app" "1.0.0" {
-    dep "lib1" { path: "../lib1" }
-    dep "http" "^2.1"
-}
-```
-
-**Workspace benefits:**
-- Shared dependency resolution (single `rask.lock` at workspace root)
-- Path dependencies within workspace (no need for publishing)
-- Consistent versions across all packages
-
-### Versioning Best Practices
-
-**For library authors:**
-
-| Rule | Rationale |
-|------|-----------|
-| Start at `0.1.0` | Signals unstable/experimental |
-| Bump to `1.0.0` when API is stable | Commits to semver guarantees |
-| MAJOR bump for breaking changes | Allows users to stay on compatible versions |
-| MINOR bump for new features | Backward-compatible additions |
-| PATCH bump for bug fixes | No API changes |
-
-**For application authors:**
-
-| Recommendation | Rationale |
-|----------------|-----------|
-| Commit `rask.lock` | Ensures reproducible builds |
-| Use `^` constraints | Allow compatible updates |
-| Review dependency updates | Run tests before accepting updates |
-| Pin critical dependencies | Use exact versions (`=1.2.3`) for security-critical libs |
-
-**Deprecation strategy:**
-
-```rask
-// In library code
 @deprecated(since = "2.1.0", note = "Use new_function instead")
 public func old_function() { ... }
 ```
 
-Compiler emits warning when deprecated items are used. MAJOR version bump can remove deprecated items.
+### Remaining Issues
 
-### Edge Cases
+**Medium priority:**
+1. Private registry authentication
+2. Vendoring mechanism for offline builds
+3. Yanking (hide versions from new resolution)
 
-| Case | Handling |
-|------|----------|
-| Missing `rask.build` | Package has no external dependencies; version = "0.0.0" |
-| Lock file out of date | Error: "rask.lock is out of sync with rask.build, run `rask update`" |
-| Network unavailable | Error: "Cannot fetch pkg@version, check network or use cache" |
-| Registry returns 404 | Error: "Package pkg@version not found in registry" |
-| Checksum mismatch | Error: "Checksum mismatch for pkg@version, possible tampering" |
-| Circular dependency | Error: "Circular dependency: A → B → C → A" |
-| Version conflict | Error: "Cannot resolve: X requires Y ^1.0, Z requires Y ^2.0" |
-| Pre-release in lock file | Lock file stores exact pre-release version |
-| Pre-release in constraint | Error: "Pre-release versions MUST be exact: use `=1.0.0-beta.1`" |
-| Path dependency in publish | Error: "Cannot publish with path dependencies" |
-| Workspace member version conflict | Error: "Workspace member X@1.0 conflicts with dependency X@2.0" |
-| Git dependency not found | Error: "Git repository not found: <url>" |
-| Git dependency no tags | Use commit hash as version identifier |
-| 0.x MAJOR bump | Treat as breaking; `0.3` and `0.4` are incompatible |
-| Dev-dependency conflict | Dev-dependencies do NOT affect transitive resolution |
-| Multiple registries | Each package resolved from its specified registry |
+**Low priority:**
+4. Mirror registries
+5. Patch dependency overrides
 
-## Examples
+### See Also
 
-### Simple Application
-
-**Directory structure:**
-```
-myapp/
-├── rask.build
-├── main.rk
-└── util.rk
-```
-
-**rask.build:**
-```rask
-package "myapp" "1.0.0" {
-    dep "http" "^2.1"
-    dep "json" "^1.3"
-}
-```
-
-**main.rk:**
-```rask
-import http
-import json
-
-func main() {
-    const req = http.get("https://api.example.com/data")
-    const data = json.parse(req.body)
-    print(data)
-}
-```
-
-**Build process:**
-```bash
-$ rask build
-Resolving dependencies...
-  Fetching http@2.1.5
-  Fetching json@1.3.2
-  Fetching string-utils@0.5.1 (dependency of http, json)
-Generating rask.lock
-Compiling string-utils@0.5.1
-Compiling http@2.1.5
-Compiling json@1.3.2
-Compiling myapp@1.0.0
-  Linking myapp
-Build complete: ./myapp
-```
-
-### Library with Dev Dependencies
-
-**rask.build:**
-```rask
-package "mylib" "2.3.1" {
-    license: "MIT"
-
-    dep "string-utils" "^0.5"
-
-    scope "dev" {
-        dep "testing" "^1.0"
-    }
-}
-```
-
-**lib.rk:**
-```rask
-import string_utils
-
-public func process(s: string) -> string {
-    return string_utils.normalize(s)
-}
-```
-
-**lib_test.rk:**
-```rask
-import testing
-import mylib
-
-test "process normalizes strings" {
-    testing.assert_eq(mylib.process("  hello  "), "hello")
-}
-```
-
-**Publishing:**
-```bash
-$ rask publish
-Publishing mylib@2.3.1 to https://packages.rk-lang.org
-  Verifying dependencies...
-  Packaging tarball...
-  Uploading (1.2 MB)...
-  Success! Published mylib@2.3.1
-```
-
-### Monorepo Workspace
-
-**workspace/rask.build:**
-```rask
-package "my-workspace" "1.0.0" {
-    members: ["server", "client", "shared"]
-}
-```
-
-**workspace/server/rask.build:**
-```rask
-package "server" "1.0.0" {
-    dep "shared" { path: "../shared" }
-    dep "http" "^2.1"
-}
-```
-
-**workspace/client/rask.build:**
-```rask
-package "client" "1.0.0" {
-    dep "shared" { path: "../shared" }
-    dep "http" "^2.1"
-}
-```
-
-**workspace/shared/rask.build:**
-```rask
-package "shared" "0.1.0" {
-    dep "json" "^1.3"
-}
-```
-
-**Build:**
-```bash
-$ cd workspace
-$ rask build
-Resolving workspace dependencies...
-  Fetching http@2.1.5
-  Fetching json@1.3.2
-Building workspace members...
-  Compiling shared@0.1.0
-  Compiling server@1.0.0
-  Compiling client@1.0.0
-```
-
-### Custom Registry
-
-**rask.build:**
-```rask
-package "corporate-app" "1.0.0" {
-    registry: "https://registry.company.internal"
-
-    dep "internal-auth" "^3.2"
-    dep "http" "^2.1" { registry: "https://packages.rk-lang.org" }
-}
-```
-
-## Integration Notes
-
-- **Module System**: Dependencies are imported like local packages—`import http` works identically whether `http` is local or external
-- **Compilation Model**: Packages compiled in topological order; independent packages compile in parallel (CS ≥ 5× Rust goal)
-- **Type System**: Type identity preserved across dependency boundaries (same as local packages)
-- **Error Handling**: Dependency resolution errors reported immediately (fail-fast); checksum errors are fatal
-- **C Interop**: C link libraries specified via `compile_c()` in build functions (see [build.md](build.md)); C dependencies not managed by Rask (use system package manager)
-- **Tooling**: IDEs fetch package metadata on save; auto-import suggests packages from registry; `rask.lock` changes trigger rebuild
-
-## Remaining Issues
-
-### Medium Priority
-1. **Private registry authentication** — How to handle auth tokens for private registries? Environment variables? Config file?
-2. **Vendoring** — Mechanism to bundle dependencies in source tree for offline builds or environments without registry access
-3. **Yanking** — Can published versions be "yanked" (hidden from new resolution but still available for existing lock files)?
-
-### Low Priority
-4. **Mirror registries** — Fallback to mirrors if primary registry unavailable
-5. **Patch dependencies** — Override specific dependency versions (for security patches before upstream fixes)
+- `struct.build` — package block, build scripts
+- `struct.modules` — import resolution, package organization

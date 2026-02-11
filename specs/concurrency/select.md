@@ -1,12 +1,19 @@
+<!-- id: conc.select -->
+<!-- status: decided -->
+<!-- summary: Wait on multiple channel operations simultaneously with random or priority selection -->
+<!-- depends: concurrency/async.md -->
+
 # Select and Multiplex
 
 Wait on multiple sources simultaneously.
 
-## Overview
+## Arm Types
 
-Select waits on multiple channel operations simultaneously.
-
-## Syntax
+| Rule | Description |
+|------|-------------|
+| **A1: Receive** | `rx -> v: expr` — wait for value, bind to `v` |
+| **A2: Send** | `tx <- val: expr` — wait for send completion |
+| **A3: Default** | `_: expr` — non-blocking fallback |
 
 ```rask
 result = select {
@@ -17,84 +24,101 @@ result = select {
 }
 ```
 
-## Arm Types
+Timeouts use `Timer.after(duration)` which returns a receiver that fires once — regular receive arm, no special syntax.
 
-| Arm Type | Syntax | Semantics |
-|----------|--------|-----------|
-| Receive | `rx -> v: expr` | Wait for value, bind to `v` |
-| Send | `tx <- val: expr` | Wait for send completion |
-| Default | `_: expr` | Non-blocking fallback |
+## Selection Policy
 
-Timeouts use `Timer.after(duration)` which returns a receiver that fires once after the duration elapses. Regular receive arm—no special syntax needed.
+| Rule | Description |
+|------|-------------|
+| **P1: Random default** | `select` picks uniformly at random among ready arms — prevents starvation |
+| **P2: Priority opt-in** | `select_priority` evaluates arms in listed order — first ready arm fires |
+| **P3: Zero arms** | Select with 0 arms is a compile error |
 
-## Semantics
-
-### Selection Policy
-
-When multiple arms are ready simultaneously:
-
-| Construct | Policy | Rationale |
-|-----------|--------|-----------|
-| `select` | **Random** among ready arms | Prevents starvation |
-| `select_priority` | **First-listed** wins | Deterministic, explicit priority |
-
-#### `select` (Default)
-
-Runtime selects **uniformly at random** among all ready arms. Prevents starvation—no arm can be indefinitely skipped if it's always ready.
-
+<!-- test: skip -->
 ```rask
+// Random (default) — fair
 select {
     rx1 -> v: handle(v),  // 50% if both ready
     rx2 -> v: handle(v),  // 50% if both ready
 }
-```
 
-**Guarantee:** If an arm is ready on N consecutive iterations, it fires with probability approaching 1 as N grows.
-
-#### `select_priority` (Opt-in)
-
-When priority or determinism is required:
-
-```rask
+// Priority — deterministic
 select_priority {
-    shutdown -> _: return,   // Always checked first
-    work -> w: process(w),   // Only if shutdown not ready
+    shutdown -> _: return,       // Always checked first
+    work -> w: process(w),       // Only if shutdown not ready
 }
 ```
 
-**Semantics:** Arms evaluated in listed order. First ready arm fires.
+## Ownership
 
-**Use cases:**
-- Control signals that must preempt work
-- Graceful shutdown patterns
-- Deterministic testing
+| Rule | Description |
+|------|-------------|
+| **OW1: Selected arm** | Ownership transfers as normal |
+| **OW2: Non-selected send** | Value returned to caller (not consumed) |
 
-### Ownership
-
-**Non-selected send arms:** Value returned to caller (not consumed).
-
+<!-- test: skip -->
 ```rask
 result = select {
     tx1 <- msg: "sent to tx1",
     tx2 <- msg: "sent to tx2",  // msg reused if tx1 selected
 }
-// If tx1 selected, msg for tx2 arm is NOT consumed
 ```
 
-**Selected arm:** Ownership transfers as normal.
+## Closed Channels
 
-### Closed Channels
+| Rule | Description |
+|------|-------------|
+| **CL1: All closed** | If all recv channels closed, immediate return with `Err(Closed)` |
+| **CL2: Some closed** | Skip closed channels, wait on remaining |
+| **CL3: Send closed** | Send arm returns `Err(Closed)` |
 
-| Scenario | Behavior |
-|----------|----------|
-| All recv channels closed | Immediate return with `Err(Closed)` |
-| Some recv channels closed | Skip closed, wait on others |
-| Send channel closed | Arm returns `Err(Closed)` |
+## Timer
 
-## Examples
+<!-- test: skip -->
+```rask
+const rx = Timer.after(5.seconds)
+rx.recv()  // Blocks for 5 seconds, returns ()
 
-### Timeout Pattern
+select {
+    work -> w: process(w),
+    Timer.after(1.seconds) -> _: check_health(),
+}
+```
 
+Properties: returns `Receiver<()>`, single-shot (fires once, then closes), cancellable (drop receiver to cancel).
+
+## Error Messages
+
+```
+ERROR [conc.select/P3]: select requires at least one arm
+   |
+5  |  select { }
+   |  ^^^^^^^^^ empty select block
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| Select with 0 arms | P3 | Compile error |
+| All channels closed | CL1 | Returns immediately with `Err(Closed)` |
+| Timer in select | A1 | Regular receive arm — `Timer.after()` returns `Receiver<()>` |
+| Non-selected send value | OW2 | Value returned to caller, not consumed |
+
+---
+
+## Appendix (non-normative)
+
+### Rationale
+
+**P1 (random default):** Deterministic selection (always first-listed) causes starvation — a fast channel starves a slow one. Random selection guarantees fairness: if an arm is ready on N consecutive iterations, it fires with probability approaching 1 as N grows.
+
+**P2 (priority opt-in):** Some patterns need determinism — shutdown signals must preempt work, graceful shutdown patterns need ordered checking. `select_priority` is the explicit opt-in.
+
+### Patterns
+
+**Timeout:**
+<!-- test: skip -->
 ```rask
 result = select {
     rx -> v: Ok(v),
@@ -102,8 +126,8 @@ result = select {
 }
 ```
 
-### Fan-in (Multiple Sources)
-
+**Fan-in:**
+<!-- test: skip -->
 ```rask
 loop {
     select {
@@ -114,8 +138,8 @@ loop {
 }
 ```
 
-### Try-send with Fallback
-
+**Try-send with fallback:**
+<!-- test: skip -->
 ```rask
 select {
     tx <- msg: log("sent"),
@@ -123,40 +147,11 @@ select {
 }
 ```
 
-## Edge Cases
+### Open Issues
 
-| Case | Handling |
-|------|----------|
-| Select with 0 arms | Compile error |
-| All channels closed | Returns immediately |
+1. **Select as macro** — Should select be a macro for flexibility? Currently specified as language construct.
 
-## Timer
+### See Also
 
-`Timer.after(duration)` returns a `Receiver<()>` that delivers a single value after the duration:
-
-```rask
-// Standalone usage
-const rx = Timer.after(5.seconds)
-rx.recv()  // Blocks for 5 seconds, then returns ()
-
-// In select (most common)
-select {
-    work -> w: process(w),
-    Timer.after(1.seconds) -> _: check_health(),
-}
-```
-
-**Properties:**
-- Returns `Receiver<()>` — integrates naturally with select
-- Single-shot: fires once, then closes
-- Cancellable: drop the receiver to cancel
-
----
-
-## Remaining Issues
-
-### Low Priority
-
-1. **Select macros**
-   - Should select be a macro for flexibility?
-   - Currently specified as language construct
+- `conc.async` — channels, task spawning
+- `conc.sync` — synchronization primitives
