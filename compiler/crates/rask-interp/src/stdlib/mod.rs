@@ -175,7 +175,7 @@ impl Interpreter {
                             .map(|p| p.name != "self")
                             .unwrap_or(true);
                         if is_static {
-                            return self.call_function(&method_fn, args);
+                            return self.call_function(&method_fn, args).map_err(|diag| diag.error);
                         }
                     }
                 }

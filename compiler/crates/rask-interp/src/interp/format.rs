@@ -330,7 +330,7 @@ impl Interpreter {
             ))
         })?;
 
-        self.eval_expr(&expr)
+        self.eval_expr(&expr).map_err(|diag| diag.error)
     }
 
     /// Format a value with a format specifier like :.2, :.1, :b, :x, etc.

@@ -96,7 +96,7 @@ impl Interpreter {
                         }
                     }
                     ExprKind::Index { object: idx_obj, index: idx_expr } => {
-                        let idx_val = self.eval_expr(idx_expr)?;
+                        let idx_val = self.eval_expr(idx_expr).map_err(|diag| diag.error)?;
                         if let ExprKind::Ident(var_name) = &idx_obj.kind {
                             if let Some(container) = self.env.get(var_name).cloned() {
                                 match container {
@@ -142,7 +142,7 @@ impl Interpreter {
                 }
             }
             ExprKind::Index { object, index } => {
-                let idx = self.eval_expr(index)?;
+                let idx = self.eval_expr(index).map_err(|diag| diag.error)?;
                 if let ExprKind::Ident(var_name) = &object.kind {
                     if let Some(obj) = self.env.get(var_name).cloned() {
                         match obj {

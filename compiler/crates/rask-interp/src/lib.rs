@@ -10,7 +10,7 @@ mod interp;
 mod builtins;
 mod stdlib;
 
-pub use interp::{BenchmarkResult, Interpreter, RuntimeError, TestResult};
+pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, TestResult};
 
 #[cfg(test)]
 mod drift;

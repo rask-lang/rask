@@ -84,19 +84,23 @@ impl Playground {
                 let output = self.output_buffer.lock().unwrap().clone();
                 Ok(output)
             }
-            Err(RuntimeError::Exit(code)) => {
+            Err(diag) if matches!(diag.error, RuntimeError::Exit(_)) => {
                 // Program called exit() - this is normal, return output
                 let output = self.output_buffer.lock().unwrap().clone();
-                if code == 0 {
-                    Ok(output)
+                if let RuntimeError::Exit(code) = diag.error {
+                    if code == 0 {
+                        Ok(output)
+                    } else {
+                        Err(format!(
+                            "Program exited with code {}\n{}",
+                            code, output
+                        ))
+                    }
                 } else {
-                    Err(format!(
-                        "Program exited with code {}\n{}",
-                        code, output
-                    ))
+                    unreachable!()
                 }
             }
-            Err(e) => Err(format!("Runtime error:\n{}", e)),
+            Err(diag) => Err(format!("Runtime error:\n{}", diag.error)),
         }
     }
 

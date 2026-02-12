@@ -5,10 +5,10 @@ use rask_ast::stmt::{Stmt, StmtKind};
 
 use crate::value::Value;
 
-use super::{Interpreter, RuntimeError};
+use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(super) fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
+    pub(super) fn exec_stmt(&mut self, stmt: &Stmt) -> Result<Value, RuntimeDiagnostic> {
         match &stmt.kind {
             StmtKind::Expr(expr) => self.eval_expr(expr),
 
@@ -25,7 +25,8 @@ impl Interpreter {
                 let value = self.eval_expr(init)?;
                 // Coerce Vec to SimdF32x8 when type annotation says f32x8
                 let value = if ty.as_deref() == Some("f32x8") {
-                    Self::coerce_to_simd_f32x8(value)?
+                    Self::coerce_to_simd_f32x8(value)
+                        .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?
                 } else {
                     value
                 };
@@ -38,19 +39,22 @@ impl Interpreter {
 
             StmtKind::LetTuple { names, init } => {
                 let value = self.eval_expr(init)?;
-                self.destructure_tuple(names, value)?;
+                self.destructure_tuple(names, value)
+                    .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
             StmtKind::ConstTuple { names, init } => {
                 let value = self.eval_expr(init)?;
-                self.destructure_tuple(names, value)?;
+                self.destructure_tuple(names, value)
+                    .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
             StmtKind::Assign { target, value } => {
                 let val = self.eval_expr(value)?;
-                self.assign_target(target, val)?;
+                self.assign_target(target, val)
+                    .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))?;
                 Ok(Value::Unit)
             }
 
@@ -60,7 +64,7 @@ impl Interpreter {
                 } else {
                     Value::Unit
                 };
-                Err(RuntimeError::Return(value))
+                Err(RuntimeDiagnostic::new(RuntimeError::Return(value), stmt.span))
             }
 
             StmtKind::While { cond, body } => {
@@ -72,11 +76,11 @@ impl Interpreter {
                     self.env.push_scope();
                     match self.exec_stmts(body) {
                         Ok(_) => {}
-                        Err(RuntimeError::Break) => {
+                        Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                             self.env.pop_scope();
                             break;
                         }
-                        Err(RuntimeError::Continue) => {
+                        Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                             self.env.pop_scope();
                             continue;
                         }
@@ -105,11 +109,11 @@ impl Interpreter {
                         }
                         match self.exec_stmts(body) {
                             Ok(_) => {}
-                            Err(RuntimeError::Break) => {
+                            Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                                 self.env.pop_scope();
                                 break;
                             }
-                            Err(RuntimeError::Continue) => {
+                            Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                                 self.env.pop_scope();
                                 continue;
                             }
@@ -130,11 +134,11 @@ impl Interpreter {
                 self.env.push_scope();
                 match self.exec_stmts(body) {
                     Ok(_) => {}
-                    Err(RuntimeError::Break) => {
+                    Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                         self.env.pop_scope();
                         break Ok(Value::Unit);
                     }
-                    Err(RuntimeError::Continue) => {
+                    Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                         self.env.pop_scope();
                         continue;
                     }
@@ -146,9 +150,9 @@ impl Interpreter {
                 self.env.pop_scope();
             },
 
-            StmtKind::Break { .. } => Err(RuntimeError::Break),
+            StmtKind::Break { .. } => Err(RuntimeDiagnostic::new(RuntimeError::Break, stmt.span)),
 
-            StmtKind::Continue(_) => Err(RuntimeError::Continue),
+            StmtKind::Continue(_) => Err(RuntimeDiagnostic::new(RuntimeError::Continue, stmt.span)),
 
             StmtKind::For {
                 binding,
@@ -170,11 +174,11 @@ impl Interpreter {
                             self.env.define(binding.clone(), Value::Int(i));
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(RuntimeError::Continue) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -194,11 +198,11 @@ impl Interpreter {
                             self.env.define(binding.clone(), item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(RuntimeError::Continue) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -230,11 +234,11 @@ impl Interpreter {
                             self.env.define(binding.clone(), handle);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
-                                Err(RuntimeError::Break) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Break) => {
                                     self.env.pop_scope();
                                     break;
                                 }
-                                Err(RuntimeError::Continue) => {
+                                Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
                                     self.env.pop_scope();
                                     continue;
                                 }
@@ -247,10 +251,13 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "cannot iterate over {}",
-                        iter_val.type_name()
-                    ))),
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "cannot iterate over {}",
+                            iter_val.type_name()
+                        )),
+                        stmt.span
+                    )),
                 }
             }
 

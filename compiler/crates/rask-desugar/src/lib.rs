@@ -215,6 +215,15 @@ impl Desugarer {
                 }
             }
             ExprKind::Try(e) => self.desugar_expr(e),
+            ExprKind::Unwrap(e) => self.desugar_expr(e),
+            ExprKind::GuardPattern {
+                expr,
+                else_branch,
+                ..
+            } => {
+                self.desugar_expr(expr);
+                self.desugar_expr(else_branch);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.desugar_expr(value);
                 self.desugar_expr(default);

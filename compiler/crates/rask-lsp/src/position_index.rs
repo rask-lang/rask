@@ -222,6 +222,9 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
         ExprKind::Try(e) => {
             visit_expr(e, index);
         }
+        ExprKind::Unwrap(e) => {
+            visit_expr(e, index);
+        }
         ExprKind::NullCoalesce { value, default } => {
             visit_expr(value, index);
             visit_expr(default, index);

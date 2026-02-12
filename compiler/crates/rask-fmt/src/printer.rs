@@ -1000,6 +1000,17 @@ impl<'a> Printer<'a> {
                 self.emit("try ");
                 self.format_expr(inner);
             }
+            ExprKind::Unwrap(inner) => {
+                self.format_expr(inner);
+                self.emit("!");
+            }
+            ExprKind::GuardPattern { expr, pattern, else_branch } => {
+                self.format_expr(expr);
+                self.emit(" is ");
+                self.format_pattern(pattern);
+                self.emit(" else ");
+                self.format_expr(else_branch);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.format_expr(value);
                 self.emit(" ?? ");

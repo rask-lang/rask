@@ -938,6 +938,14 @@ impl Resolver {
             ExprKind::Try(inner) => {
                 self.resolve_expr(inner);
             }
+            ExprKind::Unwrap(inner) => {
+                self.resolve_expr(inner);
+            }
+            ExprKind::GuardPattern { expr, pattern, else_branch } => {
+                self.resolve_expr(expr);
+                self.resolve_pattern(pattern);
+                self.resolve_expr(else_branch);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.resolve_expr(value);
                 self.resolve_expr(default);

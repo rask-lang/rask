@@ -45,7 +45,7 @@ impl Interpreter {
 
                         let join_handle = std::thread::spawn(move || {
                             let mut interp = child;
-                            match interp.eval_expr(&body) {
+                            match interp.eval_expr(&body).map_err(|diag| diag.error) {
                                 Ok(val) => Ok(val),
                                 Err(RuntimeError::Return(val)) => Ok(val),
                                 Err(e) => Err(format!("{}", e)),

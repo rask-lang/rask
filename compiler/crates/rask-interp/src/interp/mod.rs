@@ -22,6 +22,7 @@ mod operators;
 mod dispatch;
 
 use rask_ast::decl::{BenchmarkDecl, Decl, EnumDecl, FnDecl, StructDecl, TestDecl};
+use rask_ast::Span;
 
 use crate::env::Environment;
 use crate::resource::ResourceTracker;
@@ -166,7 +167,7 @@ impl Interpreter {
 
                 let join_handle = std::thread::spawn(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body) {
+                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
                         Ok(val) => Ok(val),
                         Err(RuntimeError::Return(val)) => Ok(val),
                         Err(e) => Err(format!("{}", e)),
@@ -221,7 +222,7 @@ impl Interpreter {
 
                 let join_handle = std::thread::spawn(move || {
                     let mut interp = child;
-                    match interp.eval_expr(&body) {
+                    match interp.eval_expr(&body).map_err(|diag| diag.error) {
                         Ok(val) => Ok(val),
                         Err(RuntimeError::Return(val)) => Ok(val),
                         Err(e) => Err(format!("{}", e)),
@@ -283,7 +284,7 @@ impl Interpreter {
                 let task = PoolTask {
                     work: Box::new(move || {
                         let mut interp = child;
-                        match interp.eval_expr(&body) {
+                        match interp.eval_expr(&body).map_err(|diag| diag.error) {
                             Ok(val) => {
                                 let _ = result_tx.send(Ok(val));
                             }
@@ -386,13 +387,14 @@ impl Interpreter {
         }
     }
 
-    pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeError> {
-        let registered = self.register_declarations(decls)?;
+    pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeDiagnostic> {
+        let registered = self.register_declarations(decls)
+            .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
 
         if let Some(entry) = registered.entry_fn {
             self.call_function(&entry, vec![])
         } else {
-            Err(RuntimeError::NoEntryPoint)
+            Err(RuntimeDiagnostic::new(RuntimeError::NoEntryPoint, Span::new(0, 0)))
         }
     }
 
@@ -527,6 +529,10 @@ pub enum RuntimeError {
     #[error("try error")]
     TryError(Value),
 
+    /// Unwrap on None panics
+    #[error("unwrap failed: value was None")]
+    UnwrapError,
+
     /// Assertion failed (assert expr) — stops test immediately
     #[error("assertion failed: {0}")]
     AssertionFailed(String),
@@ -535,3 +541,24 @@ pub enum RuntimeError {
     #[error("check failed: {0}")]
     CheckFailed(String),
 }
+
+/// Runtime error with source location for diagnostic display.
+#[derive(Debug)]
+pub struct RuntimeDiagnostic {
+    pub error: RuntimeError,
+    pub span: Span,
+}
+
+impl RuntimeDiagnostic {
+    pub fn new(error: RuntimeError, span: Span) -> Self {
+        Self { error, span }
+    }
+}
+
+impl std::fmt::Display for RuntimeDiagnostic {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", self.error)
+    }
+}
+
+impl std::error::Error for RuntimeDiagnostic {}

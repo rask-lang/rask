@@ -137,6 +137,45 @@ impl TypeChecker {
                 then_ty
             }
 
+            ExprKind::GuardPattern {
+                expr: value,
+                pattern,
+                else_branch,
+            } => {
+                let value_ty = self.infer_expr(value);
+
+                // Check that else branch diverges (returns Never)
+                let else_ty = self.infer_expr(else_branch);
+                let resolved_else = self.ctx.apply(&else_ty);
+                if !matches!(resolved_else, Type::Never) {
+                    self.errors.push(TypeError::GuardElseMustDiverge {
+                        found: resolved_else,
+                        span: else_branch.span,
+                    });
+                }
+
+                // Check pattern and extract bindings
+                // Note: Bindings are NOT added to scope here - they're added by the stmt handler
+                // We just return them via the expression type mechanism
+                let bindings = self.check_pattern(pattern, &value_ty, expr.span);
+
+                // For a guard pattern like `const v = opt is Some else { return }`,
+                // the expression itself evaluates to the inner type
+                // The pattern binding happens at the statement level
+                if let Some((_, inner_ty)) = bindings.first() {
+                    inner_ty.clone()
+                } else {
+                    // If no explicit bindings, extract inner type from Option/Result
+                    // This handles patterns like `Some` or `Ok` without explicit field binding
+                    let resolved_value_ty = self.ctx.apply(&value_ty);
+                    match &resolved_value_ty {
+                        Type::Option(inner) => *inner.clone(),
+                        Type::Result { ok, .. } => *ok.clone(),
+                        _ => Type::Unit,
+                    }
+                }
+            }
+
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let result_ty = self.ctx.fresh_var();
@@ -358,6 +397,32 @@ impl TypeChecker {
                 }
             }
 
+            ExprKind::Unwrap(inner) => {
+                let inner_ty = self.infer_expr(inner);
+                let resolved = self.ctx.apply(&inner_ty);
+                match &resolved {
+                    Type::Option(inner) => {
+                        // For Unwrap, extract the inner type from Option
+                        *inner.clone()
+                    }
+                    Type::Var(_) => {
+                        // If we don't know the type yet, constrain it to be an Option
+                        let inner_opt_ty = self.ctx.fresh_var();
+                        let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
+                        let _ = self.unify(&inner_ty, &option_ty, expr.span);
+                        inner_opt_ty
+                    }
+                    _ => {
+                        self.errors.push(TypeError::Mismatch {
+                            expected: Type::Option(Box::new(self.ctx.fresh_var())),
+                            found: resolved,
+                            span: expr.span,
+                        });
+                        Type::Error
+                    }
+                }
+            }
+
             ExprKind::Closure { params, body, .. } => {
                 let param_types: Vec<_> = params
                     .iter()
@@ -495,6 +560,7 @@ impl TypeChecker {
                     len,
                 }
             }
+
 
             ExprKind::NullCoalesce { value, default } => {
                 let val_ty = self.infer_expr(value);
