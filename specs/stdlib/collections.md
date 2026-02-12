@@ -57,9 +57,18 @@ vec.push_or_panic(x)        // Explicit panic variant
 | Method | Signature | Semantics |
 |--------|-----------|-----------|
 | `Vec.from(arr)` | `[T; N] -> Vec<T>` | Copy array elements into new Vec |
-| `Map.from(pairs)` | `[(K,V); N] -> Map<K,V>` | Build Map from key-value pairs |
+| `Map.from(pairs)` | `[[K,V]; N] -> Map<K,V>` | Build Map from key-value pair arrays |
 
 Array literals `[...]` already create Vec values, so `Vec.from([1, 2, 3])` is equivalent to `[1, 2, 3]`. The explicit constructor exists for API clarity.
+
+**Note:** Key-value pairs for `Map.from()` are represented as 2-element arrays `[key, value]` rather than tuple syntax. Native tuple support may be added in the future. Example:
+
+```rask
+const users = Map.from([
+    ["alice", User.new("Alice")],
+    ["bob", User.new("Bob")],
+])
+```
 
 ## Vec -- Indexed Access
 

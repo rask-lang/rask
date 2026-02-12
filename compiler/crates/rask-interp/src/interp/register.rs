@@ -4,6 +4,7 @@
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FnDecl, TestDecl, Variant, Field};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
+use rask_ast::Span;
 
 use crate::value::{BuiltinKind, ModuleKind, Value};
 
@@ -190,6 +191,7 @@ impl Interpreter {
                         name: "Some".to_string(),
                         fields: vec![Field {
                             name: "value".to_string(),
+                            name_span: Span::new(0, 0),
                             ty: "T".to_string(),
                             is_pub: false,
                         }],
@@ -213,6 +215,7 @@ impl Interpreter {
                         name: "Ok".to_string(),
                         fields: vec![Field {
                             name: "value".to_string(),
+                            name_span: Span::new(0, 0),
                             ty: "T".to_string(),
                             is_pub: false,
                         }],
@@ -221,6 +224,7 @@ impl Interpreter {
                         name: "Err".to_string(),
                         fields: vec![Field {
                             name: "error".to_string(),
+                            name_span: Span::new(0, 0),
                             ty: "E".to_string(),
                             is_pub: false,
                         }],

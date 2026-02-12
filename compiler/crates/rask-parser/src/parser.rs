@@ -594,6 +594,7 @@ impl Parser {
         loop {
             let is_take = self.match_token(&TokenKind::Take);
             let is_mutate = if !is_take { self.match_token(&TokenKind::MutateKw) } else { false };
+            let name_span = self.current().span;
             let name = self.expect_ident_or_keyword()?;
 
             let ty = if self.match_token(&TokenKind::Colon) {
@@ -614,7 +615,7 @@ impl Parser {
                 None
             };
 
-            params.push(Param { name, ty, is_take, is_mutate, default });
+            params.push(Param { name, name_span, ty, is_take, is_mutate, default });
 
             if !self.match_token(&TokenKind::Comma) {
                 break;
@@ -956,10 +957,11 @@ impl Parser {
                     methods.push(fn_decl);
                 }
             } else {
+                let name_span = self.current().span;
                 let field_name = self.expect_ident_or_keyword()?;
                 self.expect(&TokenKind::Colon)?;
                 let ty = self.parse_type_name()?;
-                fields.push(Field { name: field_name, ty, is_pub: field_pub });
+                fields.push(Field { name: field_name, name_span, ty, is_pub: field_pub });
             }
 
             self.skip_newlines();
@@ -1017,22 +1019,25 @@ impl Parser {
                 if self.match_token(&TokenKind::LParen) {
                     let mut idx = 0;
                     while !self.check(&TokenKind::RParen) && !self.at_end() {
-                        let (field_name, ty) = if self.check(&TokenKind::Ident(String::new())) {
+                        let (field_name, name_span, ty) = if self.check(&TokenKind::Ident(String::new())) {
                             if self.peek(1) == &TokenKind::Colon {
+                                let span = self.current().span;
                                 let name = self.expect_ident()?;
                                 self.advance();
                                 let ty = self.parse_type_name()?;
-                                (name, ty)
+                                (name, span, ty)
                             } else {
+                                let type_span = self.current().span;
                                 let ty = self.parse_type_name()?;
-                                (format!("_{}", idx), ty)
+                                (format!("_{}", idx), type_span, ty)
                             }
                         } else {
+                            let type_span = self.current().span;
                             let ty = self.parse_type_name()?;
-                            (format!("_{}", idx), ty)
+                            (format!("_{}", idx), type_span, ty)
                         };
 
-                        fields.push(Field { name: field_name, ty, is_pub: false });
+                        fields.push(Field { name: field_name, name_span, ty, is_pub: false });
                         idx += 1;
 
                         if !self.match_token(&TokenKind::Comma) { break; }
@@ -1043,10 +1048,11 @@ impl Parser {
                     self.advance();
                     self.skip_newlines();
                     while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                        let name_span = self.current().span;
                         let field_name = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
                         let ty = self.parse_type_name()?;
-                        fields.push(Field { name: field_name, ty, is_pub: false });
+                        fields.push(Field { name: field_name, name_span, ty, is_pub: false });
                         if !self.match_token(&TokenKind::Comma) {
                             self.skip_newlines();
                             if !self.check(&TokenKind::RBrace) { continue; }
@@ -1588,6 +1594,7 @@ impl Parser {
             return Ok(StmtKind::LetTuple { names, init });
         }
 
+        let name_span = self.current().span;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
@@ -1622,7 +1629,7 @@ impl Parser {
         }
 
         self.expect_terminator()?;
-        Ok(StmtKind::Let { name, ty, init })
+        Ok(StmtKind::Let { name, name_span, ty, init })
     }
 
     fn parse_const_stmt(&mut self) -> Result<StmtKind, ParseError> {
@@ -1641,6 +1648,7 @@ impl Parser {
             return Ok(StmtKind::ConstTuple { names, init });
         }
 
+        let name_span = self.current().span;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
@@ -1675,7 +1683,7 @@ impl Parser {
         }
 
         self.expect_terminator()?;
-        Ok(StmtKind::Const { name, ty, init })
+        Ok(StmtKind::Const { name, name_span, ty, init })
     }
 
     fn parse_return_stmt(&mut self) -> Result<StmtKind, ParseError> {

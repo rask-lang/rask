@@ -668,26 +668,26 @@ impl Resolver {
             StmtKind::Expr(expr) => {
                 self.resolve_expr(expr);
             }
-            StmtKind::Let { name, ty, init } => {
+            StmtKind::Let { name, name_span, ty, init } => {
                 self.resolve_expr(init);
                 let sym_id = self.symbols.insert(
                     name.clone(),
                     SymbolKind::Variable { mutable: true },
                     ty.clone(),
-                    stmt.span,
+                    *name_span,
                     false,
                 );
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
                     self.errors.push(e);
                 }
             }
-            StmtKind::Const { name, ty, init } => {
+            StmtKind::Const { name, name_span, ty, init } => {
                 self.resolve_expr(init);
                 let sym_id = self.symbols.insert(
                     name.clone(),
                     SymbolKind::Variable { mutable: false },
                     ty.clone(),
-                    stmt.span,
+                    *name_span,
                     false,
                 );
                 if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {

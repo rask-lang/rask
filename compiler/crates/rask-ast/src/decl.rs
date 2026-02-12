@@ -105,6 +105,7 @@ pub struct ContextClause {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub name_span: Span,
     pub ty: String,
     pub is_take: bool,
     pub is_mutate: bool,
@@ -138,6 +139,7 @@ pub struct StructDecl {
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
+    pub name_span: Span,
     pub ty: String,
     pub is_pub: bool,
 }
