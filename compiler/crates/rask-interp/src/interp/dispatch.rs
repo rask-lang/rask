@@ -20,7 +20,7 @@ impl Interpreter {
             Value::Builtin(kind) => {
                 // Handle AsyncSpawn separately as it needs mutable access
                 if kind == BuiltinKind::AsyncSpawn {
-                    return self.spawn_os_thread(args);
+                    return self.spawn_async_task(args);
                 }
                 self.call_builtin(kind, args)
             }

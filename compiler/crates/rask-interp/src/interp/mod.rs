@@ -184,6 +184,62 @@ impl Interpreter {
         }
     }
 
+    /// Spawn an async task from a closure (spawn() in using Multitasking).
+    /// In interpreter: uses OS thread but returns TaskHandle for type distinction.
+    pub(crate) fn spawn_async_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use crate::value::ThreadHandleInner;
+
+        if args.is_empty() {
+            return Err(RuntimeError::TypeError(
+                "spawn() requires a closure argument".to_string(),
+            ));
+        }
+
+        // Check for Multitasking context
+        if self.env.get("__multitasking_ctx").is_none() {
+            return Err(RuntimeError::TypeError(
+                "spawn() requires 'using Multitasking' context".to_string(),
+            ));
+        }
+
+        let closure = &args[0];
+        match closure {
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                if !params.is_empty() {
+                    return Err(RuntimeError::TypeError(
+                        "spawn() closure must take no parameters".to_string(),
+                    ));
+                }
+
+                let body = body.clone();
+                let captured = captured_env.clone();
+                let child = self.spawn_child(captured);
+
+                let join_handle = std::thread::spawn(move || {
+                    let mut interp = child;
+                    match interp.eval_expr(&body) {
+                        Ok(val) => Ok(val),
+                        Err(RuntimeError::Return(val)) => Ok(val),
+                        Err(e) => Err(format!("{}", e)),
+                    }
+                });
+
+                // Return TaskHandle (not ThreadHandle) for type distinction
+                Ok(Value::TaskHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "spawn() expects a closure, got {}",
+                closure.type_name()
+            ))),
+        }
+    }
+
     /// Spawn a thread pool task from a closure (ThreadPool.spawn).
     pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
         use crate::value::{PoolTask, ThreadHandleInner};

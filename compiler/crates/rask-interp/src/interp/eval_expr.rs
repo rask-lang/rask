@@ -782,7 +782,7 @@ impl Interpreter {
             }
 
             ExprKind::UsingBlock { name, args, body }
-                if name == "ThreadPool" || name == "Multitasking" || name == "threading" || name == "multitasking" =>
+                if name == "ThreadPool" || name == "threading" =>
             {
                 let num_threads = if args.is_empty() {
                     std::thread::available_parallelism()
@@ -841,6 +841,42 @@ impl Interpreter {
                 for w in workers {
                     let _ = w.join();
                 }
+                self.env.pop_scope();
+                Ok(result)
+            }
+
+            ExprKind::UsingBlock { name, args, body }
+                if name == "Multitasking" || name == "multitasking" =>
+            {
+                use crate::value::MultitaskingRuntime;
+
+                let num_workers = if args.is_empty() {
+                    std::thread::available_parallelism()
+                        .map(|n| n.get())
+                        .unwrap_or(4)
+                } else {
+                    self.eval_expr(&args[0])?.as_int()
+                        .map_err(|e| RuntimeError::TypeError(e))? as usize
+                };
+
+                let runtime = Arc::new(MultitaskingRuntime {
+                    workers: num_workers,
+                });
+
+                self.env.push_scope();
+                self.env.define("__multitasking_ctx".to_string(), Value::MultitaskingRuntime(runtime));
+
+                let mut result = Value::Unit;
+                for stmt in body {
+                    match self.exec_stmt(stmt) {
+                        Ok(val) => result = val,
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return Err(e);
+                        }
+                    }
+                }
+
                 self.env.pop_scope();
                 Ok(result)
             }

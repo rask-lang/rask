@@ -188,6 +188,18 @@ impl fmt::Debug for ThreadPoolInner {
     }
 }
 
+/// Multitasking runtime (in interpreter, just tracks that we're in async context).
+pub struct MultitaskingRuntime {
+    /// Number of worker threads (unused in interpreter, just for compatibility).
+    pub workers: usize,
+}
+
+impl fmt::Debug for MultitaskingRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MultitaskingRuntime(workers={})", self.workers)
+    }
+}
+
 /// A runtime value in the interpreter.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -277,6 +289,10 @@ pub enum Value {
     Receiver(Arc<Mutex<mpsc::Receiver<Value>>>),
     /// Thread pool (from `using ThreadPool(workers: n) { }`)
     ThreadPool(Arc<ThreadPoolInner>),
+    /// Async task handle (from spawn() in using Multitasking)
+    TaskHandle(Arc<ThreadHandleInner>),
+    /// Multitasking runtime (from `using Multitasking { }`)
+    MultitaskingRuntime(Arc<MultitaskingRuntime>),
     /// Map (key-value storage with Value keys)
     Map(Arc<Mutex<Vec<(Value, Value)>>>),
     /// Atomic bool (lock-free boolean)
@@ -324,6 +340,8 @@ impl Value {
             Value::Pool(_) => "Pool",
             Value::Handle { .. } => "Handle",
             Value::ThreadHandle(_) => "ThreadHandle",
+            Value::TaskHandle(_) => "TaskHandle",
+            Value::MultitaskingRuntime(_) => "MultitaskingRuntime",
             Value::Sender(_) => "Sender",
             Value::Receiver(_) => "Receiver",
             Value::ThreadPool(_) => "ThreadPool",
@@ -566,6 +584,8 @@ impl fmt::Display for Value {
                 generation,
             } => write!(f, "Handle({}, {}, {})", pool_id, index, generation),
             Value::ThreadHandle(_) => write!(f, "<ThreadHandle>"),
+            Value::TaskHandle(_) => write!(f, "<TaskHandle>"),
+            Value::MultitaskingRuntime(r) => write!(f, "<Multitasking runtime workers={}>", r.workers),
             Value::Sender(_) => write!(f, "<Sender>"),
             Value::Receiver(_) => write!(f, "<Receiver>"),
             Value::ThreadPool(p) => write!(f, "<ThreadPool size={}>", p.size),
