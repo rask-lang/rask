@@ -84,11 +84,17 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     match interp.run(&parse_result.decls) {
         Ok(_) => {}
-        Err(rask_interp::RuntimeError::Exit(code)) => {
-            process::exit(code);
+        Err(diag) if matches!(diag.error, rask_interp::RuntimeError::Exit(..)) => {
+            if let rask_interp::RuntimeError::Exit(code) = diag.error {
+                process::exit(code);
+            }
         }
-        Err(e) => {
-            eprintln!("{}: {}", "Runtime error".red().bold(), e);
+        Err(diag) => {
+            let diagnostic = diag.to_diagnostic();
+            show_diagnostics(&[diagnostic], &source, path, "runtime", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Runtime", 1));
+            }
             process::exit(1);
         }
     }

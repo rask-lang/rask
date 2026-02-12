@@ -81,4 +81,9 @@ pub enum TypeError {
         function_name: String,
         span: Span,
     },
+    #[error("guard pattern 'else' block must diverge (return, panic, etc), found {found}")]
+    GuardElseMustDiverge {
+        found: Type,
+        span: Span,
+    },
 }

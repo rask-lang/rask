@@ -80,6 +80,12 @@ pub enum ExprKind {
         then_branch: Box<Expr>,
         else_branch: Option<Box<Expr>>,
     },
+    /// Guard pattern (const v = expr is Pattern else { diverge })
+    GuardPattern {
+        expr: Box<Expr>,
+        pattern: Pattern,
+        else_branch: Box<Expr>,
+    },
     /// Match expression
     Match {
         scrutinee: Box<Expr>,
@@ -87,6 +93,8 @@ pub enum ExprKind {
     },
     /// Try expression (try prefix or postfix ?)
     Try(Box<Expr>),
+    /// Unwrap expression (postfix !) - panics if None/Err
+    Unwrap(Box<Expr>),
     /// Null coalescing (a ?? b)
     NullCoalesce {
         value: Box<Expr>,

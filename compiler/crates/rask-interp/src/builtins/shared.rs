@@ -64,9 +64,50 @@ impl Interpreter {
                 if let Some(param_name) = params.first() {
                     self.env.define(param_name.clone(), arg);
                 }
-                let result = self.eval_expr(body);
+                let result = self.eval_expr(body).map_err(|diag| diag.error);
                 self.env.pop_scope();
-                result
+                match result {
+                    Ok(v) => Ok(v),
+                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Err(e) => Err(e),
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "expected closure, found {}",
+                closure.type_name()
+            ))),
+        }
+    }
+
+    /// Execute a closure with no arguments, returning the closure's result.
+    pub(crate) fn call_closure_no_args(
+        &mut self,
+        closure: &Value,
+    ) -> Result<Value, RuntimeError> {
+        match closure {
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                if !params.is_empty() {
+                    return Err(RuntimeError::TypeError(format!(
+                        "expected zero-argument closure, got closure with {} parameter(s)",
+                        params.len()
+                    )));
+                }
+
+                self.env.push_scope();
+                for (k, v) in captured_env {
+                    self.env.define(k.clone(), v.clone());
+                }
+                let result = self.eval_expr(body).map_err(|diag| diag.error);
+                self.env.pop_scope();
+                match result {
+                    Ok(v) => Ok(v),
+                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Err(e) => Err(e),
+                }
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "expected closure, found {}",
@@ -102,7 +143,7 @@ impl Interpreter {
                     .unwrap_or_else(|| "_".to_string());
                 self.env.define(param_name.clone(), guard.clone());
 
-                let result = self.eval_expr(body);
+                let result = self.eval_expr(body).map_err(|diag| diag.error);
 
                 // Write back mutations to the shared value
                 if let Some(updated) = self.env.get(&param_name) {
@@ -110,7 +151,11 @@ impl Interpreter {
                 }
 
                 self.env.pop_scope();
-                result
+                match result {
+                    Ok(v) => Ok(v),
+                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Err(e) => Err(e),
+                }
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "expected closure, found {}",

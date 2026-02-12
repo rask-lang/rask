@@ -4,18 +4,22 @@
 use rask_ast::decl::FnDecl;
 use rask_ast::expr::ExprKind;
 use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::Span;
 
 use crate::value::Value;
 
-use super::{Interpreter, RuntimeError};
+use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         if args.len() != func.params.len() {
-            return Err(RuntimeError::ArityMismatch {
-                expected: func.params.len(),
-                got: args.len(),
-            });
+            return Err(RuntimeDiagnostic::new(
+                RuntimeError::ArityMismatch {
+                    expected: func.params.len(),
+                    got: args.len(),
+                },
+                Span::new(0, 0) // Will be re-wrapped by caller with proper span
+            ));
         }
 
         self.env.push_scope();
@@ -29,14 +33,20 @@ impl Interpreter {
                         if let Some(field_val) = fields.get(proj_fields[0]) {
                             self.env.define(param.name.clone(), field_val.clone());
                         } else {
-                            return Err(RuntimeError::TypeError(format!(
-                                "struct has no field '{}' for projection", proj_fields[0]
-                            )));
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "struct has no field '{}' for projection", proj_fields[0]
+                                )),
+                                Span::new(0, 0)
+                            ));
                         }
                     } else {
-                        return Err(RuntimeError::TypeError(format!(
-                            "projection parameter expects struct, got {}", arg.type_name()
-                        )));
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "projection parameter expects struct, got {}", arg.type_name()
+                            )),
+                            Span::new(0, 0)
+                        ));
                     }
                 } else {
                     self.env.define(param.name.clone(), arg);
@@ -51,26 +61,45 @@ impl Interpreter {
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
         match &result {
-            Err(RuntimeError::Return(v)) | Ok(v) => {
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(v)) => {
+                if let RuntimeError::Return(v) = &diag.error {
+                    self.transfer_resource_to_scope(v, caller_depth);
+                }
+            }
+            Ok(v) => {
                 self.transfer_resource_to_scope(v, caller_depth);
             }
-            Err(RuntimeError::TryError(v)) => {
-                self.transfer_resource_to_scope(v, caller_depth);
+            Err(diag) if matches!(&diag.error, RuntimeError::TryError(v)) => {
+                if let RuntimeError::TryError(v) = &diag.error {
+                    self.transfer_resource_to_scope(v, caller_depth);
+                }
             }
             _ => {}
         }
 
         if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
             self.env.pop_scope();
-            return Err(RuntimeError::Panic(msg));
+            return Err(RuntimeDiagnostic::new(RuntimeError::Panic(msg), Span::new(0, 0)));
         }
 
         self.env.pop_scope();
 
         let value = match result {
             Ok(_) => Value::Unit,
-            Err(RuntimeError::Return(v)) => v,
-            Err(RuntimeError::TryError(v)) => v,
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
+                if let RuntimeError::Return(v) = diag.error {
+                    v
+                } else {
+                    unreachable!()
+                }
+            }
+            Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
+                if let RuntimeError::TryError(v) = diag.error {
+                    v
+                } else {
+                    unreachable!()
+                }
+            }
             Err(e) => return Err(e),
         };
 
@@ -92,10 +121,10 @@ impl Interpreter {
     }
 
     /// Runs ensure blocks in LIFO order on block exit.
-    pub(super) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeError> {
+    pub(super) fn exec_stmts(&mut self, stmts: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
         let mut last_value = Value::Unit;
         let mut ensures: Vec<&Stmt> = Vec::new();
-        let mut exit_error: Option<RuntimeError> = None;
+        let mut exit_error: Option<RuntimeDiagnostic> = None;
 
         for stmt in stmts {
             if matches!(&stmt.kind, StmtKind::Ensure { .. }) {
@@ -124,7 +153,7 @@ impl Interpreter {
 
     /// Returns fatal error (Panic/Exit) if one occurs; non-fatal errors passed to else handlers.
     /// Skips ensure clauses whose receiver resource was already consumed.
-    pub(super) fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeError> {
+    pub(super) fn run_ensures(&mut self, ensures: &[&Stmt]) -> Option<RuntimeDiagnostic> {
         for ensure_stmt in ensures.iter().rev() {
             if let StmtKind::Ensure { body, else_handler } = &ensure_stmt.kind {
                 // Check if the ensure body's receiver is a consumed resource.
@@ -144,10 +173,22 @@ impl Interpreter {
                             }
                         }
                     }
-                    Err(RuntimeError::Panic(msg)) => return Some(RuntimeError::Panic(msg)),
-                    Err(RuntimeError::Exit(code)) => return Some(RuntimeError::Exit(code)),
-                    Err(RuntimeError::TryError(val)) => {
-                        self.handle_ensure_error(val, else_handler);
+                    Err(diag) if matches!(&diag.error, RuntimeError::Panic(_)) => {
+                        if let RuntimeError::Panic(msg) = diag.error {
+                            return Some(RuntimeDiagnostic::new(RuntimeError::Panic(msg), diag.span));
+                        }
+                        unreachable!()
+                    }
+                    Err(diag) if matches!(&diag.error, RuntimeError::Exit(_)) => {
+                        if let RuntimeError::Exit(code) = diag.error {
+                            return Some(RuntimeDiagnostic::new(RuntimeError::Exit(code), diag.span));
+                        }
+                        unreachable!()
+                    }
+                    Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
+                        if let RuntimeError::TryError(val) = diag.error {
+                            self.handle_ensure_error(val, else_handler);
+                        }
                     }
                     Err(_) => {}
                 }
@@ -183,7 +224,7 @@ impl Interpreter {
         false
     }
 
-    fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeError> {
+    fn exec_ensure_body(&mut self, body: &[Stmt]) -> Result<Value, RuntimeDiagnostic> {
         let mut last_value = Value::Unit;
         for stmt in body {
             last_value = self.exec_stmt(stmt)?;

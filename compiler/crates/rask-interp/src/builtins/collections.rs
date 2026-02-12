@@ -647,7 +647,7 @@ impl Interpreter {
 
     /// Handle Map method calls.
     pub(crate) fn call_map_method(
-        &self,
+        &mut self,
         m: &Arc<Mutex<Vec<(Value, Value)>>>,
         method: &str,
         args: Vec<Value>,
@@ -661,11 +661,16 @@ impl Interpreter {
                 // Check if key exists, update if so
                 for (k, v) in map.iter_mut() {
                     if Self::value_eq(k, &key) {
+                        let old_value = v.clone();
                         *v = value;
                         return Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Unit],
+                            fields: vec![Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![old_value],
+                            }],
                         });
                     }
                 }
@@ -675,7 +680,11 @@ impl Interpreter {
                 Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
+                    fields: vec![Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }],
                 })
             }
             "get" => {
@@ -770,6 +779,37 @@ impl Interpreter {
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 Ok(Value::Map(Arc::new(Mutex::new(cloned))))
+            }
+            "ensure" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 2,
+                    got: args.len(),
+                })?;
+
+                // Check if key already exists
+                let key_exists = {
+                    let map = m.lock().unwrap();
+                    map.iter().any(|(k, _)| Self::value_eq(k, &key))
+                };
+
+                if key_exists {
+                    return Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    });
+                }
+
+                // Key doesn't exist, call factory and insert
+                let new_value = self.call_closure_no_args(factory)?;
+                m.lock().unwrap().push((key, new_value));
+
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![Value::Unit],
+                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Map".to_string(),

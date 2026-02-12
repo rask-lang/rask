@@ -123,7 +123,7 @@ impl Interpreter {
             }
             let mut all_args = vec![receiver];
             all_args.extend(args);
-            return self.call_function(&method_fn, all_args);
+            return self.call_function(&method_fn, all_args).map_err(|diag| diag.error);
         }
 
         Err(RuntimeError::NoSuchMethod {

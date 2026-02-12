@@ -8,10 +8,10 @@ use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
 use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
-use super::{Interpreter, RuntimeError};
+use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+    pub(crate) fn eval_expr(&mut self, expr: &Expr) -> Result<Value, RuntimeDiagnostic> {
         match &expr.kind {
             ExprKind::Int(n, suffix) => {
                 use rask_ast::token::IntSuffix;
@@ -24,7 +24,8 @@ impl Interpreter {
             ExprKind::Float(n, _) => Ok(Value::Float(*n)),
             ExprKind::String(s) => {
                 if s.contains('{') {
-                    let interpolated = self.interpolate_string(s)?;
+                    let interpolated = self.interpolate_string(s)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                     Ok(Value::String(Arc::new(Mutex::new(interpolated))))
                 } else {
                     Ok(Value::String(Arc::new(Mutex::new(s.clone()))))
@@ -93,7 +94,7 @@ impl Interpreter {
                 if self.struct_decls.contains_key(base_name) {
                     return Ok(Value::Type(base_name.to_string()));
                 }
-                Err(RuntimeError::UndefinedVariable(name.clone()))
+                Err(RuntimeDiagnostic::new(RuntimeError::UndefinedVariable(name.clone()), expr.span))
             }
 
             ExprKind::Call { func, args } => {
@@ -114,10 +115,11 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Ok" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    return self.call_method(inner, field, arg_vals);
+                                    return self.call_method(inner, field, arg_vals)
+                                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                                 }
                                 "Err" => {
-                                    return Err(RuntimeError::TryError(obj_val));
+                                    return Err(RuntimeDiagnostic::new(RuntimeError::TryError(obj_val), expr.span));
                                 }
                                 _ => {}
                             }
@@ -125,7 +127,8 @@ impl Interpreter {
                             match variant.as_str() {
                                 "Some" => {
                                     let inner = fields.first().cloned().unwrap_or(Value::Unit);
-                                    let result = self.call_method(inner, field, arg_vals)?;
+                                    let result = self.call_method(inner, field, arg_vals)
+                                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                                     return Ok(Value::Enum {
                                         name: "Option".to_string(),
                                         variant: "Some".to_string(),
@@ -144,7 +147,8 @@ impl Interpreter {
                         }
                     }
 
-                    return self.call_method(obj_val, field, arg_vals);
+                    return self.call_method(obj_val, field, arg_vals)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
                 let func_val = self.eval_expr(func)?;
@@ -153,6 +157,7 @@ impl Interpreter {
                     .map(|a| self.eval_expr(a))
                     .collect::<Result<_, _>>()?;
                 self.call_value(func_val, arg_vals)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
             ExprKind::MethodCall {
@@ -171,10 +176,13 @@ impl Interpreter {
                                 .map(|a| self.eval_expr(a))
                                 .collect::<Result<_, _>>()?;
                             if arg_vals.len() != field_count {
-                                return Err(RuntimeError::ArityMismatch {
-                                    expected: field_count,
-                                    got: arg_vals.len(),
-                                });
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::ArityMismatch {
+                                        expected: field_count,
+                                        got: arg_vals.len(),
+                                    },
+                                    expr.span
+                                ));
                             }
                             return Ok(Value::Enum {
                                 name: name.clone(),
@@ -223,10 +231,12 @@ impl Interpreter {
                 }
 
                 if let Value::Type(type_name) = &receiver {
-                    return self.call_type_method(type_name, method, arg_vals);
+                    return self.call_type_method(type_name, method, arg_vals)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
                 self.call_method(receiver, method, arg_vals)
+                    .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
 
             ExprKind::Binary { op, left, right } => match op {
@@ -254,6 +264,7 @@ impl Interpreter {
                     let l = self.eval_expr(left)?;
                     let r = self.eval_expr(right)?;
                     self.eval_binop(*op, l, r)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
                 }
             },
 
@@ -262,23 +273,32 @@ impl Interpreter {
                 match op {
                     UnaryOp::Not => match val {
                         Value::Bool(b) => Ok(Value::Bool(!b)),
-                        _ => Err(RuntimeError::TypeError(format!(
-                            "! requires bool, got {}",
-                            val.type_name()
-                        ))),
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "! requires bool, got {}",
+                                val.type_name()
+                            )),
+                            expr.span
+                        )),
                     },
                     UnaryOp::Neg => match val {
                         Value::Int(n) => Ok(Value::Int(-n)),
                         Value::Float(n) => Ok(Value::Float(-n)),
-                        _ => Err(RuntimeError::TypeError(format!(
-                            "- requires number, got {}",
-                            val.type_name()
-                        ))),
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "- requires number, got {}",
+                                val.type_name()
+                            )),
+                            expr.span
+                        )),
                     },
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "unhandled unary op {:?}",
-                        op
-                    ))),
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "unhandled unary op {:?}",
+                            op
+                        )),
+                        expr.span
+                    )),
                 }
             }
 
@@ -313,10 +333,13 @@ impl Interpreter {
                     match self.eval_expr(s)? {
                         Value::Int(n) => n,
                         v => {
-                            return Err(RuntimeError::TypeError(format!(
-                                "range start must be int, got {}",
-                                v.type_name()
-                            )))
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "range start must be int, got {}",
+                                    v.type_name()
+                                )),
+                                expr.span
+                            ))
                         }
                     }
                 } else {
@@ -326,10 +349,13 @@ impl Interpreter {
                     match self.eval_expr(e)? {
                         Value::Int(n) => n,
                         v => {
-                            return Err(RuntimeError::TypeError(format!(
-                                "range end must be int, got {}",
-                                v.type_name()
-                            )))
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "range end must be int, got {}",
+                                    v.type_name()
+                                )),
+                                expr.span
+                            ))
                         }
                     }
                 } else {
@@ -346,7 +372,8 @@ impl Interpreter {
                 // Check if this is a generic instantiation
                 let concrete_name = if name.contains('<') {
                     // Parse generic arguments and monomorphize
-                    self.monomorphize_struct_from_name(name)?
+                    self.monomorphize_struct_from_name(name)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?
                 } else {
                     name.clone()
                 };
@@ -414,55 +441,74 @@ impl Interpreter {
                         match field.as_str() {
                             "Instant" => Ok(Value::Type("Instant".to_string())),
                             "Duration" => Ok(Value::Type("Duration".to_string())),
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "time module has no member '{}'",
-                                field
-                            ))),
+                            _ => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "time module has no member '{}'",
+                                    field
+                                )),
+                                expr.span
+                            )),
                         }
                     }
                     Value::Module(ModuleKind::Math) => {
                         self.get_math_field(field)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
                     }
                     Value::Module(ModuleKind::Path) => {
                         match field.as_str() {
                             "Path" => Ok(Value::Type("Path".to_string())),
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "path module has no member '{}'",
-                                field
-                            ))),
+                            _ => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "path module has no member '{}'",
+                                    field
+                                )),
+                                expr.span
+                            )),
                         }
                     }
                     Value::Module(ModuleKind::Random) => {
                         match field.as_str() {
                             "Rng" => Ok(Value::Type("Rng".to_string())),
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "random module has no member '{}'",
-                                field
-                            ))),
+                            _ => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "random module has no member '{}'",
+                                    field
+                                )),
+                                expr.span
+                            )),
                         }
                     }
                     Value::Module(ModuleKind::Json) => {
                         match field.as_str() {
                             "JsonValue" => Ok(Value::Type("JsonValue".to_string())),
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "json module has no member '{}'",
-                                field
-                            ))),
+                            _ => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "json module has no member '{}'",
+                                    field
+                                )),
+                                expr.span
+                            )),
                         }
                     }
                     Value::Module(ModuleKind::Cli) => {
                         match field.as_str() {
                             "Parser" => Ok(Value::Type("Parser".to_string())),
-                            _ => Err(RuntimeError::TypeError(format!(
-                                "cli module has no member '{}'",
-                                field
-                            ))),
+                            _ => Err(RuntimeDiagnostic::new(
+                                RuntimeError::TypeError(format!(
+                                    "cli module has no member '{}'",
+                                    field
+                                )),
+                                expr.span
+                            )),
                         }
                     }
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "cannot access field on {}",
-                        obj.type_name()
-                    ))),
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "cannot access field on {}",
+                            obj.type_name()
+                        )),
+                        expr.span
+                    )),
                 }
             }
 
@@ -518,14 +564,17 @@ impl Interpreter {
                         let pool = p.lock().unwrap();
                         let idx = pool
                             .validate(*pool_id, *index, *generation)
-                            .map_err(|e| RuntimeError::Panic(e))?;
+                            .map_err(|e| RuntimeDiagnostic::new(RuntimeError::Panic(e), expr.span))?;
                         Ok(pool.slots[idx].1.as_ref().unwrap().clone())
                     }
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "cannot index {} with {}",
-                        obj.type_name(),
-                        idx.type_name()
-                    ))),
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "cannot index {} with {}",
+                            obj.type_name(),
+                            idx.type_name()
+                        )),
+                        expr.span
+                    )),
                 }
             }
 
@@ -541,9 +590,12 @@ impl Interpreter {
                 let val = self.eval_expr(value)?;
                 let n = match self.eval_expr(count)? {
                     Value::Int(n) => n as usize,
-                    other => return Err(RuntimeError::TypeError(format!(
-                        "array repeat count must be integer, found {}", other.type_name()
-                    ))),
+                    other => return Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "array repeat count must be integer, found {}", other.type_name()
+                        )),
+                        expr.span
+                    )),
                 };
                 let values: Vec<Value> = (0..n).map(|_| val.clone()).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(values))))
@@ -584,7 +636,7 @@ impl Interpreter {
                     }
                 }
 
-                Err(RuntimeError::NoMatchingArm)
+                Err(RuntimeDiagnostic::new(RuntimeError::NoMatchingArm, expr.span))
             }
 
             ExprKind::IfLet {
@@ -617,16 +669,48 @@ impl Interpreter {
                         variant, fields, ..
                     } => match variant.as_str() {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "Err" | "None" => Err(RuntimeError::TryError(val)),
-                        _ => Err(RuntimeError::TypeError(format!(
-                            "? operator requires Ok/Some or Err/None variant, got {}",
-                            variant
-                        ))),
+                        "Err" | "None" => Err(RuntimeDiagnostic::new(RuntimeError::TryError(val), expr.span)),
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "? operator requires Ok/Some or Err/None variant, got {}",
+                                variant
+                            )),
+                            expr.span
+                        )),
                     },
-                    _ => Err(RuntimeError::TypeError(format!(
-                        "? operator requires Result or Option, got {}",
-                        val.type_name()
-                    ))),
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "? operator requires Result or Option, got {}",
+                            val.type_name()
+                        )),
+                        expr.span
+                    )),
+                }
+            }
+
+            ExprKind::Unwrap(inner) => {
+                let val = self.eval_expr(inner)?;
+                match &val {
+                    Value::Enum {
+                        variant, fields, ..
+                    } => match variant.as_str() {
+                        "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                        "None" => Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span)),
+                        _ => Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "! operator requires Option (Some/None), got {}",
+                                variant
+                            )),
+                            expr.span
+                        )),
+                    },
+                    _ => Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(format!(
+                            "! operator requires Option, got {}",
+                            val.type_name()
+                        )),
+                        expr.span
+                    )),
                 }
             }
 
@@ -730,8 +814,11 @@ impl Interpreter {
                 let pool = match pool {
                     Some(Value::ThreadPool(p)) => p,
                     _ => {
-                        return Err(RuntimeError::TypeError(
-                            "spawn_thread requires `ThreadPool` in scope".to_string(),
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(
+                                "spawn_thread requires `ThreadPool` in scope".to_string(),
+                            ),
+                            expr.span
                         ))
                     }
                 };
@@ -762,11 +849,17 @@ impl Interpreter {
                 let sender = pool.sender.lock().unwrap();
                 if let Some(ref tx) = *sender {
                     tx.send(task).map_err(|_| {
-                        RuntimeError::ResourceClosed { resource_type: "ThreadPool".to_string(), operation: "spawn on".to_string() }
+                        RuntimeDiagnostic::new(
+                            RuntimeError::ResourceClosed { resource_type: "ThreadPool".to_string(), operation: "spawn on".to_string() },
+                            expr.span
+                        )
                     })?;
                 } else {
-                    return Err(RuntimeError::TypeError(
-                        "thread pool is shut down".to_string(),
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::TypeError(
+                            "thread pool is shut down".to_string(),
+                        ),
+                        expr.span
                     ));
                 }
 
@@ -790,7 +883,7 @@ impl Interpreter {
                         .unwrap_or(4)
                 } else {
                     self.eval_expr(&args[0])?.as_int()
-                        .map_err(|e| RuntimeError::TypeError(e))? as usize
+                        .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
                 let (tx, rx) = mpsc::channel::<PoolTask>();
@@ -856,7 +949,7 @@ impl Interpreter {
                         .unwrap_or(4)
                 } else {
                     self.eval_expr(&args[0])?.as_int()
-                        .map_err(|e| RuntimeError::TypeError(e))? as usize
+                        .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
                 let runtime = Arc::new(MultitaskingRuntime {
@@ -914,7 +1007,7 @@ impl Interpreter {
                     } else {
                         "assertion failed".to_string()
                     };
-                    Err(RuntimeError::AssertionFailed(msg))
+                    Err(RuntimeDiagnostic::new(RuntimeError::AssertionFailed(msg), expr.span))
                 }
             }
 
@@ -929,7 +1022,7 @@ impl Interpreter {
                     } else {
                         "check failed".to_string()
                     };
-                    Err(RuntimeError::CheckFailed(msg))
+                    Err(RuntimeDiagnostic::new(RuntimeError::CheckFailed(msg), expr.span))
                 }
             }
 
@@ -953,8 +1046,11 @@ impl Interpreter {
                             name: binding_name.clone(),
                         });
                     } else {
-                        return Err(RuntimeError::TypeError(
-                            "with...as source must be a collection index (e.g., pool[h])".to_string(),
+                        return Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(
+                                "with...as source must be a collection index (e.g., pool[h])".to_string(),
+                            ),
+                            expr.span
                         ));
                     }
                 }
@@ -965,8 +1061,11 @@ impl Interpreter {
                         if Self::value_eq(&infos[i].collection, &infos[j].collection)
                             && Self::value_eq(&infos[i].key, &infos[j].key)
                         {
-                            return Err(RuntimeError::Panic(
-                                "with...as: duplicate key in same collection (aliasing)".to_string(),
+                            return Err(RuntimeDiagnostic::new(
+                                RuntimeError::Panic(
+                                    "with...as: duplicate key in same collection (aliasing)".to_string(),
+                                ),
+                                expr.span
                             ));
                         }
                     }
@@ -975,7 +1074,8 @@ impl Interpreter {
                 // Read current values and push scope with bindings
                 self.env.push_scope();
                 for info in &infos {
-                    let elem = self.index_into(&info.collection, &info.key)?;
+                    let elem = self.index_into(&info.collection, &info.key)
+                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                     self.env.define(info.name.clone(), elem);
                 }
 
@@ -988,7 +1088,8 @@ impl Interpreter {
                 // Writeback: read binding values and write back to collections
                 for info in &infos {
                     if let Some(updated) = self.env.get(&info.name).cloned() {
-                        self.write_back_index(&info.collection, &info.key, updated)?;
+                        self.write_back_index(&info.collection, &info.key, updated)
+                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
                     }
                 }
 

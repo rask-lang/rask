@@ -1591,7 +1591,36 @@ impl Parser {
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
-        let init = self.parse_expr()?;
+        let mut init = self.parse_expr()?;
+
+        // Check for guard pattern: let v = expr is Pattern else { ... }
+        if self.match_token(&TokenKind::Is) {
+            let start = init.span.start;
+            let pattern = self.parse_pattern()?;
+            self.expect(&TokenKind::Else)?;
+
+            // Parse else block (inline or braced)
+            let else_branch = if self.match_token(&TokenKind::Colon) {
+                self.parse_inline_block(start)?
+            } else {
+                self.skip_newlines();
+                let stmts = self.parse_block_body()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+            };
+
+            let end = else_branch.span.end;
+            init = Expr {
+                id: self.next_id(),
+                kind: ExprKind::GuardPattern {
+                    expr: Box::new(init),
+                    pattern,
+                    else_branch: Box::new(else_branch),
+                },
+                span: Span::new(start, end),
+            };
+        }
+
         self.expect_terminator()?;
         Ok(StmtKind::Let { name, ty, init })
     }
@@ -1615,7 +1644,36 @@ impl Parser {
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) { Some(self.parse_type_name()?) } else { None };
         self.expect(&TokenKind::Eq)?;
-        let init = self.parse_expr()?;
+        let mut init = self.parse_expr()?;
+
+        // Check for guard pattern: const v = expr is Pattern else { ... }
+        if self.match_token(&TokenKind::Is) {
+            let start = init.span.start;
+            let pattern = self.parse_pattern()?;
+            self.expect(&TokenKind::Else)?;
+
+            // Parse else block (inline or braced)
+            let else_branch = if self.match_token(&TokenKind::Colon) {
+                self.parse_inline_block(start)?
+            } else {
+                self.skip_newlines();
+                let stmts = self.parse_block_body()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+            };
+
+            let end = else_branch.span.end;
+            init = Expr {
+                id: self.next_id(),
+                kind: ExprKind::GuardPattern {
+                    expr: Box::new(init),
+                    pattern,
+                    else_branch: Box::new(else_branch),
+                },
+                span: Span::new(start, end),
+            };
+        }
+
         self.expect_terminator()?;
         Ok(StmtKind::Const { name, ty, init })
     }
@@ -2374,6 +2432,13 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Try(Box::new(lhs)), span: Span::new(start, end) })
             }
 
+            // Unwrap operator (!) - panics if None/Err
+            TokenKind::Bang => {
+                self.advance();
+                let end = self.tokens[self.pos - 1].span.end;
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap(Box::new(lhs)), span: Span::new(start, end) })
+            }
+
             // Detect :: path separator (Rust syntax)
             TokenKind::ColonColon => {
                 return Err(ParseError {
@@ -2903,7 +2968,7 @@ impl Parser {
     fn postfix_bp(&self) -> Option<u8> {
         match self.current_kind() {
             TokenKind::LParen | TokenKind::LBracket | TokenKind::Dot | TokenKind::QuestionDot => Some(25),
-            TokenKind::Question => Some(24),
+            TokenKind::Question | TokenKind::Bang => Some(24),
             TokenKind::ColonColon => Some(25), // Same precedence as dot for better error messages
             _ => None,
         }

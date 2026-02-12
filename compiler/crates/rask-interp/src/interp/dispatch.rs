@@ -12,7 +12,7 @@ impl Interpreter {
         match func {
             Value::Function { name } => {
                 if let Some(decl) = self.functions.get(&name).cloned() {
-                    self.call_function(&decl, args)
+                    self.call_function(&decl, args).map_err(|diag| diag.error)
                 } else {
                     Err(RuntimeError::UndefinedFunction(name))
                 }
@@ -53,7 +53,7 @@ impl Interpreter {
                 for (param, arg) in params.iter().zip(args.into_iter()) {
                     self.env.define(param.clone(), arg);
                 }
-                let result = self.eval_expr(&body);
+                let result = self.eval_expr(&body).map_err(|diag| diag.error);
                 self.env.pop_scope();
                 match result {
                     Ok(v) => Ok(v),

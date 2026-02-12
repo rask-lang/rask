@@ -367,6 +367,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("remove the allocation or move it outside the @no_alloc function")
                     .with_why("@no_alloc functions run in real-time contexts where heap allocation causes unpredictable latency")
             }
+
+            GuardElseMustDiverge { found, span } => {
+                Diagnostic::error("guard pattern 'else' block must diverge")
+                    .with_code("E0325")
+                    .with_primary(*span, format!("'else' block has type `{}`, but must diverge", found))
+                    .with_help("use 'return', 'break', 'continue', or 'panic' to ensure the block never completes normally")
+                    .with_fix("add a 'return' statement at the end of the 'else' block")
+                    .with_why("guard patterns bind variables in the outer scope — the 'else' path must exit to ensure the binding is always valid")
+            }
         }
     }
 }
@@ -549,6 +558,162 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 ))
                 .with_fix(format!("call `.close()` on `{}` or use `ensure` for cleanup", name))
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Runtime Errors
+// ============================================================================
+
+impl ToDiagnostic for rask_interp::RuntimeDiagnostic {
+    fn to_diagnostic(&self) -> Diagnostic {
+        use rask_interp::RuntimeError;
+
+        match &self.error {
+            RuntimeError::DivisionByZero => {
+                Diagnostic::error("division by zero")
+                    .with_code("R0001")
+                    .with_primary(self.span, "divisor is zero")
+                    .with_help("add a check before dividing: `if divisor != 0 { ... }`")
+                    .with_fix("check divisor != 0 before division")
+                    .with_why("division by zero is undefined")
+            }
+
+            RuntimeError::IndexOutOfBounds { index, len } => {
+                Diagnostic::error(format!("index {} out of bounds", index))
+                    .with_code("R0002")
+                    .with_primary(self.span, format!("length is {}", len))
+                    .with_help("check the index is within bounds before accessing")
+                    .with_fix("add a bounds check: `if index < collection.len() { ... }`")
+                    .with_why("accessing an out-of-bounds index is unsafe")
+            }
+
+            RuntimeError::UndefinedVariable(name) => {
+                Diagnostic::error(format!("undefined variable `{}`", name))
+                    .with_code("R0003")
+                    .with_primary(self.span, "not found in scope")
+                    .with_help("check the variable name or ensure it's declared before use")
+            }
+
+            RuntimeError::UndefinedFunction(name) => {
+                Diagnostic::error(format!("undefined function `{}`", name))
+                    .with_code("R0004")
+                    .with_primary(self.span, "not found in scope")
+                    .with_help("check the function name or ensure it's declared before use")
+            }
+
+            RuntimeError::TypeError(msg) => {
+                Diagnostic::error(msg)
+                    .with_code("R0005")
+                    .with_primary(self.span, "type error occurred here")
+            }
+
+            RuntimeError::ArityMismatch { expected, got } => {
+                Diagnostic::error(format!(
+                    "expected {} argument{}, got {}",
+                    expected,
+                    if *expected == 1 { "" } else { "s" },
+                    got
+                ))
+                .with_code("R0006")
+                .with_primary(self.span, "wrong number of arguments")
+                .with_help(format!("function expects {} argument{}", expected, if *expected == 1 { "" } else { "s" }))
+            }
+
+            RuntimeError::NoSuchMethod { ty, method } => {
+                Diagnostic::error(format!("no method `{}` on type `{}`", method, ty))
+                    .with_code("R0007")
+                    .with_primary(self.span, format!("method not found on `{}`", ty))
+                    .with_help("check the method name or the type's available methods")
+            }
+
+            RuntimeError::NoSuchField { ty, field } => {
+                Diagnostic::error(format!("no field `{}` on type `{}`", field, ty))
+                    .with_code("R0008")
+                    .with_primary(self.span, format!("field not found on `{}`", ty))
+                    .with_help("check the field name or the type's available fields")
+            }
+
+            RuntimeError::ResourceClosed { resource_type, operation } => {
+                Diagnostic::error(format!("resource is closed; cannot {} a closed {}", operation, resource_type))
+                    .with_code("R0009")
+                    .with_primary(self.span, "resource already closed")
+                    .with_help("check if the resource is still open before using it")
+                    .with_why("using a closed resource is invalid")
+            }
+
+            RuntimeError::Panic(msg) => {
+                Diagnostic::error(format!("panic: {}", msg))
+                    .with_code("R0010")
+                    .with_primary(self.span, "panic occurred here")
+            }
+
+            RuntimeError::NoMatchingArm => {
+                Diagnostic::error("no matching arm in match")
+                    .with_code("R0011")
+                    .with_primary(self.span, "no arm matches")
+                    .with_help("add a wildcard `_` arm to handle all cases")
+                    .with_fix("add `_ => { ... }` at the end of the match")
+                    .with_why("match expressions must be exhaustive")
+            }
+
+            RuntimeError::MultipleEntryPoints => {
+                Diagnostic::error("multiple @entry functions found")
+                    .with_code("R0012")
+                    .with_primary(self.span, "multiple entry points")
+                    .with_help("only one `func main()` or `@entry` function allowed per program")
+                    .with_why("programs need a single, unambiguous entry point")
+            }
+
+            RuntimeError::NoEntryPoint => {
+                Diagnostic::error("no entry point found")
+                    .with_code("R0013")
+                    .with_primary(self.span, "no entry point")
+                    .with_help("add `func main()` or mark a function with `@entry`")
+                    .with_why("programs need an entry point to start execution")
+            }
+
+            RuntimeError::AssertionFailed(msg) => {
+                Diagnostic::error(format!("assertion failed: {}", msg))
+                    .with_code("R0014")
+                    .with_primary(self.span, "assertion failed here")
+                    .with_why("assertion detected a violated invariant")
+            }
+
+            RuntimeError::CheckFailed(msg) => {
+                Diagnostic::error(format!("check failed: {}", msg))
+                    .with_code("R0015")
+                    .with_primary(self.span, "check failed here")
+                    .with_why("check detected a test failure")
+            }
+
+            RuntimeError::UnwrapError => {
+                Diagnostic::error("unwrap failed: value was None")
+                    .with_code("R0016")
+                    .with_primary(self.span, "unwrap failed here")
+                    .with_help("use pattern matching or `??` to handle None safely")
+                    .with_fix("replace `!` with `?? default_value` or use `if x is Some { ... }`")
+                    .with_why("unwrap panics when called on None")
+            }
+
+            RuntimeError::Generic(msg) => {
+                Diagnostic::error(msg)
+                    .with_code("R0017")
+                    .with_primary(self.span, "error occurred here")
+            }
+
+
+            // Control flow and special cases - no diagnostic
+            RuntimeError::Exit(_)
+            | RuntimeError::Return(_)
+            | RuntimeError::Break
+            | RuntimeError::Continue
+            | RuntimeError::TryError(_) => {
+                // These are not actual errors, just control flow
+                Diagnostic::error(format!("{}", self.error))
+                    .with_primary(self.span, "control flow")
             }
         }
     }

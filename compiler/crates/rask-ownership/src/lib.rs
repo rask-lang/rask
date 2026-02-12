@@ -434,6 +434,13 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Try(inner) => {
                 self.check_expr(inner);
             }
+            ExprKind::Unwrap(inner) => {
+                self.check_expr(inner);
+            }
+            ExprKind::GuardPattern { expr, pattern: _, else_branch } => {
+                self.check_expr(expr);
+                self.check_expr(else_branch);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
                 self.check_expr(default);

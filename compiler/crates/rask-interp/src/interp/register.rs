@@ -280,7 +280,8 @@ impl Interpreter {
 
         // Evaluate top-level const declarations after builtins are registered
         for c in &top_level_consts {
-            let value = self.eval_expr(&c.init)?;
+            let value = self.eval_expr(&c.init)
+                .map_err(|diag| RuntimeError::Generic(format!("Error evaluating const {}: {}", c.name, diag.error)))?;
             self.env.define(c.name.clone(), value);
         }
 
@@ -308,14 +309,18 @@ impl Interpreter {
             } else {
                 match self.exec_stmt(stmt) {
                     Ok(_) => {}
-                    Err(RuntimeError::CheckFailed(msg)) => {
-                        errors.push(msg);
+                    Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_)) => {
+                        if let RuntimeError::CheckFailed(msg) = diag.error {
+                            errors.push(msg);
+                        }
                     }
-                    Err(RuntimeError::AssertionFailed(msg)) => {
-                        errors.push(msg);
+                    Err(diag) if matches!(&diag.error, RuntimeError::AssertionFailed(_)) => {
+                        if let RuntimeError::AssertionFailed(msg) = diag.error {
+                            errors.push(msg);
+                        }
                         break;
                     }
-                    Err(RuntimeError::Return(_)) => {
+                    Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
                         break;
                     }
                     Err(e) => {
@@ -344,8 +349,12 @@ impl Interpreter {
 
         match self.call_function(func, vec![]) {
             Ok(_) => {}
-            Err(RuntimeError::Return(_)) => {}
-            Err(RuntimeError::CheckFailed(msg)) | Err(RuntimeError::AssertionFailed(msg)) => {
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {}
+            Err(diag) if matches!(&diag.error, RuntimeError::CheckFailed(_) | RuntimeError::AssertionFailed(_)) => {
+                let msg = match diag.error {
+                    RuntimeError::CheckFailed(m) | RuntimeError::AssertionFailed(m) => m,
+                    _ => unreachable!(),
+                };
                 errors.push(msg);
             }
             Err(e) => {
