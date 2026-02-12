@@ -59,6 +59,10 @@ pub fn build_position_index(decls: &[Decl]) -> PositionIndex {
 fn visit_decl(decl: &Decl, index: &mut PositionIndex) {
     match &decl.kind {
         DeclKind::Fn(fn_decl) => {
+            // Track parameter names for hover support
+            for param in &fn_decl.params {
+                index.idents.push((param.name_span, decl.id, param.name.clone()));
+            }
             for stmt in &fn_decl.body {
                 visit_stmt(stmt, index);
             }
@@ -78,6 +82,10 @@ fn visit_decl(decl: &Decl, index: &mut PositionIndex) {
         }
         DeclKind::Impl(impl_decl) => {
             for method in &impl_decl.methods {
+                // Track parameter names for hover support
+                for param in &method.params {
+                    index.idents.push((param.name_span, decl.id, param.name.clone()));
+                }
                 for stmt in &method.body {
                     visit_stmt(stmt, index);
                 }
@@ -85,6 +93,10 @@ fn visit_decl(decl: &Decl, index: &mut PositionIndex) {
         }
         DeclKind::Trait(trait_decl) => {
             for method in &trait_decl.methods {
+                // Track parameter names for hover support
+                for param in &method.params {
+                    index.idents.push((param.name_span, decl.id, param.name.clone()));
+                }
                 for stmt in &method.body {
                     visit_stmt(stmt, index);
                 }
@@ -102,7 +114,9 @@ fn visit_stmt(stmt: &Stmt, index: &mut PositionIndex) {
         StmtKind::Break { value: Some(value), .. } => {
             visit_expr(value, index);
         }
-        StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+        StmtKind::Let { name, name_span, init, .. } | StmtKind::Const { name, name_span, init, .. } => {
+            // Track the declaration name as an identifier for hover support
+            index.idents.push((*name_span, stmt.id, name.clone()));
             visit_expr(init, index);
         }
         StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {

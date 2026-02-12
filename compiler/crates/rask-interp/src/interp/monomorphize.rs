@@ -109,6 +109,7 @@ impl Interpreter {
             let new_ty = self.substitute_type(&field.ty, &subst_map)?;
             new_fields.push(Field {
                 name: field.name.clone(),
+                name_span: field.name_span,
                 ty: new_ty,
                 is_pub: field.is_pub,
             });

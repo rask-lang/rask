@@ -701,7 +701,7 @@ impl<'a> Printer<'a> {
             StmtKind::Expr(expr) => {
                 self.format_expr(expr);
             }
-            StmtKind::Let { name, ty, init } => {
+            StmtKind::Let { name, name_span: _, ty, init } => {
                 self.emit("let ");
                 self.emit(name);
                 if let Some(ref ty) = ty {
@@ -718,7 +718,7 @@ impl<'a> Printer<'a> {
                 self.emit(") = ");
                 self.format_expr(init);
             }
-            StmtKind::Const { name, ty, init } => {
+            StmtKind::Const { name, name_span: _, ty, init } => {
                 self.emit("const ");
                 self.emit(name);
                 if let Some(ref ty) = ty {

@@ -22,7 +22,7 @@ impl TypeChecker {
                 // ESAD Phase 1: Clear borrows at statement end (semicolon)
                 self.clear_expression_borrows();
             }
-            StmtKind::Let { name, ty, init } => {
+            StmtKind::Let { name, name_span: _, ty, init } => {
                 let init_ty = self.infer_expr(init);
                 if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
@@ -39,7 +39,7 @@ impl TypeChecker {
                 self.check_view_at_binding(name, init, stmt.span);
                 self.clear_expression_borrows();
             }
-            StmtKind::Const { name, ty, init } => {
+            StmtKind::Const { name, name_span: _, ty, init } => {
                 let init_ty = self.infer_expr(init);
                 if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {

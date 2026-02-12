@@ -189,7 +189,7 @@ impl<'a> OwnershipChecker<'a> {
 
     fn check_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
-            StmtKind::Let { name, ty, init } => {
+            StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
                 // let creates mutable binding - moves the value
                 self.handle_assignment(init, stmt.span, true);
@@ -210,7 +210,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.bindings.insert(name.clone(), BindingState::Owned);
                 }
             }
-            StmtKind::Const { name, ty, init } => {
+            StmtKind::Const { name, name_span: _, ty, init } => {
                 self.check_expr(init);
                 // const creates immutable binding - borrows the value
                 self.handle_assignment(init, stmt.span, false);

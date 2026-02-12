@@ -20,6 +20,7 @@ pub enum StmtKind {
     /// Let binding (mutable)
     Let {
         name: String,
+        name_span: Span,
         ty: Option<String>,
         init: Expr,
     },
@@ -31,6 +32,7 @@ pub enum StmtKind {
     /// Const binding (immutable)
     Const {
         name: String,
+        name_span: Span,
         ty: Option<String>,
         init: Expr,
     },

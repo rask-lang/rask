@@ -188,7 +188,8 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
                 process::exit(1);
             }
-            let program_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+            let mut program_args: Vec<String> = vec![cmd_args[2].to_string()];
+            program_args.extend(prog_args.iter().map(|s| s.to_string()));
             commands::run::cmd_run(cmd_args[2], program_args, format);
         }
         "test" => {

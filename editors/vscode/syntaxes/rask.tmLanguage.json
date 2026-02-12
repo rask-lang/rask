@@ -143,7 +143,7 @@
         },
         {
           "name": "keyword.modifier.rk",
-          "match": "\\b(public|take|own|read|unsafe|comptime|native|export|lazy)\\b"
+          "match": "\\b(public|take|own|mutate|unsafe|comptime|native|export|lazy)\\b"
         },
         {
           "name": "keyword.other.rk",
