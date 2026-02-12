@@ -30,7 +30,7 @@ func cleanup(h: Handle<Entity>) using Pool<Entity> {
 //    |                                      ------------ unnamed context provides auto-resolution only
 //    |
 //    help: use a named context to access the pool:
-//          func cleanup(h: Handle<Entity>) with entities: Pool<Entity>
+//          func cleanup(h: Handle<Entity>) using entities: Pool<Entity>
 //
 //    note: unnamed contexts (`using Pool<T>`) enable auto-resolution for handle
 //          field access (h.field), but do not provide a binding for structural
@@ -38,7 +38,7 @@ func cleanup(h: Handle<Entity>) using Pool<Entity> {
 //          both.
 
 // FIX: Use named context
-func cleanup_fixed(h: Handle<Entity>) with entities: Pool<Entity> {
+func cleanup_fixed(h: Handle<Entity>) using entities: Pool<Entity> {
     h.active = false       // ✅ Field access via auto-resolution
 
     if h.health <= 0 {

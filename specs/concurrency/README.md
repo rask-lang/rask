@@ -29,21 +29,24 @@ Concurrency model for Rask.
 ## Quick Reference
 
 ```rask
+import async.spawn
+import thread.{Thread, ThreadPool}
+
 // Async mode - green tasks for I/O
 func main() {
     using Multitasking {
-        spawn { handle_connection(conn) }.detach()
+        spawn({ handle_connection(conn) }).detach()
     }
 }
 
 // Async + CPU work
 func main() {
     using Multitasking, ThreadPool {
-        const h = spawn {
-            const data = try fetch(url)                              // I/O - pauses
-            const result = try spawn thread { analyze(data) }.join()  // CPU on threads
-            try save(result)                                       // I/O - pauses
-        }
+        const h = spawn({
+            const data = try fetch(url)                                       // I/O - pauses
+            const result = try ThreadPool.spawn({ analyze(data) }).join()  // CPU on threads
+            try save(result)                                                // I/O - pauses
+        })
         try h.join()
     }
 }
@@ -51,53 +54,53 @@ func main() {
 // Sync mode - CPU parallelism only
 func main() {
     using ThreadPool {
-        const handles = files.map { |f| spawn thread { process(f) } }
+        const handles = files.map({ |f| ThreadPool.spawn({ process(f) }) })
         for h in handles { try h.join() }
     }
 }
 
 // Spawn and wait for result
-const h = spawn { compute() }
+const h = spawn({ compute() })
 const result = try h.join()
 
 // Fire-and-forget (explicit)
-spawn { background_work() }.detach()
+spawn({ background_work() }).detach()
 
 // Multiple tasks
 let (a, b) = join_all(
-    spawn { work1() },
-    spawn { work2() }
+    spawn({ work1() }),
+    spawn({ work2() })
 )
 
 // Dynamic spawning
 const group = TaskGroup.new()
 for url in urls {
-    group.spawn { fetch(url) }
+    group.spawn({ fetch(url) })
 }
 const results = try group.join_all()
 
 // Raw OS thread (works anywhere)
-const h = spawn raw { needs_thread_affinity() }
+const h = Thread.spawn({ needs_thread_affinity() })
 try h.join()
 ```
 
-## Three Spawn Constructs
+## Three Spawn Functions
 
-| Construct | Purpose | Requires | Pauses? |
-|-----------|---------|----------|---------|
-| `spawn { }` | Green task | `using Multitasking` | Yes (at I/O) |
-| `spawn thread { }` | Thread from pool | `using ThreadPool` | No |
-| `spawn raw { }` | Raw OS thread | Nothing | No |
+| Function | Purpose | Requires | Pauses? |
+|----------|---------|----------|---------|
+| `spawn({})` | Green task | `using Multitasking` | Yes (at I/O) |
+| `ThreadPool.spawn({})` | Thread from pool | `using ThreadPool` | No |
+| `Thread.spawn({})` | Raw OS thread | Nothing | No |
 
 ## Key Patterns
 
 | Pattern | Syntax |
 |---------|--------|
-| Spawn and wait | `try spawn { }.join()` |
-| Fire-and-forget | `spawn { }.detach()` |
-| Wait for all | `join_all(spawn{}, spawn{})` |
+| Spawn and wait | `try spawn({}).join()` |
+| Fire-and-forget | `spawn({}).detach()` |
+| Wait for all | `join_all(spawn({}), spawn({}))` |
 | Dynamic spawning | `TaskGroup` |
-| CPU parallelism | `spawn thread { }` |
+| CPU parallelism | `ThreadPool.spawn({})` |
 | Raw OS thread | `spawn raw { }` |
 | Unused handle | **Compile error** |
 

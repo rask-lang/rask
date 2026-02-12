@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // HTTP JSON API Server
-// Demonstrates: Concurrency (spawn, channels), JSON, error handling, Multitasking
+// Demonstrates: Concurrency (async spawn, channels), JSON, error handling, Multitasking
 
+import async.spawn
 import net
 import json
 import time
@@ -158,12 +159,12 @@ func main() -> () or Error {
 
     using Multitasking {
         // Spawn logger task that consumes log entries
-        spawn {
+        spawn({
             while log_rx.recv() is Ok(entry) {
                 const elapsed = entry.timestamp.elapsed().as_secs_f64()
                 println("[{elapsed:.3}s] {entry.method} {entry.path} -> {entry.status} ({entry.duration_ms:.2}ms)")
             }
-        }.detach()
+        }).detach()
 
         const listener = try net.tcp_listen("0.0.0.0:8080")
         println("Server listening on :8080")
@@ -174,12 +175,12 @@ func main() -> () or Error {
             const log_tx_ref = log_tx.clone()
 
             // Spawn a green task for each connection
-            spawn {
+            spawn({
                 match handle_request(conn, db_ref, log_tx_ref) {
                     Ok(()) => {}
                     Err(e) => println("Request error: {e}"),
                 }
-            }.detach()
+            }).detach()
         }
     }
 }

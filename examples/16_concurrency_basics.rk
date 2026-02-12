@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Concurrency with threads and channels
 
+import thread.{Thread, ThreadPool}
+
 func worker(id: i32, iterations: i32) -> i32 {
     print("Worker ")
     print(id)
@@ -23,12 +25,12 @@ func worker(id: i32, iterations: i32) -> i32 {
 func main() -> () or string {
     print("=== Basic Threading ===\n\n")
 
-    // Spawn a thread with spawn raw { }
+    // Spawn a thread with Thread.spawn({})
     // Returns a ThreadHandle
-    const handle = spawn raw {
+    const handle = Thread.spawn({
         print("Hello from thread!\n")
         return 42
-    }
+    })
 
     print("Main thread continues...\n")
 
@@ -41,9 +43,9 @@ func main() -> () or string {
     // Spawn multiple threads
     print("=== Multiple Threads ===\n\n")
 
-    const h1 = spawn raw { return worker(1, 10) }
-    const h2 = spawn raw { return worker(2, 20) }
-    const h3 = spawn raw { return worker(3, 15) }
+    const h1 = Thread.spawn({ return worker(1, 10) })
+    const h2 = Thread.spawn({ return worker(2, 20) })
+    const h3 = Thread.spawn({ return worker(3, 15) })
 
     // Wait for all threads
     const r1 = try h1.join()
@@ -58,10 +60,10 @@ func main() -> () or string {
     // Detaching threads - fire and forget
     print("=== Detached Threads ===\n\n")
 
-    const detached = spawn raw {
+    const detached = Thread.spawn({
         print("I'm a detached thread!\n")
         return 0
-    }
+    })
 
     detached.detach()  // Don't wait for it
     print("Detached thread running in background\n\n")
@@ -72,16 +74,16 @@ func main() -> () or string {
     const channel = Channel.buffered<string>(5)
 
     // Spawn producer thread
-    const producer = spawn raw {
+    const producer = Thread.spawn({
         try channel.sender.send("Message 1")
         try channel.sender.send("Message 2")
         try channel.sender.send("Message 3")
         print("Producer sent 3 messages\n")
         return 0
-    }
+    })
 
     // Spawn consumer thread
-    const consumer = spawn raw {
+    const consumer = Thread.spawn({
         const msg1 = try channel.receiver.recv()
         print("Received: ")
         print(msg1)
@@ -98,7 +100,7 @@ func main() -> () or string {
         print("\n")
 
         return 0
-    }
+    })
 
     try producer.join()
     try consumer.join()
@@ -109,21 +111,21 @@ func main() -> () or string {
 
     const sync_channel = Channel.unbuffered<i32>()
 
-    const sender_thread = spawn raw {
+    const sender_thread = Thread.spawn({
         print("Sending 100...\n")
         try sync_channel.sender.send(100)  // Blocks until received
         print("Send complete\n")
         return 0
-    }
+    })
 
-    const receiver_thread = spawn raw {
+    const receiver_thread = Thread.spawn({
         print("Waiting to receive...\n")
         const value = try sync_channel.receiver.recv()  // Blocks until sent
         print("Received: ")
         print(value)
         print("\n")
         return 0
-    }
+    })
 
     try sender_thread.join()
     try receiver_thread.join()
@@ -174,12 +176,12 @@ func main() -> () or string {
         const handles = Vec.new()
 
         for i in 0..8 {
-            const h = spawn thread {
+            const h = ThreadPool.spawn({
                 print("Pool task ")
                 print(i)
                 print(" running\n")
                 return i * i
-            }
+            })
             handles.push(h)
         }
 
@@ -194,8 +196,8 @@ func main() -> () or string {
     }
 
     print("\n=== Key Points ===\n")
-    print("- spawn raw { } creates raw OS threads\n")
-    print("- spawn thread { } uses thread pool (needs using ThreadPool)\n")
+    print("- Thread.spawn({}) creates raw OS threads\n")
+    print("- ThreadPool.spawn({}) uses thread pool (needs using ThreadPool)\n")
     print("- handle.join() waits for completion\n")
     print("- handle.detach() runs in background\n")
     print("- Channels enable message passing\n")

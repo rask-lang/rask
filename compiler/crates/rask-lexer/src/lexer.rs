@@ -48,8 +48,6 @@ enum RawToken {
     Break,
     #[token("continue")]
     Continue,
-    #[token("spawn")]
-    Spawn,
     #[token("select_priority")]
     SelectPriority,
     #[token("select")]
@@ -439,7 +437,6 @@ impl<'a> Lexer<'a> {
             RawToken::Loop => TokenKind::Loop,
             RawToken::Break => TokenKind::Break,
             RawToken::Continue => TokenKind::Continue,
-            RawToken::Spawn => TokenKind::Spawn,
             RawToken::SelectPriority => TokenKind::SelectPriority,
             RawToken::Select => TokenKind::Select,
             RawToken::With => TokenKind::With,
