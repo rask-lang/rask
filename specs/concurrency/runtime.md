@@ -504,6 +504,215 @@ func TcpConnection::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize 
 
 ---
 
+## Hidden Parameter Debuggability
+
+### The Challenge (HP1)
+
+The hidden `__ctx: RuntimeContext` parameter achieves "no function coloring" but creates debuggability issues:
+
+**Problems:**
+1. **Stack traces show invisible parameters** - `File.open(path, __ctx)` but user wrote `File.open(path)`
+2. **Mental model mismatch** - Function signatures appear different than they are
+3. **Error messages confusing** - "missing parameter __ctx" when user didn't write that parameter
+4. **Third-party tools blind** - gdb/lldb don't understand hidden parameters
+
+**Trade-off accepted:** Some "magic" in exchange for no function coloring. Make the magic as visible as possible through tooling.
+
+### Tooling Requirements (HP2)
+
+To make hidden parameters acceptable, Rask tooling MUST provide excellent support:
+
+#### 1. Debugger Integration (HP2.1)
+
+**Stack trace rendering:**
+- Hide `__ctx` parameter by default in stack traces
+- Show "async frame" markers instead:
+```
+Frame 0: process_request(conn)  ⟨async⟩
+Frame 1: handle_connection(addr)  ⟨async⟩
+Frame 2: main()
+```
+
+**Verbose mode (opt-in):**
+```
+Frame 0: process_request(conn, __ctx: RuntimeContext)
+Frame 1: handle_connection(addr, __ctx: RuntimeContext)
+Frame 2: main()
+```
+
+**GDB/LLDB integration:**
+- Debug symbols mark hidden parameters with special attribute
+- Custom pretty-printers for stack frames
+- `info async` command shows task tree
+
+**Implementation:** DWARF debug info extension + debugger plugin
+
+#### 2. LSP/IDE Support (HP2.2)
+
+**Hover on function call:**
+```rask
+using Multitasking {
+    const file = try File.open("data.txt")
+    //               ^^^^^^^^^^
+}
+```
+
+Hover shows:
+```
+func File.open(path: string) -> File or Error
+
+Context: Multitasking (async)
+⟨pauses task on I/O⟩
+
+Note: In async context, this function may pause the current task.
+I/O operations register with reactor and yield to scheduler.
+```
+
+**Outside async context:**
+```rask
+func main() {
+    const file = try File.open("data.txt")
+    //               ^^^^^^^^^^
+}
+```
+
+Hover shows:
+```
+func File.open(path: string) -> File or Error
+
+Context: Sync (blocking)
+⟨blocks thread on I/O⟩
+
+Note: In sync context, this function blocks the thread.
+Consider using Multitasking { } for concurrent I/O.
+```
+
+**Signature help:** Show both contexts in signature popup
+```
+File.open(path: string) -> File or Error
+  Context-aware: blocks in sync context, pauses in async context
+```
+
+**Go-to-definition:** Jump to function, show both implementations:
+```rask
+func File.open(path: string, __ctx?: RuntimeContext) -> File or Error {
+    if __ctx is Some(ctx) {
+        // Async path (pauses task)
+        ...
+    } else {
+        // Sync path (blocks thread)
+        ...
+    }
+}
+```
+
+#### 3. Compiler Diagnostics (HP2.3)
+
+**Explicit context flag (--explicit-context):**
+```
+$ rask check --explicit-context main.rk
+```
+
+Makes hidden parameters visible in error messages:
+```
+error: function File.open requires RuntimeContext parameter
+  --> main.rk:10:11
+   |
+10 |     const file = try File.open("data.txt")
+   |                      ^^^^^^^^^^
+   |
+note: missing 'using Multitasking' context
+help: wrap in 'using Multitasking { }' block to provide context
+```
+
+**Standard mode:**
+```
+error: function File.open requires async context
+  --> main.rk:10:11
+   |
+10 |     const file = try File.open("data.txt")
+   |                      ^^^^^^^^^^
+   |
+help: wrap in 'using Multitasking { }' block for async I/O
+```
+
+#### 4. Linter Rules (HP2.4)
+
+**Warn on I/O in tight loops:**
+```rask
+using Multitasking {
+    for i in 0..1000 {
+        const file = try File.open("data_{i}.txt")  // Warning
+        process(file)
+    }
+}
+
+warning: I/O operation in tight loop may cause scheduler thrashing
+  --> main.rk:15:22
+   |
+15 |         const file = try File.open("data_{i}.txt")
+   |                          ^^^^^^^^^
+   |
+note: each I/O call pauses task and switches context
+help: consider batching operations or using ThreadPool for parallel file access
+```
+
+**Suggest ThreadPool for CPU work:**
+```rask
+using Multitasking {
+    spawn(|| {
+        for i in 0..1000000 {  // Warning
+            compute_heavy(i)
+        }
+    })
+}
+
+warning: long-running CPU computation in async context
+  --> main.rk:10:9
+   |
+10 |         for i in 0..1000000 {
+   |         ^^^
+   |
+note: async tasks should yield frequently (I/O or cancellation checks)
+help: consider using ThreadPool for CPU-bound work:
+      using ThreadPool {
+          ThreadPool.spawn(|| { ... })
+      }
+```
+
+#### 5. Documentation (HP2.5)
+
+**Spec requirement:** The language specification MUST explicitly document hidden parameters:
+
+**In reference manual:**
+> ### Context Parameters
+>
+> Functions that interact with runtime systems (I/O, async, pools) accept hidden context parameters. These parameters are automatically provided by `using` blocks and are invisible in function calls.
+>
+> Example: `File.open(path: string)` has hidden signature:
+> ```rask
+> func File.open(path: string, __ctx?: RuntimeContext) -> File or Error
+> ```
+>
+> The `__ctx` parameter is provided by `using Multitasking { }` blocks.
+
+**In tutorial:**
+> Rask uses "context parameters" to achieve zero-cost abstraction over sync/async. You don't see these parameters in your code, but they control how functions behave. Your IDE and debugger understand these hidden parameters and show helpful hints.
+
+### Implementation Checklist (HP3)
+
+For Rask v1.0, the following MUST be implemented:
+
+- [ ] Debugger support (stack trace hiding, async frame markers)
+- [ ] LSP hover hints (show both sync/async contexts)
+- [ ] Compiler flag `--explicit-context` for debugging
+- [ ] Linter rules (I/O in loops, CPU in async)
+- [ ] Documentation (reference manual, tutorial, spec)
+
+**Partial completion unacceptable:** Without tooling, hidden parameters are just confusing magic. The language cannot ship without these tools.
+
+---
+
 ## Handle Implementation
 
 ### TaskHandle Structure (H1 - realizes conc.async/H1-H4)
@@ -712,6 +921,444 @@ fn unwind_task(task: &Task) {
 **Guarantee (CN2):** Ensure blocks run even on cancellation or panic. Ensures resources cleaned up (file handles closed, locks released, etc.).
 
 **Error handling:** If ensure block fails, error is logged but doesn't prevent other ensures from running. This matches Rust's drop semantics (drop can't propagate panics).
+
+---
+
+## Compile-Time Affine Checking
+
+### Motivation (AC1)
+
+**Current approach:** Runtime panic in `TaskHandle::drop` if handle not consumed.
+
+**Problem:** This violates Rask's "mechanical safety" principle. Safety should be compile-time (by construction), not runtime (by detection).
+
+**Goal:** Enforce at compile time that all TaskHandles are consumed via join/detach/cancel before going out of scope.
+
+### Linear Type System (AC2)
+
+**Approach:** Mark `TaskHandle<T>` as a **linear type** (must be used exactly once).
+
+**Type system rule:**
+```
+If a value of linear type enters a scope, it must be consumed before exiting that scope.
+```
+
+**Implementation:** Flow-sensitive control-flow analysis tracks linear values through all execution paths.
+
+### Control Flow Examples (AC3)
+
+**Simple case (easy):**
+```rask
+const h = spawn(|| { work() })
+// ERROR: handle not consumed
+// help: call h.join(), h.detach(), or h.cancel()
+```
+
+**Branching (requires flow analysis):**
+```rask
+const h = spawn(|| { work() })
+if condition {
+    h.join()  // Consumed here
+} else {
+    h.detach()  // Consumed here
+}
+// OK: consumed in all branches
+```
+
+**Early return (error):**
+```rask
+func process() {
+    const h = spawn(|| { work() })
+    if error {
+        return  // ERROR: handle not consumed on this path
+    }
+    h.join()
+}
+```
+
+**Loop (error):**
+```rask
+for item in items {
+    const h = spawn(|| { process(item) })
+    // ERROR: handle goes out of scope without consuming
+}
+
+// Fix: consume in loop
+for item in items {
+    spawn(|| { process(item) }).detach()  // OK
+}
+```
+
+### Compiler Analysis (AC4)
+
+**Algorithm:**
+
+1. **Build control-flow graph (CFG)** for each function
+2. **Track linear values** created in function (spawn calls)
+3. **For each linear value:**
+   - Follow all paths through CFG
+   - Check if value consumed on every path
+   - Error if any path doesn't consume
+4. **Define "consumed":**
+   - `h.join()` - consumes h
+   - `h.detach()` - consumes h
+   - `h.cancel()` - consumes h
+   - Passing to function with `take h: TaskHandle<T>` - consumes h
+   - Returning from function - consumes h (caller's responsibility)
+
+**Complexity:**
+- Per-function analysis (no cross-function tracking needed)
+- O(basic_blocks × linear_values) typically very fast
+- No lifetime inference (simpler than Rust's borrow checker)
+
+**Example error message:**
+```
+error[E0509]: linear value `h` not consumed
+  --> src/main.rk:15:11
+   |
+15 |     const h = spawn(|| { work() })
+   |           ^ handle must be consumed (join/detach/cancel)
+16 |     if error_occurred {
+17 |         return
+   |         ------ handle dropped here without consuming
+   |
+help: add `h.detach()` before return, or move `h.join()` after if block
+```
+
+### Integration with Type System (AC5)
+
+**Marker trait:**
+```rask
+// In stdlib
+trait Linear {}
+
+// TaskHandle implements Linear
+extend TaskHandle<T> : Linear {
+    // All methods either:
+    // 1. Take `self` (consuming, like join/detach/cancel), or
+    // 2. Take `&self` (non-consuming, like is_complete)
+}
+```
+
+**Compiler recognizes `Linear` trait:**
+- Values of Linear types tracked through control flow
+- Compiler errors if Linear value dropped without consuming
+
+**Other linear types (future):**
+- Resource types (File, TcpConnection) - must close
+- Lock guards (if we add non-closure-based locks) - must drop
+- Ownership tokens (advanced use cases)
+
+### Compilation Speed Impact (AC6)
+
+**Analysis cost:**
+- Each function analyzed once (no global analysis)
+- O(n) in function size (linear scan of CFG)
+- Similar to definite assignment analysis (C#, Swift, Kotlin)
+
+**Comparison to Rust:**
+- Rust: Borrow checker is O(n²) in worst case (lifetime constraints)
+- Rask: Affine checking is O(n) (just track consumption, no lifetimes)
+
+**Target:** This should NOT violate the "5× faster than Rust" compilation goal. Affine checking is much simpler than borrow checking.
+
+**Measurement needed:** Benchmark on large codebases (10k+ functions) to validate.
+
+### Phased Rollout (AC7)
+
+**Phase 1 (interpreter, current):** Runtime panic
+- Simple to implement
+- Validates semantics
+- Catches bugs (just at runtime)
+
+**Phase 2 (compiler):** Static analysis with compile errors
+- Implement linear type tracking
+- Flow-sensitive CFG analysis
+- Error messages with helpful suggestions
+
+**Phase 3 (production):** Remove runtime checks
+- Compiler guarantees safety
+- No Drop check needed (already verified)
+- Slight performance win (~5ns per drop)
+
+**Hybrid approach (defense-in-depth):**
+- Keep both compile-time and runtime checks initially
+- Compile error catches most bugs
+- Runtime panic catches edge cases (FFI, reflection, compiler bugs)
+- Gain confidence in static analysis over time
+
+### Related Work (AC8)
+
+**Languages with similar systems:**
+- **Rust:** `#[must_use]` attribute + compiler warnings
+  - Rask is stricter: compile *error*, not warning
+  - Rask tracks through control flow (more sophisticated)
+
+- **Rust:** Linear types for Future (must .await)
+  - Same principle: value must be consumed
+  - Rask applies to TaskHandle
+
+- **Swift:** Definite assignment analysis
+  - Same CFG-based approach
+  - Proves variables initialized before use
+  - Rask: proves handles consumed before drop
+
+- **Kotlin:** Exhaustive `when` checks
+  - Compiler verifies all branches covered
+  - Similar flow analysis
+
+**Novelty:** Applying linear types to concurrency primitive (TaskHandle) at language level, not library level.
+
+---
+
+## Timer Support
+
+### Overview (TM1)
+
+Timers are fundamental async primitives. Every async runtime needs:
+- `sleep(duration)` - pause task for fixed duration
+- `interval(duration)` - periodic ticks
+- `timeout(duration, operation)` - bound operation time
+- Integration with `select` for timeout branches
+
+**Current status:** Not implemented (neither in spec nor interpreter).
+
+**Requirement:** Must be specified for v1.0. Cannot claim "practical coverage" without timers.
+
+### API Design (TM2)
+
+```rask
+// In stdlib async module
+public func sleep(duration: Duration) -> ()
+public func timeout<T>(duration: Duration, operation: || -> T) -> T or TimedOut
+
+// Timer struct for periodic ticks
+public struct Timer {
+    func interval(duration: Duration) -> TimerReceiver
+    func after(duration: Duration) -> TimerReceiver
+}
+
+public struct TimerReceiver {
+    func recv() -> () or RecvError  // Blocks until timer fires
+}
+```
+
+**Usage examples:**
+
+```rask
+using Multitasking {
+    // Sleep
+    spawn(|| {
+        print("Starting...\n")
+        sleep(Duration.seconds(5))
+        print("5 seconds later!\n")
+    }).detach()
+
+    // Timeout
+    const result = timeout(Duration.seconds(10), || {
+        try fetch_from_slow_api()
+    })
+    match result {
+        Ok(data) => process(data),
+        Err(TimedOut) => print("Operation timed out\n"),
+    }
+
+    // Interval
+    const ticker = Timer.interval(Duration.milliseconds(100))
+    spawn(|| {
+        loop {
+            try ticker.recv()
+            update_stats()
+        }
+    }).detach()
+
+    // Select integration
+    const rx = channel.receiver
+    const timer = Timer.after(Duration.seconds(30))
+    result = select {
+        rx -> msg: handle_message(msg),
+        timer -> _: handle_timeout(),
+    }
+}
+```
+
+### Implementation Architecture (TM3)
+
+**Approach:** Hierarchical timing wheel (separate from reactor).
+
+**Why not reactor-integrated?**
+- Reactor handles I/O events (file descriptors)
+- Timers are pure time-based (no FDs)
+- Mixing concerns complicates reactor logic
+- Timer wheel is well-studied, efficient
+
+**Timing wheel structure:**
+
+```rust
+TimerWheel {
+    wheels: [Vec<TimerEntry>; 4],  // Hours, minutes, seconds, milliseconds
+    resolution: Duration,           // Smallest tick (1ms)
+    current_tick: AtomicU64,        // Monotonic tick counter
+}
+
+struct TimerEntry {
+    deadline: u64,       // Absolute tick count
+    waker: Waker,        // Task to wake
+    repeating: bool,     // For intervals
+    interval: Duration,  // For intervals
+}
+```
+
+**Tick precision:**
+- 1ms resolution (adequate for most use cases)
+- Can upgrade to µs if profiling shows need
+- Trade-off: Higher resolution = more CPU overhead
+
+**Registration flow:**
+
+1. `sleep(duration)` called
+2. Calculate absolute deadline: `current_tick + duration_in_ticks`
+3. Insert into appropriate wheel slot
+4. Register waker for current task
+5. Return Poll::Pending (task parks)
+
+**Timer thread (dedicated):**
+
+```rust
+fn timer_thread(wheel: Arc<TimerWheel>) {
+    let mut last_tick = Instant::now();
+
+    loop {
+        // Sleep for one resolution unit
+        sleep(Duration::from_millis(1));
+
+        // Advance tick
+        let now = Instant::now();
+        let elapsed = now.duration_since(last_tick);
+        let ticks = elapsed.as_millis() as u64;
+
+        for _ in 0..ticks {
+            wheel.current_tick.fetch_add(1, SeqCst);
+
+            // Collect expired timers
+            let expired = wheel.pop_expired(wheel.current_tick.load(SeqCst));
+
+            // Wake tasks
+            for entry in expired {
+                entry.waker.wake();
+
+                // Re-insert if repeating
+                if entry.repeating {
+                    let next_deadline = wheel.current_tick.load(SeqCst) + entry.interval_ticks;
+                    wheel.insert(TimerEntry { deadline: next_deadline, ..entry });
+                }
+            }
+        }
+
+        last_tick = now;
+
+        if wheel.should_shutdown() {
+            break;
+        }
+    }
+}
+```
+
+**Cost per timer:**
+- Registration: ~200ns (calculate deadline, insert into wheel)
+- Fire: ~500ns (wake task, remove from wheel)
+- Memory: ~40 bytes per timer
+
+**Accuracy:**
+- Best case: ±1ms (tick resolution)
+- Typical: ±2-5ms (scheduler latency)
+- Worst case: ±10ms (system load)
+- Not suitable for real-time (use OS timers for that)
+
+### Integration with Select (TM4)
+
+`select` already sketches timer support (from select.md):
+
+```rask
+result = select {
+    rx1 -> v: handle_v(v),
+    Timer.after(5.seconds) -> _: timed_out(),
+}
+```
+
+**Implementation:**
+- `Timer.after()` returns `TimerReceiver` (channel-like)
+- `select` registers interest in timer receiver
+- When timer fires, waker wakes select task
+- `select` polls timer receiver, gets result
+
+**Uniform interface:** Timers look like channels from select's perspective.
+
+### Interpreter Implementation (TM5)
+
+**Current:** None.
+
+**Proposed:** Use `std::thread::sleep` for blocking sleep:
+
+```rust
+func sleep(duration: Duration) {
+    std::thread::sleep(duration.into());
+}
+```
+
+**No timer wheel needed** in interpreter (OS threads can just block).
+
+**Timeout via thread + channel:**
+
+```rust
+func timeout<T>(duration: Duration, operation: || -> T) -> T or TimedOut {
+    let (tx, rx) = channel::<Result<T, ()>>(1);
+
+    // Spawn operation
+    let op_thread = thread::spawn(move || {
+        let result = operation();
+        tx.send(Ok(result)).ok();
+    });
+
+    // Spawn timeout watchdog
+    let timeout_tx = tx.clone();
+    let watchdog = thread::spawn(move || {
+        thread::sleep(duration);
+        timeout_tx.send(Err(())).ok();
+    });
+
+    // Wait for first result
+    match rx.recv() {
+        Ok(Ok(value)) => {
+            watchdog.join().ok();  // Cancel watchdog
+            Ok(value)
+        }
+        _ => {
+            op_thread.join().ok();  // Best-effort cancel
+            Err(TimedOut)
+        }
+    }
+}
+```
+
+### Open Questions (TM6)
+
+**Adjusting timers:**
+- Should timers be cancellable?
+- Should `Timer.after()` return a handle with `.cancel()` method?
+
+**Recommendation:** Start without cancel. Add if users request it.
+
+**Timer drift:**
+- For long-running intervals, accumulate error
+- Should we adjust deadlines to prevent drift?
+
+**Recommendation:** Yes, adjust deadlines (calculate next as `last + interval`, not `now + interval`).
+
+**High-resolution timers:**
+- Support µs or ns resolution?
+
+**Recommendation:** Start with 1ms. Add high-res API if profiling shows need (separate timer wheel with different resolution).
 
 ---
 
@@ -983,6 +1630,108 @@ fn thread_pool_worker(pool: Arc<ThreadPool>) {
 - >1M msg/sec on single channel: Lock-free ring buffer upgrade
 
 **Current interpreter:** Much lower limits (OS thread limits, typically ~10k threads max).
+
+---
+
+## Performance Roadmap
+
+### Evolution Plan for Scalability
+
+The current spec describes a **prototype implementation** suitable for validation and medium-scale services. Production deployments targeting high-scale infrastructure require evolution:
+
+#### Phase 1: Prototype (Current Spec)
+**Target:** Validate design, support 80% of typical services
+
+**Architecture:**
+- Single central reactor
+- Random-victim work stealing
+- Lock-protected channels
+
+**Scalability:**
+- Concurrent tasks: 1M+ (memory-bound)
+- **I/O ops/sec: ~100k** (reactor bottleneck)
+- Spawn rate: ~10M/sec
+- Channel throughput: ~10M msg/sec (single channel)
+
+**Suitable for:**
+- Web applications (HTTP APIs, services)
+- CLI tools with background tasks
+- Game servers (<100k connections)
+- Data processing pipelines
+
+**Not suitable for:**
+- High-scale infrastructure (proxies, load balancers)
+- High-frequency systems (trading, real-time bidding)
+- Database engines (Redis, PostgreSQL scale)
+
+**Documentation requirement:** Specs and user docs MUST clearly state the 100k ops/sec limit. Don't promise "practical coverage" without qualification.
+
+#### Phase 2: Production Scale
+**Target:** 1M+ I/O ops/sec, scale to infrastructure workloads
+
+**Architecture changes:**
+1. **Per-thread reactors** (like tokio)
+   - Each worker owns epoll/kqueue instance
+   - Task→reactor affinity (tasks pinned to thread)
+   - Removes reactor contention bottleneck
+   - Tradeoff: More complex, no cross-thread I/O wakeups
+
+2. **NUMA-aware work stealing**
+   - Prefer stealing from same socket
+   - Reduces cross-socket cache misses
+   - Significant for >32 core systems
+
+3. **Lock-free channels** (optional)
+   - Use crossbeam unbounded/bounded channels
+   - Removes mutex contention at high throughput
+   - Only if profiling shows lock contention is real bottleneck
+
+**Design sketch (per-thread reactor):**
+```rust
+WorkerThread {
+    local_queue: Worker<Task>,
+    reactor: mio::Poll,                    // Owned reactor
+    registrations: HashMap<RawFd, TaskId>, // Local FD mappings
+    stealers: Vec<Stealer<Task>>,
+}
+
+// I/O registration now thread-local:
+func register_io(fd: RawFd, interest: Interest) {
+    let worker = current_worker();
+    worker.reactor.register(fd, interest);  // No cross-thread coordination
+}
+```
+
+**Migration path:**
+- Introduce `Multitasking(reactor: PerThread)` option
+- Default to `Single` (Phase 1), opt-in to `PerThread`
+- Measure real workloads, validate improvement
+
+#### Phase 3: Optimization & Tuning
+**Target:** Fine-tune for specific workload classes
+
+**Optimizations:**
+1. **Reactor polling strategies**
+   - Busy-polling for latency-critical (io_uring on Linux)
+   - Adaptive timeouts based on I/O rate
+   - Batched event processing
+
+2. **Task pool recycling**
+   - Reuse Task allocations (object pool)
+   - Reduces allocator pressure
+   - Typical saving: 50ns per spawn
+
+3. **Specializations**
+   - `CurrentThread` executor (no work-stealing, latency-sensitive)
+   - `Dedicated` executor (one task per thread, game engine style)
+   - `Priority` queues (high/low priority tasks)
+
+4. **Compiler optimizations**
+   - Inline state machine transitions
+   - Devirtualize future poll calls
+   - Reduce state machine size (merge states)
+
+**Guideline:** Don't optimize until Phase 2 deployed and profiled with real workloads.
 
 ---
 
@@ -1505,16 +2254,9 @@ These items need future resolution:
 
 ### Timer Support (OQ1)
 
-**Question:** How should `sleep()` and timeout() work?
+**Status:** Needs specification (moved to proper section below)
 
-**Options:**
-1. Separate timer wheel (hierarchical timing wheel, independent of reactor)
-2. Reactor-integrated (epoll_wait/kqueue with timeout)
-3. Polling (tasks check deadline on each poll)
-
-**Recommendation:** Option 1 (timer wheel). Reactor remains I/O-only. Timer wheel is well-understood data structure.
-
-**Spec impact:** Need timer.md spec for API and implementation.
+**See:** Timer Support section added before Channels for full specification.
 
 ### Task Priorities (OQ2)
 
@@ -1574,15 +2316,28 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 **Key mechanisms:**
 - Tasks: Stackless state machines (120 bytes)
 - Scheduler: Work-stealing FIFO queues
-- Reactor: Single central epoll/kqueue
-- I/O: Context-aware via hidden parameters
-- Handles: Affine (must consume)
+- Reactor: Single central epoll/kqueue (Phase 1 prototype)
+- I/O: Context-aware via hidden parameters (with tooling requirements)
+- Handles: Affine (compile-time checking via linear types)
 - Cancellation: Cooperative flag + ensure hooks
 - Channels: Lock-protected ring buffers
+- Timers: Hierarchical timing wheel (sleep, timeout, intervals)
 
-**Design philosophy:** Simple, correct, "fast enough" for 80% of use cases. Iterate based on real-world feedback.
+**New sections added (from critical review):**
+1. **Performance Roadmap** - Phase 1 (100k ops/sec prototype), Phase 2 (1M+ ops/sec production), Phase 3 (optimization)
+2. **Compile-Time Affine Checking** - Linear type system with flow analysis for TaskHandle consumption
+3. **Hidden Parameter Debuggability** - Tooling requirements (debugger, LSP, linter) for making hidden `__ctx` parameter acceptable
+4. **Timer Support** - Full specification for sleep, timeout, and interval timers
+
+**Design philosophy:** Simple, correct, "fast enough" for 80% of use cases. Iterate based on real-world feedback. **Prototype-first approach** with clear evolution plan.
 
 **Current interpreter:** Uses OS threads (1:1 model), no M:N scheduler. Full runtime planned for compiled version.
+
+**Critical requirements for v1.0:**
+- ✅ Reactor bottleneck documented (100k ops/sec limit in Phase 1)
+- ⚠️ Static affine checking (linear types in compiler)
+- ⚠️ Debugger/LSP tooling (for hidden parameters)
+- ⚠️ Timer implementation (sleep, timeout, intervals)
 
 **Related specs:**
 - [async.md](async.md) - Programmer-facing semantics
@@ -1590,8 +2345,21 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 - [memory/context-clauses.md](../memory/context-clauses.md) - Context parameter threading
 - [memory/resource-types.md](../memory/resource-types.md) - Ensure hook integration
 
-**Next steps:**
-- Implement M:N scheduler in compiled version
-- Integrate mio for reactor
-- Compiler transform: closure → state machine
-- Static affine checking for handles
+**Implementation roadmap:**
+
+**Phase 1 (Prototype - Current Spec):**
+- Single reactor (100k ops/sec)
+- Runtime affine checks (panics)
+- Basic tooling (compiler errors only)
+
+**Phase 2 (Production - Planned):**
+- Per-thread reactors (1M+ ops/sec)
+- Static affine checking (linear types)
+- Full tooling suite (debugger, LSP, linter)
+- Timer wheel implementation
+
+**Phase 3 (Optimization - Future):**
+- NUMA-aware stealing
+- Lock-free channels (if needed)
+- High-resolution timers
+- Specialized executors
