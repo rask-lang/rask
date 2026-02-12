@@ -58,6 +58,52 @@ impl Interpreter {
         }
     }
 
+    /// Handle TaskHandle method calls.
+    /// In interpreter, TaskHandle has same implementation as ThreadHandle (OS threads).
+    pub(crate) fn call_task_handle_method(
+        &self,
+        handle: &Arc<ThreadHandleInner>,
+        method: &str,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "join" => {
+                let jh = handle.handle.lock().unwrap().take();
+                match jh {
+                    Some(jh) => match jh.join() {
+                        Ok(Ok(val)) => Ok(val),
+                        Ok(Err(msg)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                        }),
+                        Err(_) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "task panicked".to_string(),
+                            )))],
+                        }),
+                    },
+                    None => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "handle already joined".to_string(),
+                        )))],
+                    }),
+                }
+            }
+            "detach" => {
+                let _ = handle.handle.lock().unwrap().take();
+                Ok(Value::Unit)
+            }
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "TaskHandle".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
     /// Handle Sender method calls.
     pub(crate) fn call_sender_method(
         &self,

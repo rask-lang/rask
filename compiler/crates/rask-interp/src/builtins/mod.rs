@@ -48,6 +48,7 @@ impl Interpreter {
                 return self.call_option_method(variant, fields, method, args);
             }
             Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
+            Value::TaskHandle(handle) => return self.call_task_handle_method(handle, method),
             Value::Sender(tx) => return self.call_sender_method(tx, method, args),
             Value::Receiver(rx) => return self.call_receiver_method(rx, method),
             Value::AtomicBool(atomic) => return self.call_atomic_bool_method(atomic, method, args),
