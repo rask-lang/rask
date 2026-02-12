@@ -322,7 +322,7 @@ db.write(|d| {
 
 // Message passing — channels between tasks
 const ch = Channel.buffered(16)
-spawn({ ch.sender.send(compute_result()) }
+spawn(|| { ch.sender.send(compute_result()) }
 const result = try ch.receiver.recv()
 ```
 
@@ -341,13 +341,13 @@ See [concurrency/sync.md](concurrency/sync.md).
 ```rask
 // Spawn and join
 using Multitasking {
-    const handle = spawn({ fetch(url) }
+    const handle = spawn(|| { fetch(url) }
     const result = try handle.join()
 }
 
 // Fire-and-forget
 using Multitasking {
-    spawn({ log_event(event) }).detach()
+    spawn(|| { log_event(event) }).detach()
 }
 
 // Parallel work with channels
@@ -355,7 +355,7 @@ using Multitasking {
     const ch = Channel.buffered(10)
 
     for url in urls {
-        spawn({
+        spawn(|| {
             const data = try fetch(url)
             try ch.sender.send(data)
         }

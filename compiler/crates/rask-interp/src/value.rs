@@ -124,6 +124,7 @@ pub enum BuiltinKind {
     Println,
     Panic,
     Format,
+    AsyncSpawn, // spawn(|| {}) from async module
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).
@@ -154,6 +155,8 @@ pub enum ModuleKind {
     Json,   // json.parse, json.stringify, json.encode, etc.
     Path,   // Path.new (type constructor via module)
     Net,    // net.tcp_listen, net.tcp_connect
+    Async,  // async.spawn (green task spawner)
+    Thread, // thread.Thread, thread.ThreadPool
 }
 
 /// Inner state for a spawned thread handle.
@@ -527,6 +530,8 @@ impl fmt::Display for Value {
                 ModuleKind::Json => write!(f, "<module json>"),
                 ModuleKind::Path => write!(f, "<module path>"),
                 ModuleKind::Net => write!(f, "<module net>"),
+                ModuleKind::Async => write!(f, "<module async>"),
+                ModuleKind::Thread => write!(f, "<module thread>"),
             },
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {

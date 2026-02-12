@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::sync::mpsc;
 
 mod register;
 mod monomorphize;
@@ -124,7 +125,7 @@ impl Interpreter {
     }
 
     /// Clones function/enum/method tables and captured environment for spawned thread.
-    fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
+    pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
         let mut child = Interpreter::new();
         child.functions = self.functions.clone();
         child.enums = self.enums.clone();
@@ -134,6 +135,141 @@ impl Interpreter {
             child.env.define(name, value);
         }
         child
+    }
+
+    /// Spawn an OS thread from a closure (Thread.spawn).
+    pub(crate) fn spawn_os_thread(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use crate::value::ThreadHandleInner;
+
+        if args.is_empty() {
+            return Err(RuntimeError::TypeError(
+                "Thread.spawn requires a closure argument".to_string(),
+            ));
+        }
+
+        let closure = &args[0];
+        match closure {
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                if !params.is_empty() {
+                    return Err(RuntimeError::TypeError(
+                        "Thread.spawn closure must take no parameters".to_string(),
+                    ));
+                }
+
+                let body = body.clone();
+                let captured = captured_env.clone();
+                let child = self.spawn_child(captured);
+
+                let join_handle = std::thread::spawn(move || {
+                    let mut interp = child;
+                    match interp.eval_expr(&body) {
+                        Ok(val) => Ok(val),
+                        Err(RuntimeError::Return(val)) => Ok(val),
+                        Err(e) => Err(format!("{}", e)),
+                    }
+                });
+
+                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "Thread.spawn expects a closure, got {}",
+                closure.type_name()
+            ))),
+        }
+    }
+
+    /// Spawn a thread pool task from a closure (ThreadPool.spawn).
+    pub(crate) fn spawn_pool_task(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use crate::value::{PoolTask, ThreadHandleInner};
+
+        if args.is_empty() {
+            return Err(RuntimeError::TypeError(
+                "ThreadPool.spawn requires a closure argument".to_string(),
+            ));
+        }
+
+        let closure = &args[0];
+        match closure {
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                if !params.is_empty() {
+                    return Err(RuntimeError::TypeError(
+                        "ThreadPool.spawn closure must take no parameters".to_string(),
+                    ));
+                }
+
+                // Check for thread pool context
+                let pool = self.env.get("__thread_pool").cloned();
+                let pool = match pool {
+                    Some(Value::ThreadPool(p)) => p,
+                    _ => {
+                        return Err(RuntimeError::TypeError(
+                            "ThreadPool.spawn requires `using ThreadPool` context".to_string(),
+                        ))
+                    }
+                };
+
+                let body = body.clone();
+                let captured = captured_env.clone();
+                let child = self.spawn_child(captured);
+
+                let (result_tx, result_rx) = mpsc::sync_channel::<Result<Value, String>>(1);
+
+                let task = PoolTask {
+                    work: Box::new(move || {
+                        let mut interp = child;
+                        match interp.eval_expr(&body) {
+                            Ok(val) => {
+                                let _ = result_tx.send(Ok(val));
+                            }
+                            Err(RuntimeError::Return(val)) => {
+                                let _ = result_tx.send(Ok(val));
+                            }
+                            Err(e) => {
+                                let _ = result_tx.send(Err(format!("{}", e)));
+                            }
+                        }
+                    }),
+                };
+
+                let sender = pool.sender.lock().unwrap();
+                if let Some(ref tx) = *sender {
+                    tx.send(task).map_err(|_| {
+                        RuntimeError::ResourceClosed {
+                            resource_type: "ThreadPool".to_string(),
+                            operation: "spawn on".to_string(),
+                        }
+                    })?;
+                } else {
+                    return Err(RuntimeError::TypeError(
+                        "thread pool is shut down".to_string(),
+                    ));
+                }
+
+                let join_handle = std::thread::spawn(move || {
+                    result_rx
+                        .recv()
+                        .unwrap_or(Err("thread pool task dropped".to_string()))
+                });
+
+                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                    handle: Mutex::new(Some(join_handle)),
+                })))
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "ThreadPool.spawn expects a closure, got {}",
+                closure.type_name()
+            ))),
+        }
     }
 
     fn write_output(&self, s: &str) {

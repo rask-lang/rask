@@ -19,6 +19,29 @@ fn strip_generics(name: &str) -> &str {
 }
 
 impl Interpreter {
+    /// Register a selective import (e.g., `import thread.Thread`).
+    fn register_selective_import(&mut self, module: ModuleKind, member: &str, alias: &str) {
+        match (module, member) {
+            // Thread module members
+            (ModuleKind::Thread, "Thread") => {
+                self.env.define(alias.to_string(), Value::Type("Thread".to_string()));
+            }
+            (ModuleKind::Thread, "ThreadPool") => {
+                self.env.define(alias.to_string(), Value::Type("ThreadPool".to_string()));
+            }
+            // Async module members
+            (ModuleKind::Async, "spawn") => {
+                // Define spawn as a builtin function that forwards to async.spawn
+                // For now, we'll use a special builtin
+                self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
+            }
+            // Future: Add more module members as needed
+            _ => {
+                // Unknown member - ignore for now (could warn)
+            }
+        }
+    }
+
     pub(super) fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
@@ -54,7 +77,6 @@ impl Interpreter {
                 }
                 DeclKind::Import(import) => {
                     if let Some(module_name) = import.path.first() {
-                        let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
                         let module_kind = match module_name.as_str() {
                             "fs" => Some(ModuleKind::Fs),
                             "io" => Some(ModuleKind::Io),
@@ -68,10 +90,28 @@ impl Interpreter {
                             "json" => Some(ModuleKind::Json),
                             "path" => Some(ModuleKind::Path),
                             "net" => Some(ModuleKind::Net),
+                            "async" => Some(ModuleKind::Async),
+                            "thread" => Some(ModuleKind::Thread),
                             _ => None,
                         };
+
                         if let Some(kind) = module_kind {
-                            imports.push((alias, kind));
+                            // Handle two cases:
+                            // 1. `import module` -> bind module itself
+                            // 2. `import module.Member` -> bind specific member
+                            if import.path.len() == 1 {
+                                // Whole module import
+                                let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
+                                imports.push((alias, kind));
+                            } else if import.path.len() == 2 {
+                                // Selective import: import module.Member
+                                let member_name = &import.path[1];
+                                let alias = import.alias.clone().unwrap_or_else(|| member_name.clone());
+
+                                // Get the member from the module and bind it
+                                // For now, we'll push a placeholder and handle it after registration
+                                self.register_selective_import(kind, member_name, &alias);
+                            }
                         }
                     }
                 }

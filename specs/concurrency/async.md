@@ -11,9 +11,9 @@ Green tasks with affine handles. No function coloring. Explicit resource declara
 
 | Rule | Description |
 |------|-------------|
-| **S1: Green task** | `spawn({})` creates a green task; requires `using Multitasking` |
-| **S2: Pooled thread** | `ThreadPool.spawn({})` runs on thread pool; requires `using ThreadPool` |
-| **S3: Raw thread** | `Thread.spawn({})` creates OS thread; no context required |
+| **S1: Green task** | `spawn(|| {})` creates a green task; requires `using Multitasking` |
+| **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; requires `using ThreadPool` |
+| **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no context required |
 | **S4: Affine handle** | All spawn forms return affine handles — must be joined or detached |
 
 ```rask
@@ -23,7 +23,7 @@ func main() -> () or Error {
 
         loop {
             const conn = try listener.accept()
-            spawn({ handle_connection(conn) }).detach()
+            spawn(|| { handle_connection(conn) }).detach()
         }
     }
 }
@@ -46,12 +46,12 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 
 <!-- test: skip -->
 ```rask
-const h = spawn({ compute() })
+const h = spawn(|| { compute() })
 const result = try h.join()
 
-spawn({ background_work() }).detach()
+spawn(|| { background_work() }).detach()
 
-spawn({ work() })  // ERROR [conc.async/H1]: unused TaskHandle
+spawn(|| { work() })  // ERROR [conc.async/H1]: unused TaskHandle
 ```
 
 ### Handle API
@@ -78,13 +78,13 @@ extend TaskHandle<T> {
 <!-- test: skip -->
 ```rask
 let (a, b) = join_all(
-    spawn({ work1() }),
-    spawn({ work2() })
+    spawn(|| { work1() }),
+    spawn(|| { work2() })
 )
 
 const group = TaskGroup.new()
 for url in urls {
-    group.spawn({ fetch(url) })
+    group.spawn(|| { fetch(url) })
 }
 const results = try group.join_all()
 ```
@@ -149,7 +149,7 @@ I/O flow: function calls stdlib → stdlib issues non-blocking syscall → sched
 
 <!-- test: skip -->
 ```rask
-const h = spawn({
+const h = spawn(|| {
     const file = try File.open("data.txt")
     ensure file.close()
 
@@ -176,13 +176,13 @@ try h.cancel()
 ```rask
 let (tx, rx) = Channel<Message>.buffered(100)
 
-const producer = spawn({
+const producer = spawn(|| {
     for msg in generate_messages() {
         try tx.send(msg)
     })
 }
 
-const consumer = spawn({
+const consumer = spawn(|| {
     while rx.recv() is Ok(msg) {
         process(msg)
     })
@@ -216,17 +216,17 @@ try join_all(producer, consumer)
 ```
 ERROR [conc.async/H1]: unused TaskHandle
    |
-12 |  spawn({ work() })
+12 |  spawn(|| { work() })
    |  ^^^^^^^^^^^^^^^^ TaskHandle must be joined or detached
 ```
 
 ```
 ERROR [conc.async/S1]: spawn requires Multitasking context
    |
-5  |  spawn({ fetch(url) })
+5  |  spawn(|| { fetch(url) })
    |  ^^^^^ no `using Multitasking` in scope
 
-FIX: using Multitasking { spawn({ fetch(url) }).detach() }
+FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
 ```
 
 ## Edge Cases
@@ -255,7 +255,7 @@ FIX: using Multitasking { spawn({ fetch(url) }).detach() }
 
 | Aspect | Go | Rask |
 |--------|-----|------|
-| Spawn syntax | `go func()` | `spawn({ }).detach()` |
+| Spawn syntax | `go func()` | `spawn(|| { }).detach()` |
 | Track tasks | Manual (WaitGroup) | Compile-time (affine) |
 | Forgotten tasks | Silent | Compile error |
 | Function coloring | No | No |

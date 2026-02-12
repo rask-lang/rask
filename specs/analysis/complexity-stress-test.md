@@ -159,7 +159,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
     const (snapshot, _) = world.entities.snapshot()
     const mesh_snap = world.meshes.freeze_ref()
 
-    const render_handle = ThreadPool.spawn({
+    const render_handle = ThreadPool.spawn(|| {
         for h in snapshot.handles() {
             const entity = snapshot[h]
             const mesh = mesh_snap[entity.mesh]
@@ -167,7 +167,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
         }
     }
 
-    const physics_handle = ThreadPool.spawn({
+    const physics_handle = ThreadPool.spawn(|| {
         world.physics.step(dt)
     }
 

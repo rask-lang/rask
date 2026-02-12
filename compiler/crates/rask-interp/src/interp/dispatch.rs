@@ -17,7 +17,13 @@ impl Interpreter {
                     Err(RuntimeError::UndefinedFunction(name))
                 }
             }
-            Value::Builtin(kind) => self.call_builtin(kind, args),
+            Value::Builtin(kind) => {
+                // Handle AsyncSpawn separately as it needs mutable access
+                if kind == BuiltinKind::AsyncSpawn {
+                    return self.spawn_os_thread(args);
+                }
+                self.call_builtin(kind, args)
+            }
             Value::EnumConstructor {
                 enum_name,
                 variant_name,
@@ -90,6 +96,10 @@ impl Interpreter {
                     .map(|v| format!("{}", v))
                     .unwrap_or_else(|| "panic".to_string());
                 Err(RuntimeError::Panic(msg))
+            }
+            BuiltinKind::AsyncSpawn => {
+                // This should have been handled in call_value
+                unreachable!("AsyncSpawn should be handled in call_value")
             }
             BuiltinKind::Format => {
                 if args.is_empty() {
