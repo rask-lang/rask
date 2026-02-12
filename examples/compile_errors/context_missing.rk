@@ -38,7 +38,7 @@ func damage_fixed(h: Handle<Player>, amount: i32) using Pool<Player> {
 }
 
 // FIX 2: Add named context (if structural operations needed)
-func kill_fixed(h: Handle<Player>) with players: Pool<Player> {
+func kill_fixed(h: Handle<Player>) using players: Pool<Player> {
     h.health = 0
     players.remove(h)
 }

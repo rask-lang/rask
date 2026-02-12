@@ -216,7 +216,6 @@ impl Parser {
             TokenKind::Using => "using".to_string(),
             TokenKind::Lazy => "lazy".to_string(),
             // Concurrency
-            TokenKind::Spawn => "spawn".to_string(),
             TokenKind::Select => "select".to_string(),
             TokenKind::With => "with".to_string(),
             // Error handling
@@ -1688,7 +1687,7 @@ impl Parser {
             self.current_kind(),
             TokenKind::Int(_, _) | TokenKind::Float(_, _) | TokenKind::String(_) | TokenKind::Bool(_)
                 | TokenKind::Ident(_) | TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket
-                | TokenKind::If | TokenKind::Match | TokenKind::With | TokenKind::Spawn
+                | TokenKind::If | TokenKind::Match | TokenKind::With
                 | TokenKind::Select | TokenKind::SelectPriority
                 | TokenKind::Minus | TokenKind::Bang | TokenKind::Pipe | TokenKind::Try
                 | TokenKind::Amp | TokenKind::Star | TokenKind::Tilde
@@ -2050,8 +2049,6 @@ impl Parser {
             TokenKind::Using => self.parse_using_block(),
 
             TokenKind::With => self.parse_with_binding(),
-
-            TokenKind::Spawn => self.parse_spawn_expr(),
 
             TokenKind::Select => self.parse_select_expr(false),
 
@@ -2693,36 +2690,6 @@ impl Parser {
         }
 
         Ok(expr)
-    }
-
-    fn parse_spawn_expr(&mut self) -> Result<Expr, ParseError> {
-        let start = self.current().span.start;
-        self.expect(&TokenKind::Spawn)?;
-
-        // Check for contextual modifiers: `spawn thread { }` or `spawn raw { }`
-        if let TokenKind::Ident(ref name) = self.current_kind().clone() {
-            if name == "thread" || name == "raw" {
-                let variant = format!("spawn_{}", name);
-                self.advance();
-                self.skip_newlines();
-                let body = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                return Ok(Expr {
-                    id: self.next_id(),
-                    kind: ExprKind::BlockCall { name: variant, body },
-                    span: Span::new(start, end),
-                });
-            }
-        }
-
-        self.skip_newlines();
-        let body = self.parse_block_body()?;
-        let end = self.tokens[self.pos - 1].span.end;
-        Ok(Expr {
-            id: self.next_id(),
-            kind: ExprKind::Spawn { body },
-            span: Span::new(start, end),
-        })
     }
 
     fn parse_select_expr(&mut self, is_priority: bool) -> Result<Expr, ParseError> {

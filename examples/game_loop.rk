@@ -4,6 +4,7 @@
 
 import time
 import random
+import thread.ThreadPool
 
 // Trait for updatable components
 trait Updatable {
@@ -219,13 +220,13 @@ func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, nu
     let thread_handles = Vec.new()
     for chunk in handles.chunks(chunk_size) {
         let chunk = chunk.to_vec()
-        let task = spawn thread {
+        let task = ThreadPool.spawn({
             for h in chunk {
                 if !entities[h].active: continue
                 entities[h].position.x += entities[h].velocity.dx * dt
                 entities[h].position.y += entities[h].velocity.dy * dt
             }
-        }
+        })
         thread_handles.push(task).ok()
     }
 

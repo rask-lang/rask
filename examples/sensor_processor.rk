@@ -3,6 +3,8 @@
 // Demonstrates: Lock-free atomics, unsafe hardware access, hard real-time deadlines,
 //               zero-allocation hot paths, interrupt handling, generics, SIMD
 
+import thread.Thread
+
 import time
 
 // ============================================================================
@@ -456,9 +458,9 @@ func main() -> () or Error {
     const deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on raw thread (needs thread affinity)
-    let isr_handle = spawn raw {
+    let isr_handle = Thread.spawn({
         interrupt_handler(buffer, start_time, running, SAMPLE_RATE_HZ)
-    }
+    })
 
     println("Started. Processing for {DURATION_SECS} seconds...")
     println("")

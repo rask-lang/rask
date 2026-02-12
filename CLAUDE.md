@@ -106,6 +106,9 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Pool context | `func f() using Pool<T>` | N/A |
 | Runtime context | `using Multitasking { }` | N/A |
 | Element binding | `with pool[h] as x { }` | N/A |
+| Async spawn | `spawn({})` | `tokio::spawn(async {})` |
+| Thread pool spawn | `ThreadPool.spawn({})` | N/A |
+| OS thread spawn | `Thread.spawn({})` | `std::thread::spawn(\|\| {})` |
 | Statement end | Newline | `;` |
 
 **Common patterns:**
@@ -147,12 +150,20 @@ func damage(h: Handle<Player>) using Pool<Player> {  // pool context
 }
 
 using Multitasking {                         // runtime executor
-    spawn { work() }.detach()
+    spawn({ work() }).detach()
 }
 
 with pool[h] as entity {                     // element binding
     entity.health -= 10
 }
+
+// Spawning (functions, not keywords)
+import async.spawn
+import thread.{Thread, ThreadPool}
+
+spawn({ work() })                            // async spawn
+Thread.spawn({ background() })               // raw OS thread
+ThreadPool.spawn({ compute() })              // thread pool (needs using ThreadPool)
 ```
 
 **Return semantics:**
@@ -208,7 +219,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
-| Concurrency | spawn/join/detach, channels, no function coloring | [concurrency/](specs/concurrency/) |
+| Concurrency | spawn({})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
 | Rust interop | compile_rust() in build scripts, C ABI, cbindgen | [build.md](specs/structure/build.md) |

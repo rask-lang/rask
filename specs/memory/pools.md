@@ -209,7 +209,7 @@ func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
 }
 
 // Frozen — read-only, accepts both Pool<T> and FrozenPool<T>
-func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
+func get_health(h: Handle<Entity>) using frozen Pool<Entity> -> i32 {
     return h.health
 }
 ```
@@ -217,9 +217,9 @@ func get_health(h: Handle<Entity>) with frozen Pool<Entity> -> i32 {
 | Context | `Pool<T>` | `FrozenPool<T>` |
 |---------|-----------|-----------------|
 | `using Pool<T>` | Accepted | Rejected |
-| `with frozen Pool<T>` | Accepted | Accepted |
-| `with name: Pool<T>` | Accepted | Rejected |
-| `with frozen name: Pool<T>` | Accepted | Accepted |
+| `using frozen Pool<T>` | Accepted | Accepted |
+| `using name: Pool<T>` | Accepted | Rejected |
+| `using frozen name: Pool<T>` | Accepted | Accepted |
 
 Writing through handles in a `frozen` context is a compile error. Private functions can have `frozen` inferred; public functions must declare it.
 
@@ -258,7 +258,7 @@ damage(h, 10)    // Compiler passes players as hidden parameter
 **Unnamed context** — field access only. **Named context** — field access + structural operations:
 
 ```rask
-func cleanup(h: Handle<Entity>) with entities: Pool<Entity> {
+func cleanup(h: Handle<Entity>) using entities: Pool<Entity> {
     h.active = false              // Field access via auto-resolution
     if h.health <= 0 {
         entities.remove(h)        // Structural op via named pool
@@ -292,7 +292,7 @@ entities.with_partition(4, |chunks| {
 let (snapshot, mut pool) = entities.snapshot()
 
 // Readers see frozen state (zero checks)
-spawn { render_frame(snapshot) }
+spawn({ render_frame(snapshot) }
 
 // Writer can mutate concurrently
 try pool.insert(new_entity)
@@ -422,8 +422,8 @@ FIX: Separate the check from the mutation:
 ```
 ERROR [mem.pools/PF5]: cannot write through handle in frozen context
    |
-1  |  func bad(h: Handle<Entity>) with frozen Pool<Entity> {
-   |                                    ------ context is frozen
+1  |  func bad(h: Handle<Entity>) using frozen Pool<Entity> {
+   |                                     ------ context is frozen
 2  |      h.health -= 10
    |      ^^^^^^^^^^^^^^ cannot write in frozen context
 ```

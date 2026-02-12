@@ -437,7 +437,7 @@ func sort(items: Vec<T>) {
 }
 ```
 
-**Context clauses with `with`:**
+**Context clauses with `using`:**
 ```rask
 // Unnamed context (mutable by default)
 func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
@@ -445,12 +445,12 @@ func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
 }
 
 // Frozen context (read-only, accepts FrozenPool too)
-func get_health(h: Handle<Player>) with frozen Pool<Player> -> i32 {
+func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
     return h.health
 }
 
 // Named context (auto-resolution + structural operations)
-func spawn(count: i32) with enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
+func spawn(count: i32) using enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
     const handles = Vec.new()
     for i in 0..count {
         handles.push(try enemies.insert(Enemy.new()))
@@ -460,7 +460,7 @@ func spawn(count: i32) with enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
 
 // Multiple contexts
 func transfer(from: Handle<Player>, to: Handle<Player>, item: Handle<Item>)
-    with players: Pool<Player>, items: Pool<Item>
+    using players: Pool<Player>, items: Pool<Item>
 {
     from.inventory.remove(item)
     to.inventory.add(item)
@@ -497,7 +497,7 @@ func process_all(handles: Vec<Handle<T>>)
 
 // Full signature order: generics → params → return → with → where
 public func complex<K, V>(map: Map<K, V>, key: K) -> V or NotFound
-    with values: Pool<V>
+    using values: Pool<V>
     where K: HashKey, V: Clone
 {
     const v_handle = try map.get(key)

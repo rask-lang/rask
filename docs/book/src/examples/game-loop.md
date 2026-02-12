@@ -34,7 +34,7 @@ entities[enemy].target = Some(player)
 ### Update Loop
 
 ```rask
-func update(delta: f32) with entities: Pool<Entity> {
+func update(delta: f32) using entities: Pool<Entity> {
     for h in entities {
         entities[h].pos.x += entities[h].vel.x * delta
         entities[h].pos.y += entities[h].vel.y * delta
