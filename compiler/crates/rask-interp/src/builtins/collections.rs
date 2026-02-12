@@ -455,6 +455,56 @@ impl Interpreter {
                     fields: vec![max],
                 })
             }
+            "take_all" => {
+                let items = std::mem::take(&mut *v.lock().unwrap());
+                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+            }
+            "read" => {
+                let index = self.expect_int(&args, 0)? as usize;
+                let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 2,
+                    got: args.len(),
+                })?;
+
+                let vec = v.lock().unwrap();
+                if let Some(item) = vec.get(index) {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![result],
+                    })
+                } else {
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    })
+                }
+            }
+            "modify" => {
+                let index = self.expect_int(&args, 0)? as usize;
+                let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 2,
+                    got: args.len(),
+                })?;
+
+                let mut vec = v.lock().unwrap();
+                if let Some(item) = vec.get_mut(index) {
+                    let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![result],
+                    })
+                } else {
+                    Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    })
+                }
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
                 method: method.to_string(),
@@ -464,7 +514,7 @@ impl Interpreter {
 
     /// Handle Pool method calls.
     pub(crate) fn call_pool_method(
-        &self,
+        &mut self,
         p: &Arc<Mutex<PoolData>>,
         method: &str,
         args: Vec<Value>,
@@ -604,6 +654,70 @@ impl Interpreter {
                 new_pool.len = pool.len;
                 new_pool.type_param = pool.type_param.clone();
                 Ok(Value::Pool(Arc::new(Mutex::new(new_pool))))
+            }
+            "take_all" => {
+                let mut pool = p.lock().unwrap();
+                let mut items = Vec::new();
+                // Iterate through all slots and collect active items
+                for (gen, slot) in &mut pool.slots {
+                    if let Some(value) = slot.take() {
+                        items.push(value);
+                    }
+                }
+                // Reset pool state
+                pool.free_list = (0..pool.slots.len() as u32).collect();
+                pool.len = 0;
+                Ok(Value::Vec(Arc::new(Mutex::new(items))))
+            }
+            "read" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.get(0) {
+                    let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                        expected: 2,
+                        got: args.len(),
+                    })?;
+
+                    let pool = p.lock().unwrap();
+                    if let Some((gen, Some(item))) = pool.slots.get(*index as usize) {
+                        if gen == generation {
+                            let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                            return Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![result],
+                            });
+                        }
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
+            }
+            "modify" => {
+                if let Some(Value::Handle { pool_id, index, generation }) = args.get(0) {
+                    let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                        expected: 2,
+                        got: args.len(),
+                    })?;
+
+                    let mut pool = p.lock().unwrap();
+                    if let Some((gen, Some(item))) = pool.slots.get_mut(*index as usize) {
+                        if gen == generation {
+                            let result = self.call_value(closure.clone(), vec![item.clone()])?;
+                            return Ok(Value::Enum {
+                                name: "Option".to_string(),
+                                variant: "Some".to_string(),
+                                fields: vec![result],
+                            });
+                        }
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Pool".to_string(),
@@ -809,6 +923,94 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Unit],
+                })
+            }
+            "ensure_modify" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let factory = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 3,
+                    got: args.len(),
+                })?;
+                let modifier = args.get(2).ok_or(RuntimeError::ArityMismatch {
+                    expected: 3,
+                    got: args.len(),
+                })?;
+
+                // Check if key exists
+                let mut map = m.lock().unwrap();
+                let existing_value = map.iter_mut().find(|(k, _)| Self::value_eq(k, &key));
+
+                let value_to_modify = if let Some((_, v)) = existing_value {
+                    v.clone()
+                } else {
+                    // Key doesn't exist, call factory and insert
+                    let new_value = self.call_closure_no_args(factory)?;
+                    map.push((key.clone(), new_value.clone()));
+                    new_value
+                };
+
+                // Call modifier and return result
+                let result = self.call_value(modifier.clone(), vec![value_to_modify])?;
+                Ok(Value::Enum {
+                    name: "Result".to_string(),
+                    variant: "Ok".to_string(),
+                    fields: vec![result],
+                })
+            }
+            "take_all" => {
+                let items = std::mem::take(&mut *m.lock().unwrap());
+                Ok(Value::Vec(Arc::new(Mutex::new(
+                    items.into_iter().map(|(k, v)| {
+                        Value::Vec(Arc::new(Mutex::new(vec![k, v])))
+                    }).collect()
+                ))))
+            }
+            "read" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 2,
+                    got: args.len(),
+                })?;
+
+                let map = m.lock().unwrap();
+                for (k, v) in map.iter() {
+                    if Self::value_eq(k, &key) {
+                        let result = self.call_value(closure.clone(), vec![v.clone()])?;
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                        });
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
+                })
+            }
+            "modify" => {
+                let key = args.get(0).cloned().unwrap_or(Value::Unit);
+                let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
+                    expected: 2,
+                    got: args.len(),
+                })?;
+
+                let mut map = m.lock().unwrap();
+                for (k, v) in map.iter_mut() {
+                    if Self::value_eq(k, &key) {
+                        let result = self.call_value(closure.clone(), vec![v.clone()])?;
+                        return Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                        });
+                    }
+                }
+                Ok(Value::Enum {
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {
