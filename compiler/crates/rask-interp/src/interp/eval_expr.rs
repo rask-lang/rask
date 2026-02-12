@@ -714,7 +714,7 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 let captured = self.env.capture();
                 Ok(Value::Closure {
                     params: params.iter().map(|p| p.name.clone()).collect(),

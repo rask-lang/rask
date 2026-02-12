@@ -1035,7 +1035,7 @@ impl Resolver {
                 }
                 self.scopes.pop();
             }
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 self.scopes.push(ScopeKind::Closure);
                 for param in params {
                     let sym_id = self.symbols.insert(

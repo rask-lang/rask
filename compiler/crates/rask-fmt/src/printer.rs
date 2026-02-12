@@ -1134,7 +1134,7 @@ impl<'a> Printer<'a> {
                 self.emit_indent();
                 self.emit("}");
             }
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, ret_ty, body } => {
                 self.emit("|");
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {
@@ -1146,7 +1146,12 @@ impl<'a> Printer<'a> {
                         self.emit(ty);
                     }
                 }
-                self.emit("| ");
+                self.emit("|");
+                if let Some(ref ty) = ret_ty {
+                    self.emit(" -> ");
+                    self.emit(ty);
+                }
+                self.emit(" ");
                 self.format_expr(body);
             }
             ExprKind::Cast { expr: inner, ty } => {

@@ -1,0 +1,17 @@
+func main() {
+    for i in 1..101 {
+        const m3: bool = i % 3 == 0
+
+        const m5: bool = i % 5 == 0
+
+        if m3 && m5 {
+            println("FizzBuzz")
+        } else if m3 {
+            println("Fizz")
+        } else if m5 {
+            println("Buzz")
+        } else {
+            println(i)
+        }
+    }
+}

@@ -374,7 +374,7 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(end);
                 }
             }
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
@@ -836,7 +836,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Block(stmts) => {
                 for s in stmts { self.collect_free_vars_stmt(s, locals, out); }
             }
-            ExprKind::Closure { params, body } => {
+            ExprKind::Closure { params, body, .. } => {
                 let mut inner_locals = locals.clone();
                 for p in params { inner_locals.insert(p.name.clone()); }
                 self.collect_free_vars(body, &inner_locals, out);
