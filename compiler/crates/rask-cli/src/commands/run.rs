@@ -43,6 +43,44 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
 
     rask_desugar::desugar(&mut parse_result.decls);
 
+    // Name resolution
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Type checking
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "typecheck", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Ownership checking
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership_result.is_ok() {
+        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "ownership", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+        }
+        process::exit(1);
+    }
+
+    // Run interpreter
     let mut interp = rask_interp::Interpreter::with_args(program_args);
     match interp.run(&parse_result.decls) {
         Ok(_) => {}
@@ -90,6 +128,43 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
     }
 
     rask_desugar::desugar(&mut parse_result.decls);
+
+    // Name resolution
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Type checking
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "typecheck", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Ownership checking
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership_result.is_ok() {
+        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "ownership", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+        }
+        process::exit(1);
+    }
 
     let mut interp = rask_interp::Interpreter::new();
     let results = interp.run_tests(&parse_result.decls, filter.as_deref());
@@ -180,6 +255,43 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
     }
 
     rask_desugar::desugar(&mut parse_result.decls);
+
+    // Name resolution
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "resolve", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Type checking
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(errors) => {
+            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, path, "typecheck", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
+            }
+            process::exit(1);
+        }
+    };
+
+    // Ownership checking
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership_result.is_ok() {
+        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+        show_diagnostics(&diags, &source, path, "ownership", format);
+        if format == Format::Human {
+            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+        }
+        process::exit(1);
+    }
 
     let mut interp = rask_interp::Interpreter::new();
     let results = interp.run_benchmarks(&parse_result.decls, filter.as_deref());
