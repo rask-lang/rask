@@ -34,7 +34,7 @@ impl TypeChecker {
                     Some(IntSuffix::U64) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,
-                    None => self.ctx.fresh_var(), // Infer from context, defaults to i32
+                    None => Type::I32, // Default to i32, not unconstrained variable
                 }
             }
             ExprKind::Float(_, suffix) => {
@@ -42,7 +42,7 @@ impl TypeChecker {
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => self.ctx.fresh_var(), // Infer from context, defaults to f64
+                    None => Type::F64, // Default to f64, not unconstrained variable
                 }
             }
             ExprKind::String(_) => Type::String,
