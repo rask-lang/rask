@@ -25,6 +25,31 @@ I've specified all core language semantics:
 
 ---
 
+## Current State (2026-02-12)
+
+**Language design:** ✅ Complete and stable. All core semantics decided, 70+ spec files covering types, memory, control, concurrency, stdlib.
+
+**Frontend (Phases 1-4):** ✅ Complete. Lexer, parser, resolver, type checker, ownership checker all work. All validation programs pass checks.
+
+**Interpreter:** ✅ Fully functional. 15+ stdlib modules, 4/5 validation programs run (grep, editor, game loop, HTTP server; sensor typechecks).
+
+**What's blocking compiler implementation (Phase 5):**
+1. **Name mangling scheme** — Must design symbol naming rules before emitting object files
+2. **Memory layout documentation** — Should specify enum/closure/vtable layouts for consistency
+3. **Test infrastructure** — Need systematic validation strategy (unit tests, integration tests, end-to-end)
+
+**What's NOT blocking (despite TODO listings):**
+- MIR structure: ✅ Specified (codegen.md)
+- Monomorphization: ✅ Algorithm defined (M1-M5 rules)
+- Runtime library API: ✅ Designed (RT1-RT3)
+- Stdlib implementations: ✅ Exist in interpreter (3,000+ LOC Rust)
+- Build system: Can start simple (single-file compilation)
+- Self-hosting: Not needed for v1.0
+
+**Critical path forward:** Design mangling + layouts → Implement MIR lowering → Build Cranelift backend → Create rask-rt runtime → Compile hello world → Expand to validation programs.
+
+---
+
 ## Roadmap
 
 ### Phase 1: Consolidate (COMPLETE)
@@ -168,17 +193,30 @@ Every specced language feature parses, resolves, type-checks, and ownership-chec
 ### Phase 5: Code Generation
 Move from interpreter to actual compiled output.
 
-- [x] Choose backend (LLVM vs Cranelift) - I use Cranelift for now
-- [ ] IR design — lower AST to backend IR
-- [ ] Monomorphization — generate concrete instances of generics
-- [ ] Basic code generation — primitives, functions, structs, control flow
-- [ ] Runtime — allocator, panic handler, thread startup
-- [ ] Self-hosting bootstrap path
+**Critical blockers (must design before implementing):**
+- [ ] **Name mangling scheme** — Symbol naming for monomorphized functions, modules, generics (e.g., `Vec<i32>.push` → `collections_Vec_i32_push`)
+- [ ] **Memory layout documentation** — Specify enum tag placement, closure capture struct format, vtable structure, Result<T,E> encoding
+- [ ] **Test infrastructure** — Unit tests for MIR passes, integration tests for compile+run, validation program test suite
+
+**Ready to implement (design complete):**
+- [x] Choose backend (LLVM vs Cranelift) — Using Cranelift for dev builds
+- [x] MIR structure — Defined in `codegen.md`: statements, terminators, types
+- [x] Monomorphization algorithm — Specified (M1-M5 rules in `codegen.md`)
+- [x] Runtime library API — Defined (RT1-RT3 in `codegen.md`): allocator, panic, collections, I/O, concurrency
+- [ ] Implement MIR lowering — AST → MIR for all constructs (if/else, match, try, ensure, loops, closures)
+- [ ] Implement Cranelift backend — MIR → machine code
+- [ ] Build `rask-rt` runtime library — Rust implementation of allocator, panic, Vec, Map, Pool, string, I/O
+- [ ] Implement monomorphization pass — Reachability analysis, instantiation, layout computation
+
+**Deferred (not blocking v1.0):**
+- [ ] Self-hosting bootstrap path — Compiler can stay Rust-based initially
+- [ ] LLVM backend — Cranelift sufficient for initial release
+- [ ] Advanced build system — Can use simple file compilation initially
 
 ### Phase 6: Ecosystem
-Tools that make it actually usable:
-- [ ] Build system (`rask.build`) — syntax, relationship to comptime
-- [ ] Package manager — dependency resolution, registry
+Most core tooling is done. Remaining items can be built incrementally.
+
+**Already complete:**
 - [x] LSP completion — type-aware completions, go-to-definition
 - [x] Test runner — `rask test` command
 - [x] Formatter — `rask fmt`
@@ -187,40 +225,58 @@ Tools that make it actually usable:
 - [x] `rask lint` — implement command (spec done: [specs/tooling/lint.md](specs/tooling/lint.md))
 - [x] Structured error fixes — `fix:` / `why:` fields in all diagnostics
 
+**Can defer:**
+- [ ] Build system (`rask.build`) — Start with simple `rask compile file1.rk file2.rk -o binary`, add advanced features later
+- [ ] Package manager — Use directory-based imports initially, add registry/versioning later
+
 ---
 
 ## Open Design Questions
 
-### Before Phase 5 (blocks codegen)
-- [x] FrozenPool should satisfy read-only `using Pool<T>` context clauses — see [pools.md](specs/memory/pools.md#frozenpool-context-subsumption)
+### Critical (blocks Phase 5 start)
+- [ ] **Name mangling scheme** — How to encode `Vec<Map<string, i32>>.push()` in symbol names? Need simple, readable format (Go-style vs Rust-style compression)
+- [ ] **Memory layouts** — Document enum tag placement (before/after payload?), closure capture format, vtable structure, Result encoding
+
+### Important (needed during Phase 5)
+- [ ] **Runtime simplification strategy** — Should initial compiler target full M:N scheduler with reactor (complex), or start with OS threads per spawn (simple) and upgrade later?
 - [ ] `using` block expressions (`using ThreadPool(workers: 4) { ... }`) — parser dispatches `With` but examples use `using`
 
-### During Phase 5 (doesn't block, improves quality)
+### Quality improvements (doesn't block, improves ergonomics)
 - [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code
 - [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
 - [ ] Style guideline: max 3 context clauses per function — lint, not language rule
 
-### Phase 6 (after codegen works)
+### After codegen works (evaluate with real usage)
 - [ ] **Package granularity decision** — folder = package (current, Go-style nested hierarchy) vs file = package (Zig-style flat with many files). Defer until validation programs exist to evaluate which feels better. Key tension: nested folders vs flat with descriptive filenames.
 - [ ] Field projections for `ThreadPool.spawn` closures — can't do disjoint field access across threads without destructuring
 - [ ] Design task-local storage syntax
 - [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
 - [ ] String interop convenience — `as_c_str()`, `string.from_c()` methods
 
-### Deferred (no urgency)
-- [ ] Cross-compilation C interop behavior — `c_type` sizes per target, header re-parsing, `zig cc` backend
-- [ ] `std.reflect` — comptime reflection stdlib (local-analysis-safe) — see [reflect.md](specs/stdlib/reflect.md)
-- [ ] Maybe: `compile_cpp()` build script support
-- [ ] Maybe: Auto Rask wrapper generation from Rust cbindgen output
+### Deferred (post-v1.0, no urgency)
+
+**Advanced compilation:**
+- [ ] LLVM backend — Cranelift sufficient initially, add for release optimization later
+- [ ] Incremental compilation — Semantic hashing specified, implement when compile times become an issue
+- [ ] Cross-compilation — C interop with per-target `c_type` sizes, header re-parsing
+
+**Advanced tooling:**
+- [ ] Comptime debugger — Step through comptime execution
+- [ ] Fuzzing / property-based testing — Automated test generation
+- [ ] Code coverage tooling — Track test coverage
+- [ ] Metrics validation — Actual user studies for METRICS.md goals
+
+**Language extensions (maybe):**
+- [ ] `std.reflect` — Comptime reflection stdlib (local-analysis-safe) — see [reflect.md](specs/stdlib/reflect.md)
+- [ ] Macros / `format!` — Wait until core language is solid
+- [ ] Inline assembly (`asm!`) — For lowest-level code
+- [ ] Pointer provenance rules — Formal memory model refinement
+- [ ] Comptime memoization — Cache comptime computation results
+
+**Ecosystem (maybe):**
+- [ ] `compile_cpp()` build script support — Similar to `compile_rust()`
+- [ ] Auto Rask wrapper generation from Rust cbindgen output
 - [ ] Capability-based security for dependencies (restrict filesystem/network access)
-- [ ] Macros / `format!` — wait until core language is solid
-- [ ] Inline assembly (`asm!`)
-- [ ] Pointer provenance rules
-- [ ] Comptime memoization
-- [ ] Comptime debugger
-- [ ] Fuzzing / property-based testing
-- [ ] Code coverage tooling
-- [ ] Metrics validation (actual user studies)
 
 ### Resolved
 - [x] Decide: `char` as a type — first-class Unicode scalar value, see [primitives.md](specs/types/primitives.md)
