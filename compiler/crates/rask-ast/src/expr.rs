@@ -135,6 +135,7 @@ pub enum ExprKind {
     /// Closure (|x, y| x + y)
     Closure {
         params: Vec<ClosureParam>,
+        ret_ty: Option<String>,
         body: Box<Expr>,
     },
     /// Type cast (x as i32)

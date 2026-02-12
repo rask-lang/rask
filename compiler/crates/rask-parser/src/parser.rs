@@ -2101,7 +2101,7 @@ impl Parser {
                 let end = body.span.end;
                 Ok(Expr {
                     id: self.next_id(),
-                    kind: ExprKind::Closure { params: vec![], body: Box::new(body) },
+                    kind: ExprKind::Closure { params: vec![], ret_ty: None, body: Box::new(body) },
                     span: Span::new(start, end),
                 })
             }
@@ -2331,7 +2331,7 @@ impl Parser {
         self.expect(&TokenKind::Pipe)?;
 
         // Optional return type annotation
-        let _return_type = if self.match_token(&TokenKind::Arrow) {
+        let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
             None
@@ -2342,7 +2342,7 @@ impl Parser {
 
         Ok(Expr {
             id: self.next_id(),
-            kind: ExprKind::Closure { params, body: Box::new(body) },
+            kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
             span: Span::new(start, end),
         })
     }

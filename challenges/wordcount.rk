@@ -1,0 +1,18 @@
+
+
+
+func main () {
+    const str = "wordcount\nhello world.\nshould be\n13 words\nmost most most most frequenct word"
+
+    const words = str.split_whitespace()
+    const word_count = words.len()
+
+    const frequency = Map.new()
+    for word in words {
+        frequency.ensure_modify(word, || 1, |count| {
+            count += 1
+        })
+    }
+    print(frequency)
+
+}

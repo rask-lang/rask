@@ -423,7 +423,7 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Closure { params, body, .. } => {
+            ExprKind::Closure { params, ret_ty: declared_ret, body } => {
                 let param_types: Vec<_> = params
                     .iter()
                     .map(|p| {
@@ -436,7 +436,20 @@ impl TypeChecker {
                 // ESAD Phase 2: Check for aliasing violations in closure body
                 self.check_closure_aliasing(params, body);
 
-                let ret_ty = self.infer_expr(body);
+                let inferred_ret = self.infer_expr(body);
+
+                // Check declared return type if present
+                let ret_ty = if let Some(declared) = declared_ret {
+                    let expected_ret = parse_type_string(declared, &self.types)
+                        .unwrap_or(Type::Error);
+                    if let Err(err) = self.unify(&inferred_ret, &expected_ret, expr.span) {
+                        self.errors.push(err);
+                    }
+                    expected_ret
+                } else {
+                    inferred_ret
+                };
+
                 Type::Fn {
                     params: param_types,
                     ret: Box::new(ret_ty),
