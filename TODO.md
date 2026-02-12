@@ -7,7 +7,7 @@ I've specified all core language semantics:
 - **Types:** primitives, structs, enums, generics, traits, unions, optionals, error types, SIMD
 - **Memory:** ownership, borrowing, value semantics, closures, pools/handles, resource types, atomics, unsafe
 - **Control:** if/else, loops, match, ensure, comptime, explicit returns
-- **Concurrency:** spawn/join/detach, channels, select, ThreadPool, Multitasking, no function coloring
+- **Concurrency:** spawn/join/detach, channels, select, ThreadPool, Multitasking, no function coloring, async runtime implementation spec
 - **Structure:** modules, packages, targets, C interop, Rust interop (via C ABI + build system)
 - **Stdlib specs:** collections, strings, iteration, bits, testing
 
@@ -202,7 +202,7 @@ Tools that make it actually usable:
 
 ### Phase 6 (after codegen works)
 - [ ] **Package granularity decision** — folder = package (current, Go-style nested hierarchy) vs file = package (Zig-style flat with many files). Defer until validation programs exist to evaluate which feels better. Key tension: nested folders vs flat with descriptive filenames.
-- [ ] Field projections for `spawn_thread` closures — can't do disjoint field access across threads without destructuring
+- [ ] Field projections for `ThreadPool.spawn` closures — can't do disjoint field access across threads without destructuring
 - [ ] Design task-local storage syntax
 - [ ] Design `Projectable` trait — let custom containers define `with...as` behavior
 - [ ] String interop convenience — `as_c_str()`, `string.from_c()` methods

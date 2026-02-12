@@ -21,6 +21,7 @@ Concurrency model for Rask.
 | Spec | Status | Purpose |
 |------|--------|---------|
 | [async.md](async.md) | Draft | **Execution model**: Multitasking, ThreadPool, spawn, handles |
+| [runtime.md](runtime.md) | Draft | **Runtime implementation**: M:N scheduler, reactor, task state machines |
 | [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 
