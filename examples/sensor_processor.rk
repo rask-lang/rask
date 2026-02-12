@@ -458,7 +458,7 @@ func main() -> () or Error {
     const deadline_ns = HARD_DEADLINE_US * 1000
 
     // Start interrupt handler on raw thread (needs thread affinity)
-    let isr_handle = Thread.spawn({
+    let isr_handle = Thread.spawn(|| {
         interrupt_handler(buffer, start_time, running, SAMPLE_RATE_HZ)
     })
 

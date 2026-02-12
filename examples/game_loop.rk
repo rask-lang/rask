@@ -220,7 +220,7 @@ func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, nu
     let thread_handles = Vec.new()
     for chunk in handles.chunks(chunk_size) {
         let chunk = chunk.to_vec()
-        let task = ThreadPool.spawn({
+        let task = ThreadPool.spawn(|| {
             for h in chunk {
                 if !entities[h].active: continue
                 entities[h].position.x += entities[h].velocity.dx * dt

@@ -292,7 +292,7 @@ entities.with_partition(4, |chunks| {
 let (snapshot, mut pool) = entities.snapshot()
 
 // Readers see frozen state (zero checks)
-spawn({ render_frame(snapshot) }
+spawn(|| { render_frame(snapshot) }
 
 // Writer can mutate concurrently
 try pool.insert(new_entity)

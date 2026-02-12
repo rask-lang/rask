@@ -3,6 +3,7 @@
 //!
 //! Routes `module.method()` calls to the appropriate stdlib module handler.
 
+mod async_mod;
 mod cli;
 mod env;
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,6 +17,7 @@ mod net;
 mod os;
 mod path;
 mod random;
+mod thread;
 mod time;
 
 use crate::interp::{Interpreter, RuntimeError};
@@ -57,6 +59,8 @@ impl Interpreter {
             ModuleKind::Os => self.call_os_method(method, args),
             ModuleKind::Json => self.call_json_method(method, args),
             ModuleKind::Path => self.call_path_module_method(method, args),
+            ModuleKind::Async => self.call_async_method(method, args),
+            ModuleKind::Thread => self.call_thread_method(method, args),
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),
             ModuleKind::Cli => self.call_cli_module_method(method, args),
@@ -143,6 +147,24 @@ impl Interpreter {
             "Rng" => Err(RuntimeError::TypeError(format!(
                 "Rng.{} is not yet implemented", method
             ))),
+            "Thread" => {
+                if method == "spawn" {
+                    self.spawn_os_thread(args)
+                } else {
+                    Err(RuntimeError::TypeError(format!(
+                        "Thread has no method '{}'", method
+                    )))
+                }
+            }
+            "ThreadPool" => {
+                if method == "spawn" {
+                    self.spawn_pool_task(args)
+                } else {
+                    Err(RuntimeError::TypeError(format!(
+                        "ThreadPool has no method '{}'", method
+                    )))
+                }
+            }
             _ => {
                 // User-defined static methods from extend blocks
                 if let Some(type_methods) = self.methods.get(type_name).cloned() {
