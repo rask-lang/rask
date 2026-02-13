@@ -680,6 +680,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-mir"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-types",
+]
+
+[[package]]
+name = "rask-mono"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+ "rask-diagnostics",
+ "rask-types",
+]
+
+[[package]]
 name = "rask-ownership"
 version = "0.1.0"
 dependencies = [

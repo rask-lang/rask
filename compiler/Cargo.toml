@@ -9,6 +9,8 @@ members = [
     "crates/rask-types",
     "crates/rask-comptime",
     "crates/rask-ownership",
+    "crates/rask-mono",
+    "crates/rask-mir",
     "crates/rask-diagnostics",
     "crates/rask-interp",
     "crates/rask-stdlib",
