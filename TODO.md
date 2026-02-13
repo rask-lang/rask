@@ -194,19 +194,81 @@ Every specced language feature parses, resolves, type-checks, and ownership-chec
 Move from interpreter to actual compiled output.
 
 **Critical blockers (must design before implementing):**
-- [ ] **Name mangling scheme** — Symbol naming for monomorphized functions, modules, generics (e.g., `Vec<i32>.push` → `collections_Vec_i32_push`)
-- [ ] **Memory layout documentation** — Specify enum tag placement, closure capture struct format, vtable structure, Result<T,E> encoding
-- [ ] **Test infrastructure** — Unit tests for MIR passes, integration tests for compile+run, validation program test suite
+- [x] **Name mangling scheme** — Symbol naming for monomorphized functions, modules, generics (e.g., `Vec<i32>.push` → `collections_Vec_i32_push`)
+- [x] **Memory layout documentation** — Specify enum tag placement, closure capture struct format, vtable structure, Result<T,E> encoding
+- [x] **Test infrastructure** — Unit tests for MIR passes, integration tests for compile+run, validation program test suite
 
 **Ready to implement (design complete):**
 - [x] Choose backend (LLVM vs Cranelift) — Using Cranelift for dev builds
 - [x] MIR structure — Defined in `codegen.md`: statements, terminators, types
 - [x] Monomorphization algorithm — Specified (M1-M5 rules in `codegen.md`)
 - [x] Runtime library API — Defined (RT1-RT3 in `codegen.md`): allocator, panic, collections, I/O, concurrency
-- [ ] Implement MIR lowering — AST → MIR for all constructs (if/else, match, try, ensure, loops, closures)
+- [x] Create `rask-mono` and `rask-mir` crate scaffolds — Data structures defined, compiles
+- [ ] **Implement Monomorphization and MIR Lowering** (44 tasks):
+
+  **Foundation (6 tasks):**
+  - [ ] Study AST structure: read expr.rs, stmt.rs, decl.rs to understand all node types
+  - [ ] Study TypedProgram structure: understand how type checker outputs are organized
+  - [ ] Design type size/alignment computation: define functions for primitive and aggregate types
+  - [ ] Implement struct layout computation: field ordering by alignment, padding calculation
+  - [ ] Implement enum layout computation: tag size/placement, variant payload layout
+  - [ ] Write layout computation tests: verify sizes match spec, test padding insertion
+
+  **Monomorphization (8 tasks):**
+  - [ ] Design AST cloning: implement deep clone for Decl/Expr/Stmt with type substitution
+  - [ ] Implement type substitution visitor: replace type parameters throughout AST
+  - [ ] Write instantiation tests: verify generic functions instantiate correctly
+  - [ ] Design reachability walker: breadth-first traversal of call graph from main()
+  - [ ] Implement function call discovery: find all Call expressions, extract type args
+  - [ ] Implement generic instantiation deduplication: track (func_id, type_args) pairs
+  - [ ] Wire up monomorphize(): connect reachability → instantiation → layouts
+  - [ ] Write monomorphization integration tests: test on small programs with generics
+
+  **MIR Basics (10 tasks):**
+  - [ ] Design Type → MirType conversion: handle all type variants, error on generics
+  - [ ] Implement MirType conversion with layout lookups
+  - [ ] Implement literal lowering: Int/Float/String/Bool/Char → MirConst
+  - [ ] Implement variable reference lowering: Ident → lookup local
+  - [ ] Implement binary op lowering: lower operands, emit method Call
+  - [ ] Implement unary op lowering: similar to binary ops
+  - [ ] Implement simple call lowering: lower args, emit Call statement
+  - [ ] Implement let/const lowering: allocate local, assign initializer
+  - [ ] Implement return lowering: lower value, emit Return terminator
+  - [ ] Write simple lowering tests: verify basic expressions produce correct MIR
+
+  **Control Flow (6 tasks):**
+  - [ ] Implement if-expression lowering: branch, then/else blocks, merge
+  - [ ] Implement match-expression lowering: extract tag, switch, payload extraction
+  - [ ] Write control flow tests: verify CFG structure for if/match
+  - [ ] Implement while loop lowering: check/body/exit blocks
+  - [ ] Implement for loop lowering: desugar to while with iterator
+  - [ ] Implement loop/break/continue: infinite loop with exit handling
+
+  **Error Handling (3 tasks):**
+  - [ ] Implement try lowering: call, tag check, Ok/Err paths with cleanup
+  - [ ] Implement ensure block lowering: push cleanup block, track stack
+  - [ ] Write error handling tests: verify cleanup chain execution
+
+  **Aggregates (4 tasks):**
+  - [ ] Implement struct literal lowering: allocate, store fields
+  - [ ] Implement enum literal lowering: store tag and payload
+  - [ ] Implement array literal lowering: store elements sequentially
+  - [ ] Implement field access lowering: Field rvalue with offset
+
+  **Closures (4 tasks):**
+  - [ ] Implement closure capture analysis: find free variables in closure body
+  - [ ] Implement closure environment generation: create struct for captured vars
+  - [ ] Implement closure function generation: clone body, add env parameter
+  - [ ] Implement closure creation lowering: allocate env, store captures
+
+  **Integration (3 tasks):**
+  - [ ] Add rask mir command: pretty-print MIR for debugging
+  - [ ] Integrate into build command: add mono and MIR lowering phases
+  - [ ] Write end-to-end tests: compile hello_world.rk and verify MIR
+  - [ ] Test on validation programs: grep, game_loop, editor - verify all lower correctly
+
 - [ ] Implement Cranelift backend — MIR → machine code
 - [ ] Build `rask-rt` runtime library — Rust implementation of allocator, panic, Vec, Map, Pool, string, I/O
-- [ ] Implement monomorphization pass — Reachability analysis, instantiation, layout computation
 
 **Deferred (not blocking v1.0):**
 - [ ] Self-hosting bootstrap path — Compiler can stay Rust-based initially
