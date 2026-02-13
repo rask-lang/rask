@@ -15,7 +15,7 @@
 
 ## What's left
 
-- Check design feel, do the design challenges
+- Check design feel, do the [tutorials](tutorials/)
 
 ### Code generation
 Turn AST into actual binaries. Need:

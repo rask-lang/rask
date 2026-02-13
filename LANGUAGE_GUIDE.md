@@ -1,4 +1,4 @@
-# Rask: The Complete Walkthrough
+# Rask Language Guide
 
 I wrote this so I could explain Rask to anyone—including myself. No jargon without
 explanation, no hand-waving. If you've written code in any language, you'll follow this.
@@ -1179,9 +1179,9 @@ where yields happen, but your code doesn't carry that burden.
 
 | Construct | What It Does | Overhead | Use For |
 |---|---|---|---|
-| `spawn { }` | Creates a green task (lightweight) | ~4KB per task | I/O-heavy work, thousands of concurrent operations |
-| `spawn thread { }` | Sends work to a thread pool | OS thread cost | CPU-heavy computation |
-| `spawn raw { }` | Creates a raw OS thread | Heaviest | Special cases (thread-local storage, specific scheduling) |
+| `spawn(\|\| {})` | Creates a green task (lightweight) | ~4KB per task | I/O-heavy work, thousands of concurrent operations |
+| `ThreadPool.spawn(\|\| {})` | Sends work to a thread pool | OS thread cost | CPU-heavy computation |
+| `Thread.spawn(\|\| {})` | Creates a raw OS thread | Heaviest | Special cases (thread-local storage, specific scheduling) |
 
 ### Green Tasks: Lightweight Concurrency
 
@@ -1189,20 +1189,20 @@ Green tasks are like goroutines in Go. They're managed by a scheduler in the run
 by the OS. You can have 100,000+ of them.
 
 ```rask
-func main() {
+func main() -> () or Error {
     using Multitasking {
         const listener = try TcpListener.bind("0.0.0.0:8080")
 
         loop {
             const conn = try listener.accept()
-            spawn { handle_connection(conn) }.detach()
+            spawn(|| { handle_connection(conn) }).detach()
         }
     }
 }
 ```
 
 The scheduler is **opt-in**—it doesn't run by default. A plain Rask program has zero
-scheduler overhead. `using Multitasking { }` is what spins it up, and `spawn { }` only
+scheduler overhead. `using Multitasking { }` is what spins it up, and `spawn()` only
 works within that block. Each incoming connection gets its own
 task—cheap enough that you don't worry about it.
 
@@ -1211,14 +1211,14 @@ task—cheap enough that you don't worry about it.
 Every `spawn` returns a handle that you must deal with:
 
 ```rask
-const h = spawn { compute_something() }
+const h = spawn(|| { compute_something() })
 const result = try h.join()    // Wait for it, get the result
 
 // Or explicitly detach (fire-and-forget):
-spawn { log_event(event) }.detach()
+spawn(|| { log_event(event) }).detach()
 
 // ✗ Compile error: handle not used
-spawn { work() }    // ERROR: unused TaskHandle
+spawn(|| { work() })    // ERROR: unused TaskHandle
 ```
 
 This prevents silently losing track of spawned work. If you meant fire-and-forget, say
@@ -1230,11 +1230,11 @@ Green tasks interleave on a few OS threads—they're concurrent but not truly pa
 CPU-heavy work (parsing, compression, number crunching), use the thread pool:
 
 ```rask
-func main() {
+func main() -> () or Error {
     using Multitasking, ThreadPool {
-        const data = try fetch(url)                                // I/O: pauses task
-        const result = try spawn thread { analyze(data) }.join()   // CPU: actual parallelism
-        try save(result)                                           // I/O: pauses task
+        const data = try fetch(url)                                       // I/O: pauses task
+        const result = try ThreadPool.spawn(|| { analyze(data) }).join()   // CPU: actual parallelism
+        try save(result)                                                   // I/O: pauses task
     }
 }
 ```
@@ -1244,17 +1244,17 @@ func main() {
 ```rask
 let (tx, rx) = Channel<Message>.buffered(100)
 
-const producer = spawn {
+const producer = spawn(|| {
     for msg in messages {
         try tx.send(msg)     // Pauses if buffer full
     }
-}
+})
 
-const consumer = spawn {
+const consumer = spawn(|| {
     while rx.recv() is Ok(msg) {
         process(msg)
     }
-}
+})
 
 try join_all(producer, consumer)
 ```
@@ -1312,7 +1312,7 @@ randomly to prevent starvation.
 Tasks check a cancellation flag cooperatively:
 
 ```rask
-const h = spawn {
+const h = spawn(|| {
     const file = try File.open("data.txt")
     ensure file.close()       // ALWAYS runs, even on cancel
 
@@ -1320,7 +1320,7 @@ const h = spawn {
         if cancelled() { break }
         do_work()
     }
-}
+})
 
 sleep(5.seconds)
 try h.cancel()    // Request cancellation
