@@ -163,24 +163,25 @@ Strings need their own spec document. Expected methods:
 ## Iteration Protocol
 
 The spec describes three iteration modes:
-1. **Index/Handle mode**: `for i in vec` yields indices
-2. **Ref mode**: `for item in vec.iter()` borrows elements
+1. **Value mode** (default): `for item in vec` yields borrowed elements (read-only)
+2. **Index mode** (explicit): `for i in 0..vec.len()` yields indices for mutation
 3. **Take-all mode**: `for item in vec.take_all()` consumes collection
 
 ### Current Interpreter Behavior
 
-The interpreter doesn't distinguish between these modes yet:
-- `for i in vec` iterates over **elements** (not indices)
-- `for item in vec.iter()` also iterates over elements (no borrow tracking)
-- `vec.take_all()` **does not exist**
+The interpreter now implements value-first iteration:
+- `for item in vec` iterates over **borrowed elements** (value mode)
+- `for i in 0..vec.len()` yields **indices** (index mode)
+- `pool.handles()` and `map.keys()` provide handle/key iteration
+- `vec.take_all()` **does not exist yet** (planned)
 
 ### Required Changes
 
-To align with spec:
-1. **Default iteration should yield indices**, not elements
-2. Implement `take_all()` for all collections
-3. Add `modify(i, |v| ...)` and `read(i, |v| ...)` for element access
-4. Track borrows for ref mode (interpreter can be permissive)
+To complete value-first iteration:
+1. ✅ **Default iteration yields borrowed elements** (implemented)
+2. ⏳ Implement `take_all()` for all collections (planned)
+3. ⏳ Add `.handles()` for Pool and `.keys()` for Map (needed for index mode)
+4. ⏳ Track borrows for value mode to prevent structural mutation
 
 ## Error Handling
 

@@ -216,22 +216,18 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Pool(p) => {
+                        // Value mode: yield borrowed elements
                         let pool = p.lock().unwrap();
-                        let pool_id = pool.pool_id;
-                        let handles: Vec<Value> = pool
-                            .valid_handles()
+                        let items: Vec<Value> = pool
+                            .slots
                             .iter()
-                            .map(|(idx, gen)| Value::Handle {
-                                pool_id,
-                                index: *idx,
-                                generation: *gen,
-                            })
+                            .filter_map(|(_gen, slot)| slot.clone())
                             .collect();
                         drop(pool);
 
-                        for handle in handles {
+                        for item in items {
                             self.env.push_scope();
-                            self.env.define(binding.clone(), handle);
+                            self.env.define(binding.clone(), item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(diag) if matches!(diag.error, RuntimeError::Break) => {

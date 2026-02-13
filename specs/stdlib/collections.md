@@ -142,9 +142,9 @@ See `std.iteration` for full iteration spec.
 
 <!-- test: skip -->
 ```rask
-for i in vec { }              // i: usize (index iteration)
-for item in vec.iter() { }    // item: borrowed T (ref iteration)
-for item in vec.take_all() { } // item: T (consuming iteration)
+for item in vec { }              // item: borrowed T (value iteration, default)
+for i in 0..vec.len() { }        // i: usize (index iteration, explicit)
+for item in vec.take_all() { }   // item: T (consuming iteration)
 ```
 
 ### Conditional Removal

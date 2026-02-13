@@ -939,8 +939,8 @@ names = [u.name for u in active_users]
 
 **Rask:**
 ```rask
-const active_users = users.iter().filter(|u| u.active).collect()
-const names = active_users.iter().map(|u| u.name).collect()
+const active_users = users.into_iter().filter(|u| u.active).collect()
+const names = active_users.into_iter().map(|u| u.name).collect()
 ```
 
 ---
