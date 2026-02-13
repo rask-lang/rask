@@ -570,6 +570,8 @@ dependencies = [
  "rask-interp",
  "rask-lexer",
  "rask-lint",
+ "rask-mir",
+ "rask-mono",
  "rask-ownership",
  "rask-parser",
  "rask-resolve",
