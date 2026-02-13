@@ -14,7 +14,7 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 |------|-------------|
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
-| **S3: Field ordering** | Fields appear in declaration order; compiler MAY reorder for layout |
+| **S3: Field ordering** | Fields laid out in declaration order (source order); no automatic reordering |
 | **S4: Visibility** | Default: package-visible. `public` makes externally visible |
 
 <!-- test: parse -->
