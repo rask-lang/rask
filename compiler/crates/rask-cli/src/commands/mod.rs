@@ -3,6 +3,7 @@
 
 pub mod phase;
 pub mod analysis;
+pub mod codegen;
 pub mod run;
 pub mod build;
 pub mod tools;

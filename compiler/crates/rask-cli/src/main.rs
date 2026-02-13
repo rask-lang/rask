@@ -226,6 +226,18 @@ fn main() {
             let path = cmd_args.get(2).copied();
             commands::specs::cmd_test_specs(path);
         }
+        "mir" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_mir_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("mir"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            commands::codegen::cmd_mir(cmd_args[2], format);
+        }
         "build" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_build_help();

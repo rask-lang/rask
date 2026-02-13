@@ -46,7 +46,7 @@ pub fn print_usage() {
     println!("  {} {} Type check a file", output::command("typecheck"), output::arg("<file>"));
     println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
     println!("  {} {}  Evaluate comptime blocks", output::command("comptime"), output::arg("<file>"));
-
+    println!("  {} {}       Dump MIR (mid-level IR)", output::command("mir"), output::arg("<file>"));
 
     println!();
     println!("{}", output::section_header("Options:"));
@@ -386,4 +386,20 @@ pub fn print_comptime_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output comptime results as structured JSON", output::arg("--json"));
+}
+
+pub fn print_mir_help() {
+    println!("{}", output::section_header("MIR"));
+    println!();
+    println!("Lower a Rask source file to MIR (mid-level intermediate representation).");
+    println!("Runs full pipeline: lex → parse → resolve → typecheck → ownership →");
+    println!("monomorphize → MIR lowering, then prints the control-flow graph.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("mir"),
+        output::arg("<file.rk>"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Output MIR as structured JSON", output::arg("--json"));
 }

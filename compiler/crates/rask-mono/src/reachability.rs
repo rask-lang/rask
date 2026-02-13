@@ -1,80 +1,131 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! Reachability analysis - walk call graph from main() to find generic instantiations.
+//! Monomorphization driver - reachability-driven instantiation.
+//!
+//! Walks the call graph from main(), instantiating generic functions on demand.
+//! This is the core loop per spec rules M1-M4:
+//!   M1: Walk reachable code from main()
+//!   M2: Instantiate each unique (function_id, [type_args])
+//!   M3: Compute layouts (done after this pass)
+//!   M4: Transitive - new instantiations may discover more calls
 
+use crate::instantiate::instantiate_function;
+use crate::MonoFunction;
 use rask_ast::{
     decl::{Decl, DeclKind},
     expr::{Expr, ExprKind},
     stmt::{Stmt, StmtKind},
 };
 use rask_types::Type;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
-/// Reachability walker - discovers all reachable function calls
-struct ReachabilityWalker {
-    /// Functions discovered so far: (name, type_args) -> visited
-    discovered: HashMap<(String, Vec<Type>), bool>,
-    /// Work queue for breadth-first traversal
-    work_queue: VecDeque<(String, Vec<Type>, Decl)>,
+/// Monomorphization work item
+struct WorkItem {
+    name: String,
+    type_args: Vec<Type>,
 }
 
-impl ReachabilityWalker {
-    fn new() -> Self {
-        Self {
-            discovered: HashMap::new(),
-            work_queue: VecDeque::new(),
-        }
-    }
+/// Drives monomorphization: reachability first, instantiation on demand.
+pub struct Monomorphizer<'a> {
+    /// Lookup table: function name → original declaration
+    fn_table: HashMap<String, &'a Decl>,
+    /// Already processed (name, type_args) pairs
+    seen: HashMap<(String, Vec<Type>), bool>,
+    /// BFS work queue
+    queue: VecDeque<WorkItem>,
+    /// Resulting instantiated functions
+    pub results: Vec<MonoFunction>,
+}
 
-    /// Add entry point to work queue
-    fn add_entry(&mut self, entry: &Decl) {
-        let fn_decl = match &entry.kind {
-            DeclKind::Fn(f) => f,
-            _ => return,
-        };
-
-        let key = (fn_decl.name.clone(), Vec::new()); // Entry has no type args
-        if !self.discovered.contains_key(&key) {
-            self.discovered.insert(key.clone(), false);
-            self.work_queue
-                .push_back((fn_decl.name.clone(), Vec::new(), entry.clone()));
-        }
-    }
-
-    /// Process work queue until empty
-    fn process(&mut self) -> Vec<(String, Vec<Type>)> {
-        while let Some((name, type_args, decl)) = self.work_queue.pop_front() {
-            let key = (name.clone(), type_args.clone());
-            if let Some(visited) = self.discovered.get_mut(&key) {
-                if *visited {
-                    continue; // Already processed
-                }
-                *visited = true;
+impl<'a> Monomorphizer<'a> {
+    pub fn new(decls: &'a [Decl]) -> Self {
+        let mut fn_table = HashMap::new();
+        for decl in decls {
+            if let DeclKind::Fn(f) = &decl.kind {
+                fn_table.insert(f.name.clone(), decl);
             }
+        }
 
-            // Walk function body to find calls
-            if let DeclKind::Fn(fn_decl) = &decl.kind {
+        Self {
+            fn_table,
+            seen: HashMap::new(),
+            queue: VecDeque::new(),
+            results: Vec::new(),
+        }
+    }
+
+    /// Seed the work queue with main()
+    pub fn add_entry(&mut self, name: &str) -> bool {
+        if self.fn_table.contains_key(name) {
+            self.enqueue(name.to_string(), Vec::new());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Run until fixpoint: process queue, instantiate, discover more calls
+    pub fn run(&mut self) {
+        while let Some(item) = self.queue.pop_front() {
+            let key = (item.name.clone(), item.type_args.clone());
+            if let Some(visited) = self.seen.get(&key) {
+                if *visited {
+                    continue;
+                }
+            }
+            self.seen.insert(key, true);
+
+            let original = match self.fn_table.get(&item.name) {
+                Some(decl) => *decl,
+                None => continue, // External or unknown function
+            };
+
+            // Instantiate: if type_args present, clone AST with substitution.
+            // Otherwise use original decl directly.
+            let concrete = if item.type_args.is_empty() {
+                original.clone()
+            } else {
+                instantiate_function(original, &item.type_args)
+            };
+
+            // Walk the concrete body to discover more calls (M4: transitive)
+            if let DeclKind::Fn(fn_decl) = &concrete.kind {
                 for stmt in &fn_decl.body {
                     self.visit_stmt(stmt);
                 }
             }
-        }
 
-        // Return all discovered functions
-        self.discovered.keys().cloned().collect()
+            self.results.push(MonoFunction {
+                name: item.name.clone(),
+                type_args: item.type_args,
+                body: concrete,
+            });
+        }
     }
 
-    /// Visit statement to find function calls
+    /// Add a (name, type_args) pair to queue if not already seen
+    fn enqueue(&mut self, name: String, type_args: Vec<Type>) {
+        let key = (name.clone(), type_args.clone());
+        if !self.seen.contains_key(&key) {
+            self.seen.insert(key, false);
+            self.queue.push_back(WorkItem { name, type_args });
+        }
+    }
+
+    // --- AST visitors: find calls, enqueue discovered functions ---
+
     fn visit_stmt(&mut self, stmt: &Stmt) {
         match &stmt.kind {
             StmtKind::Expr(e) => self.visit_expr(e),
-            StmtKind::Let { init, .. } => self.visit_expr(init),
-            StmtKind::Const { init, .. } => self.visit_expr(init),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                self.visit_expr(init);
+            }
             StmtKind::Assign { target, value } => {
                 self.visit_expr(target);
                 self.visit_expr(value);
             }
             StmtKind::Return(Some(e)) => self.visit_expr(e),
+            StmtKind::Return(None) => {}
             StmtKind::While { cond, body } => {
                 self.visit_expr(cond);
                 for s in body {
@@ -92,18 +143,50 @@ impl ReachabilityWalker {
                     self.visit_stmt(s);
                 }
             }
-            _ => {} // TODO: Handle more statement variants
+            StmtKind::Ensure { body, else_handler } => {
+                for s in body {
+                    self.visit_stmt(s);
+                }
+                if let Some((_param, handler)) = else_handler {
+                    for s in handler {
+                        self.visit_stmt(s);
+                    }
+                }
+            }
+            StmtKind::WhileLet { expr, body, .. } => {
+                self.visit_expr(expr);
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            StmtKind::Comptime(body) => {
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+                self.visit_expr(init);
+            }
+            StmtKind::Break { value: Some(e), .. } => self.visit_expr(e),
+            StmtKind::Break { value: None, .. } | StmtKind::Continue(_) => {}
         }
     }
 
-    /// Visit expression to find function calls
     fn visit_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                // Check if this is a generic function call
-                // TODO: Extract type arguments from call site
-                // For now, just recurse
+                // Discover callee. For now: only handle direct name calls.
+                // TODO: Get type_args from TypedProgram.node_types
+                if let ExprKind::Ident(name) = &func.kind {
+                    self.enqueue(name.clone(), Vec::new());
+                }
                 self.visit_expr(func);
+                for arg in args {
+                    self.visit_expr(arg);
+                }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                self.visit_expr(object);
                 for arg in args {
                     self.visit_expr(arg);
                 }
@@ -131,22 +214,124 @@ impl ReachabilityWalker {
                     self.visit_expr(else_br);
                 }
             }
+            ExprKind::IfLet {
+                expr,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.visit_expr(expr);
+                self.visit_expr(then_branch);
+                if let Some(else_br) = else_branch {
+                    self.visit_expr(else_br);
+                }
+            }
+            ExprKind::GuardPattern {
+                expr, else_branch, ..
+            } => {
+                self.visit_expr(expr);
+                self.visit_expr(else_branch);
+            }
             ExprKind::Match { scrutinee, arms } => {
                 self.visit_expr(scrutinee);
                 for arm in arms {
                     self.visit_expr(&arm.body);
+                    if let Some(guard) = &arm.guard {
+                        self.visit_expr(guard);
+                    }
                 }
             }
-            _ => {} // TODO: Handle more expression variants
+            ExprKind::Try(e) | ExprKind::Unwrap(e) => self.visit_expr(e),
+            ExprKind::NullCoalesce { value, default } => {
+                self.visit_expr(value);
+                self.visit_expr(default);
+            }
+            ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+                self.visit_expr(object);
+            }
+            ExprKind::Index { object, index } => {
+                self.visit_expr(object);
+                self.visit_expr(index);
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for field in fields {
+                    self.visit_expr(&field.value);
+                }
+                if let Some(s) = spread {
+                    self.visit_expr(s);
+                }
+            }
+            ExprKind::Array(elems) => {
+                for elem in elems {
+                    self.visit_expr(elem);
+                }
+            }
+            ExprKind::ArrayRepeat { value, count } => {
+                self.visit_expr(value);
+                self.visit_expr(count);
+            }
+            ExprKind::Tuple(elems) => {
+                for elem in elems {
+                    self.visit_expr(elem);
+                }
+            }
+            ExprKind::Range { start, end, .. } => {
+                if let Some(s) = start {
+                    self.visit_expr(s);
+                }
+                if let Some(e) = end {
+                    self.visit_expr(e);
+                }
+            }
+            ExprKind::Closure { body, .. } => {
+                self.visit_expr(body);
+            }
+            ExprKind::Cast { expr, .. } => self.visit_expr(expr),
+            ExprKind::Spawn { body } | ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            ExprKind::UsingBlock { args, body, .. } => {
+                for arg in args {
+                    self.visit_expr(arg);
+                }
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            ExprKind::WithAs { bindings, body } => {
+                for (expr, _) in bindings {
+                    self.visit_expr(expr);
+                }
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            ExprKind::BlockCall { body, .. } => {
+                for s in body {
+                    self.visit_stmt(s);
+                }
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    self.visit_expr(&arm.body);
+                }
+            }
+            ExprKind::Assert { condition, message }
+            | ExprKind::Check { condition, message } => {
+                self.visit_expr(condition);
+                if let Some(msg) = message {
+                    self.visit_expr(msg);
+                }
+            }
+            // Leaves - no sub-expressions
+            ExprKind::Int(..)
+            | ExprKind::Float(..)
+            | ExprKind::String(_)
+            | ExprKind::Char(_)
+            | ExprKind::Bool(_)
+            | ExprKind::Ident(_) => {}
         }
     }
-}
-
-/// Collect reachable function instances starting from entry point
-///
-/// Returns (function_id, concrete_type_args) pairs for all reachable calls
-pub fn collect_reachable(entry: &Decl) -> Vec<(String, Vec<Type>)> {
-    let mut walker = ReachabilityWalker::new();
-    walker.add_entry(entry);
-    walker.process()
 }

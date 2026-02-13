@@ -64,6 +64,23 @@ pub fn cmd_build(path: &str) {
                                         eprintln!("error: {}", error.kind);
                                     }
                                     total_errors += ownership_result.errors.len();
+                                } else {
+                                    // Monomorphize
+                                    match rask_mono::monomorphize(&typed, &all_decls) {
+                                        Ok(mono) => {
+                                            // Lower to MIR
+                                            for mono_fn in &mono.functions {
+                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body) {
+                                                    eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
+                                                    total_errors += 1;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            eprintln!("monomorphization error: {:?}", e);
+                                            total_errors += 1;
+                                        }
+                                    }
                                 }
                             }
                             Err(errors) => {
