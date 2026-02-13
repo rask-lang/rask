@@ -98,6 +98,14 @@ impl BlockBuilder {
         block.terminator = term;
     }
 
+    /// Check if the current block still has the default Unreachable terminator.
+    pub fn current_block_unterminated(&self) -> bool {
+        matches!(
+            self.function.blocks[self.current_block.0 as usize].terminator,
+            MirTerminator::Unreachable
+        )
+    }
+
     pub fn finish(self) -> MirFunction {
         self.function
     }

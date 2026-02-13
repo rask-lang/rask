@@ -69,8 +69,9 @@ pub fn cmd_build(path: &str) {
                                     match rask_mono::monomorphize(&typed, &all_decls) {
                                         Ok(mono) => {
                                             // Lower to MIR
+                                            let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
                                             for mono_fn in &mono.functions {
-                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body) {
+                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls) {
                                                     eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
                                                     total_errors += 1;
                                                 }

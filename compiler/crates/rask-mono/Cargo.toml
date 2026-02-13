@@ -7,3 +7,6 @@ edition = "2021"
 rask-ast = { path = "../rask-ast" }
 rask-types = { path = "../rask-types" }
 rask-diagnostics = { path = "../rask-diagnostics" }
+
+[dev-dependencies]
+rask-resolve = { path = "../rask-resolve" }

@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Code generation commands: mir.
+//! Code generation commands: mono, mir.
 
 use colored::Colorize;
 use rask_diagnostics::{Diagnostic, ToDiagnostic};
+use rask_mono::MonoProgram;
 use std::fs;
 use std::process;
 
 use crate::{output, show_diagnostics, Format};
 
-/// Dump MIR for a single file.
-///
-/// Runs the full pipeline (lex → parse → desugar → resolve → typecheck → ownership →
-/// monomorphize → lower to MIR) and prints the resulting MIR for each function.
-pub fn cmd_mir(path: &str, format: Format) {
+/// Run the full front-end pipeline: lex → parse → desugar → resolve →
+/// typecheck → ownership → monomorphize. Exits on error.
+fn run_pipeline(path: &str, format: Format) -> MonoProgram {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -102,13 +101,125 @@ pub fn cmd_mir(path: &str, format: Format) {
     }
 
     // Monomorphize
-    let mono = match rask_mono::monomorphize(&typed, &parse_result.decls) {
+    match rask_mono::monomorphize(&typed, &parse_result.decls) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{}: monomorphization failed: {:?}", output::error_label(), e);
             process::exit(1);
         }
-    };
+    }
+}
+
+/// Dump monomorphization output for a single file.
+pub fn cmd_mono(path: &str, format: Format) {
+    let mono = run_pipeline(path, format);
+
+    if format == Format::Human {
+        println!(
+            "{} Mono ({} function{}, {} struct layout{}, {} enum layout{}) {}\n",
+            "===".dimmed(),
+            mono.functions.len(),
+            if mono.functions.len() == 1 { "" } else { "s" },
+            mono.struct_layouts.len(),
+            if mono.struct_layouts.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            mono.enum_layouts.len(),
+            if mono.enum_layouts.len() == 1 {
+                ""
+            } else {
+                "s"
+            },
+            "===".dimmed()
+        );
+
+        // Print reachable functions
+        println!("{}", "Functions:".bold());
+        for mono_fn in &mono.functions {
+            let fn_decl = match &mono_fn.body.kind {
+                rask_ast::decl::DeclKind::Fn(f) => f,
+                _ => continue,
+            };
+            let params: Vec<String> = fn_decl
+                .params
+                .iter()
+                .map(|p| format!("{}: {}", p.name, p.ty))
+                .collect();
+            let ret = fn_decl
+                .ret_ty
+                .as_deref()
+                .map(|t| format!(" -> {}", t))
+                .unwrap_or_default();
+            let type_args = if mono_fn.type_args.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<{}>",
+                    mono_fn
+                        .type_args
+                        .iter()
+                        .map(|t| format!("{:?}", t))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            println!(
+                "  func {}{}({}){} [{} stmt{}]",
+                mono_fn.name,
+                type_args,
+                params.join(", "),
+                ret,
+                fn_decl.body.len(),
+                if fn_decl.body.len() == 1 { "" } else { "s" }
+            );
+        }
+
+        // Print struct layouts
+        if !mono.struct_layouts.is_empty() {
+            println!();
+            println!("{}", "Struct layouts:".bold());
+            for layout in &mono.struct_layouts {
+                println!(
+                    "  {} (size: {}, align: {})",
+                    layout.name, layout.size, layout.align
+                );
+                for field in &layout.fields {
+                    println!(
+                        "    .{}: {:?} (offset: {}, size: {})",
+                        field.name, field.ty, field.offset, field.size
+                    );
+                }
+            }
+        }
+
+        // Print enum layouts
+        if !mono.enum_layouts.is_empty() {
+            println!();
+            println!("{}", "Enum layouts:".bold());
+            for layout in &mono.enum_layouts {
+                println!(
+                    "  {} (size: {}, align: {}, tag: {:?})",
+                    layout.name, layout.size, layout.align, layout.tag_ty
+                );
+                for variant in &layout.variants {
+                    println!(
+                        "    .{} = {} (payload offset: {}, size: {})",
+                        variant.name, variant.tag, variant.payload_offset, variant.payload_size
+                    );
+                }
+            }
+        }
+
+        println!();
+        println!("{}", output::banner_ok("Monomorphization"));
+    }
+}
+
+/// Dump MIR for a single file.
+pub fn cmd_mir(path: &str, format: Format) {
+    let mono = run_pipeline(path, format);
 
     // Lower each monomorphized function to MIR
     if format == Format::Human {
@@ -133,9 +244,12 @@ pub fn cmd_mir(path: &str, format: Format) {
         );
     }
 
+    // Collect all monomorphized function bodies for signature table
+    let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
-        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body) {
+        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls) {
             Ok(mir_fn) => {
                 if format == Format::Human {
                     println!("{}", mir_fn);

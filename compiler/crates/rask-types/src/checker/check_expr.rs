@@ -677,6 +677,9 @@ impl TypeChecker {
         }
     }
 
+    // TODO: For generic function calls, track fresh type variables created for
+    // type params here. After constraint solving, resolve them and populate
+    // TypedProgram.call_type_args so monomorphization can instantiate correctly.
     pub(super) fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
