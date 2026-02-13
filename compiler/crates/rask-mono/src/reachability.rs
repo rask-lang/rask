@@ -16,6 +16,7 @@ use rask_ast::{
     expr::{Expr, ExprKind},
     stmt::{Stmt, StmtKind},
 };
+use rask_ast::NodeId;
 use rask_types::Type;
 use std::collections::{HashMap, VecDeque};
 
@@ -29,6 +30,8 @@ struct WorkItem {
 pub struct Monomorphizer<'a> {
     /// Lookup table: function name → original declaration
     fn_table: HashMap<String, &'a Decl>,
+    /// Resolved type args per call site (from typechecker)
+    call_type_args: &'a HashMap<NodeId, Vec<Type>>,
     /// Already processed (name, type_args) pairs
     seen: HashMap<(String, Vec<Type>), bool>,
     /// BFS work queue
@@ -38,7 +41,7 @@ pub struct Monomorphizer<'a> {
 }
 
 impl<'a> Monomorphizer<'a> {
-    pub fn new(decls: &'a [Decl]) -> Self {
+    pub fn new(decls: &'a [Decl], call_type_args: &'a HashMap<NodeId, Vec<Type>>) -> Self {
         let mut fn_table = HashMap::new();
         for decl in decls {
             if let DeclKind::Fn(f) = &decl.kind {
@@ -48,6 +51,7 @@ impl<'a> Monomorphizer<'a> {
 
         Self {
             fn_table,
+            call_type_args,
             seen: HashMap::new(),
             queue: VecDeque::new(),
             results: Vec::new(),
@@ -175,10 +179,12 @@ impl<'a> Monomorphizer<'a> {
     fn visit_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Call { func, args } => {
-                // Discover callee. For now: only handle direct name calls.
-                // TODO: Get type_args from TypedProgram.node_types
                 if let ExprKind::Ident(name) = &func.kind {
-                    self.enqueue(name.clone(), Vec::new());
+                    let type_args = self.call_type_args
+                        .get(&expr.id)
+                        .cloned()
+                        .unwrap_or_default();
+                    self.enqueue(name.clone(), type_args);
                 }
                 self.visit_expr(func);
                 for arg in args {

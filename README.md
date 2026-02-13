@@ -45,6 +45,14 @@ Full example: [grep_clone.rk](examples/grep_clone.rk)
 
 ## Getting Started
 
+### Prerequisites
+
+You need the Rust toolchain to build from source. If you don't have it:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
 ### Build
 
 ```bash

@@ -5,16 +5,21 @@
 mod expr;
 mod stmt;
 
-use crate::{
-    operand::MirConst, BlockBuilder, FunctionRef, MirFunction, MirOperand, MirRValue, MirStmt,
-    MirTerminator, MirType, BlockId, LocalId,
-};
+use crate::{BlockBuilder, MirFunction, MirOperand, MirTerminator, MirType, BlockId, LocalId};
 use rask_ast::{
     decl::{Decl, DeclKind},
-    expr::{BinOp, Expr, ExprKind, UnaryOp},
-    stmt::{Stmt, StmtKind},
+    expr::{BinOp, UnaryOp},
 };
 use std::collections::HashMap;
+
+/// Typed expression result from lowering
+type TypedOperand = (MirOperand, MirType);
+
+/// Function signature for return type lookups
+#[derive(Clone)]
+struct FuncSig {
+    ret_ty: MirType,
+}
 
 /// Loop context for break/continue
 struct LoopContext {
@@ -29,13 +34,19 @@ struct LoopContext {
 
 pub struct MirLowerer {
     builder: BlockBuilder,
-    locals: HashMap<String, LocalId>,
+    /// Variable name → (local id, type)
+    locals: HashMap<String, (LocalId, MirType)>,
+    /// Function name → signature (for call return types)
+    func_sigs: HashMap<String, FuncSig>,
     /// Stack of enclosing loops (innermost last)
     loop_stack: Vec<LoopContext>,
 }
 
 impl MirLowerer {
-    pub fn lower_function(decl: &Decl) -> Result<MirFunction, LoweringError> {
+    /// Lower a monomorphized function declaration to MIR.
+    ///
+    /// `all_decls` provides function signatures for resolving call return types.
+    pub fn lower_function(decl: &Decl, all_decls: &[Decl]) -> Result<MirFunction, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
             _ => {
@@ -45,21 +56,37 @@ impl MirLowerer {
             }
         };
 
-        // TODO: Parse return type string to MirType
-        let ret_ty = MirType::Void; // Placeholder
+        let ret_ty = fn_decl
+            .ret_ty
+            .as_deref()
+            .map(parse_type_str)
+            .unwrap_or(MirType::Void);
+
+        // Build function signature table from all declarations
+        let mut func_sigs = HashMap::new();
+        for d in all_decls {
+            if let DeclKind::Fn(f) = &d.kind {
+                let sig_ret = f
+                    .ret_ty
+                    .as_deref()
+                    .map(parse_type_str)
+                    .unwrap_or(MirType::Void);
+                func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
+            }
+        }
 
         let mut lowerer = MirLowerer {
             builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty),
             locals: HashMap::new(),
+            func_sigs,
             loop_stack: Vec::new(),
         };
 
         // Add parameters
         for param in &fn_decl.params {
-            // TODO: Parse param type
-            let param_ty = MirType::I32; // Placeholder
-            let local_id = lowerer.builder.add_param(param.name.clone(), param_ty);
-            lowerer.locals.insert(param.name.clone(), local_id);
+            let param_ty = parse_type_str(&param.ty);
+            let local_id = lowerer.builder.add_param(param.name.clone(), param_ty.clone());
+            lowerer.locals.insert(param.name.clone(), (local_id, param_ty));
         }
 
         // Lower function body
@@ -67,1310 +94,122 @@ impl MirLowerer {
             lowerer.lower_stmt(stmt)?;
         }
 
-        // TODO: Add implicit void return if missing
+        // Implicit void return for functions that don't explicitly return
+        if lowerer.builder.current_block_unterminated() {
+            lowerer.builder.terminate(MirTerminator::Return { value: None });
+        }
 
         Ok(lowerer.builder.finish())
     }
-
-    // =================================================================
-    // Expression lowering
-    // =================================================================
-
-    fn lower_expr(&mut self, expr: &Expr) -> Result<MirOperand, LoweringError> {
-        match &expr.kind {
-            // Literals
-            ExprKind::Int(val, _suffix) => Ok(MirOperand::Constant(MirConst::Int(*val))),
-            ExprKind::Float(val, _suffix) => Ok(MirOperand::Constant(MirConst::Float(*val))),
-            ExprKind::String(s) => Ok(MirOperand::Constant(MirConst::String(s.clone()))),
-            ExprKind::Char(c) => Ok(MirOperand::Constant(MirConst::Char(*c))),
-            ExprKind::Bool(b) => Ok(MirOperand::Constant(MirConst::Bool(*b))),
-
-            // Variable reference
-            ExprKind::Ident(name) => self
-                .locals
-                .get(name)
-                .copied()
-                .map(MirOperand::Local)
-                .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone())),
-
-            // Binary operations → method calls
-            ExprKind::Binary { op, left, right } => {
-                let left_op = self.lower_expr(left)?;
-                let right_op = self.lower_expr(right)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-
-                let method_name = binop_method_name(*op);
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: method_name },
-                    args: vec![left_op, right_op],
-                });
-
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Unary operations → method calls
-            ExprKind::Unary { op, operand } => {
-                let operand_op = self.lower_expr(operand)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-
-                let method_name = unaryop_method_name(*op);
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: method_name },
-                    args: vec![operand_op],
-                });
-
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Function call
-            ExprKind::Call { func, args } => {
-                let func_name = match &func.kind {
-                    ExprKind::Ident(name) => name.clone(),
-                    _ => {
-                        return Err(LoweringError::InvalidConstruct(
-                            "Complex function expressions not yet supported".to_string(),
-                        ))
-                    }
-                };
-
-                let arg_operands: Result<Vec<_>, _> =
-                    args.iter().map(|a| self.lower_expr(a)).collect();
-                let arg_operands = arg_operands?;
-
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: func_name },
-                    args: arg_operands,
-                });
-
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // If expression (spec L1)
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => self.lower_if(cond, then_branch, else_branch.as_deref()),
-
-            // Match expression (spec L2)
-            ExprKind::Match { scrutinee, arms } => self.lower_match(scrutinee, arms),
-
-            // Block expression
-            ExprKind::Block(stmts) => self.lower_block(stmts),
-
-            // Method call
-            ExprKind::MethodCall {
-                object,
-                method,
-                args,
-                ..
-            } => {
-                let obj_op = self.lower_expr(object)?;
-                let mut all_args = vec![obj_op];
-                for arg in args {
-                    all_args.push(self.lower_expr(arg)?);
-                }
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef {
-                        name: method.clone(),
-                    },
-                    args: all_args,
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Field access
-            ExprKind::Field { object, field: _ } => {
-                let obj_op = self.lower_expr(object)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Lookup field index
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field {
-                        base: obj_op,
-                        field_index: 0, // TODO: Lookup from layout
-                    },
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Index access
-            ExprKind::Index { object, index } => {
-                let obj_op = self.lower_expr(object)?;
-                let idx_op = self.lower_expr(index)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef {
-                        name: "index".to_string(),
-                    },
-                    args: vec![obj_op, idx_op],
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Array literal
-            ExprKind::Array(elems) => {
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Array type
-                for (i, elem) in elems.iter().enumerate() {
-                    let elem_op = self.lower_expr(elem)?;
-                    self.builder.push_stmt(MirStmt::Store {
-                        addr: result_local,
-                        offset: i as u32 * 4, // TODO: Proper element size
-                        value: elem_op,
-                    });
-                }
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Tuple literal
-            ExprKind::Tuple(elems) => {
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Tuple type
-                for (i, elem) in elems.iter().enumerate() {
-                    let elem_op = self.lower_expr(elem)?;
-                    self.builder.push_stmt(MirStmt::Store {
-                        addr: result_local,
-                        offset: i as u32 * 8, // TODO: Proper field offsets
-                        value: elem_op,
-                    });
-                }
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Struct literal
-            ExprKind::StructLit { fields, .. } => {
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Struct type
-                for (i, field) in fields.iter().enumerate() {
-                    let val_op = self.lower_expr(&field.value)?;
-                    self.builder.push_stmt(MirStmt::Store {
-                        addr: result_local,
-                        offset: i as u32 * 4, // TODO: Use layout
-                        value: val_op,
-                    });
-                }
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // If-let (if expr is Pattern { then } else { else })
-            ExprKind::IfLet {
-                expr,
-                pattern: _,
-                then_branch,
-                else_branch,
-            } => {
-                // TODO: Proper pattern matching with tag check
-                // For now, treat like if-expression with the expr as condition
-                let cond_op = self.lower_expr(expr)?;
-                let then_block = self.builder.create_block();
-                let else_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
-                let result_local = self.builder.alloc_temp(MirType::I32);
-
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: cond_op,
-                    then_block,
-                    else_block,
-                });
-
-                self.builder.switch_to_block(then_block);
-                let then_val = self.lower_expr(then_branch)?;
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(then_val),
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(else_block);
-                if let Some(else_expr) = else_branch {
-                    let else_val = self.lower_expr(else_expr)?;
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(else_val),
-                    });
-                }
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(merge_block);
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Guard pattern (const v = expr is Pattern else { diverge })
-            ExprKind::GuardPattern {
-                expr,
-                pattern: _,
-                else_branch,
-            } => {
-                // TODO: Proper pattern match + bind
-                let val = self.lower_expr(expr)?;
-                let ok_block = self.builder.create_block();
-                let else_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
-
-                // Treat as "always matches" for now
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: val.clone(),
-                    then_block: ok_block,
-                    else_block,
-                });
-
-                self.builder.switch_to_block(else_block);
-                self.lower_expr(else_branch)?;
-                // else_branch should diverge (return/break), but terminate anyway
-                self.builder.terminate(MirTerminator::Unreachable);
-
-                self.builder.switch_to_block(ok_block);
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(merge_block);
-                Ok(val)
-            }
-
-            // Try expression (spec L3)
-            ExprKind::Try(inner) => self.lower_try(inner),
-
-            // Unwrap (postfix !) - panic on None/Err
-            ExprKind::Unwrap(inner) => {
-                let val = self.lower_expr(inner)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
-
-                let ok_block = self.builder.create_block();
-                let panic_block = self.builder.create_block();
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: MirOperand::Local(tag_local),
-                    then_block: panic_block, // tag != 0 means Err/None
-                    else_block: ok_block,    // tag == 0 means Ok/Some
-                });
-
-                self.builder.switch_to_block(panic_block);
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: None,
-                    func: FunctionRef { name: "panic_unwrap".to_string() },
-                    args: vec![],
-                });
-                self.builder.terminate(MirTerminator::Unreachable);
-
-                self.builder.switch_to_block(ok_block);
-                // Extract payload
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field { base: val, field_index: 0 },
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Null coalescing (a ?? b)
-            ExprKind::NullCoalesce { value, default } => {
-                let val = self.lower_expr(value)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
-
-                let some_block = self.builder.create_block();
-                let none_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
-                let result_local = self.builder.alloc_temp(MirType::I32);
-
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: MirOperand::Local(tag_local),
-                    then_block: none_block,
-                    else_block: some_block,
-                });
-
-                self.builder.switch_to_block(some_block);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field { base: val, field_index: 0 },
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(none_block);
-                let default_val = self.lower_expr(default)?;
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(default_val),
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(merge_block);
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Range expression
-            ExprKind::Range { start, end, inclusive } => {
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Range type
-                let mut args = Vec::new();
-                if let Some(s) = start {
-                    args.push(self.lower_expr(s)?);
-                }
-                if let Some(e) = end {
-                    args.push(self.lower_expr(e)?);
-                }
-                let func_name = if *inclusive { "range_inclusive" } else { "range" };
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: func_name.to_string() },
-                    args,
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Array repeat ([value; count])
-            ExprKind::ArrayRepeat { value, count } => {
-                let val = self.lower_expr(value)?;
-                let cnt = self.lower_expr(count)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Array type
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: "array_repeat".to_string() },
-                    args: vec![val, cnt],
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Optional chaining (a?.b)
-            ExprKind::OptionalField { object, field: _ } => {
-                // Desugar to: if obj is Some(v): Some(v.field) else: None
-                let obj = self.lower_expr(object)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: obj.clone() },
-                });
-
-                let some_block = self.builder.create_block();
-                let none_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
-                let result_local = self.builder.alloc_temp(MirType::I32);
-
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: MirOperand::Local(tag_local),
-                    then_block: none_block,
-                    else_block: some_block,
-                });
-
-                self.builder.switch_to_block(some_block);
-                // TODO: Extract inner value and access field
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field { base: obj, field_index: 0 },
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(none_block);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))), // None
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(merge_block);
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Closure
-            ExprKind::Closure { params, body, .. } => {
-                // Closures lower to: allocate env struct, store captures, create fat ptr
-                // TODO: Full capture analysis - for now just lower the body
-                let result_local = self.builder.alloc_temp(MirType::Ptr);
-
-                // Register closure params as locals within the body
-                let saved_locals = self.locals.clone();
-                for param in params {
-                    let param_local = self.builder.alloc_temp(MirType::I32);
-                    self.locals.insert(param.name.clone(), param_local);
-                }
-                let _body_val = self.lower_expr(body)?;
-                self.locals = saved_locals;
-
-                // TODO: Create closure struct with function pointer + env
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))), // Placeholder
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Cast
-            ExprKind::Cast { expr, .. } => {
-                let val = self.lower_expr(expr)?;
-                let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Target type
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Cast {
-                        value: val,
-                        target_ty: MirType::I32,
-                    },
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Using block
-            ExprKind::UsingBlock { body, .. } => {
-                // TODO: Set up context, lower body, tear down context
-                self.lower_block_stmts(body)
-            }
-
-            // With-as binding
-            ExprKind::WithAs { bindings, body } => {
-                // Lower bindings, make them available, lower body
-                for (bind_expr, name) in bindings {
-                    let val = self.lower_expr(bind_expr)?;
-                    let local = self.builder.alloc_local(name.clone(), MirType::I32);
-                    self.locals.insert(name.clone(), local);
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: local,
-                        rvalue: MirRValue::Use(val),
-                    });
-                }
-                self.lower_block_stmts(body)
-            }
-
-            // Spawn
-            ExprKind::Spawn { body } => {
-                // TODO: Create task, capture env, schedule
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                // Lower body statements for analysis (captures)
-                let _body_val = self.lower_block_stmts(body)?;
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Block call (e.g., spawn_raw { ... })
-            ExprKind::BlockCall { name, body } => {
-                let body_val = self.lower_block_stmts(body)?;
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: Some(result_local),
-                    func: FunctionRef { name: name.clone() },
-                    args: vec![body_val],
-                });
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Unsafe block
-            ExprKind::Unsafe { body } => {
-                // Same as block - safety checks happen in type checker
-                self.lower_block_stmts(body)
-            }
-
-            // Comptime expression
-            ExprKind::Comptime { body } => {
-                // TODO: Should be evaluated at compile time
-                // For now just lower the body
-                self.lower_block_stmts(body)
-            }
-
-            // Select (channel multiplexing)
-            ExprKind::Select { arms, .. } => {
-                // TODO: Full select lowering with channel polling
-                let result_local = self.builder.alloc_temp(MirType::I32);
-                let merge_block = self.builder.create_block();
-                let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-
-                // For now: just jump to first arm (placeholder)
-                if let Some(&first) = arm_blocks.first() {
-                    self.builder.terminate(MirTerminator::Goto { target: first });
-                } else {
-                    self.builder.terminate(MirTerminator::Goto { target: merge_block });
-                }
-
-                for (i, arm) in arms.iter().enumerate() {
-                    self.builder.switch_to_block(arm_blocks[i]);
-                    let arm_val = self.lower_expr(&arm.body)?;
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(arm_val),
-                    });
-                    self.builder.terminate(MirTerminator::Goto { target: merge_block });
-                }
-
-                self.builder.switch_to_block(merge_block);
-                Ok(MirOperand::Local(result_local))
-            }
-
-            // Assert
-            ExprKind::Assert { condition, message } => {
-                let cond_op = self.lower_expr(condition)?;
-                let ok_block = self.builder.create_block();
-                let fail_block = self.builder.create_block();
-
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: cond_op,
-                    then_block: ok_block,
-                    else_block: fail_block,
-                });
-
-                self.builder.switch_to_block(fail_block);
-                let mut args = Vec::new();
-                if let Some(msg) = message {
-                    args.push(self.lower_expr(msg)?);
-                }
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: None,
-                    func: FunctionRef { name: "assert_fail".to_string() },
-                    args,
-                });
-                self.builder.terminate(MirTerminator::Unreachable);
-
-                self.builder.switch_to_block(ok_block);
-                Ok(MirOperand::Constant(MirConst::Bool(true)))
-            }
-
-            // Check (like assert but continues)
-            ExprKind::Check { condition, message } => {
-                let cond_op = self.lower_expr(condition)?;
-                let ok_block = self.builder.create_block();
-                let fail_block = self.builder.create_block();
-                let merge_block = self.builder.create_block();
-                let result_local = self.builder.alloc_temp(MirType::Bool);
-
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: cond_op,
-                    then_block: ok_block,
-                    else_block: fail_block,
-                });
-
-                self.builder.switch_to_block(fail_block);
-                let mut args = Vec::new();
-                if let Some(msg) = message {
-                    args.push(self.lower_expr(msg)?);
-                }
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: None,
-                    func: FunctionRef { name: "check_fail".to_string() },
-                    args,
-                });
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(false))),
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(ok_block);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Bool(true))),
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
-
-                self.builder.switch_to_block(merge_block);
-                Ok(MirOperand::Local(result_local))
-            }
-        }
-    }
-
-    // =================================================================
-    // Control flow lowering
-    // =================================================================
-
-    /// If expression lowering (spec L1).
-    ///
-    /// ```text
-    /// [current]  cond → branch then_block / else_block
-    /// [then]     result = then_val; goto merge
-    /// [else]     result = else_val; goto merge
-    /// [merge]    continue with result
-    /// ```
-    fn lower_if(
-        &mut self,
-        cond: &Expr,
-        then_branch: &Expr,
-        else_branch: Option<&Expr>,
-    ) -> Result<MirOperand, LoweringError> {
-        let cond_op = self.lower_expr(cond)?;
-
-        let then_block = self.builder.create_block();
-        let else_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-
-        // Result local - both branches assign into this
-        let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-
-        // Terminate current block with branch
-        self.builder.terminate(MirTerminator::Branch {
-            cond: cond_op,
-            then_block,
-            else_block,
-        });
-
-        // Then branch
-        self.builder.switch_to_block(then_block);
-        let then_val = self.lower_expr(then_branch)?;
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(then_val),
-        });
-        self.builder.terminate(MirTerminator::Goto {
-            target: merge_block,
-        });
-
-        // Else branch
-        self.builder.switch_to_block(else_block);
-        if let Some(else_expr) = else_branch {
-            let else_val = self.lower_expr(else_expr)?;
-            self.builder.push_stmt(MirStmt::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(else_val),
-            });
-        }
-        // else: result stays uninitialized (void if-statement, no else)
-        self.builder.terminate(MirTerminator::Goto {
-            target: merge_block,
-        });
-
-        // Continue in merge block
-        self.builder.switch_to_block(merge_block);
-
-        Ok(MirOperand::Local(result_local))
-    }
-
-    /// Match expression lowering (spec L2).
-    ///
-    /// ```text
-    /// [current]  tag = enum_tag(scrutinee); switch tag → arm blocks
-    /// [arm_0]    bind payload; result = body; goto merge
-    /// [arm_1]    bind payload; result = body; goto merge
-    /// [merge]    continue with result
-    /// ```
-    fn lower_match(
-        &mut self,
-        scrutinee: &Expr,
-        arms: &[rask_ast::expr::MatchArm],
-    ) -> Result<MirOperand, LoweringError> {
-        let scrutinee_op = self.lower_expr(scrutinee)?;
-        let result_local = self.builder.alloc_temp(MirType::I32); // TODO: Infer type
-
-        // Extract tag
-        let tag_local = self.builder.alloc_temp(MirType::U8);
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: tag_local,
-            rvalue: MirRValue::EnumTag {
-                value: scrutinee_op.clone(),
-            },
-        });
-
-        let merge_block = self.builder.create_block();
-
-        // Create arm blocks (don't switch yet - we still need to terminate current block)
-        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
-
-        let cases: Vec<(u64, BlockId)> = arm_blocks
-            .iter()
-            .enumerate()
-            .map(|(i, &block)| (i as u64, block))
-            .collect();
-
-        // Terminate current block with switch
-        self.builder.terminate(MirTerminator::Switch {
-            value: MirOperand::Local(tag_local),
-            cases,
-            default: merge_block,
-        });
-
-        // Lower each arm in its own block
-        for (i, arm) in arms.iter().enumerate() {
-            self.builder.switch_to_block(arm_blocks[i]);
-
-            // TODO: Bind pattern variables (extract payload fields from scrutinee)
-            let body_val = self.lower_expr(&arm.body)?;
-
-            self.builder.push_stmt(MirStmt::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(body_val),
-            });
-            self.builder.terminate(MirTerminator::Goto {
-                target: merge_block,
-            });
-        }
-
-        self.builder.switch_to_block(merge_block);
-        Ok(MirOperand::Local(result_local))
-    }
-
-    /// Block expression: lower each statement, last expression is the value.
-    fn lower_block(&mut self, stmts: &[Stmt]) -> Result<MirOperand, LoweringError> {
-        let mut last_val = MirOperand::Constant(MirConst::Int(0)); // void placeholder
-        for (i, stmt) in stmts.iter().enumerate() {
-            if i == stmts.len() - 1 {
-                // Last statement: if it's an expression, use its value
-                if let StmtKind::Expr(e) = &stmt.kind {
-                    last_val = self.lower_expr(e)?;
-                    continue;
-                }
-            }
-            self.lower_stmt(stmt)?;
-        }
-        Ok(last_val)
-    }
-
-    // =================================================================
-    // Statement lowering
-    // =================================================================
-
-    fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
-        match &stmt.kind {
-            StmtKind::Expr(e) => {
-                self.lower_expr(e)?;
-                Ok(())
-            }
-
-            StmtKind::Let { name, init, .. } => {
-                let init_op = self.lower_expr(init)?;
-                let var_ty = MirType::I32; // TODO: Parse type
-                let local_id = self.builder.alloc_local(name.clone(), var_ty);
-                self.locals.insert(name.clone(), local_id);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: local_id,
-                    rvalue: MirRValue::Use(init_op),
-                });
-                Ok(())
-            }
-
-            StmtKind::Const { name, init, .. } => {
-                let init_op = self.lower_expr(init)?;
-                let var_ty = MirType::I32; // TODO: Parse type
-                let local_id = self.builder.alloc_local(name.clone(), var_ty);
-                self.locals.insert(name.clone(), local_id);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: local_id,
-                    rvalue: MirRValue::Use(init_op),
-                });
-                Ok(())
-            }
-
-            StmtKind::Return(opt_expr) => {
-                let value = if let Some(e) = opt_expr {
-                    Some(self.lower_expr(e)?)
-                } else {
-                    None
-                };
-                self.builder.terminate(MirTerminator::Return { value });
-                Ok(())
-            }
-
-            StmtKind::Assign { target, value } => {
-                let val_op = self.lower_expr(value)?;
-                // Target must be a local variable or field access
-                match &target.kind {
-                    ExprKind::Ident(name) => {
-                        let local_id = self
-                            .locals
-                            .get(name)
-                            .copied()
-                            .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone()))?;
-                        self.builder.push_stmt(MirStmt::Assign {
-                            dst: local_id,
-                            rvalue: MirRValue::Use(val_op),
-                        });
-                    }
-                    _ => {
-                        // TODO: Handle field/index assignment
-                        return Err(LoweringError::InvalidConstruct(
-                            "Complex assignment targets not yet supported".to_string(),
-                        ));
-                    }
-                }
-                Ok(())
-            }
-
-            // While loop (spec L5)
-            StmtKind::While { cond, body } => self.lower_while(cond, body),
-
-            // For loop - desugar to while with iterator
-            StmtKind::For {
-                label,
-                binding,
-                iter,
-                body,
-            } => self.lower_for(label.as_deref(), binding, iter, body),
-
-            // Infinite loop
-            StmtKind::Loop { label, body } => self.lower_loop(label.as_deref(), body),
-
-            // Break
-            StmtKind::Break { label, value } => self.lower_break(label.as_deref(), value.as_ref()),
-
-            // Continue
-            StmtKind::Continue(label) => self.lower_continue(label.as_deref()),
-
-            // Let tuple destructuring
-            StmtKind::LetTuple { names, init } => {
-                let init_op = self.lower_expr(init)?;
-                for (i, name) in names.iter().enumerate() {
-                    let local_id = self.builder.alloc_local(name.clone(), MirType::I32);
-                    self.locals.insert(name.clone(), local_id);
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: local_id,
-                        rvalue: MirRValue::Field {
-                            base: init_op.clone(),
-                            field_index: i as u32,
-                        },
-                    });
-                }
-                Ok(())
-            }
-
-            // Const tuple destructuring
-            StmtKind::ConstTuple { names, init } => {
-                let init_op = self.lower_expr(init)?;
-                for (i, name) in names.iter().enumerate() {
-                    let local_id = self.builder.alloc_local(name.clone(), MirType::I32);
-                    self.locals.insert(name.clone(), local_id);
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: local_id,
-                        rvalue: MirRValue::Field {
-                            base: init_op.clone(),
-                            field_index: i as u32,
-                        },
-                    });
-                }
-                Ok(())
-            }
-
-            // While-let pattern loop
-            StmtKind::WhileLet { pattern: _, expr, body } => {
-                // Desugar: while expr matches pattern, execute body
-                // TODO: Proper pattern matching
-                let check_block = self.builder.create_block();
-                let body_block = self.builder.create_block();
-                let exit_block = self.builder.create_block();
-
-                self.builder.terminate(MirTerminator::Goto { target: check_block });
-
-                self.builder.switch_to_block(check_block);
-                let val = self.lower_expr(expr)?;
-                // Check tag == 0 (Some/Ok)
-                let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val },
-                });
-                self.builder.terminate(MirTerminator::Branch {
-                    cond: MirOperand::Local(tag),
-                    then_block: exit_block,   // tag != 0 → None/Err → exit
-                    else_block: body_block,   // tag == 0 → Some/Ok → body
-                });
-
-                self.builder.switch_to_block(body_block);
-                self.loop_stack.push(LoopContext {
-                    label: None,
-                    continue_block: check_block,
-                    exit_block,
-                    result_local: None,
-                });
-                for s in body {
-                    self.lower_stmt(s)?;
-                }
-                self.builder.terminate(MirTerminator::Goto { target: check_block });
-                self.loop_stack.pop();
-
-                self.builder.switch_to_block(exit_block);
-                Ok(())
-            }
-
-            // Ensure (spec L4)
-            StmtKind::Ensure { body, else_handler } => {
-                let cleanup_block = self.builder.create_block();
-                let continue_block = self.builder.create_block();
-
-                // Register cleanup
-                self.builder.push_stmt(MirStmt::EnsurePush { cleanup_block });
-
-                // Lower body
-                for s in body {
-                    self.lower_stmt(s)?;
-                }
-
-                // Pop cleanup on normal path
-                self.builder.push_stmt(MirStmt::EnsurePop);
-                self.builder.terminate(MirTerminator::Goto { target: continue_block });
-
-                // Cleanup block
-                self.builder.switch_to_block(cleanup_block);
-                if let Some((param_name, handler_body)) = else_handler {
-                    let param_local = self.builder.alloc_local(param_name.clone(), MirType::I32);
-                    self.locals.insert(param_name.clone(), param_local);
-                    for s in handler_body {
-                        self.lower_stmt(s)?;
-                    }
-                }
-                self.builder.push_stmt(MirStmt::EnsurePop);
-                self.builder.terminate(MirTerminator::Goto { target: continue_block });
-
-                self.builder.switch_to_block(continue_block);
-                Ok(())
-            }
-
-            // Comptime (compile-time evaluated)
-            StmtKind::Comptime(stmts) => {
-                // TODO: Mark as comptime-only
-                for s in stmts {
-                    self.lower_stmt(s)?;
-                }
-                Ok(())
-            }
-        }
-    }
-
-    // =================================================================
-    // Loop lowering
-    // =================================================================
-
-    /// While loop (spec L5).
-    ///
-    /// ```text
-    /// [current]  goto check
-    /// [check]    cond → branch body / exit
-    /// [body]     stmts; goto check
-    /// [exit]     continue
-    /// ```
-    fn lower_while(&mut self, cond: &Expr, body: &[Stmt]) -> Result<(), LoweringError> {
-        let check_block = self.builder.create_block();
-        let body_block = self.builder.create_block();
-        let exit_block = self.builder.create_block();
-
-        // Jump to check
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
-        });
-
-        // Check block: evaluate condition, branch
-        self.builder.switch_to_block(check_block);
-        let cond_op = self.lower_expr(cond)?;
-        self.builder.terminate(MirTerminator::Branch {
-            cond: cond_op,
-            then_block: body_block,
-            else_block: exit_block,
-        });
-
-        // Body block: push loop context, lower body, jump back to check
-        self.builder.switch_to_block(body_block);
-        self.loop_stack.push(LoopContext {
-            label: None,
-            continue_block: check_block,
-            exit_block,
-            result_local: None,
-        });
-
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
-        });
-
-        self.loop_stack.pop();
-
-        // Continue after loop
-        self.builder.switch_to_block(exit_block);
-        Ok(())
-    }
-
-    /// For loop: desugar to iterator + while.
-    ///
-    /// ```text
-    /// iter_local = lower(iter_expr)
-    /// [check]    has_next = iter.next(); branch has_next / exit
-    /// [body]     binding = current; stmts; goto check
-    /// [exit]     continue
-    /// ```
-    fn lower_for(
-        &mut self,
-        label: Option<&str>,
-        binding: &str,
-        iter_expr: &Expr,
-        body: &[Stmt],
-    ) -> Result<(), LoweringError> {
-        // Lower iterator expression
-        let iter_op = self.lower_expr(iter_expr)?;
-        let iter_local = self.builder.alloc_temp(MirType::I32); // TODO: Iterator type
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: iter_local,
-            rvalue: MirRValue::Use(iter_op),
-        });
-
-        let check_block = self.builder.create_block();
-        let body_block = self.builder.create_block();
-        let exit_block = self.builder.create_block();
-
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
-        });
-
-        // Check: call next() on iterator, branch on result
-        self.builder.switch_to_block(check_block);
-        let next_result = self.builder.alloc_temp(MirType::I32); // TODO: Option type
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(next_result),
-            func: FunctionRef {
-                name: "next".to_string(),
-            },
-            args: vec![MirOperand::Local(iter_local)],
-        });
-        // TODO: Proper Option check - for now treat as bool-like
-        self.builder.terminate(MirTerminator::Branch {
-            cond: MirOperand::Local(next_result),
-            then_block: body_block,
-            else_block: exit_block,
-        });
-
-        // Body: bind loop variable, lower body
-        self.builder.switch_to_block(body_block);
-        let binding_local = self.builder.alloc_local(binding.to_string(), MirType::I32);
-        self.locals.insert(binding.to_string(), binding_local);
-        // TODO: Extract value from Option
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: binding_local,
-            rvalue: MirRValue::Use(MirOperand::Local(next_result)),
-        });
-
-        self.loop_stack.push(LoopContext {
-            label: label.map(|s| s.to_string()),
-            continue_block: check_block,
-            exit_block,
-            result_local: None,
-        });
-
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
-        });
-
-        self.loop_stack.pop();
-        self.builder.switch_to_block(exit_block);
-        Ok(())
-    }
-
-    /// Infinite loop.
-    ///
-    /// ```text
-    /// [loop]  body; goto loop
-    /// [exit]  continue (reached via break)
-    /// ```
-    fn lower_loop(&mut self, label: Option<&str>, body: &[Stmt]) -> Result<(), LoweringError> {
-        let loop_block = self.builder.create_block();
-        let exit_block = self.builder.create_block();
-
-        self.builder.terminate(MirTerminator::Goto {
-            target: loop_block,
-        });
-
-        self.builder.switch_to_block(loop_block);
-
-        self.loop_stack.push(LoopContext {
-            label: label.map(|s| s.to_string()),
-            continue_block: loop_block,
-            exit_block,
-            result_local: None,
-        });
-
-        for stmt in body {
-            self.lower_stmt(stmt)?;
-        }
-        self.builder.terminate(MirTerminator::Goto {
-            target: loop_block,
-        });
-
-        self.loop_stack.pop();
-        self.builder.switch_to_block(exit_block);
-        Ok(())
-    }
-
-    /// Break statement - jump to enclosing loop's exit block.
-    fn lower_break(
-        &mut self,
-        label: Option<&str>,
-        value: Option<&Expr>,
-    ) -> Result<(), LoweringError> {
-        let ctx = self.find_loop(label)?;
-        let exit_block = ctx.exit_block;
-        let result_local = ctx.result_local;
-
-        if let Some(val_expr) = value {
-            let val_op = self.lower_expr(val_expr)?;
-            if let Some(result) = result_local {
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result,
-                    rvalue: MirRValue::Use(val_op),
-                });
-            }
-        }
-
-        self.builder.terminate(MirTerminator::Goto {
-            target: exit_block,
-        });
-
-        // Create unreachable block for any code after break
-        let dead_block = self.builder.create_block();
-        self.builder.switch_to_block(dead_block);
-
-        Ok(())
-    }
-
-    /// Continue statement - jump to enclosing loop's check block.
-    fn lower_continue(&mut self, label: Option<&str>) -> Result<(), LoweringError> {
-        let ctx = self.find_loop(label)?;
-        let continue_block = ctx.continue_block;
-
-        self.builder.terminate(MirTerminator::Goto {
-            target: continue_block,
-        });
-
-        let dead_block = self.builder.create_block();
-        self.builder.switch_to_block(dead_block);
-
-        Ok(())
-    }
-
-    /// Try expression lowering (spec L3).
-    ///
-    /// ```text
-    /// [current]  result = call expr; tag = enum_tag(result)
-    ///            branch tag==0 → ok_block, err_block
-    /// [ok]       value = field(result, 0); goto merge
-    /// [err]      err = field(result, 0); cleanup_return err
-    /// [merge]    continue with value
-    /// ```
-    fn lower_try(&mut self, inner: &Expr) -> Result<MirOperand, LoweringError> {
-        let result = self.lower_expr(inner)?;
-
-        let tag_local = self.builder.alloc_temp(MirType::U8);
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: tag_local,
-            rvalue: MirRValue::EnumTag {
-                value: result.clone(),
-            },
-        });
-
-        let ok_block = self.builder.create_block();
-        let err_block = self.builder.create_block();
-        let merge_block = self.builder.create_block();
-
-        self.builder.terminate(MirTerminator::Branch {
-            cond: MirOperand::Local(tag_local),
-            then_block: err_block, // tag != 0 → Err
-            else_block: ok_block,  // tag == 0 → Ok
-        });
-
-        // Err path: extract error, return it (with cleanup)
-        self.builder.switch_to_block(err_block);
-        let err_val = self.builder.alloc_temp(MirType::I32);
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: err_val,
-            rvalue: MirRValue::Field {
-                base: result.clone(),
-                field_index: 0,
-            },
-        });
-        // TODO: Run ensure cleanup chain before returning
-        self.builder.terminate(MirTerminator::Return {
-            value: Some(MirOperand::Local(err_val)),
-        });
-
-        // Ok path: extract value, continue
-        self.builder.switch_to_block(ok_block);
-        let ok_val = self.builder.alloc_temp(MirType::I32);
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: ok_val,
-            rvalue: MirRValue::Field {
-                base: result,
-                field_index: 0,
-            },
-        });
-        self.builder.terminate(MirTerminator::Goto {
-            target: merge_block,
-        });
-
-        self.builder.switch_to_block(merge_block);
-        Ok(MirOperand::Local(ok_val))
-    }
-
-    /// Lower a list of statements as a block, returning the last expression value.
-    fn lower_block_stmts(&mut self, stmts: &[Stmt]) -> Result<MirOperand, LoweringError> {
-        let mut last_val = MirOperand::Constant(MirConst::Int(0));
-        for (i, stmt) in stmts.iter().enumerate() {
-            if i == stmts.len() - 1 {
-                if let StmtKind::Expr(e) = &stmt.kind {
-                    last_val = self.lower_expr(e)?;
-                    continue;
-                }
-            }
-            self.lower_stmt(stmt)?;
-        }
-        Ok(last_val)
-    }
-
-    /// Find the loop context for a break/continue, optionally by label.
-    fn find_loop(&self, label: Option<&str>) -> Result<&LoopContext, LoweringError> {
-        match label {
-            None => self.loop_stack.last().ok_or_else(|| {
-                LoweringError::InvalidConstruct("break/continue outside of loop".to_string())
-            }),
-            Some(lbl) => self
-                .loop_stack
-                .iter()
-                .rev()
-                .find(|ctx| ctx.label.as_deref() == Some(lbl))
-                .ok_or_else(|| {
-                    LoweringError::InvalidConstruct(format!("No loop with label '{}'", lbl))
-                }),
-        }
+}
+
+// =================================================================
+// Type string parsing
+// =================================================================
+
+/// Parse a Rask type string to MirType.
+/// Handles primitives and common patterns. Unknown types fall back to Ptr.
+fn parse_type_str(s: &str) -> MirType {
+    match s.trim() {
+        "i8" => MirType::I8,
+        "i16" => MirType::I16,
+        "i32" => MirType::I32,
+        "i64" => MirType::I64,
+        "u8" => MirType::U8,
+        "u16" => MirType::U16,
+        "u32" => MirType::U32,
+        "u64" => MirType::U64,
+        "f32" => MirType::F32,
+        "f64" => MirType::F64,
+        "bool" => MirType::Bool,
+        "char" => MirType::Char,
+        "string" => MirType::FatPtr,
+        "()" | "" => MirType::Void,
+        _ => MirType::Ptr, // Structs, enums, generics → opaque pointer for now
     }
 }
 
-/// Get method name for binary operator
-fn binop_method_name(op: BinOp) -> String {
-    match op {
-        BinOp::Add => "add",
-        BinOp::Sub => "sub",
-        BinOp::Mul => "mul",
-        BinOp::Div => "div",
-        BinOp::Mod => "mod",
-        BinOp::Eq => "eq",
-        BinOp::Ne => "ne",
-        BinOp::Lt => "lt",
-        BinOp::Gt => "gt",
-        BinOp::Le => "le",
-        BinOp::Ge => "ge",
-        BinOp::And => "and",
-        BinOp::Or => "or",
-        BinOp::BitAnd => "bitand",
-        BinOp::BitOr => "bitor",
-        BinOp::BitXor => "bitxor",
-        BinOp::Shl => "shl",
-        BinOp::Shr => "shr",
+// =================================================================
+// Operator mappings
+// =================================================================
+
+/// Recognize operator method names produced by desugar (e.g. "add", "sub", "eq")
+fn operator_method_to_binop(method: &str) -> Option<crate::operand::BinOp> {
+    use crate::operand::BinOp as MirBinOp;
+    match method {
+        "add" => Some(MirBinOp::Add),
+        "sub" => Some(MirBinOp::Sub),
+        "mul" => Some(MirBinOp::Mul),
+        "div" => Some(MirBinOp::Div),
+        "rem" => Some(MirBinOp::Mod),
+        "eq" => Some(MirBinOp::Eq),
+        "lt" => Some(MirBinOp::Lt),
+        "gt" => Some(MirBinOp::Gt),
+        "le" => Some(MirBinOp::Le),
+        "ge" => Some(MirBinOp::Ge),
+        "bit_and" => Some(MirBinOp::BitAnd),
+        "bit_or" => Some(MirBinOp::BitOr),
+        "bit_xor" => Some(MirBinOp::BitXor),
+        "shl" => Some(MirBinOp::Shl),
+        "shr" => Some(MirBinOp::Shr),
+        _ => None,
     }
-    .to_string()
 }
 
-/// Get method name for unary operator
-fn unaryop_method_name(op: UnaryOp) -> String {
-    match op {
-        UnaryOp::Neg => "neg",
-        UnaryOp::Not => "not",
-        UnaryOp::BitNot => "bitnot",
-        UnaryOp::Ref => "ref",
-        UnaryOp::Deref => "deref",
+/// Recognize unary operator method names produced by desugar
+fn operator_method_to_unaryop(method: &str) -> Option<crate::operand::UnaryOp> {
+    use crate::operand::UnaryOp as MirUnaryOp;
+    match method {
+        "neg" => Some(MirUnaryOp::Neg),
+        "bit_not" => Some(MirUnaryOp::BitNot),
+        _ => None,
     }
-    .to_string()
+}
+
+/// Map AST binary operator to MIR binary operator (for &&/|| that survive desugar)
+fn lower_binop(op: BinOp) -> crate::operand::BinOp {
+    use crate::operand::BinOp as MirBinOp;
+    match op {
+        BinOp::Add => MirBinOp::Add,
+        BinOp::Sub => MirBinOp::Sub,
+        BinOp::Mul => MirBinOp::Mul,
+        BinOp::Div => MirBinOp::Div,
+        BinOp::Mod => MirBinOp::Mod,
+        BinOp::Eq => MirBinOp::Eq,
+        BinOp::Ne => MirBinOp::Ne,
+        BinOp::Lt => MirBinOp::Lt,
+        BinOp::Gt => MirBinOp::Gt,
+        BinOp::Le => MirBinOp::Le,
+        BinOp::Ge => MirBinOp::Ge,
+        BinOp::And => MirBinOp::And,
+        BinOp::Or => MirBinOp::Or,
+        BinOp::BitAnd => MirBinOp::BitAnd,
+        BinOp::BitOr => MirBinOp::BitOr,
+        BinOp::BitXor => MirBinOp::BitXor,
+        BinOp::Shl => MirBinOp::Shl,
+        BinOp::Shr => MirBinOp::Shr,
+    }
+}
+
+/// Map AST unary operator to MIR unary operator.
+fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
+    use crate::operand::UnaryOp as MirUnaryOp;
+    match op {
+        UnaryOp::Neg => MirUnaryOp::Neg,
+        UnaryOp::Not => MirUnaryOp::Not,
+        UnaryOp::BitNot => MirUnaryOp::BitNot,
+        UnaryOp::Ref | UnaryOp::Deref => unreachable!(),
+    }
+}
+
+/// Determine result type for a binary operation.
+/// Comparison ops return Bool, arithmetic returns the operand type.
+fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirType {
+    use crate::operand::BinOp as B;
+    match op {
+        B::Eq | B::Ne | B::Lt | B::Gt | B::Le | B::Ge | B::And | B::Or => MirType::Bool,
+        _ => operand_ty.clone(),
+    }
 }
 
 #[derive(Debug)]
@@ -1378,4 +217,795 @@ pub enum LoweringError {
     UnresolvedVariable(String),
     UnresolvedGeneric(String),
     InvalidConstruct(String),
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{operand::MirConst, MirRValue, MirStmt};
+    use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
+    use rask_ast::expr::{Expr, ExprKind, MatchArm, Pattern};
+    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::{NodeId, Span};
+
+    // ── AST construction helpers ────────────────────────────────
+
+    fn sp() -> Span {
+        Span::new(0, 0)
+    }
+
+    fn int_expr(val: i64) -> Expr {
+        Expr { id: NodeId(100), kind: ExprKind::Int(val, None), span: sp() }
+    }
+
+    fn float_expr(val: f64) -> Expr {
+        Expr { id: NodeId(101), kind: ExprKind::Float(val, None), span: sp() }
+    }
+
+    fn string_expr(s: &str) -> Expr {
+        Expr { id: NodeId(102), kind: ExprKind::String(s.to_string()), span: sp() }
+    }
+
+    fn bool_expr(val: bool) -> Expr {
+        Expr { id: NodeId(103), kind: ExprKind::Bool(val), span: sp() }
+    }
+
+    fn ident_expr(name: &str) -> Expr {
+        Expr { id: NodeId(105), kind: ExprKind::Ident(name.to_string()), span: sp() }
+    }
+
+    fn call_expr(func: &str, args: Vec<Expr>) -> Expr {
+        Expr {
+            id: NodeId(106),
+            kind: ExprKind::Call {
+                func: Box::new(ident_expr(func)),
+                args,
+            },
+            span: sp(),
+        }
+    }
+
+    fn binary_expr(op: BinOp, left: Expr, right: Expr) -> Expr {
+        Expr {
+            id: NodeId(107),
+            kind: ExprKind::Binary {
+                op,
+                left: Box::new(left),
+                right: Box::new(right),
+            },
+            span: sp(),
+        }
+    }
+
+    fn unary_expr(op: UnaryOp, operand: Expr) -> Expr {
+        Expr {
+            id: NodeId(108),
+            kind: ExprKind::Unary {
+                op,
+                operand: Box::new(operand),
+            },
+            span: sp(),
+        }
+    }
+
+    fn method_call_expr(obj: Expr, method: &str, args: Vec<Expr>) -> Expr {
+        Expr {
+            id: NodeId(109),
+            kind: ExprKind::MethodCall {
+                object: Box::new(obj),
+                method: method.to_string(),
+                type_args: None,
+                args,
+            },
+            span: sp(),
+        }
+    }
+
+    fn if_expr(cond: Expr, then_br: Expr, else_br: Option<Expr>) -> Expr {
+        Expr {
+            id: NodeId(110),
+            kind: ExprKind::If {
+                cond: Box::new(cond),
+                then_branch: Box::new(then_br),
+                else_branch: else_br.map(Box::new),
+            },
+            span: sp(),
+        }
+    }
+
+    fn match_expr(scrutinee: Expr, arms: Vec<MatchArm>) -> Expr {
+        Expr {
+            id: NodeId(111),
+            kind: ExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span: sp(),
+        }
+    }
+
+    fn try_expr(inner: Expr) -> Expr {
+        Expr {
+            id: NodeId(112),
+            kind: ExprKind::Try(Box::new(inner)),
+            span: sp(),
+        }
+    }
+
+    fn return_stmt(val: Option<Expr>) -> Stmt {
+        Stmt { id: NodeId(200), kind: StmtKind::Return(val), span: sp() }
+    }
+
+    fn let_stmt(name: &str, ty: Option<&str>, init: Expr) -> Stmt {
+        Stmt {
+            id: NodeId(201),
+            kind: StmtKind::Let {
+                name: name.to_string(),
+                name_span: sp(),
+                ty: ty.map(|s| s.to_string()),
+                init,
+            },
+            span: sp(),
+        }
+    }
+
+    fn const_stmt(name: &str, ty: Option<&str>, init: Expr) -> Stmt {
+        Stmt {
+            id: NodeId(202),
+            kind: StmtKind::Const {
+                name: name.to_string(),
+                name_span: sp(),
+                ty: ty.map(|s| s.to_string()),
+                init,
+            },
+            span: sp(),
+        }
+    }
+
+    fn expr_stmt(e: Expr) -> Stmt {
+        Stmt { id: NodeId(203), kind: StmtKind::Expr(e), span: sp() }
+    }
+
+    fn while_stmt(cond: Expr, body: Vec<Stmt>) -> Stmt {
+        Stmt {
+            id: NodeId(204),
+            kind: StmtKind::While { cond, body },
+            span: sp(),
+        }
+    }
+
+    fn loop_stmt(label: Option<&str>, body: Vec<Stmt>) -> Stmt {
+        Stmt {
+            id: NodeId(205),
+            kind: StmtKind::Loop {
+                label: label.map(|s| s.to_string()),
+                body,
+            },
+            span: sp(),
+        }
+    }
+
+    fn for_stmt(binding: &str, iter: Expr, body: Vec<Stmt>) -> Stmt {
+        Stmt {
+            id: NodeId(206),
+            kind: StmtKind::For {
+                label: None,
+                binding: binding.to_string(),
+                iter,
+                body,
+            },
+            span: sp(),
+        }
+    }
+
+    fn break_stmt(label: Option<&str>, value: Option<Expr>) -> Stmt {
+        Stmt {
+            id: NodeId(207),
+            kind: StmtKind::Break {
+                label: label.map(|s| s.to_string()),
+                value,
+            },
+            span: sp(),
+        }
+    }
+
+    fn continue_stmt(label: Option<&str>) -> Stmt {
+        Stmt {
+            id: NodeId(208),
+            kind: StmtKind::Continue(label.map(|s| s.to_string())),
+            span: sp(),
+        }
+    }
+
+    fn ensure_stmt(body: Vec<Stmt>, handler: Option<(&str, Vec<Stmt>)>) -> Stmt {
+        Stmt {
+            id: NodeId(209),
+            kind: StmtKind::Ensure {
+                body,
+                else_handler: handler.map(|(n, s)| (n.to_string(), s)),
+            },
+            span: sp(),
+        }
+    }
+
+    fn assign_stmt(target: Expr, value: Expr) -> Stmt {
+        Stmt {
+            id: NodeId(210),
+            kind: StmtKind::Assign { target, value },
+            span: sp(),
+        }
+    }
+
+    fn make_fn(name: &str, params: Vec<(&str, &str)>, ret_ty: Option<&str>, body: Vec<Stmt>) -> Decl {
+        Decl {
+            id: NodeId(0),
+            kind: DeclKind::Fn(FnDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                params: params
+                    .into_iter()
+                    .map(|(n, ty)| Param {
+                        name: n.to_string(),
+                        name_span: sp(),
+                        ty: ty.to_string(),
+                        is_take: false,
+                        is_mutate: false,
+                        default: None,
+                    })
+                    .collect(),
+                ret_ty: ret_ty.map(|s| s.to_string()),
+                context_clauses: vec![],
+                body,
+                is_pub: false,
+                is_comptime: false,
+                is_unsafe: false,
+                attrs: vec![],
+            }),
+            span: sp(),
+        }
+    }
+
+    fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
+        MirLowerer::lower_function(decl, all_decls).expect("lowering failed")
+    }
+
+    fn lower_one(decl: &Decl) -> MirFunction {
+        lower(decl, &[decl.clone()])
+    }
+
+    // ── helpers for inspecting MIR ──────────────────────────────
+
+    fn has_return(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Return { .. }))
+    }
+
+    fn has_branch(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Branch { .. }))
+    }
+
+    fn has_switch(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Switch { .. }))
+    }
+
+    fn has_goto(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Goto { .. }))
+    }
+
+    fn count_blocks(f: &MirFunction) -> usize {
+        f.blocks.len()
+    }
+
+    fn find_call(f: &MirFunction, func_name: &str) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Call { func, .. } if func.name == func_name))
+        })
+    }
+
+    fn find_assign_binop(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::BinaryOp { .. }, .. }))
+        })
+    }
+
+    fn find_assign_unaryop(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::UnaryOp { .. }, .. }))
+        })
+    }
+
+    fn find_ensure_push(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::EnsurePush { .. }))
+        })
+    }
+
+    fn find_ensure_pop(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::EnsurePop))
+        })
+    }
+
+    fn find_enum_tag(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
+        })
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Literals
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_integer_literal() {
+        let decl = make_fn("f", vec![], Some("i64"), vec![return_stmt(Some(int_expr(42)))]);
+        let f = lower_one(&decl);
+        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
+        if let MirTerminator::Return { value: Some(MirOperand::Constant(MirConst::Int(42))) } = &ret_block.terminator {
+            // good
+        } else {
+            panic!("Expected return 42, got: {:?}", ret_block.terminator);
+        }
+    }
+
+    #[test]
+    fn lower_string_literal() {
+        let decl = make_fn("f", vec![], Some("string"), vec![return_stmt(Some(string_expr("hello")))]);
+        let f = lower_one(&decl);
+        assert_eq!(f.ret_ty, MirType::FatPtr);
+    }
+
+    #[test]
+    fn lower_bool_literal() {
+        let decl = make_fn("f", vec![], Some("bool"), vec![return_stmt(Some(bool_expr(true)))]);
+        let f = lower_one(&decl);
+        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
+        if let MirTerminator::Return { value: Some(MirOperand::Constant(MirConst::Bool(true))) } = &ret_block.terminator {
+            // good
+        } else {
+            panic!("Expected return true, got: {:?}", ret_block.terminator);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Variables and bindings
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_variable_reference() {
+        let decl = make_fn("f", vec![], Some("i32"), vec![
+            const_stmt("x", Some("i32"), int_expr(42)),
+            return_stmt(Some(ident_expr("x"))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(f.locals.iter().any(|l| l.name.as_deref() == Some("x")));
+    }
+
+    #[test]
+    fn lower_unresolved_variable_errors() {
+        let decl = make_fn("f", vec![], None, vec![return_stmt(Some(ident_expr("no_such_var")))]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lower_let_binding() {
+        let decl = make_fn("f", vec![], None, vec![
+            let_stmt("x", Some("i32"), int_expr(10)),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        let x_local = f.locals.iter().find(|l| l.name.as_deref() == Some("x"));
+        assert!(x_local.is_some());
+        assert_eq!(x_local.unwrap().ty, MirType::I32);
+    }
+
+    #[test]
+    fn lower_let_infers_type() {
+        let decl = make_fn("f", vec![], None, vec![
+            let_stmt("x", None, int_expr(42)),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        let x_local = f.locals.iter().find(|l| l.name.as_deref() == Some("x")).unwrap();
+        assert_eq!(x_local.ty, MirType::I64);
+    }
+
+    #[test]
+    fn lower_assignment() {
+        let decl = make_fn("f", vec![], None, vec![
+            let_stmt("x", Some("i32"), int_expr(0)),
+            assign_stmt(ident_expr("x"), int_expr(42)),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        let assign_count = f.blocks.iter()
+            .flat_map(|b| b.statements.iter())
+            .filter(|s| matches!(s, MirStmt::Assign { .. }))
+            .count();
+        assert!(assign_count >= 2);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Operators
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_binary_op_and_or() {
+        let decl = make_fn("f", vec![], Some("bool"), vec![
+            return_stmt(Some(binary_expr(BinOp::And, bool_expr(true), bool_expr(false)))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_binop(&f));
+    }
+
+    #[test]
+    fn lower_desugared_add_method() {
+        let decl = make_fn("f", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
+            return_stmt(Some(method_call_expr(ident_expr("a"), "add", vec![ident_expr("b")]))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_binop(&f));
+    }
+
+    #[test]
+    fn lower_desugared_neg_method() {
+        let decl = make_fn("f", vec![("a", "i32")], Some("i32"), vec![
+            return_stmt(Some(method_call_expr(ident_expr("a"), "neg", vec![]))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_unaryop(&f));
+    }
+
+    #[test]
+    fn lower_unary_not() {
+        let decl = make_fn("f", vec![], Some("bool"), vec![
+            return_stmt(Some(unary_expr(UnaryOp::Not, bool_expr(true)))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_unaryop(&f));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Function calls
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_function_call() {
+        let callee = make_fn("greet", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![
+            expr_stmt(call_expr("greet", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower(&decl, &[decl.clone(), callee]);
+        assert!(find_call(&f, "greet"));
+    }
+
+    #[test]
+    fn lower_call_with_args() {
+        let add = make_fn("add", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
+            return_stmt(Some(int_expr(0))),
+        ]);
+        let decl = make_fn("main", vec![], Some("i32"), vec![
+            return_stmt(Some(call_expr("add", vec![int_expr(1), int_expr(2)]))),
+        ]);
+        let f = lower(&decl, &[decl.clone(), add]);
+        assert!(find_call(&f, "add"));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Function metadata
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_function_params() {
+        let decl = make_fn("add", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
+            return_stmt(Some(int_expr(0))),
+        ]);
+        let f = lower_one(&decl);
+        assert_eq!(f.params.len(), 2);
+        assert_eq!(f.params[0].name.as_deref(), Some("a"));
+        assert_eq!(f.params[0].ty, MirType::I32);
+        assert_eq!(f.params[1].name.as_deref(), Some("b"));
+        assert!(f.params[0].is_param);
+        assert!(f.params[1].is_param);
+    }
+
+    #[test]
+    fn lower_function_name_and_ret_ty() {
+        let decl = make_fn("compute", vec![], Some("f64"), vec![return_stmt(Some(float_expr(0.0)))]);
+        let f = lower_one(&decl);
+        assert_eq!(f.name, "compute");
+        assert_eq!(f.ret_ty, MirType::F64);
+    }
+
+    #[test]
+    fn lower_void_return() {
+        let decl = make_fn("f", vec![], None, vec![return_stmt(None)]);
+        let f = lower_one(&decl);
+        let ret = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
+        assert!(matches!(ret.terminator, MirTerminator::Return { value: None }));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // parse_type_str
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_parse_type_str_coverage() {
+        assert_eq!(parse_type_str("i8"), MirType::I8);
+        assert_eq!(parse_type_str("i16"), MirType::I16);
+        assert_eq!(parse_type_str("i32"), MirType::I32);
+        assert_eq!(parse_type_str("i64"), MirType::I64);
+        assert_eq!(parse_type_str("u8"), MirType::U8);
+        assert_eq!(parse_type_str("u16"), MirType::U16);
+        assert_eq!(parse_type_str("u32"), MirType::U32);
+        assert_eq!(parse_type_str("u64"), MirType::U64);
+        assert_eq!(parse_type_str("f32"), MirType::F32);
+        assert_eq!(parse_type_str("f64"), MirType::F64);
+        assert_eq!(parse_type_str("bool"), MirType::Bool);
+        assert_eq!(parse_type_str("char"), MirType::Char);
+        assert_eq!(parse_type_str("string"), MirType::FatPtr);
+        assert_eq!(parse_type_str("()"), MirType::Void);
+        assert_eq!(parse_type_str(""), MirType::Void);
+        assert_eq!(parse_type_str("SomeStruct"), MirType::Ptr);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Control flow
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_if_creates_branch() {
+        let decl = make_fn("f", vec![], Some("i64"), vec![
+            return_stmt(Some(if_expr(bool_expr(true), int_expr(1), Some(int_expr(2))))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_branch(&f));
+        assert!(count_blocks(&f) >= 4);
+    }
+
+    #[test]
+    fn lower_if_without_else() {
+        let decl = make_fn("f", vec![], None, vec![
+            return_stmt(Some(if_expr(bool_expr(true), int_expr(1), None))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_branch(&f));
+    }
+
+    #[test]
+    fn lower_match_creates_switch() {
+        let decl = make_fn("f", vec![("x", "i32")], Some("i64"), vec![
+            return_stmt(Some(match_expr(
+                ident_expr("x"),
+                vec![
+                    MatchArm { pattern: Pattern::Ident("a".to_string()), guard: None, body: Box::new(int_expr(1)) },
+                    MatchArm { pattern: Pattern::Ident("b".to_string()), guard: None, body: Box::new(int_expr(2)) },
+                ],
+            ))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_switch(&f));
+        assert!(find_enum_tag(&f));
+    }
+
+    #[test]
+    fn lower_while_loop_cfg() {
+        let decl = make_fn("f", vec![], None, vec![
+            let_stmt("x", Some("i32"), int_expr(10)),
+            while_stmt(
+                binary_expr(BinOp::Gt, ident_expr("x"), int_expr(0)),
+                vec![assign_stmt(ident_expr("x"), int_expr(0))],
+            ),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_branch(&f));
+        assert!(has_goto(&f));
+        assert!(count_blocks(&f) >= 4);
+    }
+
+    #[test]
+    fn lower_for_loop() {
+        let range = Expr {
+            id: NodeId(300),
+            kind: ExprKind::Range {
+                start: Some(Box::new(int_expr(0))),
+                end: Some(Box::new(int_expr(10))),
+                inclusive: false,
+            },
+            span: sp(),
+        };
+        let decl = make_fn("f", vec![], None, vec![
+            for_stmt("i", range, vec![expr_stmt(call_expr("process", vec![ident_expr("i")]))]),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_branch(&f));
+        assert!(find_call(&f, "next"));
+    }
+
+    #[test]
+    fn lower_infinite_loop() {
+        let decl = make_fn("f", vec![], None, vec![
+            loop_stmt(None, vec![break_stmt(None, None)]),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_goto(&f));
+        assert!(has_return(&f));
+    }
+
+    #[test]
+    fn lower_continue() {
+        let decl = make_fn("f", vec![], None, vec![
+            let_stmt("x", Some("i32"), int_expr(0)),
+            while_stmt(
+                binary_expr(BinOp::Lt, ident_expr("x"), int_expr(10)),
+                vec![continue_stmt(None)],
+            ),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        let goto_count = f.blocks.iter()
+            .filter(|b| matches!(b.terminator, MirTerminator::Goto { .. }))
+            .count();
+        assert!(goto_count >= 2);
+    }
+
+    #[test]
+    fn lower_break_outside_loop_errors() {
+        let decl = make_fn("f", vec![], None, vec![break_stmt(None, None)]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn lower_continue_outside_loop_errors() {
+        let decl = make_fn("f", vec![], None, vec![continue_stmt(None)]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        assert!(result.is_err());
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Error handling
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_try_creates_tag_check() {
+        let callee = make_fn("fallible", vec![], Some("i32"), vec![return_stmt(Some(int_expr(0)))]);
+        let decl = make_fn("f", vec![], Some("i32"), vec![
+            return_stmt(Some(try_expr(call_expr("fallible", vec![])))),
+        ]);
+        let f = lower(&decl, &[decl.clone(), callee]);
+        assert!(find_enum_tag(&f));
+        assert!(has_branch(&f));
+    }
+
+    #[test]
+    fn lower_ensure_push_pop() {
+        let decl = make_fn("f", vec![], None, vec![
+            ensure_stmt(
+                vec![expr_stmt(call_expr("do_work", vec![]))],
+                None,
+            ),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_ensure_push(&f));
+        assert!(find_ensure_pop(&f));
+    }
+
+    #[test]
+    fn lower_ensure_with_handler() {
+        let decl = make_fn("f", vec![], None, vec![
+            ensure_stmt(
+                vec![expr_stmt(call_expr("work", vec![]))],
+                Some(("err", vec![expr_stmt(call_expr("cleanup", vec![ident_expr("err")]))])),
+            ),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_ensure_push(&f));
+        assert!(find_ensure_pop(&f));
+        assert!(f.locals.iter().any(|l| l.name.as_deref() == Some("err")));
+    }
+
+    #[test]
+    fn lower_unwrap_panics_on_err() {
+        let decl = make_fn("f", vec![("x", "i32")], Some("i32"), vec![
+            return_stmt(Some(Expr {
+                id: NodeId(400),
+                kind: ExprKind::Unwrap(Box::new(ident_expr("x"))),
+                span: sp(),
+            })),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_enum_tag(&f));
+        assert!(has_branch(&f));
+        assert!(find_call(&f, "panic_unwrap"));
+        assert!(f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Unreachable)));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // End-to-end
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn e2e_hello_world() {
+        let print_fn = make_fn("print", vec![("s", "string")], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![
+            expr_stmt(call_expr("print", vec![string_expr("Hello, world!")])),
+        ]);
+        let f = lower(&decl, &[decl.clone(), print_fn]);
+        assert_eq!(f.name, "main");
+        assert!(find_call(&f, "print"));
+    }
+
+    #[test]
+    fn e2e_mir_display_roundtrip() {
+        let decl = make_fn("factorial", vec![("n", "i32")], Some("i32"), vec![
+            return_stmt(Some(ident_expr("n"))),
+        ]);
+        let f = lower_one(&decl);
+        let output = format!("{}", f);
+        assert!(output.contains("func factorial"));
+        assert!(output.contains("n: i32"));
+        assert!(output.contains("-> i32"));
+        assert!(output.contains("bb0:"));
+        assert!(output.contains("return"));
+    }
+
+    #[test]
+    fn e2e_nested_calls() {
+        let g = make_fn("g", vec![("a", "i32")], Some("i32"), vec![return_stmt(Some(ident_expr("a")))]);
+        let h = make_fn("h", vec![("a", "i32")], Some("i32"), vec![return_stmt(Some(ident_expr("a")))]);
+        let decl = make_fn("f", vec![("x", "i32")], Some("i32"), vec![
+            return_stmt(Some(call_expr("g", vec![call_expr("h", vec![ident_expr("x")])]))),
+        ]);
+        let all = vec![decl.clone(), g, h];
+        let f = lower(&decl, &all);
+        assert!(find_call(&f, "g"));
+        assert!(find_call(&f, "h"));
+    }
+
+    #[test]
+    fn e2e_assert_generates_branch() {
+        let decl = make_fn("f", vec![("x", "i32")], None, vec![
+            expr_stmt(Expr {
+                id: NodeId(500),
+                kind: ExprKind::Assert {
+                    condition: Box::new(binary_expr(BinOp::Gt, ident_expr("x"), int_expr(0))),
+                    message: Some(Box::new(string_expr("x must be positive"))),
+                },
+                span: sp(),
+            }),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(has_branch(&f));
+        assert!(find_call(&f, "assert_fail"));
+        assert!(f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Unreachable)));
+    }
+
+    #[test]
+    fn e2e_cast_expression() {
+        let decl = make_fn("f", vec![("x", "i32")], Some("i64"), vec![
+            return_stmt(Some(Expr {
+                id: NodeId(600),
+                kind: ExprKind::Cast {
+                    expr: Box::new(ident_expr("x")),
+                    ty: "i64".to_string(),
+                },
+                span: sp(),
+            })),
+        ]);
+        let f = lower_one(&decl);
+        let has_cast = f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::Cast { .. }, .. }))
+        });
+        assert!(has_cast);
+    }
 }
