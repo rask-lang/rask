@@ -33,8 +33,22 @@ pub struct MonoFunction {
 }
 
 /// Monomorphize a type-checked program
-pub fn monomorphize(program: &TypedProgram) -> Result<MonoProgram, MonomorphizeError> {
-    todo!("Implement monomorphization")
+pub fn monomorphize(_program: &TypedProgram) -> Result<MonoProgram, MonomorphizeError> {
+    // TODO: Full implementation requires:
+    // 1. Find main() or entry point in program
+    // 2. Run reachability analysis: collect_reachable(main_decl)
+    // 3. For each (function_name, type_args) pair:
+    //    - Find function declaration in program
+    //    - Call instantiate_function(decl, &type_args)
+    // 4. Compute layouts: compute_struct_layout/compute_enum_layout for all types
+    // 5. Return MonoProgram with functions and layouts
+
+    // For now, return empty program to allow integration testing
+    Ok(MonoProgram {
+        functions: Vec::new(),
+        struct_layouts: Vec::new(),
+        enum_layouts: Vec::new(),
+    })
 }
 
 #[derive(Debug)]
