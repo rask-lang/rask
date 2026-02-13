@@ -114,7 +114,7 @@ Iterators borrow for expression scope only. Cannot be stored.
 | `"literal"` | `string` | Static storage, compile-time validated |
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
-| `string.repeat(s, n)` | `string` | `s` repeated `n` times |
+| `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
 | `slice.to_owned()` | `string` | Convert expression slice to owned (allocates) |
 
 ## String Builder
@@ -144,8 +144,8 @@ No `+` operator. Allocation must be visible via method name or interpolation.
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
-| `s.push_char(c)` | `(self, c: char)` | Append char, may reallocate |
-| `s.push_str(other: string)` | `(self)` | Append string/slice |
+| `s.push(c)` or `s.push_char(c)` | `(self, c: char)` | Append char, may reallocate |
+| `s.push_str(other)` | `(self)` | Append string/slice |
 | `s.truncate(len)` | `(self, len: usize)` | Truncate to `len` bytes |
 | `s.clear()` | `(self)` | Clear contents, keep capacity |
 
@@ -153,7 +153,7 @@ No `+` operator. Allocation must be visible via method name or interpolation.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.find(pat)` | `Option<usize>` | Byte index of first match |
+| `s.find(pat)` or `s.index_of(pat)` | `Option<usize>` | Byte index of first match |
 | `s.rfind(pat)` | `Option<usize>` | Byte index of last match |
 | `s.contains(pat)` | `bool` | Substring check |
 | `s.starts_with(pat)` | `bool` | Prefix check |
@@ -174,6 +174,33 @@ No `+` operator. Allocation must be visible via method name or interpolation.
 |-----------|--------|-------|
 | `s.to_uppercase()` | `string` | Allocates new string |
 | `s.to_lowercase()` | `string` | Allocates new string |
+
+## Character and Byte Access
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.char_at(idx)` | `Option<char>` | Get Unicode scalar at char index (not byte index) |
+| `s.byte_at(idx)` | `Option<u8>` | Get byte at byte index |
+
+## Substring Extraction
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.substring(start, end)` | `string` | Extract chars from start (inclusive) to end (exclusive), allocates |
+
+## Parsing
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.parse_int()` or `s.parse()` | `Result<i64, string>` | Parse to integer, trims whitespace |
+| `s.parse_float()` | `Result<f64, string>` | Parse to floating point, trims whitespace |
+
+## String Manipulation
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `s.replace(from, to)` | `string` | Replace all occurrences of pattern, allocates |
+| `s.reverse()` | `string` | Reverse string by Unicode scalars, allocates |
 
 ## Equality and Comparison
 
@@ -335,6 +362,27 @@ for (i, c) in text.char_indices() {
 - All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
 - String literals and interpolation at comptime produce static strings
+
+### Implementation Notes (Interpreter)
+
+Current interpreter behavior differs from spec in some areas:
+
+**Iterator methods return Vec:**
+- `s.chars()` returns `Vec<char>` instead of expression-scoped iterator
+- `s.lines()` returns `Vec<string>` instead of expression-scoped slices
+- `s.split(pat)` returns `Vec<string>` instead of expression-scoped slices
+- `s.split_whitespace()` returns `Vec<string>` instead of expression-scoped slices
+
+**Trimming returns owned strings:**
+- `s.trim()`, `s.trim_start()`, `s.trim_end()` return new `string` instead of expression-scoped slices
+- This causes allocation but matches common usage patterns
+
+**Method name aliases:**
+- `s.push(c)` and `s.push_char(c)` both work
+- `s.parse()` and `s.parse_int()` both work
+- `s.index_of(pat)` is alias for `s.find(pat)`
+
+These will converge to spec behavior in the compiled version.
 
 ### See Also
 

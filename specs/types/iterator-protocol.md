@@ -59,14 +59,14 @@ for i in vec.indices().filter(|i| vec[i].active).take(10) {
 
 | Collection | Method | Returns | Item Type |
 |------------|--------|---------|-----------|
-| `Vec<T>` | `.indices()` | `RangeIterator` | `usize` |
-| `Pool<T>` | (default for-in) | `PoolHandleIterator<T>` | `Handle<T>` |
-| `Pool<T>` | `.iter()` | `PoolRefIterator<T>` | `(Handle<T>, borrowed T)` |
-| `Pool<T>` | `.take_all()` | `PoolTakeAll<T>` | `T` |
-| `Map<K,V>` | (for Copy keys) | `MapKeyIterator<K>` | `K` |
-| `Map<K,V>` | `.iter()` | `MapRefIterator<K,V>` | `(borrowed K, borrowed V)` |
-| `Map<K,V>` | `.take_all()` | `MapTakeAll<K,V>` | `(K, V)` |
+| `Vec<T>` | (default for-in) | `VecRefIterator<T>` | borrowed `T` |
 | `Vec<T>` | `.take_all()` | `VecTakeAll<T>` | `T` |
+| `Pool<T>` | (default for-in) | `PoolRefIterator<T>` | borrowed `T` |
+| `Pool<T>` | `.handles()` | `PoolHandleIterator<T>` | `Handle<T>` |
+| `Pool<T>` | `.take_all()` | `PoolTakeAll<T>` | `T` |
+| `Map<K,V>` | (default for-in) | `MapRefIterator<K,V>` | `(K, borrowed V)` |
+| `Map<K,V>` | `.keys()` | `MapKeyIterator<K>` | `K` |
+| `Map<K,V>` | `.take_all()` | `MapTakeAll<K,V>` | `(K, V)` |
 | Range | `0..n` | `RangeIterator` | Integer type |
 
 ## For-In Desugaring
@@ -74,20 +74,39 @@ for i in vec.indices().filter(|i| vec[i].active).take(10) {
 | Rule | Description |
 |------|-------------|
 | **D1: Range** | `for x in range` — built-in range loop, no method call |
-| **D2: Collection** | `for x in collection` — calls `collection.into_iter()` |
-| **D3: Ref iteration** | `for x in collection.iter()` — borrows for reading |
-| **D4: Consuming** | `for x in collection.take_all()` — takes ownership of elements |
+| **D2: Collection value** | `for x in collection` — calls `collection.into_iter()` yielding borrowed elements |
+| **D3: Consuming** | `for x in collection.take_all()` — takes ownership of elements |
+| **D4: Index mode** | `for i in 0..vec.len()` or `for h in pool.handles()` — explicit index/handle iteration |
 | **D5: Method resolution** | Check Range type first, then explicit method call, then `.into_iter()` |
 
 <!-- test: skip -->
 ```rask
-// Vec index iteration
-for i in vec {
+// Vec value iteration (default)
+for item in vec {
+    print(item.name)
+}
+// Desugars to:
+{
+    const _iter = vec.into_iter()  // VecRefIterator (yields borrowed T)
+    loop {
+        const item = match _iter.next() {
+            Some(val) => val,
+            None => break,
+        }
+        print(item.name)
+    }
+}
+```
+
+<!-- test: skip -->
+```rask
+// Index iteration (explicit)
+for i in 0..vec.len() {
     print(vec[i])
 }
 // Desugars to:
 {
-    const _iter = vec.into_iter()  // RangeIterator (0..vec.len())
+    const _iter = (0..vec.len()).into_iter()  // RangeIterator
     loop {
         const i = match _iter.next() {
             Some(val) => val,
@@ -113,7 +132,7 @@ for i in vec {
 |------|-------------|
 | **CU1: Implement trait** | Collections provide methods returning types implementing `Iterator<Item>` |
 | **CU2: No stored references** | Iterator structs must store Copy data (indices, handles), not references |
-| **CU3: into_iter contract** | `.into_iter()` for Vec/Pool/Map returns index/handle iterator — does NOT consume the collection |
+| **CU3: into_iter contract** | `.into_iter()` for Vec/Pool/Map returns value iterator (borrowed elements) — does NOT consume |
 
 <!-- test: skip -->
 ```rask
@@ -182,7 +201,7 @@ FIX: Store Copy-able indices or handles instead.
 
 **I4 (no stored references):** Rask's "no storable references" rule applies to iterators. Storing a reference to the collection would create lifetime complexity. Index-based iteration avoids this entirely.
 
-**CU3 (into_iter doesn't consume):** Vec's `.into_iter()` returns a range iterator (indices), not an owning iterator. The collection remains accessible in the loop body. Use `.take_all()` for ownership transfer.
+**CU3 (into_iter doesn't consume):** Vec's `.into_iter()` returns a value iterator (borrowed elements), not an owning iterator. The collection remains accessible in the loop body. Use `.take_all()` for ownership transfer.
 
 ### Patterns & Guidance
 
@@ -196,12 +215,24 @@ for item in vec.take_all() {
 // vec is now empty
 ```
 
-**Ref iteration with destructuring:**
+**Value iteration (default):**
 
 <!-- test: skip -->
 ```rask
-for (h, entity) in pool.iter() {
-    print(h, entity.name)
+for entity in pool {
+    print(entity.name)
+}
+```
+
+**Handle iteration (explicit):**
+
+<!-- test: skip -->
+```rask
+for h in pool.handles() {
+    pool[h].update()
+    if pool[h].dead {
+        pool.remove(h)
+    }
 }
 ```
 

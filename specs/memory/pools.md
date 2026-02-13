@@ -123,9 +123,19 @@ pool.modify(h, |entity| {
 })
 ```
 
-## Cursor Iteration
+## Iteration
 
-`pool.cursor()` provides zero-allocation iteration with safe removal.
+Pool supports value mode (borrowed elements) and handle mode (mutation/removal).
+
+**Value mode (default)** — read-only iteration:
+```rask
+for entity in pool {
+    print(entity.name)
+    entity.render()
+}
+```
+
+**Handle mode** — `pool.handles()` provides iteration with safe removal:
 
 | Rule | Description |
 |------|-------------|
@@ -135,7 +145,7 @@ pool.modify(h, |entity| {
 | **PF4: No double-visit** | Each existing element visited at most once |
 
 ```rask
-for h in pool.cursor() {
+for h in pool.handles() {
     pool[h].update()
     if pool[h].expired {
         pool.remove(h)      // Safe during iteration
@@ -453,7 +463,7 @@ ERROR [mem.pools/PF5]: cannot write through handle in frozen context
 
 ```rask
 func update_game(mut entities: Pool<Entity>, dt: f32) {
-    for h in entities.cursor() {
+    for h in entities.handles() {
         h.velocity += h.acceleration * dt
         h.position += h.velocity * dt
 
@@ -493,7 +503,7 @@ func build_graph() -> Pool<Node> or Error {
 ```rask
 func render_frame(world: World) {
     // Physics update (needs mutation)
-    for h in world.entities.cursor() {
+    for h in world.entities.handles() {
         world.entities[h].update_physics()
     }
 
@@ -598,7 +608,7 @@ func process_by_type(mut entities: Pool<Entity>) {
     let player_handles = Vec.new()
     let enemy_handles = Vec.new()
 
-    for h in entities.cursor() {
+    for h in entities.handles() {
         match entities[h].kind {
             EntityKind.Player => player_handles.push(h),
             EntityKind.Enemy => enemy_handles.push(h),
