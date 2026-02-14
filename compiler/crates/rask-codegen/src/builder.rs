@@ -264,13 +264,24 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirOperand::Constant(const_val) => {
-                // For now, just handle i32 constants
-                // TODO: Implement other constant types
                 match const_val {
                     MirConst::Int(n) => {
-                        Ok(builder.ins().iconst(types::I32, *n as i64))
+                        Ok(builder.ins().iconst(types::I64, *n))
                     }
-                    _ => Err(CodegenError::UnsupportedFeature("Constant type not implemented".to_string())),
+                    MirConst::Float(f) => {
+                        Ok(builder.ins().f64const(*f))
+                    }
+                    MirConst::Bool(b) => {
+                        Ok(builder.ins().iconst(types::I8, if *b { 1 } else { 0 }))
+                    }
+                    MirConst::Char(c) => {
+                        Ok(builder.ins().iconst(types::I32, *c as i64))
+                    }
+                    MirConst::String(_s) => {
+                        // Strings need runtime support - emit a call to a runtime function
+                        // For now, stub with a null pointer
+                        Ok(builder.ins().iconst(types::I64, 0))
+                    }
                 }
             }
         }
