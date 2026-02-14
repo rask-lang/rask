@@ -842,6 +842,7 @@ dependencies = [
  "rask-desugar",
  "rask-diagnostics",
  "rask-fmt",
+ "rask-hidden-params",
  "rask-interp",
  "rask-lexer",
  "rask-lint",
@@ -919,6 +920,13 @@ dependencies = [
  "rask-ast",
  "rask-lexer",
  "rask-parser",
+]
+
+[[package]]
+name = "rask-hidden-params"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
 ]
 
 [[package]]
@@ -1020,6 +1028,10 @@ dependencies = [
  "tempfile",
  "thiserror",
 ]
+
+[[package]]
+name = "rask-rt"
+version = "0.1.0"
 
 [[package]]
 name = "rask-spec-test"

@@ -1,0 +1,8 @@
+[package]
+name = "rask-hidden-params"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
