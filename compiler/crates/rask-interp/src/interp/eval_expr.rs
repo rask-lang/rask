@@ -983,6 +983,7 @@ impl Interpreter {
                 });
 
                 self.env.push_scope();
+                let scope_depth = self.env.scope_depth();
                 self.env.define("__multitasking_ctx".to_string(), Value::MultitaskingRuntime(runtime));
 
                 let mut result = Value::Unit;
@@ -994,6 +995,15 @@ impl Interpreter {
                             return Err(e);
                         }
                     }
+                }
+
+                // Check for unconsumed handles (conc.async/H1)
+                if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
+                    self.env.pop_scope();
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic(msg),
+                        expr.span,
+                    ));
                 }
 
                 self.env.pop_scope();
@@ -1017,9 +1027,22 @@ impl Interpreter {
                     Ok(result)
                 });
 
-                Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                // Return TaskHandle when inside using Multitasking, ThreadHandle otherwise
+                let handle_inner = Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
-                })))
+                });
+                let in_multitasking = self.env.get("__multitasking_ctx").is_some();
+
+                // Register handle for affine tracking (conc.async/H1)
+                let ptr = Arc::as_ptr(&handle_inner) as usize;
+                let type_name = if in_multitasking { "TaskHandle" } else { "ThreadHandle" };
+                self.resource_tracker.register_handle(ptr, type_name, self.env.scope_depth());
+
+                if in_multitasking {
+                    Ok(Value::TaskHandle(handle_inner))
+                } else {
+                    Ok(Value::ThreadHandle(handle_inner))
+                }
             }
 
             ExprKind::Assert { condition, message } => {
@@ -1136,6 +1159,180 @@ impl Interpreter {
                 let result = self.exec_stmts(body);
                 self.env.pop_scope();
                 result
+            }
+
+            // Select: channel multiplexing (conc.select/A1-A3, P1-P2)
+            ExprKind::Select { arms, is_priority } => {
+                use rask_ast::expr::SelectArmKind;
+
+                if arms.is_empty() {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::Panic("select with zero arms [conc.select/P3]".to_string()),
+                        expr.span,
+                    ));
+                }
+
+                // Evaluate channel expressions up front
+                struct SelectEntry {
+                    kind: EvalSelectKind,
+                    arm_idx: usize,
+                }
+                enum EvalSelectKind {
+                    Recv {
+                        rx: Arc<Mutex<mpsc::Receiver<Value>>>,
+                        binding: String,
+                    },
+                    Send {
+                        tx: Arc<Mutex<mpsc::SyncSender<Value>>>,
+                        value: Value,
+                    },
+                    Default,
+                }
+
+                let mut entries = Vec::new();
+                let mut default_idx: Option<usize> = None;
+
+                for (i, arm) in arms.iter().enumerate() {
+                    match &arm.kind {
+                        SelectArmKind::Recv { channel, binding } => {
+                            let ch_val = self.eval_expr(channel)?;
+                            match ch_val {
+                                Value::Receiver(rx) => {
+                                    entries.push(SelectEntry {
+                                        kind: EvalSelectKind::Recv {
+                                            rx,
+                                            binding: binding.clone(),
+                                        },
+                                        arm_idx: i,
+                                    });
+                                }
+                                _ => {
+                                    return Err(RuntimeDiagnostic::new(
+                                        RuntimeError::TypeError(format!(
+                                            "select recv arm expects Receiver, got {}",
+                                            ch_val.type_name()
+                                        )),
+                                        expr.span,
+                                    ));
+                                }
+                            }
+                        }
+                        SelectArmKind::Send { channel, value } => {
+                            let ch_val = self.eval_expr(channel)?;
+                            let send_val = self.eval_expr(value)?;
+                            match ch_val {
+                                Value::Sender(tx) => {
+                                    entries.push(SelectEntry {
+                                        kind: EvalSelectKind::Send {
+                                            tx,
+                                            value: send_val,
+                                        },
+                                        arm_idx: i,
+                                    });
+                                }
+                                _ => {
+                                    return Err(RuntimeDiagnostic::new(
+                                        RuntimeError::TypeError(format!(
+                                            "select send arm expects Sender, got {}",
+                                            ch_val.type_name()
+                                        )),
+                                        expr.span,
+                                    ));
+                                }
+                            }
+                        }
+                        SelectArmKind::Default => {
+                            default_idx = Some(i);
+                        }
+                    }
+                }
+
+                // Build poll order: sequential for priority, shuffled for fair
+                let mut poll_order: Vec<usize> = (0..entries.len()).collect();
+                if !is_priority {
+                    // Simple shuffle using system time as seed (P1: random fair)
+                    let seed = std::time::SystemTime::now()
+                        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos() as u64;
+                    let mut rng = seed;
+                    for i in (1..poll_order.len()).rev() {
+                        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        let j = (rng as usize) % (i + 1);
+                        poll_order.swap(i, j);
+                    }
+                }
+
+                // Poll loop with backoff
+                let mut backoff_us: u64 = 10; // start at 10μs
+                let max_backoff_us: u64 = 1000; // cap at 1ms
+
+                loop {
+                    let mut all_closed = true;
+
+                    for &entry_idx in &poll_order {
+                        let entry = &entries[entry_idx];
+                        match &entry.kind {
+                            EvalSelectKind::Recv { rx, binding } => {
+                                let rx_guard = rx.lock().unwrap();
+                                match rx_guard.try_recv() {
+                                    Ok(val) => {
+                                        drop(rx_guard);
+                                        // Execute this arm's body with binding
+                                        self.env.push_scope();
+                                        self.env.define(binding.clone(), val);
+                                        let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                        self.env.pop_scope();
+                                        return Ok(result);
+                                    }
+                                    Err(mpsc::TryRecvError::Empty) => {
+                                        all_closed = false;
+                                    }
+                                    Err(mpsc::TryRecvError::Disconnected) => {
+                                        // Channel closed, skip
+                                    }
+                                }
+                            }
+                            EvalSelectKind::Send { tx, value } => {
+                                let tx_guard = tx.lock().unwrap();
+                                match tx_guard.try_send(value.clone()) {
+                                    Ok(()) => {
+                                        drop(tx_guard);
+                                        let result = self.eval_expr(&arms[entry.arm_idx].body)?;
+                                        return Ok(result);
+                                    }
+                                    Err(mpsc::TrySendError::Full(_)) => {
+                                        all_closed = false;
+                                    }
+                                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                                        // Channel closed
+                                    }
+                                }
+                            }
+                            EvalSelectKind::Default => unreachable!(),
+                        }
+                    }
+
+                    // All channels closed (CL1)
+                    if all_closed && default_idx.is_none() {
+                        return Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "all channels closed".to_string(),
+                            )))],
+                        });
+                    }
+
+                    // Default arm fires if nothing ready (A3)
+                    if let Some(idx) = default_idx {
+                        return self.eval_expr(&arms[idx].body);
+                    }
+
+                    // Backoff
+                    std::thread::sleep(std::time::Duration::from_micros(backoff_us));
+                    backoff_us = (backoff_us * 2).min(max_backoff_us);
+                }
             }
 
             _ => Ok(Value::Unit),

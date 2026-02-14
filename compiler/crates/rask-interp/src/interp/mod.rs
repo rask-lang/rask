@@ -230,9 +230,15 @@ impl Interpreter {
                 });
 
                 // Return TaskHandle (not ThreadHandle) for type distinction
-                Ok(Value::TaskHandle(Arc::new(ThreadHandleInner {
+                let handle_inner = Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
-                })))
+                });
+
+                // Register handle for affine tracking (conc.async/H1)
+                let ptr = Arc::as_ptr(&handle_inner) as usize;
+                self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
+
+                Ok(Value::TaskHandle(handle_inner))
             }
             _ => Err(RuntimeError::TypeError(format!(
                 "spawn() expects a closure, got {}",
@@ -362,6 +368,10 @@ impl Interpreter {
                 let ptr = Arc::as_ptr(rc) as usize;
                 self.resource_tracker.lookup_file_id(ptr)
             }
+            Value::TaskHandle(h) | Value::ThreadHandle(h) => {
+                let ptr = Arc::as_ptr(h) as usize;
+                self.resource_tracker.lookup_handle_id(ptr)
+            }
             _ => None,
         }
     }
@@ -372,6 +382,12 @@ impl Interpreter {
             Value::File(rc) => {
                 let ptr = Arc::as_ptr(rc) as usize;
                 if let Some(id) = self.resource_tracker.lookup_file_id(ptr) {
+                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                }
+            }
+            Value::TaskHandle(h) | Value::ThreadHandle(h) => {
+                let ptr = Arc::as_ptr(h) as usize;
+                if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
                     self.resource_tracker.transfer_to_scope(id, new_depth);
                 }
             }

@@ -30,6 +30,8 @@ pub struct ResourceTracker {
     entries: HashMap<u64, ResourceEntry>,
     /// Map Arc pointer addresses to resource IDs (for Value::File).
     file_ids: HashMap<usize, u64>,
+    /// Map Arc pointer addresses to resource IDs (for TaskHandle/ThreadHandle).
+    handle_ids: HashMap<usize, u64>,
     next_id: u64,
 }
 
@@ -38,6 +40,7 @@ impl ResourceTracker {
         Self {
             entries: HashMap::new(),
             file_ids: HashMap::new(),
+            handle_ids: HashMap::new(),
             next_id: 1,
         }
     }
@@ -111,6 +114,18 @@ impl ResourceTracker {
         }
     }
 
+    /// Register a TaskHandle/ThreadHandle using its Arc pointer address (conc.async/H1).
+    pub fn register_handle(&mut self, ptr: usize, type_name: &str, scope_depth: usize) -> u64 {
+        let id = self.register(type_name, scope_depth);
+        self.handle_ids.insert(ptr, id);
+        id
+    }
+
+    /// Look up the resource ID for a handle by its Arc pointer address.
+    pub fn lookup_handle_id(&self, ptr: usize) -> Option<u64> {
+        self.handle_ids.get(&ptr).copied()
+    }
+
     /// Check for unconsumed resources at the given scope depth.
     /// Returns Err listing leaked resources, or Ok if all consumed.
     /// Removes all entries at this scope depth regardless.
@@ -130,8 +145,9 @@ impl ResourceTracker {
 
         // Clean up entries at this scope depth
         for id in &to_remove {
-            // Also clean up file_ids
+            // Also clean up file_ids and handle_ids
             self.file_ids.retain(|_, v| v != id);
+            self.handle_ids.retain(|_, v| v != id);
             self.entries.remove(id);
         }
 

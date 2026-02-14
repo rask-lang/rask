@@ -101,6 +101,10 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
         process::exit(1);
     }
 
+    // Hidden parameter pass — desugar `using` clauses into explicit params
+    // Runs after type checking, before monomorphization (comp.hidden-params/HP1)
+    rask_hidden_params::desugar_hidden_params(&mut parse_result.decls);
+
     // Monomorphize
     let mono = match rask_mono::monomorphize(&typed, &parse_result.decls) {
         Ok(m) => m,
