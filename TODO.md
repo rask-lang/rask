@@ -25,7 +25,7 @@ I've specified all core language semantics:
 
 ---
 
-## Current State (2026-02-13)
+## Current State (2026-02-14)
 
 **Language design:** ✅ Complete and stable. All core semantics decided, 70+ spec files covering types, memory, control, concurrency, stdlib.
 
@@ -33,12 +33,25 @@ I've specified all core language semantics:
 
 **Interpreter:** ✅ Fully functional. 15+ stdlib modules, 4/5 validation programs run (grep, editor, game loop, HTTP server; sensor typechecks).
 
-**Monomorphization + MIR Lowering:** ✅ Implemented. Struct/enum layouts, generic instantiation, reachability analysis, full AST→MIR lowering (literals, variables, binary/unary ops, calls, control flow, structs, enums, closures, error handling). `rask mir` command prints readable MIR. Simple programs (hello_world, functions, structs, variables) lower correctly. Complex features (collection types, pattern match bindings, module paths) not yet handled in lowering.
+**Monomorphization + MIR Lowering:** ✅ Implemented. Struct/enum layouts with real field types (threaded from AST), generic instantiation, reachability analysis, full AST→MIR lowering. Type inference for expressions (loops, ensure, try/unwrap, tuple destructure) using context from layouts. `rask mir` command prints readable MIR. Simple programs lower correctly.
+
+**Cranelift Backend:** 🟡 In progress (new `rask-codegen` crate). Basic code generation working:
+- ✅ Function signatures and basic blocks
+- ✅ Integer/float constants and variables
+- ✅ Binary ops (arithmetic, bitwise, comparisons)
+- ✅ Unary ops (neg, not)
+- ✅ Type conversions (b1↔i8, integer truncate/extend)
+- ✅ Return statements with type matching
+- ✅ Simple programs compile and execute (arithmetic: 10+20*2→60)
+- ❌ **Blocked:** Control flow with branches (if-expressions) - Cranelift verifier errors on SSA phi nodes when variables merge from multiple blocks
+- ❌ Function calls (needs import mechanism)
+- ❌ Loops, strings, memory ops, runtime functions
 
 **What's next:**
 1. ~~**Write tests** — Layout, monomorphization, and MIR lowering test suites~~ ✅ Done (94 tests across rask-mono and rask-mir)
-2. **Implement Cranelift backend** — MIR → machine code
-3. **Build `rask-rt` runtime library** — allocator, panic, Vec, Map, Pool, string, I/O
+2. **Fix Cranelift SSA construction** — Debug block sealing/variable merging for control flow
+3. **Complete backend basics** — Function calls, loops, basic runtime integration
+4. **Build `rask-rt` runtime library** — allocator, panic, Vec, Map, Pool, string, I/O
 
 ---
 
