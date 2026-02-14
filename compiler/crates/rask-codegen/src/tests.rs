@@ -1008,7 +1008,292 @@ mod tests {
         gen.gen_function(&mir).unwrap();
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // Resource tracking
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_resource_register_consume() {
+        // func f() {
+        //   _0 = ResourceRegister("File", scope_depth=1)
+        //   ResourceConsume(_0)
+        //   ResourceScopeCheck(1)
+        // }
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                temp(0, MirType::I64), // resource id
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ResourceRegister {
+                        dst: LocalId(0),
+                        type_name: "File".to_string(),
+                        scope_depth: 1,
+                    },
+                    MirStmt::ResourceConsume {
+                        resource_id: LocalId(0),
+                    },
+                    MirStmt::ResourceScopeCheck {
+                        scope_depth: 1,
+                    },
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = gen_with_stdlib();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Pool checked access
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_pool_checked_access() {
+        // func f(pool: i64, handle: i64) -> i64 {
+        //   _2 = PoolCheckedAccess { pool: _0, handle: _1 }
+        //   return _2
+        // }
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![
+                local(0, "pool", MirType::I64, true),
+                local(1, "handle", MirType::I64, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "pool", MirType::I64, true),
+                local(1, "handle", MirType::I64, true),
+                temp(2, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::PoolCheckedAccess {
+                        dst: LocalId(2),
+                        pool: LocalId(0),
+                        handle: LocalId(1),
+                    },
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = gen_with_stdlib();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Ensure push/pop (no-ops)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_ensure_push_pop_noop() {
+        // EnsurePush/Pop should compile without error (no-ops).
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::EnsurePush { cleanup_block: BlockId(99) },
+                    MirStmt::EnsurePop,
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // CleanupReturn
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_cleanup_return_empty_chain() {
+        // CleanupReturn with empty cleanup_chain = plain return.
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I32,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![], MirTerminator::CleanupReturn {
+                    value: i32_const(42),
+                    cleanup_chain: vec![],
+                }),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_cleanup_return_with_chain() {
+        // CleanupReturn that inlines a cleanup block before returning.
+        //
+        // bb0: CleanupReturn { value: 99, cleanup_chain: [bb1] }
+        // bb1 (cleanup): call rask_print_i64(0)  (side effect)
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I32,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![], MirTerminator::CleanupReturn {
+                    value: i32_const(99),
+                    cleanup_chain: vec![BlockId(1)],
+                }),
+                block(1, vec![
+                    call(None, "rask_print_i64", vec![i32_const(0)]),
+                ], ret(None)), // terminator ignored for cleanup blocks
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Stdlib dispatch
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_stdlib_vec_push() {
+        // Calling stdlib Vec methods through dispatch.
+        // _0 = Vec_new()
+        // push(_0, 42)
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                temp(0, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    call(Some(0), "Vec_new", vec![]),
+                    call(None, "push", vec![local_op(0), i32_const(42)]),
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = gen_with_stdlib();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_stdlib_vec_len() {
+        // _0 = Vec_new()
+        // _1 = len(_0)
+        // return _1
+        let mir = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),
+                temp(1, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    call(Some(0), "Vec_new", vec![]),
+                    call(Some(1), "len", vec![local_op(0)]),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = gen_with_stdlib();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_stdlib_user_overrides_stdlib() {
+        // User-defined "push" function should shadow stdlib "push".
+        let push_fn = MirFunction {
+            name: "push".to_string(),
+            params: vec![local(0, "x", MirType::I32, true)],
+            ret_ty: MirType::Void,
+            locals: vec![local(0, "x", MirType::I32, true)],
+            blocks: vec![block(0, vec![], ret(None))],
+            entry_block: BlockId(0),
+        };
+
+        let caller_fn = MirFunction {
+            name: "caller".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![
+                    call(None, "push", vec![i32_const(1)]),
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = gen_with_stdlib();
+        gen.declare_functions(&dummy_mono(), &[push_fn.clone(), caller_fn.clone()]).unwrap();
+        gen.gen_function(&push_fn).unwrap();
+        gen.gen_function(&caller_fn).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Closure environment layout (unit test)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn closure_env_layout_sizing() {
+        use crate::closures::ClosureEnvLayout;
+
+        let mut layout = ClosureEnvLayout::new();
+        assert_eq!(layout.size, 0);
+
+        let off0 = layout.add_capture(LocalId(0), 8);
+        assert_eq!(off0, 0);
+        assert_eq!(layout.size, 8);
+
+        let off1 = layout.add_capture(LocalId(1), 4);
+        assert_eq!(off1, 8); // aligned to 8
+        assert_eq!(layout.size, 12);
+
+        let off2 = layout.add_capture(LocalId(2), 8);
+        assert_eq!(off2, 16); // aligned up from 12 → 16
+        assert_eq!(layout.size, 24);
+
+        assert_eq!(layout.captures.len(), 3);
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
+
+    /// CodeGenerator with runtime + stdlib declared (for tests needing stdlib).
+    fn gen_with_stdlib() -> CodeGenerator {
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_stdlib_functions().unwrap();
+        gen
+    }
 
     fn dummy_mono() -> rask_mono::MonoProgram {
         rask_mono::MonoProgram {

@@ -186,6 +186,14 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Declare stdlib functions (Vec, Map, string, resource tracking, etc.).
+    ///
+    /// Call this after `declare_runtime_functions()` and before `declare_functions()`.
+    /// User-defined functions declared later will shadow any matching stdlib names.
+    pub fn declare_stdlib_functions(&mut self) -> CodegenResult<()> {
+        crate::dispatch::declare_stdlib(&mut self.module, &mut self.func_ids)
+    }
+
     /// Declare all functions first (for forward references).
     pub fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         // Store layouts for use during code generation
