@@ -129,21 +129,15 @@ impl Scheduler {
         cvar.notify_one();
     }
 
-    /// Notify the scheduler that a task has completed.
-    pub(crate) fn task_completed(&self) {
-        let prev = self.shared.active_tasks.fetch_sub(1, Ordering::AcqRel);
-        if prev == 1 {
-            // Last task done — signal block exit.
-            let (lock, cvar) = &self.shared.all_done;
-            let mut done = lock.lock().unwrap();
-            *done = true;
-            cvar.notify_all();
-        }
-    }
-
-    /// Notify the scheduler that a task was detached (no longer tracked).
+    /// Notify the scheduler that a task was detached.
+    ///
+    /// Per conc.async/C4, block exit still waits for detached tasks to
+    /// complete. Detach only means the caller doesn't care about the
+    /// result — the runtime still tracks the task. So this is a no-op
+    /// for the active count; `run_task` decrements on actual completion.
     pub(crate) fn task_detached(&self) {
-        self.task_completed();
+        // Intentionally does NOT decrement active_tasks.
+        // The task still runs; run_task decrements when it completes.
     }
 
     /// Get a reference to the reactor for I/O registration.
@@ -282,7 +276,9 @@ fn run_task(task: Arc<RawTask>, shared: &SharedState) {
         return;
     }
 
-    task.transition(TaskState::Running);
+    task.header
+        .state
+        .store(TaskState::Running as u8, Ordering::Release);
 
     let completed = task.poll();
 
@@ -297,9 +293,25 @@ fn run_task(task: Arc<RawTask>, shared: &SharedState) {
             cvar.notify_all();
         }
     } else {
-        // Future returned Pending. It registered a waker that will
-        // transition Waiting → Ready and re-enqueue via schedule_fn.
-        task.transition(TaskState::Waiting);
+        // Future returned Pending. Use CAS to transition Running→Waiting.
+        // If the waker already fired during poll() (changed Running→Ready
+        // via schedule_fn), the CAS fails — re-enqueue immediately so the
+        // task isn't lost.
+        let prev = task.header.state.compare_exchange(
+            TaskState::Running as u8,
+            TaskState::Waiting as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        if prev.is_err() {
+            // Waker fired while we were polling — it changed
+            // Running→Ready. Re-enqueue so the task gets polled again.
+            inject_task(shared, task);
+            let (lock, cvar) = &shared.work_available;
+            let mut ready = lock.lock().unwrap();
+            *ready = true;
+            cvar.notify_one();
+        }
     }
 }
 

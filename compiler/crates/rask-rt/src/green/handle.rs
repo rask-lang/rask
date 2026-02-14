@@ -126,11 +126,10 @@ impl<T> Future for GreenJoinFuture<T> {
             return Poll::Ready(result);
         }
 
-        // Not done yet — register waker and park.
-        // Store waker so the completed task can wake us.
-        // (Using the schedule_fn mechanism: when this task's waker is
-        // called, the scheduler re-enqueues us.)
-        cx.waker().wake_by_ref();
+        // Register our waker with the target task. When the target
+        // completes (mark_complete), it wakes all registered join wakers,
+        // which re-enqueues us via the scheduler.
+        self.raw.register_join_waker(cx.waker().clone());
         Poll::Pending
     }
 }
