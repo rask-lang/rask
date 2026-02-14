@@ -43,13 +43,13 @@ I've specified all core language semantics:
 - ✅ Type conversions (b1↔i8, integer truncate/extend)
 - ✅ Return statements with type matching
 - ✅ Simple programs compile and execute (arithmetic: 10+20*2→60)
-- ❌ **Blocked:** Control flow with branches (if-expressions) - Cranelift verifier errors on SSA phi nodes when variables merge from multiple blocks
+- ✅ Control flow with branches (if-expressions, chained/nested ifs, mutable variable merging)
 - ❌ Function calls (needs import mechanism)
 - ❌ Loops, strings, memory ops, runtime functions
 
 **What's next:**
 1. ~~**Write tests** — Layout, monomorphization, and MIR lowering test suites~~ ✅ Done (94 tests across rask-mono and rask-mir)
-2. **Fix Cranelift SSA construction** — Debug block sealing/variable merging for control flow
+2. ~~**Fix Cranelift SSA construction** — Debug block sealing/variable merging for control flow~~ ✅ Done
 3. **Complete backend basics** — Function calls, loops, basic runtime integration
 4. **Build `rask-rt` runtime library** — allocator, panic, Vec, Map, Pool, string, I/O
 
