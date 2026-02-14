@@ -94,6 +94,8 @@ int64_t rask_string_push_char(RaskString *s, int32_t cp) {
         buf[1] = 0x80 | (uint8_t)(cp & 0x3F);
         n = 2;
     } else if (cp <= 0xFFFF) {
+        // Reject surrogates — not valid Unicode scalar values
+        if (cp >= 0xD800 && cp <= 0xDFFF) return -1;
         buf[0] = 0xE0 | (uint8_t)(cp >> 12);
         buf[1] = 0x80 | (uint8_t)((cp >> 6) & 0x3F);
         buf[2] = 0x80 | (uint8_t)(cp & 0x3F);
