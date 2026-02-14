@@ -65,6 +65,9 @@ pub fn cmd_build(path: &str) {
                                     }
                                     total_errors += ownership_result.errors.len();
                                 } else {
+                                    // Hidden parameter pass (comp.hidden-params/HP1)
+                                    rask_hidden_params::desugar_hidden_params(&mut all_decls);
+
                                     // Monomorphize
                                     match rask_mono::monomorphize(&typed, &all_decls) {
                                         Ok(mono) => {

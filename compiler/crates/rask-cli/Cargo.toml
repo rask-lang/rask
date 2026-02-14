@@ -26,4 +26,5 @@ rask-lint = { path = "../rask-lint" }
 rask-mono = { path = "../rask-mono" }
 rask-mir = { path = "../rask-mir" }
 rask-codegen = { path = "../rask-codegen" }
+rask-hidden-params = { path = "../rask-hidden-params" }
 colored = "3"
