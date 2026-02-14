@@ -138,7 +138,9 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(cleanup_block);
                 if let Some((param_name, handler_body)) = else_handler {
-                    let param_ty = MirType::I32; // TODO: Error type
+                    // Error type - would need full type inference to determine exact type
+                    // For now, use I32 as a placeholder for error values
+                    let param_ty = MirType::I32;
                     let param_local = self.builder.alloc_local(param_name.clone(), param_ty.clone());
                     self.locals.insert(param_name.clone(), (param_local, param_ty));
                     for s in handler_body {
@@ -179,8 +181,11 @@ impl<'a> MirLowerer<'a> {
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
         let (init_op, _) = self.lower_expr(init)?;
         for (i, name) in names.iter().enumerate() {
-            // TODO: Infer tuple element type
-            let elem_ty = MirType::I32;
+            // Infer element type - would need full tuple type parsing
+            // For now, try to look up from type checker, otherwise default to I32
+            let elem_ty = self.lookup_expr_type(init)
+                .or_else(|| Some(MirType::I32))
+                .unwrap_or(MirType::I32);
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
             self.locals.insert(name.clone(), (local_id, elem_ty));
             self.builder.push_stmt(MirStmt::Assign {
@@ -275,8 +280,10 @@ impl<'a> MirLowerer<'a> {
         });
 
         self.builder.switch_to_block(body_block);
-        // TODO: Infer element type from iterator type
-        let elem_ty = MirType::I32;
+        // Infer element type from iterator type
+        let elem_ty = self.lookup_expr_type(iter_expr)
+            .and_then(|iter_ty| self.extract_iterator_elem_type(&iter_ty))
+            .unwrap_or(MirType::I32);
         let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
         self.locals.insert(binding.to_string(), (binding_local, elem_ty));
         self.builder.push_stmt(MirStmt::Assign {

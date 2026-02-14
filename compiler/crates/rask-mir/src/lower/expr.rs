@@ -447,8 +447,10 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::Unreachable);
 
                 self.builder.switch_to_block(ok_block);
-                // TODO: Infer payload type from inner type
-                let payload_ty = MirType::I32;
+                // Infer payload type from the Option/Result being unwrapped
+                let payload_ty = self.lookup_expr_type(inner)
+                    .and_then(|ty| self.extract_ok_payload_type(&ty))
+                    .unwrap_or(MirType::I32);
                 let result_local = self.builder.alloc_temp(payload_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
@@ -477,8 +479,10 @@ impl<'a> MirLowerer<'a> {
                 });
 
                 self.builder.switch_to_block(some_block);
-                // TODO: Infer payload type
-                let payload_ty = MirType::I32;
+                // Infer payload type from the Option being coalesced
+                let payload_ty = self.lookup_expr_type(value)
+                    .and_then(|ty| self.extract_ok_payload_type(&ty))
+                    .unwrap_or(MirType::I32);
                 let result_local = self.builder.alloc_temp(payload_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
@@ -547,8 +551,10 @@ impl<'a> MirLowerer<'a> {
                 let some_block = self.builder.create_block();
                 let none_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
-                // TODO: Infer inner field type
-                let result_ty = MirType::I32;
+                // Infer field type from the optional value
+                let result_ty = self.lookup_expr_type(object)
+                    .and_then(|ty| self.extract_ok_payload_type(&ty))
+                    .unwrap_or(MirType::I32);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
 
                 self.builder.terminate(MirTerminator::Branch {
@@ -952,8 +958,10 @@ impl<'a> MirLowerer<'a> {
 
         // Ok path
         self.builder.switch_to_block(ok_block);
-        // TODO: Infer Ok payload type
-        let ok_ty = MirType::I32;
+        // Infer Ok payload type from the Result being tried
+        let ok_ty = self.lookup_expr_type(inner)
+            .and_then(|ty| self.extract_ok_payload_type(&ty))
+            .unwrap_or(MirType::I32);
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
         self.builder.push_stmt(MirStmt::Assign {
             dst: ok_val,
