@@ -21,6 +21,7 @@ struct RaskMap {
     int64_t    val_size;
     int64_t    cap;
     int64_t    len;
+    int64_t    tombstones;
     uint8_t   *states;
     char      *keys;
     char      *vals;
@@ -87,6 +88,7 @@ static void map_rehash(RaskMap *m) {
 
     map_alloc_tables(m, old_cap * 2);
     m->len = 0;
+    m->tombstones = 0;
 
     for (int64_t i = 0; i < old_cap; i++) {
         if (old_states[i] == MAP_OCCUPIED) {
@@ -112,6 +114,7 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
     m->key_size = key_size;
     m->val_size = val_size;
     m->len = 0;
+    m->tombstones = 0;
     m->hash_fn = hash;
     m->eq_fn = eq;
     map_alloc_tables(m, MAP_INITIAL_CAP);
@@ -134,8 +137,9 @@ int64_t rask_map_len(const RaskMap *m) {
 int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
     if (!m) return -1;
 
-    // Rehash if load factor exceeded
-    if ((m->len + 1) * MAP_LOAD_MAX_DEN > m->cap * MAP_LOAD_MAX_NUM) {
+    // Rehash if occupied + tombstones exceed load threshold.
+    // Tombstones degrade probe chains just like occupied slots.
+    if ((m->len + m->tombstones + 1) * MAP_LOAD_MAX_DEN > m->cap * MAP_LOAD_MAX_NUM) {
         map_rehash(m);
     }
 
@@ -146,12 +150,13 @@ int64_t rask_map_insert(RaskMap *m, const void *key, const void *val) {
         slot = map_find_slot(m, key);
     }
 
-    int64_t was_occupied = (m->states[slot] == MAP_OCCUPIED);
+    uint8_t prev_state = m->states[slot];
     memcpy(m->keys + slot * m->key_size, key, (size_t)m->key_size);
     memcpy(m->vals + slot * m->val_size, val, (size_t)m->val_size);
     m->states[slot] = MAP_OCCUPIED;
-    if (!was_occupied) m->len++;
-    return was_occupied ? 1 : 0;
+    if (prev_state == MAP_TOMBSTONE) m->tombstones--;
+    if (prev_state != MAP_OCCUPIED) m->len++;
+    return (prev_state == MAP_OCCUPIED) ? 1 : 0;
 }
 
 void *rask_map_get(const RaskMap *m, const void *key) {
@@ -188,6 +193,7 @@ int64_t rask_map_remove(RaskMap *m, const void *key) {
         if (m->eq_fn(m->keys + slot * m->key_size, key, m->key_size)) {
             m->states[slot] = MAP_TOMBSTONE;
             m->len--;
+            m->tombstones++;
             return 0;
         }
     }

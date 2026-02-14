@@ -11,7 +11,8 @@
 // Per-slot metadata, stored separately from element data.
 typedef struct {
     uint32_t generation;
-    int32_t  next_free; // -1 = occupied, >= 0 = next free slot index
+    int32_t  next_free; // next free slot index, only meaningful when !occupied
+    uint8_t  occupied;
 } PoolSlot;
 
 struct RaskPool {
@@ -38,6 +39,7 @@ static void pool_grow(RaskPool *p, int64_t new_cap) {
     for (int64_t i = p->cap; i < new_cap; i++) {
         p->slots[i].generation = 0;
         p->slots[i].next_free = (i + 1 < new_cap) ? (int32_t)(i + 1) : p->free_head;
+        p->slots[i].occupied = 0;
     }
     // New free list: old_cap -> old_cap+1 -> ... -> new_cap-1 -> old free_head
     p->free_head = (int32_t)p->cap;
@@ -88,7 +90,7 @@ RaskHandle rask_pool_insert(RaskPool *p, const void *elem) {
     // Pop from free list
     int32_t idx = p->free_head;
     p->free_head = p->slots[idx].next_free;
-    p->slots[idx].next_free = -1; // mark occupied
+    p->slots[idx].occupied = 1;
 
     // Write element data
     memcpy(p->data + idx * p->elem_size, elem, (size_t)p->elem_size);
@@ -104,7 +106,7 @@ static int pool_validate(const RaskPool *p, RaskHandle h) {
     if (!p) return 0;
     if (h.pool_id != p->pool_id) return 0;
     if (h.index >= (uint32_t)p->cap) return 0;
-    if (p->slots[h.index].next_free >= 0) return 0; // slot is free
+    if (!p->slots[h.index].occupied) return 0;
     if (p->slots[h.index].generation != h.generation) return 0;
     return 1;
 }
@@ -127,6 +129,7 @@ int64_t rask_pool_remove(RaskPool *p, RaskHandle h, void *out) {
     }
 
     // Push onto free list
+    p->slots[h.index].occupied = 0;
     p->slots[h.index].next_free = p->free_head;
     p->free_head = (int32_t)h.index;
     p->len--;
