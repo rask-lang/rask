@@ -3,12 +3,13 @@
 //! Function builder — lowers MIR to Cranelift IR.
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{FuncRef, Function, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, StackSlotData, StackSlotKind};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::HashMap;
 
-use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, UnaryOp};
+use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, MirType, UnaryOp};
+use rask_mono::{StructLayout, EnumLayout};
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
 
@@ -18,6 +19,12 @@ pub struct FunctionBuilder<'a> {
     mir_fn: &'a MirFunction,
     /// Pre-imported function references (MIR name → Cranelift FuncRef)
     func_refs: &'a HashMap<String, FuncRef>,
+    /// Struct layouts from monomorphization
+    struct_layouts: &'a [StructLayout],
+    /// Enum layouts from monomorphization
+    enum_layouts: &'a [EnumLayout],
+    /// String literal data (content → GlobalValue for the data address)
+    string_globals: &'a HashMap<String, GlobalValue>,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -30,12 +37,18 @@ impl<'a> FunctionBuilder<'a> {
         func: &'a mut Function,
         mir_fn: &'a MirFunction,
         func_refs: &'a HashMap<String, FuncRef>,
+        struct_layouts: &'a [StructLayout],
+        enum_layouts: &'a [EnumLayout],
+        string_globals: &'a HashMap<String, GlobalValue>,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
             builder_ctx: FunctionBuilderContext::new(),
             mir_fn,
             func_refs,
+            struct_layouts,
+            enum_layouts,
+            string_globals,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
         })
@@ -43,6 +56,21 @@ impl<'a> FunctionBuilder<'a> {
 
     /// Build the Cranelift IR from MIR.
     pub fn build(&mut self) -> CodegenResult<()> {
+        // Pre-compute stack allocation sizes before builder borrows self.func.
+        // Entries: (local_id, byte size) for each aggregate local.
+        let stack_allocs: Vec<(LocalId, u32)> = self.mir_fn.locals.iter()
+            .filter(|l| !l.is_param)
+            .filter_map(|l| {
+                let size = match &l.ty {
+                    MirType::Struct(id) => self.struct_layouts.get(id.0 as usize).map(|sl| sl.size),
+                    MirType::Enum(id) => self.enum_layouts.get(id.0 as usize).map(|el| el.size),
+                    MirType::Array { elem, len } => Some(crate::types::mir_type_size(elem) * len),
+                    _ => None,
+                };
+                size.filter(|&s| s > 0).map(|s| (l.id, s))
+            })
+            .collect();
+
         let mut builder = ClifFunctionBuilder::new(self.func, &mut self.builder_ctx);
 
         // Create all blocks first
@@ -73,6 +101,20 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(*var, block_param);
         }
 
+        // Allocate stack slots for aggregate locals (structs, enums, arrays).
+        // These types are represented as pointers (i64) — the variable holds
+        // the address of the stack-allocated storage.
+        for (local_id, size) in &stack_allocs {
+            let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                StackSlotKind::ExplicitSlot,
+                *size,
+                0, // align_shift: natural alignment
+            ));
+            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            let var = self.var_map[local_id];
+            builder.def_var(var, addr);
+        }
+
         // Lower each block (don't seal yet - seal after all terminators are processed)
         for mir_block in &self.mir_fn.blocks {
             let cl_block = self.block_map[&mir_block.id];
@@ -83,7 +125,11 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
-                Self::lower_stmt(&mut builder, stmt, &self.var_map, &self.mir_fn.locals, self.func_refs)?;
+                Self::lower_stmt(
+                    &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
+                    self.func_refs, self.struct_layouts, self.enum_layouts,
+                    self.string_globals,
+                )?;
             }
 
             // Lower terminator
@@ -100,12 +146,16 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn lower_stmt(
         builder: &mut ClifFunctionBuilder,
         stmt: &MirStmt,
         var_map: &HashMap<LocalId, Variable>,
         locals: &[rask_mir::MirLocal],
         func_refs: &HashMap<String, FuncRef>,
+        struct_layouts: &[StructLayout],
+        enum_layouts: &[EnumLayout],
+        string_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
@@ -113,7 +163,10 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
                 let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
 
-                let mut val = Self::lower_rvalue(builder, rvalue, var_map, Some(dst_ty))?;
+                let mut val = Self::lower_rvalue(
+                    builder, rvalue, var_map, locals, Some(dst_ty),
+                    struct_layouts, enum_layouts, string_globals,
+                )?;
 
                 let val_ty = builder.func.dfg.value_type(val);
                 if val_ty != dst_ty {
@@ -128,7 +181,7 @@ impl<'a> FunctionBuilder<'a> {
             MirStmt::Store { addr, offset, value } => {
                 let addr_val = builder.use_var(*var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
-                let val = Self::lower_operand(builder, value, var_map)?;
+                let val = Self::lower_operand(builder, value, var_map, string_globals)?;
 
                 let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
@@ -146,7 +199,7 @@ impl<'a> FunctionBuilder<'a> {
                 let mut arg_vals = Vec::with_capacity(args.len());
                 for (i, a) in args.iter().enumerate() {
                     let expected_ty = param_types.get(i).copied();
-                    let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty)?;
+                    let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
                     // Convert if the actual type doesn't match the expected parameter type
                     if let Some(expected) = expected_ty {
                         let actual = builder.func.dfg.value_type(val);
@@ -240,15 +293,28 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// Look up the MirType of an operand from the locals table.
+    fn operand_mir_type(operand: &MirOperand, locals: &[rask_mir::MirLocal]) -> Option<MirType> {
+        match operand {
+            MirOperand::Local(id) => locals.iter().find(|l| l.id == *id).map(|l| l.ty.clone()),
+            MirOperand::Constant(_) => None,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn lower_rvalue(
         builder: &mut ClifFunctionBuilder,
         rvalue: &rask_mir::MirRValue,
         var_map: &HashMap<LocalId, Variable>,
+        locals: &[rask_mir::MirLocal],
         expected_ty: Option<Type>,
+        struct_layouts: &[StructLayout],
+        enum_layouts: &[EnumLayout],
+        string_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<Value> {
         match rvalue {
             rask_mir::MirRValue::Use(op) => {
-                Self::lower_operand_typed(builder, op, var_map, expected_ty)
+                Self::lower_operand_typed(builder, op, var_map, expected_ty, string_globals)
             }
 
             rask_mir::MirRValue::BinaryOp { op, left, right } => {
@@ -257,9 +323,9 @@ impl<'a> FunctionBuilder<'a> {
                 );
 
                 let operand_ty = if is_comparison { None } else { expected_ty };
-                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty)?;
+                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty, string_globals)?;
                 let lhs_ty = builder.func.dfg.value_type(lhs_val);
-                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty))?;
+                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals)?;
 
                 let result = match op {
                     BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
@@ -284,7 +350,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             rask_mir::MirRValue::UnaryOp { op, operand } => {
-                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty)?;
+                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty, string_globals)?;
 
                 let result = match op {
                     UnaryOp::Neg => builder.ins().ineg(val),
@@ -295,26 +361,108 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             rask_mir::MirRValue::Cast { value, target_ty } => {
-                let val = Self::lower_operand(builder, value, var_map)?;
+                let val = Self::lower_operand(builder, value, var_map, string_globals)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 Ok(Self::convert_value(builder, val, val_ty, target))
             }
 
-            rask_mir::MirRValue::Field { .. } => {
-                Err(CodegenError::UnsupportedFeature("Field access not yet implemented in codegen".to_string()))
+            // Struct/enum field access: load from base pointer + field offset
+            rask_mir::MirRValue::Field { base, field_index } => {
+                let base_val = Self::lower_operand(builder, base, var_map, string_globals)?;
+                let base_ty = Self::operand_mir_type(base, locals);
+                let load_ty = expected_ty.unwrap_or(types::I64);
+
+                let offset = match &base_ty {
+                    Some(MirType::Struct(id)) => {
+                        if let Some(layout) = struct_layouts.get(id.0 as usize) {
+                            layout.fields
+                                .get(*field_index as usize)
+                                .map(|f| f.offset as i32)
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        }
+                    }
+                    Some(MirType::Enum(id)) => {
+                        if let Some(layout) = enum_layouts.get(id.0 as usize) {
+                            // Payload starts at payload_offset; field is relative within payload.
+                            // Use the first variant with enough fields for the offset.
+                            let variant = layout.variants.iter()
+                                .find(|v| v.fields.len() > *field_index as usize);
+                            match variant {
+                                Some(v) => (v.payload_offset + v.fields[*field_index as usize].offset) as i32,
+                                None => layout.variants.first()
+                                    .map(|v| v.payload_offset as i32)
+                                    .unwrap_or(0),
+                            }
+                        } else {
+                            0
+                        }
+                    }
+                    _ => (*field_index as i32) * 8, // fallback: assume 8-byte stride
+                };
+
+                let flags = MemFlags::new();
+                Ok(builder.ins().load(load_ty, flags, base_val, offset))
             }
 
-            rask_mir::MirRValue::EnumTag { .. } => {
-                Err(CodegenError::UnsupportedFeature("Enum tag extraction not yet implemented in codegen".to_string()))
+            // Enum discriminant extraction: load tag byte from base pointer
+            rask_mir::MirRValue::EnumTag { value } => {
+                let ptr_val = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let base_ty = Self::operand_mir_type(value, locals);
+
+                let tag_offset = match &base_ty {
+                    Some(MirType::Enum(id)) => {
+                        enum_layouts.get(id.0 as usize)
+                            .map(|l| l.tag_offset as i32)
+                            .unwrap_or(0)
+                    }
+                    _ => 0,
+                };
+
+                let flags = MemFlags::new();
+                // Tag is always u8
+                Ok(builder.ins().load(types::I8, flags, ptr_val, tag_offset))
             }
 
-            rask_mir::MirRValue::Ref(_) => {
-                Err(CodegenError::UnsupportedFeature("Reference-of not yet implemented in codegen".to_string()))
+            // Address-of: return the pointer that the local already holds (for aggregates)
+            // or spill a scalar to a stack slot and return its address.
+            rask_mir::MirRValue::Ref(local_id) => {
+                let var = var_map.get(local_id)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
+                let val = builder.use_var(*var);
+
+                // For aggregate types the variable already IS a pointer
+                let local_ty = locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
+                let is_aggregate = matches!(
+                    local_ty,
+                    Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. })
+                );
+
+                if is_aggregate {
+                    Ok(val)
+                } else {
+                    // Scalar: spill to a stack slot, return the address
+                    let val_ty = builder.func.dfg.value_type(val);
+                    let size = val_ty.bytes();
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        size,
+                        0, // align_shift: natural alignment
+                    ));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    builder.ins().store(MemFlags::new(), val, addr, 0);
+                    Ok(addr)
+                }
             }
 
-            rask_mir::MirRValue::Deref(_) => {
-                Err(CodegenError::UnsupportedFeature("Dereference not yet implemented in codegen".to_string()))
+            // Pointer dereference: load the value pointed to by the operand
+            rask_mir::MirRValue::Deref(operand) => {
+                let ptr_val = Self::lower_operand(builder, operand, var_map, string_globals)?;
+                let load_ty = expected_ty.unwrap_or(types::I64);
+                let flags = MemFlags::new();
+                Ok(builder.ins().load(load_ty, flags, ptr_val, 0))
             }
         }
     }
@@ -330,7 +478,7 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminator::Return { value } => {
                 if let Some(val_op) = value {
                     let expected_ty = mir_to_cranelift_type(ret_ty)?;
-                    let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty))?;
+                    let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), &HashMap::new())?;
                     let actual_ty = builder.func.dfg.value_type(val);
                     let final_val = if actual_ty != expected_ty {
                         Self::convert_value(builder, val, actual_ty, expected_ty)
@@ -350,7 +498,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Branch { cond, then_block, else_block } => {
-                let mut cond_val = Self::lower_operand(builder, cond, var_map)?;
+                let mut cond_val = Self::lower_operand(builder, cond, var_map, &HashMap::new())?;
 
                 let cond_ty = builder.func.dfg.value_type(cond_val);
                 if cond_ty == types::I8 {
@@ -365,7 +513,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Switch { value, cases, default } => {
-                let scrutinee_val = Self::lower_operand(builder, value, var_map)?;
+                let scrutinee_val = Self::lower_operand(builder, value, var_map, &HashMap::new())?;
 
                 let mut current_block = builder.current_block().unwrap();
 
@@ -397,7 +545,7 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminator::CleanupReturn { value, .. } => {
                 // Treat as normal return — cleanup chains not yet supported
                 let expected_ty = mir_to_cranelift_type(ret_ty)?;
-                let val = Self::lower_operand_typed(builder, value, var_map, Some(expected_ty))?;
+                let val = Self::lower_operand_typed(builder, value, var_map, Some(expected_ty), &HashMap::new())?;
                 let actual_ty = builder.func.dfg.value_type(val);
                 let final_val = if actual_ty != expected_ty {
                     Self::convert_value(builder, val, actual_ty, expected_ty)
@@ -414,8 +562,9 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
         var_map: &HashMap<LocalId, Variable>,
+        string_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<Value> {
-        Self::lower_operand_typed(builder, op, var_map, None)
+        Self::lower_operand_typed(builder, op, var_map, None, string_globals)
     }
 
     fn lower_operand_typed(
@@ -423,6 +572,7 @@ impl<'a> FunctionBuilder<'a> {
         op: &MirOperand,
         var_map: &HashMap<LocalId, Variable>,
         expected_ty: Option<Type>,
+        string_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<Value> {
         match op {
             MirOperand::Local(local_id) => {
@@ -451,9 +601,15 @@ impl<'a> FunctionBuilder<'a> {
                     MirConst::Char(c) => {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
-                    MirConst::String(_s) => {
-                        // Strings need data section support — stub with null pointer
-                        Ok(builder.ins().iconst(types::I64, 0))
+                    MirConst::String(s) => {
+                        // Look up the pre-created data section global for this string.
+                        // Returns a pointer (i64) to null-terminated bytes.
+                        if let Some(gv) = string_globals.get(s.as_str()) {
+                            Ok(builder.ins().global_value(types::I64, *gv))
+                        } else {
+                            // Fallback: no data registered — emit null pointer
+                            Ok(builder.ins().iconst(types::I64, 0))
+                        }
                     }
                 }
             }
