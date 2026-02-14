@@ -23,15 +23,20 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Let { name, name_span: _, ty, init } => {
-                let init_ty = self.infer_expr(init);
-                if let Some(ty_str) = ty {
+                let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
-                        self.ctx
-                            .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
-                        self.define_local(name.clone(), declared);
+                        let init_ty = self.infer_expr_expecting(init, &declared);
+                        (init_ty, Some(declared))
                     } else {
-                        self.define_local(name.clone(), init_ty);
+                        (self.infer_expr(init), None)
                     }
+                } else {
+                    (self.infer_expr(init), None)
+                };
+                if let Some(declared) = declared_ty {
+                    self.ctx
+                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    self.define_local(name.clone(), declared);
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
@@ -40,15 +45,20 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Const { name, name_span: _, ty, init } => {
-                let init_ty = self.infer_expr(init);
-                if let Some(ty_str) = ty {
+                let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
-                        self.ctx
-                            .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
-                        self.define_local(name.clone(), declared);
+                        let init_ty = self.infer_expr_expecting(init, &declared);
+                        (init_ty, Some(declared))
                     } else {
-                        self.define_local(name.clone(), init_ty);
+                        (self.infer_expr(init), None)
                     }
+                } else {
+                    (self.infer_expr(init), None)
+                };
+                if let Some(declared) = declared_ty {
+                    self.ctx
+                        .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
+                    self.define_local(name.clone(), declared);
                 } else {
                     self.define_local(name.clone(), init_ty);
                 }
@@ -76,7 +86,7 @@ impl TypeChecker {
                     }
                 }
                 let target_ty = self.infer_expr(target);
-                let value_ty = self.infer_expr(value);
+                let value_ty = self.infer_expr_expecting(value, &target_ty);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     target_ty, value_ty, stmt.span,
                 ));
@@ -84,7 +94,11 @@ impl TypeChecker {
             }
             StmtKind::Return(value) => {
                 let ret_ty = if let Some(expr) = value {
-                    self.infer_expr(expr)
+                    if let Some(expected) = &self.current_return_type.clone() {
+                        self.infer_expr_expecting(expr, expected)
+                    } else {
+                        self.infer_expr(expr)
+                    }
                 } else {
                     Type::Unit
                 };

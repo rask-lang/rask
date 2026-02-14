@@ -16,6 +16,34 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type};
 
 impl TypeChecker {
+    /// Infer expression type with an expected type hint for unsuffixed literals.
+    /// Falls through to normal inference for non-literal or suffixed expressions.
+    pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
+        match &expr.kind {
+            ExprKind::Int(_, None) if Self::is_integer_type(expected) => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                return ty;
+            }
+            ExprKind::Float(_, None) if Self::is_float_type(expected) => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                return ty;
+            }
+            _ => {}
+        }
+        self.infer_expr(expr)
+    }
+
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
+    }
+
+    fn is_float_type(ty: &Type) -> bool {
+        matches!(ty, Type::F32 | Type::F64)
+    }
+
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
@@ -34,7 +62,7 @@ impl TypeChecker {
                     Some(IntSuffix::U64) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,
-                    None => Type::I32, // Default to i32, not unconstrained variable
+                    None => Type::I32, // Default to i32 when no expected type context
                 }
             }
             ExprKind::Float(_, suffix) => {
@@ -42,7 +70,7 @@ impl TypeChecker {
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => Type::F64, // Default to f64, not unconstrained variable
+                    None => Type::F64, // Default to f64 when no expected type context
                 }
             }
             ExprKind::String(_) => Type::String,
@@ -695,31 +723,37 @@ impl TypeChecker {
         }
 
         let func_ty = self.infer_expr(func);
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         match func_ty {
-            Type::Fn { params, ret } => {
-                if params.is_empty() && !arg_types.is_empty() {
-                    return *ret;
+            Type::Fn { ref params, ref ret } => {
+                if params.is_empty() && !args.is_empty() {
+                    // Infer args anyway (for side effects / node_types)
+                    for arg in args { self.infer_expr(arg); }
+                    return *ret.clone();
                 }
 
-                if params.len() != arg_types.len() {
+                if params.len() != args.len() {
+                    for arg in args { self.infer_expr(arg); }
                     self.errors.push(TypeError::ArityMismatch {
                         expected: params.len(),
-                        found: arg_types.len(),
+                        found: args.len(),
                         span,
                     });
                     return Type::Error;
                 }
 
-                for (param, arg) in params.iter().zip(arg_types.iter()) {
+                // Propagate expected param types to arguments
+                let ret = *ret.clone();
+                for (param, arg) in params.clone().iter().zip(args.iter()) {
+                    let arg_ty = self.infer_expr_expecting(arg, param);
                     self.ctx
-                        .add_constraint(TypeConstraint::Equal(param.clone(), arg.clone(), span));
+                        .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));
                 }
 
-                *ret
+                ret
             }
             Type::Var(_) => {
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
                 let ret = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     func_ty,
@@ -731,8 +765,12 @@ impl TypeChecker {
                 ));
                 ret
             }
-            Type::Error => Type::Error,
+            Type::Error => {
+                for arg in args { self.infer_expr(arg); }
+                Type::Error
+            }
             _ => {
+                for arg in args { self.infer_expr(arg); }
                 self.ctx.fresh_var()
             }
         }
