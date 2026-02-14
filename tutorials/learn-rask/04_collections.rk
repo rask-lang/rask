@@ -1,0 +1,164 @@
+// === Lesson 04: Collections ===
+//
+// Python has lists and dicts. Rask has Vec and Map.
+//
+//   Python list:   nums = [1, 2, 3]       nums.append(4)
+//   Rask Vec:      const nums = Vec.from([1, 2, 3])   nums.push(4)
+//
+//   Python dict:   scores = {"alice": 95}
+//   Rask Map:      const scores = Map.new()
+//                  scores.insert("alice", 95)
+//
+// Vec methods:  .push(), .pop(), .len(), [i] for indexing
+// Map methods:  .insert(k, v), .get(k), .len(), .contains_key(k)
+//
+// The angle brackets in Vec<f64> or Map<string, i32> tell the compiler
+// what types the collection holds. Python lists can hold anything;
+// Rask collections hold one specific type. Think of Vec<f64> as
+// "a list that only holds f64 values."
+//
+// IMPORTANT — Map.get() and the Option type:
+//   In Python, dict["key"] crashes if the key is missing.
+//   In Rask, map.get("key") returns an Option — a value that is
+//   either Some(value) if found, or None if missing.
+//
+//   const result = scores.get("alice")  // result is Some(95)
+//   const result = scores.get("bob")    // result is None
+//
+//   To use the value inside, use `if ... is Some`:
+//     if result is Some(score) {
+//         println("got {score}")
+//     }
+//
+//   This forces you to handle the missing case. No more KeyError crashes.
+//   We'll cover Option in depth in lesson 08. For now, just know it exists.
+//
+
+// --- Examples ---
+
+func example_vec() {
+    const numbers = Vec.from([10, 20, 30])
+    println("length: {numbers.len()}")
+    println("first: {numbers[0]}")
+
+    for n in numbers {
+        println("  {n}")
+    }
+}
+
+func example_map() {
+    const elements = Map.new()
+    elements.insert("H", 1)
+    elements.insert("He", 2)
+    elements.insert("Li", 3)
+
+    // .get() returns Option — Some(value) or None
+    const h = elements.get("H")
+    if h is Some(num) {
+        println("Hydrogen: atomic number {num}")
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Particle masses ---
+// Build a Vec containing the rest masses (in MeV/c²) of these particles:
+//   electron: 0.511, muon: 105.7, tau: 1776.9
+//
+// Fun fact: these are the three "generations" of leptons. They behave
+// identically except for mass. Nobody knows why there are exactly three
+// generations — it's one of the big open questions in physics.
+func particle_masses() -> Vec<f64> {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Sum a Vec ---
+// Sum all elements. In Python: sum(numbers). In Rask: write a loop.
+func sum_vec(numbers: Vec<f64>) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Periodic table ---
+// Build a Map of element symbols to their atomic numbers.
+// Include at least: H=1, He=2, Li=3, Be=4, B=5, C=6, N=7, O=8
+//
+// Fun fact: Dmitri Mendeleev published the first periodic table in 1869.
+// He left gaps for elements that hadn't been discovered yet — and
+// predicted their properties. Gallium, germanium, and scandium were all
+// found later and matched his predictions almost exactly.
+func periodic_table() -> Map<string, i32> {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Dot product ---
+// Compute the dot product of two Vec<f64>s of equal length.
+//   dot([1,2,3], [4,5,6]) = 1×4 + 2×5 + 3×6 = 32
+//
+// This is the core operation behind everything from physics simulations
+// to neural networks. If the dot product of two vectors is zero,
+// they're perpendicular (orthogonal).
+//
+// Hint: use indexing with a range: for i in 0..a.len() { ... a[i] ... }
+func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 5: Count occurrences ---
+// Given a Vec<i32>, build a Map counting how many times each value appears.
+//   [1, 2, 1, 3, 2, 1] → {1: 3, 2: 2, 3: 1}
+//
+// Hint: use .get() to check if a key exists. Remember, .get() returns
+// an Option — either Some(count) or None.
+//
+//   if existing is Some(c) {
+//       map.insert(item, c + 1)
+//   } else {
+//       map.insert(item, 1)
+//   }
+func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "particle masses" {
+    const masses = particle_masses()
+    assert masses.len() == 3
+    assert masses[0] == 0.511
+    assert masses[1] == 105.7
+    assert masses[2] == 1776.9
+}
+
+test "sum vec" {
+    assert sum_vec(Vec.from([1.0, 2.0, 3.0])) == 6.0
+    assert sum_vec(Vec.from([0.511, 105.7, 1776.9])) > 1883.0
+    assert sum_vec(Vec.new()) == 0.0
+}
+
+test "periodic table" {
+    const table = periodic_table()
+    assert table.get("H") is Some(1)
+    assert table.get("He") is Some(2)
+    assert table.get("C") is Some(6)
+    assert table.get("O") is Some(8)
+}
+
+test "dot product" {
+    assert dot_product(Vec.from([1.0, 2.0, 3.0]), Vec.from([4.0, 5.0, 6.0])) == 32.0
+    assert dot_product(Vec.from([1.0, 0.0]), Vec.from([0.0, 1.0])) == 0.0
+}
+
+test "count occurrences" {
+    const counts = count_occurrences(Vec.from([1, 2, 1, 3, 2, 1]))
+    assert counts.get(1) is Some(3)
+    assert counts.get(2) is Some(2)
+    assert counts.get(3) is Some(1)
+}
+
+func main() {
+    example_vec()
+    example_map()
+    println("Run 'rask test 04_collections.rk' to check your puzzles")
+}

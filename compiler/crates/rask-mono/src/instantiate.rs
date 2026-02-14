@@ -309,7 +309,10 @@ impl TypeSubstitutor {
 
                 // Error handling
                 ExprKind::Try(inner) => ExprKind::Try(Box::new(self.clone_expr(inner))),
-                ExprKind::Unwrap(inner) => ExprKind::Unwrap(Box::new(self.clone_expr(inner))),
+                ExprKind::Unwrap { expr: inner, message } => ExprKind::Unwrap {
+                    expr: Box::new(self.clone_expr(inner)),
+                    message: message.clone(),
+                },
                 ExprKind::NullCoalesce { value, default } => ExprKind::NullCoalesce {
                     value: Box::new(self.clone_expr(value)),
                     default: Box::new(self.clone_expr(default)),

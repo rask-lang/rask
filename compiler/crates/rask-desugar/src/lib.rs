@@ -215,7 +215,7 @@ impl Desugarer {
                 }
             }
             ExprKind::Try(e) => self.desugar_expr(e),
-            ExprKind::Unwrap(e) => self.desugar_expr(e),
+            ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,
                 else_branch,

@@ -73,11 +73,58 @@ pub fn cmd_build(path: &str) {
                                             let mir_ctx = rask_mir::lower::MirContext {
                                                 struct_layouts: &mono.struct_layouts,
                                                 enum_layouts: &mono.enum_layouts,
+                                                node_types: &typed.node_types,
                                             };
+
+                                            let mut mir_functions = Vec::new();
+                                            let mut mir_errors = 0;
+
                                             for mono_fn in &mono.functions {
-                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
-                                                    eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
-                                                    total_errors += 1;
+                                                match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
+                                                    Ok(mir_fn) => mir_functions.push(mir_fn),
+                                                    Err(e) => {
+                                                        eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
+                                                        mir_errors += 1;
+                                                    }
+                                                }
+                                            }
+
+                                            total_errors += mir_errors;
+
+                                            // Generate code if no MIR errors
+                                            if mir_errors == 0 && !mir_functions.is_empty() {
+                                                match rask_codegen::CodeGenerator::new() {
+                                                    Ok(mut codegen) => {
+                                                        // Declare all functions first
+                                                        if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
+                                                            eprintln!("codegen error: {}", e);
+                                                            total_errors += 1;
+                                                        } else {
+                                                            // Generate each function
+                                                            for mir_fn in &mir_functions {
+                                                                if let Err(e) = codegen.gen_function(mir_fn) {
+                                                                    eprintln!("codegen error in '{}': {}", mir_fn.name, e);
+                                                                    total_errors += 1;
+                                                                }
+                                                            }
+
+                                                            // Emit object file
+                                                            if total_errors == 0 {
+                                                                let output_path = "output.o";
+                                                                match codegen.emit_object(output_path) {
+                                                                    Ok(_) => println!("  {} {}", "Generated".green(), output_path),
+                                                                    Err(e) => {
+                                                                        eprintln!("failed to emit object file: {}", e);
+                                                                        total_errors += 1;
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("failed to initialize codegen: {}", e);
+                                                        total_errors += 1;
+                                                    }
                                                 }
                                             }
                                         }

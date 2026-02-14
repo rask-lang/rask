@@ -99,7 +99,10 @@ pub enum ExprKind {
     /// Try expression (try prefix or postfix ?)
     Try(Box<Expr>),
     /// Unwrap expression (postfix !) - panics if None/Err
-    Unwrap(Box<Expr>),
+    Unwrap {
+        expr: Box<Expr>,
+        message: Option<String>,
+    },
     /// Null coalescing (a ?? b)
     NullCoalesce {
         value: Box<Expr>,

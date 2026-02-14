@@ -434,7 +434,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Try(inner) => {
                 self.check_expr(inner);
             }
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern: _, else_branch } => {

@@ -1,0 +1,137 @@
+// Solution: Lesson 07
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..30 { g = (g + x / g) / 2.0 }
+    return g
+}
+
+struct Vec3 {
+    x: f64
+    y: f64
+    z: f64
+}
+
+extend Vec3 {
+    func zero() -> Vec3 {
+        return Vec3 { x: 0.0, y: 0.0, z: 0.0 }
+    }
+    func add(self, other: Vec3) -> Vec3 {
+        return Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+    }
+    func scale(self, factor: f64) -> Vec3 {
+        return Vec3 { x: self.x * factor, y: self.y * factor, z: self.z * factor }
+    }
+    func dot(self, other: Vec3) -> f64 {
+        return self.x * other.x + self.y * other.y + self.z * other.z
+    }
+    func magnitude(self) -> f64 {
+        return sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    }
+    func cross(self, other: Vec3) -> Vec3 {
+        return Vec3 {
+            x: self.y * other.z - self.z * other.y,
+            y: self.z * other.x - self.x * other.z,
+            z: self.x * other.y - self.y * other.x,
+        }
+    }
+}
+
+struct Projectile {
+    position: Vec3
+    velocity: Vec3
+}
+
+extend Projectile {
+    func launch(velocity: Vec3) -> Projectile {
+        return Projectile { position: Vec3.zero(), velocity: velocity }
+    }
+
+    func step(self, dt: f64) -> Projectile {
+        const gravity = Vec3 { x: 0.0, y: 0.0, z: -9.81 }
+        const new_vel = self.velocity.add(gravity.scale(dt))
+        let new_pos = self.position.add(new_vel.scale(dt))
+        if new_pos.z < 0.0 {
+            new_pos = Vec3 { x: new_pos.x, y: new_pos.y, z: 0.0 }
+        }
+        return Projectile { position: new_pos, velocity: new_vel }
+    }
+
+    func is_airborne(self) -> bool {
+        return self.position.z > 0.0 || self.velocity.z > 0.0
+    }
+}
+
+test "vec3 zero" {
+    const v = Vec3.zero()
+    assert v.x == 0.0
+    assert v.y == 0.0
+    assert v.z == 0.0
+}
+
+test "vec3 add" {
+    const a = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const b = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    const c = a.add(b)
+    assert c.x == 5.0
+    assert c.y == 7.0
+    assert c.z == 9.0
+}
+
+test "vec3 scale" {
+    const v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const s = v.scale(2.0)
+    assert s.x == 2.0
+    assert s.y == 4.0
+    assert s.z == 6.0
+}
+
+test "vec3 dot product" {
+    const a = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    const b = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    assert a.dot(b) == 0.0
+    const c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    assert c.dot(d) == 32.0
+}
+
+test "vec3 magnitude" {
+    const v = Vec3 { x: 3.0, y: 4.0, z: 0.0 }
+    const m = v.magnitude()
+    assert m > 4.99
+    assert m < 5.01
+}
+
+test "vec3 cross product" {
+    const i = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    const j = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    const k = i.cross(j)
+    assert k.x == 0.0
+    assert k.y == 0.0
+    assert k.z == 1.0
+}
+
+test "projectile launch" {
+    const p = Projectile.launch(Vec3 { x: 10.0, y: 0.0, z: 20.0 })
+    assert p.position.x == 0.0
+    assert p.velocity.z == 20.0
+}
+
+test "projectile step" {
+    const p = Projectile.launch(Vec3 { x: 0.0, y: 0.0, z: 20.0 })
+    const p2 = p.step(0.1)
+    assert p2.position.z > 1.8
+    assert p2.position.z < 2.0
+    assert p2.velocity.z < 20.0
+}
+
+test "projectile hits ground" {
+    let p = Projectile.launch(Vec3 { x: 7.07, y: 0.0, z: 7.07 })
+    for i in 0..200 {
+        p = p.step(0.01)
+    }
+    assert p.position.z == 0.0
+}
+
+func main() { println("All solutions for lesson 07") }

@@ -1,0 +1,317 @@
+// === Lesson 19: Final Project — Flight Simulator ===
+//
+// Everything you've learned, combined into one program.
+//
+// You'll build a simple flight dynamics simulation:
+//   - An aircraft with position, velocity, and mass
+//   - Four forces: thrust, drag, lift, gravity
+//   - Euler integration to update position each time step
+//   - Flight phases: ground, takeoff, climb, cruise, descend
+//
+// This uses: structs (07), enums (06), methods (07), match (06),
+// error handling (08), ownership (09), and loops (05).
+//
+// Fun fact: real flight simulators solve these same equations,
+// just with more terms. The X-Plane simulator uses blade element
+// theory — it models each section of each propeller blade and
+// wing panel individually. Our version is simpler but captures
+// the core idea: forces determine acceleration, acceleration
+// changes velocity, velocity changes position. Newton's second law
+// all the way down.
+//
+
+// ============================================================
+// THE SIMULATION
+// ============================================================
+
+// --- Vec3 (you built this in lesson 07, provided here) ---
+
+struct Vec3 {
+    x: f64
+    y: f64
+    z: f64
+}
+
+extend Vec3 {
+    func zero() -> Vec3 { return Vec3 { x: 0.0, y: 0.0, z: 0.0 } }
+    func new(x: f64, y: f64, z: f64) -> Vec3 { return Vec3 { x: x, y: y, z: z } }
+
+    func add(self, other: Vec3) -> Vec3 {
+        return Vec3 { x: self.x + other.x, y: self.y + other.y, z: self.z + other.z }
+    }
+    func scale(self, s: f64) -> Vec3 {
+        return Vec3 { x: self.x * s, y: self.y * s, z: self.z * s }
+    }
+    func magnitude(self) -> f64 {
+        return sqrt(self.x * self.x + self.y * self.y + self.z * self.z)
+    }
+}
+
+// You wrote this in lesson 03
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..30 { g = (g + x / g) / 2.0 }
+    return g
+}
+
+// --- Aircraft state ---
+// A minimal aircraft: position in 3D space, velocity, mass, and
+// coefficients that determine how it interacts with the air.
+//
+// Fun fact: the lift coefficient (Cl) of a 737's wing changes with
+// angle of attack. At cruise it's about 0.5, but during landing
+// with flaps extended it can reach 2.5. Our simulation uses a
+// fixed Cl, but real flight models interpolate from wind tunnel data.
+
+struct Aircraft {
+    position: Vec3       // meters (x=east, y=north, z=up)
+    velocity: Vec3       // m/s
+    mass: f64            // kg
+    thrust_n: f64        // newtons of thrust
+    wing_area: f64       // m² (737: ~125 m², Cessna 172: ~16 m²)
+    drag_coeff: f64      // Cd, dimensionless (typically 0.02-0.05)
+    lift_coeff: f64      // Cl, dimensionless (typically 0.3-2.0)
+}
+
+// --- Flight phase ---
+
+enum Phase {
+    Ground
+    Takeoff
+    Climbing
+    Cruising
+    Descending
+    Landed
+}
+
+// ============================================================
+// PUZZLES — implement these to make the simulation work
+// ============================================================
+
+// --- Puzzle 1: Compute forces ---
+// Four forces act on an aircraft:
+//
+// Gravity: straight down. F = mass * g, where g = 9.81 m/s²
+// Return (0, 0, -mass * 9.81)
+func gravity(ac: Aircraft) -> Vec3 {
+    panic("TODO")
+}
+
+// Thrust: pushes the aircraft forward (positive y for simplicity)
+// Return (0, thrust_n, 0)
+func thrust(ac: Aircraft) -> Vec3 {
+    panic("TODO")
+}
+
+// Drag: opposes velocity. Slows you down.
+// magnitude = 0.5 * rho * speed² * Cd * A
+// direction = opposite to velocity (normalized)
+// rho (air density at sea level) = 1.225 kg/m³
+//
+// If speed is 0, return zero vector (no drag when stationary).
+// Formula: drag = -0.5 * rho * speed² * Cd * A * (velocity / speed)
+//
+// Fun fact: drag increases with the SQUARE of speed. Going twice as
+// fast means four times the drag. This is why fuel consumption
+// increases dramatically at higher speeds, and why the Concorde
+// (Mach 2) burned significantly more fuel per mile than subsonic jets.
+func drag(ac: Aircraft) -> Vec3 {
+    panic("TODO")
+}
+
+// Lift: pushes upward (simplified to z-axis only)
+// magnitude = 0.5 * rho * speed² * Cl * A
+// direction = (0, 0, 1)
+//
+// Real lift is perpendicular to the wing, not straight up.
+// Our simplification works for level flight.
+func lift(ac: Aircraft) -> Vec3 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Sum all forces ---
+// Return gravity + thrust + drag + lift
+func total_force(ac: Aircraft) -> Vec3 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Euler integration step ---
+// The simplest physics integration:
+//   acceleration = total_force / mass       (Newton's F = ma)
+//   new_velocity = velocity + acceleration * dt
+//   new_position = position + new_velocity * dt
+//
+// Return a new Aircraft with updated position and velocity.
+// Clamp altitude (position.z) to >= 0 (can't go underground).
+//
+// Fun fact: Euler integration is the simplest but least accurate
+// method. Real simulators use Runge-Kutta (RK4), which evaluates
+// forces at intermediate points for better accuracy. For our
+// small time steps, Euler works fine.
+func step(ac: Aircraft, dt: f64) -> Aircraft {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Determine flight phase ---
+// Based on aircraft state:
+//   altitude <= 0 and speed < 1     → Ground
+//   altitude <= 0 and speed >= 1    → Takeoff
+//   altitude > 0 and vz > 1.0      → Climbing
+//   altitude > 0 and vz < -1.0     → Descending
+//   altitude > 0                    → Cruising (|vz| <= 1.0)
+func determine_phase(ac: Aircraft) -> Phase {
+    panic("TODO")
+}
+
+func phase_name(p: Phase) -> string {
+    return match p {
+        Ground => "ground",
+        Takeoff => "takeoff",
+        Climbing => "climbing",
+        Cruising => "cruising",
+        Descending => "descending",
+        Landed => "landed",
+    }
+}
+
+// --- Puzzle 5: Run simulation ---
+// Run the simulation for n_steps with time step dt.
+// Each step: update the aircraft with step().
+// Return the final altitude (position.z).
+func simulate(ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "gravity force" {
+    const ac = Aircraft {
+        position: Vec3.zero(), velocity: Vec3.zero(),
+        mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const g = gravity(ac)
+    assert g.x == 0.0
+    assert g.y == 0.0
+    assert g.z < -9800.0
+    assert g.z > -9820.0
+}
+
+test "thrust force" {
+    const ac = Aircraft {
+        position: Vec3.zero(), velocity: Vec3.zero(),
+        mass: 1000.0, thrust_n: 50000.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const t = thrust(ac)
+    assert t.x == 0.0
+    assert t.y == 50000.0
+    assert t.z == 0.0
+}
+
+test "drag at rest is zero" {
+    const ac = Aircraft {
+        position: Vec3.zero(), velocity: Vec3.zero(),
+        mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const d = drag(ac)
+    assert d.x == 0.0
+    assert d.y == 0.0
+    assert d.z == 0.0
+}
+
+test "drag opposes velocity" {
+    const ac = Aircraft {
+        position: Vec3.zero(),
+        velocity: Vec3.new(0.0, 100.0, 0.0),
+        mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const d = drag(ac)
+    assert d.y < 0.0
+}
+
+test "total force" {
+    const ac = Aircraft {
+        position: Vec3.zero(),
+        velocity: Vec3.new(0.0, 50.0, 0.0),
+        mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const f = total_force(ac)
+    assert f.y > 0.0    // net forward (thrust > drag at 50 m/s)
+}
+
+test "euler step" {
+    const ac = Aircraft {
+        position: Vec3.zero(),
+        velocity: Vec3.new(0.0, 100.0, 10.0),
+        mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    const next = step(ac, 0.1)
+    assert next.position.y > 0.0
+    assert next.position.z > 0.0
+}
+
+test "flight phase" {
+    const grounded = Aircraft {
+        position: Vec3.zero(), velocity: Vec3.zero(),
+        mass: 1000.0, thrust_n: 0.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    assert phase_name(determine_phase(grounded)) == "ground"
+
+    const climbing = Aircraft {
+        position: Vec3.new(0.0, 0.0, 1000.0),
+        velocity: Vec3.new(0.0, 100.0, 5.0),
+        mass: 1000.0, thrust_n: 20000.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 0.5,
+    }
+    assert phase_name(determine_phase(climbing)) == "climbing"
+}
+
+test "simulation runs" {
+    const ac = Aircraft {
+        position: Vec3.zero(),
+        velocity: Vec3.new(0.0, 50.0, 0.0),
+        mass: 1000.0, thrust_n: 30000.0, wing_area: 20.0,
+        drag_coeff: 0.03, lift_coeff: 1.2,
+    }
+    const final_alt = simulate(ac, 0.1, 100)
+    assert final_alt > 0.0
+}
+
+func main() {
+    // Simulate a light aircraft takeoff
+    // 2 tons, ~136 knots initial speed, moderate thrust
+    let ac = Aircraft {
+        position: Vec3.zero(),
+        velocity: Vec3.new(0.0, 70.0, 0.0),
+        mass: 2000.0,
+        thrust_n: 25000.0,
+        wing_area: 16.0,
+        drag_coeff: 0.03,
+        lift_coeff: 1.0,
+    }
+
+    println("=== Flight Simulation ===")
+    println("Aircraft: 2000 kg, 16 m² wing, 25 kN thrust")
+    println("")
+    for t in 0..50 {
+        const phase = phase_name(determine_phase(ac))
+        const alt = ac.position.z
+        const speed = ac.velocity.magnitude()
+        if t % 10 == 0 {
+            println("t={t}s  alt={alt}m  speed={speed}m/s  phase={phase}")
+        }
+        ac = step(ac, 0.2)
+    }
+    println("")
+    println("Final altitude: {ac.position.z} m")
+    println("")
+    println("Congratulations! You've built a flight simulator in Rask.")
+    println("Run 'rask test 19_final_project.rk' to check your puzzles")
+}

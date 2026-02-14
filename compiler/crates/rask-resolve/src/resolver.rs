@@ -953,7 +953,7 @@ impl Resolver {
             ExprKind::Try(inner) => {
                 self.resolve_expr(inner);
             }
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message: _ } => {
                 self.resolve_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern, else_branch } => {

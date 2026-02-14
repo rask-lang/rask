@@ -1,0 +1,97 @@
+// Solution: Lesson 05
+
+func next_departure(arrival_minute: i32) -> i32 {
+    if arrival_minute % 10 == 0 {
+        return arrival_minute
+    }
+    return arrival_minute + (10 - arrival_minute % 10)
+}
+
+func collatz(start: i32) -> Vec<i32> {
+    const seq = Vec.new()
+    let n = start
+    seq.push(n)
+    while n != 1 {
+        if n % 2 == 0 {
+            n = n / 2
+        } else {
+            n = 3 * n + 1
+        }
+        seq.push(n)
+    }
+    return seq
+}
+
+func manhattan_walk(directions: Vec<string>) -> i32 {
+    let x = 0
+    let y = 0
+    for dir in directions {
+        if dir == "N" { y = y + 1 }
+        if dir == "S" { y = y - 1 }
+        if dir == "E" { x = x + 1 }
+        if dir == "W" { x = x - 1 }
+    }
+    let abs_x = x
+    if abs_x < 0 { abs_x = 0 - abs_x }
+    let abs_y = y
+    if abs_y < 0 { abs_y = 0 - abs_y }
+    return abs_x + abs_y
+}
+
+func assign_runway(wind_degrees: i32) -> string {
+    if wind_degrees < 120 {
+        return "09L"
+    }
+    if wind_degrees < 240 {
+        return "18C"
+    }
+    return "27R"
+}
+
+func next_train(schedule: Vec<i32>, desired: i32) -> i32 {
+    for time in schedule {
+        if time >= desired {
+            return time
+        }
+    }
+    return -1
+}
+
+test "next shinkansen departure" {
+    assert next_departure(0) == 0
+    assert next_departure(1) == 10
+    assert next_departure(15) == 20
+    assert next_departure(30) == 30
+    assert next_departure(59) == 60
+}
+
+test "collatz sequence" {
+    const seq = collatz(6)
+    assert seq[0] == 6
+    assert seq[seq.len() - 1] == 1
+    assert seq.len() == 9
+}
+
+test "manhattan walk" {
+    assert manhattan_walk(Vec.from(["N", "N", "E"])) == 3
+    assert manhattan_walk(Vec.from(["N", "S", "E", "W"])) == 0
+    assert manhattan_walk(Vec.new()) == 0
+}
+
+test "runway assignment" {
+    assert assign_runway(90) == "09L"
+    assert assign_runway(180) == "18C"
+    assert assign_runway(270) == "27R"
+    assert assign_runway(0) == "09L"
+    assert assign_runway(350) == "27R"
+}
+
+test "next train" {
+    const sched = Vec.from([360, 420, 480, 540, 600])
+    assert next_train(sched, 450) == 480
+    assert next_train(sched, 360) == 360
+    assert next_train(sched, 600) == 600
+    assert next_train(sched, 601) == -1
+}
+
+func main() { println("All solutions for lesson 05") }

@@ -1,0 +1,78 @@
+// Solution: Lesson 12
+
+trait Aircraft {
+    func max_speed_knots(self) -> f64
+    func range_nm(self) -> f64
+    func designation(self) -> string
+}
+
+struct Boeing737 { variant: string, passenger_count: i32 }
+struct Cessna172 { registration: string }
+
+extend Boeing737 {
+    func max_speed_knots(self) -> f64 { return 453.0 }
+    func range_nm(self) -> f64 { return 3500.0 }
+    func designation(self) -> string { return "Boeing 737-{self.variant}" }
+}
+
+extend Cessna172 {
+    func max_speed_knots(self) -> f64 { return 124.0 }
+    func range_nm(self) -> f64 { return 640.0 }
+    func designation(self) -> string { return "Cessna 172 ({self.registration})" }
+}
+
+func longer_range<T: Aircraft, U: Aircraft>(a: T, b: U) -> string {
+    if a.range_nm() >= b.range_nm() { return a.designation() }
+    return b.designation()
+}
+
+trait Summable {
+    func value(self) -> f64
+}
+
+struct Measurement { reading: f64, unit: string }
+
+extend Measurement {
+    func value(self) -> f64 { return self.reading }
+}
+
+func total<T: Summable>(items: Vec<T>) -> f64 {
+    let sum = 0.0
+    for item in items {
+        sum = sum + item.value()
+    }
+    return sum
+}
+
+test "boeing 737" {
+    const b = Boeing737 { variant: "800", passenger_count: 189 }
+    assert b.max_speed_knots() == 453.0
+    assert b.range_nm() == 3500.0
+    assert b.designation() == "Boeing 737-800"
+}
+
+test "cessna 172" {
+    const c = Cessna172 { registration: "N12345" }
+    assert c.max_speed_knots() == 124.0
+    assert c.range_nm() == 640.0
+    assert c.designation() == "Cessna 172 (N12345)"
+}
+
+test "longer range" {
+    const b = Boeing737 { variant: "800", passenger_count: 189 }
+    const c = Cessna172 { registration: "N12345" }
+    assert longer_range(b, c) == "Boeing 737-800"
+}
+
+test "summable measurements" {
+    const readings = Vec.from([
+        Measurement { reading: 9.81, unit: "m/s^2" },
+        Measurement { reading: 9.79, unit: "m/s^2" },
+        Measurement { reading: 9.83, unit: "m/s^2" },
+    ])
+    const t = total(readings)
+    assert t > 29.42
+    assert t < 29.44
+}
+
+func main() { println("All solutions for lesson 12") }

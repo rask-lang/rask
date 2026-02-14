@@ -1,0 +1,176 @@
+// === Lesson 12: Traits ===
+//
+// In Python, if an object has a .fly() method, you can call it.
+// That's "duck typing" — if it quacks like a duck, it's a duck.
+//
+// Rask does something similar with traits — but the compiler checks
+// at compile time, not at runtime:
+//
+//   trait HasArea {
+//       func area(self) -> f64
+//   }
+//
+// Any type that has an area() method with the right signature
+// automatically satisfies the trait. You don't need to write
+// "implements HasArea" — if the methods match, it just works.
+//
+// Why is this useful? You can write functions that work with any type
+// that has certain methods:
+//
+//   func print_area<T: HasArea>(shape: T) {
+//       println("area: {shape.area()}")
+//   }
+//
+// This works for circles, rectangles, triangles — anything with .area().
+// The compiler generates optimized code for each specific type.
+//
+
+// --- Example ---
+
+trait Describable {
+    func describe(self) -> string
+}
+
+struct Star {
+    name: string
+    mass_solar: f64
+}
+
+extend Star {
+    func describe(self) -> string {
+        return "{self.name}: {self.mass_solar} solar masses"
+    }
+}
+
+// This function works for anything Describable
+func print_description<T: Describable>(thing: T) {
+    println(thing.describe())
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Aircraft trait ---
+// Two very different aircraft. Same interface.
+//
+// Fun fact: the Boeing 737 first flew in 1967 and is still in production.
+// Over 11,000 have been built — making it the best-selling commercial
+// jet in history. The Cessna 172 holds a different record: most produced
+// aircraft of any kind, with over 44,000 built since 1956.
+
+trait Aircraft {
+    func max_speed_knots(self) -> f64
+    func range_nm(self) -> f64
+    func designation(self) -> string
+}
+
+struct Boeing737 {
+    variant: string
+    passenger_count: i32
+}
+
+struct Cessna172 {
+    registration: string
+}
+
+// Implement Aircraft for Boeing737:
+//   max_speed_knots → 453.0
+//   range_nm → 3500.0
+//   designation → "Boeing 737-{variant}" (use self.variant)
+extend Boeing737 {
+    func max_speed_knots(self) -> f64 {
+        panic("TODO")
+    }
+    func range_nm(self) -> f64 {
+        panic("TODO")
+    }
+    func designation(self) -> string {
+        panic("TODO")
+    }
+}
+
+// Implement Aircraft for Cessna172:
+//   max_speed_knots → 124.0
+//   range_nm → 640.0
+//   designation → "Cessna 172 ({registration})" (use self.registration)
+extend Cessna172 {
+    func max_speed_knots(self) -> f64 {
+        panic("TODO")
+    }
+    func range_nm(self) -> f64 {
+        panic("TODO")
+    }
+    func designation(self) -> string {
+        panic("TODO")
+    }
+}
+
+// --- Puzzle 2: Use the trait generically ---
+// Given two Aircraft, return the designation of the one with longer range.
+func longer_range<T: Aircraft, U: Aircraft>(a: T, b: U) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Summable trait ---
+// A trait for types that can contribute a numeric value.
+
+trait Summable {
+    func value(self) -> f64
+}
+
+struct Measurement {
+    reading: f64
+    unit: string
+}
+
+// Implement Summable for Measurement — return self.reading
+extend Measurement {
+    func value(self) -> f64 {
+        panic("TODO")
+    }
+}
+
+// Sum a Vec of Summable things
+func total<T: Summable>(items: Vec<T>) -> f64 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "boeing 737" {
+    const b = Boeing737 { variant: "800", passenger_count: 189 }
+    assert b.max_speed_knots() == 453.0
+    assert b.range_nm() == 2935.0
+    assert b.designation() == "Boeing 737-800"
+}
+
+test "cessna 172" {
+    const c = Cessna172 { registration: "N12345" }
+    assert c.max_speed_knots() == 124.0
+    assert c.range_nm() == 640.0
+    assert c.designation() == "Cessna 172 (N12345)"
+}
+
+test "longer range" {
+    const b = Boeing737 { variant: "800", passenger_count: 189 }
+    const c = Cessna172 { registration: "N12345" }
+    assert longer_range(b, c) == "Boeing 737-800"
+}
+
+test "summable measurements" {
+    const readings = Vec.from([
+        Measurement { reading: 9.81, unit: "m/s^2" },
+        Measurement { reading: 9.79, unit: "m/s^2" },
+        Measurement { reading: 9.83, unit: "m/s^2" },
+    ])
+    const t = total(readings)
+    assert t > 29.42
+    assert t < 29.44
+}
+
+func main() {
+    const sun = Star { name: "Sol", mass_solar: 1.0 }
+    print_description(sun)
+    println("Run 'rask test 12_traits.rk' to check your puzzles")
+}

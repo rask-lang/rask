@@ -836,6 +836,7 @@ version = "0.1.0"
 dependencies = [
  "colored",
  "rask-ast",
+ "rask-codegen",
  "rask-comptime",
  "rask-describe",
  "rask-desugar",

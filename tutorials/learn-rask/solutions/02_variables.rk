@@ -1,0 +1,49 @@
+// Solution: Lesson 02
+
+func speed_of_light() -> i64 {
+    return 299792458
+}
+
+func schwarzschild_radius(mass: f64) -> f64 {
+    const g = 6.674e-11
+    const c = 299792458.0
+    return 2.0 * g * mass / (c * c)
+}
+
+func celsius_to_kelvin(c: f64) -> f64 {
+    return c + 273.15
+}
+
+func sum_to(n: i32) -> i32 {
+    let total = 0
+    for i in 1..n+1 {
+        total = total + i
+    }
+    return total
+}
+
+test "speed of light" {
+    assert speed_of_light() == 299792458
+}
+
+test "schwarzschild radius of the sun" {
+    const r = schwarzschild_radius(1.989e30)
+    assert r > 2952.0
+    assert r < 2954.0
+}
+
+test "celsius to kelvin" {
+    assert celsius_to_kelvin(0.0) == 273.15
+    assert celsius_to_kelvin(100.0) == 373.15
+    assert celsius_to_kelvin(-273.15) == 0.0
+}
+
+test "sum to n" {
+    assert sum_to(1) == 1
+    assert sum_to(5) == 15
+    assert sum_to(100) == 5050
+}
+
+func main() {
+    println("All solutions for lesson 02")
+}

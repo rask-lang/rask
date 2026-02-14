@@ -447,20 +447,21 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message: _ } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
                     Type::Option(inner) => {
-                        // For Unwrap, extract the inner type from Option
+                        // Extract the inner type from Option<T>
                         *inner.clone()
                     }
+                    Type::Result { ok, err: _ } => {
+                        // Extract the Ok type from Result<T, E>
+                        *ok.clone()
+                    }
                     Type::Var(_) => {
-                        // If we don't know the type yet, constrain it to be an Option
-                        let inner_opt_ty = self.ctx.fresh_var();
-                        let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
-                        let _ = self.unify(&inner_ty, &option_ty, expr.span);
-                        inner_opt_ty
+                        // Don't constrain yet - let later context determine if Option or Result
+                        self.ctx.fresh_var()
                     }
                     _ => {
                         self.errors.push(TypeError::Mismatch {

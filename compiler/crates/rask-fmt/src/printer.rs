@@ -1107,9 +1107,13 @@ impl<'a> Printer<'a> {
                 self.emit("try ");
                 self.format_expr(inner);
             }
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message } => {
                 self.format_expr(inner);
                 self.emit("!");
+                if let Some(msg) = message {
+                    self.emit(" ");
+                    self.emit(&format!("\"{}\"", msg));
+                }
             }
             ExprKind::GuardPattern { expr, pattern, else_branch } => {
                 self.format_expr(expr);

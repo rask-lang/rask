@@ -6,9 +6,10 @@ use cranelift::prelude::*;
 use cranelift_codegen::ir::{Function, InstBuilder, MemFlags};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
+use cranelift_module::FuncId;
 use std::collections::HashMap;
 
-use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, UnaryOp};
+use rask_mir::{BinOp, BlockId, FunctionRef, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, UnaryOp};
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
 
@@ -16,6 +17,7 @@ pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
     builder_ctx: FunctionBuilderContext,
     mir_fn: &'a MirFunction,
+    func_ids: &'a HashMap<String, FuncId>,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -24,11 +26,12 @@ pub struct FunctionBuilder<'a> {
 }
 
 impl<'a> FunctionBuilder<'a> {
-    pub fn new(func: &'a mut Function, mir_fn: &'a MirFunction) -> CodegenResult<Self> {
+    pub fn new(func: &'a mut Function, mir_fn: &'a MirFunction, func_ids: &'a HashMap<String, FuncId>) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
             builder_ctx: FunctionBuilderContext::new(),
             mir_fn,
+            func_ids,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
         })
@@ -78,11 +81,11 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
-                Self::lower_stmt(&mut builder, stmt, &self.var_map)?;
+                Self::lower_stmt(&mut builder, stmt, &self.var_map, &self.mir_fn.locals)?;
             }
 
             // Lower terminator
-            Self::lower_terminator(&mut builder, &mir_block.terminator, &self.var_map, &self.block_map)?;
+            Self::lower_terminator(&mut builder, &mir_block.terminator, &self.var_map, &self.block_map, &self.mir_fn.ret_ty)?;
 
             if mir_block.id != self.mir_fn.entry_block {
                 builder.seal_block(cl_block);
@@ -97,10 +100,16 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         stmt: &MirStmt,
         var_map: &HashMap<LocalId, Variable>,
+        locals: &[rask_mir::MirLocal],
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
-                let val = Self::lower_rvalue(builder, rvalue, var_map)?;
+                // Find the destination variable's type
+                let dst_local = locals.iter().find(|l| l.id == *dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
+                let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
+
+                let val = Self::lower_rvalue(builder, rvalue, var_map, Some(dst_ty))?;
                 let var = var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
                 builder.def_var(*var, val);
@@ -117,9 +126,10 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::Call { dst, func, args } => {
-                // For now, stub out calls - we'll implement this after we have runtime functions
+                // For now, calls are not yet fully implemented
+                // We need to properly import function references into the current function
                 let _ = (dst, func, args);
-                return Err(CodegenError::UnsupportedFeature("Call not yet implemented".to_string()));
+                return Err(CodegenError::UnsupportedFeature(format!("Call to '{}' not yet implemented - needs function import support", func.name)));
             }
 
             _ => {
@@ -134,15 +144,17 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         rvalue: &rask_mir::MirRValue,
         var_map: &HashMap<LocalId, Variable>,
+        expected_ty: Option<Type>,
     ) -> CodegenResult<Value> {
         match rvalue {
             rask_mir::MirRValue::Use(op) => {
-                Self::lower_operand(builder, op, var_map)
+                Self::lower_operand_typed(builder, op, var_map, expected_ty)
             }
 
             rask_mir::MirRValue::BinaryOp { op, left, right } => {
-                let lhs_val = Self::lower_operand(builder, left, var_map)?;
-                let rhs_val = Self::lower_operand(builder, right, var_map)?;
+                // For binary ops, use the expected type for both operands
+                let lhs_val = Self::lower_operand_typed(builder, left, var_map, expected_ty)?;
+                let rhs_val = Self::lower_operand_typed(builder, right, var_map, expected_ty)?;
 
                 let result = match op {
                     BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
@@ -167,7 +179,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             rask_mir::MirRValue::UnaryOp { op, operand } => {
-                let val = Self::lower_operand(builder, operand, var_map)?;
+                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty)?;
 
                 let result = match op {
                     UnaryOp::Neg => builder.ins().ineg(val),
@@ -188,11 +200,31 @@ impl<'a> FunctionBuilder<'a> {
         term: &MirTerminator,
         var_map: &HashMap<LocalId, Variable>,
         block_map: &HashMap<BlockId, Block>,
+        ret_ty: &rask_mir::MirType,
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
                 if let Some(val_op) = value {
-                    let val = Self::lower_operand(builder, val_op, var_map)?;
+                    let expected_ty = mir_to_cranelift_type(ret_ty)?;
+                    let mut val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty))?;
+
+                    // Insert conversion if types don't match
+                    let actual_ty = builder.func.dfg.value_type(val);
+                    if actual_ty != expected_ty {
+                        // For integer types, use ireduce/sextend/uextend as needed
+                        if actual_ty.is_int() && expected_ty.is_int() {
+                            let actual_bits = actual_ty.bits();
+                            let expected_bits = expected_ty.bits();
+                            if actual_bits > expected_bits {
+                                // Truncate (e.g., i64 -> i32)
+                                val = builder.ins().ireduce(expected_ty, val);
+                            } else {
+                                // Extend (e.g., i32 -> i64)
+                                val = builder.ins().sextend(expected_ty, val);
+                            }
+                        }
+                    }
+
                     builder.ins().return_(&[val]);
                 } else {
                     builder.ins().return_(&[]);
@@ -256,6 +288,15 @@ impl<'a> FunctionBuilder<'a> {
         op: &MirOperand,
         var_map: &HashMap<LocalId, Variable>,
     ) -> CodegenResult<Value> {
+        Self::lower_operand_typed(builder, op, var_map, None)
+    }
+
+    fn lower_operand_typed(
+        builder: &mut ClifFunctionBuilder,
+        op: &MirOperand,
+        var_map: &HashMap<LocalId, Variable>,
+        expected_ty: Option<Type>,
+    ) -> CodegenResult<Value> {
         match op {
             MirOperand::Local(local_id) => {
                 let var = var_map.get(local_id)
@@ -266,10 +307,17 @@ impl<'a> FunctionBuilder<'a> {
             MirOperand::Constant(const_val) => {
                 match const_val {
                     MirConst::Int(n) => {
-                        Ok(builder.ins().iconst(types::I64, *n))
+                        // Use expected type if available, otherwise default to I32
+                        let ty = expected_ty.unwrap_or(types::I32);
+                        Ok(builder.ins().iconst(ty, *n))
                     }
                     MirConst::Float(f) => {
-                        Ok(builder.ins().f64const(*f))
+                        let ty = expected_ty.unwrap_or(types::F64);
+                        if ty == types::F32 {
+                            Ok(builder.ins().f32const(*f as f32))
+                        } else {
+                            Ok(builder.ins().f64const(*f))
+                        }
                     }
                     MirConst::Bool(b) => {
                         Ok(builder.ins().iconst(types::I8, if *b { 1 } else { 0 }))
