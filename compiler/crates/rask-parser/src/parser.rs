@@ -2494,6 +2494,7 @@ impl Parser {
 
     fn parse_args(&mut self) -> Result<Vec<Expr>, ParseError> {
         let mut args = Vec::new();
+        self.skip_newlines();
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         loop {
@@ -2504,7 +2505,10 @@ impl Parser {
                 }
             }
             args.push(self.parse_expr()?);
+            self.skip_newlines();
             if !self.match_token(&TokenKind::Comma) { break; }
+            self.skip_newlines();
+            if self.check(&TokenKind::RParen) { break; }
         }
 
         Ok(args)
