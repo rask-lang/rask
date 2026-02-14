@@ -3,13 +3,12 @@
 //! Function builder — lowers MIR to Cranelift IR.
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{Function, InstBuilder, MemFlags};
+use cranelift_codegen::ir::{FuncRef, Function, InstBuilder, MemFlags};
 use cranelift_codegen::ir::condcodes::IntCC;
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
-use cranelift_module::FuncId;
 use std::collections::HashMap;
 
-use rask_mir::{BinOp, BlockId, FunctionRef, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, UnaryOp};
+use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirStmt, MirTerminator, UnaryOp};
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
 
@@ -17,7 +16,8 @@ pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
     builder_ctx: FunctionBuilderContext,
     mir_fn: &'a MirFunction,
-    func_ids: &'a HashMap<String, FuncId>,
+    /// Pre-imported function references (MIR name → Cranelift FuncRef)
+    func_refs: &'a HashMap<String, FuncRef>,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -26,12 +26,16 @@ pub struct FunctionBuilder<'a> {
 }
 
 impl<'a> FunctionBuilder<'a> {
-    pub fn new(func: &'a mut Function, mir_fn: &'a MirFunction, func_ids: &'a HashMap<String, FuncId>) -> CodegenResult<Self> {
+    pub fn new(
+        func: &'a mut Function,
+        mir_fn: &'a MirFunction,
+        func_refs: &'a HashMap<String, FuncRef>,
+    ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
             builder_ctx: FunctionBuilderContext::new(),
             mir_fn,
-            func_ids,
+            func_refs,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
         })
@@ -79,7 +83,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
-                Self::lower_stmt(&mut builder, stmt, &self.var_map, &self.mir_fn.locals)?;
+                Self::lower_stmt(&mut builder, stmt, &self.var_map, &self.mir_fn.locals, self.func_refs)?;
             }
 
             // Lower terminator
@@ -101,38 +105,19 @@ impl<'a> FunctionBuilder<'a> {
         stmt: &MirStmt,
         var_map: &HashMap<LocalId, Variable>,
         locals: &[rask_mir::MirLocal],
+        func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
-                // Find the destination variable's type
                 let dst_local = locals.iter().find(|l| l.id == *dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
                 let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
 
-                // Pass expected type for simple values, but comparisons will ignore it
                 let mut val = Self::lower_rvalue(builder, rvalue, var_map, Some(dst_ty))?;
 
-                // Handle type conversions
                 let val_ty = builder.func.dfg.value_type(val);
                 if val_ty != dst_ty {
-                    // Convert between integer types
-                    if val_ty.is_int() && dst_ty.is_int() {
-                        let val_bits = val_ty.bits();
-                        let dst_bits = dst_ty.bits();
-                        if val_bits == 1 {
-                            // b1 → iN: zero-extend
-                            val = builder.ins().uextend(dst_ty, val);
-                        } else if dst_bits == 1 {
-                            // iN → b1: compare with 0
-                            val = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
-                        } else if val_bits > dst_bits {
-                            // Truncate (e.g., i64 → i32)
-                            val = builder.ins().ireduce(dst_ty, val);
-                        } else {
-                            // Extend (e.g., i32 → i64)
-                            val = builder.ins().sextend(dst_ty, val);
-                        }
-                    }
+                    val = Self::convert_value(builder, val, val_ty, dst_ty);
                 }
 
                 let var = var_map.get(dst)
@@ -145,24 +130,114 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
                 let val = Self::lower_operand(builder, value, var_map)?;
 
-                // Store with offset
                 let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
             }
 
             MirStmt::Call { dst, func, args } => {
-                // For now, calls are not yet fully implemented
-                // We need to properly import function references into the current function
-                let _ = (dst, func, args);
-                return Err(CodegenError::UnsupportedFeature(format!("Call to '{}' not yet implemented - needs function import support", func.name)));
+                let func_ref = func_refs.get(&func.name)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+
+                // Look up the callee's signature to get expected parameter types
+                let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
+                let sig = &builder.func.dfg.signatures[ext_func.signature];
+                let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+
+                let mut arg_vals = Vec::with_capacity(args.len());
+                for (i, a) in args.iter().enumerate() {
+                    let expected_ty = param_types.get(i).copied();
+                    let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty)?;
+                    // Convert if the actual type doesn't match the expected parameter type
+                    if let Some(expected) = expected_ty {
+                        let actual = builder.func.dfg.value_type(val);
+                        if actual != expected {
+                            val = Self::convert_value(builder, val, actual, expected);
+                        }
+                    }
+                    arg_vals.push(val);
+                }
+
+                let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+                if let Some(dst_id) = dst {
+                    let results = builder.inst_results(call_inst);
+                    if !results.is_empty() {
+                        let result_val = results[0];
+                        let var = var_map.get(dst_id)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "Call destination variable not found".to_string()
+                            ))?;
+
+                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let mut val = result_val;
+                        if let Some(local) = dst_local {
+                            let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                            let val_ty = builder.func.dfg.value_type(val);
+                            if val_ty != dst_ty {
+                                val = Self::convert_value(builder, val, val_ty, dst_ty);
+                            }
+                        }
+                        builder.def_var(*var, val);
+                    }
+                }
             }
 
-            _ => {
-                // TODO: Implement other statement types (resource tracking, etc.)
-                return Err(CodegenError::UnsupportedFeature(format!("Statement not implemented: {:?}", stmt)));
+            // Debug info — no codegen needed
+            MirStmt::SourceLocation { .. } => {}
+
+            // Resource tracking — not yet supported in native codegen
+            MirStmt::ResourceRegister { .. }
+            | MirStmt::ResourceConsume { .. }
+            | MirStmt::ResourceScopeCheck { .. } => {}
+
+            // Cleanup stack — not yet supported in native codegen
+            MirStmt::EnsurePush { .. } | MirStmt::EnsurePop => {}
+
+            MirStmt::PoolCheckedAccess { .. } => {
+                return Err(CodegenError::UnsupportedFeature(
+                    "Pool checked access not yet implemented in codegen".to_string()
+                ));
             }
         }
         Ok(())
+    }
+
+    /// Convert a value between Cranelift types (integer widening/narrowing, float conversion).
+    fn convert_value(
+        builder: &mut ClifFunctionBuilder,
+        val: Value,
+        from_ty: Type,
+        to_ty: Type,
+    ) -> Value {
+        if from_ty == to_ty {
+            return val;
+        }
+
+        if from_ty.is_int() && to_ty.is_int() {
+            let from_bits = from_ty.bits();
+            let to_bits = to_ty.bits();
+            if from_bits == 1 {
+                builder.ins().uextend(to_ty, val)
+            } else if to_bits == 1 {
+                builder.ins().icmp_imm(IntCC::NotEqual, val, 0)
+            } else if from_bits > to_bits {
+                builder.ins().ireduce(to_ty, val)
+            } else {
+                builder.ins().sextend(to_ty, val)
+            }
+        } else if from_ty.is_float() && to_ty.is_float() {
+            if from_ty.bits() > to_ty.bits() {
+                builder.ins().fdemote(to_ty, val)
+            } else {
+                builder.ins().fpromote(to_ty, val)
+            }
+        } else if from_ty.is_int() && to_ty.is_float() {
+            builder.ins().fcvt_from_sint(to_ty, val)
+        } else if from_ty.is_float() && to_ty.is_int() {
+            builder.ins().fcvt_to_sint_sat(to_ty, val)
+        } else {
+            builder.ins().bitcast(to_ty, MemFlags::new(), val)
+        }
     }
 
     fn lower_rvalue(
@@ -181,8 +256,6 @@ impl<'a> FunctionBuilder<'a> {
                     BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
                 );
 
-                // Comparisons produce bool but operands must match each other's type,
-                // not the result type. Lower left first to determine operand type.
                 let operand_ty = if is_comparison { None } else { expected_ty };
                 let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty)?;
                 let lhs_ty = builder.func.dfg.value_type(lhs_val);
@@ -221,8 +294,27 @@ impl<'a> FunctionBuilder<'a> {
                 Ok(result)
             }
 
-            _ => {
-                Err(CodegenError::UnsupportedFeature(format!("RValue not implemented: {:?}", rvalue)))
+            rask_mir::MirRValue::Cast { value, target_ty } => {
+                let val = Self::lower_operand(builder, value, var_map)?;
+                let target = mir_to_cranelift_type(target_ty)?;
+                let val_ty = builder.func.dfg.value_type(val);
+                Ok(Self::convert_value(builder, val, val_ty, target))
+            }
+
+            rask_mir::MirRValue::Field { .. } => {
+                Err(CodegenError::UnsupportedFeature("Field access not yet implemented in codegen".to_string()))
+            }
+
+            rask_mir::MirRValue::EnumTag { .. } => {
+                Err(CodegenError::UnsupportedFeature("Enum tag extraction not yet implemented in codegen".to_string()))
+            }
+
+            rask_mir::MirRValue::Ref(_) => {
+                Err(CodegenError::UnsupportedFeature("Reference-of not yet implemented in codegen".to_string()))
+            }
+
+            rask_mir::MirRValue::Deref(_) => {
+                Err(CodegenError::UnsupportedFeature("Dereference not yet implemented in codegen".to_string()))
             }
         }
     }
@@ -238,26 +330,14 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminator::Return { value } => {
                 if let Some(val_op) = value {
                     let expected_ty = mir_to_cranelift_type(ret_ty)?;
-                    let mut val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty))?;
-
-                    // Insert conversion if types don't match
+                    let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty))?;
                     let actual_ty = builder.func.dfg.value_type(val);
-                    if actual_ty != expected_ty {
-                        // For integer types, use ireduce/sextend/uextend as needed
-                        if actual_ty.is_int() && expected_ty.is_int() {
-                            let actual_bits = actual_ty.bits();
-                            let expected_bits = expected_ty.bits();
-                            if actual_bits > expected_bits {
-                                // Truncate (e.g., i64 -> i32)
-                                val = builder.ins().ireduce(expected_ty, val);
-                            } else {
-                                // Extend (e.g., i32 -> i64)
-                                val = builder.ins().sextend(expected_ty, val);
-                            }
-                        }
-                    }
-
-                    builder.ins().return_(&[val]);
+                    let final_val = if actual_ty != expected_ty {
+                        Self::convert_value(builder, val, actual_ty, expected_ty)
+                    } else {
+                        val
+                    };
+                    builder.ins().return_(&[final_val]);
                 } else {
                     builder.ins().return_(&[]);
                 }
@@ -272,7 +352,6 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminator::Branch { cond, then_block, else_block } => {
                 let mut cond_val = Self::lower_operand(builder, cond, var_map)?;
 
-                // brif requires b1, convert i8 to b1 if needed
                 let cond_ty = builder.func.dfg.value_type(cond_val);
                 if cond_ty == types::I8 {
                     cond_val = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
@@ -288,8 +367,6 @@ impl<'a> FunctionBuilder<'a> {
             MirTerminator::Switch { value, cases, default } => {
                 let scrutinee_val = Self::lower_operand(builder, value, var_map)?;
 
-                // Build switch using br_table for dense cases, or chain of branches for sparse
-                // For now, use simple branch chain
                 let mut current_block = builder.current_block().unwrap();
 
                 for (value, target_id) in cases {
@@ -299,7 +376,6 @@ impl<'a> FunctionBuilder<'a> {
                     let cmp_val = builder.ins().iconst(types::I64, *value as i64);
                     let cond = builder.ins().icmp(IntCC::Equal, scrutinee_val, cmp_val);
 
-                    // Create a block for the next comparison
                     let next_block = builder.create_block();
 
                     builder.ins().brif(cond, *target_block, &[], next_block, &[]);
@@ -308,15 +384,27 @@ impl<'a> FunctionBuilder<'a> {
                     current_block = next_block;
                 }
 
-                // Default case
                 let default_block = block_map.get(default)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Switch default block not found".to_string()))?;
                 builder.ins().jump(*default_block, &[]);
                 builder.seal_block(current_block);
             }
 
-            _ => {
-                return Err(CodegenError::UnsupportedFeature(format!("Terminator not implemented: {:?}", term)));
+            MirTerminator::Unreachable => {
+                builder.ins().trap(TrapCode::user(0).unwrap());
+            }
+
+            MirTerminator::CleanupReturn { value, .. } => {
+                // Treat as normal return — cleanup chains not yet supported
+                let expected_ty = mir_to_cranelift_type(ret_ty)?;
+                let val = Self::lower_operand_typed(builder, value, var_map, Some(expected_ty))?;
+                let actual_ty = builder.func.dfg.value_type(val);
+                let final_val = if actual_ty != expected_ty {
+                    Self::convert_value(builder, val, actual_ty, expected_ty)
+                } else {
+                    val
+                };
+                builder.ins().return_(&[final_val]);
             }
         }
         Ok(())
@@ -346,7 +434,6 @@ impl<'a> FunctionBuilder<'a> {
             MirOperand::Constant(const_val) => {
                 match const_val {
                     MirConst::Int(n) => {
-                        // Use expected type if available, otherwise default to I32
                         let ty = expected_ty.unwrap_or(types::I32);
                         Ok(builder.ins().iconst(ty, *n))
                     }
@@ -365,8 +452,7 @@ impl<'a> FunctionBuilder<'a> {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
                     MirConst::String(_s) => {
-                        // Strings need runtime support - emit a call to a runtime function
-                        // For now, stub with a null pointer
+                        // Strings need data section support — stub with null pointer
                         Ok(builder.ins().iconst(types::I64, 0))
                     }
                 }

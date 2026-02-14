@@ -95,28 +95,49 @@ pub fn cmd_build(path: &str) {
                                             if mir_errors == 0 && !mir_functions.is_empty() {
                                                 match rask_codegen::CodeGenerator::new() {
                                                     Ok(mut codegen) => {
-                                                        // Declare all functions first
-                                                        if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
+                                                        // Declare runtime functions (print, exit, etc.)
+                                                        if let Err(e) = codegen.declare_runtime_functions() {
                                                             eprintln!("codegen error: {}", e);
                                                             total_errors += 1;
-                                                        } else {
-                                                            // Generate each function
+                                                        }
+
+                                                        // Declare all user functions
+                                                        if total_errors == 0 {
+                                                            if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
+                                                                eprintln!("codegen error: {}", e);
+                                                                total_errors += 1;
+                                                            }
+                                                        }
+
+                                                        // Generate each function
+                                                        if total_errors == 0 {
                                                             for mir_fn in &mir_functions {
                                                                 if let Err(e) = codegen.gen_function(mir_fn) {
                                                                     eprintln!("codegen error in '{}': {}", mir_fn.name, e);
                                                                     total_errors += 1;
                                                                 }
                                                             }
+                                                        }
 
-                                                            // Emit object file
-                                                            if total_errors == 0 {
-                                                                let output_path = "output.o";
-                                                                match codegen.emit_object(output_path) {
-                                                                    Ok(_) => println!("  {} {}", "Generated".green(), output_path),
-                                                                    Err(e) => {
-                                                                        eprintln!("failed to emit object file: {}", e);
-                                                                        total_errors += 1;
+                                                        // Emit object file and link
+                                                        if total_errors == 0 {
+                                                            let obj_path = "output.o";
+                                                            let bin_path = "output";
+                                                            match codegen.emit_object(obj_path) {
+                                                                Ok(_) => {
+                                                                    println!("  {} {}", "Generated".green(), obj_path);
+                                                                    // Link with C runtime to produce executable
+                                                                    match link_executable(obj_path, bin_path) {
+                                                                        Ok(_) => println!("  {} {}", "Linked".green(), bin_path),
+                                                                        Err(e) => {
+                                                                            eprintln!("link error: {}", e);
+                                                                            total_errors += 1;
+                                                                        }
                                                                     }
+                                                                }
+                                                                Err(e) => {
+                                                                    eprintln!("failed to emit object file: {}", e);
+                                                                    total_errors += 1;
                                                                 }
                                                             }
                                                         }
@@ -165,4 +186,63 @@ pub fn cmd_build(path: &str) {
             process::exit(1);
         }
     }
+}
+
+/// Find the runtime.c file, compile it, and link with the object file.
+fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
+    // Find the runtime relative to the rask binary
+    let runtime_path = find_runtime_c()?;
+
+    // Compile runtime.c and link with the generated object file
+    let status = process::Command::new("cc")
+        .args([&runtime_path, obj_path, "-o", bin_path])
+        .status()
+        .map_err(|e| format!("failed to run cc: {}", e))?;
+
+    if !status.success() {
+        return Err(format!("linker exited with status {}", status));
+    }
+
+    // Clean up the intermediate .o file
+    let _ = std::fs::remove_file(obj_path);
+
+    Ok(())
+}
+
+/// Locate the C runtime file. Searches:
+/// 1. Next to the rask binary: ../runtime/runtime.c
+/// 2. RASK_RUNTIME_DIR environment variable
+/// 3. Common development paths
+fn find_runtime_c() -> Result<String, String> {
+    // Check RASK_RUNTIME_DIR
+    if let Ok(dir) = std::env::var("RASK_RUNTIME_DIR") {
+        let p = Path::new(&dir).join("runtime.c");
+        if p.exists() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+    }
+
+    // Check relative to the current executable
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Development layout: target/release/rask → compiler/runtime/runtime.c
+            // Walk up from the binary to find the compiler/runtime directory
+            let mut dir = exe_dir.to_path_buf();
+            for _ in 0..5 {
+                let candidate = dir.join("compiler").join("runtime").join("runtime.c");
+                if candidate.exists() {
+                    return Ok(candidate.to_string_lossy().to_string());
+                }
+                let candidate = dir.join("runtime").join("runtime.c");
+                if candidate.exists() {
+                    return Ok(candidate.to_string_lossy().to_string());
+                }
+                if !dir.pop() {
+                    break;
+                }
+            }
+        }
+    }
+
+    Err("Could not find runtime.c — set RASK_RUNTIME_DIR to the directory containing it".to_string())
 }
