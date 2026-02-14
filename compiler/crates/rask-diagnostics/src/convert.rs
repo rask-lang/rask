@@ -376,6 +376,33 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("add a 'return' statement at the end of the 'else' block")
                     .with_why("guard patterns bind variables in the outer scope — the 'else' path must exit to ensure the binding is always valid")
             }
+
+            MissingMutateAnnotation { param_name, param_index: _, span } => {
+                Diagnostic::error(format!("parameter `{}` requires `mutate` annotation at call site", param_name))
+                    .with_code("E0326")
+                    .with_primary(*span, format!("add `mutate` before this argument"))
+                    .with_help(format!("call with `mutate {}`", param_name))
+                    .with_fix(format!("add `mutate` annotation"))
+                    .with_why("mutable parameters require explicit annotation at call site for clarity")
+            }
+
+            MissingOwnAnnotation { param_name, param_index: _, span } => {
+                Diagnostic::error(format!("parameter `{}` requires `own` annotation at call site", param_name))
+                    .with_code("E0327")
+                    .with_primary(*span, format!("add `own` before this argument"))
+                    .with_help(format!("call with `own {}`", param_name))
+                    .with_fix(format!("add `own` annotation"))
+                    .with_why("ownership transfer requires explicit annotation at call site for clarity")
+            }
+
+            UnexpectedAnnotation { annotation, param_name, param_index: _, span } => {
+                Diagnostic::error(format!("unexpected `{}` annotation for parameter `{}`", annotation, param_name))
+                    .with_code("E0328")
+                    .with_primary(*span, format!("remove this annotation"))
+                    .with_help(format!("remove `{}` annotation — parameter does not expect it", annotation))
+                    .with_fix("remove the annotation")
+                    .with_why("annotations must match parameter declarations")
+            }
         }
     }
 }
