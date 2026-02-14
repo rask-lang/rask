@@ -5,6 +5,7 @@
 mod types;
 mod builder;
 mod module;
+mod tests;
 
 pub use module::CodeGenerator;
 

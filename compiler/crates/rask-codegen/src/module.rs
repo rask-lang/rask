@@ -41,6 +41,69 @@ impl CodeGenerator {
         })
     }
 
+    /// Declare runtime functions as external imports.
+    /// These are provided by the C runtime (compiler/runtime/runtime.c).
+    pub fn declare_runtime_functions(&mut self) -> CodegenResult<()> {
+        // rask_print_i64(val: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_print_i64", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_i64".to_string(), id);
+        }
+
+        // rask_print_bool(val: i8) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I8));
+            let id = self.module
+                .declare_function("rask_print_bool", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_bool".to_string(), id);
+        }
+
+        // rask_print_newline() -> void
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_print_newline", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_newline".to_string(), id);
+        }
+
+        // rask_exit(code: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_exit", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_exit".to_string(), id);
+        }
+
+        // panic_unwrap() -> void (diverges, but declared as void return)
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_panic_unwrap", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_unwrap".to_string(), id);
+        }
+
+        // assert_fail() -> void (diverges)
+        {
+            let sig = self.module.make_signature();
+            let id = self.module
+                .declare_function("rask_assert_fail", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail".to_string(), id);
+        }
+
+        Ok(())
+    }
+
     /// Declare all functions first (for forward references).
     pub fn declare_functions(&mut self, _mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         for mir_fn in mir_functions {
@@ -58,10 +121,18 @@ impl CodeGenerator {
                 sig.returns.push(AbiParam::new(ret_ty));
             }
 
+            // Rename "main" to "rask_main" to avoid conflict with C runtime's main()
+            let export_name = if mir_fn.name == "main" {
+                "rask_main"
+            } else {
+                &mir_fn.name
+            };
+
             let func_id = self.module
-                .declare_function(&mir_fn.name, Linkage::Export, &sig)
+                .declare_function(export_name, Linkage::Export, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
+            // Store under the MIR name so internal calls resolve correctly
             self.func_ids.insert(mir_fn.name.clone(), func_id);
         }
         Ok(())
@@ -86,8 +157,20 @@ impl CodeGenerator {
         }
         self.ctx.func.signature = sig;
 
+        // Pre-import all declared functions into this function's namespace.
+        // This must happen before FunctionBuilder borrows ctx.func.
+        let mut func_refs = HashMap::new();
+        for (name, fid) in &self.func_ids {
+            let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            func_refs.insert(name.clone(), func_ref);
+        }
+
         // Build the function
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, mir_fn, &self.func_ids)?;
+        let mut builder = FunctionBuilder::new(
+            &mut self.ctx.func,
+            mir_fn,
+            &func_refs,
+        )?;
         builder.build()?;
 
         // Define the function in the module
