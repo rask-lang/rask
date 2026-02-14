@@ -1033,6 +1033,9 @@ dependencies = [
 [[package]]
 name = "rask-rt"
 version = "0.1.0"
+dependencies = [
+ "libc",
+]
 
 [[package]]
 name = "rask-spec-test"
