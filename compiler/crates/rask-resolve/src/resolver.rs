@@ -881,13 +881,13 @@ impl Resolver {
             ExprKind::Call { func, args } => {
                 self.resolve_expr(func);
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.resolve_expr(object);
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::Field { object, field } => {
@@ -1021,7 +1021,7 @@ impl Resolver {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
                 self.scopes.push(ScopeKind::Block);
                 for stmt in body {

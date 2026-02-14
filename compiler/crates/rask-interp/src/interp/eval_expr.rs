@@ -102,7 +102,7 @@ impl Interpreter {
                     let obj_val = self.eval_expr(object)?;
                     let arg_vals: Vec<Value> = args
                         .iter()
-                        .map(|a| self.eval_expr(a))
+                        .map(|a| self.eval_expr(&a.expr))
                         .collect::<Result<_, _>>()?;
 
                     if let Value::Enum {
@@ -154,7 +154,7 @@ impl Interpreter {
                 let func_val = self.eval_expr(func)?;
                 let arg_vals: Vec<Value> = args
                     .iter()
-                    .map(|a| self.eval_expr(a))
+                    .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
                 self.call_value(func_val, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
@@ -173,7 +173,7 @@ impl Interpreter {
                             let field_count = variant.fields.len();
                             let arg_vals: Vec<Value> = args
                                 .iter()
-                                .map(|a| self.eval_expr(a))
+                                .map(|a| self.eval_expr(&a.expr))
                                 .collect::<Result<_, _>>()?;
                             if arg_vals.len() != field_count {
                                 return Err(RuntimeDiagnostic::new(
@@ -202,7 +202,7 @@ impl Interpreter {
                             if is_static {
                                 let arg_vals: Vec<Value> = args
                                     .iter()
-                                    .map(|a| self.eval_expr(a))
+                                    .map(|a| self.eval_expr(&a.expr))
                                     .collect::<Result<_, _>>()?;
                                 return self.call_function(method_fn, arg_vals);
                             }
@@ -213,7 +213,7 @@ impl Interpreter {
                 let receiver = self.eval_expr(object)?;
                 let mut arg_vals: Vec<Value> = args
                     .iter()
-                    .map(|a| self.eval_expr(a))
+                    .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
                 // Inject type_args for generic methods (e.g. json.decode<T>)
@@ -888,7 +888,7 @@ impl Interpreter {
                         .map(|n| n.get())
                         .unwrap_or(4)
                 } else {
-                    self.eval_expr(&args[0])?.as_int()
+                    self.eval_expr(&args[0].expr)?.as_int()
                         .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
@@ -954,7 +954,7 @@ impl Interpreter {
                         .map(|n| n.get())
                         .unwrap_or(4)
                 } else {
-                    self.eval_expr(&args[0])?.as_int()
+                    self.eval_expr(&args[0].expr)?.as_int()
                         .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 

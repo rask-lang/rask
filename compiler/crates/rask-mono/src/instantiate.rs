@@ -5,7 +5,7 @@
 use rask_ast::{
     decl::{Decl, DeclKind, FnDecl, Param, TypeParam},
     expr::{
-        ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind,
+        CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind,
     },
     stmt::{Stmt, StmtKind},
     NodeId,
@@ -44,7 +44,7 @@ impl TypeSubstitutor {
         // Simple substitution - replace type parameter names
         // TODO: Handle complex types like Vec<T>, Result<T, E>
         if let Some(ty) = self.substitutions.get(type_str) {
-            format!("{:?}", ty)
+            format!("{}", ty)
         } else {
             type_str.to_string()
         }
@@ -231,7 +231,7 @@ impl TypeSubstitutor {
                 // Calls
                 ExprKind::Call { func, args } => ExprKind::Call {
                     func: Box::new(self.clone_expr(func)),
-                    args: args.iter().map(|a| self.clone_expr(a)).collect(),
+                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                 },
                 ExprKind::MethodCall {
                     object,
@@ -246,7 +246,7 @@ impl TypeSubstitutor {
                             .map(|t| self.substitute_type_string(t))
                             .collect()
                     }),
-                    args: args.iter().map(|a| self.clone_expr(a)).collect(),
+                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                 },
 
                 // Access
@@ -379,7 +379,7 @@ impl TypeSubstitutor {
                 // Context blocks
                 ExprKind::UsingBlock { name, args, body } => ExprKind::UsingBlock {
                     name: name.clone(),
-                    args: args.iter().map(|a| self.clone_expr(a)).collect(),
+                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
                 ExprKind::WithAs { bindings, body } => ExprKind::WithAs {

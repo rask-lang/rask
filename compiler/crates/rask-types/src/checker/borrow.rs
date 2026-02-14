@@ -185,13 +185,13 @@ impl TypeChecker {
                     }
                 }
                 for arg in args {
-                    self.collect_closure_accesses(arg, skip);
+                    self.collect_closure_accesses(&arg.expr, skip);
                 }
             }
             ExprKind::Call { func, args } => {
                 self.collect_closure_accesses(func, skip);
                 for arg in args {
-                    self.collect_closure_accesses(arg, skip);
+                    self.collect_closure_accesses(&arg.expr, skip);
                 }
             }
             ExprKind::Block(stmts) => {

@@ -916,6 +916,15 @@ impl<'a> Printer<'a> {
 
     // --- Expressions ---
 
+    fn format_call_arg(&mut self, arg: &CallArg) {
+        match arg.mode {
+            ArgMode::Mutate => self.emit("mutate "),
+            ArgMode::Own => self.emit("own "),
+            ArgMode::Default => {}
+        }
+        self.format_expr(&arg.expr);
+    }
+
     fn format_expr(&mut self, expr: &Expr) {
         self.format_expr_inner(expr, None);
     }
@@ -964,7 +973,7 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         self.emit(", ");
                     }
-                    self.format_expr(arg);
+                    self.format_call_arg(arg);
                 }
                 self.emit(")");
             }
@@ -982,7 +991,7 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         self.emit(", ");
                     }
-                    self.format_expr(arg);
+                    self.format_call_arg(arg);
                 }
                 self.emit(")");
             }
@@ -1202,7 +1211,7 @@ impl<'a> Printer<'a> {
                         if i > 0 {
                             self.emit(", ");
                         }
-                        self.format_expr(arg);
+                        self.format_call_arg(arg);
                     }
                     self.emit(")");
                 }

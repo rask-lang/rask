@@ -360,12 +360,14 @@ impl ComptimeInterpreter {
 
             // Function call
             ExprKind::Call { func, args } => {
-                self.eval_call(func, args)?
+                let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
+                self.eval_call(func, &arg_exprs)?
             }
 
             // Method call (from desugared operators)
             ExprKind::MethodCall { object, method, args, .. } => {
-                self.eval_method_call(object, method, args)?
+                let arg_exprs: Vec<_> = args.iter().map(|a| &a.expr).collect();
+                self.eval_method_call(object, method, &arg_exprs)?
             }
 
             // Field access
@@ -834,7 +836,7 @@ impl ComptimeInterpreter {
         }
     }
 
-    fn eval_call(&mut self, func: &Expr, args: &[Expr]) -> ComptimeResult<ComptimeValue> {
+    fn eval_call(&mut self, func: &Expr, args: &[&Expr]) -> ComptimeResult<ComptimeValue> {
         // Get function name
         let func_name = if let ExprKind::Ident(name) = &func.kind {
             name.clone()
@@ -860,7 +862,7 @@ impl ComptimeInterpreter {
         &mut self,
         object: &Expr,
         method: &str,
-        args: &[Expr],
+        args: &[&Expr],
     ) -> ComptimeResult<ComptimeValue> {
         let obj = self.eval_expr(object)?;
         let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();

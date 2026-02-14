@@ -189,13 +189,13 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
         ExprKind::Call { func, args } => {
             visit_expr(func, index);
             for arg in args {
-                visit_expr(arg, index);
+                visit_expr(&arg.expr, index);
             }
         }
         ExprKind::MethodCall { object, args, .. } => {
             visit_expr(object, index);
             for arg in args {
-                visit_expr(arg, index);
+                visit_expr(&arg.expr, index);
             }
         }
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {

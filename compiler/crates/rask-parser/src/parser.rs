@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
-use rask_ast::expr::{BinOp, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -2075,7 +2075,9 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: Span::new(start, end) })
             }
 
-            TokenKind::Own | TokenKind::MutateKw => {
+            // `own` as prefix in non-call contexts (struct field inits).
+            // Call-site `own`/`mutate` are captured in parse_args().
+            TokenKind::Own => {
                 self.advance();
                 self.parse_expr_bp(Self::PREFIX_BP)
             }
@@ -2492,19 +2494,33 @@ impl Parser {
         }
     }
 
-    fn parse_args(&mut self) -> Result<Vec<Expr>, ParseError> {
+    fn parse_args(&mut self) -> Result<Vec<CallArg>, ParseError> {
         let mut args = Vec::new();
         self.skip_newlines();
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         loop {
+            // Skip named argument labels (name: expr)
             if let TokenKind::Ident(_) = self.current_kind().clone() {
                 if self.peek(1) == &TokenKind::Colon {
                     self.advance();
                     self.advance();
                 }
             }
-            args.push(self.parse_expr()?);
+
+            // Capture call-site mode keywords
+            let mode = if self.check(&TokenKind::MutateKw) {
+                self.advance();
+                ArgMode::Mutate
+            } else if self.check(&TokenKind::Own) {
+                self.advance();
+                ArgMode::Own
+            } else {
+                ArgMode::Default
+            };
+
+            let expr = self.parse_expr()?;
+            args.push(CallArg { mode, expr });
             self.skip_newlines();
             if !self.match_token(&TokenKind::Comma) { break; }
             self.skip_newlines();

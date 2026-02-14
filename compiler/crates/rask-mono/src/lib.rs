@@ -98,7 +98,7 @@ mod tests {
     use rask_ast::decl::{
         Decl, DeclKind, EnumDecl, FnDecl, Param, StructDecl, TypeParam, Variant, Field,
     };
-    use rask_ast::expr::{Expr, ExprKind};
+    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
     use rask_ast::stmt::{Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
@@ -127,7 +127,7 @@ mod tests {
             id: NodeId(102),
             kind: ExprKind::Call {
                 func: Box::new(ident_expr(func_name)),
-                args,
+                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
             },
             span: sp(),
         }

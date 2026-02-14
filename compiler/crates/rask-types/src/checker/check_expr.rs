@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
-use rask_ast::expr::{BinOp, Expr, ExprKind};
+use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind};
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
 use rask_resolve::{SymbolId, SymbolKind};
@@ -566,7 +566,7 @@ impl TypeChecker {
 
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.infer_expr(arg);
+                    self.infer_expr(&arg.expr);
                 }
                 for stmt in body {
                     self.check_stmt(stmt);
@@ -714,11 +714,11 @@ impl TypeChecker {
     // TODO: For generic function calls, track fresh type variables created for
     // type params here. After constraint solving, resolve them and populate
     // TypedProgram.call_type_args so monomorphization can instantiate correctly.
-    pub(super) fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> Type {
+    pub(super) fn check_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
                 for arg in args {
-                    self.infer_expr(arg);
+                    self.infer_expr(&arg.expr);
                 }
                 return match name.as_str() {
                     "panic" => Type::Never,
@@ -733,13 +733,12 @@ impl TypeChecker {
         match func_ty {
             Type::Fn { ref params, ref ret } => {
                 if params.is_empty() && !args.is_empty() {
-                    // Infer args anyway (for side effects / node_types)
-                    for arg in args { self.infer_expr(arg); }
+                    for arg in args { self.infer_expr(&arg.expr); }
                     return *ret.clone();
                 }
 
                 if params.len() != args.len() {
-                    for arg in args { self.infer_expr(arg); }
+                    for arg in args { self.infer_expr(&arg.expr); }
                     self.errors.push(TypeError::ArityMismatch {
                         expected: params.len(),
                         found: args.len(),
@@ -751,7 +750,7 @@ impl TypeChecker {
                 // Propagate expected param types to arguments
                 let ret = *ret.clone();
                 for (param, arg) in params.clone().iter().zip(args.iter()) {
-                    let arg_ty = self.infer_expr_expecting(arg, param);
+                    let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     self.ctx
                         .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));
                 }
@@ -759,7 +758,7 @@ impl TypeChecker {
                 ret
             }
             Type::Var(_) => {
-                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     func_ty,
@@ -772,11 +771,11 @@ impl TypeChecker {
                 ret
             }
             Type::Error => {
-                for arg in args { self.infer_expr(arg); }
+                for arg in args { self.infer_expr(&arg.expr); }
                 Type::Error
             }
             _ => {
-                for arg in args { self.infer_expr(arg); }
+                for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
         }
@@ -790,7 +789,7 @@ impl TypeChecker {
         &mut self,
         object: &Expr,
         method: &str,
-        args: &[Expr],
+        args: &[CallArg],
         span: Span,
     ) -> Type {
         // Check if this is a builtin module method call (e.g., fs.open)
@@ -821,7 +820,7 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         let ret_ty = self.ctx.fresh_var();
 
@@ -840,10 +839,10 @@ impl TypeChecker {
         &mut self,
         module: &str,
         method: &str,
-        args: &[Expr],
+        args: &[CallArg],
         span: Span,
     ) -> Type {
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
             // Check parameter count — skip for wildcard params (_Any accepts anything)
