@@ -265,6 +265,20 @@ Move from interpreter to actual compiled output.
   - [x] Type inference during lowering: `lower_expr` returns `(MirOperand, MirType)`, parses type annotations, function signature table for call return types
   - [x] Readable MIR display: proper Display impls for all MIR types
 
+  **MIR Type Inference (completed 2026-02-14):**
+  - [x] Thread struct/enum layouts into MIR lowerer
+  - [x] Fix instantiation: use Display format ("i32") not Debug ("I32") for type strings
+  - [x] Struct literals use real `MirType::Struct(id)` with actual field offsets from layouts
+  - [x] Field access resolves real field index and type from struct layouts
+  - [x] Array/tuple literals compute proper element sizes and aligned offsets
+  - [x] Index operations extract element type from `MirType::Array`
+
+  **MIR Type Inference TODOs (needs deeper inference):**
+  - [ ] For loop element types — needs iterator type inference beyond layouts
+  - [ ] Ensure handler parameter types — needs error type system
+  - [ ] Closure parameter types — needs inference from call site context
+  - [ ] Try/unwrap payload types for complex cases — works for basic enums, needs inference for nested/generic types
+
 - [ ] Implement Cranelift backend — MIR → machine code
 - [ ] Build `rask-rt` runtime library — Rust implementation of allocator, panic, Vec, Map, Pool, string, I/O
 

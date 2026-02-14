@@ -16,6 +16,6 @@ pub mod lower;
 
 pub use builder::BlockBuilder;
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
-pub use operand::{FunctionRef, LocalId, MirOperand, MirRValue};
+pub use operand::{FunctionRef, LocalId, MirConst, MirOperand, MirRValue};
 pub use stmt::{MirStmt, MirTerminator};
 pub use types::MirType;
