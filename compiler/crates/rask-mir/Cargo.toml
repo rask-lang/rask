@@ -1,0 +1,9 @@
+[package]
+name = "rask-mir"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+rask-mono = { path = "../rask-mono" }

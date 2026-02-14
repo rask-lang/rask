@@ -1,0 +1,89 @@
+// Solution: Lesson 14
+
+struct Wind { direction: i32, speed: i32 }
+
+func parse_wind(metar: string) -> Wind {
+    const dir_str = metar[0..3]
+    const spd_str = metar[3..5]
+    return Wind {
+        direction: dir_str.parse_int()!,
+        speed: spd_str.parse_int()!,
+    }
+}
+
+func format_flight_plan(departure: string, arrival: string, waypoints: Vec<string>) -> string {
+    let result = departure.clone()
+    for wp in waypoints {
+        result = "{result} → {wp}"
+    }
+    result = "{result} → {arrival}"
+    return result
+}
+
+func word_count(text: string) -> i32 {
+    if text.len() == 0 { return 0 }
+    const words = text.split_whitespace()
+    return words.len()
+}
+
+func callsign_prefix(callsign: string) -> string {
+    let end = 0
+    for c in callsign.chars() {
+        if c >= 'A' && c <= 'Z' {
+            end = end + 1
+        } else {
+            break
+        }
+    }
+    return callsign[0..end]
+}
+
+func parse_csv(input: string) -> Vec<Vec<string>> {
+    const rows = Vec.new()
+    const lines = input.split("\n")
+    for line in lines {
+        rows.push(line.split(","))
+    }
+    return rows
+}
+
+test "parse wind" {
+    const w = parse_wind("27015KT")
+    assert w.direction == 270
+    assert w.speed == 15
+    const w2 = parse_wind("09008KT")
+    assert w2.direction == 90
+    assert w2.speed == 8
+}
+
+test "format flight plan" {
+    const plan = format_flight_plan("ENGM", "EGLL", Vec.from(["CEDAR", "MAPLE", "BIRCH"]))
+    assert plan == "ENGM → CEDAR → MAPLE → BIRCH → EGLL"
+}
+
+test "format flight plan no waypoints" {
+    const plan = format_flight_plan("ENGM", "ESSA", Vec.new())
+    assert plan == "ENGM → ESSA"
+}
+
+test "word count" {
+    assert word_count("cleared for takeoff runway two seven left") == 7
+    assert word_count("roger") == 1
+    assert word_count("") == 0
+}
+
+test "callsign prefix" {
+    assert callsign_prefix("SAS937") == "SAS"
+    assert callsign_prefix("BAW123") == "BAW"
+    assert callsign_prefix("N12345") == "N"
+}
+
+test "parse csv" {
+    const rows = parse_csv("a,b,c\n1,2,3")
+    assert rows.len() == 2
+    assert rows[0].len() == 3
+    assert rows[0][0] == "a"
+    assert rows[1][2] == "3"
+}
+
+func main() { println("All solutions for lesson 14") }

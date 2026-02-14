@@ -3,8 +3,9 @@
   "displayName": "Rask",
   "description": "Language support for Rask",
   "version": "0.1.0",
-  "publisher": "rask",
+  "publisher": "rask-lang",
   "license": "MIT OR Apache-2.0",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/rask-lang/rask"
@@ -25,7 +26,11 @@
         "id": "rask",
         "aliases": ["Rask", "rask"],
         "extensions": [".rk"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/rask-file.svg",
+          "dark": "./icons/rask-file.svg"
+        }
       }
     ],
     "grammars": [
@@ -43,6 +48,32 @@
         }
       }
     ],
+    "commands": [
+      {
+        "command": "rask.run",
+        "title": "Rask: Run File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "rask.restartServer",
+        "title": "Rask: Restart Language Server"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "rask",
+        "path": "./snippets/rask.json"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "rask.run",
+          "when": "resourceLangId == rask",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "type": "object",
       "title": "Rask",

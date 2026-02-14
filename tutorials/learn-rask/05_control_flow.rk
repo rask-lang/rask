@@ -1,0 +1,158 @@
+// === Lesson 05: Control Flow ===
+//
+// Rask control flow looks like Python but with braces instead of indentation.
+//
+//   Python:  if x > 0:              Rask:  if x > 0 {
+//                do_thing()                     do_thing()
+//                                           }
+//
+//   Python:  for i in range(n):     Rask:  for i in 0..n {
+//                print(i)                       println("{i}")
+//                                           }
+//
+//   Python:  while x > 0:           Rask:  while x > 0 {
+//                x -= 1                         x = x - 1
+//                                           }
+//
+// Ranges:
+//   0..10     — 0 through 9 (exclusive end, like Python's range)
+//   1..101    — 1 through 100
+//
+// No += or -= yet — write x = x + 1. (It's on the roadmap.)
+//
+// Loop control: `break` exits a loop, `continue` skips to next iteration.
+// Same as Python.
+//
+
+// --- Example ---
+
+func countdown(n: i32) {
+    let i = n
+    while i > 0 {
+        println("{i}...")
+        i = i - 1
+    }
+    println("liftoff!")
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Train schedule ---
+// The Shinkansen (Japanese bullet train) departs every 10 minutes
+// starting at minute 0. Given a time in minutes since midnight,
+// return the next departure time.
+//
+// Examples: arrive at 0 → depart at 0, arrive at 1 → depart at 10,
+//           arrive at 15 → depart at 20, arrive at 30 → depart at 30
+//
+// Fun fact: the Shinkansen's average delay is under 1 minute per year.
+// Since 1964, it has never had a fatal accident at speed.
+//
+// Hint: think about modulo (%). If arrival % 10 == 0, you're on time.
+func next_departure(arrival_minute: i32) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Collatz sequence ---
+// One of the most famous unsolved problems in math. Start with any number:
+//   If even: n = n / 2
+//   If odd:  n = 3*n + 1
+// The conjecture says you always reach 1. Nobody has proven it.
+// Paul Erdős said: "Mathematics is not yet ready for such problems."
+//
+// Return the sequence as a Vec.
+//   collatz(6) → [6, 3, 10, 5, 16, 8, 4, 2, 1]
+//
+// Hint: use a while loop and .push()
+func collatz(start: i32) -> Vec<i32> {
+    panic("TODO")
+}
+
+// --- Puzzle 3: City grid walk ---
+// You're on a grid-based city map (like Manhattan). From position (0, 0),
+// follow a sequence of direction commands: "N", "S", "E", "W"
+// (each moves 1 block). Return the final Manhattan distance from origin.
+//
+// Manhattan distance = |x| + |y| — the actual walking distance on a grid,
+// named after the grid layout of Manhattan's streets.
+//
+// Fun fact: Manhattan's grid was designed in the Commissioners' Plan of 1811.
+// It was controversial — critics said the grid was monotonous and ignored
+// the island's natural terrain. The critics were right, but the grid won anyway.
+func manhattan_walk(directions: Vec<string>) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Runway assignment ---
+// An airport has 3 runways. Wind direction determines which to use:
+//   0-119 degrees   → "09L"  (runway facing ~90°)
+//   120-239 degrees → "18C"  (runway facing ~180°)
+//   240-359 degrees → "27R"  (runway facing ~270°)
+//
+// Runways are numbered by their magnetic heading divided by 10.
+// So runway "27" faces 270°. The letters L/C/R distinguish parallel runways.
+func assign_runway(wind_degrees: i32) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 5: Train connection planner ---
+// Given a list of departure times (sorted, in minutes since midnight)
+// and a desired departure time, find the earliest departure at or after
+// the desired time. Return -1 if no train is available.
+//
+//   schedule: [360, 420, 480, 540, 600]  (6am, 7am, 8am, 9am, 10am)
+//   desired: 450 → returns 480 (the 8am train)
+//   desired: 600 → returns 600 (exactly the 10am)
+//   desired: 601 → returns -1 (missed the last one)
+func next_train(schedule: Vec<i32>, desired: i32) -> i32 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "next shinkansen departure" {
+    assert next_departure(0) == 0
+    assert next_departure(1) == 10
+    assert next_departure(15) == 20
+    assert next_departure(30) == 30
+    assert next_departure(59) == 60
+}
+
+test "collatz sequence" {
+    const seq = collatz(6)
+    assert seq[0] == 6
+    assert seq[seq.len() - 1] == 1
+    assert seq.len() == 9
+}
+
+test "manhattan walk" {
+    // N, N, E → (1, 2), distance = 3
+    assert manhattan_walk(Vec.from(["N", "N", "E"])) == 3
+    // N, S, E, W → back to origin, distance = 0
+    assert manhattan_walk(Vec.from(["N", "S", "E", "W"])) == 0
+    // Empty walk
+    assert manhattan_walk(Vec.new()) == 0
+}
+
+test "runway assignment" {
+    assert assign_runway(90) == "09L"
+    assert assign_runway(180) == "18C"
+    assert assign_runway(270) == "27R"
+    assert assign_runway(0) == "09L"
+    assert assign_runway(350) == "27R"
+}
+
+test "next train" {
+    const sched = Vec.from([360, 420, 480, 540, 600])
+    assert next_train(sched, 450) == 480
+    assert next_train(sched, 360) == 360
+    assert next_train(sched, 600) == 600
+    assert next_train(sched, 601) == -1
+}
+
+func main() {
+    countdown(5)
+    println("Run 'rask test 05_control_flow.rk' to check your puzzles")
+}

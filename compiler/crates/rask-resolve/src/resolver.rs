@@ -478,6 +478,18 @@ impl Resolver {
                 return;
             }
 
+            // Define the imported symbol in scope so bare references resolve
+            let sym_id = self.symbols.insert(
+                binding_name.clone(),
+                SymbolKind::Variable { mutable: false },
+                None,
+                span,
+                false,
+            );
+            if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                self.errors.push(e);
+            }
+
             self.imported_symbols.insert(binding_name.clone());
 
             if import_decl.is_lazy {
@@ -603,7 +615,10 @@ impl Resolver {
         for param in &fn_decl.params {
             let param_sym = self.symbols.insert(
                 param.name.clone(),
-                SymbolKind::Parameter { is_take: param.is_take },
+                SymbolKind::Parameter {
+                    is_take: param.is_take,
+                    is_mutate: param.is_mutate,
+                },
                 Some(param.ty.clone()),
                 Span::new(0, 0),
                 false,
@@ -869,13 +884,13 @@ impl Resolver {
             ExprKind::Call { func, args } => {
                 self.resolve_expr(func);
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.resolve_expr(object);
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
             }
             ExprKind::Field { object, field } => {
@@ -938,13 +953,17 @@ impl Resolver {
             ExprKind::Try(inner) => {
                 self.resolve_expr(inner);
             }
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message: _ } => {
                 self.resolve_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern, else_branch } => {
                 self.resolve_expr(expr);
                 self.resolve_pattern(pattern);
                 self.resolve_expr(else_branch);
+            }
+            ExprKind::IsPattern { expr, pattern } => {
+                self.resolve_expr(expr);
+                self.resolve_pattern(pattern);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.resolve_expr(value);
@@ -1005,7 +1024,7 @@ impl Resolver {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.resolve_expr(arg);
+                    self.resolve_expr(&arg.expr);
                 }
                 self.scopes.push(ScopeKind::Block);
                 for stmt in body {
@@ -1040,7 +1059,10 @@ impl Resolver {
                 for param in params {
                     let sym_id = self.symbols.insert(
                         param.name.clone(),
-                        SymbolKind::Parameter { is_take: false },
+                        SymbolKind::Parameter {
+                            is_take: false,
+                            is_mutate: false,
+                        },
                         param.ty.clone(),
                         expr.span,
                         false,

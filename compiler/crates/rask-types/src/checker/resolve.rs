@@ -575,7 +575,7 @@ impl TypeChecker {
         span: Span,
     ) -> Result<bool, TypeError> {
         // ThreadHandle<T> has two methods:
-        // - join(self) -> T or string
+        // - join(self) -> T or JoinError
         // - detach(self) -> ()
 
         match method {
@@ -587,10 +587,10 @@ impl TypeChecker {
                     self.ctx.fresh_var()
                 };
 
-                // join returns Result<T, string>
+                // join returns Result<T, JoinError>
                 let result_type = Type::Result {
                     ok: Box::new(inner_type),
-                    err: Box::new(Type::String),
+                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
                 };
 
                 self.unify(ret, &result_type, span)

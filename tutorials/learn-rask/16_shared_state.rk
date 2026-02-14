@@ -1,0 +1,136 @@
+// === Lesson 16: Shared State ===
+//
+// In Python, threads can freely read and write the same variable.
+// This causes bugs: two threads incrementing a counter can lose updates
+// because they read-modify-write without coordination.
+//
+// Python's fix: threading.Lock(). You manually acquire/release it.
+// Problem: forget to release → deadlock. Forget to acquire → data race.
+//
+// Rask makes this impossible to get wrong. Three tools:
+//
+//   Shared<T> — many readers, one writer at a time (like a library book)
+//     config.read(|c| c.timeout)        // anyone can read simultaneously
+//     config.write(|c| c.timeout = 60)  // only one can write, blocks others
+//
+//   Mutex<T> — exclusive access (like a bathroom key)
+//     counter.lock(|c| c += 1)          // only one thread at a time
+//
+//   AtomicI64, AtomicBool — lock-free single values (for simple counters)
+//     counter.fetch_add(1, Relaxed)     // hardware-level atomic increment
+//
+// Both Shared and Mutex use closures — the lock is held only while
+// the closure runs and automatically released when it returns.
+// You literally can't forget to unlock. Compare:
+//
+//   Python:                       Rask:
+//   lock.acquire()                counter.lock(|c| {
+//   counter += 1                      c += 1
+//   lock.release()  # forget?     })  # auto-released
+//
+
+import async.spawn
+import sync.AtomicI64
+import sync.Relaxed
+
+// --- Example ---
+
+func example_shared() -> () or Error {
+    with Multitasking {
+        const counter = Shared.new(0)
+
+        const h1 = spawn(|| {
+            for i in 0..1000 {
+                counter.write(|c| {
+                    c = c + 1
+                })
+            }
+        })
+        const h2 = spawn(|| {
+            for i in 0..1000 {
+                counter.write(|c| {
+                    c = c + 1
+                })
+            }
+        })
+
+        try h1.join()
+        try h2.join()
+
+        const final_count = counter.read(|c| c)
+        println("counter: {final_count}")
+        // always 2000, never wrong
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Flight tracker ---
+// Multiple "radar" tasks report aircraft sightings.
+// Use Shared<Vec<string>> to collect all sightings safely.
+// Spawn 3 tasks, each adding its aircraft to the shared list.
+// Return the total count.
+//
+// .join() returns T or JoinError. You can:
+//   try h.join()          - propagate errors (function must return or JoinError)
+//   h.join()!             - panic if task panicked
+//   match h.join() { }    - handle explicitly
+//
+// Fun fact: real ADS-B (Automatic Dependent Surveillance-Broadcast)
+// receivers pick up aircraft transponder signals. Sites like
+// Flightradar24 aggregate data from thousands of volunteers'
+// receivers worldwide. Your Raspberry Pi can be one of them.
+func flight_tracker() -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Atomic flight counter ---
+// Count total flights across multiple tasks using AtomicI64.
+// Spawn num_tasks tasks, each incrementing the counter count_per_task times.
+// Return the final count.
+//
+// Atomics are the fastest synchronization — no locks, just a single
+// CPU instruction. The tradeoff: they only work for simple values
+// (integers, booleans), not complex data structures.
+func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Shared config ---
+// Create a Shared config with an initial max_altitude of 35000.
+// Spawn an "ATC" task that updates it to 37000.
+// Spawn a "pilot" task that reads the max_altitude.
+// Use a channel to make sure the ATC update happens before the pilot reads.
+// Return the value the pilot reads.
+//
+// Fun fact: in real aviation, ATC issues altitude clearances. A pilot
+// can't just climb to FL370 — they need "SAS 937, climb flight level
+// three seven zero." The shared config pattern models this nicely.
+func shared_config_update() -> i32 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "flight tracker" {
+    const count = flight_tracker()
+    // 3 tasks, each should add some aircraft
+    assert count > 0
+    assert count >= 3
+}
+
+test "atomic counter" {
+    assert atomic_counter(4, 1000) == 4000
+    assert atomic_counter(2, 500) == 1000
+}
+
+test "shared config update" {
+    assert shared_config_update() == 37000
+}
+
+func main() {
+    example_shared()
+    println("Run 'rask test 16_shared_state.rk' to check your puzzles")
+}

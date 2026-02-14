@@ -35,7 +35,7 @@ Rask's async runtime is an **M:N green task scheduler** with transparent I/O pau
 ```rust
 Task<T> {
     state: AtomicU8,                    // TaskState enum (see T2)
-    result: Mutex<Option<Result<T, TaskError>>>,  // Completion value
+    result: Mutex<Option<Result<T, JoinError>>>,  // Completion value
     waker: Mutex<Option<Waker>>,        // Reactor wake-up handle
     cancel_flag: AtomicBool,            // Cooperative cancellation (CN1)
     ensure_hooks: Mutex<Vec<EnsureHook>>, // Resource cleanup (mem.resources/R4)
@@ -739,7 +739,7 @@ impl<T> Drop for TaskHandle<T> {
 ### Join Operation (H2 - realizes conc.async/H2, J1)
 
 ```rust
-func TaskHandle::join(mut self) -> T or TaskError {
+func TaskHandle::join(mut self) -> T or JoinError {
     self.consumed = true;  // Mark consumed
 
     // Context-dependent waiting (J1)
@@ -792,7 +792,7 @@ func TaskHandle::detach(mut self) {
 ### Cancel Operation (H4 - realizes conc.async/H4, CN1-CN3)
 
 ```rust
-func TaskHandle::cancel(mut self) -> T or TaskError {
+func TaskHandle::cancel(mut self) -> T or JoinError {
     self.consumed = true;
 
     // Set cancel flag (CN1: cooperative)
@@ -828,7 +828,7 @@ func File::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize or Error 
     if __ctx is Some(ctx) {
         // Check cancel flag before I/O
         if ctx.current_task().cancel_flag.load(Relaxed) {
-            return Err(TaskError::Cancelled)
+            return Err(JoinError::Cancelled)
         }
 
         // Proceed with I/O...
@@ -839,7 +839,7 @@ func File::read(self, buf: &mut [u8], __ctx?: RuntimeContext) -> usize or Error 
 func Channel::send<T>(self, value: T, __ctx?: RuntimeContext) -> () or Error {
     if __ctx is Some(ctx) {
         if ctx.current_task().cancel_flag.load(Relaxed) {
-            return Err(TaskError::Cancelled)
+            return Err(JoinError::Cancelled)
         }
     }
 

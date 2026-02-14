@@ -4,6 +4,8 @@
 
 # Test Infrastructure
 
+**Note:** The spec testing command is `rask verify-specs` (renamed from `rask test-specs` for clarity).
+
 Systematic validation for parser, type checker, codegen, runtime. Multiple test levels from unit to end-to-end.
 
 ## Test Pyramid
@@ -12,7 +14,7 @@ Systematic validation for parser, type checker, codegen, runtime. Multiple test 
 |-------|------|-------|----------|-------|
 | **L1: Unit** | Individual functions, passes | Rust `#[test]` | Inline in source | Fast (ms) |
 | **L2: Component** | Full compiler phases | Rust `tests/` dir | Per-crate tests/ | Fast (ms) |
-| **L3: Spec** | Literate tests from specs | `rask test-specs` | `specs/**/*.md` | Medium (100ms) |
+| **L3: Spec** | Literate tests from specs | `rask verify-specs` | `specs/**/*.md` | Medium (100ms) |
 | **L4: Integration** | Parser → codegen → runtime | Test suite | `tests/integration/` | Medium (100ms) |
 | **L5: End-to-end** | Full programs compiled + run | Test programs | `tests/e2e/` | Slow (seconds) |
 | **L6: Validation** | Real-world programs | Example apps | `examples/` | Very slow (minutes) |
@@ -126,7 +128,7 @@ func factorial(n: u32) -> u32 {
 | **S3: Run on spec edit** | Auto-run via hook when specs change |
 | **S4: Staleness warnings** | Warn if spec dependencies changed |
 
-Command: `rask test-specs specs/` (already implemented)
+Command: `rask verify-specs specs/` (already implemented)
 
 ## L4: Integration Tests
 
@@ -173,6 +175,21 @@ fn test_simple_function_codegen() {
 | **I3: Symbol checking** | Verify name mangling correctness |
 | **I4: Format validation** | Check MIR/IR structure |
 
+**Symbol file format** (`.expected.symbols`):
+
+Plain text, one symbol per line. Lines starting with `#` are comments. Blank lines ignored.
+
+Example `tests/integration/monomorphization/vec_push.expected.symbols`:
+```
+# Expected symbols for Vec<i32> push operation
+
+_R4core_S3Vec_Gi32
+_R4core_M3Vec4push_Gi32
+_R4main_F4main
+```
+
+**Matching:** Test passes if compiled object file contains all listed symbols (subset match). Additional symbols are allowed.
+
 ## L5: End-to-End Tests
 
 Compile and execute complete programs. Verify output, exit codes, file operations.
@@ -181,29 +198,59 @@ Compile and execute complete programs. Verify output, exit codes, file operation
 tests/e2e/
   hello_world/
     main.rk
-    expected_output.txt
-    exit_code: 0
+    output.txt          (expected stdout)
+    exit_code           (file containing "0")
 
   error_handling/
     panic.rk
-    expected_stderr.txt
-    exit_code: 1
+    stderr.txt          (expected stderr)
+    exit_code           (file containing "1")
 
   collections/
     vec_operations.rk
-    expected_output.txt
+    output.txt          (expected stdout)
 ```
+
+**File format:**
+- `output.txt` — Expected stdout (exact match)
+- `stderr.txt` — Expected stderr (exact match)
+- `exit_code` — Plain text file with exit code number (e.g., "0", "1")
+- If `exit_code` missing, assume 0
+
+**Interpreter vs Compiled:**
+
+Rask has a tree-walk interpreter (already implemented) for fast testing and a compiler for full validation:
+- **Interpreter**: Fast iteration, no codegen, useful for parser/type-checker validation
+- **Compiler**: Full pipeline including codegen, linking, optimization
+
+E2E tests run in both modes to ensure consistency.
 
 Test runner:
 
 ```rust
 #[test]
 fn test_hello_world() {
-    let program = compile_program("tests/e2e/hello_world/main.rk");
+    let test_dir = "tests/e2e/hello_world";
+    let program = compile_program(&format!("{}/main.rk", test_dir));
     let output = execute_compiled(program);
 
-    assert_eq!(output.exit_code, 0);
-    assert_eq!(output.stdout, read_file("tests/e2e/hello_world/expected_output.txt"));
+    // Check exit code
+    let expected_exit = read_file(&format!("{}/exit_code", test_dir))
+        .unwrap_or("0".to_string())
+        .trim()
+        .parse::<i32>()
+        .unwrap();
+    assert_eq!(output.exit_code, expected_exit);
+
+    // Check stdout
+    if let Ok(expected_out) = read_file(&format!("{}/output.txt", test_dir)) {
+        assert_eq!(output.stdout, expected_out);
+    }
+
+    // Check stderr
+    if let Ok(expected_err) = read_file(&format!("{}/stderr.txt", test_dir)) {
+        assert_eq!(output.stderr, expected_err);
+    }
 }
 ```
 
@@ -212,7 +259,7 @@ fn test_hello_world() {
 | **E1: Full execution** | Compile + link + run |
 | **E2: Observable behavior** | Check stdout, stderr, exit code, files |
 | **E3: Realistic programs** | Multi-file, with stdlib usage |
-| **E4: Both modes** | Test compiled binary AND interpreter |
+| **E4: Both modes** | Test compiled binary AND interpreter (tree-walk interpreter for fast iteration) |
 
 Categories:
 - Basic features (variables, functions, control flow)
@@ -281,7 +328,7 @@ rask/
 | Command | Level | Speed | CI |
 |---------|-------|-------|-----|
 | `cargo test` | L1 + L2 | Fast | Yes |
-| `rask test-specs specs/` | L3 | Medium | Yes |
+| `rask verify-specs specs/` | L3 | Medium | Yes |
 | `cargo test --test integration` | L4 | Medium | Yes |
 | `cargo test --test e2e` | L5 | Slow | Yes |
 | `./run_validation.sh` | L6 | Very slow | No |
@@ -424,7 +471,7 @@ jobs:
       - uses: actions-rs/toolchain@v1
       - run: cargo test --all
       - run: cargo build --release
-      - run: ./target/release/rask test-specs specs/
+      - run: ./target/release/rask verify-specs specs/
       - run: cargo test --test integration
       - run: cargo test --test e2e
 ```
@@ -438,7 +485,7 @@ Track test coverage and quality:
 | Line coverage | 80%+ | `cargo tarpaulin` |
 | Branch coverage | 75%+ | `cargo tarpaulin` |
 | Error message tests | 100% | Manual audit |
-| Spec test success | 100% | `rask test-specs` |
+| Spec test success | 100% | `rask verify-specs` |
 | E2E test pass rate | 100% | CI results |
 
 ## Testing New Features

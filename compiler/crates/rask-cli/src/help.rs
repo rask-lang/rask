@@ -46,7 +46,8 @@ pub fn print_usage() {
     println!("  {} {} Type check a file", output::command("typecheck"), output::arg("<file>"));
     println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
     println!("  {} {}  Evaluate comptime blocks", output::command("comptime"), output::arg("<file>"));
-
+    println!("  {} {}      Dump monomorphized functions + layouts", output::command("mono"), output::arg("<file>"));
+    println!("  {} {}       Dump MIR (mid-level IR)", output::command("mir"), output::arg("<file>"));
 
     println!();
     println!("{}", output::section_header("Options:"));
@@ -386,4 +387,36 @@ pub fn print_comptime_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output comptime results as structured JSON", output::arg("--json"));
+}
+
+pub fn print_mono_help() {
+    println!("{}", output::section_header("Mono"));
+    println!();
+    println!("Monomorphize a Rask source file — eliminate generics and compute layouts.");
+    println!("Runs pipeline: lex → parse → resolve → typecheck → ownership → monomorphize,");
+    println!("then prints reachable functions with struct/enum memory layouts.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("mono"),
+        output::arg("<file.rk>"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Output monomorphization results as structured JSON", output::arg("--json"));
+}
+
+pub fn print_mir_help() {
+    println!("{}", output::section_header("MIR"));
+    println!();
+    println!("Lower a Rask source file to MIR (mid-level intermediate representation).");
+    println!("Runs full pipeline: lex → parse → resolve → typecheck → ownership →");
+    println!("monomorphize → MIR lowering, then prints the control-flow graph.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("mir"),
+        output::arg("<file.rk>"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Output MIR as structured JSON", output::arg("--json"));
 }

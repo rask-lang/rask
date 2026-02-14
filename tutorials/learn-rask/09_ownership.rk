@@ -1,0 +1,204 @@
+// === Lesson 09: Ownership ===
+//
+// This is the biggest difference from Python. Take your time.
+//
+// In Python, when you write `b = a`, both `a` and `b` point to the
+// same object. Modify one, the other sees it. This is convenient,
+// but it's also the source of a whole class of bugs:
+//
+//   a = [1, 2, 3]
+//   b = a
+//   b.append(4)
+//   print(a)       # [1, 2, 3, 4] — surprise!
+//
+// Rask prevents this entirely. In Rask, every value has exactly one
+// owner. When you write `const b = a`, the value *moves* from a to b.
+// After that, `a` doesn't exist anymore.
+//
+//   const a = Vec.from([1, 2, 3])
+//   const b = a       // value moves from a → b
+//   // println("{a}")  // COMPILE ERROR: a has been moved
+//
+// "But I need two copies!" — use .clone():
+//   const b = a.clone()   // now a and b are independent copies
+//
+// For small values (numbers, bools), copying is free and automatic:
+//   const x = 42
+//   const y = x      // copy — both x and y are valid
+//
+// === Passing to functions ===
+//
+// Functions don't take ownership by default. They *borrow* — meaning
+// they can look at the value but the caller keeps it:
+//
+//   func print_length(data: Vec<i32>) {   // borrows data (read-only)
+//       println("length: {data.len()}")
+//   }
+//   print_length(my_vec)    // my_vec is still yours after the call
+//
+// To let a function modify your value, use `mutate`:
+//   func add_item(mutate list: Vec<i32>, item: i32) {
+//       list.push(item)
+//   }
+//   add_item(mutate my_vec, 42)    // my_vec now has 42 appended
+//
+// To permanently give a value to a function, use `take`/`own`:
+//   func consume(take list: Vec<i32>) { ... }
+//   consume(own my_vec)    // my_vec is gone — the function owns it now
+//
+// Why? Because the compiler can guarantee no data races, no dangling
+// references, no use-after-free — without a garbage collector. The
+// safety is invisible: you just follow the ownership rules and the
+// compiler handles the rest.
+//
+
+// --- Examples ---
+
+func example_copy_vs_move() {
+    // Small values (numbers, bools) copy automatically
+    const x = 42
+    const y = x
+    // copy — both valid
+    println("x = {x}, y = {y}")
+
+    // Collections move — use .clone() for an independent copy
+    const name = "Besse"
+    const other = name.clone()
+    println("name = {name}, other = {other}")
+    // Borrows data — can read but not modify
+    // Borrows data mutably — can modify the caller's value
+}
+
+func print_length(data: Vec<i32>) {
+    println("length: {data.len()}")
+}
+
+func add_item(mutate data: Vec<i32>, item: i32) {
+    data.push(item)
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Build a flight log ---
+// Create a Vec of altitude readings and return it.
+// Add these values: 0, 5000, 15000, 25000, 35000
+//
+// When you return a Vec from a function, ownership transfers to the caller.
+// The function doesn't keep a copy — the value moves out.
+func flight_altitudes() -> Vec<i32> {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Modify without consuming ---
+// Append an altitude reading to an existing log.
+// The caller should still own the Vec after the call.
+//
+// Hint: use `mutate` parameter.
+func record_altitude(mutate log: Vec<i32>, altitude: i32) {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Read without consuming ---
+// Find the maximum altitude in a flight log.
+// The caller should still own the Vec after the call.
+//
+// Default parameters borrow — no special keyword needed.
+func max_altitude(log: Vec<i32>) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Compute statistics (borrow twice) ---
+// Compute the mean of a Vec<f64>. The original must stay valid.
+//
+// This works because default parameters borrow. The function
+// can call mean(data) and then still use data afterward.
+func mean(data: Vec<f64>) -> f64 {
+    panic("TODO")
+}
+
+// Now compute the standard deviation using mean().
+// Both mean() and std_dev() borrow data — so data survives both calls.
+//
+// Formula: sqrt(average of (x - mean)² for each x)
+func std_dev(data: Vec<f64>) -> f64 {
+    panic("TODO")
+}
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0
+    }
+    let g = x / 2.0
+    for i in 0..30 {
+        g = (g + x / g) / 2.0
+    }
+    return g
+}
+
+// --- Puzzle 5: Filter without consuming ---
+// Return a new Vec containing only altitudes above a threshold.
+// The original Vec must remain valid.
+//
+// Fun fact: FL350 (flight level 350) means 35,000 ft. Flight levels
+// are based on standard pressure (1013.25 hPa), not actual altitude.
+// Two planes at "FL350" might actually be at different real altitudes
+// depending on local air pressure — but they're separated safely
+// because they're both using the same reference.
+func altitudes_above(log: Vec<i32>, threshold: i32) -> Vec<i32> {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "flight altitudes" {
+    const log = flight_altitudes()
+    assert log.len() == 5
+    assert log[0] == 0
+    assert log[4] == 35000
+    // log is still valid — not consumed
+    // log is still valid — it was borrowed, not consumed
+    // data is still valid after borrowing
+    // original is still valid
+}
+
+test "record altitude" {
+    let log = Vec.from([0, 5000])
+    record_altitude(mutate log, 10000)
+    assert log.len() == 3
+    assert log[2] == 10000
+    record_altitude(mutate log, 15000)
+    assert log.len() == 4
+}
+
+test "max altitude" {
+    const log = Vec.from([0, 5000, 35000, 25000, 15000])
+    assert max_altitude(log) == 35000
+    assert log.len() == 5
+}
+
+test "mean" {
+    const data = Vec.from([2.0, 4.0, 6.0, 8.0, 10.0])
+    assert mean(data) == 6.0
+    assert data.len() == 5
+}
+
+test "std dev" {
+    const data = Vec.from([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0])
+    const sd = std_dev(data)
+    assert sd > 1.99
+    assert sd < 2.01
+}
+
+test "altitudes above" {
+    const log = Vec.from([0, 5000, 15000, 25000, 35000])
+    const high = altitudes_above(log, 20000)
+    assert high.len() == 2
+    assert log.len() == 5
+}
+
+func main() {
+    example_copy_vs_move()
+    println("Run 'rask test 09_ownership.rk' to check your puzzles")
+}

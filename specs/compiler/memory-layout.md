@@ -74,7 +74,7 @@ enum Result<T, E> {
 
 Layout structure:
 ```
-[discriminant: usize][padding][payload union]
+[discriminant: u8 or u16][padding][payload union]
 ```
 
 | Rule | Description |
@@ -112,11 +112,24 @@ enum Token {
 }
 ```
 
-### Niche Optimization (Future)
+### Niche Optimization
 
-Currently not implemented. Simple tagged union always. Future optimization:
-- `Option<Handle<T>>` could use 0xFFFF_FFFF_FFFF_FFFF for None (niche in handle space)
-- `Option<&T>` could use null pointer for None
+Certain types have unused bit patterns that can encode enum discriminants without extra storage.
+
+| Rule | Description |
+|------|-------------|
+| **N1: Handle niche** | `Option<Handle<T>>` uses generation=0 to represent None (8 bytes, not 16) |
+| **N2: Reference niche** | `Option<&T>` uses null pointer for None (8 bytes, not 16) |
+| **N3: NonZero types** | Future: `Option<NonZeroU32>` etc. use zero as None |
+
+**Option<Handle<T>> Layout:**
+```
+// Without niche (naive):       16 bytes = [tag: u8][pad: 7][Handle: 8]
+// With niche (optimized):        8 bytes = [index: u32][generation: u32]
+//   where generation=0 means None, generation>0 means Some
+```
+
+**Priority:** Handle niche optimization MUST be implemented before ABI stabilization. This is critical for graph algorithms using Pool handles.
 
 ## Closures
 
@@ -141,7 +154,7 @@ struct Closure_f {
 | Rule | Description |
 |------|-------------|
 | **CL1: Struct layout** | Closure = struct of captured values + function pointer |
-| **CL2: Capture order** | Captures ordered alphabetically by variable name |
+| **CL2: Capture order** | Captures ordered by first use in closure body (declaration order) |
 | **CL3: Function pointer last** | Function pointer stored as final field |
 | **CL4: Zero-size if no captures** | Pure closures (no captures) = single function pointer |
 
@@ -155,8 +168,8 @@ const greet = |msg: string| print("{msg}, {name}, age {age}")
 Generated:
 ```rask
 struct Closure_greet {
-    age: i32,            // offset 0, size 4
-    name: string,        // offset 8, size 16 (padded from offset 4)
+    name: string,        // offset 0, size 16 (first use in body)
+    age: i32,            // offset 16, size 4 (second use in body)
     fn_ptr: *u8,         // offset 24, size 8
 }
 // Total: 32 bytes
@@ -291,9 +304,8 @@ struct Vec<T> {
     ptr: *T,            // offset 0, 8 bytes
     len: usize,         // offset 8, 8 bytes
     cap: usize,         // offset 16, 8 bytes
-    max_cap: Option<usize>,  // offset 24, 16 bytes (8 for tag + 8 for value)
 }
-// Total: 40 bytes
+// Total: 24 bytes
 ```
 
 Heap layout:
@@ -310,12 +322,11 @@ struct Map<K, V> {
     buckets: *Bucket<K, V>,   // offset 0
     len: usize,               // offset 8
     cap: usize,               // offset 16
-    max_cap: Option<usize>,   // offset 24
 }
-// Total: 40 bytes
+// Total: 24 bytes
 ```
 
-Bucket structure is internal, Robin Hood hashing with quadratic probing.
+Internal bucket structure and hashing strategy are implementation-defined and subject to change. Do not depend on internal layout.
 
 ### Pool<T>
 
@@ -435,7 +446,7 @@ const f = |a: i32| a + z
 Generated:
 ```rask
 struct Closure_f {
-    z: u32,             // offset 0 (alphabetically first)
+    z: u32,             // offset 0 (only capture, used in body)
     fn_ptr: *u8,        // offset 8 (padded)
 }
 // Total: 16 bytes
@@ -455,7 +466,19 @@ Function calls follow System V AMD64 ABI on Linux, Windows x64 calling conventio
 | Return value (≤16 bytes) | RAX, RDX |
 | Return value (>16 bytes) | Pointer passed in RDI |
 
-Fat pointers (trait objects, slices) passed as two separate arguments (data pointer, metadata).
+**Fat pointer calling convention:**
+
+Fat pointers (trait objects, slices) are passed as two consecutive register arguments:
+- **Trait object `any T`**: data pointer in first register, vtable pointer in second register
+  - Example: `func f(w: any Widget)` → data in RDI, vtable in RSI
+- **Slice `[]T`**: data pointer in first register, length in second register
+  - Example: `func f(s: []i32)` → data in RDI, len in RSI
+
+Fat pointers consume two argument slots. Example:
+```rask
+func process(x: i32, s: []u8, y: i32)
+```
+Arguments: `x` in RDI, `s.ptr` in RSI, `s.len` in RDX, `y` in RCX
 
 ## Codegen Validation
 

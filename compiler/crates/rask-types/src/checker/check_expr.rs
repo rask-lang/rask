@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Expression type inference and specific type checks.
 
-use rask_ast::expr::{BinOp, Expr, ExprKind};
+use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind};
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
 use rask_resolve::{SymbolId, SymbolKind};
@@ -16,6 +16,34 @@ use super::TypeChecker;
 use crate::types::{GenericArg, Type};
 
 impl TypeChecker {
+    /// Infer expression type with an expected type hint for unsuffixed literals.
+    /// Falls through to normal inference for non-literal or suffixed expressions.
+    pub(super) fn infer_expr_expecting(&mut self, expr: &Expr, expected: &Type) -> Type {
+        match &expr.kind {
+            ExprKind::Int(_, None) if Self::is_integer_type(expected) => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                return ty;
+            }
+            ExprKind::Float(_, None) if Self::is_float_type(expected) => {
+                let ty = expected.clone();
+                self.node_types.insert(expr.id, ty.clone());
+                return ty;
+            }
+            _ => {}
+        }
+        self.infer_expr(expr)
+    }
+
+    fn is_integer_type(ty: &Type) -> bool {
+        matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+                    | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128)
+    }
+
+    fn is_float_type(ty: &Type) -> bool {
+        matches!(ty, Type::F32 | Type::F64)
+    }
+
     pub(super) fn infer_expr(&mut self, expr: &Expr) -> Type {
         let ty = match &expr.kind {
             // Literals
@@ -34,7 +62,7 @@ impl TypeChecker {
                     Some(IntSuffix::U64) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,
-                    None => Type::I32, // Default to i32, not unconstrained variable
+                    None => Type::I32, // Default to i32 when no expected type context
                 }
             }
             ExprKind::Float(_, suffix) => {
@@ -42,7 +70,7 @@ impl TypeChecker {
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => Type::F64, // Default to f64, not unconstrained variable
+                    None => Type::F64, // Default to f64 when no expected type context
                 }
             }
             ExprKind::String(_) => Type::String,
@@ -81,9 +109,25 @@ impl TypeChecker {
             ExprKind::Index { object, index } => {
                 let obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);
+
+                // Check if indexing with a range (slicing)
+                let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
+
                 match &obj_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
-                    Type::String => Type::Char,
+                    Type::Array { elem, .. } | Type::Slice(elem) => {
+                        if is_range {
+                            Type::Slice(elem.clone())
+                        } else {
+                            *elem.clone()
+                        }
+                    }
+                    Type::String => {
+                        if is_range {
+                            Type::String
+                        } else {
+                            Type::Char
+                        }
+                    }
                     _ => self.ctx.fresh_var(),
                 }
             }
@@ -174,6 +218,12 @@ impl TypeChecker {
                         _ => Type::Unit,
                     }
                 }
+            }
+
+            ExprKind::IsPattern { expr: value, pattern } => {
+                let value_ty = self.infer_expr(value);
+                let _bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                Type::Bool
             }
 
             ExprKind::Match { scrutinee, arms } => {
@@ -397,20 +447,21 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message: _ } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
                     Type::Option(inner) => {
-                        // For Unwrap, extract the inner type from Option
+                        // Extract the inner type from Option<T>
                         *inner.clone()
                     }
+                    Type::Result { ok, err: _ } => {
+                        // Extract the Ok type from Result<T, E>
+                        *ok.clone()
+                    }
                     Type::Var(_) => {
-                        // If we don't know the type yet, constrain it to be an Option
-                        let inner_opt_ty = self.ctx.fresh_var();
-                        let option_ty = Type::Option(Box::new(inner_opt_ty.clone()));
-                        let _ = self.unify(&inner_ty, &option_ty, expr.span);
-                        inner_opt_ty
+                        // Don't constrain yet - let later context determine if Option or Result
+                        self.ctx.fresh_var()
                     }
                     _ => {
                         self.errors.push(TypeError::Mismatch {
@@ -532,10 +583,19 @@ impl TypeChecker {
 
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.infer_expr(arg);
+                    self.infer_expr(&arg.expr);
                 }
                 for stmt in body {
                     self.check_stmt(stmt);
+                }
+                // Check if the block ends with a diverging statement (return/break/continue)
+                if let Some(last) = body.last() {
+                    match &last.kind {
+                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
+                            return Type::Never;
+                        }
+                        _ => {}
+                    }
                 }
                 Type::Unit
             }
@@ -550,6 +610,15 @@ impl TypeChecker {
                     self.check_stmt(stmt);
                 }
                 self.pop_scope();
+                // Check if the block ends with a diverging statement
+                if let Some(last) = body.last() {
+                    match &last.kind {
+                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
+                            return Type::Never;
+                        }
+                        _ => {}
+                    }
+                }
                 Type::Unit
             }
 
@@ -677,11 +746,14 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn check_call(&mut self, func: &Expr, args: &[Expr], span: Span) -> Type {
+    // TODO: For generic function calls, track fresh type variables created for
+    // type params here. After constraint solving, resolve them and populate
+    // TypedProgram.call_type_args so monomorphization can instantiate correctly.
+    pub(super) fn check_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
                 for arg in args {
-                    self.infer_expr(arg);
+                    self.infer_expr(&arg.expr);
                 }
                 return match name.as_str() {
                     "panic" => Type::Never,
@@ -691,32 +763,40 @@ impl TypeChecker {
             }
         }
 
+        // Validate call-site annotations before type inference
+        self.check_call_annotations(func, args, span);
+
         let func_ty = self.infer_expr(func);
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
 
         match func_ty {
-            Type::Fn { params, ret } => {
-                if params.is_empty() && !arg_types.is_empty() {
-                    return *ret;
+            Type::Fn { ref params, ref ret } => {
+                if params.is_empty() && !args.is_empty() {
+                    for arg in args { self.infer_expr(&arg.expr); }
+                    return *ret.clone();
                 }
 
-                if params.len() != arg_types.len() {
+                if params.len() != args.len() {
+                    for arg in args { self.infer_expr(&arg.expr); }
                     self.errors.push(TypeError::ArityMismatch {
                         expected: params.len(),
-                        found: arg_types.len(),
+                        found: args.len(),
                         span,
                     });
                     return Type::Error;
                 }
 
-                for (param, arg) in params.iter().zip(arg_types.iter()) {
+                // Propagate expected param types to arguments
+                let ret = *ret.clone();
+                for (param, arg) in params.clone().iter().zip(args.iter()) {
+                    let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     self.ctx
-                        .add_constraint(TypeConstraint::Equal(param.clone(), arg.clone(), span));
+                        .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));
                 }
 
-                *ret
+                ret
             }
             Type::Var(_) => {
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     func_ty,
@@ -728,8 +808,12 @@ impl TypeChecker {
                 ));
                 ret
             }
-            Type::Error => Type::Error,
+            Type::Error => {
+                for arg in args { self.infer_expr(&arg.expr); }
+                Type::Error
+            }
             _ => {
+                for arg in args { self.infer_expr(&arg.expr); }
                 self.ctx.fresh_var()
             }
         }
@@ -739,11 +823,83 @@ impl TypeChecker {
         matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format")
     }
 
+    /// Validate that call-site annotations match parameter declarations.
+    fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
+        use rask_ast::expr::ArgMode;
+        use rask_resolve::SymbolKind;
+
+        // Get the function's symbol ID
+        let sym_id = if let ExprKind::Ident(_) = &func.kind {
+            self.resolved.resolutions.get(&func.id).copied()
+        } else {
+            None
+        };
+
+        let Some(sym_id) = sym_id else { return };
+        let Some(sym) = self.resolved.symbols.get(sym_id) else { return };
+
+        // Get parameter symbols
+        let param_ids = match &sym.kind {
+            SymbolKind::Function { params, .. } => params.clone(),
+            _ => return,
+        };
+
+        // Validate each argument annotation
+        for (i, (arg, &param_id)) in args.iter().zip(param_ids.iter()).enumerate() {
+            let Some(param_sym) = self.resolved.symbols.get(param_id) else { continue };
+            let (is_take, is_mutate) = match &param_sym.kind {
+                SymbolKind::Parameter { is_take, is_mutate } => (*is_take, *is_mutate),
+                _ => continue,
+            };
+
+            let param_name = &param_sym.name;
+
+            match (&arg.mode, is_take, is_mutate) {
+                // Missing `own` annotation when parameter is `take`
+                (ArgMode::Default | ArgMode::Mutate, true, _) => {
+                    self.errors.push(TypeError::MissingOwnAnnotation {
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Missing `mutate` annotation when parameter is `mutate`
+                (ArgMode::Default | ArgMode::Own, _, true) => {
+                    self.errors.push(TypeError::MissingMutateAnnotation {
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Unexpected `own` annotation
+                (ArgMode::Own, false, _) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "own".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Unexpected `mutate` annotation
+                (ArgMode::Mutate, _, false) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "mutate".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // All other cases are valid
+                _ => {}
+            }
+        }
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         object: &Expr,
         method: &str,
-        args: &[Expr],
+        args: &[CallArg],
         span: Span,
     ) -> Type {
         // Check if this is a builtin module method call (e.g., fs.open)
@@ -774,7 +930,7 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         let ret_ty = self.ctx.fresh_var();
 
@@ -793,10 +949,10 @@ impl TypeChecker {
         &mut self,
         module: &str,
         method: &str,
-        args: &[Expr],
+        args: &[CallArg],
         span: Span,
     ) -> Type {
-        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(a)).collect();
+        let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
         if let Some(sig) = self.types.builtin_modules.get_method(module, method) {
             // Check parameter count — skip for wildcard params (_Any accepts anything)

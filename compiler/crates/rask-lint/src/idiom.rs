@@ -115,13 +115,13 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             }
             walk_expr_for_unwrap(object, source, diags);
             for arg in args {
-                walk_expr_for_unwrap(arg, source, diags);
+                walk_expr_for_unwrap(&arg.expr, source, diags);
             }
         }
         ExprKind::Call { func, args } => {
             walk_expr_for_unwrap(func, source, diags);
             for arg in args {
-                walk_expr_for_unwrap(arg, source, diags);
+                walk_expr_for_unwrap(&arg.expr, source, diags);
             }
         }
         ExprKind::Binary { left, right, .. } => {
@@ -154,6 +154,9 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
                 walk_expr_for_unwrap(e, source, diags);
             }
         }
+        ExprKind::IsPattern { expr, .. } => {
+            walk_expr_for_unwrap(expr, source, diags);
+        }
         ExprKind::Match { scrutinee, arms } => {
             walk_expr_for_unwrap(scrutinee, source, diags);
             for arm in arms {
@@ -175,7 +178,7 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(object, source, diags);
             walk_expr_for_unwrap(index, source, diags);
         }
-        ExprKind::Try(inner) | ExprKind::Unwrap(inner) | ExprKind::Cast { expr: inner, .. } => {
+        ExprKind::Try(inner) | ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
             walk_expr_for_unwrap(inner, source, diags);
         }
         ExprKind::NullCoalesce { value, default } => {

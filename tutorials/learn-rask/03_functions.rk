@@ -1,0 +1,121 @@
+// === Lesson 03: Functions ===
+//
+// In Python:   def add(a, b): return a + b
+// In Rask:     func add(a: i32, b: i32) -> i32 { return a + b }
+//
+// Differences from Python:
+//   - `func` instead of `def`
+//   - Every parameter needs a type: name: Type
+//   - Return type goes after ->
+//   - Curly braces { } instead of indentation
+//   - You must always write `return` (Python lets you skip it)
+//
+// A function with no return type returns nothing:
+//   func greet(name: string) {
+//       println("Hello, {name}!")
+//   }
+//
+// That's like a Python function that returns None — except Rask
+// uses `()` (called "unit") instead of None.
+//
+
+// --- Examples ---
+
+func add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+func is_positive(x: f64) -> bool {
+    return x > 0.0
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Kinetic energy ---
+// You know this one: E = ½mv²
+//
+// A Boeing 737-800 at cruise speed (230 m/s) with mass 79,000 kg
+// has kinetic energy of about 2 billion joules — enough to power
+// roughly 500 homes for an hour.
+//
+// No ** operator in Rask. Write v * v instead.
+func kinetic_energy(mass: f64, velocity: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Gravitational force ---
+// Newton's law: F = G × m₁ × m₂ / r²
+// Use G = 6.674e-11
+//
+// Fun fact: the gravitational force between the Earth and the Moon
+// is about 2 × 10²⁰ N. That's what keeps the Moon in orbit and
+// gives us tides. The same equation works for planets, stars, and
+// the apple that supposedly hit Newton.
+func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Square root (Newton's method) ---
+// Rask doesn't have a built-in sqrt yet (the standard library is young).
+// But you can write your own — Newton figured this out in the 1600s:
+//
+//   Start with a guess (x / 2.0 works fine)
+//   Repeat: guess = (guess + x / guess) / 2.0
+//   After ~20 iterations, the guess is extremely accurate
+//
+// This is the same algorithm your calculator uses, just unrolled.
+// Write a loop: for i in 0..20 { ... }
+func sqrt(x: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Orbital velocity ---
+// The speed needed to orbit a body at radius r:
+//   v = sqrt(G * M / r)
+//
+// The ISS orbits at about 408 km above Earth's surface.
+// Earth's radius is 6,371 km, so r = 6,779,000 m.
+// Earth's mass is 5.972e24 kg. Use G = 6.674e-11.
+//
+// The answer should be about 7,660 m/s — that's 27,600 km/h.
+// The ISS completes one orbit every 90 minutes. You cross
+// entire continents while eating lunch.
+func orbital_velocity(planet_mass: f64, orbit_radius: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "kinetic energy" {
+    assert kinetic_energy(1.0, 10.0) == 50.0
+    assert kinetic_energy(2.0, 3.0) == 9.0
+}
+
+test "gravitational force" {
+    // Earth-Sun force: ~3.54e22 N
+    const f = gravitational_force(5.972e24, 1.989e30, 1.496e11)
+    assert f > 3.5e22
+    assert f < 3.6e22
+}
+
+test "sqrt" {
+    const s = sqrt(4.0)
+    assert s > 1.999
+    assert s < 2.001
+
+    const s2 = sqrt(2.0)
+    assert s2 > 1.4141
+    assert s2 < 1.4143
+}
+
+test "orbital velocity of ISS" {
+    const v = orbital_velocity(5.972e24, 6779000.0)
+    assert v > 7650.0
+    assert v < 7670.0
+}
+
+func main() {
+    println("Run 'rask test 03_functions.rk' to check your puzzles")
+}

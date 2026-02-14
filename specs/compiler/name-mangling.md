@@ -74,10 +74,14 @@ myapp.net.http  → 5myapp3net4http
 |------|----------|---------|
 | `i32` | `i32` | `_Gi32` |
 | `Vec<i32>` | `Vec[i32]` | `_GVec[i32]` |
-| `Map<string, User>` | `Map[string,User]` | `_GMap[string,4User]` |
+| `Map<string, User>` | `Map[string,4User]` | `_GMap[string,4User]` |
 | `Option<T>` | `Option[T]` | `_GOption[T]` |
+| `Result<T, HttpError>` | `Result[T,9HttpError]` | `_GResult[T,9HttpError]` |
 
-User types include length prefix: `User` → `4User`, `HttpRequest` → `11HttpRequest`
+**Encoding rules:**
+- **Primitives:** No length prefix (i32, u64, bool, str, f32, f64)
+- **User types:** Always length-prefixed (User → 4User, HttpRequest → 11HttpRequest)
+- **Generic params:** Bare type variable name (T, K, V)
 
 ## Collision Hashes
 
@@ -147,14 +151,36 @@ benchmark "JSON decode" {
 
 Test/benchmark names: replace spaces with underscores, keep alphanumeric+underscore, drop other chars.
 
+**Test name sanitization rules:**
+
+| Rule | Description |
+|------|-------------|
+| **TS1: Max length** | Test names truncated to 80 chars in symbol; longer names get 4-char hash |
+| **TS2: Unicode** | Non-ASCII chars transliterated (ä→a, ñ→n); unmappable chars become `_N` where N is hex codepoint |
+| **TS3: Collision** | Hash appended if sanitized names collide |
+
+Examples:
+```
+test "parse URL correctly"                    → _R5myapp_Test17parse_URL_correctly
+test "测试"                                    → _R5myapp_Test7test_N6D4B_N8BD5
+test "this is a very long test name..."       → _R5myapp_Test80this_is_a_very_long_test_name_that_goes_on_and_on_and_on_and_on_and_o_H4a3f
+```
+
 ### Context Clauses
 
-Context clauses included in generic args:
+Context clauses separated by colons after type parameters:
 
 ```rask
 func write(h: Handle<T>) using Pool<T>
 ```
-→ `_R4core_F5write_GHandle[T]Pool[T]`
+→ `_R4core_F5write_GHandle[T]:Pool[T]`
+
+```rask
+func sort(arr: Vec<T>) using Compare<T> using Clone<T>
+```
+→ `_R4core_F4sort_GVec[T]:Compare[T]:Clone[T]`
+
+**Rule:** Type parameters, then colon-separated context clauses.
 
 ### Main Entry Point
 
@@ -199,6 +225,45 @@ public func initialize()
 ```
 → `rask_init` (no mangling, user-specified symbol)
 
+**C compatibility validation:**
+
+| Rule | Description |
+|------|-------------|
+| **CV1: Type checking** | Functions with `@export` MUST use only C-compatible types |
+| **CV2: Compile error** | Non-C-compatible params or return type is a compile error |
+| **CV3: Compatible types** | See `struct.c-interop/TM1-TM3` for type mapping table |
+
+C-compatible types:
+- Primitives: `i8`-`i64`, `u8`-`u64`, `f32`, `f64`, `bool`, `c_int`, `c_long`, etc.
+- Pointers: `*T`, `*void`, `*u8`
+- Structs with `@layout(C)`
+- `extern "C" struct/enum/union`
+
+**Not C-compatible** (compile error if used with `@export`):
+- `string` (use `*u8` + `usize` or `.as_c_str()`)
+- `Result<T, E>` (use return codes + out params)
+- `Option<T>` (use nullable pointers or sentinel values)
+- `Vec<T>`, `Map<K,V>` (use `*T` + `usize`)
+- Trait objects `any Trait`
+
+Example error:
+```rask
+@export("process_data")
+public func process(data: string) -> Result<(), Error>  // ERROR
+```
+```
+ERROR [compiler.mangling/CV2]: @export function uses non-C-compatible types
+  |
+3 | public func process(data: string) -> Result<(), Error>
+  |                           ^^^^^^    ^^^^^^^^^^^^^^^^^^^
+  |
+WHY: Functions exported to C must use only C-compatible types.
+     See struct.c-interop/TM1 for type mapping.
+
+FIX: Change signature to C-compatible types:
+     public func process(data: *u8, len: usize) -> c_int
+```
+
 ## Runtime Functions
 
 Built-in runtime functions use reserved prefix `_Rrt`:
@@ -210,6 +275,32 @@ Built-in runtime functions use reserved prefix `_Rrt`:
 | Vec ops | `_Rrt_vec_push`, `_Rrt_vec_grow` |
 | Pool ops | `_Rrt_pool_alloc`, `_Rrt_pool_free` |
 | Spawn | `_Rrt_spawn`, `_Rrt_spawn_detach` |
+
+## Symbol Length Limits
+
+| Rule | Description |
+|------|-------------|
+| **SL1: Soft limit** | Aim for symbols <200 chars for readability |
+| **SL2: Abbreviation** | If symbol >200 chars, abbreviate package path to first 3 chars per segment |
+| **SL3: Type names** | Never abbreviate type names (preserve debuggability) |
+| **SL4: No hard limit** | Compiler accepts arbitrarily long symbols; linker-dependent |
+
+**Abbreviation example:**
+```rask
+// package: myapp.api.handlers.user.profile
+public func get_profile<T>(user: User, opts: Options<T>)
+    using Database using Logger -> Result<Profile<T>, Error>
+```
+
+Full symbol (>200 chars):
+```
+_R5myapp3api8handlers4user7profile_F11get_profile_G4User7Options[T]:8Database6Logger6Result[7Profile[T],5Error]_H4a3f
+```
+
+Abbreviated symbol:
+```
+_R3mya3api3han3use3pro_F11get_profile_G4User7Options[T]:8Database6Logger6Result[7Profile[T],5Error]_H4a3f
+```
 
 ## Implementation Notes
 

@@ -1,0 +1,18 @@
+[package]
+name = "rask-codegen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rask-mir = { path = "../rask-mir" }
+rask-mono = { path = "../rask-mono" }
+
+cranelift = "0.114"
+cranelift-module = "0.114"
+cranelift-object = "0.114"
+cranelift-native = "0.114"
+cranelift-codegen = "0.114"
+cranelift-frontend = "0.114"
+
+target-lexicon = "0.12"
+object = "0.36"
