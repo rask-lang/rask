@@ -554,6 +554,460 @@ mod tests {
         gen.gen_function(&mir).unwrap();
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // Struct field access (Field rvalue)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_struct_field_access() {
+        // struct Point { x: i32, y: i32 }
+        // func get_y(p: Point) -> i32 { return p.y }
+        //
+        // MIR: p is a pointer to 8 bytes on stack (Struct(0))
+        //   _1 = Field { base: _0, field_index: 1 }
+        //   return _1
+        use rask_mir::MirType;
+
+        let struct_layout_id = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+
+        let mir = MirFunction {
+            name: "get_y".to_string(),
+            params: vec![local(0, "p", struct_layout_id.clone(), true)],
+            ret_ty: MirType::I32,
+            locals: vec![
+                local(0, "p", struct_layout_id, true),
+                temp(1, MirType::I32),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1 }),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_point_struct();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_struct_store_and_field() {
+        // Construct a struct on the stack, then read a field.
+        //
+        //   _0: Struct(0)  — stack allocated
+        //   store _0 + 0, 10   — x = 10
+        //   store _0 + 4, 20   — y = 20
+        //   _1 = Field { base: _0, field_index: 1 }  — read y
+        //   return _1
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+
+        let mir = MirFunction {
+            name: "make_point".to_string(),
+            params: vec![],
+            ret_ty: MirType::I32,
+            locals: vec![
+                temp(0, struct_ty),
+                temp(1, MirType::I32),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(10) },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(20) },
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1 }),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_point_struct();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Enum tag extraction (EnumTag rvalue)
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_enum_tag() {
+        // enum Result { Ok(i32), Err(i32) }
+        // func get_tag(r: Result) -> u8 { return r.tag }
+        //
+        // MIR: _1 = EnumTag { value: _0 }
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+
+        let mir = MirFunction {
+            name: "get_tag".to_string(),
+            params: vec![local(0, "r", enum_ty.clone(), true)],
+            ret_ty: MirType::U8,
+            locals: vec![
+                local(0, "r", enum_ty, true),
+                temp(1, MirType::U8),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(1, MirRValue::EnumTag { value: local_op(0) }),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_result_enum();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_enum_field_access() {
+        // Extract payload from enum after tag check.
+        //
+        //   _0: Enum(0) — result param
+        //   _1 = EnumTag { value: _0 }
+        //   branch _1 == 0 → bb1 (Ok), else bb2
+        //   bb1: _2 = Field { base: _0, field_index: 0 }  — extract Ok payload
+        //        return _2
+        //   bb2: return 0
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+
+        let mir = MirFunction {
+            name: "unwrap_ok".to_string(),
+            params: vec![local(0, "r", enum_ty.clone(), true)],
+            ret_ty: MirType::I32,
+            locals: vec![
+                local(0, "r", enum_ty, true),
+                temp(1, MirType::U8),  // tag
+                temp(2, MirType::I32), // extracted payload
+                temp(3, MirType::Bool), // comparison
+            ],
+            blocks: vec![
+                // bb0: extract tag and branch
+                block(0, vec![
+                    assign(1, MirRValue::EnumTag { value: local_op(0) }),
+                    assign(3, MirRValue::BinaryOp {
+                        op: BinOp::Eq,
+                        left: local_op(1),
+                        right: MirOperand::Constant(MirConst::Int(0)),
+                    }),
+                ], branch(local_op(3), 1, 2)),
+                // bb1: Ok case
+                block(1, vec![
+                    assign(2, MirRValue::Field { base: local_op(0), field_index: 0 }),
+                ], ret(Some(local_op(2)))),
+                // bb2: Err case
+                block(2, vec![], ret(Some(i32_const(0)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_result_enum();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Pointer ref/deref
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_ref_aggregate() {
+        // Ref on an aggregate returns the pointer (no extra work).
+        //   _0: Struct(0) — stack allocated
+        //   _1: Ptr = Ref(_0)
+        //   return _1
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+
+        let mir = MirFunction {
+            name: "ref_struct".to_string(),
+            params: vec![],
+            ret_ty: MirType::Ptr,
+            locals: vec![
+                temp(0, struct_ty),
+                temp(1, MirType::Ptr),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(1, MirRValue::Ref(LocalId(0))),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_point_struct();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_ref_scalar() {
+        // Ref on a scalar spills to a stack slot and returns the address.
+        //   _0: i32 = 42
+        //   _1: Ptr = Ref(_0)
+        //   return _1
+        let mir = MirFunction {
+            name: "ref_scalar".to_string(),
+            params: vec![],
+            ret_ty: MirType::Ptr,
+            locals: vec![
+                temp(0, MirType::I32),
+                temp(1, MirType::Ptr),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(i32_const(42))),
+                    assign(1, MirRValue::Ref(LocalId(0))),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_deref() {
+        // Deref: load from a pointer.
+        //   _0: i32 = 42
+        //   _1: Ptr = Ref(_0)
+        //   _2: i32 = Deref(_1)
+        //   return _2
+        let mir = MirFunction {
+            name: "deref_test".to_string(),
+            params: vec![],
+            ret_ty: MirType::I32,
+            locals: vec![
+                temp(0, MirType::I32),
+                temp(1, MirType::Ptr),
+                temp(2, MirType::I32),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(i32_const(42))),
+                    assign(1, MirRValue::Ref(LocalId(0))),
+                    assign(2, MirRValue::Deref(local_op(1))),
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // String data section
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_string_constant() {
+        // func greet() { rask_print_string("hello") }
+        let mir = MirFunction {
+            name: "greet".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![
+                    call(None, "rask_print_string", vec![
+                        MirOperand::Constant(MirConst::String("hello".to_string())),
+                    ]),
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.register_strings(&[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_string_dedup() {
+        // Same string used twice should not cause errors (deduplication).
+        let mir = MirFunction {
+            name: "greet2".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![],
+            blocks: vec![
+                block(0, vec![
+                    call(None, "rask_print_string", vec![
+                        MirOperand::Constant(MirConst::String("dup".to_string())),
+                    ]),
+                    call(None, "rask_print_string", vec![
+                        MirOperand::Constant(MirConst::String("dup".to_string())),
+                    ]),
+                ], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.register_strings(&[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_string_in_assign() {
+        // _0: FatPtr = "hello world"
+        // return _0  (as i64 pointer)
+        let mir = MirFunction {
+            name: "str_val".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::FatPtr),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(
+                        MirOperand::Constant(MirConst::String("hello world".to_string())),
+                    )),
+                ], ret(Some(local_op(0)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.register_strings(&[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Stack allocation for aggregates
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_stack_alloc_struct() {
+        // A non-param struct local should get a stack allocation.
+        //   _0: Struct(0) — auto-allocated stack slot
+        //   store _0 + 0, 1
+        //   store _0 + 4, 2
+        //   return 0
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+
+        let mir = MirFunction {
+            name: "alloc_struct".to_string(),
+            params: vec![],
+            ret_ty: MirType::I32,
+            locals: vec![
+                temp(0, struct_ty),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(1) },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(2) },
+                ], ret(Some(i32_const(0)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_point_struct();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    #[test]
+    fn codegen_stack_alloc_enum() {
+        // A non-param enum local should get a stack allocation.
+        //   _0: Enum(0) — auto-allocated stack slot
+        //   store _0 + 0, 0  — tag = Ok
+        //   store _0 + 4, 42 — payload = 42
+        //   _1 = EnumTag { value: _0 }
+        //   return _1
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+
+        let mir = MirFunction {
+            name: "alloc_enum".to_string(),
+            params: vec![],
+            ret_ty: MirType::U8,
+            locals: vec![
+                temp(0, enum_ty),
+                temp(1, MirType::U8),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)) },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(42) },
+                    assign(1, MirRValue::EnumTag { value: local_op(0) }),
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mono = mono_with_result_enum();
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&mono, &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // I/O runtime function declarations
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_io_functions_declared() {
+        // Verify that I/O runtime functions can be called from generated code.
+        let mir = MirFunction {
+            name: "io_test".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64), // fd from open
+                temp(1, MirType::I64), // write result
+                temp(2, MirType::I64), // close result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    // fd = rask_io_open(path, flags, mode)
+                    call(Some(0), "rask_io_open", vec![
+                        MirOperand::Constant(MirConst::Int(0)), // null path
+                        MirOperand::Constant(MirConst::Int(0)), // flags
+                        MirOperand::Constant(MirConst::Int(0)), // mode
+                    ]),
+                    // rask_io_write(fd, buf, len)
+                    call(Some(1), "rask_io_write", vec![
+                        local_op(0),
+                        MirOperand::Constant(MirConst::Int(0)),
+                        MirOperand::Constant(MirConst::Int(0)),
+                    ]),
+                    // rask_io_close(fd)
+                    call(Some(2), "rask_io_close", vec![local_op(0)]),
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
+        gen.gen_function(&mir).unwrap();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
 
     fn dummy_mono() -> rask_mono::MonoProgram {
@@ -561,6 +1015,86 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
+        }
+    }
+
+    /// MonoProgram with a Point { x: i32, y: i32 } struct at index 0.
+    fn mono_with_point_struct() -> rask_mono::MonoProgram {
+        rask_mono::MonoProgram {
+            functions: vec![],
+            struct_layouts: vec![
+                rask_mono::StructLayout {
+                    name: "Point".to_string(),
+                    size: 8,
+                    align: 4,
+                    fields: vec![
+                        rask_mono::FieldLayout {
+                            name: "x".to_string(),
+                            ty: rask_types::Type::I32,
+                            offset: 0,
+                            size: 4,
+                            align: 4,
+                        },
+                        rask_mono::FieldLayout {
+                            name: "y".to_string(),
+                            ty: rask_types::Type::I32,
+                            offset: 4,
+                            size: 4,
+                            align: 4,
+                        },
+                    ],
+                },
+            ],
+            enum_layouts: vec![],
+        }
+    }
+
+    /// MonoProgram with Result { Ok(i32), Err(i32) } enum at index 0.
+    fn mono_with_result_enum() -> rask_mono::MonoProgram {
+        rask_mono::MonoProgram {
+            functions: vec![],
+            struct_layouts: vec![],
+            enum_layouts: vec![
+                rask_mono::EnumLayout {
+                    name: "Result".to_string(),
+                    size: 8,
+                    align: 4,
+                    tag_ty: rask_types::Type::U8,
+                    tag_offset: 0,
+                    variants: vec![
+                        rask_mono::VariantLayout {
+                            name: "Ok".to_string(),
+                            tag: 0,
+                            payload_offset: 4,
+                            payload_size: 4,
+                            fields: vec![
+                                rask_mono::FieldLayout {
+                                    name: "value".to_string(),
+                                    ty: rask_types::Type::I32,
+                                    offset: 0,
+                                    size: 4,
+                                    align: 4,
+                                },
+                            ],
+                        },
+                        rask_mono::VariantLayout {
+                            name: "Err".to_string(),
+                            tag: 1,
+                            payload_offset: 4,
+                            payload_size: 4,
+                            fields: vec![
+                                rask_mono::FieldLayout {
+                                    name: "error".to_string(),
+                                    ty: rask_types::Type::I32,
+                                    offset: 0,
+                                    size: 4,
+                                    align: 4,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
         }
     }
 }

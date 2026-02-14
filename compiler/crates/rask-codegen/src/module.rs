@@ -3,12 +3,13 @@
 //! Cranelift module setup and code generation orchestration.
 
 use cranelift::prelude::*;
-use cranelift_module::{Linkage, Module};
+use cranelift_codegen::ir::GlobalValue;
+use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::HashMap;
 
-use rask_mir::MirFunction;
-use rask_mono::MonoProgram;
+use rask_mir::{MirConst, MirFunction, MirOperand};
+use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
@@ -17,6 +18,12 @@ pub struct CodeGenerator {
     module: ObjectModule,
     ctx: codegen::Context,
     func_ids: HashMap<String, cranelift_module::FuncId>,
+    /// Struct layouts from monomorphization
+    struct_layouts: Vec<StructLayout>,
+    /// Enum layouts from monomorphization
+    enum_layouts: Vec<EnumLayout>,
+    /// String literal data (content → DataId in the object module)
+    string_data: HashMap<String, cranelift_module::DataId>,
 }
 
 impl CodeGenerator {
@@ -38,6 +45,9 @@ impl CodeGenerator {
             module,
             ctx: codegen::Context::new(),
             func_ids: HashMap::new(),
+            struct_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            string_data: HashMap::new(),
         })
     }
 
@@ -73,6 +83,26 @@ impl CodeGenerator {
             self.func_ids.insert("rask_print_newline".to_string(), id);
         }
 
+        // rask_print_string(ptr: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_print_string", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_string".to_string(), id);
+        }
+
+        // rask_print_f64(val: f64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::F64));
+            let id = self.module
+                .declare_function("rask_print_f64", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_f64".to_string(), id);
+        }
+
         // rask_exit(code: i64) -> void
         {
             let mut sig = self.module.make_signature();
@@ -101,11 +131,67 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail".to_string(), id);
         }
 
+        // ─── I/O functions ──────────────────────────────────────
+
+        // rask_io_write(fd: i64, buf: i64, len: i64) -> i64
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_io_write", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_io_write".to_string(), id);
+        }
+
+        // rask_io_read(fd: i64, buf: i64, len: i64) -> i64
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_io_read", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_io_read".to_string(), id);
+        }
+
+        // rask_io_open(path: i64, flags: i64, mode: i64) -> i64
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_io_open", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_io_open".to_string(), id);
+        }
+
+        // rask_io_close(fd: i64) -> i64
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_io_close", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_io_close".to_string(), id);
+        }
+
         Ok(())
     }
 
     /// Declare all functions first (for forward references).
-    pub fn declare_functions(&mut self, _mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+    pub fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        // Store layouts for use during code generation
+        self.struct_layouts = mono.struct_layouts.clone();
+        self.enum_layouts = mono.enum_layouts.clone();
+
         for mir_fn in mir_functions {
             let mut sig = self.module.make_signature();
 
@@ -138,6 +224,82 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Scan MIR functions for string constants and create data objects for each unique string.
+    /// Must be called after declare_functions and before gen_function.
+    pub fn register_strings(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        let mut counter = 0usize;
+        for mir_fn in mir_functions {
+            for block in &mir_fn.blocks {
+                for stmt in &block.statements {
+                    self.collect_string_constants(stmt, &mut counter)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn collect_string_constants(&mut self, stmt: &rask_mir::MirStmt, counter: &mut usize) -> CodegenResult<()> {
+        // Walk operands looking for string constants
+        match stmt {
+            rask_mir::MirStmt::Assign { rvalue, .. } => {
+                self.scan_rvalue_strings(rvalue, counter)?;
+            }
+            rask_mir::MirStmt::Store { value, .. } => {
+                self.register_operand_string(value, counter)?;
+            }
+            rask_mir::MirStmt::Call { args, .. } => {
+                for arg in args {
+                    self.register_operand_string(arg, counter)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn scan_rvalue_strings(&mut self, rvalue: &rask_mir::MirRValue, counter: &mut usize) -> CodegenResult<()> {
+        match rvalue {
+            rask_mir::MirRValue::Use(op) => self.register_operand_string(op, counter),
+            rask_mir::MirRValue::BinaryOp { left, right, .. } => {
+                self.register_operand_string(left, counter)?;
+                self.register_operand_string(right, counter)
+            }
+            rask_mir::MirRValue::UnaryOp { operand, .. } => self.register_operand_string(operand, counter),
+            rask_mir::MirRValue::Cast { value, .. } => self.register_operand_string(value, counter),
+            rask_mir::MirRValue::Field { base, .. } => self.register_operand_string(base, counter),
+            rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
+            rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
+            rask_mir::MirRValue::Ref(_) => Ok(()),
+        }
+    }
+
+    fn register_operand_string(&mut self, op: &MirOperand, counter: &mut usize) -> CodegenResult<()> {
+        if let MirOperand::Constant(MirConst::String(s)) = op {
+            if !self.string_data.contains_key(s) {
+                let name = format!(".str.{}", counter);
+                *counter += 1;
+
+                let data_id = self.module
+                    .declare_data(&name, Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+                // Store null-terminated bytes
+                let mut bytes = s.as_bytes().to_vec();
+                bytes.push(0);
+
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+
+                self.module
+                    .define_data(data_id, &desc)
+                    .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+                self.string_data.insert(s.clone(), data_id);
+            }
+        }
+        Ok(())
+    }
+
     /// Generate code for a single MIR function.
     pub fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()> {
         let func_id = self.func_ids.get(&mir_fn.name)
@@ -165,11 +327,21 @@ impl CodeGenerator {
             func_refs.insert(name.clone(), func_ref);
         }
 
+        // Pre-import string data globals into this function
+        let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (content, data_id) in &self.string_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            string_globals.insert(content.clone(), gv);
+        }
+
         // Build the function
         let mut builder = FunctionBuilder::new(
             &mut self.ctx.func,
             mir_fn,
             &func_refs,
+            &self.struct_layouts,
+            &self.enum_layouts,
+            &string_globals,
         )?;
         builder.build()?;
 

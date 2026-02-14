@@ -112,6 +112,14 @@ pub fn cmd_build(path: &str) {
                                                             }
                                                         }
 
+                                                        // Register string constants before codegen
+                                                        if total_errors == 0 {
+                                                            if let Err(e) = codegen.register_strings(&mir_functions) {
+                                                                eprintln!("codegen error: {}", e);
+                                                                total_errors += 1;
+                                                            }
+                                                        }
+
                                                         // Generate each function
                                                         if total_errors == 0 {
                                                             for mir_fn in &mir_functions {
