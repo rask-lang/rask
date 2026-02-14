@@ -6,5 +6,6 @@ pub mod analysis;
 pub mod codegen;
 pub mod run;
 pub mod build;
+pub mod link;
 pub mod tools;
 pub mod specs;

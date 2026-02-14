@@ -188,9 +188,43 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
                 process::exit(1);
             }
-            let mut program_args: Vec<String> = vec![cmd_args[2].to_string()];
+            let native = cmd_args.contains(&"--native");
+            let file_arg = cmd_args.iter().skip(2).find(|a| !a.starts_with('-')).copied();
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            let mut program_args: Vec<String> = vec![file.to_string()];
             program_args.extend(prog_args.iter().map(|s| s.to_string()));
-            commands::run::cmd_run(cmd_args[2], program_args, format);
+            if native {
+                commands::run::cmd_run_native(file, program_args, format);
+            } else {
+                commands::run::cmd_run(file, program_args, format);
+            }
+        }
+        "compile" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_compile_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("compile"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            let output_path = extract_flag_value(&cmd_args, "-o");
+            let file_arg = cmd_args.iter().skip(2).find(|a| !a.starts_with('-')).copied();
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::codegen::cmd_compile(file, output_path.as_deref(), format);
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -330,6 +364,14 @@ fn main() {
 
 fn extract_filter(args: &[&str]) -> Option<String> {
     if let Some(pos) = args.iter().position(|a| *a == "-f") {
+        args.get(pos + 1).map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+fn extract_flag_value(args: &[&str], flag: &str) -> Option<String> {
+    if let Some(pos) = args.iter().position(|a| *a == flag) {
         args.get(pos + 1).map(|s| s.to_string())
     } else {
         None

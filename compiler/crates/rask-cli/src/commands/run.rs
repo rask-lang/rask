@@ -227,6 +227,41 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
     }
 }
 
+/// Compile a .rk file to a temp executable and run it.
+pub fn cmd_run_native(path: &str, program_args: Vec<String>, _format: Format) {
+    // Compile to a temp file
+    let tmp_dir = std::env::temp_dir();
+    let bin_name = std::path::Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("rask_out");
+    let bin_path = tmp_dir.join(format!("rask_{}", bin_name));
+    let bin_str = bin_path.to_string_lossy().to_string();
+
+    // Compile quietly — suppress the "Compiled →" banner (errors still show)
+    super::codegen::cmd_compile(path, Some(&bin_str), Format::Json);
+
+    // Execute
+    let status = process::Command::new(&bin_str)
+        .args(&program_args)
+        .status();
+
+    // Clean up
+    let _ = std::fs::remove_file(&bin_path);
+
+    match status {
+        Ok(s) => {
+            if !s.success() {
+                process::exit(s.code().unwrap_or(1));
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: executing {}: {}", output::error_label(), bin_str, e);
+            process::exit(1);
+        }
+    }
+}
+
 pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
