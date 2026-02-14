@@ -868,6 +868,7 @@ dependencies = [
  "object",
  "rask-mir",
  "rask-mono",
+ "rask-types",
  "target-lexicon",
 ]
 
