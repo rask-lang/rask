@@ -11,6 +11,7 @@ members = [
     "crates/rask-ownership",
     "crates/rask-mono",
     "crates/rask-mir",
+    "crates/rask-codegen",
     "crates/rask-diagnostics",
     "crates/rask-interp",
     "crates/rask-stdlib",
