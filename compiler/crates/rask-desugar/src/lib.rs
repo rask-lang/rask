@@ -10,7 +10,7 @@
 //! This pass runs before type checking.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind, MatchArm, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
 
@@ -164,13 +164,13 @@ impl Desugarer {
             ExprKind::Call { func, args } => {
                 self.desugar_expr(func);
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.desugar_expr(object);
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
@@ -215,7 +215,7 @@ impl Desugarer {
                 }
             }
             ExprKind::Try(e) => self.desugar_expr(e),
-            ExprKind::Unwrap(e) => self.desugar_expr(e),
+            ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,
                 else_branch,
@@ -223,6 +223,9 @@ impl Desugarer {
             } => {
                 self.desugar_expr(expr);
                 self.desugar_expr(else_branch);
+            }
+            ExprKind::IsPattern { expr, .. } => {
+                self.desugar_expr(expr);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.desugar_expr(value);
@@ -300,7 +303,7 @@ impl Desugarer {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
                 for s in body {
                     self.desugar_stmt(s);
@@ -312,7 +315,8 @@ impl Desugarer {
             | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
-            | ExprKind::Ident(_) => {}
+            | ExprKind::Ident(_)
+            => {}
         }
 
         // Then, transform operators if applicable
@@ -345,7 +349,7 @@ impl Desugarer {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
                             type_args: None,
-                            args: vec![right_expr],
+                            args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
                         },
                         span,
                     };
@@ -358,7 +362,7 @@ impl Desugarer {
                         object: Box::new(left_expr),
                         method: method.to_string(),
                         type_args: None,
-                        args: vec![right_expr],
+                        args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
                     };
                 }
             }

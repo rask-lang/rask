@@ -20,6 +20,8 @@ pub enum SymbolKind {
     Parameter {
         /// Whether this parameter takes ownership.
         is_take: bool,
+        /// Whether this parameter is mutable.
+        is_mutate: bool,
     },
     /// A function.
     Function {

@@ -41,14 +41,14 @@ pub enum ExprKind {
     /// Function call
     Call {
         func: Box<Expr>,
-        args: Vec<Expr>,
+        args: Vec<CallArg>,
     },
     /// Method call (syntactic sugar for field access + call)
     MethodCall {
         object: Box<Expr>,
         method: String,
         type_args: Option<Vec<String>>,
-        args: Vec<Expr>,
+        args: Vec<CallArg>,
     },
     /// Field access
     Field {
@@ -86,6 +86,11 @@ pub enum ExprKind {
         pattern: Pattern,
         else_branch: Box<Expr>,
     },
+    /// Pattern test expression (expr is Pattern) — evaluates to bool
+    IsPattern {
+        expr: Box<Expr>,
+        pattern: Pattern,
+    },
     /// Match expression
     Match {
         scrutinee: Box<Expr>,
@@ -94,7 +99,10 @@ pub enum ExprKind {
     /// Try expression (try prefix or postfix ?)
     Try(Box<Expr>),
     /// Unwrap expression (postfix !) - panics if None/Err
-    Unwrap(Box<Expr>),
+    Unwrap {
+        expr: Box<Expr>,
+        message: Option<String>,
+    },
     /// Null coalescing (a ?? b)
     NullCoalesce {
         value: Box<Expr>,
@@ -124,7 +132,7 @@ pub enum ExprKind {
     /// Using block expression (using name { body } or using name(args) { body })
     UsingBlock {
         name: String,
-        args: Vec<Expr>,
+        args: Vec<CallArg>,
         body: Vec<super::stmt::Stmt>,
     },
     /// With-as element binding (with expr as name, ... { body })
@@ -175,6 +183,24 @@ pub enum ExprKind {
         condition: Box<Expr>,
         message: Option<Box<Expr>>,
     },
+}
+
+/// How an argument is passed at a call site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgMode {
+    /// Default (borrow / read-only)
+    Default,
+    /// `own expr` — transfers ownership (matches `take` param)
+    Own,
+    /// `mutate expr` — mutable borrow (matches `mutate` param)
+    Mutate,
+}
+
+/// A function call argument with optional mode annotation.
+#[derive(Debug, Clone)]
+pub struct CallArg {
+    pub mode: ArgMode,
+    pub expr: Expr,
 }
 
 /// A field initializer in a struct literal.

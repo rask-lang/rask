@@ -19,8 +19,8 @@ impl Interpreter {
                 if let Some(dot) = name.find('.') {
                     let (pat_enum, pat_variant) = (&name[..dot], &name[dot + 1..]);
                     return match value {
-                        Value::Enum { name: en, variant, fields }
-                            if en == pat_enum && variant == pat_variant && fields.is_empty() =>
+                        Value::Enum { name: en, variant, .. }
+                            if en == pat_enum && variant == pat_variant =>
                         {
                             Some(HashMap::new())
                         }
@@ -31,23 +31,20 @@ impl Interpreter {
                         _ => None,
                     };
                 }
-                if let Value::Enum {
-                    variant,
-                    fields,
-                    ..
-                } = value
-                {
-                    let is_unit_variant = self.enums.values().any(|e| {
-                        e.variants.iter().any(|v| v.name == *name && v.fields.is_empty())
+                // Check if this ident is a known enum variant — match tag only
+                if let Value::Enum { variant, .. } = value {
+                    let is_known_variant = self.enums.values().any(|e| {
+                        e.variants.iter().any(|v| v.name == *name)
                     });
-                    if is_unit_variant {
-                        if variant == name && fields.is_empty() {
+                    if is_known_variant {
+                        if variant == name {
                             return Some(HashMap::new());
                         } else {
                             return None;
                         }
                     }
                 }
+                // Not a known variant — treat as variable binding
                 let mut bindings = HashMap::new();
                 bindings.insert(name.clone(), value.clone());
                 Some(bindings)

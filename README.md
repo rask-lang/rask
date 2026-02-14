@@ -34,11 +34,62 @@ Full example: [grep_clone.rk](examples/grep_clone.rk)
 ---
 
 **Jump to:**
+- [Getting Started](#getting-started) - Build and run
 - [The Idea](#the-idea) - What I'm trying and why
 - [What This Costs](#what-this-costs) - Tradeoffs
 - [Implementation Status](#implementation-status) - What works today
 - [Design Principles](#design-principles) - Core philosophy
 - [Documentation](#documentation) - Where to look
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+You need the Rust toolchain to build from source. If you don't have it:
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+```
+
+### Build
+
+```bash
+git clone https://github.com/rask-lang/rask.git
+cd rask/compiler
+cargo build --release
+```
+
+### Add to PATH
+
+```bash
+export PATH="$PWD/target/release:$PATH"
+```
+
+Add to your shell profile (`~/.bashrc`, `~/.zshrc`) to make it permanent.
+
+### Run
+
+```bash
+cd ..
+rask run examples/hello_world.rk
+```
+
+### What you can do
+
+```bash
+rask run <file>       # execute a .rk program
+rask check <file>     # type-check only
+rask lint <file>      # style/idiom check
+rask fmt <file>       # auto-format
+```
+
+### Next steps
+
+- Browse [examples/](examples/) for working programs
+- Try the [tutorials](tutorials/) — hands-on challenges with built-in reference
+- Read the [Language Guide](LANGUAGE_GUIDE.md) for the full explanation
 
 ---
 
@@ -144,15 +195,21 @@ Rask borrows ideas from everywhere:
 
 ## Documentation
 
-For the language guide: see the [book](https://rask-lang.dev/book) (work in progress).  
-For the design specs: see [specs/](specs/).
+| Resource | What |
+|----------|------|
+| [Language Guide](LANGUAGE_GUIDE.md) | Full explanation of every feature, jargon-free |
+| [Tutorials](tutorials/) | Hands-on challenges with built-in reference |
+| [Examples](examples/) | Working programs from hello world to grep clone |
+| [Book](https://rask-lang.dev/book) | Online guide (work in progress) |
+| [Specs](specs/) | Formal language specifications |
 
 ### Project Structure
 
 ```
+├── LANGUAGE_GUIDE.md       # The full language explanation
 ├── CORE_DESIGN.md          # Design philosophy and core mechanisms
-├── METRICS.md              # How I measure whether the design works
-├── TODO.md                 # What's done, what's next
+├── tutorials/              # Hands-on challenges (5 levels)
+├── examples/               # Working .rk programs
 ├── specs/                  # Language specifications
 │   ├── types/              # Type system, generics, traits
 │   ├── memory/             # Ownership, borrowing, resources
@@ -160,16 +217,11 @@ For the design specs: see [specs/](specs/).
 │   ├── concurrency/        # Tasks, threads, channels
 │   ├── structure/          # Modules, packages, builds
 │   └── stdlib/             # Standard library APIs
-├── compiler/               # The actual implementation
-│   ├── rask-lexer/         # Tokenization
-│   ├── rask-parser/        # AST construction
-│   ├── rask-types/         # Type checking
-│   ├── rask-interp/        # Interpreter (current execution)
-│   └── ...
-└── examples/               # Real programs that run today
-    ├── grep_clone.rk
-    ├── game_loop.rk
-    ├── text_editor.rk
+└── compiler/               # The implementation
+    ├── rask-lexer/         # Tokenization
+    ├── rask-parser/        # AST construction
+    ├── rask-types/         # Type checking
+    ├── rask-interp/        # Interpreter (current execution)
     └── ...
 ```
 

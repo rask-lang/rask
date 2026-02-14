@@ -1,0 +1,12 @@
+[package]
+name = "rask-mono"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rask-ast = { path = "../rask-ast" }
+rask-types = { path = "../rask-types" }
+rask-diagnostics = { path = "../rask-diagnostics" }
+
+[dev-dependencies]
+rask-resolve = { path = "../rask-resolve" }

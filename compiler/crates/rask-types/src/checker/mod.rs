@@ -101,6 +101,7 @@ impl TypeChecker {
                 resolutions: self.resolved.resolutions,
                 types: self.types,
                 node_types,
+                call_type_args: HashMap::new(),
             })
         } else {
             let ctx = &self.ctx;
@@ -117,6 +118,7 @@ impl TypeChecker {
                     resolutions: self.resolved.resolutions,
                     types: self.types,
                     node_types,
+                    call_type_args: HashMap::new(),
                 })
             } else {
                 Err(errors)

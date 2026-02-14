@@ -1,0 +1,85 @@
+// Solution: Lesson 04
+
+func particle_masses() -> Vec<f64> {
+    return Vec.from([0.511, 105.7, 1776.9])
+}
+
+func sum_vec(numbers: Vec<f64>) -> f64 {
+    let total = 0.0
+    for n in numbers {
+        total = total + n
+    }
+    return total
+}
+
+func periodic_table() -> Map<string, i32> {
+    const table = Map.new()
+    table.insert("H", 1)
+    table.insert("He", 2)
+    table.insert("Li", 3)
+    table.insert("Be", 4)
+    table.insert("B", 5)
+    table.insert("C", 6)
+    table.insert("N", 7)
+    table.insert("O", 8)
+    return table
+}
+
+func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
+    let sum = 0.0
+    for i in 0..a.len() {
+        sum = sum + a[i] * b[i]
+    }
+    return sum
+}
+
+func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
+    const counts = Map.new()
+    for item in items {
+        const existing = counts.get(item)
+        if existing is Some(c) {
+            counts.insert(item, c + 1)
+        } else {
+            counts.insert(item, 1)
+        }
+    }
+    return counts
+}
+
+test "particle masses" {
+    const masses = particle_masses()
+    assert masses.len() == 3
+    assert masses[0] == 0.511
+    assert masses[1] == 105.7
+    assert masses[2] == 1776.9
+}
+
+test "sum vec" {
+    assert sum_vec(Vec.from([1.0, 2.0, 3.0])) == 6.0
+    assert sum_vec(Vec.from([0.511, 105.7, 1776.9])) > 1883.0
+    assert sum_vec(Vec.new()) == 0.0
+}
+
+test "periodic table" {
+    const table = periodic_table()
+    assert table.get("H") is Some(1)
+    assert table.get("He") is Some(2)
+    assert table.get("C") is Some(6)
+    assert table.get("O") is Some(8)
+}
+
+test "dot product" {
+    assert dot_product(Vec.from([1.0, 2.0, 3.0]), Vec.from([4.0, 5.0, 6.0])) == 32.0
+    assert dot_product(Vec.from([1.0, 0.0]), Vec.from([0.0, 1.0])) == 0.0
+}
+
+test "count occurrences" {
+    const counts = count_occurrences(Vec.from([1, 2, 1, 3, 2, 1]))
+    assert counts.get(1) is Some(3)
+    assert counts.get(2) is Some(2)
+    assert counts.get(3) is Some(1)
+}
+
+func main() {
+    println("All solutions for lesson 04")
+}

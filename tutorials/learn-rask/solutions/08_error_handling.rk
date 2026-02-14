@@ -1,0 +1,88 @@
+// Solution: Lesson 08
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..30 { g = (g + x / g) / 2.0 }
+    return g
+}
+
+func validate_temperature(reading: f64) -> f64 or string {
+    if reading < -40.0 { return Err("too low") }
+    if reading > 150.0 { return Err("too high") }
+    return reading
+}
+
+func parse_altitude(s: string) -> i32 or string {
+    if s.len() == 0 { return Err("empty string") }
+    const alt = try s.parse_i32()
+    if alt < 0 { return Err("negative altitude") }
+    return alt
+}
+
+func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or string {
+    const a = try validate_temperature(r1)
+    const b = try validate_temperature(r2)
+    const c = try validate_temperature(r3)
+    return (a + b + c) / 3.0
+}
+
+func safe_get(v: Vec<i32>, i: i32) -> i32? {
+    if i < 0 { return None }
+    if i >= v.len() { return None }
+    return v[i]
+}
+
+test "valid temperature" {
+    const r = validate_temperature(20.0)
+    assert r.is_ok()
+}
+
+test "temperature too high" {
+    assert validate_temperature(200.0).is_err()
+}
+
+test "temperature too low" {
+    assert validate_temperature(-50.0).is_err()
+}
+
+test "temperature at boundary" {
+    assert validate_temperature(-40.0).is_ok()
+    assert validate_temperature(150.0).is_ok()
+}
+
+test "parse altitude" {
+    const r = parse_altitude("35000")
+    assert r.is_ok()
+}
+
+test "parse negative altitude" {
+    assert parse_altitude("-100").is_err()
+}
+
+test "parse empty altitude" {
+    assert parse_altitude("").is_err()
+}
+
+test "average valid readings" {
+    const r = average_readings(20.0, 22.0, 21.0)
+    assert r.is_ok()
+}
+
+test "average with invalid reading" {
+    assert average_readings(20.0, 200.0, 21.0).is_err()
+}
+
+test "safe get in bounds" {
+    const v = Vec.from([10, 20, 30])
+    assert safe_get(v, 0) is Some(10)
+    assert safe_get(v, 2) is Some(30)
+}
+
+test "safe get out of bounds" {
+    const v = Vec.from([10, 20, 30])
+    assert safe_get(v, 5) is None
+    assert safe_get(v, -1) is None
+}
+
+func main() { println("All solutions for lesson 08") }

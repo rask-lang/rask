@@ -78,4 +78,7 @@ pub struct TypedProgram {
     pub types: TypeTable,
     /// Computed type for each expression node.
     pub node_types: HashMap<NodeId, Type>,
+    /// Resolved type arguments for each generic call site.
+    /// Key is the Call/MethodCall expression's NodeId.
+    pub call_type_args: HashMap<NodeId, Vec<Type>>,
 }

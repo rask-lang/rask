@@ -317,13 +317,13 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Call { func, args } => {
                 self.check_expr(func);
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_expr(&arg.expr);
                 }
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
@@ -434,12 +434,15 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Try(inner) => {
                 self.check_expr(inner);
             }
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
             }
             ExprKind::GuardPattern { expr, pattern: _, else_branch } => {
                 self.check_expr(expr);
                 self.check_expr(else_branch);
+            }
+            ExprKind::IsPattern { expr, pattern: _ } => {
+                self.check_expr(expr);
             }
             ExprKind::NullCoalesce { value, default } => {
                 self.check_expr(value);
@@ -450,7 +453,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::UsingBlock { name: _, args, body } => {
                 for arg in args {
-                    self.check_expr(arg);
+                    self.check_expr(&arg.expr);
                 }
                 self.check_block(body);
             }
@@ -815,11 +818,11 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::Call { func, args } => {
                 self.collect_free_vars(func, locals, out);
-                for arg in args { self.collect_free_vars(arg, locals, out); }
+                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.collect_free_vars(object, locals, out);
-                for arg in args { self.collect_free_vars(arg, locals, out); }
+                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
                 self.collect_free_vars(object, locals, out);
@@ -928,7 +931,7 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Call { func, args } => {
                 // Check args for resource identifiers
                 for arg in args {
-                    if let ExprKind::Ident(name) = &arg.kind {
+                    if let ExprKind::Ident(name) = &arg.expr.kind {
                         if self.resource_bindings.contains(name) {
                             self.ensure_registered.insert(name.clone());
                         }

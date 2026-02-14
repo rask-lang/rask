@@ -147,7 +147,7 @@
         },
         {
           "name": "keyword.other.rk",
-          "match": "\\b(select|with|ensure|where|as|or|asm|step|benchmark)\\b"
+          "match": "\\b(select|using|with|ensure|where|as|or|asm|step|benchmark)\\b"
         },
         {
           "name": "constant.language.rk",

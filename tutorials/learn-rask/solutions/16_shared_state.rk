@@ -1,0 +1,121 @@
+// Solution: Lesson 16
+//
+// Three ways to handle .join() errors:
+//
+//   1. h.join()! — panic if task panicked (simplest, good for tests)
+//   2. try h.join() — propagate JoinError (function must return or JoinError)
+//   3. match h.join() { Ok(v) => ..., Err(e) => ... } — explicit handling
+//
+import async.spawn
+import sync.AtomicI64
+import sync.Relaxed
+
+// Approach 1: Use ! to panic on task failure (simplest for tests)
+func flight_tracker() -> i32 {
+    using Multitasking {
+        const sightings = Shared.new(Vec.new())
+
+        const h1 = spawn(|| {
+            sightings.write(|s| s.push("SAS937"))
+            sightings.write(|s| s.push("BAW123"))
+        })
+        const h2 = spawn(|| {
+            sightings.write(|s| s.push("DLH456"))
+            sightings.write(|s| s.push("AFR789"))
+        })
+        const h3 = spawn(|| {
+            sightings.write(|s| s.push("UAL100"))
+        })
+
+        h1.join()!
+        // panic if task panicked
+        h2.join()!
+        h3.join()!
+
+        return sightings.read(|s| s.len())
+    }
+}
+
+// Approach 2: Propagate errors (if function can return JoinError)
+// For this version, we keep it simple and use ! since tests expect i64
+func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
+    using Multitasking {
+        const counter = AtomicI64.new(0)
+
+        const handles = Vec.new()
+        for i in 0..num_tasks {
+            const h = spawn(|| {
+                for j in 0..count_per_task {
+                    counter.fetch_add(1, Relaxed)
+                }
+            })
+            handles.push(h)
+        }
+
+        for h in handles {
+            h.join()!
+        }
+
+        return counter.load(Relaxed)
+    }
+}
+
+func shared_config_update() -> i32 {
+    using Multitasking {
+        const config = Shared.new(35000)
+        let (tx, rx) = Channel<bool>.buffered(1)
+
+        const atc = spawn(|| {
+            config.write(|c| {
+                c = 37000
+            })
+            tx.send(true)
+        })
+
+        const pilot = spawn(|| {
+            rx.recv()
+            return config.read(|c| c)
+        })
+
+        atc.join()!
+        const result = pilot.join()!
+        return result
+    }
+}
+
+test "flight tracker" {
+    const count = flight_tracker()
+    assert count > 0
+    assert count >= 3
+}
+
+test "atomic counter" {
+    assert atomic_counter(4, 1000) == 4000
+    assert atomic_counter(2, 500) == 1000
+}
+
+test "shared config update" {
+    assert shared_config_update() == 37000
+}
+
+// Example showing error handling approaches
+//
+// Approach 1: Use ! to panic on task failure (simplest)
+//   const h = spawn(|| { work() })
+//   h.join()!  // panics if task panicked
+//
+// Approach 2: Propagate errors with try
+//   func process() -> T or JoinError {
+//       const h = spawn(|| { work() })
+//       try h.join()  // propagates JoinError
+//       return result
+//   }
+//
+// Approach 3: Explicit match
+//   const result = h.join()
+//   if result is Ok(val) { use(val) }
+//   else if result is Err(e) { handle(e) }
+
+func main() {
+    println("All solutions for lesson 16")
+}

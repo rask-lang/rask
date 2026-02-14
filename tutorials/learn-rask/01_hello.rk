@@ -1,0 +1,80 @@
+// === Lesson 01: Hello, Rask ===
+//
+// Welcome, Besse. You know Python. This will feel different.
+//
+// In Python, you'd write:
+//   print("hello world")
+//
+// In Rask:
+//   func main() {
+//       println("hello world")
+//   }
+//
+// Three things to notice:
+//   1. Every program needs `func main()` — that's where execution starts
+//   2. `println` instead of `print` (the "ln" means it adds a newline)
+//   3. Curly braces `{ }` instead of indentation
+//
+// String interpolation works like Python f-strings, but simpler:
+//   Python:  f"speed = {c} m/s"
+//   Rask:    "speed = {c} m/s"      (no f prefix — all strings interpolate)
+//
+
+// --- Example ---
+
+func main() {
+    const name = "Besse"
+    println("Hello, {name}!")
+
+    // Numbers work in strings too
+    const altitude = 10668
+    println("Cruising at {altitude} meters")
+
+    // Fun fact: 10,668 m is 35,000 ft — standard cruising altitude for
+    // commercial jets. The air up there is -56°C and about 4x thinner
+    // than at sea level. Jet engines actually perform *better* in thin
+    // air because there's less drag.
+
+    println("")
+    println("Now solve the puzzles below!")
+    println("Run: rask test 01_hello.rk")
+}
+
+// ============================================================
+// PUZZLES — fill in the functions, then run `rask test 01_hello.rk`
+// ============================================================
+
+// --- Puzzle 1: Introduce yourself ---
+// Return a greeting string that includes a name.
+// Example: greet("Ada") should return "Hello, Ada!"
+//
+// Hint: build strings with interpolation: "value is {x}"
+func greet(name: string) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Flight announcement ---
+// Airports display departure messages like:
+//   "Flight SK1234 to Stockholm now boarding at gate B12"
+//
+// Fun fact: SK is the IATA code for SAS (Scandinavian Airlines),
+// which started operations in 1946. Their first transatlantic service
+// was Stockholm to New York. In 1954, SAS became the first airline to
+// fly a scheduled polar route from Copenhagen to Los Angeles.
+//
+// Build and return the announcement from the parts.
+func announce(flight: string, destination: string, gate: string) -> string {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "greet" {
+    assert greet("Besse") == "Hello, Besse!"
+    assert greet("Ada") == "Hello, Ada!"
+}
+
+test "flight announcement" {
+    const msg = announce("SK1234", "Stockholm", "B12")
+    assert msg == "Flight SK1234 to Stockholm now boarding at gate B12"
+}

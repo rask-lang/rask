@@ -1,0 +1,154 @@
+// === Lesson 18: Compile-Time Execution ===
+//
+// Python computes everything when you run the program.
+// Rask can compute things when you *compile* the program.
+//
+// Why? Some values never change — lookup tables, physical constants,
+// pre-computed coefficients. If you compute them during compilation,
+// they're ready instantly when the program starts. Zero startup cost.
+//
+//   const PRIMES = comptime {
+//       const v = Vec.new()
+//       for n in 2..100 {
+//           if is_prime(n) { v.push(n) }
+//       }
+//       v.freeze()    // lock the collection — now it's a fixed table
+//   }
+//
+// Rules:
+//   - comptime blocks run during compilation, not at runtime
+//   - No I/O, no network, no files
+//   - No concurrency (it's single-threaded compilation)
+//   - Collections must be .freeze()d — this converts them from
+//     growable collections into fixed-size tables embedded in
+//     the compiled program
+//   - The last expression in the block is the value (like any block)
+//
+// comptime if for platform-specific code:
+//   comptime if cfg.os == "linux" {
+//       const PLATFORM = "linux"
+//   } else {
+//       const PLATFORM = "other"
+//   }
+// The compiler evaluates the condition and only compiles the
+// matching branch. Dead code is completely removed.
+//
+
+// --- Example ---
+
+// Pre-compute squares at compile time
+const SQUARES = comptime {
+    const v = Vec.new()
+    for i in 0..20 {
+        v.push(i * i)
+    }
+    v.freeze()
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Factorial table ---
+// Pre-compute factorials 0! through 12! at compile time.
+// Return as a frozen Vec<i64>.
+//
+// Fun fact: 12! = 479,001,600, which fits in an i32. But 13! = 6.2 billion,
+// which doesn't. That's why we stop at 12 and use i64 for headroom.
+// Factorials grow absurdly fast — 20! is already 2.4 quintillion.
+// Stirling's approximation (n! ≈ √(2πn) · (n/e)^n) is how physicists
+// deal with factorials of large numbers without actually computing them.
+const FACTORIALS = comptime {
+    panic("TODO: build and freeze a Vec of factorials")
+}
+
+// --- Puzzle 2: Standard atmosphere ---
+// The International Standard Atmosphere (ISA) defines temperature
+// at each altitude. Pilots use it to calibrate altimeters.
+//
+// At sea level: 288.15 K (15°C)
+// Lapse rate: -6.5 K per 1000m (up to 11,000m)
+// Above 11,000m: constant at 216.65 K (the tropopause)
+//
+// Pre-compute temperatures at 0, 1000, 2000, ..., 20000 meters.
+//
+// Fun fact: the tropopause is where weather stops. Above it,
+// temperature actually *increases* because ozone absorbs UV.
+// Jet aircraft cruise at 10,000-12,000m specifically to fly
+// just above the weather. The Concorde cruised at 18,000m —
+// so high that pilots could see the curvature of the Earth.
+const STD_ATMOSPHERE = comptime {
+    panic("TODO: build and freeze a Vec of temperatures in Kelvin")
+}
+
+// Look up temperature for a given altitude (rounded to nearest 1000m)
+func std_temperature(altitude_m: i32) -> f64 {
+    panic("TODO: look up in STD_ATMOSPHERE table")
+}
+
+// --- Puzzle 3: ASCII lookup ---
+// Pre-compute whether each byte value 0-127 is an uppercase letter.
+// This is how fast parsers work — instead of checking A ≤ c ≤ Z
+// every time, you look up a table. One memory read vs two comparisons.
+//
+// Fun fact: ASCII was designed in 1963. Uppercase and lowercase
+// letters differ by exactly one bit (bit 5): 'A' is 0x41, 'a'
+// is 0x61. This wasn't an accident — it made case conversion
+// trivial on early hardware that could only flip individual bits.
+const IS_UPPER = comptime {
+    panic("TODO: build and freeze a Vec<bool> for ASCII 0-127")
+}
+
+func is_uppercase(c: i32) -> bool {
+    panic("TODO: look up in IS_UPPER table")
+}
+
+// --- Tests ---
+
+test "squares table" {
+    assert SQUARES[0] == 0
+    assert SQUARES[4] == 16
+    assert SQUARES[10] == 100
+}
+
+test "factorial table" {
+    assert FACTORIALS[0] == 1
+    assert FACTORIALS[1] == 1
+    assert FACTORIALS[5] == 120
+    assert FACTORIALS[10] == 3628800
+    assert FACTORIALS[12] == 479001600
+}
+
+test "standard atmosphere" {
+    // Sea level: 288.15 K
+    const t0 = std_temperature(0)
+    assert t0 > 288.0
+    assert t0 < 289.0
+
+    // 5000m: 288.15 - 5*6.5 = 255.65 K
+    const t5 = std_temperature(5000)
+    assert t5 > 255.0
+    assert t5 < 256.0
+
+    // 11000m: 288.15 - 11*6.5 = 216.65 K (tropopause)
+    const t11 = std_temperature(11000)
+    assert t11 > 216.0
+    assert t11 < 217.0
+
+    // 15000m: same as 11000m (constant above tropopause)
+    const t15 = std_temperature(15000)
+    assert t15 > 216.0
+    assert t15 < 217.0
+}
+
+test "is uppercase" {
+    assert is_uppercase(65) == true    // 'A'
+    assert is_uppercase(90) == true    // 'Z'
+    assert is_uppercase(97) == false   // 'a'
+    assert is_uppercase(48) == false   // '0'
+}
+
+func main() {
+    println("Squares[5] = {SQUARES[5]}")
+    println("Run 'rask test 18_comptime.rk' to check your puzzles")
+}

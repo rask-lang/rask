@@ -1,0 +1,90 @@
+{
+  "Function": {
+    "prefix": "func",
+    "body": [
+      "func ${1:name}(${2:params}) -> ${3:ReturnType} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Function declaration"
+  },
+  "Struct": {
+    "prefix": "struct",
+    "body": [
+      "struct ${1:Name} {",
+      "\t${2:field}: ${3:Type},",
+      "}"
+    ],
+    "description": "Struct declaration"
+  },
+  "Enum": {
+    "prefix": "enum",
+    "body": [
+      "enum ${1:Name} {",
+      "\t${2:Variant},",
+      "}"
+    ],
+    "description": "Enum declaration"
+  },
+  "Extend": {
+    "prefix": "extend",
+    "body": [
+      "extend ${1:Type} {",
+      "\tfunc ${2:method}(self${3}) -> ${4:ReturnType} {",
+      "\t\t$0",
+      "\t}",
+      "}"
+    ],
+    "description": "Method block"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "\t${2:Pattern} => ${3:expr},",
+      "}"
+    ],
+    "description": "Match expression"
+  },
+  "For loop": {
+    "prefix": "for",
+    "body": [
+      "for ${1:item} in ${2:iter} {",
+      "\t$0",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "If is": {
+    "prefix": "ifis",
+    "body": [
+      "if ${1:value} is ${2:Some}: ${3:expr}"
+    ],
+    "description": "Pattern match with if-is"
+  },
+  "Guard pattern": {
+    "prefix": "guard",
+    "body": [
+      "const ${1:v} = ${2:expr} is ${3:Ok} else { return ${4:None} }"
+    ],
+    "description": "Guard pattern"
+  },
+  "Test": {
+    "prefix": "test",
+    "body": [
+      "test \"${1:description}\" {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Test block"
+  },
+  "Trait": {
+    "prefix": "trait",
+    "body": [
+      "trait ${1:Name} {",
+      "\tfunc ${2:method}(self${3}) -> ${4:ReturnType}",
+      "}"
+    ],
+    "description": "Trait declaration"
+  }
+}

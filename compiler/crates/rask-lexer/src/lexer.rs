@@ -249,6 +249,10 @@ enum RawToken {
     #[regex(r"[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9]+)?(f32|f64)?")]
     Float,
 
+    // Scientific notation without decimal point (1e-7, 2e+3, etc.)
+    #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9]+(f32|f64)?")]
+    ScientificFloat,
+
     // Decimal integers: [0-9][0-9_]* with optional type suffix
     #[regex(r"[0-9][0-9_]*(i8|i16|i32|i64|i128|isize|u8|u16|u32|u64|u128|usize)?")]
     DecInt,
@@ -554,6 +558,26 @@ impl<'a> Lexer<'a> {
                 TokenKind::Int(value, suffix)
             }
             RawToken::Float => {
+                // Detect suffix
+                let suffix = if slice.ends_with("f32") {
+                    Some(FloatSuffix::F32)
+                } else if slice.ends_with("f64") {
+                    Some(FloatSuffix::F64)
+                } else {
+                    None
+                };
+
+                // Remove suffix and underscores
+                let cleaned: String = slice
+                    .trim_end_matches("f32")
+                    .trim_end_matches("f64")
+                    .chars()
+                    .filter(|c| *c != '_')
+                    .collect();
+                let value = cleaned.parse::<f64>().map_err(|_| LexError::invalid_number(start, end))?;
+                TokenKind::Float(value, suffix)
+            }
+            RawToken::ScientificFloat => {
                 // Detect suffix
                 let suffix = if slice.ends_with("f32") {
                     Some(FloatSuffix::F32)

@@ -189,13 +189,13 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
         ExprKind::Call { func, args } => {
             visit_expr(func, index);
             for arg in args {
-                visit_expr(arg, index);
+                visit_expr(&arg.expr, index);
             }
         }
         ExprKind::MethodCall { object, args, .. } => {
             visit_expr(object, index);
             for arg in args {
-                visit_expr(arg, index);
+                visit_expr(&arg.expr, index);
             }
         }
         ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
@@ -224,6 +224,9 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_expr(else_br, index);
             }
         }
+        ExprKind::IsPattern { expr, .. } => {
+            visit_expr(expr, index);
+        }
         ExprKind::Match { scrutinee, arms } => {
             visit_expr(scrutinee, index);
             for arm in arms {
@@ -236,7 +239,7 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
         ExprKind::Try(e) => {
             visit_expr(e, index);
         }
-        ExprKind::Unwrap(e) => {
+        ExprKind::Unwrap { expr: e, .. } => {
             visit_expr(e, index);
         }
         ExprKind::NullCoalesce { value, default } => {

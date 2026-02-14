@@ -1,0 +1,110 @@
+// Solution: Lesson 15
+import async.spawn
+
+func vec_max(v: Vec<f64>) -> f64 {
+    let m = v[0]
+    for i in 1..v.len() {
+        if v[i] > m { m = v[i] }
+    }
+    return m
+}
+
+func parallel_max(readings: Vec<f64>) -> f64 or Error {
+    using Multitasking {
+        const mid = readings.len() / 2
+        const first_half = readings[0..mid].to_vec()
+        const second_half = readings[mid..readings.len()].to_vec()
+
+        const h1 = spawn(|| {
+            return vec_max(first_half)
+        })
+        const h2 = spawn(|| {
+            return vec_max(second_half)
+        })
+
+        const m1 = try h1.join()
+        const m2 = try h2.join()
+
+        if m1 > m2 { return m1 }
+        return m2
+    }
+}
+
+func channel_sum(n: i32) -> i32 or Error {
+    using Multitasking {
+        let (tx, rx) = Channel<i32>.buffered(n)
+
+        const producer = spawn(|| {
+            for i in 1..(n + 1) {
+                tx.send(i)
+            }
+            tx.close()
+        })
+
+        let sum = 0
+        for value in rx {
+            sum = sum + value
+        }
+
+        try producer.join()
+        return sum
+    }
+}
+
+func estimate_pi(total: i32, num_tasks: i32) -> f64 {
+    using Multitasking {
+        const per_task = total / num_tasks
+        let (tx, rx) = Channel<i32>.buffered(num_tasks)
+
+        for task_id in 0..num_tasks {
+            const seed = task_id * 1000 + 42
+            const iters = per_task
+            spawn(|| {
+                let state = seed
+                let inside = 0
+                const a = 1103515245
+                const c = 12345
+                const m = 2147483648
+
+                for i in 0..iters {
+                    state = (a * state + c) % m
+                    const x = state as f64 / m as f64
+                    state = (a * state + c) % m
+                    const y = state as f64 / m as f64
+                    if x * x + y * y <= 1.0 {
+                        inside = inside + 1
+                    }
+                }
+                tx.send(inside)
+            }).detach()
+        }
+
+        let total_inside = 0
+        for i in 0..num_tasks {
+            total_inside = total_inside + rx.recv()
+        }
+
+        return 4.0 * total_inside as f64 / total as f64
+    }
+}
+
+test "parallel max" {
+    const readings = Vec.from([
+        31000.0, 33000.0, 35000.0, 34000.0,
+        36000.0, 32000.0, 37000.0, 34500.0,
+    ])
+    assert parallel_max(readings)! == 37000.0
+}
+
+test "channel sum" {
+    assert channel_sum(10)! == 55
+    assert channel_sum(100)! == 5050
+}
+
+test "monte carlo pi" {
+    const pi = estimate_pi(100000, 4)
+    assert pi > 2.9
+    assert pi < 3.5
+}
+
+func main() { println("All solutions for lesson 15") }

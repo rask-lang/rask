@@ -23,4 +23,7 @@ rask-fmt = { path = "../rask-fmt" }
 rask-comptime = { path = "../rask-comptime" }
 rask-describe = { path = "../rask-describe" }
 rask-lint = { path = "../rask-lint" }
+rask-mono = { path = "../rask-mono" }
+rask-mir = { path = "../rask-mir" }
+rask-codegen = { path = "../rask-codegen" }
 colored = "3"

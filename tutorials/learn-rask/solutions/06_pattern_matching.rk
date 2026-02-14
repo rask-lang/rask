@@ -1,0 +1,98 @@
+// Solution: Lesson 06
+
+enum State { Solid, Liquid, Gas }
+
+func classify_water(kelvin: f64) -> State {
+    if kelvin < 273.15 { return State.Solid }
+    if kelvin < 373.15 { return State.Liquid }
+    return State.Gas
+}
+
+func state_name(s: State) -> string {
+    return match s {
+        Solid => "solid",
+        Liquid => "liquid",
+        Gas => "gas",
+    }
+}
+
+enum Distance {
+    Meters(f64)
+    Feet(f64)
+    NauticalMiles(f64)
+    Lightyears(f64)
+}
+
+func to_meters(d: Distance) -> f64 {
+    return match d {
+        Meters(m) => m,
+        Feet(ft) => ft * 0.3048,
+        NauticalMiles(nm) => nm * 1852.0,
+        Lightyears(ly) => ly * 9.461e15,
+    }
+}
+
+enum Signal {
+    Red
+    Yellow(speed_limit: i32)
+    Green
+    Flashing(message: string)
+}
+
+func driver_action(s: Signal) -> string {
+    return match s {
+        Red => "stop",
+        Yellow(limit) => "slow to {limit} km/h",
+        Green => "proceed",
+        Flashing(msg) => "caution: {msg}",
+    }
+}
+
+enum Region {
+    Domestic
+    European
+    Intercontinental
+}
+
+func terminal(r: Region) -> string {
+    return match r {
+        Domestic => "T1",
+        European => "T2",
+        Intercontinental => "T3",
+    }
+}
+
+test "classify water state" {
+    assert state_name(classify_water(200.0)) == "solid"
+    assert state_name(classify_water(300.0)) == "liquid"
+    assert state_name(classify_water(400.0)) == "gas"
+    assert state_name(classify_water(273.15)) == "liquid"
+    assert state_name(classify_water(373.15)) == "gas"
+}
+
+test "distance to meters" {
+    assert to_meters(Distance.Meters(100.0)) == 100.0
+    const feet_result = to_meters(Distance.Feet(1.0))
+    assert feet_result > 0.304
+    assert feet_result < 0.305
+    const nm = to_meters(Distance.NauticalMiles(1.0))
+    assert nm == 1852.0
+    const ly = to_meters(Distance.Lightyears(1.0))
+    assert ly > 9.4e15
+    assert ly < 9.5e15
+}
+
+test "driver action" {
+    assert driver_action(Signal.Red) == "stop"
+    assert driver_action(Signal.Green) == "proceed"
+    assert driver_action(Signal.Yellow(80)) == "slow to 80 km/h"
+    assert driver_action(Signal.Flashing("bridge ahead")) == "caution: bridge ahead"
+}
+
+test "terminal assignment" {
+    assert terminal(Region.Domestic) == "T1"
+    assert terminal(Region.European) == "T2"
+    assert terminal(Region.Intercontinental) == "T3"
+}
+
+func main() { println("All solutions for lesson 06") }

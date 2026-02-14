@@ -1,0 +1,93 @@
+// Solution: Lesson 18
+
+const SQUARES = comptime {
+    const v = Vec.new()
+    for i in 0..20 {
+        v.push(i * i)
+    }
+    v.freeze()
+}
+
+const FACTORIALS = comptime {
+    const v = Vec.new()
+    let f: i64 = 1
+    v.push(f)
+    for i in 1..13 {
+        f = f * i as i64
+        v.push(f)
+    }
+    v.freeze()
+}
+
+const STD_ATMOSPHERE = comptime {
+    const v = Vec.new()
+    for alt in 0..21 {
+        const altitude_m = alt * 1000
+        if altitude_m <= 11000 {
+            v.push(288.15 - 6.5 * altitude_m as f64 / 1000.0)
+        } else {
+            v.push(216.65)
+        }
+    }
+    v.freeze()
+}
+
+func std_temperature(altitude_m: i32) -> f64 {
+    const index = altitude_m / 1000
+    return STD_ATMOSPHERE[index]
+}
+
+const IS_UPPER = comptime {
+    const v = Vec.new()
+    for i in 0..128 {
+        v.push(i >= 65 && i <= 90)
+    }
+    v.freeze()
+}
+
+func is_uppercase(c: i32) -> bool {
+    if c < 0 { return false }
+    if c > 127 { return false }
+    return IS_UPPER[c]
+}
+
+test "squares table" {
+    assert SQUARES[0] == 0
+    assert SQUARES[4] == 16
+    assert SQUARES[10] == 100
+}
+
+test "factorial table" {
+    assert FACTORIALS[0] == 1
+    assert FACTORIALS[1] == 1
+    assert FACTORIALS[5] == 120
+    assert FACTORIALS[10] == 3628800
+    assert FACTORIALS[12] == 479001600
+}
+
+test "standard atmosphere" {
+    const t0 = std_temperature(0)
+    assert t0 > 288.0
+    assert t0 < 289.0
+
+    const t5 = std_temperature(5000)
+    assert t5 > 255.0
+    assert t5 < 256.0
+
+    const t11 = std_temperature(11000)
+    assert t11 > 216.0
+    assert t11 < 217.0
+
+    const t15 = std_temperature(15000)
+    assert t15 > 216.0
+    assert t15 < 217.0
+}
+
+test "is uppercase" {
+    assert is_uppercase(65) == true
+    assert is_uppercase(90) == true
+    assert is_uppercase(97) == false
+    assert is_uppercase(48) == false
+}
+
+func main() { println("All solutions for lesson 18") }
