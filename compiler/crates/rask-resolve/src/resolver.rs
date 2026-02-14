@@ -615,7 +615,10 @@ impl Resolver {
         for param in &fn_decl.params {
             let param_sym = self.symbols.insert(
                 param.name.clone(),
-                SymbolKind::Parameter { is_take: param.is_take },
+                SymbolKind::Parameter {
+                    is_take: param.is_take,
+                    is_mutate: param.is_mutate,
+                },
                 Some(param.ty.clone()),
                 Span::new(0, 0),
                 false,
@@ -1056,7 +1059,10 @@ impl Resolver {
                 for param in params {
                     let sym_id = self.symbols.insert(
                         param.name.clone(),
-                        SymbolKind::Parameter { is_take: false },
+                        SymbolKind::Parameter {
+                            is_take: false,
+                            is_mutate: false,
+                        },
                         param.ty.clone(),
                         expr.span,
                         false,

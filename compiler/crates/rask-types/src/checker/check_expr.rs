@@ -728,6 +728,9 @@ impl TypeChecker {
             }
         }
 
+        // Validate call-site annotations before type inference
+        self.check_call_annotations(func, args, span);
+
         let func_ty = self.infer_expr(func);
 
         match func_ty {
@@ -783,6 +786,78 @@ impl TypeChecker {
 
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
         matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format")
+    }
+
+    /// Validate that call-site annotations match parameter declarations.
+    fn check_call_annotations(&mut self, func: &Expr, args: &[CallArg], _span: Span) {
+        use rask_ast::expr::ArgMode;
+        use rask_resolve::SymbolKind;
+
+        // Get the function's symbol ID
+        let sym_id = if let ExprKind::Ident(_) = &func.kind {
+            self.resolved.resolutions.get(&func.id).copied()
+        } else {
+            None
+        };
+
+        let Some(sym_id) = sym_id else { return };
+        let Some(sym) = self.resolved.symbols.get(sym_id) else { return };
+
+        // Get parameter symbols
+        let param_ids = match &sym.kind {
+            SymbolKind::Function { params, .. } => params.clone(),
+            _ => return,
+        };
+
+        // Validate each argument annotation
+        for (i, (arg, &param_id)) in args.iter().zip(param_ids.iter()).enumerate() {
+            let Some(param_sym) = self.resolved.symbols.get(param_id) else { continue };
+            let (is_take, is_mutate) = match &param_sym.kind {
+                SymbolKind::Parameter { is_take, is_mutate } => (*is_take, *is_mutate),
+                _ => continue,
+            };
+
+            let param_name = &param_sym.name;
+
+            match (&arg.mode, is_take, is_mutate) {
+                // Missing `own` annotation when parameter is `take`
+                (ArgMode::Default | ArgMode::Mutate, true, _) => {
+                    self.errors.push(TypeError::MissingOwnAnnotation {
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Missing `mutate` annotation when parameter is `mutate`
+                (ArgMode::Default | ArgMode::Own, _, true) => {
+                    self.errors.push(TypeError::MissingMutateAnnotation {
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Unexpected `own` annotation
+                (ArgMode::Own, false, _) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "own".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // Unexpected `mutate` annotation
+                (ArgMode::Mutate, _, false) => {
+                    self.errors.push(TypeError::UnexpectedAnnotation {
+                        annotation: "mutate".to_string(),
+                        param_name: param_name.clone(),
+                        param_index: i,
+                        span: arg.expr.span,
+                    });
+                }
+                // All other cases are valid
+                _ => {}
+            }
+        }
     }
 
     pub(super) fn check_method_call(

@@ -86,4 +86,23 @@ pub enum TypeError {
         found: Type,
         span: Span,
     },
+    #[error("parameter `{param_name}` requires `mutate` annotation at call site")]
+    MissingMutateAnnotation {
+        param_name: String,
+        param_index: usize,
+        span: Span,
+    },
+    #[error("parameter `{param_name}` requires `own` annotation at call site")]
+    MissingOwnAnnotation {
+        param_name: String,
+        param_index: usize,
+        span: Span,
+    },
+    #[error("unexpected `{annotation}` annotation for parameter `{param_name}`")]
+    UnexpectedAnnotation {
+        annotation: String,
+        param_name: String,
+        param_index: usize,
+        span: Span,
+    },
 }
