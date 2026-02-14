@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use rask_mir::MirFunction;
 use rask_mono::MonoProgram;
 use crate::builder::FunctionBuilder;
+use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
 
 pub struct CodeGenerator {
@@ -43,10 +44,19 @@ impl CodeGenerator {
     /// Declare all functions first (for forward references).
     pub fn declare_functions(&mut self, _mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         for mir_fn in mir_functions {
-            let sig = self.module.make_signature();
+            let mut sig = self.module.make_signature();
 
-            // For now, all functions take no args and return void
-            // TODO: Parse MirFunction params and ret_ty
+            // Build parameter list
+            for param in &mir_fn.params {
+                let param_ty = mir_to_cranelift_type(&param.ty)?;
+                sig.params.push(AbiParam::new(param_ty));
+            }
+
+            // Build return type
+            let ret_ty = mir_to_cranelift_type(&mir_fn.ret_ty)?;
+            if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) {
+                sig.returns.push(AbiParam::new(ret_ty));
+            }
 
             let func_id = self.module
                 .declare_function(&mir_fn.name, Linkage::Export, &sig)
@@ -63,7 +73,18 @@ impl CodeGenerator {
             .ok_or_else(|| CodegenError::FunctionNotFound(mir_fn.name.clone()))?;
 
         self.ctx.clear();
-        self.ctx.func.signature = self.module.make_signature();
+
+        // Build the signature (must match declaration)
+        let mut sig = self.module.make_signature();
+        for param in &mir_fn.params {
+            let param_ty = mir_to_cranelift_type(&param.ty)?;
+            sig.params.push(AbiParam::new(param_ty));
+        }
+        let ret_ty = mir_to_cranelift_type(&mir_fn.ret_ty)?;
+        if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) {
+            sig.returns.push(AbiParam::new(ret_ty));
+        }
+        self.ctx.func.signature = sig;
 
         // Build the function
         let mut builder = FunctionBuilder::new(&mut self.ctx.func, mir_fn)?;

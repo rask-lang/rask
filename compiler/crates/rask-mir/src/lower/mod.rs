@@ -9,9 +9,11 @@ use crate::{BlockBuilder, MirFunction, MirOperand, MirTerminator, MirType, Block
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{Decl, DeclKind},
-    expr::{BinOp, UnaryOp},
+    expr::{BinOp, Expr, UnaryOp},
+    NodeId,
 };
 use rask_mono::{StructLayout, EnumLayout};
+use rask_types::Type;
 use std::collections::HashMap;
 
 /// Typed expression result from lowering
@@ -38,14 +40,17 @@ struct LoopContext {
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
     pub enum_layouts: &'a [EnumLayout],
+    /// Type information for each expression node from type checking
+    pub node_types: &'a HashMap<NodeId, Type>,
 }
 
 impl<'a> MirContext<'a> {
-    /// Empty context for tests that don't need layouts.
-    pub fn empty() -> MirContext<'static> {
+    /// Empty context for tests that don't need layouts or type information.
+    pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
+            node_types: map,
         }
     }
 
@@ -92,6 +97,18 @@ impl<'a> MirContext<'a> {
                 }
             }
         }
+    }
+
+    /// Convert a Type from the type checker to MirType.
+    pub fn type_to_mir(&self, ty: &Type) -> MirType {
+        // Use Display to convert Type to string, then resolve it
+        let type_str = format!("{}", ty);
+        self.resolve_type_str(&type_str)
+    }
+
+    /// Look up the MIR type for an expression node.
+    pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
+        self.node_types.get(&node_id).map(|ty| self.type_to_mir(ty))
     }
 }
 
@@ -171,6 +188,37 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok(lowerer.builder.finish())
+    }
+
+    /// Look up the type of an expression from the type checker.
+    /// Returns None if type info is unavailable (e.g., in tests without full type checking).
+    fn lookup_expr_type(&self, expr: &Expr) -> Option<MirType> {
+        self.ctx.lookup_node_type(expr.id)
+    }
+
+    /// Extract the element type from an iterator type.
+    /// For Range<T> or Vec<T>, returns T. For unknown types, returns None.
+    fn extract_iterator_elem_type(&self, iter_ty: &MirType) -> Option<MirType> {
+        // This is simplified - in reality we'd need to parse generic type arguments
+        // For now, use a heuristic based on the iterator type
+        match iter_ty {
+            MirType::Ptr => Some(MirType::I32), // Default for unknown iterator types
+            _ => Some(MirType::I32), // Fallback
+        }
+    }
+
+    /// Extract the Ok/Some payload type from Result<T, E> or Option<T>.
+    /// Returns the payload type T, or None if unavailable.
+    fn extract_ok_payload_type(&self, result_ty: &MirType) -> Option<MirType> {
+        // This is simplified - ideally we'd parse the enum variant's payload type
+        // For now, return a sensible default
+        Some(MirType::I32)
+    }
+
+    /// Extract the error type from Result<T, E>.
+    fn extract_error_type(&self, result_ty: &MirType) -> Option<MirType> {
+        // This is simplified - ideally we'd parse the enum's error variant type
+        Some(MirType::I32)
     }
 }
 
@@ -539,7 +587,9 @@ mod tests {
     }
 
     fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
-        MirLowerer::lower_function(decl, all_decls, &MirContext::empty()).expect("lowering failed")
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        MirLowerer::lower_function(decl, all_decls, &ctx).expect("lowering failed")
     }
 
     fn lower_one(decl: &Decl) -> MirFunction {
@@ -656,7 +706,9 @@ mod tests {
     #[test]
     fn lower_unresolved_variable_errors() {
         let decl = make_fn("f", vec![], None, vec![return_stmt(Some(ident_expr("no_such_var")))]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx);
         assert!(result.is_err());
     }
 
@@ -805,7 +857,8 @@ mod tests {
 
     #[test]
     fn lower_parse_type_str_coverage() {
-        let ctx = MirContext::empty();
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
         assert_eq!(ctx.resolve_type_str("i8"), MirType::I8);
         assert_eq!(ctx.resolve_type_str("i16"), MirType::I16);
         assert_eq!(ctx.resolve_type_str("i32"), MirType::I32);
@@ -930,14 +983,18 @@ mod tests {
     #[test]
     fn lower_break_outside_loop_errors() {
         let decl = make_fn("f", vec![], None, vec![break_stmt(None, None)]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx);
         assert!(result.is_err());
     }
 
     #[test]
     fn lower_continue_outside_loop_errors() {
         let decl = make_fn("f", vec![], None, vec![continue_stmt(None)]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
+        let node_types = HashMap::new();
+        let ctx = MirContext::empty_with_map(&node_types);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &ctx);
         assert!(result.is_err());
     }
 
