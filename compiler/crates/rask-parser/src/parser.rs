@@ -943,15 +943,6 @@ impl Parser {
 
             let field_pub = self.match_token(&TokenKind::Public);
 
-            // Detect trailing/separator comma (Rust syntax)
-            if self.check(&TokenKind::Comma) {
-                return Err(ParseError {
-                    span: self.current().span,
-                    message: "unexpected ',' in struct definition".to_string(),
-                    hint: Some("struct fields are separated by newlines, not commas".to_string()),
-                });
-            }
-
             if self.check(&TokenKind::Func) {
                 if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![])? {
                     methods.push(fn_decl);
@@ -964,16 +955,8 @@ impl Parser {
                 fields.push(Field { name: field_name, name_span, ty, is_pub: field_pub });
             }
 
+            self.match_token(&TokenKind::Comma);
             self.skip_newlines();
-        }
-
-        // Detect trailing comma (Rust syntax)
-        if self.check(&TokenKind::Comma) {
-            return Err(ParseError {
-                span: self.current().span,
-                message: "unexpected ',' in struct definition".to_string(),
-                hint: Some("struct fields are separated by newlines, not commas".to_string()),
-            });
         }
 
         self.expect(&TokenKind::RBrace)?;
@@ -1601,30 +1584,29 @@ impl Parser {
         let mut init = self.parse_expr()?;
 
         // Check for guard pattern: let v = expr is Pattern else { ... }
-        if self.match_token(&TokenKind::Is) {
-            let start = init.span.start;
-            let pattern = self.parse_pattern()?;
+        if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
+            let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
+            let guard_start = expr.span.start;
             self.expect(&TokenKind::Else)?;
 
-            // Parse else block (inline or braced)
             let else_branch = if self.match_token(&TokenKind::Colon) {
-                self.parse_inline_block(start)?
+                self.parse_inline_block(guard_start)?
             } else {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(guard_start, end) }
             };
 
             let end = else_branch.span.end;
             init = Expr {
                 id: self.next_id(),
                 kind: ExprKind::GuardPattern {
-                    expr: Box::new(init),
+                    expr,
                     pattern,
                     else_branch: Box::new(else_branch),
                 },
-                span: Span::new(start, end),
+                span: Span::new(guard_start, end),
             };
         }
 
@@ -1655,30 +1637,29 @@ impl Parser {
         let mut init = self.parse_expr()?;
 
         // Check for guard pattern: const v = expr is Pattern else { ... }
-        if self.match_token(&TokenKind::Is) {
-            let start = init.span.start;
-            let pattern = self.parse_pattern()?;
+        if matches!(init.kind, ExprKind::IsPattern { .. }) && self.check(&TokenKind::Else) {
+            let ExprKind::IsPattern { expr, pattern } = init.kind else { unreachable!() };
+            let guard_start = expr.span.start;
             self.expect(&TokenKind::Else)?;
 
-            // Parse else block (inline or braced)
             let else_branch = if self.match_token(&TokenKind::Colon) {
-                self.parse_inline_block(start)?
+                self.parse_inline_block(guard_start)?
             } else {
                 self.skip_newlines();
                 let stmts = self.parse_block_body()?;
                 let end = self.tokens[self.pos - 1].span.end;
-                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(start, end) }
+                Expr { id: self.next_id(), kind: ExprKind::Block(stmts), span: Span::new(guard_start, end) }
             };
 
             let end = else_branch.span.end;
             init = Expr {
                 id: self.next_id(),
                 kind: ExprKind::GuardPattern {
-                    expr: Box::new(init),
+                    expr,
                     pattern,
                     else_branch: Box::new(else_branch),
                 },
-                span: Span::new(start, end),
+                span: Span::new(guard_start, end),
             };
         }
 
@@ -1766,8 +1747,7 @@ impl Parser {
 
         let cond = self.parse_expr_no_braces()?;
 
-        if self.match_token(&TokenKind::Is) {
-            let pattern = self.parse_pattern()?;
+        if let ExprKind::IsPattern { expr: scrutinee, pattern } = cond.kind {
             let body = if self.match_token(&TokenKind::Colon) {
                 vec![self.parse_stmt()?]
             } else {
@@ -1775,7 +1755,7 @@ impl Parser {
                 self.parse_block_body()?
             };
             let _ = label;
-            return Ok(StmtKind::WhileLet { pattern, expr: cond, body });
+            return Ok(StmtKind::WhileLet { pattern, expr: *scrutinee, body });
         }
 
         let body = if self.match_token(&TokenKind::Colon) {
@@ -1891,6 +1871,21 @@ impl Parser {
                 lhs = Expr {
                     id: self.next_id(),
                     kind: ExprKind::Cast { expr: Box::new(lhs), ty },
+                    span: Span::new(start, end),
+                };
+                continue;
+            }
+
+            // Pattern test: expr is Pattern (evaluates to bool)
+            if self.check(&TokenKind::Is) {
+                let bp = 5;
+                if bp < min_bp { break; }
+                self.advance();
+                let pattern = self.parse_pattern()?;
+                let end = self.tokens[self.pos - 1].span.end;
+                lhs = Expr {
+                    id: self.next_id(),
+                    kind: ExprKind::IsPattern { expr: Box::new(lhs), pattern },
                     span: Span::new(start, end),
                 };
                 continue;
@@ -2080,7 +2075,7 @@ impl Parser {
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unary { op: UnaryOp::Deref, operand: Box::new(operand) }, span: Span::new(start, end) })
             }
 
-            TokenKind::Own => {
+            TokenKind::Own | TokenKind::MutateKw => {
                 self.advance();
                 self.parse_expr_bp(Self::PREFIX_BP)
             }
@@ -2097,7 +2092,7 @@ impl Parser {
 
             TokenKind::PipePipe => {
                 self.advance();
-                let body = self.parse_expr()?;
+                let body = self.parse_closure_body()?;
                 let end = body.span.end;
                 Ok(Expr {
                     id: self.next_id(),
@@ -2337,7 +2332,7 @@ impl Parser {
             None
         };
 
-        let body = self.parse_expr()?;
+        let body = self.parse_closure_body()?;
         let end = body.span.end;
 
         Ok(Expr {
@@ -2345,6 +2340,43 @@ impl Parser {
             kind: ExprKind::Closure { params, ret_ty, body: Box::new(body) },
             span: Span::new(start, end),
         })
+    }
+
+    /// Parse a closure body, handling assignment in braceless bodies.
+    /// Supports `|c| c = 42` and `|c| c += 1` without requiring braces.
+    fn parse_closure_body(&mut self) -> Result<Expr, ParseError> {
+        let body = self.parse_expr()?;
+
+        if self.match_token(&TokenKind::Eq) {
+            let value = self.parse_expr()?;
+            let span = Span::new(body.span.start, value.span.end);
+            let assign_stmt = Stmt {
+                id: self.next_id(),
+                kind: StmtKind::Assign { target: body, value },
+                span: span.clone(),
+            };
+            Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
+        } else if let Some(op) = self.match_compound_assign() {
+            let rhs = self.parse_expr()?;
+            let value = Expr {
+                id: self.next_id(),
+                kind: ExprKind::Binary {
+                    op,
+                    left: Box::new(body.clone()),
+                    right: Box::new(rhs),
+                },
+                span: body.span.clone(),
+            };
+            let span = Span::new(body.span.start, value.span.end);
+            let assign_stmt = Stmt {
+                id: self.next_id(),
+                kind: StmtKind::Assign { target: body, value },
+                span: span.clone(),
+            };
+            Ok(Expr { id: self.next_id(), kind: ExprKind::Block(vec![assign_stmt]), span })
+        } else {
+            Ok(body)
+        }
     }
 
     fn parse_postfix(&mut self, lhs: Expr) -> Result<Expr, ParseError> {
@@ -2484,9 +2516,7 @@ impl Parser {
 
         let cond = self.parse_expr_no_braces()?;
 
-        if self.match_token(&TokenKind::Is) {
-            let pattern = self.parse_pattern()?;
-
+        if let ExprKind::IsPattern { expr: scrutinee, pattern } = cond.kind {
             let then_branch = if self.match_token(&TokenKind::Colon) {
                 self.parse_inline_block(start)?
             } else {
@@ -2519,7 +2549,7 @@ impl Parser {
             let end = self.tokens[self.pos - 1].span.end;
             return Ok(Expr {
                 id: self.next_id(),
-                kind: ExprKind::IfLet { expr: Box::new(cond), pattern, then_branch: Box::new(then_branch), else_branch },
+                kind: ExprKind::IfLet { expr: scrutinee, pattern, then_branch: Box::new(then_branch), else_branch },
                 span: Span::new(start, end),
             });
         }

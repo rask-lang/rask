@@ -167,11 +167,19 @@ mod tests {
     }
 
     #[test]
-    fn rust_syntax_trailing_comma() {
-        let result = parse("struct User {\n    name: string\n    age: i32,\n}");
-        assert!(!result.is_ok());
-        assert_eq!(result.errors[0].message, "unexpected ',' in struct definition");
-        assert_eq!(result.errors[0].hint.as_deref(), Some("struct fields are separated by newlines, not commas"));
+    fn struct_optional_commas() {
+        // Commas between fields
+        let result = parse("struct User {\n    name: string,\n    age: i32\n}");
+        assert!(result.is_ok(), "commas between struct fields should be allowed");
+        // All commas
+        let result = parse("struct Vec3 { x: f64, y: f64, z: f64 }");
+        assert!(result.is_ok(), "single-line comma-separated struct should parse");
+        // No commas (original style)
+        let result = parse("struct User {\n    name: string\n    age: i32\n}");
+        assert!(result.is_ok(), "newline-separated struct fields should still work");
+        // Trailing comma
+        let result = parse("struct Point { x: i32, y: i32, }");
+        assert!(result.is_ok(), "trailing comma should be allowed");
     }
 
     #[test]
