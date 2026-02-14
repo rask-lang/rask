@@ -662,6 +662,12 @@ impl Interpreter {
                 }
             }
 
+            ExprKind::IsPattern { expr: inner, pattern } => {
+                let value = self.eval_expr(inner)?;
+                let matched = self.match_pattern(pattern, &value).is_some();
+                Ok(Value::Bool(matched))
+            }
+
             ExprKind::Try(inner) => {
                 let val = self.eval_expr(inner)?;
                 match &val {
