@@ -69,9 +69,7 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(*var, block_param);
         }
 
-        builder.seal_block(*entry_block);
-
-        // Lower each block
+        // Lower each block (don't seal yet - seal after all terminators are processed)
         for mir_block in &self.mir_fn.blocks {
             let cl_block = self.block_map[&mir_block.id];
 
@@ -86,10 +84,12 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower terminator
             Self::lower_terminator(&mut builder, &mir_block.terminator, &self.var_map, &self.block_map, &self.mir_fn.ret_ty)?;
+        }
 
-            if mir_block.id != self.mir_fn.entry_block {
-                builder.seal_block(cl_block);
-            }
+        // Now seal all blocks (all predecessors are known)
+        for mir_block in &self.mir_fn.blocks {
+            let cl_block = self.block_map[&mir_block.id];
+            builder.seal_block(cl_block);
         }
 
         builder.finalize();
@@ -109,7 +109,32 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
                 let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
 
-                let val = Self::lower_rvalue(builder, rvalue, var_map, Some(dst_ty))?;
+                // Pass expected type for simple values, but comparisons will ignore it
+                let mut val = Self::lower_rvalue(builder, rvalue, var_map, Some(dst_ty))?;
+
+                // Handle type conversions
+                let val_ty = builder.func.dfg.value_type(val);
+                if val_ty != dst_ty {
+                    // Convert between integer types
+                    if val_ty.is_int() && dst_ty.is_int() {
+                        let val_bits = val_ty.bits();
+                        let dst_bits = dst_ty.bits();
+                        if val_bits == 1 {
+                            // b1 → iN: zero-extend
+                            val = builder.ins().uextend(dst_ty, val);
+                        } else if dst_bits == 1 {
+                            // iN → b1: compare with 0
+                            val = builder.ins().icmp_imm(IntCC::NotEqual, val, 0);
+                        } else if val_bits > dst_bits {
+                            // Truncate (e.g., i64 → i32)
+                            val = builder.ins().ireduce(dst_ty, val);
+                        } else {
+                            // Extend (e.g., i32 → i64)
+                            val = builder.ins().sextend(dst_ty, val);
+                        }
+                    }
+                }
+
                 let var = var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
                 builder.def_var(*var, val);
@@ -238,7 +263,14 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Branch { cond, then_block, else_block } => {
-                let cond_val = Self::lower_operand(builder, cond, var_map)?;
+                let mut cond_val = Self::lower_operand(builder, cond, var_map)?;
+
+                // brif requires b1, convert i8 to b1 if needed
+                let cond_ty = builder.func.dfg.value_type(cond_val);
+                if cond_ty == types::I8 {
+                    cond_val = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
+                }
+
                 let then_cl = block_map.get(then_block)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Then block not found".to_string()))?;
                 let else_cl = block_map.get(else_block)
