@@ -22,6 +22,8 @@ members = [
     "crates/rask-fmt",
     "crates/rask-describe",
     "crates/rask-lint",
+    "crates/rask-hidden-params",
+    "crates/rask-rt",
 ]
 
 [workspace.package]

@@ -9,14 +9,23 @@ use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{ThreadHandleInner, Value};
 
 impl Interpreter {
+    /// Mark a handle as consumed in the resource tracker (conc.async/H1).
+    fn consume_handle(&mut self, handle: &Arc<ThreadHandleInner>) {
+        let ptr = Arc::as_ptr(handle) as usize;
+        if let Some(id) = self.resource_tracker.lookup_handle_id(ptr) {
+            let _ = self.resource_tracker.mark_consumed(id);
+        }
+    }
+
     /// Handle ThreadHandle method calls.
     pub(crate) fn call_thread_handle_method(
-        &self,
+        &mut self,
         handle: &Arc<ThreadHandleInner>,
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
             "join" => {
+                self.consume_handle(handle);
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
                     Some(jh) => match jh.join() {
@@ -64,6 +73,7 @@ impl Interpreter {
                 }
             }
             "detach" => {
+                self.consume_handle(handle);
                 let _ = handle.handle.lock().unwrap().take();
                 Ok(Value::Unit)
             }
@@ -77,12 +87,13 @@ impl Interpreter {
     /// Handle TaskHandle method calls.
     /// In interpreter, TaskHandle has same implementation as ThreadHandle (OS threads).
     pub(crate) fn call_task_handle_method(
-        &self,
+        &mut self,
         handle: &Arc<ThreadHandleInner>,
         method: &str,
     ) -> Result<Value, RuntimeError> {
         match method {
             "join" => {
+                self.consume_handle(handle);
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
                     Some(jh) => match jh.join() {
@@ -130,8 +141,41 @@ impl Interpreter {
                 }
             }
             "detach" => {
+                self.consume_handle(handle);
                 let _ = handle.handle.lock().unwrap().take();
                 Ok(Value::Unit)
+            }
+            "cancel" => {
+                self.consume_handle(handle);
+                // Cooperative cancellation (CN1): set flag and join.
+                // Phase A: no cancel token in interpreter yet — just join and
+                // return Cancelled. Full cancel support lives in rask-rt.
+                let jh = handle.handle.lock().unwrap().take();
+                match jh {
+                    Some(jh) => {
+                        let _ = jh.join();
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Cancelled".to_string(),
+                                fields: vec![],
+                            }],
+                        })
+                    }
+                    None => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::Enum {
+                            name: "JoinError".to_string(),
+                            variant: "Panicked".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "handle already consumed".to_string(),
+                            )))],
+                        }],
+                    }),
+                }
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "TaskHandle".to_string(),
