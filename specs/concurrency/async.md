@@ -40,14 +40,27 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 | Rule | Description |
 |------|-------------|
 | **H1: Must consume** | `TaskHandle<T>` must be joined or detached — compile error if dropped |
-| **H2: Join** | `try h.join()` waits for result, consumes handle |
+| **H2: Join** | `h.join()` waits for result, returns `T or JoinError`, consumes handle |
 | **H3: Detach** | `h.detach()` opts out of tracking (fire-and-forget), consumes handle |
-| **H4: Cancel** | `try h.cancel()` requests cooperative cancellation, waits for exit |
+| **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError` |
 
 <!-- test: skip -->
 ```rask
+// Propagate errors
 const h = spawn(|| { compute() })
 const result = try h.join()
+
+// Panic on task failure
+const h = spawn(|| { work() })
+h.join()!
+
+// Handle explicitly
+const h = spawn(|| { fallible_work() })
+match h.join() {
+    Ok(val) => process(val),
+    Err(JoinError.Panicked(msg)) => println("task panicked: {msg}"),
+    Err(JoinError.Cancelled) => println("task was cancelled"),
+}
 
 spawn(|| { background_work() }).detach()
 
@@ -61,9 +74,14 @@ spawn(|| { work() })  // ERROR [conc.async/H1]: unused TaskHandle
 struct TaskHandle<T> { }
 
 extend TaskHandle<T> {
-    func join(take self) -> T or TaskError
+    func join(take self) -> T or JoinError
     func detach(take self)
-    func cancel(take self) -> T or TaskError
+    func cancel(take self) -> T or JoinError
+}
+
+enum JoinError {
+    Panicked(string),  // task panicked with message
+    Cancelled,         // task was cancelled
 }
 ```
 
@@ -138,6 +156,13 @@ I/O flow: function calls stdlib → stdlib issues non-blocking syscall → sched
 |--------------|-------------------|
 | Green task | Pauses task (scheduler runs others) |
 | Sync mode | Blocks thread |
+
+**Error handling:**
+```rask
+try h.join()          // propagate JoinError
+h.join()!             // panic if task panicked
+match h.join() { }    // explicit handling
+```
 
 ## Cancellation
 

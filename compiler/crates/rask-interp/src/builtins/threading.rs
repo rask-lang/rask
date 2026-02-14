@@ -20,30 +20,46 @@ impl Interpreter {
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
                     Some(jh) => match jh.join() {
+                        // Thread succeeded - return Ok(value)
                         Ok(Ok(val)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![val],
                         }),
+                        // Thread returned error - wrap in JoinError::Panicked
                         Ok(Err(msg)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                            }],
                         }),
+                        // Thread panicked - return Err(JoinError::Panicked)
                         Err(_) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "thread panicked".to_string(),
-                            )))],
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(
+                                    "thread panicked".to_string(),
+                                )))],
+                            }],
                         }),
                     },
+                    // Handle already consumed - return Err(JoinError::Panicked) with message
                     None => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "handle already joined".to_string(),
-                        )))],
+                        fields: vec![Value::Enum {
+                            name: "JoinError".to_string(),
+                            variant: "Panicked".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "handle already joined".to_string(),
+                            )))],
+                        }],
                     }),
                 }
             }
@@ -70,26 +86,46 @@ impl Interpreter {
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
                     Some(jh) => match jh.join() {
-                        Ok(Ok(val)) => Ok(val),
+                        // Thread succeeded - return Ok(value)
+                        Ok(Ok(val)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![val],
+                        }),
+                        // Thread returned error - wrap in JoinError::Panicked
                         Ok(Err(msg)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                            }],
                         }),
+                        // Thread panicked - return Err(JoinError::Panicked)
                         Err(_) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
-                            fields: vec![Value::String(Arc::new(Mutex::new(
-                                "task panicked".to_string(),
-                            )))],
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(
+                                    "task panicked".to_string(),
+                                )))],
+                            }],
                         }),
                     },
+                    // Handle already consumed - return Err(JoinError::Panicked) with message
                     None => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
-                        fields: vec![Value::String(Arc::new(Mutex::new(
-                            "handle already joined".to_string(),
-                        )))],
+                        fields: vec![Value::Enum {
+                            name: "JoinError".to_string(),
+                            variant: "Panicked".to_string(),
+                            fields: vec![Value::String(Arc::new(Mutex::new(
+                                "handle already joined".to_string(),
+                            )))],
+                        }],
                     }),
                 }
             }
