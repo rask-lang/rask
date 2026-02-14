@@ -10,6 +10,8 @@
 #include <fcntl.h>
 #include <string.h>
 
+#include "rask_runtime.h"
+
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
 
@@ -76,8 +78,7 @@ int64_t rask_io_write(int64_t fd, const void *buf, int64_t len) {
 // ─── Entry point ──────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+    rask_args_init(argc, argv);
     rask_main();
     return 0;
 }
