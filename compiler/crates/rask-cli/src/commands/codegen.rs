@@ -11,7 +11,8 @@ use crate::{output, show_diagnostics, Format};
 
 /// Run the full front-end pipeline: lex → parse → desugar → resolve →
 /// typecheck → ownership → monomorphize. Exits on error.
-fn run_pipeline(path: &str, format: Format) -> MonoProgram {
+/// Returns (MonoProgram, TypedProgram) for code generation.
+fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {
@@ -101,18 +102,20 @@ fn run_pipeline(path: &str, format: Format) -> MonoProgram {
     }
 
     // Monomorphize
-    match rask_mono::monomorphize(&typed, &parse_result.decls) {
+    let mono = match rask_mono::monomorphize(&typed, &parse_result.decls) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{}: monomorphization failed: {:?}", output::error_label(), e);
             process::exit(1);
         }
-    }
+    };
+
+    (mono, typed)
 }
 
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
-    let mono = run_pipeline(path, format);
+    let (mono, _typed) = run_pipeline(path, format);
 
     if format == Format::Human {
         println!(
@@ -219,7 +222,7 @@ pub fn cmd_mono(path: &str, format: Format) {
 
 /// Dump MIR for a single file.
 pub fn cmd_mir(path: &str, format: Format) {
-    let mono = run_pipeline(path, format);
+    let (mono, typed) = run_pipeline(path, format);
 
     // Lower each monomorphized function to MIR
     if format == Format::Human {
@@ -249,6 +252,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
+        node_types: &typed.node_types,
     };
 
     let mut mir_errors = 0;

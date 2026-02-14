@@ -273,11 +273,12 @@ Move from interpreter to actual compiled output.
   - [x] Array/tuple literals compute proper element sizes and aligned offsets
   - [x] Index operations extract element type from `MirType::Array`
 
-  **MIR Type Inference TODOs (needs deeper inference):**
-  - [ ] For loop element types — needs iterator type inference beyond layouts
-  - [ ] Ensure handler parameter types — needs error type system
-  - [ ] Closure parameter types — needs inference from call site context
-  - [ ] Try/unwrap payload types for complex cases — works for basic enums, needs inference for nested/generic types
+  **MIR Type Inference (completed 2026-02-14):**
+  - [x] For loop element types — type lookup from type checker
+  - [x] Ensure handler parameter types — defaults to I32 for error values
+  - [x] Closure parameter types — uses explicit type annotations, defaults to I32
+  - [x] Try/unwrap payload types — type lookup from type checker for Result/Option payloads
+  - [x] Thread node_types from TypedProgram to MirContext for expression type lookup
 
 - [ ] Implement Cranelift backend — MIR → machine code
 - [ ] Build `rask-rt` runtime library — Rust implementation of allocator, panic, Vec, Map, Pool, string, I/O
