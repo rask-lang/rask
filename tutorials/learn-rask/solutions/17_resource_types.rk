@@ -1,0 +1,77 @@
+// Solution: Lesson 17
+
+struct Booking {
+    id: i32
+    committed: bool
+}
+
+extend Booking {
+    func new(id: i32) -> Booking {
+        return Booking { id: id, committed: false }
+    }
+
+    func commit(mutate self) {
+        self.committed = true
+    }
+
+    func is_committed(self) -> bool {
+        return self.committed
+    }
+}
+
+func book_flight(id: i32, passenger: string) -> i32 or string {
+    let booking = Booking.new(id)
+
+    if passenger == "FAIL" {
+        return Err("payment failed")
+    }
+
+    booking.commit()
+    return booking.id
+}
+
+struct BookingStatus {
+    first_committed: bool
+    second_committed: bool
+}
+
+func two_bookings() -> BookingStatus {
+    let b1 = Booking.new(1)
+    b1.commit()
+
+    let b2 = Booking.new(2)
+
+    return BookingStatus {
+        first_committed: b1.is_committed(),
+        second_committed: b2.is_committed(),
+    }
+}
+
+func process_flights(flights: Vec<string>) -> i32 or string {
+    return flights.len()
+}
+
+test "booking commit" {
+    const result = book_flight(1, "Besse")
+    assert result.is_ok()
+}
+
+test "booking failure" {
+    const result = book_flight(2, "FAIL")
+    assert result.is_err()
+}
+
+test "booking pattern" {
+    let b = Booking.new(42)
+    assert b.is_committed() == false
+    b.commit()
+    assert b.is_committed() == true
+}
+
+test "two bookings" {
+    const status = two_bookings()
+    assert status.first_committed == true
+    assert status.second_committed == false
+}
+
+func main() { println("All solutions for lesson 17") }

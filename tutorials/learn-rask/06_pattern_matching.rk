@@ -1,0 +1,184 @@
+// === Lesson 06: Pattern Matching and Enums ===
+//
+// Python has if/elif chains. Rask has `match` — and it's better.
+//
+// First, enums. An enum is a type with a fixed set of variants:
+//
+//   enum Direction { North, South, East, West }
+//
+// To check which variant you have, use `match`:
+//
+//   match dir {
+//       North => println("going north"),
+//       South => println("going south"),
+//       East  => println("going east"),
+//       West  => println("going west"),
+//   }
+//
+// The compiler forces you to handle *every* variant. Forget one?
+// Compile error. This means you can add a variant later and the
+// compiler tells you every place in your code that needs updating.
+// In Python, you'd just get a silent bug.
+//
+// Variants can carry data:
+//   enum Shape {
+//       Circle(f64)                         // one value
+//       Rectangle(width: f64, height: f64)  // named fields
+//   }
+//
+// Match pulls the data out automatically:
+//   match shape {
+//       Circle(radius) => 3.14159 * radius * radius,
+//       Rectangle(w, h) => w * h,
+//   }
+//
+// match works as an expression — it produces a value:
+//   const area = match shape { Circle(r) => ..., Rectangle(w, h) => ... }
+//
+
+// --- Example ---
+
+enum TrainType {
+    Local
+    Express
+    Shinkansen
+}
+
+func max_speed(t: TrainType) -> i32 {
+    return match t {
+        // Fun fact: the Shinkansen E5 can technically do 320 km/h,
+        // but Japan caps it at 300 on the Tohoku line for noise reasons.
+        Local => 90
+        Express => 160
+        Shinkansen => 300
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: State of matter ---
+// Given a temperature in Kelvin, classify water's state.
+//   < 273.15  → Solid
+//   < 373.15  → Liquid
+//   >= 373.15 → Gas
+//
+// Fun fact: at exactly 273.16 K and 611.657 Pa, water exists as
+// solid, liquid, and gas simultaneously. This is the "triple point"
+// — and it's used to calibrate thermometers worldwide.
+
+enum State { Solid, Liquid, Gas }
+
+func classify_water(kelvin: f64) -> State {
+    panic("TODO")
+}
+
+func state_name(s: State) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Unit conversion with enums ---
+// A measurement can be in different unit systems. Convert to meters.
+//
+// 1 foot = 0.3048 meters (defined exactly since 1959)
+// 1 lightyear = 9.461e15 meters
+// 1 nautical mile = 1852 meters (used in aviation and maritime navigation,
+//   originally defined as 1 minute of latitude on the Earth's surface)
+
+enum Distance {
+    Meters(f64)
+    Feet(f64)
+    NauticalMiles(f64)
+    Lightyears(f64)
+}
+
+func to_meters(d: Distance) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Train signal routing ---
+// A railway signal can be in different states. Each state has associated data.
+//
+// Think of a junction where tracks split. The signal tells the train
+// which way to go — and at what speed.
+
+enum Signal {
+    Red
+    Yellow(speed_limit: i32)
+    Green
+    Flashing(message: string)
+}
+
+// Return what the train driver should do:
+//   Red                → "stop"
+//   Yellow(limit)      → "slow to {limit} km/h"
+//   Green              → "proceed"
+//   Flashing(msg)      → "caution: {msg}"
+func driver_action(s: Signal) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Boarding gate assignment ---
+// Airlines assign gates based on destination region.
+//
+// Fun fact: most major airports organize terminals by alliance:
+// Star Alliance at one terminal, SkyTeam at another, Oneworld at a third.
+// It reduces the walking distance for connecting passengers.
+
+enum Region {
+    Domestic
+    European
+    Intercontinental
+}
+
+// Return the terminal name:
+//   Domestic          → "T1"
+//   European          → "T2"
+//   Intercontinental  → "T3"
+func terminal(r: Region) -> string {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "classify water state" {
+    assert state_name(classify_water(200.0)) == "solid"
+    assert state_name(classify_water(300.0)) == "liquid"
+    assert state_name(classify_water(400.0)) == "gas"
+    assert state_name(classify_water(273.15)) == "liquid"
+    assert state_name(classify_water(373.15)) == "gas"
+}
+
+test "distance to meters" {
+    assert to_meters(Distance.Meters(100.0)) == 100.0
+
+    const feet_result = to_meters(Distance.Feet(1.0))
+    assert feet_result > 0.304
+    assert feet_result < 0.305
+
+    const nm = to_meters(Distance.NauticalMiles(1.0))
+    assert nm == 1852.0
+
+    const ly = to_meters(Distance.Lightyears(1.0))
+    assert ly > 9.4e15
+    assert ly < 9.5e15
+}
+
+test "driver action" {
+    assert driver_action(Signal.Red) == "stop"
+    assert driver_action(Signal.Green) == "proceed"
+    assert driver_action(Signal.Yellow(80)) == "slow to 80 km/h"
+    assert driver_action(Signal.Flashing("bridge ahead")) == "caution: bridge ahead"
+}
+
+test "terminal assignment" {
+    assert terminal(Region.Domestic) == "T1"
+    assert terminal(Region.European) == "T2"
+    assert terminal(Region.Intercontinental) == "T3"
+}
+
+func main() {
+    println("Max Shinkansen speed: {max_speed(TrainType.Shinkansen)} km/h")
+    println("Run 'rask test 06_pattern_matching.rk' to check your puzzles")
+}

@@ -1,0 +1,197 @@
+// === Lesson 13: Advanced Enums ===
+//
+// You saw basic enums in lesson 06. Now let's go deeper.
+//
+// Enums can hold different data in each variant:
+//   enum FlightEvent {
+//       Takeoff(runway: string)
+//       Cruise(altitude: f64, speed: f64)
+//       Landing(runway: string, crosswind: f64)
+//       Divert(reason: string)
+//   }
+//
+// Match pulls the data out:
+//   match event {
+//       Takeoff(rwy) => println("departing {rwy}"),
+//       Cruise(alt, spd) => println("FL{alt} at {spd} kts"),
+//       Landing(rwy, xwind) => println("landing {rwy}, xwind {xwind}"),
+//       Divert(reason) => println("diverting: {reason}"),
+//   }
+//
+// This is way more powerful than Python's if/elif chains.
+// Each variant carries exactly the data it needs — no more, no less.
+// The compiler guarantees you handle every case.
+//
+
+// --- Example ---
+
+enum FlightPhase {
+    Parked
+    Taxiing
+    Takeoff(runway: string)
+    Climbing(altitude: f64, target: f64)
+    Cruising(altitude: f64)
+    Descending(altitude: f64, target: f64)
+    Landed
+}
+
+func describe_phase(phase: FlightPhase) -> string {
+    return match phase {
+        Parked => "parked at gate",
+        Taxiing => "taxiing",
+        Takeoff(rwy) => "taking off from runway {rwy}",
+        Climbing(alt, tgt) => "climbing through {alt} ft, target {tgt} ft",
+        Cruising(alt) => "cruising at {alt} ft",
+        Descending(alt, tgt) => "descending through {alt} ft, target {tgt} ft",
+        Landed => "landed",
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Flight log ---
+// Model a flight log as a sequence of timestamped events.
+//
+// Fun fact: real flight data recorders (black boxes) record
+// thousands of parameters. The CVR (cockpit voice recorder)
+// stores the last 2 hours of audio. The FDR (flight data recorder)
+// logs altitude, airspeed, heading, and hundreds of other values
+// at least once per second. Both are designed to survive a 3,400g
+// impact and 1,100°C fire for 30 minutes.
+
+enum LogEntry {
+    EngineStart(time: i32)
+    Takeoff(time: i32, runway: string)
+    WaypointReached(time: i32, name: string, altitude: f64)
+    Landing(time: i32, runway: string)
+    EngineStop(time: i32)
+}
+
+// Extract the time from any log entry.
+// Every variant has a time field — match all five.
+func entry_time(entry: LogEntry) -> i32 {
+    panic("TODO")
+}
+
+// Calculate flight time: minutes between Takeoff and Landing.
+// Scan the log for the first Takeoff time and the first Landing time.
+// If either is missing, return 0.
+func flight_time(log: Vec<LogEntry>) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Postfix calculator ---
+// Evaluate math expressions in postfix (Reverse Polish) notation.
+//
+// Fun fact: HP calculators used RPN from the 1960s through the 2000s.
+// Physicists and engineers loved them because RPN eliminates the need
+// for parentheses: instead of (3 + 4) × 2, you write 3 4 + 2 ×.
+// It maps directly to how a stack machine works.
+
+enum Token {
+    Num(f64)
+    Plus
+    Minus
+    Times
+    Divide
+}
+
+// Process tokens left to right:
+//   Num(x) → push x onto a stack (use a Vec as a stack with .push()/.pop())
+//   Plus → pop two values, push their sum
+//   (same pattern for Minus, Times, Divide)
+// Return the final value on the stack.
+func eval_postfix(tokens: Vec<Token>) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Airport weather minimums ---
+// Pilots need to know if they can land. It depends on the weather
+// and the pilot's certification level.
+//
+// IFR (Instrument Flight Rules): trained to fly in clouds.
+// VFR (Visual Flight Rules): must see the ground to fly.
+//
+// Ceiling = lowest cloud layer, in feet.
+// Visibility = how far you can see, in statute miles.
+
+enum AirportStatus {
+    Open
+    Closed(reason: string)
+    Restricted(ceiling_ft: i32, visibility_sm: f64)
+}
+
+// Can an IFR-rated pilot land?
+//   Open → yes
+//   Closed → no
+//   Restricted → yes if ceiling >= 200 ft AND visibility >= 0.5 sm
+func can_land_ifr(status: AirportStatus) -> bool {
+    panic("TODO")
+}
+
+// Can a VFR-only pilot land?
+//   Open → yes
+//   Closed → no
+//   Restricted → yes if ceiling >= 1000 ft AND visibility >= 3.0 sm
+func can_land_vfr(status: AirportStatus) -> bool {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "entry time" {
+    assert entry_time(LogEntry.EngineStart(800)) == 800
+    assert entry_time(LogEntry.Takeoff(815, "27L")) == 815
+    assert entry_time(LogEntry.Landing(1030, "09R")) == 1030
+}
+
+test "flight time" {
+    const log = Vec.from([
+        LogEntry.EngineStart(800),
+        LogEntry.Takeoff(815, "27L"),
+        LogEntry.WaypointReached(900, "CEDAR", 35000.0),
+        LogEntry.WaypointReached(945, "MAPLE", 35000.0),
+        LogEntry.Landing(1030, "09R"),
+        LogEntry.EngineStop(1045),
+    ])
+    assert flight_time(log) == 215
+}
+
+test "flight time no takeoff" {
+    const log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
+    assert flight_time(log) == 0
+}
+
+test "eval postfix" {
+    // 3 + 4 = 7
+    assert eval_postfix(Vec.from([Token.Num(3.0), Token.Num(4.0), Token.Plus])) == 7.0
+    // 2 × 3 + 1 = 7 (postfix: 2 3 × 1 +)
+    assert eval_postfix(Vec.from([
+        Token.Num(2.0), Token.Num(3.0), Token.Times, Token.Num(1.0), Token.Plus
+    ])) == 7.0
+    // 10 / 2 - 1 = 4 (postfix: 10 2 / 1 -)
+    assert eval_postfix(Vec.from([
+        Token.Num(10.0), Token.Num(2.0), Token.Divide, Token.Num(1.0), Token.Minus
+    ])) == 4.0
+}
+
+test "airport IFR landing" {
+    assert can_land_ifr(AirportStatus.Open) == true
+    assert can_land_ifr(AirportStatus.Closed("snow")) == false
+    assert can_land_ifr(AirportStatus.Restricted(300, 1.0)) == true
+    assert can_land_ifr(AirportStatus.Restricted(100, 0.3)) == false
+}
+
+test "airport VFR landing" {
+    assert can_land_vfr(AirportStatus.Open) == true
+    assert can_land_vfr(AirportStatus.Closed("snow")) == false
+    assert can_land_vfr(AirportStatus.Restricted(1500, 5.0)) == true
+    assert can_land_vfr(AirportStatus.Restricted(800, 2.0)) == false
+}
+
+func main() {
+    println(describe_phase(FlightPhase.Cruising(35000.0)))
+    println("Run 'rask test 13_enums_advanced.rk' to check your puzzles")
+}

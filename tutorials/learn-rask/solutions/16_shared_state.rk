@@ -1,0 +1,87 @@
+// Solution: Lesson 16
+import async.spawn
+import sync.{AtomicI64, Relaxed}
+
+func flight_tracker() -> i32 {
+    using Multitasking {
+        const sightings = Shared.new(Vec.new())
+
+        const h1 = spawn(|| {
+            sightings.write(|s| s.push("SAS937"))
+            sightings.write(|s| s.push("BAW123"))
+        })
+        const h2 = spawn(|| {
+            sightings.write(|s| s.push("DLH456"))
+            sightings.write(|s| s.push("AFR789"))
+        })
+        const h3 = spawn(|| {
+            sightings.write(|s| s.push("UAL100"))
+        })
+
+        h1.join()
+        h2.join()
+        h3.join()
+
+        return sightings.read(|s| s.len())
+    }
+}
+
+func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
+    using Multitasking {
+        const counter = AtomicI64.new(0)
+
+        const handles = Vec.new()
+        for i in 0..num_tasks {
+            const h = spawn(|| {
+                for j in 0..count_per_task {
+                    counter.fetch_add(1, Relaxed)
+                }
+            })
+            handles.push(h)
+        }
+
+        for h in handles {
+            h.join()
+        }
+
+        return counter.load(Relaxed)
+    }
+}
+
+func shared_config_update() -> i32 {
+    using Multitasking {
+        const config = Shared.new(35000)
+        let (tx, rx) = Channel<bool>.buffered(1)
+
+        const atc = spawn(|| {
+            config.write(|c| c = 37000)
+            tx.send(true)
+        })
+
+        const pilot = spawn(|| {
+            rx.recv()
+            return config.read(|c| c)
+        })
+
+        atc.join()
+        const result = pilot.join()
+        return result
+    }
+}
+
+test "flight tracker" {
+    const count = flight_tracker()
+    assert count > 0
+    assert count >= 3
+}
+
+test "atomic counter" {
+    assert atomic_counter(4, 1000) == 4000
+    assert atomic_counter(2, 500) == 1000
+}
+
+test "shared config update" {
+    assert shared_config_update() == 37000
+}
+
+func main() { println("All solutions for lesson 16") }

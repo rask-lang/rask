@@ -1,0 +1,129 @@
+// === Lesson 02: Variables and Types ===
+//
+// In Python, variables are shapeshifters: x = 42; x = "hello" — fine.
+// In Rask, every variable has one type, forever.
+//
+// Two kinds of variables:
+//   const x = 42      // can never change (default — use this most of the time)
+//   let x = 42        // can be reassigned: x = 43
+//
+// Think of `const` as the normal case and `let` as the exception.
+// In Python everything is `let`. In Rask you opt *in* to mutability.
+//
+// Types you'll use:
+//   i32       — integer (whole number). The default. Handles up to ~2 billion.
+//   i64       — bigger integer. For when i32 isn't enough.
+//   f64       — decimal number. Same as Python's `float`.
+//   bool      — true or false
+//   string    — text (note: lowercase!)
+//
+// The compiler usually figures out the type from context:
+//   const x = 42           // compiler knows this is i32
+//   const x: f64 = 42.0    // you can spell it out if you want
+//
+// Scientific notation works: 6.674e-11 means 6.674 × 10⁻¹¹
+//
+
+// --- Examples ---
+
+func example_variables() {
+    const pi = 3.14159
+    const name = "Besse"
+    println("pi = {pi}")
+    println("name = {name}")
+
+    // Mutable variable — use `let`
+    let counter = 0
+    counter = counter + 1
+    counter = counter + 1
+    println("counter = {counter}")    // 2
+
+    // Explicit type annotation
+    const g: f64 = 9.81
+    println("g = {g} m/s²")
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Speed of light ---
+// Return the speed of light in m/s: 299,792,458.
+//
+// Fun fact: this number is exact, not measured. Since 1983, the meter
+// is *defined* as the distance light travels in 1/299,792,458 of a second.
+// The speed of light defines the meter, not the other way around.
+func speed_of_light() -> i64 {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Schwarzschild radius ---
+// If you compress any mass into a small enough sphere, it becomes
+// a black hole. The critical radius is:
+//
+//   r = 2 * G * M / c²
+//
+// where G = 6.674e-11 (gravitational constant), c = 299792458.0
+//
+// The Sun's mass is 1.989e30 kg. Its Schwarzschild radius?
+// About 2953 meters — roughly 3 km. If you could squeeze the entire
+// Sun into a ball smaller than that, it would become a black hole.
+// You just calculated the boundary of a black hole.
+//
+// Hint: no ** operator in Rask. Write c * c instead of c**2.
+func schwarzschild_radius(mass: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Temperature conversion ---
+// Convert Celsius to Kelvin: K = C + 273.15
+//
+// 0 K (absolute zero) is -273.15°C — the coldest anything can be.
+// At cruising altitude, outside air is about -56°C (217 K).
+func celsius_to_kelvin(c: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Mutable accumulator ---
+// Sum the integers from 1 to n (inclusive) using a `let` variable and a loop.
+// Example: sum_to(5) = 1 + 2 + 3 + 4 + 5 = 15
+//
+// Hint: for i in 1..n+1 { ... }  gives you 1, 2, ..., n
+// (The range 1..6 means "1 up to but not including 6" — like Python's range)
+//
+// The mathematician Carl Friedrich Gauss supposedly computed 1+2+...+100
+// as a child by noticing that the pairs (1+100), (2+99), ... all sum to 101.
+// There are 50 such pairs, so the answer is 50×101 = 5050.
+// But here, just use a loop.
+func sum_to(n: i32) -> i32 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "speed of light" {
+    assert speed_of_light() == 299792458
+}
+
+test "schwarzschild radius of the sun" {
+    const r = schwarzschild_radius(1.989e30)
+    assert r > 2952.0
+    assert r < 2954.0
+}
+
+test "celsius to kelvin" {
+    assert celsius_to_kelvin(0.0) == 273.15
+    assert celsius_to_kelvin(100.0) == 373.15
+    assert celsius_to_kelvin(-273.15) == 0.0
+}
+
+test "sum to n" {
+    assert sum_to(1) == 1
+    assert sum_to(5) == 15
+    assert sum_to(100) == 5050
+}
+
+func main() {
+    example_variables()
+    println("Run 'rask test 02_variables.rk' to check your puzzles")
+}

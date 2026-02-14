@@ -694,17 +694,37 @@ impl Interpreter {
                 }
             }
 
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message } => {
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {
                         variant, fields, ..
                     } => match variant.as_str() {
                         "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "None" => Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span)),
+                        "None" => {
+                            if let Some(msg) = message {
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::Panic(msg.clone()),
+                                    expr.span
+                                ))
+                            } else {
+                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                            }
+                        }
+                        "Ok" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
+                        "Err" => {
+                            if let Some(msg) = message {
+                                Err(RuntimeDiagnostic::new(
+                                    RuntimeError::Panic(msg.clone()),
+                                    expr.span
+                                ))
+                            } else {
+                                Err(RuntimeDiagnostic::new(RuntimeError::UnwrapError, expr.span))
+                            }
+                        }
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
-                                "! operator requires Option (Some/None), got {}",
+                                "! operator requires Option or Result, got {}",
                                 variant
                             )),
                             expr.span
@@ -712,7 +732,7 @@ impl Interpreter {
                     },
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
-                            "! operator requires Option, got {}",
+                            "! operator requires Option or Result, got {}",
                             val.type_name()
                         )),
                         expr.span

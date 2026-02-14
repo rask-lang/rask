@@ -1,0 +1,169 @@
+// === Lesson 14: String Operations ===
+//
+// Python strings and Rask strings are similar — both UTF-8, both
+// have lots of built-in methods. The syntax is nearly identical:
+//
+//   Python:   s.split(",")       Rask:  s.split(",")
+//   Python:   s.strip()          Rask:  s.trim()
+//   Python:   s.startswith("x")  Rask:  s.starts_with("x")
+//   Python:   f"x={x}"           Rask:  "x={x}" (interpolation built in)
+//   Python:   len(s)             Rask:  s.len()
+//   Python:   s.upper()          Rask:  s.to_uppercase()
+//
+// Strings are collections (of characters), so ownership rules apply.
+// Default parameter mode is borrow, so passing a string to a function
+// doesn't consume it — same as every other type.
+//
+// Common methods:
+//   .len()                    character count
+//   .split(delim)             split into Vec<string>
+//   .split_whitespace()       split on whitespace
+//   .trim()                   strip leading/trailing whitespace
+//   .contains(substr)         substring check
+//   .starts_with(prefix)      prefix check
+//   .to_uppercase()           uppercase copy
+//   .to_lowercase()           lowercase copy
+//   .chars()                  iterate characters
+//
+// String slicing:
+//   s[0..3]                   first 3 characters (like Python's s[:3])
+//   s[3..5]                   characters 3 and 4 (like Python's s[3:5])
+//
+
+// --- Examples ---
+
+func example_strings() {
+    const callsign = "SAS 937"
+    println("callsign: {callsign}")
+    println("length: {callsign.len()}")
+    println("uppercase: {callsign.to_uppercase()}")
+    const starts = callsign.starts_with("SAS")
+    println("starts with SAS: {starts}")
+
+    const csv = "ENGM,OSL,Oslo Gardermoen"
+    const parts = csv.split(",")
+    println("ICAO: {parts[0]}, IATA: {parts[1]}, Name: {parts[2]}")
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Parse METAR wind ---
+// A METAR wind string looks like "27015KT" meaning:
+//   direction: 270 degrees, speed: 15 knots
+//
+// METAR (Meteorological Aerodrome Report) is the standard format
+// pilots use to check weather before a flight. Every airport with
+// a control tower broadcasts one at least once per hour. The format
+// hasn't changed much since the 1960s.
+//
+// Parse the wind string. The format is always DDDssKT:
+// first 3 chars = direction, next 2 = speed, last 2 = "KT".
+// Use s[0..3] and s[3..5] for the substrings.
+
+struct Wind {
+    direction: i32
+    speed: i32
+}
+
+func parse_wind(metar: string) -> Wind {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Build a flight plan string ---
+// Given departure, arrival, and a list of waypoints, produce:
+//   "ENGM → CEDAR → MAPLE → BIRCH → EGLL"
+//
+// Fun fact: waypoints have five-letter names that are often
+// pronounceable words. Near airports, they're sometimes themed:
+// near KJFK you'll find BETTE, MERIT, and KORRY. Near LFPG (Paris),
+// there's MOPAR, OKRIX, and BANOX. Pilots navigate by chaining these
+// waypoints into routes called "airways."
+func format_flight_plan(departure: string, arrival: string, waypoints: Vec<string>) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Count words in ATC transmission ---
+// Split on whitespace, count non-empty words.
+//
+// Fun fact: ATC communication uses a strict phraseology.
+// Numbers are spoken digit by digit: runway "27L" is
+// "two seven left." Altitudes use "flight level": 35,000 ft
+// is "flight level three five zero."
+func word_count(text: string) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Extract callsign prefix ---
+// Airline callsigns are like "SAS937", "BAW123", "DLH456".
+// Extract the letter prefix (all leading uppercase letters).
+// "SAS937" → "SAS", "BAW123" → "BAW", "N12345" → "N"
+//
+// Fun fact: three-letter prefixes are ICAO airline designators.
+// SAS = Scandinavian Airlines, BAW = British Airways, DLH = Lufthansa.
+// Private aircraft use their registration instead: "N12345" is a
+// US-registered plane (N-numbers), "SE-XXX" is Swedish.
+func callsign_prefix(callsign: string) -> string {
+    panic("TODO")
+}
+
+// --- Puzzle 5: Simple CSV parser ---
+// Parse a CSV string into a Vec of rows, where each row is a Vec<string>.
+//   "a,b,c\n1,2,3\n4,5,6" → [["a","b","c"], ["1","2","3"], ["4","5","6"]]
+//
+// Split on newlines first, then split each line on commas.
+func parse_csv(input: string) -> Vec<Vec<string>> {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "parse wind" {
+    const w = parse_wind("27015KT")
+    assert w.direction == 270
+    assert w.speed == 15
+
+    const w2 = parse_wind("09008KT")
+    assert w2.direction == 90
+    assert w2.speed == 8
+}
+
+test "format flight plan" {
+    const plan = format_flight_plan(
+        "ENGM",
+        "EGLL",
+        Vec.from(["CEDAR", "MAPLE", "BIRCH"]),
+    )
+    assert plan == "ENGM → CEDAR → MAPLE → BIRCH → EGLL"
+}
+
+test "format flight plan no waypoints" {
+    const plan = format_flight_plan("ENGM", "ESSA", Vec.new())
+    assert plan == "ENGM → ESSA"
+}
+
+test "word count" {
+    assert word_count("cleared for takeoff runway two seven left") == 7
+    assert word_count("roger") == 1
+    assert word_count("") == 0
+}
+
+test "callsign prefix" {
+    assert callsign_prefix("SAS937") == "SAS"
+    assert callsign_prefix("BAW123") == "BAW"
+    assert callsign_prefix("N12345") == "N"
+}
+
+test "parse csv" {
+    const rows = parse_csv("a,b,c\n1,2,3")
+    assert rows.len() == 2
+    assert rows[0].len() == 3
+    assert rows[0][0] == "a"
+    assert rows[1][2] == "3"
+}
+
+func main() {
+    example_strings()
+    println("Run 'rask test 14_strings.rk' to check your puzzles")
+}

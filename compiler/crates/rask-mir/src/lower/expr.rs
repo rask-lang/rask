@@ -422,7 +422,7 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Try(inner) => self.lower_try(inner),
 
             // Unwrap (postfix !) - panic on None/Err
-            ExprKind::Unwrap(inner) => {
+            ExprKind::Unwrap { expr: inner, message: _ } => {
                 let (val, _inner_ty) = self.lower_expr(inner)?;
                 let tag_local = self.builder.alloc_temp(MirType::U8);
                 self.builder.push_stmt(MirStmt::Assign {

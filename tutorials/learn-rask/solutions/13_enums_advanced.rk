@@ -1,0 +1,141 @@
+// Solution: Lesson 13
+
+enum FlightPhase {
+    Parked, Taxiing, Takeoff(runway: string),
+    Climbing(altitude: f64, target: f64), Cruising(altitude: f64),
+    Descending(altitude: f64, target: f64), Landed
+}
+
+enum LogEntry {
+    EngineStart(time: i32)
+    Takeoff(time: i32, runway: string)
+    WaypointReached(time: i32, name: string, altitude: f64)
+    Landing(time: i32, runway: string)
+    EngineStop(time: i32)
+}
+
+func entry_time(entry: LogEntry) -> i32 {
+    return match entry {
+        EngineStart(t) => t,
+        Takeoff(t, _) => t,
+        WaypointReached(t, _, _) => t,
+        Landing(t, _) => t,
+        EngineStop(t) => t,
+    }
+}
+
+func flight_time(log: Vec<LogEntry>) -> i32 {
+    let takeoff_time = -1
+    let landing_time = -1
+    for entry in log {
+        match entry {
+            Takeoff(t, _) => { takeoff_time = t }
+            Landing(t, _) => { landing_time = t }
+            _ => {}
+        }
+    }
+    if takeoff_time < 0 { return 0 }
+    if landing_time < 0 { return 0 }
+    return landing_time - takeoff_time
+}
+
+enum Token { Num(f64), Plus, Minus, Times, Divide }
+
+func eval_postfix(tokens: Vec<Token>) -> f64 {
+    const stack = Vec.new()
+    for token in tokens {
+        match token {
+            Num(x) => stack.push(x),
+            Plus => {
+                const b = stack.pop()!
+                const a = stack.pop()!
+                stack.push(a + b)
+            }
+            Minus => {
+                const b = stack.pop()!
+                const a = stack.pop()!
+                stack.push(a - b)
+            }
+            Times => {
+                const b = stack.pop()!
+                const a = stack.pop()!
+                stack.push(a * b)
+            }
+            Divide => {
+                const b = stack.pop()!
+                const a = stack.pop()!
+                stack.push(a / b)
+            }
+        }
+    }
+    return stack.pop()!
+}
+
+enum AirportStatus {
+    Open
+    Closed(reason: string)
+    Restricted(ceiling_ft: i32, visibility_sm: f64)
+}
+
+func can_land_ifr(status: AirportStatus) -> bool {
+    return match status {
+        Open => true,
+        Closed(_) => false,
+        Restricted(ceiling, vis) => ceiling >= 200 && vis >= 0.5,
+    }
+}
+
+func can_land_vfr(status: AirportStatus) -> bool {
+    return match status {
+        Open => true,
+        Closed(_) => false,
+        Restricted(ceiling, vis) => ceiling >= 1000 && vis >= 3.0,
+    }
+}
+
+test "entry time" {
+    assert entry_time(LogEntry.EngineStart(800)) == 800
+    assert entry_time(LogEntry.Takeoff(815, "27L")) == 815
+    assert entry_time(LogEntry.Landing(1030, "09R")) == 1030
+}
+
+test "flight time" {
+    const log = Vec.from([
+        LogEntry.EngineStart(800), LogEntry.Takeoff(815, "27L"),
+        LogEntry.WaypointReached(900, "CEDAR", 35000.0),
+        LogEntry.WaypointReached(945, "MAPLE", 35000.0),
+        LogEntry.Landing(1030, "09R"), LogEntry.EngineStop(1045),
+    ])
+    assert flight_time(log) == 215
+}
+
+test "flight time no takeoff" {
+    const log = Vec.from([LogEntry.EngineStart(800), LogEntry.EngineStop(805)])
+    assert flight_time(log) == 0
+}
+
+test "eval postfix" {
+    assert eval_postfix(Vec.from([Token.Num(3.0), Token.Num(4.0), Token.Plus])) == 7.0
+    assert eval_postfix(Vec.from([
+        Token.Num(2.0), Token.Num(3.0), Token.Times, Token.Num(1.0), Token.Plus
+    ])) == 7.0
+    assert eval_postfix(Vec.from([
+        Token.Num(10.0), Token.Num(2.0), Token.Divide, Token.Num(1.0), Token.Minus
+    ])) == 4.0
+}
+
+test "airport IFR landing" {
+    assert can_land_ifr(AirportStatus.Open) == true
+    assert can_land_ifr(AirportStatus.Closed("snow")) == false
+    assert can_land_ifr(AirportStatus.Restricted(300, 1.0)) == true
+    assert can_land_ifr(AirportStatus.Restricted(100, 0.3)) == false
+}
+
+test "airport VFR landing" {
+    assert can_land_vfr(AirportStatus.Open) == true
+    assert can_land_vfr(AirportStatus.Closed("snow")) == false
+    assert can_land_vfr(AirportStatus.Restricted(1500, 5.0)) == true
+    assert can_land_vfr(AirportStatus.Restricted(800, 2.0)) == false
+}
+
+func main() { println("All solutions for lesson 13") }

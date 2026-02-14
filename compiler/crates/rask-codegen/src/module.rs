@@ -87,7 +87,7 @@ impl CodeGenerator {
         self.ctx.func.signature = sig;
 
         // Build the function
-        let mut builder = FunctionBuilder::new(&mut self.ctx.func, mir_fn)?;
+        let mut builder = FunctionBuilder::new(&mut self.ctx.func, mir_fn, &self.func_ids)?;
         builder.build()?;
 
         // Define the function in the module

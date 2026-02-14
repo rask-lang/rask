@@ -1,0 +1,52 @@
+// Solution: Lesson 03
+
+func kinetic_energy(mass: f64, velocity: f64) -> f64 {
+    return 0.5 * mass * velocity * velocity
+}
+
+func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
+    const g = 6.674e-11
+    return g * m1 * m2 / (r * r)
+}
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..20 {
+        g = (g + x / g) / 2.0
+    }
+    return g
+}
+
+func orbital_velocity(planet_mass: f64, orbit_radius: f64) -> f64 {
+    const g = 6.674e-11
+    return sqrt(g * planet_mass / orbit_radius)
+}
+
+test "kinetic energy" {
+    assert kinetic_energy(1.0, 10.0) == 50.0
+    assert kinetic_energy(2.0, 3.0) == 9.0
+}
+
+test "gravitational force" {
+    const f = gravitational_force(5.972e24, 1.989e30, 1.496e11)
+    assert f > 3.5e22
+    assert f < 3.6e22
+}
+
+test "sqrt" {
+    const s = sqrt(4.0)
+    assert s > 1.999
+    assert s < 2.001
+    const s2 = sqrt(2.0)
+    assert s2 > 1.4141
+    assert s2 < 1.4143
+}
+
+test "orbital velocity of ISS" {
+    const v = orbital_velocity(5.972e24, 6779000.0)
+    assert v > 7650.0
+    assert v < 7670.0
+}
+
+func main() { println("All solutions for lesson 03") }

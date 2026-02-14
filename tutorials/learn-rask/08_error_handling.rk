@@ -1,0 +1,230 @@
+// === Lesson 08: Error Handling ===
+//
+// In Python, errors are exceptions. They fly up the call stack until
+// something catches them — or the program crashes.
+//
+//   Python:  int("hello")   → ValueError: invalid literal...
+//
+// In Rask, errors are values. A function that might fail says so in its
+// return type with `T or E`:
+//
+//   func divide(a: f64, b: f64) -> f64 or string {
+//       if b == 0.0 { return Err("division by zero") }
+//       return a / b    // automatically wrapped in Ok
+//   }
+//
+// `T or E` means:
+//   - T is the success type (what you return on success)
+//   - E is the error type (what you return on failure)
+//   - `f64 or string` = success gives f64, failure gives string
+//
+// Under the hood, `T or E` is sugar for `Result<T, E>`, but the
+// `or` syntax reads more naturally.
+//
+// The caller MUST handle the result:
+//
+//   match divide(10.0, 0.0) {
+//       Ok(val)  => println("got {val}"),
+//       Err(msg) => println("error: {msg}"),
+//   }
+//
+// Or propagate the error with `try` — if the result is Err, the
+// current function returns immediately with that error:
+//
+//   func calc() -> f64 or string {
+//       const val = try divide(10.0, 3.0)   // unwraps Ok, or returns Err
+//       return val * 2.0
+//   }
+//
+// Remember Option from lesson 04? It's the same idea:
+//   Some(value) or None — for "might not exist"
+//   Ok(value) or Err(e) — for "might fail"
+//
+// Quick shortcuts:
+//   result.is_ok()     → true if Ok
+//   result.is_err()    → true if Err
+//   option ?? default  → unwrap Option, use default if None
+//   result!            → unwraps Ok, panics if Err
+//
+// === Panic vs Error ===
+//
+// When should you use `!` (panic) vs `try` (error)?
+//
+// **Panic (`!`)** — the program crashes. Use for bugs:
+//   const config = load_config()!   // if this fails, we can't continue
+//   const x = items[0]!              // we know items is non-empty here
+//
+// **Error (`try`)** — the function returns an Err. Use for expected failures:
+//   const temp = try validate_temperature(reading)  // sensor might fail
+//   const user = try authenticate(token)             // token might be invalid
+//
+// Rule of thumb:
+//   - Can the caller recover? Use `T or E` and `try`
+//   - Is this a bug in the code? Use `panic()` or `!`
+//
+// In Python, everything is an exception. Rask separates:
+//   - Errors = values you handle (Ok/Err)
+//   - Panics = bugs you don't (crash)
+//
+
+// --- Examples ---
+
+func safe_divide(a: f64, b: f64) -> f64 or string {
+    if b == 0.0 {
+        return Err("division by zero")
+    }
+    return a / b
+}
+
+func example_error_handling() {
+    match safe_divide(10.0, 3.0) {
+        Ok(val) => println("10 / 3 = {val}"),
+        Err(msg) => println("Error: {msg}"),
+    }
+
+    match safe_divide(10.0, 0.0) {
+        Ok(val) => println("10 / 0 = {val}"),
+        Err(msg) => println("Error: {msg}"),
+    }
+}
+
+// Using try to chain operations
+func calc() -> f64 or string {
+    const a = try safe_divide(100.0, 4.0)    // 25.0
+    const b = try safe_divide(a, 5.0)         // 5.0
+    return b
+}
+
+// --- sqrt helper (you wrote this in lesson 03) ---
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..30 { g = (g + x / g) / 2.0 }
+    return g
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Validate sensor reading ---
+// A temperature sensor should read between -40.0 and 150.0 °C.
+// Return the reading if valid, or an error string if out of range.
+//
+// Sensors fail all the time in the real world. The Mars Climate Orbiter
+// was lost because one team used pounds and another used newtons.
+// Validating inputs is boring but saves missions.
+func validate_temperature(reading: f64) -> f64 or string {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Parse altitude ---
+// Parse a string like "35000" into an i32 altitude.
+// Return Err if the string is empty.
+// Return Err if the altitude is negative.
+//
+// In a real system, you'd also validate against the aircraft's service
+// ceiling. The Boeing 737 MAX can go to 41,000 ft. The Concorde
+// cruised at 60,000 ft — pilots could see the curvature of Earth.
+//
+// For this puzzle: just check empty and negative.
+// Hint: use string.parse_i32() which returns `i32 or string`
+func parse_altitude(s: string) -> i32 or string {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Chain with try ---
+// Given three sensor readings, validate each one and return their average.
+// If any reading is invalid, the error propagates automatically via try.
+//
+// This is the beauty of `try` — error handling without nesting.
+// Compare to Python:
+//   try:
+//       a = validate(r1)
+//       b = validate(r2)
+//       c = validate(r3)
+//       return (a + b + c) / 3
+//   except:
+//       ...
+//
+// In Rask, the `try` keyword does the same but at each step:
+func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or string {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Option — safe Vec access ---
+// Return the element at index i, or None if out of bounds.
+//
+// The return type `i32?` is shorthand for `Option<i32>`.
+// Return Some(value) or None.
+func safe_get(v: Vec<i32>, i: i32) -> i32? {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "valid temperature" {
+    const r = validate_temperature(20.0)
+    assert r.is_ok()
+}
+
+test "temperature too high" {
+    assert validate_temperature(200.0).is_err()
+}
+
+test "temperature too low" {
+    assert validate_temperature(-50.0).is_err()
+}
+
+test "temperature at boundary" {
+    assert validate_temperature(-40.0).is_ok()
+    assert validate_temperature(150.0).is_ok()
+}
+
+test "parse altitude" {
+    const r = parse_altitude("35000")
+    assert r.is_ok()
+    match r {
+        Ok(alt) => assert alt == 35000
+        Err(_) => assert false
+    }
+}
+
+test "parse negative altitude" {
+    assert parse_altitude("-100").is_err()
+}
+
+test "parse empty altitude" {
+    assert parse_altitude("").is_err()
+}
+
+test "average valid readings" {
+    const r = average_readings(20.0, 22.0, 21.0)
+    assert r.is_ok()
+    match r {
+        Ok(avg) => assert avg == 21.0
+        Err(_) => assert false
+    }
+}
+
+test "average with invalid reading" {
+    assert average_readings(20.0, 200.0, 21.0).is_err()
+}
+
+test "safe get in bounds" {
+    const v = Vec.from([10, 20, 30])
+    assert safe_get(v, 0) is Some(10)
+    assert safe_get(v, 2) is Some(30)
+}
+
+test "safe get out of bounds" {
+    const v = Vec.from([10, 20, 30])
+    assert safe_get(v, 5) is None
+    assert safe_get(v, -1) is None
+}
+
+func main() {
+    example_error_handling()
+    println("Run 'rask test 08_error_handling.rk' to check your puzzles")
+}

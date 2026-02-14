@@ -1,0 +1,167 @@
+// === Lesson 17: Resource Types ===
+//
+// In Python, you use `with open("file") as f:` to ensure cleanup.
+// Forget the `with`? The file stays open. Python won't warn you.
+//
+// Rask has a stronger version: resource types. If a type is marked
+// @resource, the compiler forces you to consume it. You literally
+// can't compile code that forgets to close a file or finish a
+// transaction.
+//
+//   @resource
+//   struct File { ... }
+//
+//   const file = try File.open("data.txt")
+//   // if you stop here → compile error! File not consumed.
+//
+// The `ensure` keyword schedules cleanup that runs when the scope exits:
+//   const file = try File.open("data.txt")
+//   ensure file.close()       // runs when this block ends
+//   // ... use file ...
+//   // file.close() happens here automatically, even if we returned early
+//
+// Think of `ensure` as Python's `finally`, but:
+//   - It's attached to a specific value, not a whole try block
+//   - The compiler tracks it — it knows the resource is handled
+//   - Multiple ensures run in reverse order (last opened = first closed)
+//
+// You already saw this pattern in lesson 15: spawn handles MUST be
+// joined or detached. That's the same idea — task handles are resources.
+//
+
+// --- Example ---
+
+// This example shows the pattern. The actual file I/O isn't
+// implemented in the tutorial compiler, but the concept is key.
+func example_resource() -> () or string {
+    const file = try fs.open("test.txt")
+    ensure file.close()
+
+    const text = try file.read_text()
+    println("read {text.len()} characters")
+    return ()
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Transaction pattern ---
+// The ensure + consume pattern is perfect for transactions.
+// Imagine a flight booking system:
+//
+//   1. Begin transaction (create Booking)
+//   2. Reserve seat, charge payment
+//   3. Commit if everything worked, rollback if not
+//
+// The compiler won't let you forget step 3. If a Booking goes
+// out of scope without being committed or rolled back → compile error.
+//
+// Fun fact: this is how databases work internally. PostgreSQL's
+// MVCC (Multi-Version Concurrency Control) tracks every transaction
+// and forces a commit or rollback. Rask gives you the same guarantee
+// at the language level.
+
+struct Booking {
+    id: i32
+    committed: bool
+}
+
+extend Booking {
+    func new(id: i32) -> Booking {
+        return Booking { id: id, committed: false }
+    }
+
+    func commit(mutate self) {
+        self.committed = true
+    }
+
+    func is_committed(self) -> bool {
+        return self.committed
+    }
+}
+
+// Book a flight. If passenger name is "FAIL", simulate a payment error.
+// Otherwise, commit the booking and return the id.
+//
+// Pattern:
+//   1. Create booking
+//   2. ensure rollback (safety net)
+//   3. Try to process payment
+//   4. If payment works, commit
+//   5. ensure runs on scope exit — but commit already happened, so no rollback
+func book_flight(id: i32, passenger: string) -> i32 or string {
+    panic("TODO")
+}
+
+// --- Puzzle 2: LIFO cleanup ---
+// When you have multiple resources, ensures run in reverse order.
+// This matters: if resource B depends on resource A, you want to
+// clean up B first.
+//
+//   const a = open_resource_a()
+//   ensure a.close()            // runs second
+//   const b = open_resource_b()
+//   ensure b.close()            // runs first
+//
+// This is like a stack: last in, first out. Same as Python's
+// nested `with` statements, but you don't need to nest.
+//
+// For this puzzle: create two Bookings. Commit the first,
+// leave the second uncommitted. Return whether each was committed.
+
+struct BookingStatus {
+    first_committed: bool
+    second_committed: bool
+}
+
+func two_bookings() -> BookingStatus {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Resource guard ---
+// Sometimes you want to guarantee something runs even if a
+// function returns early. This is the "guard" pattern.
+//
+// Write a function that processes a list of flight numbers.
+// Before processing, set a "processing" flag to true.
+// After processing (even if you return early on error),
+// set it back to false.
+//
+// In Python: try/finally. In Rask: ensure.
+//
+// Fun fact: the Space Shuttle's flight software used a similar
+// pattern. Every state change had a guaranteed rollback path.
+// The software flew 135 missions with zero in-flight failures.
+func process_flights(flights: Vec<string>) -> i32 or string {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "booking commit" {
+    const result = book_flight(1, "Besse")
+    assert result is Ok
+}
+
+test "booking failure" {
+    const result = book_flight(2, "FAIL")
+    assert result is Err
+}
+
+test "booking pattern" {
+    let b = Booking.new(42)
+    assert b.is_committed() == false
+    b.commit()
+    assert b.is_committed() == true
+}
+
+test "two bookings" {
+    const status = two_bookings()
+    assert status.first_committed == true
+    assert status.second_committed == false
+}
+
+func main() {
+    println("Run 'rask test 17_resource_types.rk' to check your puzzles")
+}

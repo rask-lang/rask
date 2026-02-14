@@ -2477,8 +2477,22 @@ impl Parser {
             // Unwrap operator (!) - panics if None/Err
             TokenKind::Bang => {
                 self.advance();
-                let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap(Box::new(lhs)), span: Span::new(start, end) })
+                let mut end = self.tokens[self.pos - 1].span.end;
+
+                // Check for optional custom message: x! "message"
+                let message = if matches!(self.peek(0), TokenKind::String(_)) {
+                    let msg_token = self.advance();
+                    end = msg_token.span.end;
+                    if let TokenKind::String(s) = &msg_token.kind {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Unwrap { expr: Box::new(lhs), message }, span: Span::new(start, end) })
             }
 
             // Detect :: path separator (Rust syntax)

@@ -1,0 +1,150 @@
+// === Lesson 15: Concurrency ===
+//
+// In Python, the GIL (Global Interpreter Lock) means threads take turns —
+// only one runs at a time. For CPU work, you use multiprocessing instead.
+//
+// Rask has real parallelism. Multiple threads run simultaneously, no GIL.
+//
+// Three ways to run code in parallel:
+//
+//   spawn(|| { ... })              — lightweight task (like asyncio, but parallel)
+//   ThreadPool.spawn(|| { ... })   — worker thread from a pool (for CPU work)
+//   Thread.spawn(|| { ... })       — dedicated OS thread
+//
+// The || { } is a closure (lesson 10). The || means "takes no arguments."
+//
+// Lightweight tasks need a scheduler. You set one up with:
+//   using Multitasking {
+//       // spawn tasks in here
+//   }
+// Think of it like Python's `async with asyncio.TaskGroup():` but for
+// real parallel work, not just I/O.
+//
+// Every spawn returns a handle. You MUST either:
+//   - join it:   const result = try h.join()    // wait for the result
+//   - detach it: spawn(|| { fire_and_forget() }).detach()
+//
+// The compiler enforces this — you can't accidentally forget about a task.
+// (This is the resource type pattern from lesson 17, applied to tasks.)
+//
+// Communication between tasks: Channels
+//   Channels are like Python's queue.Queue, but type-safe.
+//   const (tx, rx) = Channel<i32>.buffered(100)
+//   tx.send(42)           // put a value in
+//   const v = rx.recv()   // take a value out (waits if empty)
+//
+
+import async.spawn
+
+// --- Example ---
+
+func example_concurrency() -> () or Error {
+    // Spawn two tasks, each returns a value. Join both.
+    using Multitasking {
+        const h1 = spawn(|| {
+            21
+        })
+        const h2 = spawn(|| {
+            21
+        })
+        const a = try h1.join()
+        const b = try h2.join()
+        println("sum: {a + b}")  // 42
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Parallel altitude check ---
+// Given altitude readings, split into two halves.
+// Spawn two tasks: one finds the max of the first half,
+// the other finds the max of the second half.
+// Return the overall max.
+//
+// Fun fact: flight data recorders sample altitude 4 times per second.
+// A transatlantic flight generates ~100,000 altitude readings.
+// Splitting work across cores is how you process that fast.
+//
+// Hint: use own to transfer each half into its task.
+func parallel_max(readings: Vec<f64>) -> f64 {
+    panic("TODO")
+}
+
+// Helper — finds the largest value in a Vec
+func vec_max(v: Vec<f64>) -> f64 {
+    let m = v[0]
+    for i in 1..v.len() {
+        if v[i] > m { m = v[i] }
+    }
+    return m
+}
+
+// --- Puzzle 2: Producer-consumer with channels ---
+// Producer: send the numbers 1 to n on a channel, then close it.
+// Consumer: receive all numbers and sum them.
+// Return the sum.
+//
+// This is the classic producer-consumer pattern. In Python you'd
+// use queue.Queue. In Rask, Channel gives you the same thing
+// but the type system guarantees you only send i32 values.
+func channel_sum(n: i32) -> i32 {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Parallel Monte Carlo ---
+// Estimate pi by throwing random darts at a square.
+//
+// The idea: imagine a 1×1 square with a quarter-circle of radius 1
+// in the corner. The area of the quarter-circle is pi/4. So if you
+// throw random points into the square, the fraction that land inside
+// the circle ≈ pi/4. Multiply by 4 → pi.
+//
+// For each point (x, y): if x² + y² ≤ 1, it's inside.
+//
+// Split the work: spawn num_tasks tasks, each doing total/num_tasks
+// iterations. Each task sends its inside count on a channel.
+//
+// For "random" without a random library, use a simple LCG:
+//   next = (a * current + c) % m
+//   a = 1103515245, c = 12345, m = 2147483648
+//   Normalize: (next as f64) / (m as f64)
+//   Use different seeds for each task (e.g., task index + 1).
+//
+// Fun fact: Monte Carlo methods are named after the casino in Monaco.
+// Stanislaw Ulam invented the technique while playing solitaire
+// during his recovery from brain surgery in 1946. He wondered about
+// the probability of winning and realized random sampling could
+// approximate it. Enrico Fermi had used similar ideas earlier for
+// neutron diffusion calculations on the Manhattan Project.
+func estimate_pi(total: i32, num_tasks: i32) -> f64 {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "parallel max" {
+    const readings = Vec.from([
+        31000.0, 33000.0, 35000.0, 34000.0,
+        36000.0, 32000.0, 37000.0, 34500.0,
+    ])
+    assert parallel_max(readings) == 37000.0
+}
+
+test "channel sum" {
+    assert channel_sum(10) == 55
+    assert channel_sum(100) == 5050
+}
+
+test "monte carlo pi" {
+    const pi = estimate_pi(100000, 4)
+    // Not precise with a basic RNG, but should be in the ballpark
+    assert pi > 2.9
+    assert pi < 3.5
+}
+
+func main() {
+    example_concurrency()!
+    println("Run 'rask test 15_concurrency.rk' to check your puzzles")
+}

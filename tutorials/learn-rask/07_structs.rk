@@ -1,0 +1,238 @@
+// === Lesson 07: Structs and Methods ===
+//
+// In Python, you bundle data and behavior together in a class:
+//   class Vec3:
+//       def __init__(self, x, y, z):
+//           self.x = x; self.y = y; self.z = z
+//       def magnitude(self):
+//           return (self.x**2 + self.y**2 + self.z**2)**0.5
+//
+// In Rask, data and behavior are separate:
+//
+//   struct Vec3 {           // the data (like a Python class with only __init__)
+//       x: f64
+//       y: f64
+//       z: f64
+//   }
+//
+//   extend Vec3 {           // the methods (like the rest of the class body)
+//       func magnitude(self) -> f64 { ... }
+//   }
+//
+// Why separate? Because you can add methods to types you didn't define.
+// You could write `extend Vec<i32> { ... }` to add methods to any list of ints.
+// Python can't do this without modifying the original class.
+//
+// Creating an instance:
+//   const v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+//
+// Methods:
+//   func magnitude(self) -> f64          // reads self (like Python's self)
+//   func reset(mutate self)              // modifies self in place
+//   func zero() -> Vec3                  // no self = "static" method, called as Vec3.zero()
+//
+
+// --- sqrt helper (provided — you wrote this in lesson 03) ---
+
+func sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 }
+    let g = x / 2.0
+    for i in 0..30 { g = (g + x / g) / 2.0 }
+    return g
+}
+
+// --- Example ---
+
+struct Airport {
+    code: string
+    latitude: f64
+    longitude: f64
+}
+
+extend Airport {
+    func describe(self) -> string {
+        return "{self.code} at ({self.latitude}, {self.longitude})"
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: 3D Vector ---
+// Implement the methods for Vec3. This is the workhorse type for physics:
+// position, velocity, force, momentum — they're all 3D vectors.
+
+struct Vec3 {
+    x: f64
+    y: f64
+    z: f64
+}
+
+extend Vec3 {
+    // Return (0, 0, 0)
+    func zero() -> Vec3 {
+        panic("TODO")
+    }
+
+    // Component-wise addition: (x₁+x₂, y₁+y₂, z₁+z₂)
+    func add(self, other: Vec3) -> Vec3 {
+        panic("TODO")
+    }
+
+    // Multiply each component by a scalar
+    func scale(self, factor: f64) -> Vec3 {
+        panic("TODO")
+    }
+
+    // Dot product: x₁x₂ + y₁y₂ + z₁z₂
+    // If the result is 0, the vectors are perpendicular.
+    func dot(self, other: Vec3) -> f64 {
+        panic("TODO")
+    }
+
+    // Length of the vector: √(x² + y² + z²)
+    // Use the sqrt() function defined above.
+    func magnitude(self) -> f64 {
+        panic("TODO")
+    }
+
+    // Cross product: produces a vector perpendicular to both inputs.
+    //   x = y₁z₂ - z₁y₂
+    //   y = z₁x₂ - x₁z₂
+    //   z = x₁y₂ - y₁x₂
+    //
+    // Fun fact: the cross product only works in 3D and 7D.
+    // That's a genuine mathematical theorem, not a limitation.
+    func cross(self, other: Vec3) -> Vec3 {
+        panic("TODO")
+    }
+}
+
+// --- Puzzle 2: Projectile simulation ---
+// Now use your Vec3 to simulate something. A projectile is just a
+// position and velocity that evolves under gravity.
+//
+// This is how every physics simulation works at its core:
+//   new_velocity = velocity + acceleration * dt
+//   new_position = position + new_velocity * dt
+
+struct Projectile {
+    position: Vec3
+    velocity: Vec3
+}
+
+extend Projectile {
+    // Create a projectile at the origin with given velocity
+    func launch(velocity: Vec3) -> Projectile {
+        panic("TODO")
+    }
+
+    // Advance one time step under gravity (0, 0, -9.81) m/s²
+    // Return a new Projectile with updated position and velocity.
+    // Don't let z go below 0.
+    func step(self, dt: f64) -> Projectile {
+        panic("TODO")
+    }
+
+    // Is the projectile still in the air? (z > 0, or first frame)
+    func is_airborne(self) -> bool {
+        panic("TODO")
+    }
+}
+
+// --- Tests ---
+
+test "vec3 zero" {
+    const v = Vec3.zero()
+    assert v.x == 0.0
+    assert v.y == 0.0
+    assert v.z == 0.0
+}
+
+test "vec3 add" {
+    const a = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const b = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    const c = a.add(b)
+    assert c.x == 5.0
+    assert c.y == 7.0
+    assert c.z == 9.0
+}
+
+test "vec3 scale" {
+    const v = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const s = v.scale(2.0)
+    assert s.x == 2.0
+    assert s.y == 4.0
+    assert s.z == 6.0
+}
+
+test "vec3 dot product" {
+    const a = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    const b = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    assert a.dot(b) == 0.0
+
+    const c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+    const d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+    assert c.dot(d) == 32.0
+}
+
+test "vec3 magnitude" {
+    // Classic 3-4-5 triangle
+    const v = Vec3 { x: 3.0, y: 4.0, z: 0.0 }
+    const m = v.magnitude()
+    assert m > 4.99
+    assert m < 5.01
+}
+
+test "vec3 cross product" {
+    // i × j = k (right-hand rule)
+    const i = Vec3 { x: 1.0, y: 0.0, z: 0.0 }
+    const j = Vec3 { x: 0.0, y: 1.0, z: 0.0 }
+    const k = i.cross(j)
+    assert k.x == 0.0
+    assert k.y == 0.0
+    assert k.z == 1.0
+}
+
+test "projectile launch" {
+    const p = Projectile.launch(Vec3 { x: 10.0, y: 0.0, z: 20.0 })
+    assert p.position.x == 0.0
+    assert p.velocity.z == 20.0
+}
+
+test "projectile step" {
+    // Launch straight up at 20 m/s
+    const p = Projectile.launch(Vec3 { x: 0.0, y: 0.0, z: 20.0 })
+    const p2 = p.step(0.1)
+    // After 0.1s: vz ≈ 20 - 0.981 = 19.019, z ≈ 1.9019
+    assert p2.position.z > 1.8
+    assert p2.position.z < 2.0
+    assert p2.velocity.z < 20.0
+}
+
+test "projectile hits ground" {
+    // Launch at 45° with speed 10
+    let p = Projectile.launch(Vec3 { x: 7.07, y: 0.0, z: 7.07 })
+    // Simulate for a while
+    for i in 0..200 {
+        p = p.step(0.01)
+    }
+    // After 2 seconds, should have hit the ground
+    assert p.position.z == 0.0
+}
+
+func main() {
+    // Mini simulation you can watch
+    let p = Projectile.launch(Vec3 { x: 50.0, y: 0.0, z: 30.0 })
+    println("=== Projectile Simulation ===")
+    let t = 0.0
+    while p.is_airborne() {
+        println("t={t}s  x={p.position.x}  z={p.position.z}")
+        p = p.step(0.5)
+        t = t + 0.5
+    }
+    println("Landed at x={p.position.x} after {t}s")
+    println("")
+    println("Run 'rask test 07_structs.rk' to check your puzzles")
+}

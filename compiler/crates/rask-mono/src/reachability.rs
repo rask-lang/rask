@@ -250,7 +250,7 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            ExprKind::Try(e) | ExprKind::Unwrap(e) => self.visit_expr(e),
+            ExprKind::Try(e) | ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
             ExprKind::NullCoalesce { value, default } => {
                 self.visit_expr(value);
                 self.visit_expr(default);

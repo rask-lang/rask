@@ -1,0 +1,149 @@
+// === Lesson 11: Generics ===
+//
+// In Python, every function is generic by default (duck typing):
+//   def first(items): return items[0]   # works for any list
+//
+// In Rask, you say which types a function works with using <T>:
+//   func first<T>(items: Vec<T>) -> T { return items[0] }
+//
+// The <T> means "this works for any type T." When you call first
+// with a Vec<i32>, the compiler creates a version that works with i32.
+// When you call it with Vec<string>, it creates one for string.
+// You get one function definition, multiple type-safe versions.
+//
+// Sometimes you need T to support certain operations. You can't
+// compare two values unless the type supports comparison:
+//
+//   func max<T: Comparable>(a: T, b: T) -> T {
+//       if a > b { return a }
+//       return b
+//   }
+//
+// The `: Comparable` part says "T must support comparison operators."
+// In Python you'd just try it and get a runtime error if it fails.
+// In Rask, the compiler checks this up front.
+//
+// Generic structs work the same way:
+//   struct Pair<A, B> {
+//       first: A
+//       second: B
+//   }
+//
+
+// --- Example ---
+
+func identity<T>(x: T) -> T {
+    return x
+}
+
+struct Pair<A, B> {
+    first: A
+    second: B
+}
+
+extend Pair<A, B> {
+    func swap(self) -> Pair<B, A> {
+        return Pair { first: self.second, second: self.first }
+    }
+}
+
+// ============================================================
+// PUZZLES
+// ============================================================
+
+// --- Puzzle 1: Generic max ---
+// Return the larger of two values.
+func max_of<T: Comparable>(a: T, b: T) -> T {
+    panic("TODO")
+}
+
+func min_of<T: Comparable>(a: T, b: T) -> T {
+    panic("TODO")
+}
+
+// --- Puzzle 2: Clamp to range ---
+// If value < low, return low. If value > high, return high. Otherwise return value.
+//
+// Used everywhere: clamping control surface deflection angles,
+// restricting throttle input, bounding sensor readings.
+//
+// Fun fact: the elevator (the control surface on the tail) on a 737
+// has a maximum deflection of about ±17°. Exceed that mechanically
+// and you'd overstress the airframe.
+func clamp<T: Comparable>(value: T, low: T, high: T) -> T {
+    panic("TODO")
+}
+
+// --- Puzzle 3: Min and max of a Vec ---
+// Find both the minimum and maximum in one pass. Return as a Pair.
+// Assume the Vec is non-empty.
+func min_max<T: Comparable>(items: Vec<T>) -> Pair<T, T> {
+    panic("TODO")
+}
+
+// --- Puzzle 4: Linear interpolation ---
+// lerp(a, b, t) = a + t × (b - a)
+// At t=0 returns a, at t=1 returns b, at t=0.5 returns the midpoint.
+//
+// This is how GPS navigation interpolates between waypoints.
+// If you're 40% of the way from waypoint A at 30,000 ft to waypoint B
+// at 35,000 ft, your expected altitude is lerp(30000, 35000, 0.4) = 32,000 ft.
+func lerp(a: f64, b: f64, t: f64) -> f64 {
+    panic("TODO")
+}
+
+// --- Puzzle 5: Generic contains ---
+// Check if a Vec contains a specific value.
+func contains<T: Comparable>(items: Vec<T>, target: T) -> bool {
+    panic("TODO")
+}
+
+// --- Tests ---
+
+test "max of" {
+    assert max_of(3, 7) == 7
+    assert max_of(10, 2) == 10
+    assert max_of(5, 5) == 5
+    assert max_of(1.5, 2.5) == 2.5
+}
+
+test "min of" {
+    assert min_of(3, 7) == 3
+    assert min_of(10, 2) == 2
+}
+
+test "clamp" {
+    assert clamp(25.0, -17.0, 17.0) == 17.0
+    assert clamp(-20.0, -17.0, 17.0) == -17.0
+    assert clamp(5.0, -17.0, 17.0) == 5.0
+    // Clamp airspeed to safe range (knots)
+    assert clamp(180, 120, 250) == 180
+    assert clamp(100, 120, 250) == 120
+}
+
+test "min max" {
+    const result = min_max(Vec.from([3, 1, 4, 1, 5, 9, 2, 6]))
+    assert result.first == 1
+    assert result.second == 9
+}
+
+test "lerp" {
+    assert lerp(0.0, 10.0, 0.0) == 0.0
+    assert lerp(0.0, 10.0, 1.0) == 10.0
+    assert lerp(0.0, 10.0, 0.5) == 5.0
+    assert lerp(30000.0, 35000.0, 0.4) == 32000.0
+}
+
+test "contains" {
+    assert contains(Vec.from([1, 2, 3, 4, 5]), 3) == true
+    assert contains(Vec.from([1, 2, 3, 4, 5]), 6) == false
+    // Boeing narrow-body family
+    assert contains(Vec.from(["737", "757", "727"]), "757") == true
+    assert contains(Vec.from(["737", "757", "727"]), "A320") == false
+}
+
+func main() {
+    const p = Pair { first: "altitude", second: 35000 }
+    println("{p.first}: {p.second}")
+    println("Run 'rask test 11_generics.rk' to check your puzzles")
+}

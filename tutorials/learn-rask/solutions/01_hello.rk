@@ -1,0 +1,24 @@
+// Solution: Lesson 01
+
+func greet(name: string) -> string {
+    return "Hello, {name}!"
+}
+
+func announce(flight: string, destination: string, gate: string) -> string {
+    return "Flight {flight} to {destination} now boarding at gate {gate}"
+}
+
+test "greet" {
+    assert greet("Besse") == "Hello, Besse!"
+    assert greet("Ada") == "Hello, Ada!"
+}
+
+test "flight announcement" {
+    const msg = announce("SK1234", "Stockholm", "B12")
+    assert msg == "Flight SK1234 to Stockholm now boarding at gate B12"
+}
+
+func main() {
+    println(greet("Besse"))
+    println(announce("SK1234", "Stockholm", "B12"))
+}
