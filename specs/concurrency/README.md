@@ -22,10 +22,12 @@ Concurrency model for Rask.
 |------|--------|---------|
 | [async.md](async.md) | Draft | **Execution model**: Multitasking, ThreadPool, spawn, handles |
 | [runtime.md](runtime.md) | Draft | **Runtime implementation**: M:N scheduler, reactor, task state machines |
+| [runtime-strategy.md](runtime-strategy.md) | Draft | **Implementation strategy**: OS threads first, M:N later |
+| [io-context.md](io-context.md) | Draft | **I/O dispatch**: How stdlib detects async context, sync/async code paths |
 | [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
 
-**Start here:** [async.md](async.md) for the execution model overview.
+**Start here:** [async.md](async.md) for the execution model overview, then [runtime-strategy.md](runtime-strategy.md) for implementation plan.
 
 ## Quick Reference
 
