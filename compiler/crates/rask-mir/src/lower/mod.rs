@@ -164,7 +164,10 @@ impl<'a> MirLowerer<'a> {
                     .as_deref()
                     .map(|s| ctx.resolve_type_str(s))
                     .unwrap_or(MirType::Void);
-                func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
+                let sig_params = f.params.iter().map(|p| FuncParam {
+                    ty: ctx.resolve_type_str(&p.ty),
+                }).collect();
+                func_sigs.insert(f.name.clone(), FuncSig { params: sig_params, ret_ty: sig_ret });
             }
         }
 
