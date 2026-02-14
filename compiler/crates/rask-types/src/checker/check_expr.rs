@@ -109,9 +109,25 @@ impl TypeChecker {
             ExprKind::Index { object, index } => {
                 let obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);
+
+                // Check if indexing with a range (slicing)
+                let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
+
                 match &obj_ty {
-                    Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
-                    Type::String => Type::Char,
+                    Type::Array { elem, .. } | Type::Slice(elem) => {
+                        if is_range {
+                            Type::Slice(elem.clone())
+                        } else {
+                            *elem.clone()
+                        }
+                    }
+                    Type::String => {
+                        if is_range {
+                            Type::String
+                        } else {
+                            Type::Char
+                        }
+                    }
                     _ => self.ctx.fresh_var(),
                 }
             }
@@ -571,6 +587,15 @@ impl TypeChecker {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
+                // Check if the block ends with a diverging statement (return/break/continue)
+                if let Some(last) = body.last() {
+                    match &last.kind {
+                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
+                            return Type::Never;
+                        }
+                        _ => {}
+                    }
+                }
                 Type::Unit
             }
 
@@ -584,6 +609,15 @@ impl TypeChecker {
                     self.check_stmt(stmt);
                 }
                 self.pop_scope();
+                // Check if the block ends with a diverging statement
+                if let Some(last) = body.last() {
+                    match &last.kind {
+                        StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
+                            return Type::Never;
+                        }
+                        _ => {}
+                    }
+                }
                 Type::Unit
             }
 
