@@ -177,9 +177,16 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             rask_mir::MirRValue::BinaryOp { op, left, right } => {
-                // For binary ops, use the expected type for both operands
-                let lhs_val = Self::lower_operand_typed(builder, left, var_map, expected_ty)?;
-                let rhs_val = Self::lower_operand_typed(builder, right, var_map, expected_ty)?;
+                let is_comparison = matches!(op,
+                    BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+                );
+
+                // Comparisons produce bool but operands must match each other's type,
+                // not the result type. Lower left first to determine operand type.
+                let operand_ty = if is_comparison { None } else { expected_ty };
+                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty)?;
+                let lhs_ty = builder.func.dfg.value_type(lhs_val);
+                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty))?;
 
                 let result = match op {
                     BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
