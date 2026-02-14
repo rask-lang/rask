@@ -30,21 +30,27 @@
 //
 
 import async.spawn
+import sync.AtomicI64
+import sync.Relaxed
 
 // --- Example ---
 
 func example_shared() -> () or Error {
-    using Multitasking {
+    with Multitasking {
         const counter = Shared.new(0)
 
         const h1 = spawn(|| {
             for i in 0..1000 {
-                counter.write(|c| c = c + 1)
+                counter.write(|c| {
+                    c = c + 1
+                })
             }
         })
         const h2 = spawn(|| {
             for i in 0..1000 {
-                counter.write(|c| c = c + 1)
+                counter.write(|c| {
+                    c = c + 1
+                })
             }
         })
 
@@ -52,7 +58,8 @@ func example_shared() -> () or Error {
         try h2.join()
 
         const final_count = counter.read(|c| c)
-        println("counter: {final_count}")   // always 2000, never wrong
+        println("counter: {final_count}")
+        // always 2000, never wrong
     }
 }
 
@@ -65,6 +72,11 @@ func example_shared() -> () or Error {
 // Use Shared<Vec<string>> to collect all sightings safely.
 // Spawn 3 tasks, each adding its aircraft to the shared list.
 // Return the total count.
+//
+// .join() returns T or JoinError. You can:
+//   try h.join()          - propagate errors (function must return or JoinError)
+//   h.join()!             - panic if task panicked
+//   match h.join() { }    - handle explicitly
 //
 // Fun fact: real ADS-B (Automatic Dependent Surveillance-Broadcast)
 // receivers pick up aircraft transponder signals. Sites like
