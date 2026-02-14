@@ -117,7 +117,7 @@ func phase_name(p: Phase) -> string {
     }
 }
 
-func simulate(ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
+func simulate(take ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
     let current = ac
     for i in 0..n_steps {
         current = step(current, dt)
@@ -214,13 +214,13 @@ test "flight phase" {
 }
 
 test "simulation runs" {
-    const ac = Aircraft {
+    let ac = Aircraft {
         position: Vec3.zero(),
         velocity: Vec3.new(0.0, 50.0, 0.0),
         mass: 1000.0, thrust_n: 30000.0, wing_area: 20.0,
         drag_coeff: 0.03, lift_coeff: 1.2,
     }
-    const final_alt = simulate(ac, 0.1, 100)
+    const final_alt = simulate(own ac, 0.1, 100)
     assert final_alt > 0.0
 }
 
