@@ -19,10 +19,16 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
-/// Function signature for return type lookups
+/// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
+    params: Vec<FuncParam>,
     ret_ty: MirType,
+}
+
+#[derive(Clone)]
+struct FuncParam {
+    ty: MirType,
 }
 
 /// Loop context for break/continue
@@ -1047,7 +1053,10 @@ mod tests {
         let decl = make_fn("f", vec![("x", "i32")], Some("i32"), vec![
             return_stmt(Some(Expr {
                 id: NodeId(400),
-                kind: ExprKind::Unwrap(Box::new(ident_expr("x"))),
+                kind: ExprKind::Unwrap {
+                    expr: Box::new(ident_expr("x")),
+                    message: None,
+                },
                 span: sp(),
             })),
         ]);
