@@ -228,6 +228,23 @@ impl CodeGenerator {
     /// Must be called after declare_functions and before gen_function.
     pub fn register_strings(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         let mut counter = 0usize;
+
+        // Pre-register the separator string for multi-arg print/println calls
+        let needs_separator = mir_functions.iter().any(|f| {
+            f.blocks.iter().any(|b| {
+                b.statements.iter().any(|s| {
+                    matches!(s, rask_mir::MirStmt::Call { func, args, .. }
+                        if (func.name == "print" || func.name == "println") && args.len() > 1)
+                })
+            })
+        });
+        if needs_separator {
+            self.register_operand_string(
+                &MirOperand::Constant(MirConst::String(" ".to_string())),
+                &mut counter,
+            )?;
+        }
+
         for mir_fn in mir_functions {
             for block in &mir_fn.blocks {
                 for stmt in &block.statements {
