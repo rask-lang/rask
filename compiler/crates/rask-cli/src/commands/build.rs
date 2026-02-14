@@ -70,8 +70,12 @@ pub fn cmd_build(path: &str) {
                                         Ok(mono) => {
                                             // Lower to MIR
                                             let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+                                            let mir_ctx = rask_mir::lower::MirContext {
+                                                struct_layouts: &mono.struct_layouts,
+                                                enum_layouts: &mono.enum_layouts,
+                                            };
                                             for mono_fn in &mono.functions {
-                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls) {
+                                                if let Err(e) = rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
                                                     eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
                                                     total_errors += 1;
                                                 }

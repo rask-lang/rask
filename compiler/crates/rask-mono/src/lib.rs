@@ -422,7 +422,7 @@ mod tests {
         let result = instantiate_function(&decl, &[Type::I32]);
         if let DeclKind::Fn(f) = &result.kind {
             assert!(f.type_params.is_empty());
-            assert_eq!(f.params[0].ty, "I32"); // substituted
+            assert_eq!(f.params[0].ty, "i32"); // substituted
         } else {
             panic!("Expected function declaration");
         }

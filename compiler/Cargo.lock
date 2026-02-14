@@ -686,6 +686,7 @@ name = "rask-mir"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-mono",
  "rask-types",
 ]
 

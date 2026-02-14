@@ -42,6 +42,7 @@ pub struct VariantLayout {
     pub tag: u64,
     pub payload_offset: u32,
     pub payload_size: u32,
+    pub fields: Vec<FieldLayout>,
 }
 
 /// Get size and alignment for a type (after monomorphization)
@@ -96,8 +97,12 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
             // For now, assume pointer-sized (will be fixed during layout phase)
             (8, 8)
         }
-        Type::Var(_) | Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => {
+        Type::Var(_) | Type::UnresolvedGeneric { .. } => {
             panic!("Unresolved type in layout computation: {:?}", ty)
+        }
+        Type::UnresolvedNamed(_) => {
+            // Named type not yet resolved to a layout — assume pointer-sized
+            (8, 8)
         }
         Type::Union(_) => {
             // Union of error types - same as largest error
@@ -113,6 +118,29 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
 /// Align a value up to the given alignment
 fn align_up(val: u32, align: u32) -> u32 {
     (val + align - 1) & !(align - 1)
+}
+
+/// Parse a field type string (from AST) to a Type for layout computation.
+fn parse_field_type(s: &str) -> Type {
+    match s.trim() {
+        "()" => Type::Unit,
+        "bool" => Type::Bool,
+        "i8" => Type::I8,
+        "i16" => Type::I16,
+        "i32" => Type::I32,
+        "i64" => Type::I64,
+        "i128" => Type::I128,
+        "u8" => Type::U8,
+        "u16" => Type::U16,
+        "u32" => Type::U32,
+        "u64" => Type::U64,
+        "u128" => Type::U128,
+        "f32" => Type::F32,
+        "f64" => Type::F64,
+        "char" => Type::Char,
+        "string" => Type::String,
+        name => Type::UnresolvedNamed(name.to_string()),
+    }
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4)
@@ -134,9 +162,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLay
 
     // S1-S2: Process fields in source order, no reordering
     for field in &struct_decl.fields {
-        // TODO: Parse type string to Type and substitute generics
-        // For now, use placeholder
-        let field_ty = Type::I32; // Placeholder
+        let field_ty = parse_field_type(&field.ty);
 
         let (field_size, field_align) = type_size_align(&field_ty);
         max_align = max_align.max(field_align);
@@ -197,16 +223,25 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
         let mut payload_size = 0u32;
         let mut payload_align = 1u32;
 
+        let mut variant_fields = Vec::new();
+
         if !variant.fields.is_empty() {
-            // Variant has fields - compute struct-like layout
             let mut field_offset = 0u32;
             for field in &variant.fields {
-                // TODO: Parse and substitute types
-                let field_ty = Type::I32; // Placeholder
+                let field_ty = parse_field_type(&field.ty);
                 let (size, align) = type_size_align(&field_ty);
 
                 payload_align = payload_align.max(align);
                 field_offset = align_up(field_offset, align);
+
+                variant_fields.push(FieldLayout {
+                    name: field.name.clone(),
+                    ty: field_ty,
+                    offset: field_offset,
+                    size,
+                    align,
+                });
+
                 field_offset += size;
             }
             payload_size = align_up(field_offset, payload_align);
@@ -220,6 +255,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
             tag: tag as u64,
             payload_offset: 0, // Will be computed from tag
             payload_size,
+            fields: variant_fields,
         });
     }
 
