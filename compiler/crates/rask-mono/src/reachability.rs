@@ -188,13 +188,13 @@ impl<'a> Monomorphizer<'a> {
                 }
                 self.visit_expr(func);
                 for arg in args {
-                    self.visit_expr(arg);
+                    self.visit_expr(&arg.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.visit_expr(object);
                 for arg in args {
-                    self.visit_expr(arg);
+                    self.visit_expr(&arg.expr);
                 }
             }
             ExprKind::Binary { left, right, .. } => {
@@ -303,7 +303,7 @@ impl<'a> Monomorphizer<'a> {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.visit_expr(arg);
+                    self.visit_expr(&arg.expr);
                 }
                 for s in body {
                     self.visit_stmt(s);

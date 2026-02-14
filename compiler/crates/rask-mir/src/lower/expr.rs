@@ -3,12 +3,12 @@
 //! Expression lowering.
 
 use super::{
-    binop_result_type, lower_binop, lower_unaryop, operator_method_to_binop,
-    operator_method_to_unaryop, parse_type_str, LoweringError, MirLowerer, TypedOperand,
+    binop_result_type, lower_binop, lower_unaryop, mir_type_size, operator_method_to_binop,
+    operator_method_to_unaryop, LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, BlockId, FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator,
-    MirType,
+    operand::MirConst, types::StructLayoutId, BlockId, FunctionRef, MirOperand, MirRValue,
+    MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
@@ -16,7 +16,7 @@ use rask_ast::{
     token::{FloatSuffix, IntSuffix},
 };
 
-impl MirLowerer {
+impl<'a> MirLowerer<'a> {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         match &expr.kind {
             // Literals
@@ -118,7 +118,7 @@ impl MirLowerer {
 
                 let mut arg_operands = Vec::new();
                 for a in args {
-                    let (op, _) = self.lower_expr(a)?;
+                    let (op, _) = self.lower_expr(&a.expr)?;
                     arg_operands.push(op);
                 }
 
@@ -164,7 +164,7 @@ impl MirLowerer {
                 // Detect binary operator methods (desugared from a + b → a.add(b))
                 if let Some(mir_binop) = operator_method_to_binop(method) {
                     if args.len() == 1 {
-                        let (rhs, _) = self.lower_expr(&args[0])?;
+                        let (rhs, _) = self.lower_expr(&args[0].expr)?;
                         let result_ty = binop_result_type(&mir_binop, &obj_ty);
                         let result_local = self.builder.alloc_temp(result_ty.clone());
                         self.builder.push_stmt(MirStmt::Assign {
@@ -197,7 +197,7 @@ impl MirLowerer {
                 // Regular method call
                 let mut all_args = vec![obj_op];
                 for arg in args {
-                    let (op, _) = self.lower_expr(arg)?;
+                    let (op, _) = self.lower_expr(&arg.expr)?;
                     all_args.push(op);
                 }
                 let ret_ty = self
@@ -217,16 +217,32 @@ impl MirLowerer {
             }
 
             // Field access
-            ExprKind::Field { object, field: _ } => {
-                let (obj_op, _obj_ty) = self.lower_expr(object)?;
-                // TODO: Lookup field type from layout
-                let result_ty = MirType::I32;
+            ExprKind::Field { object, field } => {
+                let (obj_op, obj_ty) = self.lower_expr(object)?;
+
+                // Resolve field index and type from struct layout
+                let (field_index, result_ty) = if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                    if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
+                        if let Some((idx, fl)) = layout.fields.iter().enumerate()
+                            .find(|(_, f)| f.name == *field)
+                        {
+                            (idx as u32, self.ctx.resolve_type_str(&format!("{}", fl.ty)))
+                        } else {
+                            (0, MirType::I32) // field not found — fallback
+                        }
+                    } else {
+                        (0, MirType::I32)
+                    }
+                } else {
+                    (0, MirType::I32) // non-struct field access — fallback
+                };
+
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
                     rvalue: MirRValue::Field {
                         base: obj_op,
-                        field_index: 0, // TODO: Lookup from layout
+                        field_index,
                     },
                 });
                 Ok((MirOperand::Local(result_local), result_ty))
@@ -234,10 +250,12 @@ impl MirLowerer {
 
             // Index access
             ExprKind::Index { object, index } => {
-                let (obj_op, _) = self.lower_expr(object)?;
+                let (obj_op, obj_ty) = self.lower_expr(object)?;
                 let (idx_op, _) = self.lower_expr(index)?;
-                // TODO: Infer element type from collection type
-                let result_ty = MirType::I32;
+                let result_ty = match &obj_ty {
+                    MirType::Array { elem, .. } => *elem.clone(),
+                    _ => MirType::I32, // fallback for non-array indexing
+                };
                 let result_local = self.builder.alloc_temp(result_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
@@ -251,54 +269,75 @@ impl MirLowerer {
 
             // Array literal
             ExprKind::Array(elems) => {
+                // Lower elements first to determine the element type
+                let mut lowered = Vec::new();
                 let mut elem_ty = MirType::I32;
                 for (i, elem) in elems.iter().enumerate() {
                     let (elem_op, ty) = self.lower_expr(elem)?;
                     if i == 0 {
                         elem_ty = ty;
                     }
-                    self.builder.push_stmt(MirStmt::Store {
-                        addr: crate::operand::LocalId(0), // Placeholder — filled in after alloc
-                        offset: i as u32 * 4, // TODO: Proper element size
-                        value: elem_op,
-                    });
+                    lowered.push(elem_op);
                 }
+                let elem_size = mir_type_size(&elem_ty);
                 let array_ty = MirType::Array {
                     elem: Box::new(elem_ty),
                     len: elems.len() as u32,
                 };
                 let result_local = self.builder.alloc_temp(array_ty.clone());
-                // TODO: Fix stores to use result_local
+                for (i, elem_op) in lowered.into_iter().enumerate() {
+                    self.builder.push_stmt(MirStmt::Store {
+                        addr: result_local,
+                        offset: i as u32 * elem_size,
+                        value: elem_op,
+                    });
+                }
                 Ok((MirOperand::Local(result_local), array_ty))
             }
 
             // Tuple literal
             ExprKind::Tuple(elems) => {
                 let result_local = self.builder.alloc_temp(MirType::Ptr);
-                for (i, elem) in elems.iter().enumerate() {
-                    let (elem_op, _) = self.lower_expr(elem)?;
+                let mut offset = 0u32;
+                for elem in elems.iter() {
+                    let (elem_op, elem_ty) = self.lower_expr(elem)?;
+                    let elem_size = mir_type_size(&elem_ty);
+                    let elem_align = elem_size.max(1);
+                    // Align offset for this element
+                    offset = (offset + elem_align - 1) & !(elem_align - 1);
                     self.builder.push_stmt(MirStmt::Store {
                         addr: result_local,
-                        offset: i as u32 * 8, // TODO: Proper field offsets
+                        offset,
                         value: elem_op,
                     });
+                    offset += elem_size;
                 }
                 Ok((MirOperand::Local(result_local), MirType::Ptr))
             }
 
             // Struct literal
-            ExprKind::StructLit { fields, .. } => {
-                // TODO: Look up struct layout for proper type
-                let result_local = self.builder.alloc_temp(MirType::Ptr);
-                for (i, field) in fields.iter().enumerate() {
+            ExprKind::StructLit { name, fields, .. } => {
+                let (result_ty, layout) = if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                    (MirType::Struct(StructLayoutId(idx)), Some(sl))
+                } else {
+                    (MirType::Ptr, None)
+                };
+
+                let result_local = self.builder.alloc_temp(result_ty.clone());
+                for field in fields.iter() {
                     let (val_op, _) = self.lower_expr(&field.value)?;
+                    // Look up field offset from layout
+                    let offset = layout
+                        .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
+                        .map(|f| f.offset)
+                        .unwrap_or(0);
                     self.builder.push_stmt(MirStmt::Store {
                         addr: result_local,
-                        offset: i as u32 * 4, // TODO: Use layout
+                        offset,
                         value: val_op,
                     });
                 }
-                Ok((MirOperand::Local(result_local), MirType::Ptr))
+                Ok((MirOperand::Local(result_local), result_ty))
             }
 
             // If-let (if expr is Pattern { then } else { else })
@@ -542,7 +581,9 @@ impl MirLowerer {
 
                 let saved_locals = self.locals.clone();
                 for param in params {
-                    let param_ty = MirType::I32; // TODO: Closure param types
+                    let param_ty = param.ty.as_deref()
+                        .map(|s| self.ctx.resolve_type_str(s))
+                        .unwrap_or(MirType::I32);
                     let param_local = self.builder.alloc_temp(param_ty.clone());
                     self.locals.insert(param.name.clone(), (param_local, param_ty));
                 }
@@ -559,7 +600,7 @@ impl MirLowerer {
             // Cast
             ExprKind::Cast { expr, ty } => {
                 let (val, _) = self.lower_expr(expr)?;
-                let target_ty = parse_type_str(ty);
+                let target_ty = self.ctx.resolve_type_str(ty);
                 let result_local = self.builder.alloc_temp(target_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,

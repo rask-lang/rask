@@ -131,7 +131,7 @@ impl TypeChecker {
                     }
                 }
                 self.check_no_alloc_expr(fn_name, object);
-                for a in args { self.check_no_alloc_expr(fn_name, a); }
+                for a in args { self.check_no_alloc_expr(fn_name, &a.expr); }
             }
             // format() — allocates a string
             ExprKind::Call { func, args } => {
@@ -145,7 +145,7 @@ impl TypeChecker {
                     }
                 }
                 self.check_no_alloc_expr(fn_name, func);
-                for a in args { self.check_no_alloc_expr(fn_name, a); }
+                for a in args { self.check_no_alloc_expr(fn_name, &a.expr); }
             }
             // Recurse into subexpressions
             ExprKind::Binary { left, right, .. } => {

@@ -115,13 +115,13 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             }
             walk_expr_for_unwrap(object, source, diags);
             for arg in args {
-                walk_expr_for_unwrap(arg, source, diags);
+                walk_expr_for_unwrap(&arg.expr, source, diags);
             }
         }
         ExprKind::Call { func, args } => {
             walk_expr_for_unwrap(func, source, diags);
             for arg in args {
-                walk_expr_for_unwrap(arg, source, diags);
+                walk_expr_for_unwrap(&arg.expr, source, diags);
             }
         }
         ExprKind::Binary { left, right, .. } => {

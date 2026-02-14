@@ -6,10 +6,12 @@ mod expr;
 mod stmt;
 
 use crate::{BlockBuilder, MirFunction, MirOperand, MirTerminator, MirType, BlockId, LocalId};
+use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{Decl, DeclKind},
     expr::{BinOp, UnaryOp},
 };
+use rask_mono::{StructLayout, EnumLayout};
 use std::collections::HashMap;
 
 /// Typed expression result from lowering
@@ -32,7 +34,68 @@ struct LoopContext {
     result_local: Option<LocalId>,
 }
 
-pub struct MirLowerer {
+/// Layout context for MIR lowering — struct/enum metadata from monomorphization.
+pub struct MirContext<'a> {
+    pub struct_layouts: &'a [StructLayout],
+    pub enum_layouts: &'a [EnumLayout],
+}
+
+impl<'a> MirContext<'a> {
+    /// Empty context for tests that don't need layouts.
+    pub fn empty() -> MirContext<'static> {
+        MirContext {
+            struct_layouts: &[],
+            enum_layouts: &[],
+        }
+    }
+
+    pub fn find_struct(&self, name: &str) -> Option<(u32, &StructLayout)> {
+        self.struct_layouts
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.name == name)
+            .map(|(i, s)| (i as u32, s))
+    }
+
+    pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
+        self.enum_layouts
+            .iter()
+            .enumerate()
+            .find(|(_, e)| e.name == name)
+            .map(|(i, e)| (i as u32, e))
+    }
+
+    /// Resolve a type string to MirType, looking up struct/enum names in layouts.
+    pub fn resolve_type_str(&self, s: &str) -> MirType {
+        match s.trim() {
+            "i8" => MirType::I8,
+            "i16" => MirType::I16,
+            "i32" => MirType::I32,
+            "i64" => MirType::I64,
+            "u8" => MirType::U8,
+            "u16" => MirType::U16,
+            "u32" => MirType::U32,
+            "u64" => MirType::U64,
+            "f32" => MirType::F32,
+            "f64" => MirType::F64,
+            "bool" => MirType::Bool,
+            "char" => MirType::Char,
+            "string" => MirType::FatPtr,
+            "()" | "" => MirType::Void,
+            name => {
+                if let Some((idx, _)) = self.find_struct(name) {
+                    MirType::Struct(StructLayoutId(idx))
+                } else if let Some((idx, _)) = self.find_enum(name) {
+                    MirType::Enum(EnumLayoutId(idx))
+                } else {
+                    MirType::Ptr
+                }
+            }
+        }
+    }
+}
+
+pub struct MirLowerer<'a> {
     builder: BlockBuilder,
     /// Variable name → (local id, type)
     locals: HashMap<String, (LocalId, MirType)>,
@@ -40,13 +103,20 @@ pub struct MirLowerer {
     func_sigs: HashMap<String, FuncSig>,
     /// Stack of enclosing loops (innermost last)
     loop_stack: Vec<LoopContext>,
+    /// Layout context from monomorphization
+    ctx: &'a MirContext<'a>,
 }
 
-impl MirLowerer {
+impl<'a> MirLowerer<'a> {
     /// Lower a monomorphized function declaration to MIR.
     ///
     /// `all_decls` provides function signatures for resolving call return types.
-    pub fn lower_function(decl: &Decl, all_decls: &[Decl]) -> Result<MirFunction, LoweringError> {
+    /// `ctx` provides struct/enum layout data for resolving field types and offsets.
+    pub fn lower_function(
+        decl: &Decl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+    ) -> Result<MirFunction, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
             _ => {
@@ -59,7 +129,7 @@ impl MirLowerer {
         let ret_ty = fn_decl
             .ret_ty
             .as_deref()
-            .map(parse_type_str)
+            .map(|s| ctx.resolve_type_str(s))
             .unwrap_or(MirType::Void);
 
         // Build function signature table from all declarations
@@ -69,7 +139,7 @@ impl MirLowerer {
                 let sig_ret = f
                     .ret_ty
                     .as_deref()
-                    .map(parse_type_str)
+                    .map(|s| ctx.resolve_type_str(s))
                     .unwrap_or(MirType::Void);
                 func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
             }
@@ -80,11 +150,12 @@ impl MirLowerer {
             locals: HashMap::new(),
             func_sigs,
             loop_stack: Vec::new(),
+            ctx,
         };
 
         // Add parameters
         for param in &fn_decl.params {
-            let param_ty = parse_type_str(&param.ty);
+            let param_ty = ctx.resolve_type_str(&param.ty);
             let local_id = lowerer.builder.add_param(param.name.clone(), param_ty.clone());
             lowerer.locals.insert(param.name.clone(), (local_id, param_ty));
         }
@@ -107,25 +178,35 @@ impl MirLowerer {
 // Type string parsing
 // =================================================================
 
-/// Parse a Rask type string to MirType.
-/// Handles primitives and common patterns. Unknown types fall back to Ptr.
+/// Parse a Rask type string to MirType (without layout context).
+/// Used in tests and as fallback. Struct/enum names resolve to Ptr.
 fn parse_type_str(s: &str) -> MirType {
-    match s.trim() {
-        "i8" => MirType::I8,
-        "i16" => MirType::I16,
-        "i32" => MirType::I32,
-        "i64" => MirType::I64,
-        "u8" => MirType::U8,
-        "u16" => MirType::U16,
-        "u32" => MirType::U32,
-        "u64" => MirType::U64,
-        "f32" => MirType::F32,
-        "f64" => MirType::F64,
-        "bool" => MirType::Bool,
-        "char" => MirType::Char,
-        "string" => MirType::FatPtr,
-        "()" | "" => MirType::Void,
-        _ => MirType::Ptr, // Structs, enums, generics → opaque pointer for now
+    MirContext::empty().resolve_type_str(s)
+}
+
+// =================================================================
+// MIR type size (for computing offsets in aggregates)
+// =================================================================
+
+/// Return byte size for a MirType. Used for array/tuple/struct store offsets.
+fn mir_type_size(ty: &MirType) -> u32 {
+    match ty {
+        MirType::Void => 0,
+        MirType::Bool | MirType::I8 | MirType::U8 => 1,
+        MirType::I16 | MirType::U16 => 2,
+        MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
+        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
+        MirType::FatPtr => 16,
+        MirType::Struct(id) => {
+            // Can't look up the layout without context — fallback to pointer size
+            let _ = id;
+            8
+        }
+        MirType::Enum(id) => {
+            let _ = id;
+            8
+        }
+        MirType::Array { elem, len } => mir_type_size(elem) * len,
     }
 }
 
@@ -226,7 +307,7 @@ mod tests {
     use super::*;
     use crate::{operand::MirConst, MirRValue, MirStmt};
     use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
-    use rask_ast::expr::{Expr, ExprKind, MatchArm, Pattern};
+    use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, MatchArm, Pattern};
     use rask_ast::stmt::{Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
@@ -261,7 +342,7 @@ mod tests {
             id: NodeId(106),
             kind: ExprKind::Call {
                 func: Box::new(ident_expr(func)),
-                args,
+                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
             },
             span: sp(),
         }
@@ -297,7 +378,7 @@ mod tests {
                 object: Box::new(obj),
                 method: method.to_string(),
                 type_args: None,
-                args,
+                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
             },
             span: sp(),
         }
@@ -468,7 +549,7 @@ mod tests {
     }
 
     fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
-        MirLowerer::lower_function(decl, all_decls).expect("lowering failed")
+        MirLowerer::lower_function(decl, all_decls, &MirContext::empty()).expect("lowering failed")
     }
 
     fn lower_one(decl: &Decl) -> MirFunction {

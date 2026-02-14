@@ -10,7 +10,7 @@
 //! This pass runs before type checking.
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl};
-use rask_ast::expr::{BinOp, Expr, ExprKind, MatchArm, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::NodeId;
 
@@ -164,13 +164,13 @@ impl Desugarer {
             ExprKind::Call { func, args } => {
                 self.desugar_expr(func);
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
             }
             ExprKind::MethodCall { object, args, .. } => {
                 self.desugar_expr(object);
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
             }
             ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
@@ -303,7 +303,7 @@ impl Desugarer {
             }
             ExprKind::UsingBlock { args, body, .. } => {
                 for arg in args {
-                    self.desugar_expr(arg);
+                    self.desugar_expr(&mut arg.expr);
                 }
                 for s in body {
                     self.desugar_stmt(s);
@@ -349,7 +349,7 @@ impl Desugarer {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
                             type_args: None,
-                            args: vec![right_expr],
+                            args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
                         },
                         span,
                     };
@@ -362,7 +362,7 @@ impl Desugarer {
                         object: Box::new(left_expr),
                         method: method.to_string(),
                         type_args: None,
-                        args: vec![right_expr],
+                        args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
                     };
                 }
             }
