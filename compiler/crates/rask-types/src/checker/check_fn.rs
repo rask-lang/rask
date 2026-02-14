@@ -198,6 +198,9 @@ impl TypeChecker {
             ExprKind::Block(stmts) | ExprKind::Unsafe { body: stmts } => {
                 stmts.iter().any(|s| self.stmt_always_returns(s))
             }
+            ExprKind::UsingBlock { body, .. } | ExprKind::WithAs { body, .. } => {
+                body.iter().any(|s| self.stmt_always_returns(s))
+            }
             ExprKind::Match { arms, .. } => {
                 !arms.is_empty() && arms.iter().all(|arm| self.expr_always_returns(&arm.body))
             }
@@ -228,9 +231,7 @@ impl TypeChecker {
             // Don't wrap if already Result (handles explicit Ok/Err returns)
             match &resolved_ret {
                 Type::Result { .. } => ret_ty,
-                // Don't wrap type variables - preserve inference flexibility
-                Type::Var(_) => ret_ty,
-                // Wrap concrete non-Result values
+                // Wrap everything else, including type variables
                 _ => Type::Result {
                     ok: Box::new(ret_ty),
                     err: err.clone(),
