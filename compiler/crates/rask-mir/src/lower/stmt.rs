@@ -2,7 +2,7 @@
 
 //! Statement lowering.
 
-use super::{parse_type_str, LoopContext, LoweringError, MirLowerer};
+use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
     FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
@@ -11,7 +11,7 @@ use rask_ast::{
     stmt::{Stmt, StmtKind},
 };
 
-impl MirLowerer {
+impl<'a> MirLowerer<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
         match &stmt.kind {
             StmtKind::Expr(e) => {
@@ -165,7 +165,7 @@ impl MirLowerer {
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
         let (init_op, inferred_ty) = self.lower_expr(init)?;
-        let var_ty = ty.map(parse_type_str).unwrap_or(inferred_ty);
+        let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty));
         self.builder.push_stmt(MirStmt::Assign {

@@ -246,10 +246,14 @@ pub fn cmd_mir(path: &str, format: Format) {
 
     // Collect all monomorphized function bodies for signature table
     let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+    let mir_ctx = rask_mir::lower::MirContext {
+        struct_layouts: &mono.struct_layouts,
+        enum_layouts: &mono.enum_layouts,
+    };
 
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
-        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls) {
+        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
             Ok(mir_fn) => {
                 if format == Format::Human {
                     println!("{}", mir_fn);

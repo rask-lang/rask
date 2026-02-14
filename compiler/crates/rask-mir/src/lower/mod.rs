@@ -175,16 +175,6 @@ impl<'a> MirLowerer<'a> {
 }
 
 // =================================================================
-// Type string parsing
-// =================================================================
-
-/// Parse a Rask type string to MirType (without layout context).
-/// Used in tests and as fallback. Struct/enum names resolve to Ptr.
-fn parse_type_str(s: &str) -> MirType {
-    MirContext::empty().resolve_type_str(s)
-}
-
-// =================================================================
 // MIR type size (for computing offsets in aggregates)
 // =================================================================
 
@@ -666,7 +656,7 @@ mod tests {
     #[test]
     fn lower_unresolved_variable_errors() {
         let decl = make_fn("f", vec![], None, vec![return_stmt(Some(ident_expr("no_such_var")))]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
         assert!(result.is_err());
     }
 
@@ -815,22 +805,23 @@ mod tests {
 
     #[test]
     fn lower_parse_type_str_coverage() {
-        assert_eq!(parse_type_str("i8"), MirType::I8);
-        assert_eq!(parse_type_str("i16"), MirType::I16);
-        assert_eq!(parse_type_str("i32"), MirType::I32);
-        assert_eq!(parse_type_str("i64"), MirType::I64);
-        assert_eq!(parse_type_str("u8"), MirType::U8);
-        assert_eq!(parse_type_str("u16"), MirType::U16);
-        assert_eq!(parse_type_str("u32"), MirType::U32);
-        assert_eq!(parse_type_str("u64"), MirType::U64);
-        assert_eq!(parse_type_str("f32"), MirType::F32);
-        assert_eq!(parse_type_str("f64"), MirType::F64);
-        assert_eq!(parse_type_str("bool"), MirType::Bool);
-        assert_eq!(parse_type_str("char"), MirType::Char);
-        assert_eq!(parse_type_str("string"), MirType::FatPtr);
-        assert_eq!(parse_type_str("()"), MirType::Void);
-        assert_eq!(parse_type_str(""), MirType::Void);
-        assert_eq!(parse_type_str("SomeStruct"), MirType::Ptr);
+        let ctx = MirContext::empty();
+        assert_eq!(ctx.resolve_type_str("i8"), MirType::I8);
+        assert_eq!(ctx.resolve_type_str("i16"), MirType::I16);
+        assert_eq!(ctx.resolve_type_str("i32"), MirType::I32);
+        assert_eq!(ctx.resolve_type_str("i64"), MirType::I64);
+        assert_eq!(ctx.resolve_type_str("u8"), MirType::U8);
+        assert_eq!(ctx.resolve_type_str("u16"), MirType::U16);
+        assert_eq!(ctx.resolve_type_str("u32"), MirType::U32);
+        assert_eq!(ctx.resolve_type_str("u64"), MirType::U64);
+        assert_eq!(ctx.resolve_type_str("f32"), MirType::F32);
+        assert_eq!(ctx.resolve_type_str("f64"), MirType::F64);
+        assert_eq!(ctx.resolve_type_str("bool"), MirType::Bool);
+        assert_eq!(ctx.resolve_type_str("char"), MirType::Char);
+        assert_eq!(ctx.resolve_type_str("string"), MirType::FatPtr);
+        assert_eq!(ctx.resolve_type_str("()"), MirType::Void);
+        assert_eq!(ctx.resolve_type_str(""), MirType::Void);
+        assert_eq!(ctx.resolve_type_str("SomeStruct"), MirType::Ptr);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -939,14 +930,14 @@ mod tests {
     #[test]
     fn lower_break_outside_loop_errors() {
         let decl = make_fn("f", vec![], None, vec![break_stmt(None, None)]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
         assert!(result.is_err());
     }
 
     #[test]
     fn lower_continue_outside_loop_errors() {
         let decl = make_fn("f", vec![], None, vec![continue_stmt(None)]);
-        let result = MirLowerer::lower_function(&decl, &[decl.clone()]);
+        let result = MirLowerer::lower_function(&decl, &[decl.clone()], &MirContext::empty());
         assert!(result.is_err());
     }
 
