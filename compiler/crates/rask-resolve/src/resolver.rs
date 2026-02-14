@@ -478,6 +478,18 @@ impl Resolver {
                 return;
             }
 
+            // Define the imported symbol in scope so bare references resolve
+            let sym_id = self.symbols.insert(
+                binding_name.clone(),
+                SymbolKind::Variable { mutable: false },
+                None,
+                span,
+                false,
+            );
+            if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                self.errors.push(e);
+            }
+
             self.imported_symbols.insert(binding_name.clone());
 
             if import_decl.is_lazy {
