@@ -238,6 +238,9 @@ impl<'a> Monomorphizer<'a> {
                 self.visit_expr(expr);
                 self.visit_expr(else_branch);
             }
+            ExprKind::IsPattern { expr, .. } => {
+                self.visit_expr(expr);
+            }
             ExprKind::Match { scrutinee, arms } => {
                 self.visit_expr(scrutinee);
                 for arm in arms {

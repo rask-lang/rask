@@ -86,6 +86,11 @@ pub enum ExprKind {
         pattern: Pattern,
         else_branch: Box<Expr>,
     },
+    /// Pattern test expression (expr is Pattern) — evaluates to bool
+    IsPattern {
+        expr: Box<Expr>,
+        pattern: Pattern,
+    },
     /// Match expression
     Match {
         scrutinee: Box<Expr>,

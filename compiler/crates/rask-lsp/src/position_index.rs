@@ -224,6 +224,9 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_expr(else_br, index);
             }
         }
+        ExprKind::IsPattern { expr, .. } => {
+            visit_expr(expr, index);
+        }
         ExprKind::Match { scrutinee, arms } => {
             visit_expr(scrutinee, index);
             for arm in arms {

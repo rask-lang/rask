@@ -277,7 +277,7 @@ impl<'a> Printer<'a> {
         match &decl.kind {
             DeclKind::Fn(f) => self.format_fn_decl(f, false, false),
             DeclKind::Struct(s) => self.format_struct_decl(s, decl.span),
-            DeclKind::Enum(e) => self.format_enum_decl(e),
+            DeclKind::Enum(e) => self.format_enum_decl(e, decl.span),
             DeclKind::Trait(t) => self.format_trait_decl(t),
             DeclKind::Impl(i) => self.format_impl_decl(i),
             DeclKind::Import(i) => self.format_import_decl(i),
@@ -474,7 +474,7 @@ impl<'a> Printer<'a> {
         est < 60
     }
 
-    fn format_enum_decl(&mut self, e: &EnumDecl) {
+    fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {
         self.emit_indent();
 
         if e.is_pub {
@@ -495,48 +495,70 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
 
-        self.emit(" {");
-        self.emit_newline();
+        let source_is_multiline = self.source_text(span).contains('\n');
+        let all_fieldless = e.variants.iter().all(|v| v.fields.is_empty());
+        let has_methods = !e.methods.is_empty();
 
-        self.indent += 1;
-        for variant in &e.variants {
-            self.emit_indent();
-            self.emit(&variant.name);
-            if !variant.fields.is_empty() {
-                let is_tuple = variant.fields.first().map_or(false, |f| {
-                    f.name.starts_with('_') && f.name[1..].parse::<usize>().is_ok()
-                        || f.name.parse::<usize>().is_ok()
-                });
-                if is_tuple {
-                    self.emit("(");
-                    for (i, field) in variant.fields.iter().enumerate() {
-                        if i > 0 {
-                            self.emit(", ");
-                        }
-                        let ty = self.format_type(&field.ty);
-                        self.emit(&ty);
-                    }
-                    self.emit(")");
-                } else {
-                    self.emit(" { ");
-                    for (i, field) in variant.fields.iter().enumerate() {
-                        if i > 0 {
-                            self.emit(", ");
-                        }
-                        self.emit(&field.name);
-                        self.emit(": ");
-                        let ty = self.format_type(&field.ty);
-                        self.emit(&ty);
-                    }
-                    self.emit(" }");
+        if !source_is_multiline && !has_methods && all_fieldless && self.enum_variants_fit_one_line(&e.variants) {
+            // Inline style: enum Dir { N, S, E, W }
+            self.emit(" { ");
+            for (i, variant) in e.variants.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
                 }
+                self.emit(&variant.name);
             }
-            self.emit(",");
+            self.emit(" }");
+        } else {
+            // Multi-line style: no commas
+            self.emit(" {");
             self.emit_newline();
+
+            self.indent += 1;
+            for variant in &e.variants {
+                self.emit_indent();
+                self.emit(&variant.name);
+                if !variant.fields.is_empty() {
+                    let is_tuple = variant.fields.first().map_or(false, |f| {
+                        f.name.starts_with('_') && f.name[1..].parse::<usize>().is_ok()
+                            || f.name.parse::<usize>().is_ok()
+                    });
+                    if is_tuple {
+                        self.emit("(");
+                        for (i, field) in variant.fields.iter().enumerate() {
+                            if i > 0 {
+                                self.emit(", ");
+                            }
+                            let ty = self.format_type(&field.ty);
+                            self.emit(&ty);
+                        }
+                        self.emit(")");
+                    } else {
+                        self.emit(" { ");
+                        for (i, field) in variant.fields.iter().enumerate() {
+                            if i > 0 {
+                                self.emit(", ");
+                            }
+                            self.emit(&field.name);
+                            self.emit(": ");
+                            let ty = self.format_type(&field.ty);
+                            self.emit(&ty);
+                        }
+                        self.emit(" }");
+                    }
+                }
+                self.emit_newline();
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
         }
-        self.indent -= 1;
-        self.emit_indent();
-        self.emit("}");
+    }
+
+    fn enum_variants_fit_one_line(&self, variants: &[Variant]) -> bool {
+        let est: usize = variants.iter().map(|v| v.name.len()).sum::<usize>()
+            + (variants.len().saturating_sub(1) * 2);
+        est < 60
     }
 
     fn format_trait_decl(&mut self, t: &TraitDecl) {
@@ -930,7 +952,10 @@ impl<'a> Printer<'a> {
             }
             ExprKind::Unary { op, operand } => {
                 self.emit(unaryop_str(op));
+                let needs_parens = matches!(operand.kind, ExprKind::IsPattern { .. });
+                if needs_parens { self.emit("("); }
                 self.format_expr(operand);
+                if needs_parens { self.emit(")"); }
             }
             ExprKind::Call { func, args } => {
                 self.format_expr(func);
@@ -1010,25 +1035,64 @@ impl<'a> Printer<'a> {
                 self.format_pattern(pattern);
             }
             ExprKind::Match { scrutinee, arms } => {
-                self.emit("match ");
-                self.format_expr(scrutinee);
-                self.emit(" {");
-                self.emit_newline();
-                self.indent += 1;
-                for arm in arms {
-                    self.emit_indent();
-                    self.format_pattern(&arm.pattern);
-                    if let Some(ref guard) = arm.guard {
-                        self.emit(" if ");
-                        self.format_expr(guard);
+                let source_is_multiline = self.source_text(expr.span).contains('\n');
+                let all_arms_simple = arms.iter().all(|a| {
+                    if a.guard.is_some() { return false; }
+                    match &a.body.kind {
+                        ExprKind::Block(stmts) => stmts.len() == 1 && matches!(stmts[0].kind, StmtKind::Expr(_)),
+                        _ => true,
                     }
-                    self.emit(" => ");
-                    self.format_match_arm_body(&arm.body);
+                });
+
+                if !source_is_multiline && all_arms_simple && arms.len() <= 4 {
+                    // Inline style: match x { 1 => "one", 2 => "two" }
+                    self.emit("match ");
+                    self.format_expr(scrutinee);
+                    self.emit(" { ");
+                    for (i, arm) in arms.iter().enumerate() {
+                        if i > 0 {
+                            self.emit(", ");
+                        }
+                        self.format_pattern(&arm.pattern);
+                        self.emit(" => ");
+                        // Unwrap single-expression blocks for inline display
+                        if let ExprKind::Block(ref stmts) = arm.body.kind {
+                            if stmts.len() == 1 {
+                                if let StmtKind::Expr(ref inner) = stmts[0].kind {
+                                    self.format_expr(inner);
+                                } else {
+                                    self.format_expr(&arm.body);
+                                }
+                            } else {
+                                self.format_expr(&arm.body);
+                            }
+                        } else {
+                            self.format_expr(&arm.body);
+                        }
+                    }
+                    self.emit(" }");
+                } else {
+                    // Multi-line style: no commas
+                    self.emit("match ");
+                    self.format_expr(scrutinee);
+                    self.emit(" {");
                     self.emit_newline();
+                    self.indent += 1;
+                    for arm in arms {
+                        self.emit_indent();
+                        self.format_pattern(&arm.pattern);
+                        if let Some(ref guard) = arm.guard {
+                            self.emit(" if ");
+                            self.format_expr(guard);
+                        }
+                        self.emit(" => ");
+                        self.format_match_arm_body(&arm.body);
+                        self.emit_newline();
+                    }
+                    self.indent -= 1;
+                    self.emit_indent();
+                    self.emit("}");
                 }
-                self.indent -= 1;
-                self.emit_indent();
-                self.emit("}");
             }
             ExprKind::Try(inner) => {
                 self.emit("try ");
@@ -1338,19 +1402,14 @@ impl<'a> Printer<'a> {
             // Check if the source had braces (block form) or not (inline expression)
             let source_text = self.source_text(body.span).trim_start();
             if source_text.starts_with('{') {
-                // Block form in source — emit as block
                 self.format_expr(body);
             } else if stmts.len() == 1 {
-                // Inline expression form
                 self.format_stmt_inline(&stmts[0]);
-                self.emit(",");
             } else {
-                // Multiple statements but no braces — use block
                 self.format_expr(body);
             }
         } else {
             self.format_expr(body);
-            self.emit(",");
         }
     }
 

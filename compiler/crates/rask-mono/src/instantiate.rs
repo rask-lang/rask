@@ -298,6 +298,10 @@ impl TypeSubstitutor {
                     pattern: self.clone_pattern(pattern),
                     else_branch: Box::new(self.clone_expr(else_branch)),
                 },
+                ExprKind::IsPattern { expr, pattern } => ExprKind::IsPattern {
+                    expr: Box::new(self.clone_expr(expr)),
+                    pattern: self.clone_pattern(pattern),
+                },
                 ExprKind::Match { scrutinee, arms } => ExprKind::Match {
                     scrutinee: Box::new(self.clone_expr(scrutinee)),
                     arms: arms.iter().map(|a| self.clone_match_arm(a)).collect(),

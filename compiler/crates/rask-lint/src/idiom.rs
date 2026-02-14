@@ -154,6 +154,9 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
                 walk_expr_for_unwrap(e, source, diags);
             }
         }
+        ExprKind::IsPattern { expr, .. } => {
+            walk_expr_for_unwrap(expr, source, diags);
+        }
         ExprKind::Match { scrutinee, arms } => {
             walk_expr_for_unwrap(scrutinee, source, diags);
             for arm in arms {

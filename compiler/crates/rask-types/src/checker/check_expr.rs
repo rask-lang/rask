@@ -204,6 +204,12 @@ impl TypeChecker {
                 }
             }
 
+            ExprKind::IsPattern { expr: value, pattern } => {
+                let value_ty = self.infer_expr(value);
+                let _bindings = self.check_pattern(pattern, &value_ty, expr.span);
+                Type::Bool
+            }
+
             ExprKind::Match { scrutinee, arms } => {
                 let scrutinee_ty = self.infer_expr(scrutinee);
                 let result_ty = self.ctx.fresh_var();
