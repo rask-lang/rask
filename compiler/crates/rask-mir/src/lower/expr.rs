@@ -372,6 +372,13 @@ impl MirLowerer {
                 Ok((val, val_ty))
             }
 
+            // Pattern test (expr is Pattern) — evaluates to bool
+            ExprKind::IsPattern { expr: inner, pattern: _ } => {
+                // TODO: Proper pattern tag check
+                let (_val, _ty) = self.lower_expr(inner)?;
+                Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
+            }
+
             // Try expression (spec L3)
             ExprKind::Try(inner) => self.lower_try(inner),
 

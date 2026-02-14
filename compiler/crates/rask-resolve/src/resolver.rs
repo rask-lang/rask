@@ -946,6 +946,10 @@ impl Resolver {
                 self.resolve_pattern(pattern);
                 self.resolve_expr(else_branch);
             }
+            ExprKind::IsPattern { expr, pattern } => {
+                self.resolve_expr(expr);
+                self.resolve_pattern(pattern);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.resolve_expr(value);
                 self.resolve_expr(default);

@@ -276,7 +276,7 @@ impl<'a> Printer<'a> {
     fn format_decl(&mut self, decl: &Decl) {
         match &decl.kind {
             DeclKind::Fn(f) => self.format_fn_decl(f, false, false),
-            DeclKind::Struct(s) => self.format_struct_decl(s),
+            DeclKind::Struct(s) => self.format_struct_decl(s, decl.span),
             DeclKind::Enum(e) => self.format_enum_decl(e),
             DeclKind::Trait(t) => self.format_trait_decl(t),
             DeclKind::Impl(i) => self.format_impl_decl(i),
@@ -398,7 +398,7 @@ impl<'a> Printer<'a> {
         }
     }
 
-    fn format_struct_decl(&mut self, s: &StructDecl) {
+    fn format_struct_decl(&mut self, s: &StructDecl, span: Span) {
         self.emit_indent();
 
         for attr in &s.attrs {
@@ -425,24 +425,53 @@ impl<'a> Printer<'a> {
             self.emit(">");
         }
 
-        self.emit(" {");
-        self.emit_newline();
+        let source_is_multiline = self.source_text(span).contains('\n');
+        let has_methods = !s.methods.is_empty();
 
-        self.indent += 1;
-        for field in &s.fields {
-            self.emit_indent();
-            if field.is_pub {
-                self.emit("public ");
+        if !source_is_multiline && !has_methods && s.fields.len() <= 4 && self.struct_fields_fit_one_line(&s.fields) {
+            // Inline style: struct Vec3 { x: f64, y: f64, z: f64 }
+            self.emit(" { ");
+            for (i, field) in s.fields.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                if field.is_pub {
+                    self.emit("public ");
+                }
+                self.emit(&field.name);
+                self.emit(": ");
+                let ty = self.format_type(&field.ty);
+                self.emit(&ty);
             }
-            self.emit(&field.name);
-            self.emit(": ");
-            let ty = self.format_type(&field.ty);
-            self.emit(&ty);
+            self.emit(" }");
+        } else {
+            // Multi-line style: no commas
+            self.emit(" {");
             self.emit_newline();
+
+            self.indent += 1;
+            for field in &s.fields {
+                self.emit_indent();
+                if field.is_pub {
+                    self.emit("public ");
+                }
+                self.emit(&field.name);
+                self.emit(": ");
+                let ty = self.format_type(&field.ty);
+                self.emit(&ty);
+                self.emit_newline();
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
         }
-        self.indent -= 1;
-        self.emit_indent();
-        self.emit("}");
+    }
+
+    fn struct_fields_fit_one_line(&self, fields: &[Field]) -> bool {
+        let est: usize = fields.iter().map(|f| {
+            f.name.len() + 2 + f.ty.len() + if f.is_pub { 7 } else { 0 }
+        }).sum::<usize>() + (fields.len().saturating_sub(1) * 2);
+        est < 60
     }
 
     fn format_enum_decl(&mut self, e: &EnumDecl) {
@@ -974,6 +1003,11 @@ impl<'a> Printer<'a> {
                     self.emit(" else");
                     self.format_branch(else_br);
                 }
+            }
+            ExprKind::IsPattern { expr, pattern } => {
+                self.format_expr(expr);
+                self.emit(" is ");
+                self.format_pattern(pattern);
             }
             ExprKind::Match { scrutinee, arms } => {
                 self.emit("match ");

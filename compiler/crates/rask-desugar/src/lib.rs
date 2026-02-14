@@ -224,6 +224,9 @@ impl Desugarer {
                 self.desugar_expr(expr);
                 self.desugar_expr(else_branch);
             }
+            ExprKind::IsPattern { expr, .. } => {
+                self.desugar_expr(expr);
+            }
             ExprKind::NullCoalesce { value, default } => {
                 self.desugar_expr(value);
                 self.desugar_expr(default);
@@ -312,7 +315,8 @@ impl Desugarer {
             | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
-            | ExprKind::Ident(_) => {}
+            | ExprKind::Ident(_)
+            => {}
         }
 
         // Then, transform operators if applicable
