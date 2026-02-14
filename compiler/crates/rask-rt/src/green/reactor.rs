@@ -163,25 +163,35 @@ impl Reactor {
             return Err(err);
         }
 
-        let mut woken = 0;
-        let regs = self.registrations.lock().unwrap();
+        // Collect wakers under the lock, then wake outside it.
+        // Wakers may acquire other locks (schedule_fn, work_available);
+        // holding registrations during wake() risks deadlock.
+        let mut to_wake = Vec::new();
 
-        for i in 0..n as usize {
-            let fd = events[i].u64 as RawFd;
+        {
+            let regs = self.registrations.lock().unwrap();
 
-            // Drain wake_fd reads (just a signal, value doesn't matter).
-            if fd == self.wake_fd {
-                let mut buf = [0u8; 8];
-                unsafe {
-                    libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+            for i in 0..n as usize {
+                let fd = events[i].u64 as RawFd;
+
+                // Drain wake_fd reads (just a signal, value doesn't matter).
+                if fd == self.wake_fd {
+                    let mut buf = [0u8; 8];
+                    unsafe {
+                        libc::read(self.wake_fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                    }
+                    continue;
                 }
-                continue;
-            }
 
-            if let Some(reg) = regs.get(&fd) {
-                reg.waker.wake_by_ref();
-                woken += 1;
+                if let Some(reg) = regs.get(&fd) {
+                    to_wake.push(reg.waker.clone());
+                }
             }
+        } // registrations lock released
+
+        let woken = to_wake.len();
+        for waker in to_wake {
+            waker.wake();
         }
 
         Ok(woken)

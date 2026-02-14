@@ -8,13 +8,15 @@ use std::sync::{Arc, Mutex};
 
 use super::task::RawTask;
 
-/// Per-worker local queue. Only the owning worker pushes/pops from
-/// the front. Other workers steal from the back.
+/// Per-worker local queue. Mutex-protected VecDeque.
+///
+/// Owner pushes/pops from the front, stealers take from the back.
+/// Both paths go through the same mutex — acceptable for initial
+/// implementation but should migrate to a lock-free Chase-Lev deque
+/// if profiling shows contention.
 ///
 /// Bounded to `CAPACITY` entries. Overflow goes to the global queue.
 pub(crate) struct LocalQueue {
-    /// Front: owner pushes/pops here (fast, no contention).
-    /// Back: stealers take from here (needs lock).
     deque: Mutex<VecDeque<Arc<RawTask>>>,
 }
 

@@ -49,10 +49,12 @@ pub(crate) type BoxFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 pub(crate) struct TaskHeader {
     pub state: AtomicU8,
     pub cancel_token: Arc<CancelToken>,
-    /// Signal for join() blocking on completion.
+    /// Signal for join() blocking on completion (OS thread condvar).
     pub complete_notify: (Mutex<bool>, Condvar),
     /// Scheduler re-enqueue callback. Set by the scheduler after spawn.
     pub schedule_fn: Mutex<Option<Arc<dyn Fn(Arc<RawTask>) + Send + Sync>>>,
+    /// Wakers from green tasks waiting to join this task.
+    pub join_wakers: Mutex<Vec<Waker>>,
     /// Debug: where was this task spawned?
     pub spawn_file: &'static str,
     pub spawn_line: u32,
@@ -91,6 +93,7 @@ impl RawTask {
                 cancel_token,
                 complete_notify: (Mutex::new(false), Condvar::new()),
                 schedule_fn: Mutex::new(None),
+                join_wakers: Mutex::new(Vec::new()),
                 spawn_file: file,
                 spawn_line: line,
             },
@@ -102,27 +105,43 @@ impl RawTask {
         TaskState::from_u8(self.header.state.load(Ordering::Acquire))
     }
 
-    /// Transition to a new state. Returns false if already Complete.
-    pub fn transition(&self, new: TaskState) -> bool {
-        let current = self.state();
-        if current == TaskState::Complete {
-            return false;
-        }
-        self.header
-            .state
-            .store(new as u8, Ordering::Release);
-        true
-    }
-
-    /// Mark complete and notify any thread blocking on join().
+    /// Mark complete and notify any thread/task blocking on join().
     pub fn mark_complete(&self) {
         self.header
             .state
             .store(TaskState::Complete as u8, Ordering::Release);
+
+        // Wake OS threads waiting via condvar (handle.join()).
         let (lock, cvar) = &self.header.complete_notify;
         let mut done = lock.lock().unwrap();
         *done = true;
         cvar.notify_all();
+        drop(done);
+
+        // Wake green tasks waiting via GreenJoinFuture.
+        let wakers = self.header.join_wakers.lock().unwrap().drain(..).collect::<Vec<_>>();
+        for w in wakers {
+            w.wake();
+        }
+    }
+
+    /// Register a waker to be notified when this task completes.
+    /// Used by GreenJoinFuture.
+    pub fn register_join_waker(&self, waker: Waker) {
+        // If already complete, wake immediately.
+        if self.state() == TaskState::Complete {
+            waker.wake();
+            return;
+        }
+        self.header.join_wakers.lock().unwrap().push(waker);
+        // Double-check: task may have completed between the state
+        // check and the push. If so, drain and wake.
+        if self.state() == TaskState::Complete {
+            let wakers = self.header.join_wakers.lock().unwrap().drain(..).collect::<Vec<_>>();
+            for w in wakers {
+                w.wake();
+            }
+        }
     }
 
     /// Poll the future once. Returns true if the task completed.
@@ -160,21 +179,51 @@ impl Wake for TaskWaker {
     }
 
     fn wake_by_ref(self: &Arc<Self>) {
-        // Only wake if the task is currently Waiting.
-        let prev = self.task.header.state.compare_exchange(
-            TaskState::Waiting as u8,
-            TaskState::Ready as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-        if prev.is_err() {
-            return; // Not in Waiting state — nothing to do.
-        }
+        loop {
+            let state = self.task.header.state.load(Ordering::Acquire);
 
-        // Re-enqueue via the schedule callback.
-        let sched = self.task.header.schedule_fn.lock().unwrap();
-        if let Some(ref f) = *sched {
-            f(self.task.clone());
+            match TaskState::from_u8(state) {
+                TaskState::Waiting => {
+                    // Normal case: task parked on I/O, transition to Ready
+                    // and re-enqueue.
+                    let prev = self.task.header.state.compare_exchange(
+                        TaskState::Waiting as u8,
+                        TaskState::Ready as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    if prev.is_err() {
+                        continue; // State changed, retry.
+                    }
+                    // Re-enqueue via the schedule callback.
+                    let sched = self.task.header.schedule_fn.lock().unwrap();
+                    if let Some(ref f) = *sched {
+                        f(self.task.clone());
+                    }
+                    return;
+                }
+                TaskState::Running => {
+                    // Waker fired during poll(). Transition Running→Ready
+                    // so run_task's CAS(Running→Waiting) fails and it
+                    // knows to re-enqueue.
+                    let prev = self.task.header.state.compare_exchange(
+                        TaskState::Running as u8,
+                        TaskState::Ready as u8,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                    if prev.is_err() {
+                        continue; // State changed, retry.
+                    }
+                    // Don't re-enqueue here — run_task still holds the
+                    // task and will see the CAS failure + re-enqueue.
+                    return;
+                }
+                TaskState::Ready | TaskState::Complete => {
+                    // Already queued or finished. Nothing to do.
+                    return;
+                }
+            }
         }
     }
 }
