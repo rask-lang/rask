@@ -165,6 +165,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 |------|-------------|
 | [generation-coalescing.md](compiler/generation-coalescing.md) | Redundant generation check elimination |
 | [semantic-hash-caching.md](compiler/semantic-hash-caching.md) | Incremental compilation, semantic hashing for generics |
+| [hidden-params.md](compiler/hidden-params.md) | Hidden parameter compiler pass for `using` clauses |
 
 ---
 

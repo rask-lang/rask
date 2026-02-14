@@ -322,7 +322,7 @@ Most core tooling is done. Remaining items can be built incrementally.
 ## Open Design Questions
 
 ### Important (needed during Phase 5)
-- [ ] **Runtime simplification strategy** — Should initial compiler target full M:N scheduler with reactor (complex), or start with OS threads per spawn (simple) and upgrade later?
+- [x] **Runtime simplification strategy** — OS threads first (Phase A), M:N green tasks later (Phase B). See [runtime-strategy.md](specs/concurrency/runtime-strategy.md), [io-context.md](specs/concurrency/io-context.md), [hidden-params.md](specs/compiler/hidden-params.md)
 - [ ] `using` block expressions (`using ThreadPool(workers: 4) { ... }`) — parser dispatches `With` but examples use `using`
 
 ### Quality improvements (doesn't block, improves ergonomics)
