@@ -1,6 +1,6 @@
 <!-- id: struct.packages -->
 <!-- status: decided -->
-<!-- summary: Semver with MVS resolution, lock files, registry, local cache -->
+<!-- summary: Semver with maximal version selection, lock files, registry, local cache -->
 <!-- depends: structure/build.md -->
 
 # Package Versioning and Dependencies
