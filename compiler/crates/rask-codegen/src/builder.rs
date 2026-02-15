@@ -565,6 +565,18 @@ impl<'a> FunctionBuilder<'a> {
                 let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty, string_globals)?;
                 let lhs_ty = builder.func.dfg.value_type(lhs_val);
                 let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals)?;
+                let rhs_ty = builder.func.dfg.value_type(rhs_val);
+
+                // Widen narrower operand if integer types differ
+                let (lhs_val, rhs_val) = if lhs_ty != rhs_ty && lhs_ty.is_int() && rhs_ty.is_int() {
+                    if lhs_ty.bits() < rhs_ty.bits() {
+                        (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty), rhs_val)
+                    } else {
+                        (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
+                    }
+                } else {
+                    (lhs_val, rhs_val)
+                };
 
                 let result = match op {
                     BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
@@ -861,7 +873,15 @@ impl<'a> FunctionBuilder<'a> {
             MirOperand::Local(local_id) => {
                 let var = var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Local not found".to_string()))?;
-                Ok(builder.use_var(*var))
+                let val = builder.use_var(*var);
+                // Widen to expected type if needed (e.g., i32 local used where i64 expected)
+                if let Some(exp_ty) = expected_ty {
+                    let actual_ty = builder.func.dfg.value_type(val);
+                    if actual_ty != exp_ty && actual_ty.is_int() && exp_ty.is_int() {
+                        return Ok(Self::convert_value(builder, val, actual_ty, exp_ty));
+                    }
+                }
+                Ok(val)
             }
 
             MirOperand::Constant(const_val) => {

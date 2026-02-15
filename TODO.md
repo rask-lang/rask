@@ -41,13 +41,13 @@ I've specified all core language semantics:
 - ✅ Stdlib dispatch wired into compile pipeline (Vec, String, Map, Pool → C runtime)
 - ✅ MirType::String preserves string type through pipeline, print dispatches correctly
 - ✅ C runtime (runtime.c) — print, I/O, Vec, String, Map, Pool, resource tracking, args
-- ❌ Stdlib type constructors (`Vec.new()`, `Map.new()`) — MIR lowerer doesn't resolve type namespaces
-- ❌ Enum constructors (`Shape.Circle(5)`) — MIR lowerer fails on type name as expression
-- ❌ Integer literal inference — `let x = 0` in a `-> i64` function infers i32, causing type mismatches
-- ❌ Cross-type closure captures — capture type (i64) vs param type (i32) causes Cranelift verifier error
+- ✅ Stdlib type constructors (`Vec.new()`, `Map.new()`) and enum constructors (`Shape.Circle(5)`)
+- ✅ Integer widening coercion (i32→i64 at call sites, returns, binary ops)
+- ❌ For-range loops — `range` function not wired in codegen
+- ❌ Stdlib module calls (`cli.parse()`, `fs.read()`) — module namespaces not in MIR
 
 **What compiles and runs natively today:**
-- hello world, string variables, multi-function programs, structs with field access, loops, closures (same-type captures), arithmetic, control flow
+- hello world, string variables, multi-function programs, structs with field access, while loops, closures (including mixed-type captures), Vec/Map/Pool operations, enum construction, arithmetic, control flow
 
 **Known codegen limitations (tracked for future work):**
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
@@ -312,9 +312,11 @@ Move from interpreter to actual compiled output.
   - [x] Closure codegen integration — MIR emits ClosureCreate/ClosureCall/LoadCapture, codegen handles them
   - [x] Stdlib dispatch wired into compile pipeline (declare_stdlib_functions() called)
   - [x] MirType::String preserves string identity, print(string_var) dispatches correctly
-  - [ ] Stdlib type constructors in MIR — `Vec.new()`, `Map.new()`, enum constructors
-  - [ ] Integer literal type inference — unsuffixed `0` in `-> i64` context should infer i64
-  - [ ] Cross-type binary ops in closures — Cranelift verifier rejects i64 + i32
+  - [x] Stdlib type constructors in MIR — `Vec.new()`, `Map.new()`, enum constructors
+  - [x] Integer widening coercion — i32→i64 accepted at call sites, returns, binary ops
+  - [x] Cross-type binary ops — codegen auto-widens narrower operand
+  - [ ] For-range loops — `range` function not wired in codegen
+  - [ ] Stdlib module calls — module namespaces (`cli`, `fs`, `io`) not in MIR
 - [ ] Build `rask-rt` runtime library — allocator, panic, concurrency primitives (collections already in runtime.c)
 
 **Deferred (not blocking v1.0):**
