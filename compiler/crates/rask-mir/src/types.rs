@@ -19,7 +19,6 @@ pub enum MirType {
     F64,
     Char,
     Ptr,
-    FatPtr,
     String,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),

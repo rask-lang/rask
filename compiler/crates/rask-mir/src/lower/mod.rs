@@ -122,11 +122,19 @@ impl<'a> MirContext<'a> {
             Type::F64 => MirType::F64,
             Type::Char => MirType::Char,
             Type::String => MirType::String,
-            // Named types need layout lookup — fall back to string-based resolution
-            _ => {
+            Type::Never => MirType::Void,
+            // Named types — look up in struct/enum layouts by name
+            Type::UnresolvedNamed(name) => self.resolve_type_str(name),
+            // Resolved named types — need monomorphization name, fall back to Ptr
+            Type::Named(_) | Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
+            // Compound types not yet lowered to MIR — pointer representation
+            Type::Fn { .. } | Type::Tuple(_) | Type::Array { .. } | Type::Slice(_)
+            | Type::Option(_) | Type::Result { .. } | Type::Union(_) => MirType::Ptr,
+            // Should not reach MIR lowering
+            Type::Var(_) | Type::Error => MirType::Ptr,
         }
     }
 
@@ -261,7 +269,7 @@ fn mir_type_size(ty: &MirType) -> u32 {
         MirType::I16 | MirType::U16 => 2,
         MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
         MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::FatPtr | MirType::String => 16,
+        MirType::String => 16,
         MirType::Struct(id) => {
             // Can't look up the layout without context — fallback to pointer size
             let _ = id;
