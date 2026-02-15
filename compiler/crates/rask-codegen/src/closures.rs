@@ -16,6 +16,8 @@ use cranelift_frontend::FunctionBuilder;
 use rask_mir::LocalId;
 use std::collections::HashMap;
 
+use crate::{CodegenError, CodegenResult};
+
 /// Closure struct layout: { func_ptr: i64, env_ptr: i64 }
 pub const CLOSURE_SIZE: u32 = 16;
 pub const CLOSURE_FUNC_OFFSET: i32 = 0;
@@ -61,14 +63,16 @@ impl ClosureEnvLayout {
 /// Allocate a closure environment on the stack and store captured values.
 ///
 /// Returns the environment pointer (i64 address of the stack slot).
+/// Errors if a captured variable is missing from var_map — that indicates
+/// a compiler bug upstream.
 pub fn allocate_env(
     builder: &mut FunctionBuilder,
     layout: &ClosureEnvLayout,
     var_map: &HashMap<LocalId, Variable>,
-) -> Value {
+) -> CodegenResult<Value> {
     if layout.size == 0 {
         // No captures — use null pointer
-        return builder.ins().iconst(types::I64, 0);
+        return Ok(builder.ins().iconst(types::I64, 0));
     }
 
     let ss = builder.create_sized_stack_slot(StackSlotData::new(
@@ -80,15 +84,17 @@ pub fn allocate_env(
 
     // Store each captured variable into the environment
     for capture in &layout.captures {
-        if let Some(var) = var_map.get(&capture.local_id) {
-            let val = builder.use_var(*var);
-            builder
-                .ins()
-                .store(MemFlags::new(), val, env_ptr, capture.offset as i32);
-        }
+        let var = var_map.get(&capture.local_id)
+            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                format!("Closure capture variable {:?} not found", capture.local_id)
+            ))?;
+        let val = builder.use_var(*var);
+        builder
+            .ins()
+            .store(MemFlags::new(), val, env_ptr, capture.offset as i32);
     }
 
-    env_ptr
+    Ok(env_ptr)
 }
 
 /// Load a captured variable from a closure environment.

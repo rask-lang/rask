@@ -567,7 +567,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
-                Self::emit_return(builder, value.as_ref(), ret_ty, var_map)?;
+                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals)?;
             }
 
             MirTerminator::Goto { target } => {
@@ -577,7 +577,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Branch { cond, then_block, else_block } => {
-                let mut cond_val = Self::lower_operand(builder, cond, var_map, &HashMap::new())?;
+                let mut cond_val = Self::lower_operand(builder, cond, var_map, string_globals)?;
 
                 let cond_ty = builder.func.dfg.value_type(cond_val);
                 if cond_ty == types::I8 {
@@ -592,7 +592,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Switch { value, cases, default } => {
-                let scrutinee_val = Self::lower_operand(builder, value, var_map, &HashMap::new())?;
+                let scrutinee_val = Self::lower_operand(builder, value, var_map, string_globals)?;
 
                 let mut current_block = builder.current_block().unwrap();
 
@@ -637,7 +637,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
 
-                Self::emit_return(builder, Some(value), ret_ty, var_map)?;
+                Self::emit_return(builder, Some(value), ret_ty, var_map, string_globals)?;
             }
         }
         Ok(())
@@ -649,10 +649,11 @@ impl<'a> FunctionBuilder<'a> {
         value: Option<&MirOperand>,
         ret_ty: &MirType,
         var_map: &HashMap<LocalId, Variable>,
+        string_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<()> {
         if let Some(val_op) = value {
             let expected_ty = mir_to_cranelift_type(ret_ty)?;
-            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), &HashMap::new())?;
+            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals)?;
             let actual_ty = builder.func.dfg.value_type(val);
             let final_val = if actual_ty != expected_ty {
                 Self::convert_value(builder, val, actual_ty, expected_ty)
