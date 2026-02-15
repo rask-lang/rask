@@ -1,11 +1,11 @@
 <!-- id: struct.packages -->
 <!-- status: decided -->
-<!-- summary: Semver with MVS resolution, lock files, registry, local cache -->
+<!-- summary: Semver with maximal version selection, lock files, registry, local cache -->
 <!-- depends: structure/build.md -->
 
 # Package Versioning and Dependencies
 
-Semantic versioning with minimal version selection (MVS), `rask.build` package block for dependencies, generated lock file for reproducibility.
+Semantic versioning with maximal version selection, `rask.build` package block for dependencies, generated lock file for reproducibility.
 
 ## Versioning
 
@@ -26,16 +26,17 @@ Semantic versioning with minimal version selection (MVS), `rask.build` package b
 
 Default: bare version → `^` (compatible). For `0.x`: bare → `~` (patch only, since MINOR may break).
 
-## Dependency Resolution (MVS)
+## Dependency Resolution
 
 | Rule | Description |
 |------|-------------|
-| **MV1: Minimum version** | Select the minimum version satisfying all constraints |
-| **MV2: Deterministic** | Same inputs → same outputs, no backtracking |
+| **MV1: Maximum compatible** | Select the newest version satisfying all constraints |
+| **MV2: Deterministic** | Same inputs + same registry state → same outputs |
 | **MV3: Upgrade-stable** | Adding a dependency cannot downgrade existing deps |
 | **MV4: Conflict error** | Incompatible constraints produce a clear error |
+| **MV5: Lock pins** | `rask.lock` records exact resolved versions — builds are reproducible regardless of new registry publishes |
 
-Algorithm: build transitive dependency graph → collect all version constraints per package → select minimum satisfying version → verify → generate lock file.
+Algorithm: build transitive dependency graph → collect all version constraints per package → select newest satisfying version → verify → generate lock file.
 
 ## Lock File
 
@@ -120,7 +121,7 @@ FIX: rask update
 
 ### Rationale
 
-**MV1 (MVS):** MVS is simpler than SAT-solving (npm/Cargo) and produces predictable, deterministic results without exponential search. Same inputs always produce same outputs.
+**MV1 (maximal compatible):** Select the newest compatible version. Developers expect the latest bug fixes when they write `dep "http" "^2.0"`. The lock file provides reproducibility — once resolved, versions don't change until `rask update`.
 
 **LK1 (lock files):** Applications should commit `rask.lock` for reproducibility. Libraries may omit it (consumers resolve their own versions).
 
