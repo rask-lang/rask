@@ -425,8 +425,7 @@ impl<'a> FunctionBuilder<'a> {
                     match &local.ty {
                         MirType::Bool => "rask_print_bool",
                         MirType::F64 | MirType::F32 => "rask_print_f64",
-                        // Strings are Ptr in MIR; no reliable way to distinguish
-                        // string pointers from other pointers here. For now, integer types.
+                        MirType::String | MirType::FatPtr => "rask_print_string",
                         _ => "rask_print_i64",
                     }
                 } else {

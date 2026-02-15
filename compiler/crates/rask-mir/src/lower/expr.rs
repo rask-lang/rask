@@ -43,7 +43,7 @@ impl<'a> MirLowerer<'a> {
             }
             ExprKind::String(s) => Ok((
                 MirOperand::Constant(MirConst::String(s.clone())),
-                MirType::FatPtr, // string is a fat pointer (ptr + len)
+                MirType::String,
             )),
             ExprKind::Char(c) => Ok((MirOperand::Constant(MirConst::Char(*c)), MirType::Char)),
             ExprKind::Bool(b) => Ok((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
