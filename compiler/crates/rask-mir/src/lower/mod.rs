@@ -755,13 +755,14 @@ fn is_variant_name(name: &str) -> bool {
         || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
 }
 
-/// Detect identifiers that name types rather than values.
+/// Detect identifiers that name types or stdlib modules rather than values.
 ///
 /// Uppercase-initial names are user-defined types (structs, enums, traits).
-/// A few lowercase names (`string`) are built-in types that support static methods.
+/// Lowercase names include built-in types (`string`) and stdlib modules
+/// (`cli`, `fs`, `std`, `io`) that support static method syntax.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        || matches!(name, "string")
+        || matches!(name, "string" | "cli" | "fs" | "std" | "io")
 }
 
 /// Determine result type for a binary operation.
