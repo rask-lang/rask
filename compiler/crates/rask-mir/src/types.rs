@@ -20,6 +20,7 @@ pub enum MirType {
     Char,
     Ptr,
     FatPtr,
+    String,
     Struct(StructLayoutId),
     Enum(EnumLayoutId),
     Array {

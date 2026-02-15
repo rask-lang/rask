@@ -868,14 +868,14 @@ mod tests {
 
     #[test]
     fn codegen_string_in_assign() {
-        // _0: FatPtr = "hello world"
+        // _0: String = "hello world"
         // return _0  (as i64 pointer)
         let mir = MirFunction {
             name: "str_val".to_string(),
             params: vec![],
             ret_ty: MirType::I64,
             locals: vec![
-                temp(0, MirType::FatPtr),
+                temp(0, MirType::String),
             ],
             blocks: vec![
                 block(0, vec![
