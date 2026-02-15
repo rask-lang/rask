@@ -17,5 +17,5 @@ pub mod lower;
 pub use builder::BlockBuilder;
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use operand::{BinOp, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
-pub use stmt::{MirStmt, MirTerminator};
+pub use stmt::{ClosureCapture, MirStmt, MirTerminator};
 pub use types::{MirType, StructLayoutId, EnumLayoutId};
