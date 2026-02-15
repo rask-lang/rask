@@ -57,7 +57,7 @@ func read_two_files(){
 // Order: b.close(), then a.close()
 ```
 
-**Lint enforcement (`idiom/ensure-ordering`):** Ensure registration order must match variable binding order. If ensures are registered out of acquisition order, LIFO gives reversed cleanup. The interleaved pattern (acquire → ensure → acquire → ensure) is always safe.
+**Lint error (`idiom/ensure-ordering`):** Ensure registration order must match variable binding order. If ensures are registered out of acquisition order, LIFO gives reversed cleanup. The interleaved pattern (acquire → ensure → acquire → ensure) is always safe. This is an error, not a warning — misordered ensures are never correct.
 
 <!-- test: skip -->
 ```rask
