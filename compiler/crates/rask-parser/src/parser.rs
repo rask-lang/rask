@@ -431,7 +431,16 @@ impl Parser {
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => self.parse_extern_decl()?,
-            TokenKind::Package => self.parse_package_decl()?,
+            TokenKind::Package => {
+                if is_pub || is_comptime || is_unsafe || !attrs.is_empty() {
+                    return Err(ParseError {
+                        span: self.current().span,
+                        message: "package declarations cannot have modifiers".to_string(),
+                        hint: Some("remove 'public', 'comptime', 'unsafe', or attributes".to_string()),
+                    });
+                }
+                self.parse_package_decl()?
+            }
             _ => {
                 return Err(ParseError::expected(
                     "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark, extern, package)",
@@ -1495,9 +1504,9 @@ impl Parser {
 
         // Optional version string
         let version = if matches!(self.current_kind(), TokenKind::String(_)) {
-            self.expect_string()?
+            Some(self.expect_string()?)
         } else {
-            String::new()
+            None
         };
 
         let mut path = None;
@@ -1531,8 +1540,24 @@ impl Parser {
                         self.expect(&TokenKind::RBracket)?;
                     }
                     _ => {
-                        // Skip unknown keys
-                        self.advance();
+                        // Skip unknown key's value (may be a block)
+                        if self.check(&TokenKind::LBrace) {
+                            let mut depth = 1;
+                            self.advance(); // consume {
+                            while depth > 0 && !self.at_end() {
+                                match self.current_kind() {
+                                    TokenKind::LBrace => depth += 1,
+                                    TokenKind::RBrace => depth -= 1,
+                                    _ => {}
+                                }
+                                if depth > 0 { self.advance(); }
+                            }
+                            if self.check(&TokenKind::RBrace) {
+                                self.advance();
+                            }
+                        } else {
+                            self.advance();
+                        }
                     }
                 }
 

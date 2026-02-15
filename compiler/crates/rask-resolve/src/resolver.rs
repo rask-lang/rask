@@ -475,6 +475,9 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
+            } else {
+                self.errors.push(ResolveError::unknown_package(path.clone(), span));
+                return;
             }
 
             self.imported_symbols.insert(binding_name.clone());
@@ -1242,38 +1245,45 @@ mod tests {
     }
 
     #[test]
-    fn test_qualified_package_import() {
-        let decls = vec![make_import_decl(vec!["http"], None, false, false)];
+    fn test_stdlib_import() {
+        let decls = vec![make_import_decl(vec!["io"], None, false, false)];
         let result = Resolver::resolve(&decls);
-        assert!(result.is_ok(), "Qualified package import should succeed");
+        assert!(result.is_ok(), "Stdlib import should succeed");
     }
 
     #[test]
     fn test_symbol_import() {
-        let decls = vec![make_import_decl(vec!["http", "Request"], None, false, false)];
+        let decls = vec![make_import_decl(vec!["io", "stdin"], None, false, false)];
         let result = Resolver::resolve(&decls);
         assert!(result.is_ok(), "Symbol import should succeed");
     }
 
     #[test]
     fn test_aliased_import() {
-        let decls = vec![make_import_decl(vec!["http"], Some("h"), false, false)];
+        let decls = vec![make_import_decl(vec!["io"], Some("h"), false, false)];
         let result = Resolver::resolve(&decls);
         assert!(result.is_ok(), "Aliased import should succeed");
     }
 
     #[test]
     fn test_glob_import() {
-        let decls = vec![make_import_decl(vec!["http"], None, true, false)];
+        let decls = vec![make_import_decl(vec!["io"], None, true, false)];
         let result = Resolver::resolve(&decls);
         assert!(result.is_ok(), "Glob import should succeed (with warning)");
     }
 
     #[test]
     fn test_lazy_import() {
-        let decls = vec![make_import_decl(vec!["http"], None, false, true)];
+        let decls = vec![make_import_decl(vec!["fs"], None, false, true)];
         let result = Resolver::resolve(&decls);
         assert!(result.is_ok(), "Lazy import should succeed");
+    }
+
+    #[test]
+    fn test_unknown_package_import_fails() {
+        let decls = vec![make_import_decl(vec!["nonexistent"], None, false, false)];
+        let result = Resolver::resolve(&decls);
+        assert!(result.is_err(), "Unknown package import should fail");
     }
 
     fn make_fn_decl(name: &str) -> Decl {
