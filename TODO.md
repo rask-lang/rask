@@ -35,29 +35,24 @@ I've specified all core language semantics:
 
 **Monomorphization + MIR Lowering:** ✅ Implemented. Struct/enum layouts with real field types (threaded from AST), generic instantiation, reachability analysis, full AST→MIR lowering. Type inference for expressions (loops, ensure, try/unwrap, tuple destructure) using context from layouts. `rask mir` command prints readable MIR. Simple programs lower correctly.
 
-**Cranelift Backend:** 🟡 In progress (new `rask-codegen` crate). Most codegen working:
-- ✅ Function signatures and basic blocks
-- ✅ Integer/float constants and variables
-- ✅ Binary ops (arithmetic, bitwise, comparisons)
-- ✅ Unary ops (neg, not)
-- ✅ Type conversions (b1↔i8, integer truncate/extend)
-- ✅ Return statements with type matching
-- ✅ Simple programs compile and execute (arithmetic: 10+20*2→60)
-- ✅ Control flow with branches (if-expressions, chained/nested ifs, mutable variable merging)
-- ✅ Function calls, loops, strings, struct/enum field access, ref/deref, stack allocation
-- ✅ Object file emission, runtime function linking (print, I/O, exit, panic)
-- ✅ All MIR statements implemented: ResourceRegister/Consume/ScopeCheck, PoolCheckedAccess, EnsurePush/Pop (no-op), CleanupReturn (inlines cleanup chain)
-- ✅ Stdlib method dispatch — bare MIR names → C runtime functions (Vec, String, Map, Pool, resource tracking)
-- ✅ Closure environment infrastructure — layout tracking, stack allocation, indirect calls (ready for MIR integration)
-- ✅ C runtime (runtime.c) — print, I/O, Vec, String, Map, Pool, resource tracking, pool checked access
-- ❌ Closure codegen integration — closures.rs has infrastructure but MIR doesn't emit closure constructs yet
-- ❌ End-to-end compile+link+run — individual pieces work, not yet wired together
+**Cranelift Backend:** 🟢 Functional for core programs. `rask compile` and `rask run --native` work end-to-end.
+- ✅ Full pipeline: lex → parse → resolve → typecheck → ownership → mono → MIR → Cranelift → link → executable
+- ✅ All MIR statements/terminators implemented, including closures (ClosureCreate/ClosureCall/LoadCapture)
+- ✅ Stdlib dispatch wired into compile pipeline (Vec, String, Map, Pool → C runtime)
+- ✅ MirType::String preserves string type through pipeline, print dispatches correctly
+- ✅ C runtime (runtime.c) — print, I/O, Vec, String, Map, Pool, resource tracking, args
+- ❌ Stdlib type constructors (`Vec.new()`, `Map.new()`) — MIR lowerer doesn't resolve type namespaces
+- ❌ Enum constructors (`Shape.Circle(5)`) — MIR lowerer fails on type name as expression
+- ❌ Integer literal inference — `let x = 0` in a `-> i64` function infers i32, causing type mismatches
+- ❌ Cross-type closure captures — capture type (i64) vs param type (i32) causes Cranelift verifier error
+
+**What compiles and runs natively today:**
+- hello world, string variables, multi-function programs, structs with field access, loops, closures (same-type captures), arithmetic, control flow
 
 **Known codegen limitations (tracked for future work):**
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
 - Closure environments are stack-allocated — closures that escape their creating function will dangle. Needs heap allocation or escape analysis.
 - CleanupReturn inlines cleanup blocks — works but means cleanup code is duplicated at each CleanupReturn site. Fine for now, revisit if code size matters.
-- `print(string_variable)` dispatches to `rask_print_i64` instead of `rask_print_string` — MIR types don't distinguish string pointers from other pointers. String literals work fine. Fix requires MIR type system changes.
 
 **What's next:**
 1. ~~**Write tests** — Layout, monomorphization, and MIR lowering test suites~~ ✅ Done (94 tests across rask-mono and rask-mir)
@@ -313,8 +308,13 @@ Move from interpreter to actual compiled output.
   - [x] Stdlib method dispatch (dispatch.rs): Vec, String, Map, Pool, resource tracking → C runtime
   - [x] Closure environment infrastructure (closures.rs): layout, allocation, indirect calls
   - [x] C runtime (runtime.c): print, exit, panic, I/O, Vec, String, Map, Pool, resource tracking, pool checked access
-  - [ ] Wire end-to-end: `rask build` → mono → MIR → codegen → link → executable
-  - [ ] Closure codegen integration — MIR doesn't emit closure constructs yet
+  - [x] Wire end-to-end: `rask compile` → mono → MIR → codegen → link → executable (basic programs work)
+  - [x] Closure codegen integration — MIR emits ClosureCreate/ClosureCall/LoadCapture, codegen handles them
+  - [x] Stdlib dispatch wired into compile pipeline (declare_stdlib_functions() called)
+  - [x] MirType::String preserves string identity, print(string_var) dispatches correctly
+  - [ ] Stdlib type constructors in MIR — `Vec.new()`, `Map.new()`, enum constructors
+  - [ ] Integer literal type inference — unsuffixed `0` in `-> i64` context should infer i64
+  - [ ] Cross-type binary ops in closures — Cranelift verifier rejects i64 + i32
 - [ ] Build `rask-rt` runtime library — allocator, panic, concurrency primitives (collections already in runtime.c)
 
 **Deferred (not blocking v1.0):**
