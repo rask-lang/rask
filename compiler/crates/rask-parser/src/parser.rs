@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -67,7 +67,7 @@ impl Parser {
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                 TokenKind::Trait | TokenKind::Extend | TokenKind::Import |
-                TokenKind::Extern | TokenKind::Public if brace_depth == 0 => {
+                TokenKind::Extern | TokenKind::Public | TokenKind::Package if brace_depth == 0 => {
                     return;
                 }
                 _ => { self.advance(); }
@@ -239,6 +239,12 @@ impl Parser {
             // Other
             TokenKind::Extern => "extern".to_string(),
             TokenKind::Asm => "asm".to_string(),
+            // Build system
+            TokenKind::Package => "package".to_string(),
+            TokenKind::Dep => "dep".to_string(),
+            TokenKind::Scope => "scope".to_string(),
+            TokenKind::Feature => "feature".to_string(),
+            TokenKind::Profile => "profile".to_string(),
             _ => return Err(ParseError::expected(
                 "a name",
                 self.current_kind(),
@@ -425,9 +431,19 @@ impl Parser {
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => self.parse_extern_decl()?,
+            TokenKind::Package => {
+                if is_pub || is_comptime || is_unsafe || !attrs.is_empty() {
+                    return Err(ParseError {
+                        span: self.current().span,
+                        message: "package declarations cannot have modifiers".to_string(),
+                        hint: Some("remove 'public', 'comptime', 'unsafe', or attributes".to_string()),
+                    });
+                }
+                self.parse_package_decl()?
+            }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark, extern)",
+                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark, extern, package)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -1373,6 +1389,186 @@ impl Parser {
         };
 
         Ok(DeclKind::Extern(ExternDecl { abi, name, params, ret_ty }))
+    }
+
+    /// Parse a package block (struct.build/PK1-PK5).
+    ///
+    /// ```rask
+    /// package "my-app" "1.0.0" {
+    ///     dep "http" "^2.0"
+    ///     dep "shared" { path: "../shared" }
+    /// }
+    /// ```
+    fn parse_package_decl(&mut self) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Package)?;
+
+        let name = self.expect_string()?;
+        let version = self.expect_string()?;
+
+        let mut deps = Vec::new();
+        let mut metadata = Vec::new();
+
+        self.skip_newlines();
+        if self.match_token(&TokenKind::LBrace) {
+            self.skip_newlines();
+
+            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                match self.current_kind() {
+                    TokenKind::Dep => {
+                        deps.push(self.parse_dep_item()?);
+                    }
+                    TokenKind::Scope => {
+                        // scope "dev" { dep ... } — parse deps within, skip scope metadata
+                        self.advance();
+                        let _scope_name = self.expect_string()?;
+                        self.skip_newlines();
+                        self.expect(&TokenKind::LBrace)?;
+                        self.skip_newlines();
+                        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                            if matches!(self.current_kind(), TokenKind::Dep) {
+                                deps.push(self.parse_dep_item()?);
+                            } else {
+                                self.advance();
+                            }
+                            self.skip_newlines();
+                        }
+                        self.expect(&TokenKind::RBrace)?;
+                    }
+                    TokenKind::Feature => {
+                        // feature "ssl" { dep ... }
+                        self.advance();
+                        let _feature_name = self.expect_string()?;
+                        self.skip_newlines();
+                        if self.match_token(&TokenKind::LBrace) {
+                            self.skip_newlines();
+                            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                                if matches!(self.current_kind(), TokenKind::Dep) {
+                                    deps.push(self.parse_dep_item()?);
+                                } else {
+                                    self.advance();
+                                }
+                                self.skip_newlines();
+                            }
+                            self.expect(&TokenKind::RBrace)?;
+                        }
+                        // code-only feature (no block) is fine
+                    }
+                    TokenKind::Profile => {
+                        // profile "embedded" { ... } — skip entirely for now
+                        self.advance();
+                        let _profile_name = self.expect_string()?;
+                        self.skip_newlines();
+                        if self.match_token(&TokenKind::LBrace) {
+                            let mut depth = 1;
+                            while depth > 0 && !self.at_end() {
+                                match self.current_kind() {
+                                    TokenKind::LBrace => depth += 1,
+                                    TokenKind::RBrace => depth -= 1,
+                                    _ => {}
+                                }
+                                if depth > 0 { self.advance(); }
+                            }
+                            self.expect(&TokenKind::RBrace)?;
+                        }
+                    }
+                    TokenKind::Ident(_) => {
+                        // metadata: key: "value"
+                        let key = self.expect_ident()?;
+                        self.expect(&TokenKind::Colon)?;
+                        let value = self.expect_string()?;
+                        metadata.push((key, value));
+                    }
+                    _ => {
+                        self.advance();
+                    }
+                }
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+        }
+
+        Ok(DeclKind::Package(PackageDecl { name, version, deps, metadata }))
+    }
+
+    /// Parse a single dep item inside a package block.
+    ///
+    /// ```rask
+    /// dep "http" "^2.0"
+    /// dep "shared" { path: "../shared" }
+    /// dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
+    /// ```
+    fn parse_dep_item(&mut self) -> Result<DepDecl, ParseError> {
+        self.expect(&TokenKind::Dep)?;
+
+        let name = self.expect_string()?;
+
+        // Optional version string
+        let version = if matches!(self.current_kind(), TokenKind::String(_)) {
+            Some(self.expect_string()?)
+        } else {
+            None
+        };
+
+        let mut path = None;
+        let mut git = None;
+        let mut branch = None;
+        let mut with_features = Vec::new();
+        let mut target = None;
+
+        // Optional sub-block { key: value, ... }
+        self.skip_newlines();
+        if self.match_token(&TokenKind::LBrace) {
+            self.skip_newlines();
+            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                // Keys may be keywords (e.g. `with`, `target`)
+                let key = self.expect_ident_or_keyword()?;
+                self.expect(&TokenKind::Colon)?;
+
+                match key.as_str() {
+                    "path" => { path = Some(self.expect_string()?); }
+                    "git" => { git = Some(self.expect_string()?); }
+                    "branch" => { branch = Some(self.expect_string()?); }
+                    "target" => { target = Some(self.expect_string()?); }
+                    "with" => {
+                        self.expect(&TokenKind::LBracket)?;
+                        while !self.check(&TokenKind::RBracket) && !self.at_end() {
+                            with_features.push(self.expect_string()?);
+                            if !self.match_token(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&TokenKind::RBracket)?;
+                    }
+                    _ => {
+                        // Skip unknown key's value (may be a block)
+                        if self.check(&TokenKind::LBrace) {
+                            let mut depth = 1;
+                            self.advance(); // consume {
+                            while depth > 0 && !self.at_end() {
+                                match self.current_kind() {
+                                    TokenKind::LBrace => depth += 1,
+                                    TokenKind::RBrace => depth -= 1,
+                                    _ => {}
+                                }
+                                if depth > 0 { self.advance(); }
+                            }
+                            if self.check(&TokenKind::RBrace) {
+                                self.advance();
+                            }
+                        } else {
+                            self.advance();
+                        }
+                    }
+                }
+
+                // Optional comma or newline separator
+                let _ = self.match_token(&TokenKind::Comma);
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+        }
+
+        Ok(DepDecl { name, version, path, git, branch, with_features, target })
     }
 
     // =========================================================================

@@ -117,6 +117,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.borrows.clear();
                 self.check_block(&bench_decl.body);
             }
+            DeclKind::Package(_) => {}
         }
     }
 
