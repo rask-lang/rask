@@ -3,12 +3,12 @@
 //! Expression lowering.
 
 use super::{
-    binop_result_type, lower_binop, lower_unaryop, mir_type_size, operator_method_to_binop,
-    operator_method_to_unaryop, LoweringError, MirLowerer, TypedOperand,
+    binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop, mir_type_size,
+    operator_method_to_binop, operator_method_to_unaryop, LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, BlockId,
-    FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
+    operand::MirConst, stmt::ClosureCapture, types::{EnumLayoutId, StructLayoutId}, BlockBuilder,
+    BlockId, FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
@@ -169,13 +169,90 @@ impl<'a> MirLowerer<'a> {
             // Block expression
             ExprKind::Block(stmts) => self.lower_block(stmts),
 
-            // Method call — operator methods from desugar become BinaryOp/UnaryOp
+            // Method call — operator methods from desugar become BinaryOp/UnaryOp,
+            // type constructors become enum construction or static calls.
             ExprKind::MethodCall {
                 object,
                 method,
                 args,
                 ..
             } => {
+                // When the object is a type name (not a local variable), intercept
+                // before lowering it as a value expression.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if !self.locals.contains_key(name) {
+                        // Enum variant constructor: Shape.Circle(r)
+                        // Extract layout data before mutable borrows in lower_expr
+                        let enum_variant = self.ctx.find_enum(name).and_then(|(idx, layout)| {
+                            let variant = layout.variants.iter().find(|v| v.name == *method)?;
+                            Some((
+                                idx,
+                                layout.tag_offset,
+                                variant.tag,
+                                variant.payload_offset,
+                                variant.fields.clone(),
+                            ))
+                        });
+
+                        if let Some((idx, tag_offset, tag_val, payload_offset, fields)) =
+                            enum_variant
+                        {
+                            let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                            let result_local = self.builder.alloc_temp(enum_ty.clone());
+
+                            // Store discriminant tag
+                            self.builder.push_stmt(MirStmt::Store {
+                                addr: result_local,
+                                offset: tag_offset,
+                                value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
+                            });
+
+                            // Store payload fields
+                            for (i, arg) in args.iter().enumerate() {
+                                let (val, _) = self.lower_expr(&arg.expr)?;
+                                let offset = if i < fields.len() {
+                                    payload_offset + fields[i].offset
+                                } else {
+                                    payload_offset + (i as u32 * 8)
+                                };
+                                self.builder.push_stmt(MirStmt::Store {
+                                    addr: result_local,
+                                    offset,
+                                    value: val,
+                                });
+                            }
+
+                            return Ok((MirOperand::Local(result_local), enum_ty));
+                        }
+
+                        // Static method on a type: Vec.new(), string.new()
+                        let is_known_type = self.ctx.find_struct(name).is_some()
+                            || self.ctx.find_enum(name).is_some()
+                            || is_type_constructor_name(name);
+
+                        if is_known_type {
+                            let func_name = format!("{}_{}", name, method);
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| self.ctx.resolve_type_str(name));
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef { name: func_name },
+                                args: arg_operands,
+                            });
+                            return Ok((MirOperand::Local(result_local), ret_ty));
+                        }
+                    }
+                }
+
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
                 // Detect binary operator methods (desugared from a + b → a.add(b))
