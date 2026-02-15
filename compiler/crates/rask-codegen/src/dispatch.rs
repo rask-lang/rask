@@ -5,6 +5,24 @@
 //! After monomorphization, stdlib method calls arrive at codegen as bare
 //! names (e.g., "push", "len"). This module maps those names to C runtime
 //! functions declared in compiler/runtime/runtime.c.
+//!
+//! ## Runtime reconciliation
+//!
+//! Two sets of C implementations exist for Vec, String, Map, and Pool:
+//!
+//! 1. **Old i64-based** (inline in `runtime.c`): all params/returns are `int64_t`,
+//!    pointers cast to/from i64. These match the Cranelift signatures below.
+//!    This is what the linker (`link.rs`) actually compiles and links.
+//!
+//! 2. **New typed** (`vec.c`, `string.c`, `map.c`, `pool.c` + `rask_runtime.h`):
+//!    proper struct pointers (`RaskVec*`, `RaskString*`, etc.) with `elem_size`
+//!    params for type-safe storage. These are not linked yet.
+//!
+//! The typed implementations are the intended target. Migrating requires:
+//! - Update dispatch entries to match typed signatures (pointer params, elem_size)
+//! - Update `link.rs` to compile the separate `.c` files (or unify into runtime.c)
+//! - Remove the old i64-based duplicates from runtime.c
+//! - Update codegen to pass elem_size when constructing collections
 
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
