@@ -277,6 +277,7 @@ impl Resolver {
                     }
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
+                DeclKind::Package(_) => {}
                 DeclKind::Extern(extern_decl) => {
                     // Declare extern functions in symbol table
                     let sym_id = self.symbols.insert(
@@ -462,6 +463,18 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
+            } else if self.package_bindings.contains_key(pkg_name) {
+                // External package import — register as a module-like binding
+                let sym_id = self.symbols.insert(
+                    binding_name.clone(),
+                    SymbolKind::Variable { mutable: false },
+                    None,
+                    span,
+                    false,
+                );
+                if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                    self.errors.push(e);
+                }
             }
 
             self.imported_symbols.insert(binding_name.clone());
@@ -563,6 +576,7 @@ impl Resolver {
                 DeclKind::Import(_) => {}
                 DeclKind::Export(_) => {}
                 DeclKind::Extern(_) => {}
+                DeclKind::Package(_) => {}
             }
         }
     }

@@ -95,7 +95,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                 }
                 // Methods on unknown types are silently dropped
             }
-            DeclKind::Test(_) | DeclKind::Benchmark(_) | DeclKind::Export(_) => {}
+            DeclKind::Test(_) | DeclKind::Benchmark(_) | DeclKind::Export(_) | DeclKind::Package(_) => {}
         }
     }
 
