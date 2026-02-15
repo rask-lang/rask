@@ -57,6 +57,13 @@ pub struct TypeChecker {
     pub(super) borrow_stack: Vec<ActiveBorrow>,
     /// Persistent borrows across statements within a scope (ESAD Phase 2).
     pub(super) persistent_borrows: Vec<PersistentBorrow>,
+    /// Pending generic call sites: (call NodeId, fresh type vars for type params).
+    /// Resolved after constraint solving to populate TypedProgram.call_type_args.
+    pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
+    /// SymbolId → type param names for generic functions.
+    /// Keyed by SymbolId (not name) to avoid collisions between
+    /// same-named functions in different scopes.
+    pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
 }
 
 impl TypeChecker {
@@ -74,6 +81,8 @@ impl TypeChecker {
             local_types: Vec::new(),
             borrow_stack: Vec::new(),
             persistent_borrows: Vec::new(),
+            pending_call_type_args: Vec::new(),
+            fn_type_params: HashMap::new(),
         }
     }
 
@@ -95,13 +104,23 @@ impl TypeChecker {
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
 
+        // Resolve pending generic call type args
+        let call_type_args: HashMap<_, _> = self
+            .pending_call_type_args
+            .iter()
+            .map(|(node_id, vars)| {
+                let resolved: Vec<Type> = vars.iter().map(|v| self.ctx.apply(v)).collect();
+                (*node_id, resolved)
+            })
+            .collect();
+
         if self.errors.is_empty() {
             Ok(TypedProgram {
                 symbols: self.resolved.symbols,
                 resolutions: self.resolved.resolutions,
                 types: self.types,
                 node_types,
-                call_type_args: HashMap::new(),
+                call_type_args,
             })
         } else {
             let ctx = &self.ctx;
@@ -118,7 +137,7 @@ impl TypeChecker {
                     resolutions: self.resolved.resolutions,
                     types: self.types,
                     node_types,
-                    call_type_args: HashMap::new(),
+                    call_type_args,
                 })
             } else {
                 Err(errors)

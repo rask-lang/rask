@@ -2,6 +2,7 @@
 //! Pass 1: declaration collection and checking.
 
 use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl};
+use rask_resolve::SymbolKind;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode};
 use super::inference::TypeConstraint;
 use super::parse_type::parse_type_string;
@@ -20,6 +21,17 @@ impl TypeChecker {
                 DeclKind::Struct(s) => self.register_struct(s),
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
+                DeclKind::Fn(f) if !f.type_params.is_empty() => {
+                    // Find this function's SymbolId by matching name + Function kind
+                    let type_param_names: Vec<String> = f.type_params.iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    if let Some(sym) = self.resolved.symbols.iter()
+                        .find(|s| s.name == f.name && matches!(s.kind, SymbolKind::Function { .. }))
+                    {
+                        self.fn_type_params.insert(sym.id, type_param_names);
+                    }
+                }
                 _ => {}
             }
         }

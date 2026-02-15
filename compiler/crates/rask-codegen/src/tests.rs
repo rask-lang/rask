@@ -1129,7 +1129,7 @@ mod tests {
             locals: vec![],
             blocks: vec![
                 block(0, vec![], MirTerminator::CleanupReturn {
-                    value: i32_const(42),
+                    value: Some(i32_const(42)),
                     cleanup_chain: vec![],
                 }),
             ],
@@ -1155,7 +1155,7 @@ mod tests {
             locals: vec![],
             blocks: vec![
                 block(0, vec![], MirTerminator::CleanupReturn {
-                    value: i32_const(99),
+                    value: Some(i32_const(99)),
                     cleanup_chain: vec![BlockId(1)],
                 }),
                 block(1, vec![
