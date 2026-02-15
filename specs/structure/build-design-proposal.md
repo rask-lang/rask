@@ -31,7 +31,7 @@ is deterministic and simple. Lock files, registry basics, and workspaces are spe
 | No vendoring | Can't build offline | Medium |
 | No `rask publish` workflow | Registry endpoint exists but no CLI flow | Medium |
 | No dependency auditing | No way to check for known vulnerabilities | Medium |
-| No build script sandboxing | Third-party build scripts have full system access | Low (v2) |
+| No build script sandboxing | Third-party build scripts have full system access | Deferred |
 | No artifact naming rules | Binary names unspecified | Low |
 | External tool versions untracked | `protoc` version drift breaks reproducibility | Low |
 
@@ -210,7 +210,7 @@ myproject/
 | **OD3: Target directories** | `build/<target-triple>/<profile>/` for cross-compilation |
 | **OD4: Binary naming** | Binary name = package name from `rask.build` (or directory name if no rask.build) |
 | **OD5: .gitignore** | `rask build` auto-creates `build/.gitignore` with `*` on first run |
-| **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rk/cache/` entries for this project |
+| **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rask/cache/` entries for this project |
 
 ---
 
@@ -295,8 +295,8 @@ changing one file recompiles only its package and dependents.
 
 | Rule | Description |
 |------|-------------|
-| **WA1: Default command** | `rask watch` → runs `rask check` on change (fastest feedback) |
-| **WA2: Custom command** | `rask watch test` → runs `rask test` on change |
+| **WA1: Default command** | `rask watch` → runs `rask check` on change (type-check only, no codegen — fastest feedback) |
+| **WA2: Custom command** | `rask watch build`, `rask watch test`, `rask watch run` — any rask subcommand |
 | **WA3: Debounce** | 100ms debounce — multiple rapid saves trigger one rebuild |
 | **WA4: Scope** | Watches `.rk` files, `rask.build`, and declared build step inputs |
 | **WA5: Clear output** | Clears terminal on each rebuild (disable with `--no-clear`) |
@@ -354,7 +354,7 @@ cache_key = hash(
 
 | Rule | Description |
 |------|-------------|
-| **CC1: Local cache** | `~/.rk/cache/compiled/` stores compiled artifacts by cache key |
+| **CC1: Local cache** | `~/.rask/cache/compiled/` stores compiled artifacts by cache key |
 | **CC2: Hit = skip** | If cache key matches, skip compilation and use cached artifact |
 | **CC3: Signature-based invalidation** | Dependency change only invalidates if its public API signature changes (not internal changes) |
 | **CC4: Cache size limit** | Default 2 GB. Configurable via `RASK_CACHE_SIZE`. LRU eviction |
@@ -399,7 +399,7 @@ $ rask publish
 | **PB1: Pre-checks** | `rask publish` runs check + test before uploading |
 | **PB2: Required metadata** | `description` and `license` required for publishing |
 | **PB3: Dry run** | `--dry-run` shows what would be published without uploading |
-| **PB4: Authentication** | API token stored in `~/.rk/credentials` or `RASK_REGISTRY_TOKEN` |
+| **PB4: Authentication** | API token stored in `~/.rask/credentials` or `RASK_REGISTRY_TOKEN` |
 | **PB5: No path deps** | Publish fails if package has path dependencies (struct.packages/RG3) |
 | **PB6: Reproducible tarball** | Deterministic file ordering, no timestamps in archive |
 | **PB7: Size limit** | 10 MB max package size. Error with breakdown if exceeded |
@@ -467,13 +467,16 @@ $ rask audit
 
 ---
 
-## 10. Build Script Security
+## 10. Build Script Security (Deferred)
 
 Build scripts (`func build()`) have full system access (BL2). This is necessary for
 calling external tools, but it's a risk for third-party packages. Nobody does this
 well today — Cargo's build.rs and npm's postinstall are known attack vectors.
 
-### Rules
+Deferred to v2. Keeping these rules as a future direction — the UX needs real-world
+usage before deciding between prompt-based, sandbox-based, or capability-based approaches.
+
+### Future Direction (not for v1)
 
 | Rule | Description |
 |------|-------------|
@@ -483,9 +486,6 @@ well today — Cargo's build.rs and npm's postinstall are known attack vectors.
 | **BS4: Hash change** | If a dependency's build script changes on update, re-prompt |
 | **BS5: CI mode** | `--trust-build-scripts` flag for CI (no prompts) |
 | **BS6: Audit trail** | `rask.lock` records which packages have build scripts and their hashes |
-
-This is deliberately minimal — a full sandbox (filesystem restrictions, network deny) is
-a v2 feature. The prompt-on-first-use pattern gives visibility without breaking workflows.
 
 ---
 
@@ -598,7 +598,7 @@ These items from the `struct.packages` remaining issues list need specs:
 | Rule | Description |
 |------|-------------|
 | **PA1: Token auth** | Bearer token in `Authorization` header |
-| **PA2: Config location** | `~/.rk/registries/<host>/token` or `RASK_REGISTRY_TOKEN_<HOST>` |
+| **PA2: Config location** | `~/.rask/registries/<host>/token` or `RASK_REGISTRY_TOKEN_<HOST>` |
 | **PA3: Per-package registry** | `dep "internal" "^1.0" { registry: "https://pkgs.corp.com" }` |
 
 ### Patch Overrides
@@ -696,24 +696,18 @@ stable — a new dependency version could break things.
 My take: MVS is the right call for Rask. Determinism matters more than auto-updates.
 `rask update` is easy to run when you want newer versions. But this is a genuine tradeoff.
 
-### Q2: Build script sandboxing scope
+### Q2: Remote compilation cache
 
-BS1–BS6 above is minimal (prompt-based). A real sandbox would restrict filesystem access,
-deny network, and limit CPU/memory. This is much harder to implement and may break
-legitimate build scripts. I'd defer full sandboxing to v2 and ship with prompts only.
-
-### Q3: Remote compilation cache
-
-RC1–RC3 above sketches a remote cache. This is high-value for teams but adds significant
+RC1–RC3 sketches a remote cache. High value for teams but adds significant
 complexity (authentication, cache poisoning, storage costs). Defer to v2?
 
-### Q4: WASM target
+### Q3: WASM target
 
 `wasm32-none` is listed as Tier 2. WASM has unique constraints (no filesystem, no threads,
 different memory model). Should this be a first-class target with its own documentation,
 or is Tier 2 + community effort sufficient initially?
 
-### Q5: Multi-binary output
+### Q4: Multi-binary output
 
 `struct.targets/MB2` specifies `bin: ["cli.rk", "server.rk"]` for multi-binary projects.
 How should `rask build` handle this? Build all binaries? Build the first one? Require
@@ -757,10 +751,9 @@ order should be:
 7. Publishing workflow (PB1–PB7)
 8. Vendoring (VD1–VD5)
 9. Dependency auditing (AU1–AU5)
-10. Build script security (BS1–BS6)
 
 **Needed for scale (v2):**
-11. Incremental build steps (ST1–ST6)
-12. Compilation cache (CC1–CC5)
-13. Remote cache (RC1–RC3)
-14. Full build script sandboxing
+10. Incremental build steps (ST1–ST6)
+11. Compilation cache (CC1–CC5)
+12. Remote cache (RC1–RC3)
+13. Build script security (BS1–BS6)
