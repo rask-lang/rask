@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Code generation commands: mono, mir.
+//! Code generation commands: mono, mir, compile.
 
 use colored::Colorize;
 use rask_diagnostics::{Diagnostic, ToDiagnostic};
 use rask_mono::MonoProgram;
 use std::fs;
+use std::path::Path;
 use std::process;
 
 use crate::{output, show_diagnostics, Format};
@@ -287,5 +288,92 @@ pub fn cmd_mir(path: &str, format: Format) {
             eprintln!("{}", output::banner_fail("MIR lowering", mir_errors));
             process::exit(1);
         }
+    }
+}
+
+/// Compile a single .rk file to a native executable.
+/// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
+/// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
+pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool) {
+    let (mono, typed) = run_pipeline(path, format);
+
+    // MIR lowering
+    let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+    let mir_ctx = rask_mir::lower::MirContext {
+        struct_layouts: &mono.struct_layouts,
+        enum_layouts: &mono.enum_layouts,
+        node_types: &typed.node_types,
+    };
+
+    let mut mir_functions = Vec::new();
+    for mono_fn in &mono.functions {
+        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
+            Ok(mir_fn) => mir_functions.push(mir_fn),
+            Err(e) => {
+                eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
+                process::exit(1);
+            }
+        }
+    }
+
+    if mir_functions.is_empty() {
+        eprintln!("{}: no functions to compile", output::error_label());
+        process::exit(1);
+    }
+
+    // Cranelift codegen
+    let mut codegen = match rask_codegen::CodeGenerator::new() {
+        Ok(cg) => cg,
+        Err(e) => {
+            eprintln!("{}: codegen init: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    };
+
+    if let Err(e) = codegen.declare_runtime_functions() {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
+    if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
+    if let Err(e) = codegen.register_strings(&mir_functions) {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
+    for mir_fn in &mir_functions {
+        if let Err(e) = codegen.gen_function(mir_fn) {
+            eprintln!("{}: codegen '{}': {}", output::error_label(), mir_fn.name, e);
+            process::exit(1);
+        }
+    }
+
+    // Emit object and link
+    let bin_path = match output_path {
+        Some(p) => p.to_string(),
+        None => {
+            // Default: strip .rk extension from input
+            let stem = Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("a.out");
+            stem.to_string()
+        }
+    };
+    let obj_path = format!("{}.o", bin_path);
+
+    if let Err(e) = codegen.emit_object(&obj_path) {
+        eprintln!("{}: emit object: {}", output::error_label(), e);
+        process::exit(1);
+    }
+
+    if let Err(e) = super::link::link_executable(&obj_path, &bin_path) {
+        eprintln!("{}: link: {}", output::error_label(), e);
+        process::exit(1);
+    }
+
+    if format == Format::Human && !quiet {
+        eprintln!("{}", output::banner_ok(&format!("Compiled → {}", bin_path)));
     }
 }
