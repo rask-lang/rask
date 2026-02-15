@@ -255,6 +255,12 @@ impl TypeChecker {
                 Ok(false)
             }
 
+            // Integer widening coercion: narrower signed → wider signed,
+            // narrower unsigned → wider unsigned. No cross-sign coercion.
+            (a, b) if Self::is_integer_widening(a, b) || Self::is_integer_widening(b, a) => {
+                Ok(false)
+            }
+
             _ => Err(TypeError::Mismatch {
                 expected: t1,
                 found: t2,
@@ -281,6 +287,21 @@ impl TypeChecker {
                 found: Type::Error,
                 span,
             }),
+        }
+    }
+
+    /// Check if `from` can widen to `to` (same signedness, strictly narrower).
+    fn is_integer_widening(from: &Type, to: &Type) -> bool {
+        match (from, to) {
+            (Type::I8, Type::I16 | Type::I32 | Type::I64 | Type::I128) => true,
+            (Type::I16, Type::I32 | Type::I64 | Type::I128) => true,
+            (Type::I32, Type::I64 | Type::I128) => true,
+            (Type::I64, Type::I128) => true,
+            (Type::U8, Type::U16 | Type::U32 | Type::U64 | Type::U128) => true,
+            (Type::U16, Type::U32 | Type::U64 | Type::U128) => true,
+            (Type::U32, Type::U64 | Type::U128) => true,
+            (Type::U64, Type::U128) => true,
+            _ => false,
         }
     }
 }
