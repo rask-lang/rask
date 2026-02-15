@@ -95,7 +95,7 @@ pub enum MirTerminator {
     },
     Unreachable,
     CleanupReturn {
-        value: MirOperand,
+        value: Option<MirOperand>,
         cleanup_chain: Vec<BlockId>,
     },
 }
