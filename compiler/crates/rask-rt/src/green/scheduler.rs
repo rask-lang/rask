@@ -15,7 +15,7 @@ use super::task::{RawTask, TaskState};
 /// Scheduler runtime. Created by `using Multitasking { }` block entry.
 ///
 /// Owns worker threads, global queue, and reactor. Shuts down when
-/// the `using` block exits (waits for all non-detached tasks).
+/// the `using` block exits (waits for all tasks, including detached).
 pub struct Scheduler {
     /// Worker handles for join-on-shutdown.
     workers: Mutex<Vec<thread::JoinHandle<()>>>,
@@ -31,10 +31,12 @@ pub(crate) struct SharedState {
     pub global_queue: Arc<InjectorQueue>,
     /// Central I/O reactor.
     pub reactor: Arc<Reactor>,
-    /// Number of active (non-completed, non-detached) tasks.
+    /// Number of active (non-completed) tasks.
     pub active_tasks: AtomicUsize,
-    /// Signal for block exit waiting on active tasks.
-    pub all_done: (Mutex<bool>, Condvar),
+    /// Condvar for shutdown() to wait on active_tasks reaching 0.
+    /// The mutex exists purely for condvar signaling — the real
+    /// condition is the atomic counter.
+    pub all_done: (Mutex<()>, Condvar),
     /// Shutdown flag for workers.
     pub shutdown: AtomicBool,
     /// Number of workers.
@@ -66,7 +68,7 @@ impl Scheduler {
             global_queue: Arc::new(InjectorQueue::new()),
             reactor,
             active_tasks: AtomicUsize::new(0),
-            all_done: (Mutex::new(false), Condvar::new()),
+            all_done: (Mutex::new(()), Condvar::new()),
             shutdown: AtomicBool::new(false),
             worker_count,
             work_available: (Mutex::new(false), Condvar::new()),
@@ -154,12 +156,15 @@ impl Scheduler {
     /// Shut down the scheduler. Waits for all active tasks, then stops
     /// workers and reactor (C4: block exit waits for tasks).
     pub fn shutdown(&self) {
-        // Wait for all tasks to complete.
+        // Wait for all tasks to complete. Only check the atomic counter —
+        // the mutex exists purely for condvar signaling. Don't rely on
+        // a bool flag (it would latch and miss tasks spawned after the
+        // first time active_tasks hit 0).
         {
             let (lock, cvar) = &self.shared.all_done;
-            let mut done = lock.lock().unwrap();
-            while !*done && self.shared.active_tasks.load(Ordering::Acquire) > 0 {
-                done = cvar.wait(done).unwrap();
+            let mut guard = lock.lock().unwrap();
+            while self.shared.active_tasks.load(Ordering::Acquire) > 0 {
+                guard = cvar.wait(guard).unwrap();
             }
         }
 
@@ -217,21 +222,30 @@ fn worker_loop(id: usize, shared: &SharedState) {
             continue;
         }
 
-        // 2. Try stealing from a random victim (S3).
+        // 2. Try stealing from peers (S3). Start at random offset,
+        //    scan all workers so we don't miss full queues.
         if shared.worker_count > 1 {
-            let victim = (xorshift64(&mut rng) as usize) % shared.worker_count;
-            if victim != id {
+            let start = (xorshift64(&mut rng) as usize) % shared.worker_count;
+            let mut found = false;
+            for offset in 0..shared.worker_count {
+                let victim = (start + offset) % shared.worker_count;
+                if victim == id {
+                    continue;
+                }
                 let stolen = shared.local_queues[victim].steal_batch();
                 if !stolen.is_empty() {
-                    // Push all but the first to our local queue; run the first.
                     let mut iter = stolen.into_iter();
                     let first = iter.next().unwrap();
                     for task in iter {
                         let _ = local.push(task);
                     }
                     run_task(first, shared);
-                    continue;
+                    found = true;
+                    break;
                 }
+            }
+            if found {
+                continue;
             }
         }
 
@@ -284,12 +298,14 @@ fn run_task(task: Arc<RawTask>, shared: &SharedState) {
 
     if completed {
         task.mark_complete();
-        // Decrement active count.
+        // Decrement active count. If this was the last task, wake
+        // shutdown(). Lock the mutex before notify to prevent the
+        // waiter from missing the signal between its counter check
+        // and condvar wait.
         let prev = shared.active_tasks.fetch_sub(1, Ordering::AcqRel);
         if prev == 1 {
             let (lock, cvar) = &shared.all_done;
-            let mut done = lock.lock().unwrap();
-            *done = true;
+            let _guard = lock.lock().unwrap();
             cvar.notify_all();
         }
     } else {
