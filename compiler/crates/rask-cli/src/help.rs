@@ -23,10 +23,21 @@ pub fn print_usage() {
     println!("  {} {}       Run a Rask program (interpreter)", output::command("run"), output::arg("<file>"));
     println!("  {} {}   Compile to native executable", output::command("compile"), output::arg("<file>"));
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
+    println!("  {} {}     Remove build artifacts", output::command("clean"), output::arg("[dir]"));
+    println!("  {}          List available compilation targets", output::command("targets"));
     println!("  {} {}       Format source files", output::command("fmt"), output::arg("<file>"));
     println!("  {} {}   Explain an error code", output::command("explain"), output::arg("<code>"));
     println!("  {}             Show this help", output::command("help"));
     println!("  {}          Show version", output::command("version"));
+
+    println!();
+    println!("{}", output::section_header("Dependencies:"));
+    println!("  {} {}       Add a dependency to rask.build", output::command("add"), output::arg("<pkg>"));
+    println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
+
+    println!();
+    println!("{}", output::section_header("Development:"));
+    println!("  {} {}   Watch files and re-run on change", output::command("watch"), output::arg("[cmd]"));
 
     println!();
     println!("{}", output::section_header("Testing:"));
@@ -152,15 +163,121 @@ pub fn print_compile_help() {
 pub fn print_build_help() {
     println!("{}", output::section_header("Build"));
     println!();
-    println!("Build a Rask package. Discovers all .rk files in the directory,");
-    println!("resolves imports, and runs type checking and ownership analysis.");
+    println!("Build a Rask package. Discovers .rk files, compiles, and links.");
+    println!("Output goes to build/<profile>/.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("build"),
-        output::arg("[directory]"));
+        output::arg("[directory] [--release] [--profile <name>] [--target <triple>] [-v]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}          Build with release profile", output::arg("--release"));
+    println!("  {} {}  Build with custom profile", output::arg("--profile"), output::arg("<name>"));
+    println!("  {} {} Cross-compile for target", output::arg("--target"), output::arg("<triple>"));
+    println!("  {} {}       Verbose output", output::arg("-v"), output::arg("--verbose"));
     println!();
     println!("If no directory is specified, builds the current directory.");
+    println!("Use {} to see available targets.", "rask targets".cyan());
+}
+
+pub fn print_targets_help() {
+    println!("{}", output::section_header("Targets"));
+    println!();
+    println!("List available cross-compilation targets with tier info.");
+    println!();
+    println!("{}: {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("targets"));
+    println!();
+    println!("Targets are organized into three tiers:");
+    println!("  {} Tested in CI, guaranteed to work", "Tier 1:".yellow().bold());
+    println!("  {} Builds successfully, best-effort support", "Tier 2:".yellow());
+    println!("  {} Community-maintained", "Tier 3:".dimmed());
+    println!();
+    println!("Use with: {} {} {}",
+        output::command("rask"),
+        output::command("build"),
+        output::arg("--target <triple>"));
+}
+
+pub fn print_clean_help() {
+    println!("{}", output::section_header("Clean"));
+    println!();
+    println!("Remove build artifacts.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("clean"),
+        output::arg("[directory] [--all]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Also clean global cache entries for this project", output::arg("--all"));
+}
+
+pub fn print_add_help() {
+    println!("{}", output::section_header("Add"));
+    println!();
+    println!("Add a dependency to rask.build.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("add"),
+        output::arg("<package> [version] [--dev] [--feature <name>] [--path <dir>]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}          Add to scope \"dev\" (test dependencies)", output::arg("--dev"));
+    println!("  {} {} Add to a feature block", output::arg("--feature"), output::arg("<name>"));
+    println!("  {} {}    Local path dependency", output::arg("--path"), output::arg("<dir>"));
+    println!();
+    println!("{}", output::section_header("Examples:"));
+    println!("  {} {} {}             Add latest version",
+        output::command("rask"),
+        output::command("add"),
+        output::arg("http"));
+    println!("  {} {} {} {}     Add with version",
+        output::command("rask"),
+        output::command("add"),
+        output::arg("http"),
+        output::arg("\"^2.0\""));
+    println!("  {} {} {} {}    Add dev dependency",
+        output::command("rask"),
+        output::command("add"),
+        output::arg("mock"),
+        output::arg("--dev"));
+}
+
+pub fn print_remove_help() {
+    println!("{}", output::section_header("Remove"));
+    println!();
+    println!("Remove a dependency from rask.build.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("remove"),
+        output::arg("<package>"));
+}
+
+pub fn print_watch_help() {
+    println!("{}", output::section_header("Watch"));
+    println!();
+    println!("Watch .rk files and rask.build for changes, re-running a command.");
+    println!("Default: runs `rask check` (type-check only, fastest feedback).");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("watch"),
+        output::arg("[command] [--no-clear]"));
+    println!();
+    println!("{}", output::section_header("Commands:"));
+    println!("  {}    Type-check on change (default)", output::arg("check"));
+    println!("  {}    Build on change", output::arg("build"));
+    println!("  {}     Run tests on change", output::arg("test"));
+    println!("  {}      Build and run on change", output::arg("run"));
+    println!("  {}     Lint on change", output::arg("lint"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Don't clear terminal on each rebuild", output::arg("--no-clear"));
 }
 
 pub fn print_test_help() {
