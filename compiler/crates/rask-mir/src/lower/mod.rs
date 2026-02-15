@@ -635,6 +635,15 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
     }
 }
 
+/// Detect identifiers that name types rather than values.
+///
+/// Uppercase-initial names are user-defined types (structs, enums, traits).
+/// A few lowercase names (`string`) are built-in types that support static methods.
+fn is_type_constructor_name(name: &str) -> bool {
+    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        || matches!(name, "string")
+}
+
 /// Determine result type for a binary operation.
 /// Comparison ops return Bool, arithmetic returns the operand type.
 fn binop_result_type(op: &crate::operand::BinOp, operand_ty: &MirType) -> MirType {
@@ -1454,5 +1463,200 @@ mod tests {
             b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::Cast { .. }, .. }))
         });
         assert!(has_cast);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Type constructors + enum variants
+    // ═══════════════════════════════════════════════════════════
+
+    fn lower_with_ctx(decl: &Decl, all_decls: &[Decl], ctx: &MirContext) -> MirFunction {
+        let mut fns = MirLowerer::lower_function(decl, all_decls, ctx).expect("lowering failed");
+        fns.remove(0)
+    }
+
+    fn find_store(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Store { .. }))
+        })
+    }
+
+    fn count_stores(f: &MirFunction) -> usize {
+        f.blocks.iter()
+            .flat_map(|b| b.statements.iter())
+            .filter(|s| matches!(s, MirStmt::Store { .. }))
+            .count()
+    }
+
+    #[test]
+    fn lower_enum_variant_construct() {
+        // Shape.Circle(5.0) → store tag 0, store payload f64
+        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+
+        let shape_enum = EnumLayout {
+            name: "Shape".to_string(),
+            size: 16,
+            align: 8,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout {
+                    name: "Circle".to_string(),
+                    tag: 0,
+                    payload_offset: 8,
+                    payload_size: 8,
+                    fields: vec![FieldLayout {
+                        name: "f0".to_string(),
+                        ty: rask_types::Type::F64,
+                        offset: 0,
+                        size: 8,
+                        align: 8,
+                    }],
+                },
+                VariantLayout {
+                    name: "Square".to_string(),
+                    tag: 1,
+                    payload_offset: 8,
+                    payload_size: 8,
+                    fields: vec![FieldLayout {
+                        name: "f0".to_string(),
+                        ty: rask_types::Type::F64,
+                        offset: 0,
+                        size: 8,
+                        align: 8,
+                    }],
+                },
+            ],
+        };
+
+        let enum_layouts = vec![shape_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Shape"), "Circle", vec![float_expr(5.0)])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        // Should emit stores for tag + payload, not a Call
+        assert!(find_store(&f));
+        assert_eq!(count_stores(&f), 2); // tag store + payload store
+        assert!(!find_call(&f, "Circle"));
+    }
+
+    #[test]
+    fn lower_enum_variant_no_payload() {
+        // Color.Red() → store tag only
+        use rask_mono::{EnumLayout, VariantLayout};
+
+        let color_enum = EnumLayout {
+            name: "Color".to_string(),
+            size: 1,
+            align: 1,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout { name: "Red".to_string(), tag: 0, payload_offset: 0, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Green".to_string(), tag: 1, payload_offset: 0, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Blue".to_string(), tag: 2, payload_offset: 0, payload_size: 0, fields: vec![] },
+            ],
+        };
+
+        let enum_layouts = vec![color_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Color"), "Red", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        assert!(find_store(&f));
+        assert_eq!(count_stores(&f), 1); // tag only
+    }
+
+    #[test]
+    fn lower_enum_variant_multi_field() {
+        // Msg.Pair(1, 2) → store tag + 2 payload fields
+        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+
+        let msg_enum = EnumLayout {
+            name: "Msg".to_string(),
+            size: 12,
+            align: 4,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout { name: "Empty".to_string(), tag: 0, payload_offset: 4, payload_size: 0, fields: vec![] },
+                VariantLayout {
+                    name: "Pair".to_string(),
+                    tag: 1,
+                    payload_offset: 4,
+                    payload_size: 8,
+                    fields: vec![
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4 },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4 },
+                    ],
+                },
+            ],
+        };
+
+        let enum_layouts = vec![msg_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Msg"), "Pair", vec![int_expr(1), int_expr(2)])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        assert_eq!(count_stores(&f), 3); // tag + 2 fields
+    }
+
+    #[test]
+    fn lower_static_method_call_on_type() {
+        // Vec.new() → Call to Vec_new
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Vec"), "new", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "Vec_new"));
+    }
+
+    #[test]
+    fn lower_string_static_method() {
+        // string.new() → Call to string_new
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("string"), "new", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "string_new"));
+    }
+
+    #[test]
+    fn lower_method_on_value_still_works() {
+        // a.add(b) where a is a local variable → BinaryOp (not static call)
+        let decl = make_fn("f", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
+            return_stmt(Some(method_call_expr(ident_expr("a"), "add", vec![ident_expr("b")]))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_binop(&f));
+        assert!(!find_call(&f, "i32_add"));
     }
 }
