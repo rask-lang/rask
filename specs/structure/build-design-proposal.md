@@ -696,16 +696,13 @@ stable — a new dependency version could break things.
 My take: MVS is the right call for Rask. Determinism matters more than auto-updates.
 `rask update` is easy to run when you want newer versions. But this is a genuine tradeoff.
 
-### Q2: Remote compilation cache
+### Q2: Remote compilation cache — Deferred to v2
 
-RC1–RC3 sketches a remote cache. High value for teams but adds significant
-complexity (authentication, cache poisoning, storage costs). Defer to v2?
+### Q3: WASM target — Tier 2, not critical for v1
 
-### Q3: WASM target
-
-`wasm32-none` is listed as Tier 2. WASM has unique constraints (no filesystem, no threads,
-different memory model). Should this be a first-class target with its own documentation,
-or is Tier 2 + community effort sufficient initially?
+WASM stays as Tier 2 (builds, best-effort). Unique constraints (no filesystem, no threads,
+different memory model) mean first-class support needs dedicated design work. Community
+can drive this when there's demand.
 
 ### Q4: Multi-binary output
 
