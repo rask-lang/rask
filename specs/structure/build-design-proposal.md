@@ -684,17 +684,11 @@ These are architectural enablers. Actual speed depends on implementation.
 
 These are decisions I want your input on before formalizing into spec rules:
 
-### Q1: MVS vs Maximal Version Selection
+### Q1: MVS vs Maximal Version Selection — Decided: Maximal
 
-The current `struct.packages` spec uses Go's MVS (minimum version selection) — always
-pick the oldest compatible version. This is deterministic and stable, but it means
-you never get bug fixes unless you explicitly `rask update`.
-
-Cargo uses maximal selection (newest compatible). More bug fixes by default, but less
-stable — a new dependency version could break things.
-
-My take: MVS is the right call for Rask. Determinism matters more than auto-updates.
-`rask update` is easy to run when you want newer versions. But this is a genuine tradeoff.
+Maximal version selection (newest compatible). Developers expect the latest bug fixes
+and features when they specify `^2.0`. The lock file (`rask.lock`) pins exact versions
+for reproducibility. `struct.packages` MV1–MV3 need updating to reflect this.
 
 ### Q2: Remote compilation cache — Deferred to v2
 
