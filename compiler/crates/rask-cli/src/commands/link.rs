@@ -4,13 +4,21 @@
 use std::path::Path;
 use std::process;
 
-/// Find the runtime.c file, compile it, and link with the object file.
+/// Find the runtime C files, compile them, and link with the object file.
 pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
     let runtime_path = find_runtime_c()?;
+    let runtime_dir = Path::new(&runtime_path)
+        .parent()
+        .ok_or_else(|| "runtime.c has no parent directory".to_string())?;
+    let args_path = runtime_dir.join("args.c");
+    let args_str = args_path.to_string_lossy().to_string();
 
-    let status = process::Command::new("cc")
-        .args([&runtime_path, obj_path, "-o", bin_path, "-no-pie"])
-        .status()
+    let mut cmd = process::Command::new("cc");
+    cmd.args([&runtime_path, obj_path, "-o", bin_path, "-no-pie"]);
+    if args_path.exists() {
+        cmd.arg(&args_str);
+    }
+    let status = cmd.status()
         .map_err(|e| format!("failed to run cc: {}", e))?;
 
     // Always clean up the intermediate .o file

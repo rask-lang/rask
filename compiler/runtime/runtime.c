@@ -10,7 +10,11 @@
 #include <fcntl.h>
 #include <string.h>
 
-#include "rask_runtime.h"
+// Don't include rask_runtime.h here — it declares the typed API (RaskVec*, etc.)
+// which conflicts with the i64-based signatures below. Once codegen migrates to
+// the typed implementations (vec.c, string.c, etc.), this file's inline
+// definitions should be removed and the header included instead.
+extern void rask_args_init(int argc, char **argv);
 
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
