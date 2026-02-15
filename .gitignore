@@ -12,6 +12,10 @@ research/
 docs/build/
 docs/book/book/
 
+# C runtime build artifacts
+compiler/runtime/*.o
+compiler/runtime/*.a
+
 # Playground builds
 docs/playground/dist/
 docs/playground/node_modules/
