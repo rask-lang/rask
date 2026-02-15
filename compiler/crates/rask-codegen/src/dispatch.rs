@@ -162,7 +162,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "pool_get",
-            c_name: "rask_pool_get",
+            c_name: "rask_pool_checked_access",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
