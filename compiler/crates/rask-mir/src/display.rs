@@ -154,6 +154,27 @@ impl fmt::Display for MirStmt {
             MirStmt::SourceLocation { line, col } => {
                 write!(f, "// {}:{}", line, col)
             }
+            MirStmt::ClosureCreate { dst, func_name, captures } => {
+                write!(f, "_{} = closure({}, [", dst.0, func_name)?;
+                for (i, cap) in captures.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "_{}@{}", cap.local_id.0, cap.offset)?;
+                }
+                write!(f, "])")
+            }
+            MirStmt::ClosureCall { dst, closure, args } => {
+                if let Some(d) = dst {
+                    write!(f, "_{} = ", d.0)?;
+                }
+                write!(f, "closure_call(_{}", closure.0)?;
+                for arg in args {
+                    write!(f, ", {}", arg)?;
+                }
+                write!(f, ")")
+            }
+            MirStmt::LoadCapture { dst, env_ptr, offset } => {
+                write!(f, "_{} = load_capture(_{}+{})", dst.0, env_ptr.0, offset)
+            }
         }
     }
 }
