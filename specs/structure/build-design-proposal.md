@@ -698,14 +698,10 @@ WASM stays as Tier 2 (builds, best-effort). Unique constraints (no filesystem, n
 different memory model) mean first-class support needs dedicated design work. Community
 can drive this when there's demand.
 
-### Q4: Multi-binary output
+### Q4: Multi-binary output — Decided: build all, run picks one
 
-`struct.targets/MB2` specifies `bin: ["cli.rk", "server.rk"]` for multi-binary projects.
-How should `rask build` handle this? Build all binaries? Build the first one? Require
-`rask build --bin cli`?
-
-Proposal: `rask build` builds all binaries. `rask run` requires specifying which one
-if there are multiple: `rask run --bin server -- --port 8080`.
+`rask build` builds all binaries. `rask run` requires `--bin` if there are multiple:
+`rask run --bin server -- --port 8080`.
 
 ---
 
