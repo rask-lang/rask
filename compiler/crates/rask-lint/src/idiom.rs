@@ -377,7 +377,7 @@ fn check_ensure_ordering_in_block(
                 let source_line = util::get_source_line(source, line);
                 diags.push(LintDiagnostic {
                     rule: "idiom/ensure-ordering".to_string(),
-                    severity: Severity::Warning,
+                    severity: Severity::Error,
                     message: format!(
                         "`ensure {curr_name}...` registered after `ensure {prev_name}...`, \
                          but `{curr_name}` was created first — \
@@ -388,7 +388,7 @@ fn check_ensure_ordering_in_block(
                         column: col,
                         source_line,
                     },
-                    fix: "reorder ensures to match acquisition order, or interleave: \
+                    fix: "interleave acquisition and ensure: \
                           acquire → ensure → acquire → ensure"
                         .to_string(),
                 });
