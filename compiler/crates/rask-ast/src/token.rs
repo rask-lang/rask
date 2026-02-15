@@ -85,6 +85,11 @@ pub enum TokenKind {
     Check,
     Try,
     Or,
+    Package,
+    Dep,
+    Scope,
+    Feature,
+    Profile,
 
     // Operators
     Plus,
@@ -207,6 +212,11 @@ impl TokenKind {
             TokenKind::Check => "'check'",
             TokenKind::Try => "'try'",
             TokenKind::Or => "'or'",
+            TokenKind::Package => "'package'",
+            TokenKind::Dep => "'dep'",
+            TokenKind::Scope => "'scope'",
+            TokenKind::Feature => "'feature'",
+            TokenKind::Profile => "'profile'",
 
             // Operators
             TokenKind::Plus => "'+'",
