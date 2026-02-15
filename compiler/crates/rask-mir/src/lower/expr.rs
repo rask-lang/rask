@@ -122,15 +122,13 @@ impl<'a> MirLowerer<'a> {
                     arg_operands.push(op);
                 }
 
-                // If the callee is a local variable (closure), emit ClosureCall
-                if let Some((closure_local, _closure_ty)) = self.locals.get(&func_name).cloned() {
-                    // Check if it's actually a closure (Ptr type from closure creation)
-                    // vs a regular variable that happens to shadow a function
-                    if !self.func_sigs.contains_key(&func_name) || _closure_ty == MirType::Ptr {
+                // If the callee is a known closure variable, emit ClosureCall
+                if self.closure_locals.contains(&func_name) {
+                    if let Some((closure_local, _)) = self.locals.get(&func_name).cloned() {
                         let ret_ty = self.func_sigs
                             .get(&func_name)
                             .map(|s| s.ret_ty.clone())
-                            .unwrap_or(MirType::I64);
+                            .unwrap_or(MirType::I32);
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::ClosureCall {
                             dst: Some(result_local),
@@ -1009,19 +1007,8 @@ impl<'a> MirLowerer<'a> {
 
         let closure_fn = closure_builder.finish();
 
-        // Register the closure function signature for potential calls
+        // Register the closure function signature for return type lookup
         self.func_sigs.insert(closure_name.clone(), super::FuncSig {
-            params: {
-                let mut ps = vec![super::FuncParam { ty: MirType::Ptr }]; // env_ptr
-                for param in params {
-                    ps.push(super::FuncParam {
-                        ty: param.ty.as_deref()
-                            .map(|s| self.ctx.resolve_type_str(s))
-                            .unwrap_or(MirType::I64),
-                    });
-                }
-                ps
-            },
             ret_ty: closure_ret,
         });
 

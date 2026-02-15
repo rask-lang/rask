@@ -22,13 +22,7 @@ type TypedOperand = (MirOperand, MirType);
 /// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
-    params: Vec<FuncParam>,
     ret_ty: MirType,
-}
-
-#[derive(Clone)]
-struct FuncParam {
-    ty: MirType,
 }
 
 /// Loop context for break/continue
@@ -134,6 +128,8 @@ pub struct MirLowerer<'a> {
     closure_counter: u32,
     /// Name of the function being lowered (for closure naming)
     parent_name: String,
+    /// Variable names known to hold closure values
+    closure_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -172,10 +168,7 @@ impl<'a> MirLowerer<'a> {
                     .as_deref()
                     .map(|s| ctx.resolve_type_str(s))
                     .unwrap_or(MirType::Void);
-                let sig_params = f.params.iter().map(|p| FuncParam {
-                    ty: ctx.resolve_type_str(&p.ty),
-                }).collect();
-                func_sigs.insert(f.name.clone(), FuncSig { params: sig_params, ret_ty: sig_ret });
+                func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
             }
         }
 
@@ -188,6 +181,7 @@ impl<'a> MirLowerer<'a> {
             synthesized_functions: Vec::new(),
             closure_counter: 0,
             parent_name: fn_decl.name.clone(),
+            closure_locals: std::collections::HashSet::new(),
         };
 
         // Add parameters
@@ -232,15 +226,8 @@ impl<'a> MirLowerer<'a> {
 
     /// Extract the Ok/Some payload type from Result<T, E> or Option<T>.
     /// Returns the payload type T, or None if unavailable.
-    fn extract_ok_payload_type(&self, result_ty: &MirType) -> Option<MirType> {
-        // This is simplified - ideally we'd parse the enum variant's payload type
-        // For now, return a sensible default
-        Some(MirType::I32)
-    }
-
-    /// Extract the error type from Result<T, E>.
-    fn extract_error_type(&self, result_ty: &MirType) -> Option<MirType> {
-        // This is simplified - ideally we'd parse the enum's error variant type
+    fn extract_ok_payload_type(&self, _result_ty: &MirType) -> Option<MirType> {
+        // Simplified — ideally we'd parse the enum variant's payload type
         Some(MirType::I32)
     }
 
