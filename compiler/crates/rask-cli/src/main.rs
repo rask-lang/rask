@@ -188,9 +188,45 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
                 process::exit(1);
             }
-            let mut program_args: Vec<String> = vec![cmd_args[2].to_string()];
-            program_args.extend(prog_args.iter().map(|s| s.to_string()));
-            commands::run::cmd_run(cmd_args[2], program_args, format);
+            let native = cmd_args.contains(&"--native");
+            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            if native {
+                // Native binary doesn't need the source path as argv[0]
+                let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+                commands::run::cmd_run_native(file, native_args, format);
+            } else {
+                let mut program_args: Vec<String> = vec![file.to_string()];
+                program_args.extend(prog_args.iter().map(|s| s.to_string()));
+                commands::run::cmd_run(file, program_args, format);
+            }
+        }
+        "compile" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_compile_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("compile"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            let output_path = extract_flag_value(&cmd_args, "-o");
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-o"]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false);
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -203,7 +239,15 @@ fn main() {
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
-            commands::run::cmd_test(cmd_args[2], filter, format);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::run::cmd_test(file, filter, format);
         }
         "benchmark" | "bench" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -216,7 +260,15 @@ fn main() {
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
-            commands::run::cmd_benchmark(cmd_args[2], filter, format);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::run::cmd_benchmark(file, filter, format);
         }
         "test-specs" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -269,7 +321,15 @@ fn main() {
                 process::exit(1);
             }
             let check_only = cmd_args.iter().any(|a| *a == "--check");
-            commands::tools::cmd_fmt(cmd_args[2], check_only);
+            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::tools::cmd_fmt(file, check_only);
         }
         "describe" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -282,7 +342,15 @@ fn main() {
                 process::exit(1);
             }
             let show_all = cmd_args.iter().any(|a| *a == "--all");
-            commands::tools::cmd_describe(cmd_args[2], format, show_all);
+            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::tools::cmd_describe(file, format, show_all);
         }
         "lint" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -296,7 +364,15 @@ fn main() {
             }
             let rules = extract_repeated_flag(&cmd_args, "--rule");
             let excludes = extract_repeated_flag(&cmd_args, "--exclude");
-            commands::tools::cmd_lint(cmd_args[2], format, rules, excludes);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["--rule", "--exclude"]);
+            let file = match file_arg {
+                Some(f) => f,
+                None => {
+                    eprintln!("{}: missing file or directory argument", output::error_label());
+                    process::exit(1);
+                }
+            };
+            commands::tools::cmd_lint(file, format, rules, excludes);
         }
         "explain" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -334,6 +410,34 @@ fn extract_filter(args: &[&str]) -> Option<String> {
     } else {
         None
     }
+}
+
+fn extract_flag_value(args: &[&str], flag: &str) -> Option<String> {
+    if let Some(pos) = args.iter().position(|a| *a == flag) {
+        args.get(pos + 1).map(|s| s.to_string())
+    } else {
+        None
+    }
+}
+
+/// Find the first positional (non-flag) argument after `skip_from`, skipping
+/// flag-value pairs listed in `flags_with_values`.
+fn find_positional_arg<'a>(args: &[&'a str], skip_from: usize, flags_with_values: &[&str]) -> Option<&'a str> {
+    let mut skip_next = false;
+    for arg in args.iter().skip(skip_from) {
+        if skip_next {
+            skip_next = false;
+            continue;
+        }
+        if flags_with_values.contains(arg) {
+            skip_next = true;
+            continue;
+        }
+        if !arg.starts_with('-') {
+            return Some(arg);
+        }
+    }
+    None
 }
 
 /// Collect all .rk files in a directory recursively.

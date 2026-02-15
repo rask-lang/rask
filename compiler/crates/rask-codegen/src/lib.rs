@@ -4,6 +4,8 @@
 
 mod types;
 mod builder;
+pub mod closures;
+pub mod dispatch;
 mod module;
 mod tests;
 
