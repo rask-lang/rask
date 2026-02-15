@@ -334,8 +334,8 @@ Most core tooling is done. Remaining items can be built incrementally.
 - [x] `rask lint` — implement command (spec done: [specs/tooling/lint.md](specs/tooling/lint.md))
 - [x] Structured error fixes — `fix:` / `why:` fields in all diagnostics
 
-**Can defer:**
-- [ ] Build system (`rask.build`) — Start with simple `rask compile file1.rk file2.rk -o binary`, add advanced features later
+**In progress:**
+- [ ] Build system — Output dirs, `rask add`/`remove`, watch mode, cross-compilation. See [build.md](specs/structure/build.md)
 - [ ] Package manager — Use directory-based imports initially, add registry/versioning later
 
 ---

@@ -139,7 +139,7 @@ impl fmt::Display for MirStmt {
                 write!(f, "_{} = resource_register({}, depth={})", dst.0, type_name, scope_depth)
             }
             MirStmt::ResourceConsume { resource_id } => {
-                write!(f, "resource_consume(_{}", resource_id.0)
+                write!(f, "resource_consume(_{})", resource_id.0)
             }
             MirStmt::ResourceScopeCheck { scope_depth } => {
                 write!(f, "resource_scope_check(depth={})", scope_depth)
@@ -198,7 +198,11 @@ impl fmt::Display for MirTerminator {
             }
             MirTerminator::Unreachable => write!(f, "unreachable"),
             MirTerminator::CleanupReturn { value, cleanup_chain } => {
-                write!(f, "cleanup_return {} [", value)?;
+                if let Some(v) = value {
+                    write!(f, "cleanup_return {} [", v)?;
+                } else {
+                    write!(f, "cleanup_return [",)?;
+                }
                 for (i, b) in cleanup_chain.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "bb{}", b.0)?;
