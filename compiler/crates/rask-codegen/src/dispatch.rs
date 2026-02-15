@@ -199,14 +199,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
 /// Declare all stdlib functions in a Cranelift module.
 ///
-/// Entries go into `func_ids` keyed by their MIR name. User-defined functions
-/// declared later will shadow any matching stdlib names.
+/// Call after `declare_runtime_functions` and before `declare_functions`.
+/// Skips names already claimed by the runtime. User-defined functions
+/// declared afterwards overwrite matching entries in `func_ids`.
 pub fn declare_stdlib<M: Module>(
     module: &mut M,
     func_ids: &mut HashMap<String, cranelift_module::FuncId>,
 ) -> CodegenResult<()> {
     for entry in stdlib_entries() {
-        // Skip if already declared (user function takes priority)
+        // Skip if already declared by runtime
         if func_ids.contains_key(entry.mir_name) {
             continue;
         }
