@@ -344,10 +344,10 @@ Most core tooling is done. Remaining items can be built incrementally.
 
 ### Important (needed during Phase 5)
 - [x] **Runtime simplification strategy** — OS threads first (Phase A), M:N green tasks later (Phase B). See [runtime-strategy.md](specs/concurrency/runtime-strategy.md), [io-context.md](specs/concurrency/io-context.md), [hidden-params.md](specs/compiler/hidden-params.md)
-- [ ] `using` block expressions (`using ThreadPool(workers: 4) { ... }`) — parser dispatches `With` but examples use `using`
+- [x] `using` block expressions — parser/formatter fixed (`with`→`using`), multi-context `using A, B { }` desugars to nested blocks, hidden-params preserves body value through shutdown
 
 ### Quality improvements (doesn't block, improves ergonomics)
-- [ ] `ensure` ordering lint — wrong LIFO order hides C-level UB behind safe-looking cleanup code
+- [x] `ensure` ordering lint (`idiom/ensure-ordering`) — flags ensure registration order that doesn't match variable acquisition order
 - [ ] `pool.remove_with(h, |val| { ... })` stdlib helper — cascading @resource cleanup is a 4-step dance today
 - [ ] Style guideline: max 3 context clauses per function — lint, not language rule
 

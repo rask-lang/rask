@@ -113,7 +113,7 @@ const results = try group.join_all()
 |------|-------------|
 | **C1: Multitasking** | `using Multitasking { }` provides M:N green task scheduler + I/O event loop |
 | **C2: ThreadPool** | `using ThreadPool { }` provides thread pool for CPU-bound work |
-| **C3: Composable** | `using Multitasking, ThreadPool { }` enables both |
+| **C3: Composable** | `using Multitasking, ThreadPool { }` enables both (desugars to nested blocks) |
 | **C4: Block exit** | Exiting a `using` block waits for non-detached tasks |
 
 <!-- test: skip -->
@@ -122,6 +122,8 @@ using Multitasking(workers: 4) { }
 using ThreadPool(workers: 8) { }
 using Multitasking, ThreadPool { }
 ```
+
+**C3 desugaring:** `using A, B { body }` desugars to `using A { using B { body } }`. Each context gets its own scope and cleanup. LIFO: B shuts down before A.
 
 | Setup | Green Tasks | Thread Pool | Use Case |
 |-------|-------------|-------------|----------|

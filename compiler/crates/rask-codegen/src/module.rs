@@ -272,7 +272,8 @@ impl CodeGenerator {
             rask_mir::MirStmt::Store { value, .. } => {
                 self.register_operand_string(value, counter)?;
             }
-            rask_mir::MirStmt::Call { args, .. } => {
+            rask_mir::MirStmt::Call { args, .. }
+            | rask_mir::MirStmt::ClosureCall { args, .. } => {
                 for arg in args {
                     self.register_operand_string(arg, counter)?;
                 }

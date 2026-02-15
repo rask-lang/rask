@@ -26,7 +26,7 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::F64 => Ok(types::F64),
         MirType::Char => Ok(types::I32), // Unicode scalar value
         MirType::Ptr => Ok(types::I64),  // Pointer
-        MirType::FatPtr => Ok(types::I64), // For now, treat as single pointer (will need struct)
+        MirType::String => Ok(types::I64), // String data pointer
         MirType::Struct(_) => Ok(types::I64), // Pointer to struct
         MirType::Enum(_) => Ok(types::I64),   // Pointer to enum
         MirType::Array { .. } => Ok(types::I64), // Pointer to array
@@ -43,7 +43,7 @@ pub fn mir_type_size(ty: &MirType) -> u32 {
         MirType::I16 | MirType::U16 => 2,
         MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
         MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::FatPtr => 16, // ptr + len
+        MirType::String => 16, // ptr + len
         MirType::Struct(_) => 8, // Pointer for now (should use layout)
         MirType::Enum(_) => 8,   // Pointer for now
         MirType::Array { elem, len } => mir_type_size(elem) * len,
@@ -57,7 +57,7 @@ pub fn mir_type_alignment(ty: &MirType) -> u32 {
         MirType::Bool | MirType::I8 | MirType::U8 => 1,
         MirType::I16 | MirType::U16 => 2,
         MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FatPtr | MirType::FuncPtr(_) => 8,
+        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::String | MirType::FuncPtr(_) => 8,
         MirType::Struct(_) => 8, // Should use layout
         MirType::Enum(_) => 8,
         MirType::Array { elem, .. } => mir_type_alignment(elem),

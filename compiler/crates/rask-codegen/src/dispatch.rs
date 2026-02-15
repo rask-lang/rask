@@ -5,6 +5,24 @@
 //! After monomorphization, stdlib method calls arrive at codegen as bare
 //! names (e.g., "push", "len"). This module maps those names to C runtime
 //! functions declared in compiler/runtime/runtime.c.
+//!
+//! ## Runtime reconciliation
+//!
+//! Two sets of C implementations exist for Vec, String, Map, and Pool:
+//!
+//! 1. **Old i64-based** (inline in `runtime.c`): all params/returns are `int64_t`,
+//!    pointers cast to/from i64. These match the Cranelift signatures below.
+//!    This is what the linker (`link.rs`) actually compiles and links.
+//!
+//! 2. **New typed** (`vec.c`, `string.c`, `map.c`, `pool.c` + `rask_runtime.h`):
+//!    proper struct pointers (`RaskVec*`, `RaskString*`, etc.) with `elem_size`
+//!    params for type-safe storage. These are not linked yet.
+//!
+//! The typed implementations are the intended target. Migrating requires:
+//! - Update dispatch entries to match typed signatures (pointer params, elem_size)
+//! - Update `link.rs` to compile the separate `.c` files (or unify into runtime.c)
+//! - Remove the old i64-based duplicates from runtime.c
+//! - Update codegen to pass elem_size when constructing collections
 
 use cranelift::prelude::*;
 use cranelift_module::{Linkage, Module};
@@ -144,7 +162,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "pool_get",
-            c_name: "rask_pool_get",
+            c_name: "rask_pool_checked_access",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
@@ -181,14 +199,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
 /// Declare all stdlib functions in a Cranelift module.
 ///
-/// Entries go into `func_ids` keyed by their MIR name. User-defined functions
-/// declared later will shadow any matching stdlib names.
+/// Call after `declare_runtime_functions` and before `declare_functions`.
+/// Skips names already claimed by the runtime. User-defined functions
+/// declared afterwards overwrite matching entries in `func_ids`.
 pub fn declare_stdlib<M: Module>(
     module: &mut M,
     func_ids: &mut HashMap<String, cranelift_module::FuncId>,
 ) -> CodegenResult<()> {
     for entry in stdlib_entries() {
-        // Skip if already declared (user function takes priority)
+        // Skip if already declared by runtime
         if func_ids.contains_key(entry.mir_name) {
             continue;
         }
