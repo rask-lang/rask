@@ -85,9 +85,17 @@ impl<T: Send + 'static> GreenTaskHandle<T> {
         match self.result.take() {
             Some(Ok(val)) => Ok(val),
             Some(Err(msg)) => Err(JoinError::Panicked(msg)),
-            None => Err(JoinError::Panicked(
-                "task completed without producing a result".to_string(),
-            )),
+            None => {
+                // No result written. If the cancel token is set, the
+                // scheduler force-completed the task before it ran.
+                if self.raw.header.cancel_token.is_cancelled() {
+                    Err(JoinError::Cancelled)
+                } else {
+                    Err(JoinError::Panicked(
+                        "task completed without producing a result".to_string(),
+                    ))
+                }
+            }
         }
     }
 }
@@ -230,6 +238,31 @@ mod tests {
         match h.join() {
             Err(JoinError::Panicked(msg)) => assert!(msg.contains("boom")),
             other => panic!("expected Panicked, got {:?}", other),
+        }
+        sched.shutdown();
+    }
+
+    #[test]
+    fn green_cancel_before_run_returns_cancelled() {
+        // Scheduler-level cancellation: if we cancel before the worker
+        // polls the task, run_task skips the closure entirely.
+        let sched = make_scheduler();
+        let ran = Arc::new(AtomicBool::new(false));
+        let r = ran.clone();
+        let h = green_spawn(&sched, move || {
+            r.store(true, Ordering::Relaxed);
+            42
+        }, file!(), line!());
+        // Cancel immediately — may or may not beat the worker.
+        match h.cancel() {
+            Err(JoinError::Cancelled) => {
+                // Scheduler caught it before poll.
+                assert!(!ran.load(Ordering::Relaxed));
+            }
+            Ok(42) => {
+                // Worker was faster — closure ran normally.
+            }
+            other => panic!("unexpected result: {:?}", other),
         }
         sched.shutdown();
     }

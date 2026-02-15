@@ -76,9 +76,9 @@ impl std::fmt::Debug for RawTask {
     }
 }
 
-// RawTask is Send+Sync: the future is Send, header fields are atomic/mutex.
-unsafe impl Send for RawTask {}
-unsafe impl Sync for RawTask {}
+// RawTask is Send+Sync automatically: the future is Send, Mutex provides
+// Sync, and all header fields are atomic/Arc/Mutex. No manual unsafe impl
+// needed — the compiler derives it.
 
 impl RawTask {
     pub fn new(

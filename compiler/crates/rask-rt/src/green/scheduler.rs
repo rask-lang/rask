@@ -108,6 +108,9 @@ impl Scheduler {
     ///
     /// Sets the schedule callback on the task so wakers can re-enqueue it.
     pub(crate) fn schedule(&self, task: Arc<RawTask>) {
+        if self.shared.shutdown.load(Ordering::Acquire) {
+            panic!("cannot spawn task on a scheduler that is shutting down");
+        }
         self.shared.active_tasks.fetch_add(1, Ordering::AcqRel);
 
         // Set the re-enqueue callback the waker uses.
@@ -287,6 +290,22 @@ fn worker_loop(id: usize, shared: &SharedState) {
 fn run_task(task: Arc<RawTask>, shared: &SharedState) {
     // Skip already-completed tasks.
     if task.state() == TaskState::Complete {
+        return;
+    }
+
+    // Scheduler-level cancellation: if the token is set before we poll,
+    // drop the future without executing it. This covers the gap where
+    // cancel() is called between enqueue and poll — sync closures have
+    // no yield points, so this is the only pre-execution check point.
+    if task.header.cancel_token.is_cancelled() {
+        *task.future.lock().unwrap() = None;
+        task.mark_complete();
+        let prev = shared.active_tasks.fetch_sub(1, Ordering::AcqRel);
+        if prev == 1 {
+            let (lock, cvar) = &shared.all_done;
+            let _guard = lock.lock().unwrap();
+            cvar.notify_all();
+        }
         return;
     }
 
