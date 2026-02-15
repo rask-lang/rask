@@ -104,6 +104,14 @@ pub fn cmd_build(path: &str) {
                                                             total_errors += 1;
                                                         }
 
+                                                        // Declare stdlib functions (Vec, Map, string, etc.)
+                                                        if total_errors == 0 {
+                                                            if let Err(e) = codegen.declare_stdlib_functions() {
+                                                                eprintln!("codegen error: {}", e);
+                                                                total_errors += 1;
+                                                            }
+                                                        }
+
                                                         // Declare all user functions
                                                         if total_errors == 0 {
                                                             if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
