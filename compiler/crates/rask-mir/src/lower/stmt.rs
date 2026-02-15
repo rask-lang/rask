@@ -166,6 +166,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Lower a let/const binding: evaluate init, assign to a new local.
     fn lower_binding(&mut self, name: &str, ty: Option<&str>, init: &Expr) -> Result<(), LoweringError> {
+        let is_closure = matches!(&init.kind, ExprKind::Closure { .. });
         let (init_op, inferred_ty) = self.lower_expr(init)?;
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
@@ -174,6 +175,17 @@ impl<'a> MirLowerer<'a> {
             dst: local_id,
             rvalue: MirRValue::Use(init_op),
         });
+
+        // Track closure bindings and alias the func_sig so callers can
+        // look up the return type by variable name.
+        if is_closure {
+            self.closure_locals.insert(name.to_string());
+            let closure_fn = format!("{}__closure_{}", self.parent_name, self.closure_counter - 1);
+            if let Some(sig) = self.func_sigs.get(&closure_fn).cloned() {
+                self.func_sigs.insert(name.to_string(), sig);
+            }
+        }
+
         Ok(())
     }
 

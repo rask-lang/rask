@@ -45,6 +45,33 @@ pub enum MirStmt {
         line: u32,
         col: u32,
     },
+    /// Create a closure value: { func_ptr, env_ptr }.
+    /// `captures` lists the locals whose values are stored into the environment.
+    ClosureCreate {
+        dst: LocalId,
+        func_name: String,
+        captures: Vec<ClosureCapture>,
+    },
+    /// Call through a closure value (indirect call with env_ptr prepended).
+    ClosureCall {
+        dst: Option<LocalId>,
+        closure: LocalId,
+        args: Vec<MirOperand>,
+    },
+    /// Load a captured variable from the closure environment pointer.
+    LoadCapture {
+        dst: LocalId,
+        env_ptr: LocalId,
+        offset: u32,
+    },
+}
+
+/// A captured variable in a closure environment.
+#[derive(Debug, Clone)]
+pub struct ClosureCapture {
+    pub local_id: LocalId,
+    pub offset: u32,
+    pub size: u32,
 }
 
 /// MIR terminator - ends a basic block

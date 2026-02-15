@@ -84,7 +84,7 @@ pub fn cmd_build(path: &str) {
 
                                             for mono_fn in &mono.functions {
                                                 match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
-                                                    Ok(mir_fn) => mir_functions.push(mir_fn),
+                                                    Ok(mir_fns) => mir_functions.extend(mir_fns),
                                                     Err(e) => {
                                                         eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
                                                         mir_errors += 1;
@@ -102,6 +102,14 @@ pub fn cmd_build(path: &str) {
                                                         if let Err(e) = codegen.declare_runtime_functions() {
                                                             eprintln!("codegen error: {}", e);
                                                             total_errors += 1;
+                                                        }
+
+                                                        // Declare stdlib functions (Vec, Map, string, etc.)
+                                                        if total_errors == 0 {
+                                                            if let Err(e) = codegen.declare_stdlib_functions() {
+                                                                eprintln!("codegen error: {}", e);
+                                                                total_errors += 1;
+                                                            }
                                                         }
 
                                                         // Declare all user functions

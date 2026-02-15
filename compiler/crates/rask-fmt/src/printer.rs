@@ -1207,7 +1207,7 @@ impl<'a> Printer<'a> {
                 self.emit(")");
             }
             ExprKind::UsingBlock { name, args, body } => {
-                self.emit("with ");
+                self.emit("using ");
                 self.emit(name);
                 if !args.is_empty() {
                     self.emit("(");

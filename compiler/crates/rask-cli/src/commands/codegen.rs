@@ -263,9 +263,11 @@ pub fn cmd_mir(path: &str, format: Format) {
     let mut mir_errors = 0;
     for mono_fn in &mono.functions {
         match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
-            Ok(mir_fn) => {
+            Ok(mir_fns) => {
                 if format == Format::Human {
-                    println!("{}", mir_fn);
+                    for mir_fn in &mir_fns {
+                        println!("{}", mir_fn);
+                    }
                 }
             }
             Err(e) => {
@@ -308,7 +310,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     let mut mir_functions = Vec::new();
     for mono_fn in &mono.functions {
         match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
-            Ok(mir_fn) => mir_functions.push(mir_fn),
+            Ok(mir_fns) => mir_functions.extend(mir_fns),
             Err(e) => {
                 eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
                 process::exit(1);
@@ -331,6 +333,10 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
 
     if let Err(e) = codegen.declare_runtime_functions() {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
+    if let Err(e) = codegen.declare_stdlib_functions() {
         eprintln!("{}: {}", output::error_label(), e);
         process::exit(1);
     }
