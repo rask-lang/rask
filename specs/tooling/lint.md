@@ -171,7 +171,7 @@ rask lint src/ --exclude idiom/unwrap-production
 
 ### Future
 
-- **Custom rules** — project-level lint configuration in `rask.build`
+- **Custom rules** — project-level lint configuration in `build.rk`
 - **Auto-fix** — `rask lint --fix` for rules with unambiguous fixes
 - **CI integration** — exit code 1 on errors, 0 on warnings-only
 

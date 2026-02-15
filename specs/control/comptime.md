@@ -604,7 +604,7 @@ IDEs should provide:
 | **Can write files?** | ❌ No | ✅ Yes |
 | **Can call C code?** | ❌ No | ✅ Yes |
 | **Can spawn tasks?** | ❌ No | ✅ Yes |
-| **File** | In source files (comptime keyword) | `rask.build` |
+| **File** | In source files (comptime keyword) | `build.rk` |
 | **Executed by** | Compiler's comptime interpreter | Separate compiled program |
 
 **Use comptime for:**

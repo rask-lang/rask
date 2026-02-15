@@ -51,6 +51,42 @@ impl CodeGenerator {
         })
     }
 
+    /// Create a code generator targeting a specific platform (XT2).
+    pub fn new_with_target(triple: &str) -> CodegenResult<Self> {
+        use std::str::FromStr;
+        let target = target_lexicon::Triple::from_str(triple)
+            .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;
+
+        let mut flag_builder = settings::builder();
+        // Set is_pic for position-independent code on relevant targets
+        if matches!(target.operating_system, target_lexicon::OperatingSystem::Linux) {
+            let _ = flag_builder.set("is_pic", "true");
+        }
+        let flags = settings::Flags::new(flag_builder);
+
+        let isa = isa::lookup(target)
+            .map_err(|e| CodegenError::CraneliftError(format!("unsupported target '{}': {}", triple, e)))?
+            .finish(flags)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let builder = ObjectBuilder::new(
+            isa,
+            "rask_module",
+            cranelift_module::default_libcall_names(),
+        ).map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let module = ObjectModule::new(builder);
+
+        Ok(CodeGenerator {
+            module,
+            ctx: codegen::Context::new(),
+            func_ids: HashMap::new(),
+            struct_layouts: Vec::new(),
+            enum_layouts: Vec::new(),
+            string_data: HashMap::new(),
+        })
+    }
+
     /// Declare runtime functions as external imports.
     /// These are provided by the C runtime (compiler/runtime/runtime.c).
     pub fn declare_runtime_functions(&mut self) -> CodegenResult<()> {

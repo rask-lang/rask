@@ -13,7 +13,7 @@ better than Cargo, Go, and Zig for the common case.
 
 **What's solid:**
 
-The `rask.build` single-file design (PK1–PK5) is good. One file, Rask syntax, declarative
+The `build.rk` single-file design (PK1–PK5) is good. One file, Rask syntax, declarative
 package block parseable independently of build logic (PK3). This beats Cargo's TOML + build.rs
 split and avoids the "two languages" problem. MVS resolution (MV1–MV4) from `struct.packages`
 is deterministic and simple. Lock files, registry basics, and workspaces are specified.
@@ -24,7 +24,7 @@ is deterministic and simple. Lock files, registry basics, and workspaces are spe
 |-----|--------|----------|
 | No incremental build steps | Build scripts re-run entirely when any input changes | High |
 | No cross-compilation | Can't target other platforms from `rask build` | High |
-| No `rask add` / `rask remove` CLI | Manual editing of rask.build for every dep | High |
+| No `rask add` / `rask remove` CLI | Manual editing of build.rk for every dep | High |
 | No watch mode | Developers restart build manually after every change | High |
 | No compilation cache | Switching git branches recompiles everything | Medium |
 | No output directory spec | Where do binaries go? | Medium |
@@ -54,8 +54,8 @@ All commands live under the `rask` binary. No separate tools.
 | `rask bench [filter]` | Build and run benchmarks |
 | `rask check` | Type-check without codegen |
 | `rask watch [command]` | File watch + auto-rebuild |
-| `rask add <pkg> [version]` | Add dependency to rask.build |
-| `rask remove <pkg>` | Remove dependency from rask.build |
+| `rask add <pkg> [version]` | Add dependency to build.rk |
+| `rask remove <pkg>` | Remove dependency from build.rk |
 | `rask fetch` | Download dependencies |
 | `rask update [pkg]` | Update to latest compatible versions |
 | `rask publish` | Publish to registry |
@@ -68,14 +68,14 @@ All commands live under the `rask` binary. No separate tools.
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Zero-config default** | `rask build` works with no flags, no rask.build, no config |
+| **CL1: Zero-config default** | `rask build` works with no flags, no build.rk, no config |
 | **CL2: Consistent flags** | `--release`, `--target`, `--verbose` work on all build commands |
 | **CL3: Machine-readable output** | `--format json` on all commands for CI integration |
 | **CL4: Exit codes** | 0 = success, 1 = build error, 2 = usage error |
 
 ### `rask add`
 
-Edits `rask.build` programmatically:
+Edits `build.rk` programmatically:
 
 ```
 $ rask add http
@@ -183,7 +183,7 @@ try ctx.step("protobuf", inputs: ["api.proto"], tool: "protoc", || {
 
 ```
 myproject/
-  rask.build
+  build.rk
   main.rk
   lib.rk
   .rk-gen/                      # Generated source files (build script output)
@@ -208,7 +208,7 @@ myproject/
 | **OD1: Default location** | `build/` in project root. Override with `RASK_BUILD_DIR` |
 | **OD2: Profile directories** | `build/<profile>/` — `debug`, `release`, or custom profile name |
 | **OD3: Target directories** | `build/<target-triple>/<profile>/` for cross-compilation |
-| **OD4: Binary naming** | Binary name = package name from `rask.build` (or directory name if no rask.build) |
+| **OD4: Binary naming** | Binary name = package name from `build.rk` (or directory name if no build.rk) |
 | **OD5: .gitignore** | `rask build` auto-creates `build/.gitignore` with `*` on first run |
 | **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rask/cache/` entries for this project |
 
@@ -298,7 +298,7 @@ changing one file recompiles only its package and dependents.
 | **WA1: Default command** | `rask watch` → runs `rask check` on change (type-check only, no codegen — fastest feedback) |
 | **WA2: Custom command** | `rask watch build`, `rask watch test`, `rask watch run` — any rask subcommand |
 | **WA3: Debounce** | 100ms debounce — multiple rapid saves trigger one rebuild |
-| **WA4: Scope** | Watches `.rk` files, `rask.build`, and declared build step inputs |
+| **WA4: Scope** | Watches `.rk` files, `build.rk`, and declared build step inputs |
 | **WA5: Clear output** | Clears terminal on each rebuild (disable with `--no-clear`) |
 | **WA6: Error persistence** | Errors stay on screen until fixed (no scrolling away) |
 
@@ -377,7 +377,7 @@ cache_key = hash(
 ```
 $ rask publish --dry-run
   Package: my-api 1.0.0
-  Files: 12 (.rk) + rask.build
+  Files: 12 (.rk) + build.rk
   Size: 45 KB
   Dependencies: http ^2.0, json ^1.5
   Checks:
@@ -425,7 +425,7 @@ $ rask yank my-api 1.0.0 --reason "security vulnerability in auth module"
 ```
 $ rask vendor
   Vendored 15 packages to vendor/
-  Add to rask.build: vendor_dir: "vendor"
+  Add to build.rk: vendor_dir: "vendor"
 ```
 
 ### Rules
@@ -460,7 +460,7 @@ $ rask audit
 | Rule | Description |
 |------|-------------|
 | **AU1: Advisory database** | Fetches from `https://advisories.rk-lang.org` |
-| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `rask.build` |
+| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `build.rk` |
 | **AU3: Exit code** | Returns non-zero if vulnerabilities found (for CI gates) |
 | **AU4: Ignore list** | `rask audit --ignore CVE-2024-1234` for acknowledged risks |
 | **AU5: Offline mode** | `rask audit --db ./advisory-db.json` for air-gapped environments |
@@ -552,7 +552,7 @@ Expanding the lifecycle from `struct.build/LC1`:
 ```
 rask build
   │
-  ├─ 1. Find rask.build (or use defaults)
+  ├─ 1. Find build.rk (or use defaults)
   ├─ 2. Parse package block (PK3: independent of build logic)
   ├─ 3. Resolve dependencies (MVS)
   ├─ 4. Check rask.lock (error if out of sync)
@@ -646,7 +646,7 @@ audit built-in) is better than languages that require external tools.
 
 ### SN (Syntactic Noise, target ≤ 0.3)
 
-The `rask.build` format is minimal:
+The `build.rk` format is minimal:
 ```rask
 package "my-api" "1.0.0" {
     dep "http" "^2.0"

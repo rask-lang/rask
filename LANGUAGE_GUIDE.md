@@ -1372,7 +1372,7 @@ public func api_endpoint() { ... }    // Visible to importers
 
 ### Build Configuration
 
-Projects use a `rask.build` file (not TOML—it's Rask syntax):
+Projects use a `build.rk` file (not TOML—it's Rask syntax):
 
 ```rask
 package "myapp" "1.0.0" {
