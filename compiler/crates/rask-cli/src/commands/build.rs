@@ -55,6 +55,7 @@ fn ensure_gitignore(root: &Path) {
 }
 
 pub fn cmd_build(path: &str, opts: BuildOptions) {
+    use rask_ast::decl::DeclKind;
     use rask_resolve::PackageRegistry;
 
     let start = Instant::now();
@@ -81,7 +82,20 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     // Auto-create build/.gitignore (OD5)
     ensure_gitignore(&root);
 
-    let bin_name = binary_name(&root);
+    // === LC1 Step 1-3: Parse build.rk, discover packages + deps ===
+    let mut registry = PackageRegistry::new();
+    let root_id = match registry.discover(&root) {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("{}: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    };
+
+    // Binary name from build.rk package name or directory name (OD4)
+    let bin_name = registry.get(root_id)
+        .and_then(|pkg| pkg.manifest.as_ref().map(|m| m.name.clone()))
+        .unwrap_or_else(|| binary_name(&root));
 
     if opts.verbose {
         println!("  {} {}", "Profile:".dimmed(), opts.profile);
@@ -100,190 +114,226 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     };
     println!("{} {} ({})", "  Compiling".green().bold(), bin_name, compile_label);
 
-    let mut registry = PackageRegistry::new();
-    match registry.discover(&root) {
-        Ok(_root_id) => {
-            if opts.verbose {
-                println!("  Discovered {} package(s):", registry.len());
-                for pkg in registry.packages() {
-                    let file_count = pkg.files.len();
-                    let decl_count: usize = pkg.files.iter().map(|f| f.decls.len()).sum();
-                    println!(
-                        "    {} ({} file{}, {} decl{})",
-                        pkg.path_string(),
-                        file_count,
-                        if file_count == 1 { "" } else { "s" },
-                        decl_count,
-                        if decl_count == 1 { "" } else { "s" }
-                    );
-                }
-                println!();
-            }
+    if opts.verbose {
+        println!("  Discovered {} package(s):", registry.len());
+        for pkg in registry.packages() {
+            let file_count = pkg.files.len();
+            let decl_count: usize = pkg.files.iter().map(|f| f.decls.len()).sum();
+            let dep_label = if pkg.is_external { " (dependency)" } else { "" };
+            println!(
+                "    {}{} ({} file{}, {} decl{})",
+                pkg.path_string(),
+                dep_label,
+                file_count,
+                if file_count == 1 { "" } else { "s" },
+                decl_count,
+                if decl_count == 1 { "" } else { "s" }
+            );
+        }
+        println!();
+    }
 
-            let mut total_errors = 0;
-            for pkg in registry.packages() {
+    // === LC1 Step 6: Run build script if func build() exists ===
+    let build_decls: Vec<_> = registry.get(root_id)
+        .map(|pkg| pkg.build_decls.clone())
+        .unwrap_or_default();
+
+    let has_build_fn = build_decls.iter().any(|d| {
+        matches!(&d.kind, DeclKind::Fn(f) if f.name == "build")
+    });
+
+    if has_build_fn {
+        if opts.verbose {
+            println!("  {} build.rk", "Running".yellow().bold());
+        }
+
+        // Create .rk-gen/ directory for generated files
+        let gen_dir = root.join(".rk-gen");
+        let _ = fs::create_dir_all(&gen_dir);
+
+        let mut interp = rask_interp::Interpreter::new();
+        match interp.run(&build_decls) {
+            Ok(_) => {
                 if opts.verbose {
-                    println!("  {} {}", "Checking".dimmed(), pkg.path_string());
+                    println!("  {} build script", "Finished".green().bold());
                 }
+                // Re-discover to pick up any .rk-gen/ files
+                let mut fresh_registry = PackageRegistry::new();
+                match fresh_registry.discover(&root) {
+                    Ok(_) => { registry = fresh_registry; }
+                    Err(e) => {
+                        eprintln!("{}: re-discovery after build script: {}", output::error_label(), e);
+                        process::exit(1);
+                    }
+                }
+            }
+            Err(diag) => {
+                eprintln!("{}: build script failed: {}", output::error_label(), diag.error);
+                process::exit(1);
+            }
+        }
+    }
 
-                let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
-                rask_desugar::desugar(&mut all_decls);
+    // === LC1 Step 7: Compile packages ===
+    let mut total_errors = 0;
+    for pkg in registry.packages() {
+        if opts.verbose {
+            println!("  {} {}", "Checking".dimmed(), pkg.path_string());
+        }
 
-                match rask_resolve::resolve_package(&all_decls, &registry, pkg.id) {
-                    Ok(resolved) => {
-                        match rask_types::typecheck(resolved, &all_decls) {
-                            Ok(typed) => {
-                                let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
-                                if !ownership_result.is_ok() {
-                                    for error in &ownership_result.errors {
-                                        eprintln!("error: {}", error.kind);
-                                    }
-                                    total_errors += ownership_result.errors.len();
-                                } else {
-                                    // Hidden parameter pass
-                                    rask_hidden_params::desugar_hidden_params(&mut all_decls);
+        let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
+        rask_desugar::desugar(&mut all_decls);
 
-                                    match rask_mono::monomorphize(&typed, &all_decls) {
-                                        Ok(mono) => {
-                                            let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
-                                            let mir_ctx = rask_mir::lower::MirContext {
-                                                struct_layouts: &mono.struct_layouts,
-                                                enum_layouts: &mono.enum_layouts,
-                                                node_types: &typed.node_types,
-                                            };
+        match rask_resolve::resolve_package(&all_decls, &registry, pkg.id) {
+            Ok(resolved) => {
+                match rask_types::typecheck(resolved, &all_decls) {
+                    Ok(typed) => {
+                        let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
+                        if !ownership_result.is_ok() {
+                            for error in &ownership_result.errors {
+                                eprintln!("error: {}", error.kind);
+                            }
+                            total_errors += ownership_result.errors.len();
+                        } else {
+                            // Hidden parameter pass
+                            rask_hidden_params::desugar_hidden_params(&mut all_decls);
 
-                                            let mut mir_functions = Vec::new();
-                                            let mut mir_errors = 0;
+                            match rask_mono::monomorphize(&typed, &all_decls) {
+                                Ok(mono) => {
+                                    let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+                                    let mir_ctx = rask_mir::lower::MirContext {
+                                        struct_layouts: &mono.struct_layouts,
+                                        enum_layouts: &mono.enum_layouts,
+                                        node_types: &typed.node_types,
+                                    };
 
-                                            for mono_fn in &mono.functions {
-                                                match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
-                                                    Ok(mir_fns) => mir_functions.extend(mir_fns),
-                                                    Err(e) => {
-                                                        eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
-                                                        mir_errors += 1;
-                                                    }
-                                                }
+                                    let mut mir_functions = Vec::new();
+                                    let mut mir_errors = 0;
+
+                                    for mono_fn in &mono.functions {
+                                        match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
+                                            Ok(mir_fns) => mir_functions.extend(mir_fns),
+                                            Err(e) => {
+                                                eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
+                                                mir_errors += 1;
                                             }
+                                        }
+                                    }
 
-                                            total_errors += mir_errors;
+                                    total_errors += mir_errors;
 
-                                            if mir_errors == 0 && !mir_functions.is_empty() {
-                                                let codegen_result = match opts.target {
-                                                    Some(ref t) => rask_codegen::CodeGenerator::new_with_target(t),
-                                                    None => rask_codegen::CodeGenerator::new(),
-                                                };
-                                                match codegen_result {
-                                                    Ok(mut codegen) => {
-                                                        if let Err(e) = codegen.declare_runtime_functions() {
-                                                            eprintln!("codegen error: {}", e);
-                                                            total_errors += 1;
-                                                        }
+                                    if mir_errors == 0 && !mir_functions.is_empty() {
+                                        let codegen_result = match opts.target {
+                                            Some(ref t) => rask_codegen::CodeGenerator::new_with_target(t),
+                                            None => rask_codegen::CodeGenerator::new(),
+                                        };
+                                        match codegen_result {
+                                            Ok(mut codegen) => {
+                                                if let Err(e) = codegen.declare_runtime_functions() {
+                                                    eprintln!("codegen error: {}", e);
+                                                    total_errors += 1;
+                                                }
 
-                                                        if total_errors == 0 {
-                                                            if let Err(e) = codegen.declare_stdlib_functions() {
-                                                                eprintln!("codegen error: {}", e);
-                                                                total_errors += 1;
-                                                            }
-                                                        }
-
-                                                        if total_errors == 0 {
-                                                            if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
-                                                                eprintln!("codegen error: {}", e);
-                                                                total_errors += 1;
-                                                            }
-                                                        }
-
-                                                        if total_errors == 0 {
-                                                            if let Err(e) = codegen.register_strings(&mir_functions) {
-                                                                eprintln!("codegen error: {}", e);
-                                                                total_errors += 1;
-                                                            }
-                                                        }
-
-                                                        if total_errors == 0 {
-                                                            for mir_fn in &mir_functions {
-                                                                if let Err(e) = codegen.gen_function(mir_fn) {
-                                                                    eprintln!("codegen error in '{}': {}", mir_fn.name, e);
-                                                                    total_errors += 1;
-                                                                }
-                                                            }
-                                                        }
-
-                                                        // Emit to build/<profile>/ (OD2)
-                                                        if total_errors == 0 {
-                                                            let obj_path = out_dir.join(format!("{}.o", bin_name));
-                                                            let bin_path = out_dir.join(&bin_name);
-                                                            let obj_str = obj_path.to_string_lossy().to_string();
-                                                            let bin_str = bin_path.to_string_lossy().to_string();
-
-                                                            match codegen.emit_object(&obj_str) {
-                                                                Ok(_) => {
-                                                                    match super::link::link_executable(&obj_str, &bin_str) {
-                                                                        Ok(_) => {}
-                                                                        Err(e) => {
-                                                                            eprintln!("link error: {}", e);
-                                                                            total_errors += 1;
-                                                                        }
-                                                                    }
-                                                                }
-                                                                Err(e) => {
-                                                                    eprintln!("failed to emit object file: {}", e);
-                                                                    total_errors += 1;
-                                                                }
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        eprintln!("failed to initialize codegen: {}", e);
+                                                if total_errors == 0 {
+                                                    if let Err(e) = codegen.declare_stdlib_functions() {
+                                                        eprintln!("codegen error: {}", e);
                                                         total_errors += 1;
                                                     }
                                                 }
+
+                                                if total_errors == 0 {
+                                                    if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
+                                                        eprintln!("codegen error: {}", e);
+                                                        total_errors += 1;
+                                                    }
+                                                }
+
+                                                if total_errors == 0 {
+                                                    if let Err(e) = codegen.register_strings(&mir_functions) {
+                                                        eprintln!("codegen error: {}", e);
+                                                        total_errors += 1;
+                                                    }
+                                                }
+
+                                                if total_errors == 0 {
+                                                    for mir_fn in &mir_functions {
+                                                        if let Err(e) = codegen.gen_function(mir_fn) {
+                                                            eprintln!("codegen error in '{}': {}", mir_fn.name, e);
+                                                            total_errors += 1;
+                                                        }
+                                                    }
+                                                }
+
+                                                // Emit to build/<profile>/ (OD2)
+                                                if total_errors == 0 {
+                                                    let obj_path = out_dir.join(format!("{}.o", bin_name));
+                                                    let bin_path = out_dir.join(&bin_name);
+                                                    let obj_str = obj_path.to_string_lossy().to_string();
+                                                    let bin_str = bin_path.to_string_lossy().to_string();
+
+                                                    match codegen.emit_object(&obj_str) {
+                                                        Ok(_) => {
+                                                            match super::link::link_executable(&obj_str, &bin_str) {
+                                                                Ok(_) => {}
+                                                                Err(e) => {
+                                                                    eprintln!("link error: {}", e);
+                                                                    total_errors += 1;
+                                                                }
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            eprintln!("failed to emit object file: {}", e);
+                                                            total_errors += 1;
+                                                        }
+                                                    }
+                                                }
                                             }
-                                        }
-                                        Err(e) => {
-                                            eprintln!("monomorphization error: {:?}", e);
-                                            total_errors += 1;
+                                            Err(e) => {
+                                                eprintln!("failed to initialize codegen: {}", e);
+                                                total_errors += 1;
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Err(errors) => {
-                                for error in &errors {
-                                    eprintln!("type error: {}", error);
+                                Err(e) => {
+                                    eprintln!("monomorphization error: {:?}", e);
+                                    total_errors += 1;
                                 }
-                                total_errors += errors.len();
                             }
                         }
                     }
                     Err(errors) => {
                         for error in &errors {
-                            eprintln!("resolve error: {}", error.kind);
+                            eprintln!("type error: {}", error);
                         }
                         total_errors += errors.len();
                     }
                 }
             }
-
-            let elapsed = start.elapsed();
-            println!();
-            if total_errors == 0 {
-                let bin_path = out_dir.join(&bin_name);
-                println!(
-                    "   {} {} ({}) [{:.2}s]",
-                    "Finished".green().bold(),
-                    bin_path.display(),
-                    opts.profile,
-                    elapsed.as_secs_f64()
-                );
-            } else {
-                eprintln!("{}", output::banner_fail("Build", total_errors));
-                process::exit(1);
+            Err(errors) => {
+                for error in &errors {
+                    eprintln!("resolve error: {}", error.kind);
+                }
+                total_errors += errors.len();
             }
         }
-        Err(e) => {
-            eprintln!("{}: {}", output::error_label(), e);
-            process::exit(1);
-        }
+    }
+
+    // === LC1 Step 8-9: Link + report ===
+    let elapsed = start.elapsed();
+    println!();
+    if total_errors == 0 {
+        let bin_path = out_dir.join(&bin_name);
+        println!(
+            "   {} {} ({}) [{:.2}s]",
+            "Finished".green().bold(),
+            bin_path.display(),
+            opts.profile,
+            elapsed.as_secs_f64()
+        );
+    } else {
+        eprintln!("{}", output::banner_fail("Build", total_errors));
+        process::exit(1);
     }
 }
 
