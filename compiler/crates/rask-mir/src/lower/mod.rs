@@ -91,7 +91,7 @@ impl<'a> MirContext<'a> {
             "f64" => MirType::F64,
             "bool" => MirType::Bool,
             "char" => MirType::Char,
-            "string" => MirType::FatPtr,
+            "string" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
                 if let Some((idx, _)) = self.find_struct(name) {
@@ -107,9 +107,35 @@ impl<'a> MirContext<'a> {
 
     /// Convert a Type from the type checker to MirType.
     pub fn type_to_mir(&self, ty: &Type) -> MirType {
-        // Use Display to convert Type to string, then resolve it
-        let type_str = format!("{}", ty);
-        self.resolve_type_str(&type_str)
+        match ty {
+            Type::Unit => MirType::Void,
+            Type::Bool => MirType::Bool,
+            Type::I8 => MirType::I8,
+            Type::I16 => MirType::I16,
+            Type::I32 => MirType::I32,
+            Type::I64 | Type::I128 => MirType::I64,
+            Type::U8 => MirType::U8,
+            Type::U16 => MirType::U16,
+            Type::U32 => MirType::U32,
+            Type::U64 | Type::U128 => MirType::U64,
+            Type::F32 => MirType::F32,
+            Type::F64 => MirType::F64,
+            Type::Char => MirType::Char,
+            Type::String => MirType::String,
+            Type::Never => MirType::Void,
+            // Named types — look up in struct/enum layouts by name
+            Type::UnresolvedNamed(name) => self.resolve_type_str(name),
+            // Resolved named types — need monomorphization name, fall back to Ptr
+            Type::Named(_) | Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+                let type_str = format!("{}", ty);
+                self.resolve_type_str(&type_str)
+            }
+            // Compound types not yet lowered to MIR — pointer representation
+            Type::Fn { .. } | Type::Tuple(_) | Type::Array { .. } | Type::Slice(_)
+            | Type::Option(_) | Type::Result { .. } | Type::Union(_) => MirType::Ptr,
+            // Should not reach MIR lowering
+            Type::Var(_) | Type::Error => MirType::Ptr,
+        }
     }
 
     /// Look up the MIR type for an expression node.
@@ -243,7 +269,7 @@ fn mir_type_size(ty: &MirType) -> u32 {
         MirType::I16 | MirType::U16 => 2,
         MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
         MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::FatPtr => 16,
+        MirType::String => 16,
         MirType::Struct(id) => {
             // Can't look up the layout without context — fallback to pointer size
             let _ = id;
@@ -683,7 +709,7 @@ mod tests {
     fn lower_string_literal() {
         let decl = make_fn("f", vec![], Some("string"), vec![return_stmt(Some(string_expr("hello")))]);
         let f = lower_one(&decl);
-        assert_eq!(f.ret_ty, MirType::FatPtr);
+        assert_eq!(f.ret_ty, MirType::String);
     }
 
     #[test]
@@ -880,7 +906,7 @@ mod tests {
         assert_eq!(ctx.resolve_type_str("f64"), MirType::F64);
         assert_eq!(ctx.resolve_type_str("bool"), MirType::Bool);
         assert_eq!(ctx.resolve_type_str("char"), MirType::Char);
-        assert_eq!(ctx.resolve_type_str("string"), MirType::FatPtr);
+        assert_eq!(ctx.resolve_type_str("string"), MirType::String);
         assert_eq!(ctx.resolve_type_str("()"), MirType::Void);
         assert_eq!(ctx.resolve_type_str(""), MirType::Void);
         assert_eq!(ctx.resolve_type_str("SomeStruct"), MirType::Ptr);
