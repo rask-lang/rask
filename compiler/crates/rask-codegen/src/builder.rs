@@ -188,49 +188,83 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::Call { dst, func, args } => {
-                let func_ref = func_refs.get(&func.name)
-                    .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
-
-                // Look up the callee's signature to get expected parameter types
-                let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
-                let sig = &builder.func.dfg.signatures[ext_func.signature];
-                let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
-
-                let mut arg_vals = Vec::with_capacity(args.len());
-                for (i, a) in args.iter().enumerate() {
-                    let expected_ty = param_types.get(i).copied();
-                    let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
-                    // Convert if the actual type doesn't match the expected parameter type
-                    if let Some(expected) = expected_ty {
-                        let actual = builder.func.dfg.value_type(val);
-                        if actual != expected {
-                            val = Self::convert_value(builder, val, actual, expected);
+                // Builtin print/println — dispatch per-arg to typed runtime functions
+                if func.name == "print" || func.name == "println" {
+                    for (i, a) in args.iter().enumerate() {
+                        if i > 0 {
+                            let sp = Self::lower_operand_typed(
+                                builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
+                                var_map, Some(types::I64), string_globals,
+                            )?;
+                            let print_str = func_refs.get("rask_print_string")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
+                            builder.ins().call(*print_str, &[sp]);
                         }
-                    }
-                    arg_vals.push(val);
-                }
-
-                let call_inst = builder.ins().call(*func_ref, &arg_vals);
-
-                if let Some(dst_id) = dst {
-                    let results = builder.inst_results(call_inst);
-                    if !results.is_empty() {
-                        let result_val = results[0];
-                        let var = var_map.get(dst_id)
-                            .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                "Call destination variable not found".to_string()
-                            ))?;
-
-                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
-                        let mut val = result_val;
-                        if let Some(local) = dst_local {
-                            let dst_ty = mir_to_cranelift_type(&local.ty)?;
-                            let val_ty = builder.func.dfg.value_type(val);
-                            if val_ty != dst_ty {
-                                val = Self::convert_value(builder, val, val_ty, dst_ty);
+                        let runtime_fn = Self::runtime_print_for_operand(a, locals);
+                        let fr = func_refs.get(runtime_fn)
+                            .ok_or_else(|| CodegenError::FunctionNotFound(runtime_fn.into()))?;
+                        // Get the expected param type from the runtime function's signature
+                        let ext_func = &builder.func.dfg.ext_funcs[*fr];
+                        let sig = &builder.func.dfg.signatures[ext_func.signature];
+                        let expected_ty = sig.params.first().map(|p| p.value_type);
+                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
+                        if let Some(expected) = expected_ty {
+                            let actual = builder.func.dfg.value_type(val);
+                            if actual != expected {
+                                val = Self::convert_value(builder, val, actual, expected);
                             }
                         }
-                        builder.def_var(*var, val);
+                        builder.ins().call(*fr, &[val]);
+                    }
+                    if func.name == "println" {
+                        let nl = func_refs.get("rask_print_newline")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
+                        builder.ins().call(*nl, &[]);
+                    }
+                } else {
+                    let func_ref = func_refs.get(&func.name)
+                        .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+
+                    // Look up the callee's signature to get expected parameter types
+                    let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
+                    let sig = &builder.func.dfg.signatures[ext_func.signature];
+                    let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for (i, a) in args.iter().enumerate() {
+                        let expected_ty = param_types.get(i).copied();
+                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
+                        if let Some(expected) = expected_ty {
+                            let actual = builder.func.dfg.value_type(val);
+                            if actual != expected {
+                                val = Self::convert_value(builder, val, actual, expected);
+                            }
+                        }
+                        arg_vals.push(val);
+                    }
+
+                    let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+                    if let Some(dst_id) = dst {
+                        let results = builder.inst_results(call_inst);
+                        if !results.is_empty() {
+                            let result_val = results[0];
+                            let var = var_map.get(dst_id)
+                                .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                    "Call destination variable not found".to_string()
+                                ))?;
+
+                            let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                            let mut val = result_val;
+                            if let Some(local) = dst_local {
+                                let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                                let val_ty = builder.func.dfg.value_type(val);
+                                if val_ty != dst_ty {
+                                    val = Self::convert_value(builder, val, val_ty, dst_ty);
+                                }
+                            }
+                            builder.def_var(*var, val);
+                        }
                     }
                 }
             }
@@ -290,6 +324,31 @@ impl<'a> FunctionBuilder<'a> {
             builder.ins().fcvt_to_sint_sat(to_ty, val)
         } else {
             builder.ins().bitcast(to_ty, MemFlags::new(), val)
+        }
+    }
+
+    /// Pick the runtime print function based on the MIR operand.
+    fn runtime_print_for_operand(op: &MirOperand, locals: &[rask_mir::MirLocal]) -> &'static str {
+        match op {
+            MirOperand::Constant(c) => match c {
+                MirConst::String(_) => "rask_print_string",
+                MirConst::Bool(_) => "rask_print_bool",
+                MirConst::Float(_) => "rask_print_f64",
+                _ => "rask_print_i64",
+            },
+            MirOperand::Local(id) => {
+                if let Some(local) = locals.iter().find(|l| l.id == *id) {
+                    match &local.ty {
+                        MirType::Bool => "rask_print_bool",
+                        MirType::F64 | MirType::F32 => "rask_print_f64",
+                        // Strings are Ptr in MIR; no reliable way to distinguish
+                        // string pointers from other pointers here. For now, integer types.
+                        _ => "rask_print_i64",
+                    }
+                } else {
+                    "rask_print_i64"
+                }
+            }
         }
     }
 
