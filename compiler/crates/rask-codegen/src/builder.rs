@@ -593,7 +593,14 @@ impl<'a> FunctionBuilder<'a> {
 
                 let result = match op {
                     UnaryOp::Neg => builder.ins().ineg(val),
-                    UnaryOp::Not => builder.ins().bnot(val),
+                    // Logical NOT: XOR with 1 to flip the boolean bit.
+                    // bnot flips all bits which is wrong for booleans
+                    // (e.g. bnot(1) = 0xFE, not 0).
+                    UnaryOp::Not => {
+                        let val_ty = builder.func.dfg.value_type(val);
+                        let one = builder.ins().iconst(val_ty, 1);
+                        builder.ins().bxor(val, one)
+                    }
                     UnaryOp::BitNot => builder.ins().bnot(val),
                 };
                 Ok(result)
@@ -792,7 +799,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
 
-                Self::emit_return(builder, Some(value), ret_ty, var_map, string_globals)?;
+                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals)?;
             }
         }
         Ok(())
