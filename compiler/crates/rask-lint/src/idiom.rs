@@ -3,6 +3,7 @@
 //!
 //! - unwrap-production: Flag .unwrap() outside test blocks
 //! - missing-ensure: Flag @resource creation without ensure
+//! - ensure-ordering: Flag ensure registration order that doesn't match acquisition order
 
 use rask_ast::decl::*;
 use rask_ast::expr::{Expr, ExprKind};
@@ -284,5 +285,156 @@ fn check_expr_for_resource(
                 fix: format!("add `ensure {}.close()` after creation", name.to_lowercase()),
             });
         }
+    }
+}
+
+/// idiom/ensure-ordering: Flag ensure registration order that doesn't match
+/// variable acquisition order. LIFO execution means misordered ensures clean
+/// up resources in the wrong sequence.
+///
+/// Good (LIFO gives correct cleanup):
+///   const a = open("a")
+///   ensure a.close()       // registered 1st → runs LAST
+///   const b = open("b")
+///   ensure b.close()       // registered 2nd → runs FIRST
+///
+/// Bad (LIFO gives reversed cleanup):
+///   const a = open("a")
+///   const b = open("b")
+///   ensure b.close()       // registered 1st → runs LAST  (b closed after a!)
+///   ensure a.close()       // registered 2nd → runs FIRST (a closed before b!)
+pub fn check_ensure_ordering(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+
+    for decl in decls {
+        let body = match &decl.kind {
+            DeclKind::Fn(f) => &f.body,
+            _ => continue,
+        };
+        check_ensure_ordering_in_block(body, source, &mut diags);
+    }
+
+    diags
+}
+
+fn check_ensure_ordering_in_block(
+    stmts: &[Stmt],
+    source: &str,
+    diags: &mut Vec<LintDiagnostic>,
+) {
+    // Track binding order: variable name → position index
+    let mut binding_order: Vec<String> = Vec::new();
+    // Track ensure receivers in registration order
+    let mut ensure_receivers: Vec<(String, &Stmt)> = Vec::new();
+
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Const { name, .. } | StmtKind::Let { name, .. } => {
+                binding_order.push(name.clone());
+            }
+            StmtKind::Ensure { body, .. } => {
+                if let Some(receiver) = extract_ensure_receiver(body) {
+                    ensure_receivers.push((receiver, stmt));
+                }
+            }
+            // Recurse into nested blocks
+            StmtKind::While { body, .. }
+            | StmtKind::WhileLet { body, .. }
+            | StmtKind::For { body, .. }
+            | StmtKind::Loop { body, .. } => {
+                check_ensure_ordering_in_block(body, source, diags);
+            }
+            StmtKind::Expr(expr) => {
+                recurse_ensure_ordering_in_expr(expr, source, diags);
+            }
+            _ => {}
+        }
+    }
+
+    // Check: ensure receivers' binding positions must be non-decreasing.
+    // If receiver B (bound later) has its ensure registered before receiver A
+    // (bound earlier), LIFO will clean up A first — wrong.
+    if ensure_receivers.len() < 2 {
+        return;
+    }
+
+    let positions: Vec<Option<usize>> = ensure_receivers
+        .iter()
+        .map(|(name, _)| binding_order.iter().position(|b| b == name))
+        .collect();
+
+    let mut prev_pos: Option<usize> = None;
+    for (i, pos) in positions.iter().enumerate() {
+        let Some(current) = pos else { continue };
+        if let Some(prev) = prev_pos {
+            if *current < prev {
+                // Out of order: this ensure's variable was bound earlier
+                // than the previous ensure's variable, but registered later.
+                let (prev_name, _) = &ensure_receivers[i - 1];
+                let (curr_name, curr_stmt) = &ensure_receivers[i];
+
+                let (line, col) = util::line_col(source, curr_stmt.span.start);
+                let source_line = util::get_source_line(source, line);
+                diags.push(LintDiagnostic {
+                    rule: "idiom/ensure-ordering".to_string(),
+                    severity: Severity::Error,
+                    message: format!(
+                        "`ensure {curr_name}...` registered after `ensure {prev_name}...`, \
+                         but `{curr_name}` was created first — \
+                         LIFO will close `{curr_name}` before `{prev_name}` (ctrl.ensure/EN2)"
+                    ),
+                    location: LintLocation {
+                        line,
+                        column: col,
+                        source_line,
+                    },
+                    fix: "interleave acquisition and ensure: \
+                          acquire → ensure → acquire → ensure"
+                        .to_string(),
+                });
+            }
+        }
+        prev_pos = Some(*current);
+    }
+}
+
+fn recurse_ensure_ordering_in_expr(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnostic>) {
+    match &expr.kind {
+        ExprKind::Block(stmts)
+        | ExprKind::UsingBlock { body: stmts, .. }
+        | ExprKind::Spawn { body: stmts }
+        | ExprKind::Unsafe { body: stmts }
+        | ExprKind::Comptime { body: stmts }
+        | ExprKind::BlockCall { body: stmts, .. } => {
+            check_ensure_ordering_in_block(stmts, source, diags);
+        }
+        _ => {}
+    }
+}
+
+/// Extract the receiver variable name from an ensure body.
+/// Handles `ensure x.method()` and `ensure x.method(args)`.
+/// Returns None for complex expressions we can't analyze.
+fn extract_ensure_receiver(body: &[Stmt]) -> Option<String> {
+    if body.len() != 1 {
+        return None;
+    }
+    let expr = match &body[0].kind {
+        StmtKind::Expr(e) => e,
+        _ => return None,
+    };
+    match &expr.kind {
+        ExprKind::MethodCall { object, .. } => match &object.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            _ => None,
+        },
+        ExprKind::Call { func, .. } => match &func.kind {
+            ExprKind::Field { object, .. } => match &object.kind {
+                ExprKind::Ident(name) => Some(name.clone()),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
     }
 }
