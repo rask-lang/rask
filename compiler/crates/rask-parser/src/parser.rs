@@ -2735,27 +2735,56 @@ impl Parser {
         Ok(Expr { id: self.next_id(), kind: ExprKind::Match { scrutinee: Box::new(scrutinee), arms }, span: Span::new(start, end) })
     }
 
+    /// Parse `using Name { }` or `using A, B(args) { }`.
+    /// Multi-context desugars to nested blocks:
+    /// `using A, B { body }` → `using A { using B { body } }`
     fn parse_using_block(&mut self) -> Result<Expr, ParseError> {
         let start = self.current().span.start;
         self.expect(&TokenKind::Using)?;
-        let name = self.expect_ident()?;
 
-        let args = if self.match_token(&TokenKind::LParen) {
-            let args = self.parse_args()?;
-            self.expect(&TokenKind::RParen)?;
-            args
-        } else {
-            Vec::new()
-        };
+        let mut contexts: Vec<(String, Vec<CallArg>)> = Vec::new();
+        loop {
+            let name = self.expect_ident()?;
+            let args = if self.match_token(&TokenKind::LParen) {
+                let args = self.parse_args()?;
+                self.expect(&TokenKind::RParen)?;
+                args
+            } else {
+                Vec::new()
+            };
+            contexts.push((name, args));
+            if !self.match_token(&TokenKind::Comma) {
+                break;
+            }
+        }
 
         self.skip_newlines();
         let body = self.parse_block_body()?;
         let end = self.tokens[self.pos - 1].span.end;
-        Ok(Expr {
+        let span = Span::new(start, end);
+
+        // Build nested UsingBlock from innermost (last) outward
+        let (innermost_name, innermost_args) = contexts.pop().unwrap();
+        let mut expr = Expr {
             id: self.next_id(),
-            kind: ExprKind::UsingBlock { name, args, body },
-            span: Span::new(start, end),
-        })
+            kind: ExprKind::UsingBlock { name: innermost_name, args: innermost_args, body },
+            span,
+        };
+
+        while let Some((name, args)) = contexts.pop() {
+            let wrapper_body = vec![Stmt {
+                id: self.next_id(),
+                kind: StmtKind::Expr(expr),
+                span,
+            }];
+            expr = Expr {
+                id: self.next_id(),
+                kind: ExprKind::UsingBlock { name, args, body: wrapper_body },
+                span,
+            };
+        }
+
+        Ok(expr)
     }
 
     fn parse_with_binding(&mut self) -> Result<Expr, ParseError> {
