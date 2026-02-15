@@ -278,19 +278,7 @@ impl<'a> MirLowerer<'a> {
                 }
             }
             ExprKind::Block(stmts) => {
-                // Variables defined in this block shouldn't count as free
-                let mut local_bound = bound.clone();
-                for stmt in stmts {
-                    self.walk_free_vars_stmt(stmt, &local_bound, seen, free);
-                    // Add locally-defined variables to bound set
-                    match &stmt.kind {
-                        rask_ast::stmt::StmtKind::Let { name, .. }
-                        | rask_ast::stmt::StmtKind::Const { name, .. } => {
-                            local_bound.insert(name.clone());
-                        }
-                        _ => {}
-                    }
-                }
+                self.walk_free_vars_block(stmts, bound, seen, free);
             }
             ExprKind::Binary { left, right, .. } => {
                 self.walk_free_vars(left, bound, seen, free);
@@ -321,7 +309,9 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Match { scrutinee, arms } => {
                 self.walk_free_vars(scrutinee, bound, seen, free);
                 for arm in arms {
-                    self.walk_free_vars(&arm.body, bound, seen, free);
+                    let mut arm_bound = bound.clone();
+                    collect_pattern_names(&arm.pattern, &mut arm_bound);
+                    self.walk_free_vars(&arm.body, &arm_bound, seen, free);
                 }
             }
             ExprKind::Field { object, .. } => {
@@ -360,9 +350,11 @@ impl<'a> MirLowerer<'a> {
                 if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
                 if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
             }
-            ExprKind::IfLet { expr: inner, then_branch, else_branch, .. } => {
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch } => {
                 self.walk_free_vars(inner, bound, seen, free);
-                self.walk_free_vars(then_branch, bound, seen, free);
+                let mut then_bound = bound.clone();
+                collect_pattern_names(pattern, &mut then_bound);
+                self.walk_free_vars(then_branch, &then_bound, seen, free);
                 if let Some(e) = else_branch { self.walk_free_vars(e, bound, seen, free); }
             }
             ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
@@ -383,8 +375,13 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(value, bound, seen, free);
                 self.walk_free_vars(count, bound, seen, free);
             }
-            ExprKind::UsingBlock { body, .. } | ExprKind::Unsafe { body }
-            | ExprKind::Comptime { body } => {
+            ExprKind::UsingBlock { args, body, .. } => {
+                for arg in args {
+                    self.walk_free_vars(&arg.expr, bound, seen, free);
+                }
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
             ExprKind::WithAs { bindings, body } => {
@@ -432,6 +429,10 @@ impl<'a> MirLowerer<'a> {
                 | rask_ast::stmt::StmtKind::Const { name, .. } => {
                     local_bound.insert(name.clone());
                 }
+                rask_ast::stmt::StmtKind::LetTuple { names, .. }
+                | rask_ast::stmt::StmtKind::ConstTuple { names, .. } => {
+                    for n in names { local_bound.insert(n.clone()); }
+                }
                 _ => {}
             }
         }
@@ -463,9 +464,11 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars(cond, bound, seen, free);
                 self.walk_free_vars_block(body, bound, seen, free);
             }
-            StmtKind::WhileLet { expr, body, .. } => {
+            StmtKind::WhileLet { pattern, expr, body } => {
                 self.walk_free_vars(expr, bound, seen, free);
-                self.walk_free_vars_block(body, bound, seen, free);
+                let mut body_bound = bound.clone();
+                collect_pattern_names(pattern, &mut body_bound);
+                self.walk_free_vars_block(body, &body_bound, seen, free);
             }
             StmtKind::For { binding, iter, body, .. } => {
                 self.walk_free_vars(iter, bound, seen, free);
@@ -492,6 +495,31 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
         }
+    }
+}
+
+/// Collect variable names bound by a pattern into a set.
+fn collect_pattern_names(
+    pattern: &rask_ast::expr::Pattern,
+    names: &mut std::collections::HashSet<String>,
+) {
+    use rask_ast::expr::Pattern;
+    match pattern {
+        Pattern::Ident(name) => { names.insert(name.clone()); }
+        Pattern::Constructor { fields, .. } => {
+            for p in fields { collect_pattern_names(p, names); }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, p) in fields { collect_pattern_names(p, names); }
+        }
+        Pattern::Tuple(elems) => {
+            for p in elems { collect_pattern_names(p, names); }
+        }
+        Pattern::Or(alts) => {
+            // All alternatives bind the same names; just collect from the first
+            if let Some(first) = alts.first() { collect_pattern_names(first, names); }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }
 

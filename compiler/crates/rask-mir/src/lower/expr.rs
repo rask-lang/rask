@@ -940,7 +940,7 @@ impl<'a> MirLowerer<'a> {
         // 3. Build the closure environment layout
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
-        for (name, local_id, ty) in &free_vars {
+        for (_name, local_id, ty) in &free_vars {
             let size = mir_type_size(ty);
             // 8-byte alignment
             let aligned_offset = (env_offset + 7) & !7;
