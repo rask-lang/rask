@@ -425,7 +425,7 @@ impl<'a> FunctionBuilder<'a> {
                     match &local.ty {
                         MirType::Bool => "rask_print_bool",
                         MirType::F64 | MirType::F32 => "rask_print_f64",
-                        MirType::String | MirType::FatPtr => "rask_print_string",
+                        MirType::String => "rask_print_string",
                         _ => "rask_print_i64",
                     }
                 } else {
