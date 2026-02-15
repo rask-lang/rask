@@ -13,12 +13,12 @@ pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
         .status()
         .map_err(|e| format!("failed to run cc: {}", e))?;
 
+    // Always clean up the intermediate .o file
+    let _ = std::fs::remove_file(obj_path);
+
     if !status.success() {
         return Err(format!("linker exited with status {}", status));
     }
-
-    // Clean up the intermediate .o file
-    let _ = std::fs::remove_file(obj_path);
 
     Ok(())
 }

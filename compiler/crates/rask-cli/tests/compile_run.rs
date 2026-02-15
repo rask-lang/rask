@@ -38,7 +38,7 @@ fn compile_and_run(fixture_name: &str) -> (String, i32) {
     let rask = rask_binary();
     let tmp = std::env::temp_dir();
     let stem = fixture_name.trim_end_matches(".rk");
-    let bin_path = tmp.join(format!("rask_test_{}", stem));
+    let bin_path = tmp.join(format!("rask_test_{}_{}", stem, std::process::id()));
 
     // Compile
     let compile_out = Command::new(&rask)

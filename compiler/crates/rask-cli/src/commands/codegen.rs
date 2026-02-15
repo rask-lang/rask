@@ -294,7 +294,7 @@ pub fn cmd_mir(path: &str, format: Format) {
 /// Compile a single .rk file to a native executable.
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
-pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format) {
+pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool) {
     let (mono, typed) = run_pipeline(path, format);
 
     // MIR lowering
@@ -373,7 +373,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format) {
         process::exit(1);
     }
 
-    if format == Format::Human {
-        println!("{}", output::banner_ok(&format!("Compiled → {}", bin_path)));
+    if format == Format::Human && !quiet {
+        eprintln!("{}", output::banner_ok(&format!("Compiled → {}", bin_path)));
     }
 }
