@@ -8,9 +8,9 @@ use std::process;
 
 use crate::output;
 
-const MANIFEST: &str = "rask.build";
+const MANIFEST: &str = "build.rk";
 
-/// Add a dependency to rask.build (AD1-AD4).
+/// Add a dependency to build.rk (AD1-AD4).
 pub fn cmd_add(
     name: &str,
     version: Option<&str>,
@@ -34,7 +34,7 @@ pub fn cmd_add(
     };
 
     if !manifest_path.exists() {
-        // Create a new rask.build with the dependency
+        // Create a new build.rk with the dependency
         let dir_name = std::env::current_dir()
             .ok()
             .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
@@ -106,7 +106,7 @@ pub fn cmd_add(
     println!("  {} {}{}", "Added".green(), dep_line.trim(), location);
 }
 
-/// Remove a dependency from rask.build (RM1-RM2).
+/// Remove a dependency from build.rk (RM1-RM2).
 pub fn cmd_remove(name: &str) {
     let manifest_path = Path::new(MANIFEST);
 

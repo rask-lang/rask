@@ -32,7 +32,7 @@ pub fn print_usage() {
 
     println!();
     println!("{}", output::section_header("Dependencies:"));
-    println!("  {} {}       Add a dependency to rask.build", output::command("add"), output::arg("<pkg>"));
+    println!("  {} {}       Add a dependency to build.rk", output::command("add"), output::arg("<pkg>"));
     println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
 
     println!();
@@ -218,7 +218,7 @@ pub fn print_clean_help() {
 pub fn print_add_help() {
     println!("{}", output::section_header("Add"));
     println!();
-    println!("Add a dependency to rask.build.");
+    println!("Add a dependency to build.rk.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -250,7 +250,7 @@ pub fn print_add_help() {
 pub fn print_remove_help() {
     println!("{}", output::section_header("Remove"));
     println!();
-    println!("Remove a dependency from rask.build.");
+    println!("Remove a dependency from build.rk.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -261,7 +261,7 @@ pub fn print_remove_help() {
 pub fn print_watch_help() {
     println!("{}", output::section_header("Watch"));
     println!();
-    println!("Watch .rk files and rask.build for changes, re-running a command.");
+    println!("Watch .rk files and build.rk for changes, re-running a command.");
     println!("Default: runs `rask check` (type-check only, fastest feedback).");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),

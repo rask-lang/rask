@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Watch mode — struct.build/WA1-WA8.
 //!
-//! Monitors .rk files and rask.build, re-runs a command on change.
+//! Monitors .rk files and build.rk, re-runs a command on change.
 //! Default command: rask check (WA1).
 
 use colored::Colorize;
@@ -115,7 +115,7 @@ fn run_command(exe: &Path, sub: &str, no_clear: bool) {
     }
 }
 
-/// Collect modification times for all .rk files and rask.build.
+/// Collect modification times for all .rk files and build.rk.
 fn snapshot_files(root: &str) -> HashMap<String, SystemTime> {
     let mut map = HashMap::new();
     collect_watched_files(Path::new(root), &mut map);
@@ -141,8 +141,8 @@ fn collect_watched_files(dir: &Path, map: &mut HashMap<String, SystemTime>) {
             continue;
         }
 
-        // Watch .rk files and rask.build (WA4)
-        let is_watched = name.ends_with(".rk") || name == "rask.build";
+        // Watch .rk files and build.rk (WA4)
+        let is_watched = name.ends_with(".rk") || name == "build.rk";
         if !is_watched {
             continue;
         }

@@ -1,20 +1,20 @@
 <!-- id: struct.build -->
 <!-- status: decided -->
-<!-- summary: rask.build is manifest and build script; CLI, output dirs, cross-compilation, watch mode -->
+<!-- summary: build.rk is manifest and build script; CLI, output dirs, cross-compilation, watch mode -->
 <!-- depends: structure/modules.md, structure/packages.md -->
 
 # Build System
 
-`rask.build` is the single source of truth — both manifest and build script. A `package` block declares metadata, dependencies, features, and profiles. An optional `build()` function handles code generation and native compilation.
+`build.rk` is the single source of truth — both manifest and build script. A `package` block declares metadata, dependencies, features, and profiles. An optional `build()` function handles code generation and native compilation.
 
 ## Package Block
 
 | Rule | Description |
 |------|-------------|
-| **PK1: Single file** | `rask.build` in package root; one `package` block per file |
+| **PK1: Single file** | `build.rk` in package root; one `package` block per file |
 | **PK2: Declarative** | Package block is purely declarative — no `comptime if`, no code execution |
 | **PK3: Independent parsing** | Parser extracts `package` block independently of build logic — dep resolution works even if `func build()` has syntax errors |
-| **PK4: Optional** | No `rask.build` needed for zero-dependency packages — name from directory, version 0.0.0 |
+| **PK4: Optional** | No `build.rk` needed for zero-dependency packages — name from directory, version 0.0.0 |
 | **PK5: Auto-import** | Build module auto-imported — `BuildContext`, `CompileOptions`, etc. available without `import` |
 
 ```rask
@@ -120,7 +120,7 @@ profile "embedded" {
 
 | Rule | Description |
 |------|-------------|
-| **BL1: Separate unit** | `rask.build` is compiled before the main package |
+| **BL1: Separate unit** | `build.rk` is compiled before the main package |
 | **BL2: Full language** | Build scripts have full Rask available (I/O, pools, concurrency, C interop) |
 | **BL3: No self-import** | Can't import the package being built — circular dependency error |
 
@@ -171,13 +171,13 @@ struct BuildContext {
 | Rule | Description |
 |------|-------------|
 | **LC1: Order** | Parse package → resolve deps → compile build deps → run `func build()` → compile main package → link |
-| **LC2: Caching** | Build script only re-runs when `rask.build` or declared dependencies change |
+| **LC2: Caching** | Build script only re-runs when `build.rk` or declared dependencies change |
 
 | Trigger | Runs? |
 |---------|-------|
 | First build | Yes |
 | No changes | No (cached) |
-| `rask.build` modified | Yes |
+| `build.rk` modified | Yes |
 | Declared dependency modified | Yes |
 | `rask build --force` | Yes |
 
@@ -218,7 +218,7 @@ ERROR [struct.build/BL3]: circular dependency
 
 | Case | Rule | Handling |
 |------|------|----------|
-| No `rask.build` | PK4 | Name from directory, version 0.0.0, no deps |
+| No `build.rk` | PK4 | Name from directory, version 0.0.0, no deps |
 | Empty package block | PK1 | Valid — declares identity only |
 | `package` in regular `.rk` file | PK1 | Compile error |
 | Build script imports main package | BL3 | Compile error |
@@ -241,8 +241,8 @@ All commands live under the `rask` binary. No separate tools.
 | `rask bench [filter]` | Build and run benchmarks |
 | `rask check` | Type-check without codegen |
 | `rask watch [command]` | File watch + auto-rebuild |
-| `rask add <pkg> [version]` | Add dependency to rask.build |
-| `rask remove <pkg>` | Remove dependency from rask.build |
+| `rask add <pkg> [version]` | Add dependency to build.rk |
+| `rask remove <pkg>` | Remove dependency from build.rk |
 | `rask fetch` | Download dependencies |
 | `rask update [pkg]` | Update to latest compatible versions |
 | `rask publish` | Publish to registry |
@@ -253,7 +253,7 @@ All commands live under the `rask` binary. No separate tools.
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Zero-config default** | `rask build` works with no flags, no rask.build, no config |
+| **CL1: Zero-config default** | `rask build` works with no flags, no build.rk, no config |
 | **CL2: Consistent flags** | `--release`, `--target`, `--verbose` work on all build commands |
 | **CL3: Machine-readable output** | `--format json` on all commands for CI integration |
 | **CL4: Exit codes** | 0 = success, 1 = build error, 2 = usage error |
@@ -289,7 +289,7 @@ $ rask add mock-server --dev
 
 ```
 myproject/
-  rask.build
+  build.rk
   main.rk
   .rk-gen/                      # Generated source files (build script output)
   build/
@@ -310,7 +310,7 @@ myproject/
 | **OD1: Default location** | `build/` in project root. Override with `RASK_BUILD_DIR` |
 | **OD2: Profile directories** | `build/<profile>/` — `debug`, `release`, or custom profile name |
 | **OD3: Target directories** | `build/<target-triple>/<profile>/` for cross-compilation |
-| **OD4: Binary naming** | Binary name = package name from `rask.build` (or directory name if no rask.build) |
+| **OD4: Binary naming** | Binary name = package name from `build.rk` (or directory name if no build.rk) |
 | **OD5: .gitignore** | `rask build` auto-creates `build/.gitignore` with `*` on first run |
 | **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rask/cache/` entries for this project |
 | **OD7: Multi-binary** | `rask build` builds all binaries. `rask run --bin <name>` selects which to run |
@@ -357,7 +357,7 @@ Format: `<arch>-<os>` or `<arch>-<os>-<env>`
 | **WA1: Default command** | `rask watch` → runs `rask check` on change (type-check only, no codegen — fastest feedback) |
 | **WA2: Custom command** | `rask watch build`, `rask watch test`, `rask watch run` — any rask subcommand |
 | **WA3: Debounce** | 100ms debounce — multiple rapid saves trigger one rebuild |
-| **WA4: Scope** | Watches `.rk` files, `rask.build`, and declared build step inputs |
+| **WA4: Scope** | Watches `.rk` files, `build.rk`, and declared build step inputs |
 | **WA5: Clear output** | Clears terminal on each rebuild (disable with `--no-clear`) |
 | **WA6: Error persistence** | Errors stay on screen until fixed (no scrolling away) |
 | **WA7: Process management** | `rask watch run` kills the previous process before starting new one |
@@ -434,7 +434,7 @@ struct BuildContext {
 
 ```
 rask build
-  ├─ 1. Find rask.build (or use defaults)
+  ├─ 1. Find build.rk (or use defaults)
   ├─ 2. Parse package block (PK3)
   ├─ 3. Resolve dependencies (maximal compatible)
   ├─ 4. Check rask.lock (error if out of sync)
@@ -485,7 +485,7 @@ rask build
 | Rule | Description |
 |------|-------------|
 | **AU1: Advisory database** | Fetches from `https://advisories.rk-lang.org` |
-| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `rask.build` |
+| **AU2: Lock file based** | Checks exact versions from `rask.lock`, not constraints from `build.rk` |
 | **AU3: Exit code** | Returns non-zero if vulnerabilities found (for CI gates) |
 | **AU4: Ignore list** | `rask audit --ignore CVE-2024-1234` for acknowledged risks |
 | **AU5: Offline mode** | `rask audit --db ./advisory-db.json` for air-gapped environments |
@@ -536,7 +536,7 @@ func roundtrip_codegen() -> bool {
 }
 ```
 
-Run with: `rask test rask.build`
+Run with: `rask test build.rk`
 
 ### Full Example
 

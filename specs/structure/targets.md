@@ -76,7 +76,7 @@ public func main(args: Args) {
 | Rule | Description |
 |------|-------------|
 | **MB1: CLI selection** | `raskc myapp/cli.rk` compiles specific binary |
-| **MB2: Manifest** | `bin: ["cli.rk", "server.rk"]` in `rask.build` |
+| **MB2: Manifest** | `bin: ["cli.rk", "server.rk"]` in `build.rk` |
 | **MB3: Shared code** | Files not in `bin` list are library code |
 
 ## Error Messages
