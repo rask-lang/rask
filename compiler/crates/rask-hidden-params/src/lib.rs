@@ -582,10 +582,12 @@ impl HiddenParamPass {
     /// ```text
     /// {
     ///   const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
-    ///   { body }
+    ///   const __using_result = { body }
     ///   __ctx_runtime.__shutdown()
+    ///   __using_result
     /// }
     /// ```
+    /// Body value is captured before shutdown so block expressions work.
     fn desugar_multitasking_block(&mut self, expr: &mut Expr) {
         let span = expr.span;
 
@@ -599,7 +601,6 @@ impl HiddenParamPass {
         let mut body = body;
         self.rewrite_stmts(&mut body);
 
-        // Build the desugared block:
         // const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
         let ctx_init = Stmt {
             id: self.fresh_id(),
@@ -610,6 +611,22 @@ impl HiddenParamPass {
                 init: Expr {
                     id: self.fresh_id(),
                     kind: ExprKind::Ident("__runtime_context_new".to_string()),
+                    span,
+                },
+            },
+            span,
+        };
+
+        // const __using_result = { body }
+        let capture_result = Stmt {
+            id: self.fresh_id(),
+            kind: StmtKind::Const {
+                name: "__using_result".to_string(),
+                name_span: span,
+                ty: None,
+                init: Expr {
+                    id: self.fresh_id(),
+                    kind: ExprKind::Block(body),
                     span,
                 },
             },
@@ -636,12 +653,18 @@ impl HiddenParamPass {
             span,
         };
 
-        // Assemble: init + body + shutdown
-        let mut block_stmts = Vec::with_capacity(body.len() + 2);
-        block_stmts.push(ctx_init);
-        block_stmts.extend(body);
-        block_stmts.push(ctx_shutdown);
+        // __using_result (produce the captured value)
+        let yield_result = Stmt {
+            id: self.fresh_id(),
+            kind: StmtKind::Expr(Expr {
+                id: self.fresh_id(),
+                kind: ExprKind::Ident("__using_result".to_string()),
+                span,
+            }),
+            span,
+        };
 
+        let block_stmts = vec![ctx_init, capture_result, ctx_shutdown, yield_result];
         expr.kind = ExprKind::Block(block_stmts);
     }
 }

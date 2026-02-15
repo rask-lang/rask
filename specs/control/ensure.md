@@ -57,6 +57,23 @@ func read_two_files(){
 // Order: b.close(), then a.close()
 ```
 
+**Lint error (`idiom/ensure-ordering`):** Ensure registration order must match variable binding order. If ensures are registered out of acquisition order, LIFO gives reversed cleanup. The interleaved pattern (acquire → ensure → acquire → ensure) is always safe. This is an error, not a warning — misordered ensures are never correct.
+
+<!-- test: skip -->
+```rask
+// BAD — lint warns: a.close() will run before b.close()
+const a = open("a")
+const b = open("b")
+ensure b.close()          // registered 1st → runs LAST
+ensure a.close()          // registered 2nd → runs FIRST ✗
+
+// GOOD — interleaved, LIFO is correct
+const a = open("a")
+ensure a.close()          // registered 1st → runs LAST
+const b = open("b")
+ensure b.close()          // registered 2nd → runs FIRST ✓
+```
+
 ## Linear Resource Integration
 
 `ensure` satisfies linear consumption requirements—once scheduled, the value is guaranteed to be consumed at scope exit.
