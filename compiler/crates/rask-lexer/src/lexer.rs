@@ -109,6 +109,16 @@ enum RawToken {
     Try,
     #[token("or")]
     Or,
+    #[token("package")]
+    Package,
+    #[token("dep")]
+    Dep,
+    #[token("scope")]
+    Scope,
+    #[token("feature")]
+    Feature,
+    #[token("profile")]
+    Profile,
 
     // === Operators (order matters - longer first) ===
     // Three-character operators
@@ -471,6 +481,11 @@ impl<'a> Lexer<'a> {
             RawToken::Check => TokenKind::Check,
             RawToken::Try => TokenKind::Try,
             RawToken::Or => TokenKind::Or,
+            RawToken::Package => TokenKind::Package,
+            RawToken::Dep => TokenKind::Dep,
+            RawToken::Scope => TokenKind::Scope,
+            RawToken::Feature => TokenKind::Feature,
+            RawToken::Profile => TokenKind::Profile,
 
             // Operators
             RawToken::Plus => TokenKind::Plus,

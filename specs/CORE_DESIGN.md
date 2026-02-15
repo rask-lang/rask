@@ -178,7 +178,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Concurrency.** `spawn` for green tasks (requires `using Multitasking`), `spawn thread` for CPU-bound work (requires `using ThreadPool`). No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
 
-**Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`rask.build`) handle full-language code generation. See [comptime.md](control/comptime.md).
+**Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
 **Strings.** One owned type: `string` (UTF-8, move semantics). Block-scoped slicing for zero-copy views. `string_view` or `StringPool` for stored references. See [strings.md](stdlib/strings.md).
 
@@ -257,7 +257,7 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 
 **Benefit:** Comptime is predictable—it always terminates, never has side effects, produces the same result on every compilation.
 
-**When this hurts:** Complex code generation that would benefit from full language features. Use build scripts (`rask.build`) for those cases.
+**When this hurts:** Complex code generation that would benefit from full language features. Use build scripts (`build.rk`) for those cases.
 
 ### When to Use Rask
 

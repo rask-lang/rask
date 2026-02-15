@@ -69,7 +69,7 @@ comptime func deep_recursion(n: u64) -> u64 {
 // Build scripts run as separate programs before compilation.
 // They have no limits and can do I/O.
 //
-// In rask.build:
+// In build.rk:
 //   func generate_large_table() {
 //       // Full language available, no limits
 //       // Write output to generated file

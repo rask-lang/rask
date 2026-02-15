@@ -307,8 +307,73 @@ fn main() {
                 help::print_build_help();
                 return;
             }
-            let path = cmd_args.get(2).copied().unwrap_or(".");
-            commands::build::cmd_build(path);
+            let release = cmd_args.contains(&"--release");
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let profile = if release {
+                "release".to_string()
+            } else if let Some(p) = extract_flag_value(&cmd_args, "--profile") {
+                p
+            } else {
+                "debug".to_string()
+            };
+            let target = extract_flag_value(&cmd_args, "--target");
+            let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target"]).unwrap_or(".");
+            let opts = commands::build::BuildOptions { profile, verbose, target };
+            commands::build::cmd_build(path, opts);
+        }
+        "clean" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_clean_help();
+                return;
+            }
+            let all = cmd_args.contains(&"--all");
+            let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
+            commands::build::cmd_clean(path, all);
+        }
+        "add" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_add_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing package name", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("add"), output::arg("<package> [version]"));
+                process::exit(1);
+            }
+            let pkg_name = cmd_args[2];
+            let version = find_positional_arg(&cmd_args, 3, &["--dev", "--feature", "--path"]);
+            let dev = cmd_args.contains(&"--dev");
+            let feature = extract_flag_value(&cmd_args, "--feature");
+            let local_path = extract_flag_value(&cmd_args, "--path");
+            commands::deps::cmd_add(pkg_name, version, dev, feature.as_deref(), local_path.as_deref());
+        }
+        "remove" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_remove_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing package name", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("remove"), output::arg("<package>"));
+                process::exit(1);
+            }
+            commands::deps::cmd_remove(cmd_args[2]);
+        }
+        "targets" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_targets_help();
+                return;
+            }
+            commands::build::cmd_targets();
+        }
+        "watch" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_watch_help();
+                return;
+            }
+            let subcommand = cmd_args.get(2).copied();
+            let no_clear = cmd_args.contains(&"--no-clear");
+            commands::watch::cmd_watch(subcommand, no_clear, prog_args);
         }
         "fmt" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

@@ -143,6 +143,38 @@ fn parse_field_type(s: &str) -> Type {
     }
 }
 
+/// Build a substitution map from type param names to concrete types.
+fn build_subst<'a>(
+    type_params: &'a [rask_ast::decl::TypeParam],
+    type_args: &'a [Type],
+) -> std::collections::HashMap<&'a str, &'a Type> {
+    let mut subst = std::collections::HashMap::new();
+    for (param, arg) in type_params.iter().zip(type_args.iter()) {
+        subst.insert(param.name.as_str(), arg);
+    }
+    subst
+}
+
+/// Parse a field type string and apply generic substitution.
+/// If the parsed type is an unresolved name that matches a type parameter,
+/// replace it with the concrete type from type_args.
+fn resolve_field_type(
+    field_ty_str: &str,
+    subst: &std::collections::HashMap<&str, &Type>,
+) -> Type {
+    let parsed = parse_field_type(field_ty_str);
+    match &parsed {
+        Type::UnresolvedNamed(name) => {
+            if let Some(concrete) = subst.get(name.as_str()) {
+                (*concrete).clone()
+            } else {
+                parsed
+            }
+        }
+        _ => parsed,
+    }
+}
+
 /// Compute struct layout with field offsets (spec rules S1-S4)
 pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLayout {
     use rask_ast::decl::DeclKind;
@@ -152,9 +184,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLay
         _ => panic!("Expected struct declaration"),
     };
 
-    // TODO: Type substitution for generic parameters
-    // For now, work with concrete types
-    let _ = type_args; // Will use for substitution
+    let subst = build_subst(&struct_decl.type_params, type_args);
 
     let mut field_layouts = Vec::new();
     let mut offset = 0u32;
@@ -162,7 +192,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLay
 
     // S1-S2: Process fields in source order, no reordering
     for field in &struct_decl.fields {
-        let field_ty = parse_field_type(&field.ty);
+        let field_ty = resolve_field_type(&field.ty, &subst);
 
         let (field_size, field_align) = type_size_align(&field_ty);
         max_align = max_align.max(field_align);
@@ -201,7 +231,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
         _ => panic!("Expected enum declaration"),
     };
 
-    let _ = type_args; // TODO: Use for type substitution
+    let subst = build_subst(&enum_decl.type_params, type_args);
 
     let variant_count = enum_decl.variants.len();
 
@@ -228,7 +258,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
         if !variant.fields.is_empty() {
             let mut field_offset = 0u32;
             for field in &variant.fields {
-                let field_ty = parse_field_type(&field.ty);
+                let field_ty = resolve_field_type(&field.ty, &subst);
                 let (size, align) = type_size_align(&field_ty);
 
                 payload_align = payload_align.max(align);

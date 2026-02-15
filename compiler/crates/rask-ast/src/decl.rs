@@ -38,6 +38,8 @@ pub enum DeclKind {
     Benchmark(BenchmarkDecl),
     /// External function declaration
     Extern(ExternDecl),
+    /// Package block declaration (build.rk only)
+    Package(PackageDecl),
 }
 
 /// A top-level constant declaration.
@@ -221,4 +223,40 @@ pub struct ExportItem {
     pub path: Vec<String>,
     /// Optional rename: `export internal.Name as Alias`
     pub alias: Option<String>,
+}
+
+/// A package block declaration (struct.build/PK1-PK5).
+///
+/// Only valid in `build.rk`. Declares package metadata and dependencies.
+///
+/// ```rask
+/// package "my-app" "1.0.0" {
+///     dep "http" "^2.0"
+///     dep "shared" { path: "../shared" }
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct PackageDecl {
+    pub name: String,
+    pub version: String,
+    pub deps: Vec<DepDecl>,
+    pub metadata: Vec<(String, String)>,
+}
+
+/// A dependency declaration inside a package block.
+#[derive(Debug, Clone)]
+pub struct DepDecl {
+    pub name: String,
+    /// Version constraint (e.g., "^2.0"). None for path-only deps.
+    pub version: Option<String>,
+    /// Local path dependency.
+    pub path: Option<String>,
+    /// Git repository URL.
+    pub git: Option<String>,
+    /// Git branch.
+    pub branch: Option<String>,
+    /// Features to enable.
+    pub with_features: Vec<String>,
+    /// Target platform filter.
+    pub target: Option<String>,
 }

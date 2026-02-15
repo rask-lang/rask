@@ -5,7 +5,10 @@
 mod expr;
 mod stmt;
 
-use crate::{BlockBuilder, MirFunction, MirOperand, MirTerminator, MirType, BlockId, LocalId};
+use crate::{
+    BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, BlockId,
+    LocalId,
+};
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{Decl, DeclKind},
@@ -136,6 +139,11 @@ impl<'a> MirContext<'a> {
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         self.node_types.get(&node_id).map(|ty| self.type_to_mir(ty))
     }
+
+    /// Look up the raw Type for an expression node (preserves generic info).
+    pub fn lookup_raw_type(&self, node_id: NodeId) -> Option<&Type> {
+        self.node_types.get(&node_id)
+    }
 }
 
 pub struct MirLowerer<'a> {
@@ -239,22 +247,127 @@ impl<'a> MirLowerer<'a> {
         self.ctx.lookup_node_type(expr.id)
     }
 
-    /// Extract the element type from an iterator type.
-    /// For Range<T> or Vec<T>, returns T. For unknown types, returns None.
-    fn extract_iterator_elem_type(&self, iter_ty: &MirType) -> Option<MirType> {
-        // This is simplified - in reality we'd need to parse generic type arguments
-        // For now, use a heuristic based on the iterator type
-        match iter_ty {
-            MirType::Ptr => Some(MirType::I32), // Default for unknown iterator types
-            _ => Some(MirType::I32), // Fallback
+    /// Extract the element type from an iterator type using raw type info.
+    /// For Range<i32>, returns I32. Falls back to None for unknown types.
+    fn extract_iterator_elem_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                // Range<T> iterates over T
+                Type::UnresolvedGeneric { name, args } if name == "Range" => {
+                    args.first().and_then(|arg| {
+                        if let rask_types::GenericArg::Type(t) = arg {
+                            Some(self.ctx.type_to_mir(t))
+                        } else {
+                            None
+                        }
+                    })
+                }
+                // Array iterates over its element type
+                Type::Array { elem, .. } => Some(self.ctx.type_to_mir(elem)),
+                Type::Slice(elem) => Some(self.ctx.type_to_mir(elem)),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
-    /// Extract the Ok/Some payload type from Result<T, E> or Option<T>.
-    /// Returns the payload type T, or None if unavailable.
-    fn extract_ok_payload_type(&self, _result_ty: &MirType) -> Option<MirType> {
-        // Simplified — ideally we'd parse the enum variant's payload type
-        Some(MirType::I32)
+    /// Extract the Ok/Some payload type from the raw type of an expression.
+    /// For Option<T>, returns T. For Result<T, E>, returns T.
+    fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                Type::Option(inner) => Some(self.ctx.type_to_mir(inner)),
+                Type::Result { ok, .. } => Some(self.ctx.type_to_mir(ok)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Extract the Err payload type from the raw type of an expression.
+    fn extract_err_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                Type::Result { err, .. } => Some(self.ctx.type_to_mir(err)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a pattern to its expected discriminant tag value.
+    fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Constructor { name, .. } => self.variant_tag(name),
+            Pattern::Ident(name) => {
+                // Could be a variant name (Some, None, Ok, Err) or a binding
+                if is_variant_name(name) {
+                    self.variant_tag(name)
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    /// Look up the tag value for a variant name.
+    fn variant_tag(&self, name: &str) -> i64 {
+        // Well-known built-in variant tags
+        match name {
+            "Some" | "Ok" => 0,
+            "None" | "Err" => 1,
+            _ => {
+                // Search enum layouts for user-defined variants
+                for layout in self.ctx.enum_layouts {
+                    for variant in &layout.variants {
+                        if variant.name == name {
+                            return variant.tag as i64;
+                        }
+                    }
+                }
+                0
+            }
+        }
+    }
+
+    /// Bind pattern payload variables into the current scope.
+    ///
+    /// After confirming a tag match, extracts payload fields from the
+    /// enum value and inserts them as named locals.
+    fn bind_pattern_payload(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        value: MirOperand,
+        payload_ty: MirType,
+    ) {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Constructor { fields, .. } => {
+                for (i, field_pat) in fields.iter().enumerate() {
+                    if let Pattern::Ident(name) = field_pat {
+                        let field_ty = payload_ty.clone();
+                        let local = self.builder.alloc_local(name.clone(), field_ty.clone());
+                        self.locals.insert(name.clone(), (local, field_ty));
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Field {
+                                base: value.clone(),
+                                field_index: i as u32,
+                            },
+                        });
+                    }
+                    // Wildcard, Literal in field position — skip binding
+                }
+            }
+            // Ident that is a variant name: no binding (pure match)
+            // Ident that is a variable: this shouldn't reach here (it's a binding, not a match)
+            _ => {}
+        }
     }
 
     /// Collect free variables in a closure body — names used but not defined
@@ -633,6 +746,22 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::BitNot => MirUnaryOp::BitNot,
         UnaryOp::Ref | UnaryOp::Deref => unreachable!(),
     }
+}
+
+/// Check if a name is a known enum variant (not a variable binding).
+fn is_variant_name(name: &str) -> bool {
+    matches!(name, "Some" | "None" | "Ok" | "Err")
+        || name.contains('.')  // Qualified variant like "Status.Active"
+        || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+}
+
+/// Detect identifiers that name types rather than values.
+///
+/// Uppercase-initial names are user-defined types (structs, enums, traits).
+/// A few lowercase names (`string`) are built-in types that support static methods.
+fn is_type_constructor_name(name: &str) -> bool {
+    name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+        || matches!(name, "string")
 }
 
 /// Determine result type for a binary operation.
@@ -1454,5 +1583,200 @@ mod tests {
             b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::Cast { .. }, .. }))
         });
         assert!(has_cast);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Type constructors + enum variants
+    // ═══════════════════════════════════════════════════════════
+
+    fn lower_with_ctx(decl: &Decl, all_decls: &[Decl], ctx: &MirContext) -> MirFunction {
+        let mut fns = MirLowerer::lower_function(decl, all_decls, ctx).expect("lowering failed");
+        fns.remove(0)
+    }
+
+    fn find_store(f: &MirFunction) -> bool {
+        f.blocks.iter().any(|b| {
+            b.statements.iter().any(|s| matches!(s, MirStmt::Store { .. }))
+        })
+    }
+
+    fn count_stores(f: &MirFunction) -> usize {
+        f.blocks.iter()
+            .flat_map(|b| b.statements.iter())
+            .filter(|s| matches!(s, MirStmt::Store { .. }))
+            .count()
+    }
+
+    #[test]
+    fn lower_enum_variant_construct() {
+        // Shape.Circle(5.0) → store tag 0, store payload f64
+        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+
+        let shape_enum = EnumLayout {
+            name: "Shape".to_string(),
+            size: 16,
+            align: 8,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout {
+                    name: "Circle".to_string(),
+                    tag: 0,
+                    payload_offset: 8,
+                    payload_size: 8,
+                    fields: vec![FieldLayout {
+                        name: "f0".to_string(),
+                        ty: rask_types::Type::F64,
+                        offset: 0,
+                        size: 8,
+                        align: 8,
+                    }],
+                },
+                VariantLayout {
+                    name: "Square".to_string(),
+                    tag: 1,
+                    payload_offset: 8,
+                    payload_size: 8,
+                    fields: vec![FieldLayout {
+                        name: "f0".to_string(),
+                        ty: rask_types::Type::F64,
+                        offset: 0,
+                        size: 8,
+                        align: 8,
+                    }],
+                },
+            ],
+        };
+
+        let enum_layouts = vec![shape_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Shape"), "Circle", vec![float_expr(5.0)])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        // Should emit stores for tag + payload, not a Call
+        assert!(find_store(&f));
+        assert_eq!(count_stores(&f), 2); // tag store + payload store
+        assert!(!find_call(&f, "Circle"));
+    }
+
+    #[test]
+    fn lower_enum_variant_no_payload() {
+        // Color.Red() → store tag only
+        use rask_mono::{EnumLayout, VariantLayout};
+
+        let color_enum = EnumLayout {
+            name: "Color".to_string(),
+            size: 1,
+            align: 1,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout { name: "Red".to_string(), tag: 0, payload_offset: 0, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Green".to_string(), tag: 1, payload_offset: 0, payload_size: 0, fields: vec![] },
+                VariantLayout { name: "Blue".to_string(), tag: 2, payload_offset: 0, payload_size: 0, fields: vec![] },
+            ],
+        };
+
+        let enum_layouts = vec![color_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Color"), "Red", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        assert!(find_store(&f));
+        assert_eq!(count_stores(&f), 1); // tag only
+    }
+
+    #[test]
+    fn lower_enum_variant_multi_field() {
+        // Msg.Pair(1, 2) → store tag + 2 payload fields
+        use rask_mono::{EnumLayout, VariantLayout, FieldLayout};
+
+        let msg_enum = EnumLayout {
+            name: "Msg".to_string(),
+            size: 12,
+            align: 4,
+            tag_ty: rask_types::Type::U8,
+            tag_offset: 0,
+            variants: vec![
+                VariantLayout { name: "Empty".to_string(), tag: 0, payload_offset: 4, payload_size: 0, fields: vec![] },
+                VariantLayout {
+                    name: "Pair".to_string(),
+                    tag: 1,
+                    payload_offset: 4,
+                    payload_size: 8,
+                    fields: vec![
+                        FieldLayout { name: "f0".to_string(), ty: rask_types::Type::I32, offset: 0, size: 4, align: 4 },
+                        FieldLayout { name: "f1".to_string(), ty: rask_types::Type::I32, offset: 4, size: 4, align: 4 },
+                    ],
+                },
+            ],
+        };
+
+        let enum_layouts = vec![msg_enum];
+        let node_types = HashMap::new();
+        let ctx = MirContext {
+            struct_layouts: &[],
+            enum_layouts: &enum_layouts,
+            node_types: &node_types,
+        };
+
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Msg"), "Pair", vec![int_expr(1), int_expr(2)])),
+            return_stmt(None),
+        ]);
+        let f = lower_with_ctx(&decl, &[decl.clone()], &ctx);
+
+        assert_eq!(count_stores(&f), 3); // tag + 2 fields
+    }
+
+    #[test]
+    fn lower_static_method_call_on_type() {
+        // Vec.new() → Call to Vec_new
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("Vec"), "new", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "Vec_new"));
+    }
+
+    #[test]
+    fn lower_string_static_method() {
+        // string.new() → Call to string_new
+        let decl = make_fn("f", vec![], None, vec![
+            expr_stmt(method_call_expr(ident_expr("string"), "new", vec![])),
+            return_stmt(None),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_call(&f, "string_new"));
+    }
+
+    #[test]
+    fn lower_method_on_value_still_works() {
+        // a.add(b) where a is a local variable → BinaryOp (not static call)
+        let decl = make_fn("f", vec![("a", "i32"), ("b", "i32")], Some("i32"), vec![
+            return_stmt(Some(method_call_expr(ident_expr("a"), "add", vec![ident_expr("b")]))),
+        ]);
+        let f = lower_one(&decl);
+        assert!(find_assign_binop(&f));
+        assert!(!find_call(&f, "i32_add"));
     }
 }
