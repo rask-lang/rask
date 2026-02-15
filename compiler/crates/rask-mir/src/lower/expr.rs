@@ -7,8 +7,8 @@ use super::{
     operator_method_to_unaryop, LoweringError, MirLowerer, TypedOperand,
 };
 use crate::{
-    operand::MirConst, types::StructLayoutId, BlockId, FunctionRef, MirOperand, MirRValue,
-    MirStmt, MirTerminator, MirType,
+    operand::MirConst, stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, BlockId,
+    FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
@@ -105,7 +105,7 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Function call
+            // Function call — direct or through closure
             ExprKind::Call { func, args } => {
                 let func_name = match &func.kind {
                     ExprKind::Ident(name) => name.clone(),
@@ -120,6 +120,25 @@ impl<'a> MirLowerer<'a> {
                 for a in args {
                     let (op, _) = self.lower_expr(&a.expr)?;
                     arg_operands.push(op);
+                }
+
+                // If the callee is a local variable (closure), emit ClosureCall
+                if let Some((closure_local, _closure_ty)) = self.locals.get(&func_name).cloned() {
+                    // Check if it's actually a closure (Ptr type from closure creation)
+                    // vs a regular variable that happens to shadow a function
+                    if !self.func_sigs.contains_key(&func_name) || _closure_ty == MirType::Ptr {
+                        let ret_ty = self.func_sigs
+                            .get(&func_name)
+                            .map(|s| s.ret_ty.clone())
+                            .unwrap_or(MirType::I64);
+                        let result_local = self.builder.alloc_temp(ret_ty.clone());
+                        self.builder.push_stmt(MirStmt::ClosureCall {
+                            dst: Some(result_local),
+                            closure: closure_local,
+                            args: arg_operands,
+                        });
+                        return Ok((MirOperand::Local(result_local), ret_ty));
+                    }
                 }
 
                 let ret_ty = self
@@ -581,26 +600,9 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
-            // Closure
-            ExprKind::Closure { params, body, .. } => {
-                let result_local = self.builder.alloc_temp(MirType::Ptr);
-
-                let saved_locals = self.locals.clone();
-                for param in params {
-                    let param_ty = param.ty.as_deref()
-                        .map(|s| self.ctx.resolve_type_str(s))
-                        .unwrap_or(MirType::I32);
-                    let param_local = self.builder.alloc_temp(param_ty.clone());
-                    self.locals.insert(param.name.clone(), (param_local, param_ty));
-                }
-                let _body_val = self.lower_expr(body)?;
-                self.locals = saved_locals;
-
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-                });
-                Ok((MirOperand::Local(result_local), MirType::Ptr))
+            // Closure — synthesize a separate MIR function and emit ClosureCreate
+            ExprKind::Closure { params, ret_ty, body } => {
+                self.lower_closure(params, ret_ty.as_deref(), body)
             }
 
             // Cast
@@ -918,6 +920,122 @@ impl<'a> MirLowerer<'a> {
             self.lower_stmt(stmt)?;
         }
         Ok((last_val, last_ty))
+    }
+
+    /// Closure lowering: synthesize a separate MIR function for the body,
+    /// build the environment, and emit ClosureCreate in the enclosing function.
+    fn lower_closure(
+        &mut self,
+        params: &[rask_ast::expr::ClosureParam],
+        ret_ty: Option<&str>,
+        body: &Expr,
+    ) -> Result<TypedOperand, LoweringError> {
+        // 1. Collect free variables (captures from enclosing scope)
+        let free_vars = self.collect_free_vars(body, params);
+
+        // 2. Generate unique name for the closure function
+        let closure_name = format!("{}__closure_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        // 3. Build the closure environment layout
+        let mut captures = Vec::new();
+        let mut env_offset = 0u32;
+        for (name, local_id, ty) in &free_vars {
+            let size = mir_type_size(ty);
+            // 8-byte alignment
+            let aligned_offset = (env_offset + 7) & !7;
+            captures.push(ClosureCapture {
+                local_id: *local_id,
+                offset: aligned_offset,
+                size,
+            });
+            env_offset = aligned_offset + size;
+        }
+
+        // 4. Synthesize a MIR function for the closure body.
+        //    Signature: fn closure_name(env_ptr: ptr, params...) -> ret
+        let closure_ret = ret_ty
+            .map(|s| self.ctx.resolve_type_str(s))
+            .unwrap_or(MirType::I64);
+        let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
+
+        // env_ptr is the implicit first parameter
+        let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
+
+        // Add explicit closure parameters
+        let mut closure_locals = std::collections::HashMap::new();
+        for param in params {
+            let param_ty = param.ty.as_deref()
+                .map(|s| self.ctx.resolve_type_str(s))
+                .unwrap_or(MirType::I64);
+            let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
+            closure_locals.insert(param.name.clone(), (param_id, param_ty));
+        }
+
+        // Emit LoadCapture for each free variable
+        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+            let cap = &captures[i];
+            let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
+            closure_builder.push_stmt(MirStmt::LoadCapture {
+                dst: local_id,
+                env_ptr: env_param_id,
+                offset: cap.offset,
+            });
+            closure_locals.insert(name.clone(), (local_id, ty.clone()));
+        }
+
+        // Lower the closure body using a temporary lowerer
+        {
+            let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
+            let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
+            let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+
+            let body_result = self.lower_expr(body);
+
+            // Restore parent state
+            closure_builder = std::mem::replace(&mut self.builder, saved_builder);
+            self.locals = saved_locals;
+            self.loop_stack = saved_loop_stack;
+
+            let (body_val, _body_ty) = body_result?;
+
+            // Add implicit return of body value if block is unterminated
+            if closure_builder.current_block_unterminated() {
+                closure_builder.terminate(MirTerminator::Return {
+                    value: Some(body_val),
+                });
+            }
+        }
+
+        let closure_fn = closure_builder.finish();
+
+        // Register the closure function signature for potential calls
+        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
+            params: {
+                let mut ps = vec![super::FuncParam { ty: MirType::Ptr }]; // env_ptr
+                for param in params {
+                    ps.push(super::FuncParam {
+                        ty: param.ty.as_deref()
+                            .map(|s| self.ctx.resolve_type_str(s))
+                            .unwrap_or(MirType::I64),
+                    });
+                }
+                ps
+            },
+            ret_ty: closure_ret,
+        });
+
+        self.synthesized_functions.push(closure_fn);
+
+        // 5. In the parent function, emit ClosureCreate
+        let result_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::ClosureCreate {
+            dst: result_local,
+            func_name: closure_name,
+            captures,
+        });
+
+        Ok((MirOperand::Local(result_local), MirType::Ptr))
     }
 
     /// Try expression lowering (spec L3).
