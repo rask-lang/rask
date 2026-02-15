@@ -20,6 +20,12 @@ impl TypeChecker {
                 DeclKind::Struct(s) => self.register_struct(s),
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
+                DeclKind::Fn(f) if !f.type_params.is_empty() => {
+                    let params: Vec<String> = f.type_params.iter()
+                        .map(|p| p.name.clone())
+                        .collect();
+                    self.fn_type_params.insert(f.name.clone(), params);
+                }
                 _ => {}
             }
         }

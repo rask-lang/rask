@@ -13,8 +13,8 @@ mod reachability;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
-    compute_enum_layout, compute_struct_layout, EnumLayout, FieldLayout, StructLayout,
-    VariantLayout,
+    compute_enum_layout, compute_struct_layout, type_size_align, EnumLayout, FieldLayout,
+    StructLayout, VariantLayout,
 };
 pub use reachability::Monomorphizer;
 

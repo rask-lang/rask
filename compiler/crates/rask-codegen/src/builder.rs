@@ -646,7 +646,14 @@ impl<'a> FunctionBuilder<'a> {
                             0
                         }
                     }
-                    _ => (*field_index as i32) * 8, // fallback: assume 8-byte stride
+                    // No layout available — derive stride from the field's load type.
+                    // This covers Option/Result/Tuple which MIR lowers to Ptr.
+                    _ => {
+                        let stride = expected_ty
+                            .map(|t| t.bytes() as i32)
+                            .unwrap_or(8);
+                        (*field_index as i32) * stride
+                    }
                 };
 
                 let flags = MemFlags::new();
@@ -658,18 +665,26 @@ impl<'a> FunctionBuilder<'a> {
                 let ptr_val = Self::lower_operand(builder, value, var_map, string_globals)?;
                 let base_ty = Self::operand_mir_type(value, locals);
 
-                let tag_offset = match &base_ty {
+                let (tag_offset, tag_cranelift_ty) = match &base_ty {
                     Some(MirType::Enum(id)) => {
-                        enum_layouts.get(id.0 as usize)
-                            .map(|l| l.tag_offset as i32)
-                            .unwrap_or(0)
+                        if let Some(layout) = enum_layouts.get(id.0 as usize) {
+                            let offset = layout.tag_offset as i32;
+                            // Derive Cranelift type from tag type's size
+                            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty);
+                            let ty = match tag_size {
+                                2 => types::I16,
+                                _ => types::I8,
+                            };
+                            (offset, ty)
+                        } else {
+                            (0, types::I8)
+                        }
                     }
-                    _ => 0,
+                    _ => (0, types::I8),
                 };
 
                 let flags = MemFlags::new();
-                // Tag is always u8
-                Ok(builder.ins().load(types::I8, flags, ptr_val, tag_offset))
+                Ok(builder.ins().load(tag_cranelift_ty, flags, ptr_val, tag_offset))
             }
 
             // Address-of: return the pointer that the local already holds (for aggregates)

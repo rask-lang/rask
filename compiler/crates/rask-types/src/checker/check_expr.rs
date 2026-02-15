@@ -746,9 +746,6 @@ impl TypeChecker {
         }
     }
 
-    // TODO: For generic function calls, track fresh type variables created for
-    // type params here. After constraint solving, resolve them and populate
-    // TypedProgram.call_type_args so monomorphization can instantiate correctly.
     pub(super) fn check_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
             if self.is_builtin_function(name) {
@@ -765,6 +762,18 @@ impl TypeChecker {
 
         // Validate call-site annotations before type inference
         self.check_call_annotations(func, args, span);
+
+        // Track generic call sites: if the callee has type params, create
+        // fresh vars and record them so monomorphization can resolve them.
+        if let ExprKind::Ident(name) = &func.kind {
+            if let Some(type_params) = self.fn_type_params.get(name).cloned() {
+                let fresh_vars: Vec<Type> = type_params
+                    .iter()
+                    .map(|_| self.ctx.fresh_var())
+                    .collect();
+                self.pending_call_type_args.push((func.id, fresh_vars));
+            }
+        }
 
         let func_ty = self.infer_expr(func);
 

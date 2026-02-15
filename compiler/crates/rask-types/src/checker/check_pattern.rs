@@ -105,9 +105,33 @@ impl TypeChecker {
             Pattern::Or(alternatives) => {
                 if let Some(first) = alternatives.first() {
                     let bindings = self.check_pattern(first, scrutinee_ty, span);
+                    let expected_names: Vec<&str> = bindings.iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect();
                     for alt in &alternatives[1..] {
-                        let _alt_bindings = self.check_pattern(alt, scrutinee_ty, span);
-                        // TODO: verify same names and compatible types
+                        let alt_bindings = self.check_pattern(alt, scrutinee_ty, span);
+                        // Verify all alternatives bind the same names
+                        let alt_names: Vec<&str> = alt_bindings.iter()
+                            .map(|(n, _)| n.as_str())
+                            .collect();
+                        if alt_names != expected_names {
+                            self.errors.push(TypeError::GenericError(
+                                format!(
+                                    "or-pattern alternatives must bind the same variables \
+                                     (first binds {:?}, alternative binds {:?})",
+                                    expected_names, alt_names,
+                                ),
+                                span,
+                            ));
+                        }
+                        // Unify binding types across alternatives
+                        for ((_, first_ty), (_, alt_ty)) in bindings.iter().zip(alt_bindings.iter()) {
+                            self.ctx.add_constraint(TypeConstraint::Equal(
+                                first_ty.clone(),
+                                alt_ty.clone(),
+                                span,
+                            ));
+                        }
                     }
                     bindings
                 } else {
