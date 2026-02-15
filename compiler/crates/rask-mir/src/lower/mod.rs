@@ -22,13 +22,7 @@ type TypedOperand = (MirOperand, MirType);
 /// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
-    params: Vec<FuncParam>,
     ret_ty: MirType,
-}
-
-#[derive(Clone)]
-struct FuncParam {
-    ty: MirType,
 }
 
 /// Loop context for break/continue
@@ -154,6 +148,14 @@ pub struct MirLowerer<'a> {
     loop_stack: Vec<LoopContext>,
     /// Layout context from monomorphization
     ctx: &'a MirContext<'a>,
+    /// Synthesized closure functions produced during lowering
+    synthesized_functions: Vec<MirFunction>,
+    /// Counter for generating unique closure function names
+    closure_counter: u32,
+    /// Name of the function being lowered (for closure naming)
+    parent_name: String,
+    /// Variable names known to hold closure values
+    closure_locals: std::collections::HashSet<String>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -161,11 +163,13 @@ impl<'a> MirLowerer<'a> {
     ///
     /// `all_decls` provides function signatures for resolving call return types.
     /// `ctx` provides struct/enum layout data for resolving field types and offsets.
+    ///
+    /// Returns the lowered function plus any synthesized closure functions.
     pub fn lower_function(
         decl: &Decl,
         all_decls: &[Decl],
         ctx: &MirContext,
-    ) -> Result<MirFunction, LoweringError> {
+    ) -> Result<Vec<MirFunction>, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
             _ => {
@@ -190,10 +194,7 @@ impl<'a> MirLowerer<'a> {
                     .as_deref()
                     .map(|s| ctx.resolve_type_str(s))
                     .unwrap_or(MirType::Void);
-                let sig_params = f.params.iter().map(|p| FuncParam {
-                    ty: ctx.resolve_type_str(&p.ty),
-                }).collect();
-                func_sigs.insert(f.name.clone(), FuncSig { params: sig_params, ret_ty: sig_ret });
+                func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
             }
         }
 
@@ -203,6 +204,10 @@ impl<'a> MirLowerer<'a> {
             func_sigs,
             loop_stack: Vec::new(),
             ctx,
+            synthesized_functions: Vec::new(),
+            closure_counter: 0,
+            parent_name: fn_decl.name.clone(),
+            closure_locals: std::collections::HashSet::new(),
         };
 
         // Add parameters
@@ -222,7 +227,10 @@ impl<'a> MirLowerer<'a> {
             lowerer.builder.terminate(MirTerminator::Return { value: None });
         }
 
-        Ok(lowerer.builder.finish())
+        let main_fn = lowerer.builder.finish();
+        let mut result = vec![main_fn];
+        result.extend(lowerer.synthesized_functions);
+        Ok(result)
     }
 
     /// Look up the type of an expression from the type checker.
@@ -244,16 +252,287 @@ impl<'a> MirLowerer<'a> {
 
     /// Extract the Ok/Some payload type from Result<T, E> or Option<T>.
     /// Returns the payload type T, or None if unavailable.
-    fn extract_ok_payload_type(&self, result_ty: &MirType) -> Option<MirType> {
-        // This is simplified - ideally we'd parse the enum variant's payload type
-        // For now, return a sensible default
+    fn extract_ok_payload_type(&self, _result_ty: &MirType) -> Option<MirType> {
+        // Simplified — ideally we'd parse the enum variant's payload type
         Some(MirType::I32)
     }
 
-    /// Extract the error type from Result<T, E>.
-    fn extract_error_type(&self, result_ty: &MirType) -> Option<MirType> {
-        // This is simplified - ideally we'd parse the enum's error variant type
-        Some(MirType::I32)
+    /// Collect free variables in a closure body — names used but not defined
+    /// within the closure itself (params or local bindings).
+    fn collect_free_vars(
+        &self,
+        body: &Expr,
+        params: &[rask_ast::expr::ClosureParam],
+    ) -> Vec<(String, LocalId, MirType)> {
+        let mut free = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let bound: std::collections::HashSet<String> =
+            params.iter().map(|p| p.name.clone()).collect();
+        self.walk_free_vars(body, &bound, &mut seen, &mut free);
+        free
+    }
+
+    /// Recursive walk to find free variable references.
+    fn walk_free_vars(
+        &self,
+        expr: &Expr,
+        bound: &std::collections::HashSet<String>,
+        seen: &mut std::collections::HashSet<String>,
+        free: &mut Vec<(String, LocalId, MirType)>,
+    ) {
+        use rask_ast::expr::ExprKind;
+        match &expr.kind {
+            ExprKind::Ident(name) => {
+                if !bound.contains(name) && !seen.contains(name) {
+                    if let Some((local_id, ty)) = self.locals.get(name) {
+                        seen.insert(name.clone());
+                        free.push((name.clone(), *local_id, ty.clone()));
+                    }
+                }
+            }
+            ExprKind::Block(stmts) => {
+                self.walk_free_vars_block(stmts, bound, seen, free);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.walk_free_vars(left, bound, seen, free);
+                self.walk_free_vars(right, bound, seen, free);
+            }
+            ExprKind::Unary { operand, .. } => {
+                self.walk_free_vars(operand, bound, seen, free);
+            }
+            ExprKind::Call { func, args } => {
+                self.walk_free_vars(func, bound, seen, free);
+                for arg in args {
+                    self.walk_free_vars(&arg.expr, bound, seen, free);
+                }
+            }
+            ExprKind::MethodCall { object, args, .. } => {
+                self.walk_free_vars(object, bound, seen, free);
+                for arg in args {
+                    self.walk_free_vars(&arg.expr, bound, seen, free);
+                }
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                self.walk_free_vars(cond, bound, seen, free);
+                self.walk_free_vars(then_branch, bound, seen, free);
+                if let Some(e) = else_branch {
+                    self.walk_free_vars(e, bound, seen, free);
+                }
+            }
+            ExprKind::Match { scrutinee, arms } => {
+                self.walk_free_vars(scrutinee, bound, seen, free);
+                for arm in arms {
+                    let mut arm_bound = bound.clone();
+                    collect_pattern_names(&arm.pattern, &mut arm_bound);
+                    self.walk_free_vars(&arm.body, &arm_bound, seen, free);
+                }
+            }
+            ExprKind::Field { object, .. } => {
+                self.walk_free_vars(object, bound, seen, free);
+            }
+            ExprKind::Index { object, index } => {
+                self.walk_free_vars(object, bound, seen, free);
+                self.walk_free_vars(index, bound, seen, free);
+            }
+            ExprKind::Array(elems) => {
+                for e in elems { self.walk_free_vars(e, bound, seen, free); }
+            }
+            ExprKind::Tuple(elems) => {
+                for e in elems { self.walk_free_vars(e, bound, seen, free); }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields { self.walk_free_vars(&f.value, bound, seen, free); }
+                if let Some(s) = spread { self.walk_free_vars(s, bound, seen, free); }
+            }
+            ExprKind::Closure { params: inner_params, body, .. } => {
+                let mut inner_bound = bound.clone();
+                for p in inner_params { inner_bound.insert(p.name.clone()); }
+                self.walk_free_vars(body, &inner_bound, seen, free);
+            }
+            ExprKind::Try(inner) | ExprKind::Unwrap { expr: inner, .. } => {
+                self.walk_free_vars(inner, bound, seen, free);
+            }
+            ExprKind::Cast { expr: inner, .. } => {
+                self.walk_free_vars(inner, bound, seen, free);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                self.walk_free_vars(value, bound, seen, free);
+                self.walk_free_vars(default, bound, seen, free);
+            }
+            ExprKind::Range { start, end, .. } => {
+                if let Some(s) = start { self.walk_free_vars(s, bound, seen, free); }
+                if let Some(e) = end { self.walk_free_vars(e, bound, seen, free); }
+            }
+            ExprKind::IfLet { expr: inner, pattern, then_branch, else_branch } => {
+                self.walk_free_vars(inner, bound, seen, free);
+                let mut then_bound = bound.clone();
+                collect_pattern_names(pattern, &mut then_bound);
+                self.walk_free_vars(then_branch, &then_bound, seen, free);
+                if let Some(e) = else_branch { self.walk_free_vars(e, bound, seen, free); }
+            }
+            ExprKind::GuardPattern { expr: inner, else_branch, .. } => {
+                self.walk_free_vars(inner, bound, seen, free);
+                self.walk_free_vars(else_branch, bound, seen, free);
+            }
+            ExprKind::IsPattern { expr: inner, .. } => {
+                self.walk_free_vars(inner, bound, seen, free);
+            }
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message } => {
+                self.walk_free_vars(condition, bound, seen, free);
+                if let Some(m) = message { self.walk_free_vars(m, bound, seen, free); }
+            }
+            ExprKind::OptionalField { object, .. } => {
+                self.walk_free_vars(object, bound, seen, free);
+            }
+            ExprKind::ArrayRepeat { value, count } => {
+                self.walk_free_vars(value, bound, seen, free);
+                self.walk_free_vars(count, bound, seen, free);
+            }
+            ExprKind::UsingBlock { args, body, .. } => {
+                for arg in args {
+                    self.walk_free_vars(&arg.expr, bound, seen, free);
+                }
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } => {
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            ExprKind::WithAs { bindings, body } => {
+                for (bind_expr, _) in bindings {
+                    self.walk_free_vars(bind_expr, bound, seen, free);
+                }
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            ExprKind::Spawn { body } | ExprKind::BlockCall { body, .. } => {
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    match &arm.kind {
+                        rask_ast::expr::SelectArmKind::Recv { channel, .. } => {
+                            self.walk_free_vars(channel, bound, seen, free);
+                        }
+                        rask_ast::expr::SelectArmKind::Send { channel, value } => {
+                            self.walk_free_vars(channel, bound, seen, free);
+                            self.walk_free_vars(value, bound, seen, free);
+                        }
+                        rask_ast::expr::SelectArmKind::Default => {}
+                    }
+                    self.walk_free_vars(&arm.body, bound, seen, free);
+                }
+            }
+            // Literals — no free variables
+            ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
+            | ExprKind::Char(..) | ExprKind::Bool(..) => {}
+        }
+    }
+
+    fn walk_free_vars_block(
+        &self,
+        stmts: &[rask_ast::stmt::Stmt],
+        bound: &std::collections::HashSet<String>,
+        seen: &mut std::collections::HashSet<String>,
+        free: &mut Vec<(String, LocalId, MirType)>,
+    ) {
+        let mut local_bound = bound.clone();
+        for stmt in stmts {
+            self.walk_free_vars_stmt(stmt, &local_bound, seen, free);
+            match &stmt.kind {
+                rask_ast::stmt::StmtKind::Let { name, .. }
+                | rask_ast::stmt::StmtKind::Const { name, .. } => {
+                    local_bound.insert(name.clone());
+                }
+                rask_ast::stmt::StmtKind::LetTuple { names, .. }
+                | rask_ast::stmt::StmtKind::ConstTuple { names, .. } => {
+                    for n in names { local_bound.insert(n.clone()); }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn walk_free_vars_stmt(
+        &self,
+        stmt: &rask_ast::stmt::Stmt,
+        bound: &std::collections::HashSet<String>,
+        seen: &mut std::collections::HashSet<String>,
+        free: &mut Vec<(String, LocalId, MirType)>,
+    ) {
+        use rask_ast::stmt::StmtKind;
+        match &stmt.kind {
+            StmtKind::Expr(e) => self.walk_free_vars(e, bound, seen, free),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                self.walk_free_vars(init, bound, seen, free);
+            }
+            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+                self.walk_free_vars(init, bound, seen, free);
+            }
+            StmtKind::Return(Some(e)) => self.walk_free_vars(e, bound, seen, free),
+            StmtKind::Return(None) => {}
+            StmtKind::Assign { target, value } => {
+                self.walk_free_vars(target, bound, seen, free);
+                self.walk_free_vars(value, bound, seen, free);
+            }
+            StmtKind::While { cond, body } => {
+                self.walk_free_vars(cond, bound, seen, free);
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            StmtKind::WhileLet { pattern, expr, body } => {
+                self.walk_free_vars(expr, bound, seen, free);
+                let mut body_bound = bound.clone();
+                collect_pattern_names(pattern, &mut body_bound);
+                self.walk_free_vars_block(body, &body_bound, seen, free);
+            }
+            StmtKind::For { binding, iter, body, .. } => {
+                self.walk_free_vars(iter, bound, seen, free);
+                let mut inner_bound = bound.clone();
+                inner_bound.insert(binding.clone());
+                self.walk_free_vars_block(body, &inner_bound, seen, free);
+            }
+            StmtKind::Loop { body, .. } => {
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+            StmtKind::Break { value, .. } => {
+                if let Some(v) = value { self.walk_free_vars(v, bound, seen, free); }
+            }
+            StmtKind::Continue(_) => {}
+            StmtKind::Ensure { body, else_handler } => {
+                self.walk_free_vars_block(body, bound, seen, free);
+                if let Some((name, handler)) = else_handler {
+                    let mut inner_bound = bound.clone();
+                    inner_bound.insert(name.clone());
+                    self.walk_free_vars_block(handler, &inner_bound, seen, free);
+                }
+            }
+            StmtKind::Comptime(body) => {
+                self.walk_free_vars_block(body, bound, seen, free);
+            }
+        }
+    }
+}
+
+/// Collect variable names bound by a pattern into a set.
+fn collect_pattern_names(
+    pattern: &rask_ast::expr::Pattern,
+    names: &mut std::collections::HashSet<String>,
+) {
+    use rask_ast::expr::Pattern;
+    match pattern {
+        Pattern::Ident(name) => { names.insert(name.clone()); }
+        Pattern::Constructor { fields, .. } => {
+            for p in fields { collect_pattern_names(p, names); }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, p) in fields { collect_pattern_names(p, names); }
+        }
+        Pattern::Tuple(elems) => {
+            for p in elems { collect_pattern_names(p, names); }
+        }
+        Pattern::Or(alts) => {
+            // All alternatives bind the same names; just collect from the first
+            if let Some(first) = alts.first() { collect_pattern_names(first, names); }
+        }
+        Pattern::Wildcard | Pattern::Literal(_) => {}
     }
 }
 
@@ -624,7 +903,8 @@ mod tests {
     fn lower(decl: &Decl, all_decls: &[Decl]) -> MirFunction {
         let node_types = HashMap::new();
         let ctx = MirContext::empty_with_map(&node_types);
-        MirLowerer::lower_function(decl, all_decls, &ctx).expect("lowering failed")
+        let mut fns = MirLowerer::lower_function(decl, all_decls, &ctx).expect("lowering failed");
+        fns.remove(0) // Return the main function (first element)
     }
 
     fn lower_one(decl: &Decl) -> MirFunction {

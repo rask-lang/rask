@@ -369,6 +369,103 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, results[0]);
                 }
             }
+
+            // ── Closure support ──────────────────────────────────────────
+
+            MirStmt::ClosureCreate { dst, func_name, captures } => {
+                // Build environment: stack-allocate captured variables
+                let env_layout = crate::closures::ClosureEnvLayout {
+                    size: captures.last()
+                        .map(|c| c.offset + c.size)
+                        .unwrap_or(0),
+                    captures: captures.iter().map(|c| crate::closures::CaptureInfo {
+                        local_id: c.local_id,
+                        offset: c.offset,
+                        size: c.size,
+                    }).collect(),
+                };
+                let env_ptr = crate::closures::allocate_env(builder, &env_layout, var_map)?;
+
+                // Get function pointer for the closure function
+                let func_ref = func_refs.get(func_name)
+                    .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
+                let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
+
+                // Build the closure struct: { func_ptr, env_ptr }
+                let closure_ptr = crate::closures::create_closure(builder, func_ptr, env_ptr);
+
+                let var = var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "ClosureCreate destination not found".to_string()
+                    ))?;
+                builder.def_var(*var, closure_ptr);
+            }
+
+            MirStmt::ClosureCall { dst, closure, args } => {
+                let closure_val = builder.use_var(*var_map.get(closure)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "Closure variable not found".to_string()
+                    ))?);
+
+                // Lower arg values
+                let mut arg_vals = Vec::new();
+                for a in args {
+                    let val = Self::lower_operand(builder, a, var_map, string_globals)?;
+                    arg_vals.push(val);
+                }
+
+                // Build signature: (args...) -> ret
+                // call_closure will prepend env_ptr automatically
+                let mut sig = builder.func.signature.clone();
+                sig.params.clear();
+                sig.returns.clear();
+
+                for val in &arg_vals {
+                    let ty = builder.func.dfg.value_type(*val);
+                    sig.params.push(AbiParam::new(ty));
+                }
+
+                if let Some(dst_id) = dst {
+                    let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                    if let Some(local) = dst_local {
+                        let ret_ty = mir_to_cranelift_type(&local.ty)?;
+                        sig.returns.push(AbiParam::new(ret_ty));
+                    }
+                }
+
+                let call_inst = crate::closures::call_closure(
+                    builder, closure_val, sig, &arg_vals,
+                );
+
+                if let Some(dst_id) = dst {
+                    let results = builder.inst_results(call_inst);
+                    if !results.is_empty() {
+                        let var = var_map.get(dst_id)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "ClosureCall destination not found".to_string()
+                            ))?;
+                        builder.def_var(*var, results[0]);
+                    }
+                }
+            }
+
+            MirStmt::LoadCapture { dst, env_ptr, offset } => {
+                let env_val = builder.use_var(*var_map.get(env_ptr)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "LoadCapture env_ptr not found".to_string()
+                    ))?);
+                let dst_local = locals.iter().find(|l| l.id == *dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "LoadCapture destination not found".to_string()
+                    ))?;
+                let load_ty = mir_to_cranelift_type(&dst_local.ty)?;
+                let val = crate::closures::load_capture(builder, env_val, *offset, load_ty);
+                let var = var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "LoadCapture destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, val);
+            }
         }
         Ok(())
     }
