@@ -27,6 +27,7 @@ fn all_rules() -> Vec<Rule> {
         // Idiomatic patterns
         Rule { id: "idiom/unwrap-production", check: idiom::check_unwrap_production },
         Rule { id: "idiom/missing-ensure", check: idiom::check_missing_ensure },
+        Rule { id: "idiom/ensure-ordering", check: idiom::check_ensure_ordering },
         // Style
         Rule { id: "style/snake-case-func", check: style::check_snake_case_func },
         Rule { id: "style/pascal-case-type", check: style::check_pascal_case_type },
