@@ -5,7 +5,7 @@
 
 # Package Versioning and Dependencies
 
-Semantic versioning with maximal version selection, `rask.build` package block for dependencies, generated lock file for reproducibility.
+Semantic versioning with maximal version selection, `build.rk` package block for dependencies, generated lock file for reproducibility.
 
 ## Versioning
 
@@ -81,7 +81,7 @@ Algorithm: build transitive dependency graph → collect all version constraints
 
 | Rule | Description |
 |------|-------------|
-| **WS1: Members** | `members: ["app", "lib1", "lib2"]` in workspace root `rask.build` |
+| **WS1: Members** | `members: ["app", "lib1", "lib2"]` in workspace root `build.rk` |
 | **WS2: Shared lock** | Single `rask.lock` at workspace root |
 | **WS3: Path deps** | Members reference each other via path dependencies |
 
@@ -96,7 +96,7 @@ FIX: Check if X or Y has a newer version compatible with the other.
 
 ```
 ERROR [struct.packages/LK4]: lock file out of sync
-  rask.lock doesn't match rask.build dependencies
+  rask.lock doesn't match build.rk dependencies
 
 FIX: rask update
 ```
@@ -105,7 +105,7 @@ FIX: rask update
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Missing `rask.build` | — | No external deps, version 0.0.0 |
+| Missing `build.rk` | — | No external deps, version 0.0.0 |
 | Lock file out of date | LK4 | Error: run `rask update` |
 | Network unavailable | CA1 | Error: check network or cache |
 | Checksum mismatch | CA2 | Error: possible tampering |

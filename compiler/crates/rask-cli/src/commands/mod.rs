@@ -9,3 +9,5 @@ pub mod build;
 pub mod link;
 pub mod tools;
 pub mod specs;
+pub mod deps;
+pub mod watch;
