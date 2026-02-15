@@ -200,7 +200,10 @@ impl TypeChecker {
             }
             "None" => {
                 if fields.is_empty() {
-                    if !matches!(&resolved_scrutinee, Type::Option(_) | Type::Var(_)) {
+                    // Constrain scrutinee to Option unless already known to be one.
+                    // Var types need the constraint too — otherwise a standalone
+                    // None arm won't propagate the Option requirement.
+                    if !matches!(&resolved_scrutinee, Type::Option(_)) {
                         let inner_ty = self.ctx.fresh_var();
                         self.ctx.add_constraint(TypeConstraint::Equal(
                             scrutinee_ty.clone(),

@@ -5,7 +5,10 @@
 mod expr;
 mod stmt;
 
-use crate::{BlockBuilder, MirFunction, MirOperand, MirTerminator, MirType, BlockId, LocalId};
+use crate::{
+    BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, BlockId,
+    LocalId,
+};
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{Decl, DeclKind},
@@ -136,6 +139,11 @@ impl<'a> MirContext<'a> {
     pub fn lookup_node_type(&self, node_id: NodeId) -> Option<MirType> {
         self.node_types.get(&node_id).map(|ty| self.type_to_mir(ty))
     }
+
+    /// Look up the raw Type for an expression node (preserves generic info).
+    pub fn lookup_raw_type(&self, node_id: NodeId) -> Option<&Type> {
+        self.node_types.get(&node_id)
+    }
 }
 
 pub struct MirLowerer<'a> {
@@ -239,22 +247,127 @@ impl<'a> MirLowerer<'a> {
         self.ctx.lookup_node_type(expr.id)
     }
 
-    /// Extract the element type from an iterator type.
-    /// For Range<T> or Vec<T>, returns T. For unknown types, returns None.
-    fn extract_iterator_elem_type(&self, iter_ty: &MirType) -> Option<MirType> {
-        // This is simplified - in reality we'd need to parse generic type arguments
-        // For now, use a heuristic based on the iterator type
-        match iter_ty {
-            MirType::Ptr => Some(MirType::I32), // Default for unknown iterator types
-            _ => Some(MirType::I32), // Fallback
+    /// Extract the element type from an iterator type using raw type info.
+    /// For Range<i32>, returns I32. Falls back to None for unknown types.
+    fn extract_iterator_elem_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                // Range<T> iterates over T
+                Type::UnresolvedGeneric { name, args } if name == "Range" => {
+                    args.first().and_then(|arg| {
+                        if let rask_types::GenericArg::Type(t) = arg {
+                            Some(self.ctx.type_to_mir(t))
+                        } else {
+                            None
+                        }
+                    })
+                }
+                // Array iterates over its element type
+                Type::Array { elem, .. } => Some(self.ctx.type_to_mir(elem)),
+                Type::Slice(elem) => Some(self.ctx.type_to_mir(elem)),
+                _ => None,
+            }
+        } else {
+            None
         }
     }
 
-    /// Extract the Ok/Some payload type from Result<T, E> or Option<T>.
-    /// Returns the payload type T, or None if unavailable.
-    fn extract_ok_payload_type(&self, _result_ty: &MirType) -> Option<MirType> {
-        // Simplified — ideally we'd parse the enum variant's payload type
-        Some(MirType::I32)
+    /// Extract the Ok/Some payload type from the raw type of an expression.
+    /// For Option<T>, returns T. For Result<T, E>, returns T.
+    fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                Type::Option(inner) => Some(self.ctx.type_to_mir(inner)),
+                Type::Result { ok, .. } => Some(self.ctx.type_to_mir(ok)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Extract the Err payload type from the raw type of an expression.
+    fn extract_err_type(&self, expr: &Expr) -> Option<MirType> {
+        if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
+            match ty {
+                Type::Result { err, .. } => Some(self.ctx.type_to_mir(err)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Resolve a pattern to its expected discriminant tag value.
+    fn pattern_tag(&self, pattern: &rask_ast::expr::Pattern) -> i64 {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Constructor { name, .. } => self.variant_tag(name),
+            Pattern::Ident(name) => {
+                // Could be a variant name (Some, None, Ok, Err) or a binding
+                if is_variant_name(name) {
+                    self.variant_tag(name)
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        }
+    }
+
+    /// Look up the tag value for a variant name.
+    fn variant_tag(&self, name: &str) -> i64 {
+        // Well-known built-in variant tags
+        match name {
+            "Some" | "Ok" => 0,
+            "None" | "Err" => 1,
+            _ => {
+                // Search enum layouts for user-defined variants
+                for layout in self.ctx.enum_layouts {
+                    for variant in &layout.variants {
+                        if variant.name == name {
+                            return variant.tag as i64;
+                        }
+                    }
+                }
+                0
+            }
+        }
+    }
+
+    /// Bind pattern payload variables into the current scope.
+    ///
+    /// After confirming a tag match, extracts payload fields from the
+    /// enum value and inserts them as named locals.
+    fn bind_pattern_payload(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        value: MirOperand,
+        payload_ty: MirType,
+    ) {
+        use rask_ast::expr::Pattern;
+        match pattern {
+            Pattern::Constructor { fields, .. } => {
+                for (i, field_pat) in fields.iter().enumerate() {
+                    if let Pattern::Ident(name) = field_pat {
+                        let field_ty = payload_ty.clone();
+                        let local = self.builder.alloc_local(name.clone(), field_ty.clone());
+                        self.locals.insert(name.clone(), (local, field_ty));
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: local,
+                            rvalue: MirRValue::Field {
+                                base: value.clone(),
+                                field_index: i as u32,
+                            },
+                        });
+                    }
+                    // Wildcard, Literal in field position — skip binding
+                }
+            }
+            // Ident that is a variant name: no binding (pure match)
+            // Ident that is a variable: this shouldn't reach here (it's a binding, not a match)
+            _ => {}
+        }
     }
 
     /// Collect free variables in a closure body — names used but not defined
@@ -633,6 +746,13 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
         UnaryOp::BitNot => MirUnaryOp::BitNot,
         UnaryOp::Ref | UnaryOp::Deref => unreachable!(),
     }
+}
+
+/// Check if a name is a known enum variant (not a variable binding).
+fn is_variant_name(name: &str) -> bool {
+    matches!(name, "Some" | "None" | "Ok" | "Err")
+        || name.contains('.')  // Qualified variant like "Status.Active"
+        || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
 }
 
 /// Detect identifiers that name types rather than values.

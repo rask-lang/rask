@@ -437,23 +437,44 @@ impl<'a> MirLowerer<'a> {
             // If-let (if expr is Pattern { then } else { else })
             ExprKind::IfLet {
                 expr,
-                pattern: _,
+                pattern,
                 then_branch,
                 else_branch,
             } => {
-                // TODO: Proper pattern matching with tag check
-                let (cond_op, _) = self.lower_expr(expr)?;
+                let (val, _) = self.lower_expr(expr)?;
+                let tag = self.builder.alloc_temp(MirType::U8);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: tag,
+                    rvalue: MirRValue::EnumTag { value: val.clone() },
+                });
+
+                // Compare tag against expected variant
+                let expected = self.pattern_tag(pattern);
+                let matches = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: matches,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(expected)),
+                    },
+                });
+
                 let then_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
                 self.builder.terminate(MirTerminator::Branch {
-                    cond: cond_op,
+                    cond: MirOperand::Local(matches),
                     then_block,
                     else_block,
                 });
 
+                // Then block: bind payload, evaluate body
                 self.builder.switch_to_block(then_block);
+                let payload_ty = self.extract_payload_type(expr)
+                    .unwrap_or(MirType::I64);
+                self.bind_pattern_payload(pattern, val, payload_ty);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
@@ -462,12 +483,19 @@ impl<'a> MirLowerer<'a> {
                 });
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
+                // Else block: evaluate else branch or default to zero-value
                 self.builder.switch_to_block(else_block);
                 if let Some(else_expr) = else_branch {
                     let (else_val, _) = self.lower_expr(else_expr)?;
                     self.builder.push_stmt(MirStmt::Assign {
                         dst: result_local,
                         rvalue: MirRValue::Use(else_val),
+                    });
+                } else {
+                    // No else branch — initialize to default zero value
+                    self.builder.push_stmt(MirStmt::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
                     });
                 }
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
@@ -479,37 +507,78 @@ impl<'a> MirLowerer<'a> {
             // Guard pattern (const v = expr is Pattern else { diverge })
             ExprKind::GuardPattern {
                 expr,
-                pattern: _,
+                pattern,
                 else_branch,
             } => {
-                // TODO: Proper pattern match + bind
-                let (val, val_ty) = self.lower_expr(expr)?;
+                let (val, _) = self.lower_expr(expr)?;
+                let tag = self.builder.alloc_temp(MirType::U8);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: tag,
+                    rvalue: MirRValue::EnumTag { value: val.clone() },
+                });
+
+                let expected = self.pattern_tag(pattern);
+                let matches = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: matches,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(expected)),
+                    },
+                });
+
                 let ok_block = self.builder.create_block();
                 let else_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
 
                 self.builder.terminate(MirTerminator::Branch {
-                    cond: val.clone(),
+                    cond: MirOperand::Local(matches),
                     then_block: ok_block,
                     else_block,
                 });
 
+                // Else branch diverges (return, panic, etc.)
                 self.builder.switch_to_block(else_block);
                 self.lower_expr(else_branch)?;
                 self.builder.terminate(MirTerminator::Unreachable);
 
+                // Ok block: bind payload and continue
                 self.builder.switch_to_block(ok_block);
+                let payload_ty = self.extract_payload_type(expr)
+                    .unwrap_or(MirType::I64);
+                self.bind_pattern_payload(pattern, val.clone(), payload_ty.clone());
+                // Extract the payload value for the result
+                let payload = self.builder.alloc_temp(payload_ty.clone());
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: payload,
+                    rvalue: MirRValue::Field { base: val, field_index: 0 },
+                });
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
                 self.builder.switch_to_block(merge_block);
-                Ok((val, val_ty))
+                Ok((MirOperand::Local(payload), payload_ty))
             }
 
             // Pattern test (expr is Pattern) — evaluates to bool
-            ExprKind::IsPattern { expr: inner, pattern: _ } => {
-                // TODO: Proper pattern tag check
-                let (_val, _ty) = self.lower_expr(inner)?;
-                Ok((MirOperand::Constant(MirConst::Bool(true)), MirType::Bool))
+            ExprKind::IsPattern { expr: inner, pattern } => {
+                let (val, _ty) = self.lower_expr(inner)?;
+                let tag = self.builder.alloc_temp(MirType::U8);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: tag,
+                    rvalue: MirRValue::EnumTag { value: val },
+                });
+                let expected = self.pattern_tag(pattern);
+                let result = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: result,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(MirConst::Int(expected)),
+                    },
+                });
+                Ok((MirOperand::Local(result), MirType::Bool))
             }
 
             // Try expression (spec L3)
@@ -542,9 +611,8 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(ok_block);
                 // Infer payload type from the Option/Result being unwrapped
-                let payload_ty = self.lookup_expr_type(inner)
-                    .and_then(|ty| self.extract_ok_payload_type(&ty))
-                    .unwrap_or(MirType::I32);
+                let payload_ty = self.extract_payload_type(inner)
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_temp(payload_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
@@ -574,9 +642,8 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(some_block);
                 // Infer payload type from the Option being coalesced
-                let payload_ty = self.lookup_expr_type(value)
-                    .and_then(|ty| self.extract_ok_payload_type(&ty))
-                    .unwrap_or(MirType::I32);
+                let payload_ty = self.extract_payload_type(value)
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_temp(payload_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
@@ -646,9 +713,8 @@ impl<'a> MirLowerer<'a> {
                 let none_block = self.builder.create_block();
                 let merge_block = self.builder.create_block();
                 // Infer field type from the optional value
-                let result_ty = self.lookup_expr_type(object)
-                    .and_then(|ty| self.extract_ok_payload_type(&ty))
-                    .unwrap_or(MirType::I32);
+                let result_ty = self.extract_payload_type(object)
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_temp(result_ty.clone());
 
                 self.builder.terminate(MirTerminator::Branch {
@@ -1124,9 +1190,10 @@ impl<'a> MirLowerer<'a> {
             else_block: ok_block,
         });
 
-        // Err path
+        // Err path — extract the error payload and return it
         self.builder.switch_to_block(err_block);
-        let err_val = self.builder.alloc_temp(MirType::I32);
+        let err_ty = self.extract_err_type(inner).unwrap_or(MirType::I64);
+        let err_val = self.builder.alloc_temp(err_ty);
         self.builder.push_stmt(MirStmt::Assign {
             dst: err_val,
             rvalue: MirRValue::Field {
@@ -1141,9 +1208,8 @@ impl<'a> MirLowerer<'a> {
         // Ok path
         self.builder.switch_to_block(ok_block);
         // Infer Ok payload type from the Result being tried
-        let ok_ty = self.lookup_expr_type(inner)
-            .and_then(|ty| self.extract_ok_payload_type(&ty))
-            .unwrap_or(MirType::I32);
+        let ok_ty = self.extract_payload_type(inner)
+            .unwrap_or(MirType::I64);
         let ok_val = self.builder.alloc_temp(ok_ty.clone());
         self.builder.push_stmt(MirStmt::Assign {
             dst: ok_val,

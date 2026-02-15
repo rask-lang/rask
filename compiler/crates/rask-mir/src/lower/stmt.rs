@@ -85,7 +85,7 @@ impl<'a> MirLowerer<'a> {
             }
 
             // While-let pattern loop
-            StmtKind::WhileLet { pattern: _, expr, body } => {
+            StmtKind::WhileLet { pattern, expr, body } => {
                 let check_block = self.builder.create_block();
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
@@ -97,15 +97,30 @@ impl<'a> MirLowerer<'a> {
                 let tag = self.builder.alloc_temp(MirType::U8);
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val },
+                    rvalue: MirRValue::EnumTag { value: val.clone() },
+                });
+                // Compare tag against expected variant
+                let expected = self.pattern_tag(pattern);
+                let matches = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: matches,
+                    rvalue: MirRValue::BinaryOp {
+                        op: crate::operand::BinOp::Eq,
+                        left: MirOperand::Local(tag),
+                        right: MirOperand::Constant(crate::operand::MirConst::Int(expected)),
+                    },
                 });
                 self.builder.terminate(MirTerminator::Branch {
-                    cond: MirOperand::Local(tag),
-                    then_block: exit_block,
-                    else_block: body_block,
+                    cond: MirOperand::Local(matches),
+                    then_block: body_block,
+                    else_block: exit_block,
                 });
 
                 self.builder.switch_to_block(body_block);
+                // Bind payload variables from the pattern
+                let payload_ty = self.extract_payload_type(expr)
+                    .unwrap_or(MirType::I64);
+                self.bind_pattern_payload(pattern, val, payload_ty);
                 self.loop_stack.push(LoopContext {
                     label: None,
                     continue_block: check_block,
@@ -292,10 +307,9 @@ impl<'a> MirLowerer<'a> {
         });
 
         self.builder.switch_to_block(body_block);
-        // Infer element type from iterator type
-        let elem_ty = self.lookup_expr_type(iter_expr)
-            .and_then(|iter_ty| self.extract_iterator_elem_type(&iter_ty))
-            .unwrap_or(MirType::I32);
+        // Infer element type from iterator's raw type info
+        let elem_ty = self.extract_iterator_elem_type(iter_expr)
+            .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
         self.locals.insert(binding.to_string(), (binding_local, elem_ty));
         self.builder.push_stmt(MirStmt::Assign {
