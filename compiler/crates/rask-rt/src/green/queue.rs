@@ -46,8 +46,11 @@ impl LocalQueue {
         self.deque.lock().unwrap().pop_front()
     }
 
-    /// Steal half the queue from the back (other workers call this).
-    /// Returns stolen tasks (may be empty).
+    /// Steal half the queue (other workers call this).
+    ///
+    /// Takes the oldest tasks (front) so the thief processes them in
+    /// FIFO order. The owner keeps the newest (back), which are more
+    /// likely cache-hot.
     pub fn steal_batch(&self) -> Vec<Arc<RawTask>> {
         let mut q = self.deque.lock().unwrap();
         let count = q.len() / 2;
@@ -55,13 +58,12 @@ impl LocalQueue {
             return if q.is_empty() {
                 Vec::new()
             } else {
-                // Steal at least one if there's work.
-                q.pop_back().into_iter().collect()
+                q.pop_front().into_iter().collect()
             };
         }
         let mut stolen = Vec::with_capacity(count);
         for _ in 0..count {
-            if let Some(task) = q.pop_back() {
+            if let Some(task) = q.pop_front() {
                 stolen.push(task);
             }
         }
