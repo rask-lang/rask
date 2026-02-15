@@ -57,6 +57,7 @@ I've specified all core language semantics:
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
 - Closure environments are stack-allocated — closures that escape their creating function will dangle. Needs heap allocation or escape analysis.
 - CleanupReturn inlines cleanup blocks — works but means cleanup code is duplicated at each CleanupReturn site. Fine for now, revisit if code size matters.
+- `print(string_variable)` dispatches to `rask_print_i64` instead of `rask_print_string` — MIR types don't distinguish string pointers from other pointers. String literals work fine. Fix requires MIR type system changes.
 
 **What's next:**
 1. ~~**Write tests** — Layout, monomorphization, and MIR lowering test suites~~ ✅ Done (94 tests across rask-mono and rask-mir)
