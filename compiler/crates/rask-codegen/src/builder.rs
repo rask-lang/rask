@@ -646,14 +646,11 @@ impl<'a> FunctionBuilder<'a> {
                             0
                         }
                     }
-                    // No layout available — derive stride from the field's load type.
-                    // This covers Option/Result/Tuple which MIR lowers to Ptr.
-                    _ => {
-                        let stride = expected_ty
-                            .map(|t| t.bytes() as i32)
-                            .unwrap_or(8);
-                        (*field_index as i32) * stride
-                    }
+                    // No layout available (Option/Result/Tuple lowered to MirType::Ptr).
+                    // Currently only field_index 0 reaches here (enum payload extraction).
+                    // Higher indices would need full layout info to account for alignment
+                    // padding between heterogeneous fields.
+                    _ => 0
                 };
 
                 let flags = MemFlags::new();
