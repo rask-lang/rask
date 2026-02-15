@@ -4,12 +4,24 @@
 use std::path::Path;
 use std::process;
 
-/// Find the runtime.c file, compile it, and link with the object file.
+/// Find the runtime C files, compile them, and link with the object file.
 pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
-    let runtime_path = find_runtime_c()?;
+    let runtime_dir = find_runtime_dir()?;
+    let runtime_c = runtime_dir.join("runtime.c");
+    let args_c = runtime_dir.join("args.c");
+
+    if !args_c.exists() {
+        return Err(format!(
+            "missing args.c in {} — runtime is incomplete",
+            runtime_dir.display()
+        ));
+    }
 
     let status = process::Command::new("cc")
-        .args([&runtime_path, obj_path, "-o", bin_path, "-no-pie"])
+        .arg(&runtime_c)
+        .arg(&args_c)
+        .arg(obj_path)
+        .args(["-o", bin_path, "-no-pie"])
         .status()
         .map_err(|e| format!("failed to run cc: {}", e))?;
 
@@ -23,14 +35,15 @@ pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Locate the C runtime file. Searches:
+/// Locate the runtime directory containing runtime.c and args.c.
+/// Searches:
 /// 1. RASK_RUNTIME_DIR environment variable
 /// 2. Relative to the rask binary (walking up to find compiler/runtime/)
-fn find_runtime_c() -> Result<String, String> {
+fn find_runtime_dir() -> Result<std::path::PathBuf, String> {
     if let Ok(dir) = std::env::var("RASK_RUNTIME_DIR") {
-        let p = Path::new(&dir).join("runtime.c");
-        if p.exists() {
-            return Ok(p.to_string_lossy().to_string());
+        let p = Path::new(&dir);
+        if p.join("runtime.c").exists() {
+            return Ok(p.to_path_buf());
         }
     }
 
@@ -38,13 +51,13 @@ fn find_runtime_c() -> Result<String, String> {
         if let Some(exe_dir) = exe_path.parent() {
             let mut dir = exe_dir.to_path_buf();
             for _ in 0..5 {
-                let candidate = dir.join("compiler").join("runtime").join("runtime.c");
-                if candidate.exists() {
-                    return Ok(candidate.to_string_lossy().to_string());
+                let candidate = dir.join("compiler").join("runtime");
+                if candidate.join("runtime.c").exists() {
+                    return Ok(candidate);
                 }
-                let candidate = dir.join("runtime").join("runtime.c");
-                if candidate.exists() {
-                    return Ok(candidate.to_string_lossy().to_string());
+                let candidate = dir.join("runtime");
+                if candidate.join("runtime.c").exists() {
+                    return Ok(candidate);
                 }
                 if !dir.pop() {
                     break;
@@ -53,5 +66,5 @@ fn find_runtime_c() -> Result<String, String> {
         }
     }
 
-    Err("Could not find runtime.c — set RASK_RUNTIME_DIR to the directory containing it".to_string())
+    Err("Could not find runtime directory — set RASK_RUNTIME_DIR to the directory containing runtime.c".to_string())
 }

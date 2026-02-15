@@ -10,7 +10,11 @@
 #include <fcntl.h>
 #include <string.h>
 
-#include "rask_runtime.h"
+// Don't include rask_runtime.h here — it declares the typed API (RaskVec*, etc.)
+// which conflicts with the i64-based signatures below. Once codegen migrates to
+// the typed implementations (vec.c, string.c, etc.), this file's inline
+// definitions should be removed and the header included instead.
+extern void rask_args_init(int argc, char **argv);
 
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
@@ -125,44 +129,48 @@ void rask_resource_scope_check(int64_t scope_depth) {
     }
 }
 
-// ─── Pool checked access ─────────────────────────────────────────
-// Validates a pool handle before returning the element pointer.
+// ─── Pool helpers ────────────────────────────────────────────────
 // Handle format: lower 32 bits = index, upper 32 bits = generation.
 // Pool memory layout: { capacity: i64, gen_array: i64*, data: i64*, occupied: i8* }
 
-int64_t rask_pool_checked_access(int64_t pool_ptr, int64_t handle) {
+struct rask_pool_header {
+    int64_t  capacity;
+    int64_t *gen_array;
+    int64_t *data;
+    int8_t  *occupied;
+};
+
+// Validate a pool handle, abort on any mismatch. Returns the unpacked index.
+static int32_t pool_validate(int64_t pool_ptr, int64_t handle, const char *op) {
     if (!pool_ptr) {
-        fprintf(stderr, "panic: pool access on null pool\n");
+        fprintf(stderr, "panic: pool %s on null pool\n", op);
         abort();
     }
-
-    int64_t *pool = (int64_t *)pool_ptr;
-    int64_t capacity   = pool[0];
-    int64_t *gen_array = (int64_t *)pool[1];
-    int64_t *data      = (int64_t *)pool[2];
-    int8_t  *occupied  = (int8_t *)pool[3];
-
+    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
     int32_t index      = (int32_t)(handle & 0xFFFFFFFF);
     int32_t generation = (int32_t)((handle >> 32) & 0xFFFFFFFF);
 
-    if (index < 0 || index >= capacity) {
-        fprintf(stderr, "panic: pool index %d out of bounds (capacity %lld)\n",
-                index, (long long)capacity);
+    if (index < 0 || index >= pool->capacity) {
+        fprintf(stderr, "panic: pool %s index %d out of bounds (capacity %lld)\n",
+                op, index, (long long)pool->capacity);
         abort();
     }
-
-    if (occupied && !occupied[index]) {
-        fprintf(stderr, "panic: pool access to freed slot (index %d)\n", index);
+    if (!pool->occupied[index]) {
+        fprintf(stderr, "panic: pool %s on freed slot (index %d)\n", op, index);
         abort();
     }
-
-    if (gen_array && gen_array[index] != generation) {
-        fprintf(stderr, "panic: stale pool handle (index %d, expected gen %lld, got %d)\n",
-                index, (long long)gen_array[index], generation);
+    if (pool->gen_array[index] != generation) {
+        fprintf(stderr, "panic: pool %s with stale handle (index %d, expected gen %lld, got %d)\n",
+                op, index, (long long)pool->gen_array[index], generation);
         abort();
     }
+    return index;
+}
 
-    return (int64_t)&data[index];
+int64_t rask_pool_checked_access(int64_t pool_ptr, int64_t handle) {
+    int32_t index = pool_validate(pool_ptr, handle, "access");
+    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
+    return (int64_t)&pool->data[index];
 }
 
 // ─── Vec ─────────────────────────────────────────────────────────
@@ -342,36 +350,28 @@ int8_t rask_map_contains_key(int64_t map_ptr, int64_t key) {
 }
 
 // ─── Pool ────────────────────────────────────────────────────────
-// Object pool: { capacity: i64, gen_array: i64*, data: i64*, occupied: i8* }
-// Slots tracked by separate occupied array — gen_array only holds generation
-// counters for handle validation.
 
 int64_t rask_pool_new(void) {
-    int64_t *pool = (int64_t *)calloc(4, sizeof(int64_t));
+    struct rask_pool_header *pool = (struct rask_pool_header *)calloc(1, sizeof(struct rask_pool_header));
     if (!pool) { fprintf(stderr, "panic: pool alloc failed\n"); abort(); }
     int64_t cap = 64;
-    pool[0] = cap;
-    pool[1] = (int64_t)calloc((size_t)cap, sizeof(int64_t)); // gen_array
-    pool[2] = (int64_t)calloc((size_t)cap, sizeof(int64_t)); // data
-    pool[3] = (int64_t)calloc((size_t)cap, sizeof(int8_t));  // occupied
-    if (!pool[1] || !pool[2] || !pool[3]) {
+    pool->capacity  = cap;
+    pool->gen_array = (int64_t *)calloc((size_t)cap, sizeof(int64_t));
+    pool->data      = (int64_t *)calloc((size_t)cap, sizeof(int64_t));
+    pool->occupied  = (int8_t *)calloc((size_t)cap, sizeof(int8_t));
+    if (!pool->gen_array || !pool->data || !pool->occupied) {
         fprintf(stderr, "panic: pool alloc failed\n"); abort();
     }
     return (int64_t)pool;
 }
 
 int64_t rask_pool_alloc(int64_t pool_ptr) {
-    int64_t *pool = (int64_t *)pool_ptr;
-    int64_t capacity   = pool[0];
-    int64_t *gen_array = (int64_t *)pool[1];
-    int8_t  *occupied  = (int8_t *)pool[3];
-
-    for (int64_t i = 0; i < capacity; i++) {
-        if (!occupied[i]) {
-            occupied[i] = 1;
-            gen_array[i]++;
-            // Pack index + generation into handle
-            return (int64_t)((uint32_t)i | ((uint64_t)gen_array[i] << 32));
+    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
+    for (int64_t i = 0; i < pool->capacity; i++) {
+        if (!pool->occupied[i]) {
+            pool->occupied[i] = 1;
+            pool->gen_array[i]++;
+            return (int64_t)((uint32_t)i | ((uint64_t)pool->gen_array[i] << 32));
         }
     }
     fprintf(stderr, "panic: pool full\n");
@@ -379,32 +379,9 @@ int64_t rask_pool_alloc(int64_t pool_ptr) {
 }
 
 void rask_pool_free(int64_t pool_ptr, int64_t handle) {
-    int64_t *pool = (int64_t *)pool_ptr;
-    int64_t capacity   = pool[0];
-    int64_t *gen_array = (int64_t *)pool[1];
-    int8_t  *occupied  = (int8_t *)pool[3];
-    int32_t index      = (int32_t)(handle & 0xFFFFFFFF);
-    int32_t generation = (int32_t)((handle >> 32) & 0xFFFFFFFF);
-
-    if (index < 0 || index >= capacity) {
-        fprintf(stderr, "panic: pool free index %d out of bounds (capacity %lld)\n",
-                index, (long long)capacity);
-        abort();
-    }
-    if (!occupied[index]) {
-        fprintf(stderr, "panic: pool double-free at index %d\n", index);
-        abort();
-    }
-    if (gen_array[index] != generation) {
-        fprintf(stderr, "panic: pool free with stale handle (index %d, expected gen %lld, got %d)\n",
-                index, (long long)gen_array[index], generation);
-        abort();
-    }
-    occupied[index] = 0;
-}
-
-int64_t rask_pool_get(int64_t pool_ptr, int64_t handle) {
-    return rask_pool_checked_access(pool_ptr, handle);
+    int32_t index = pool_validate(pool_ptr, handle, "free");
+    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
+    pool->occupied[index] = 0;
 }
 
 // ─── Entry point ──────────────────────────────────────────────────

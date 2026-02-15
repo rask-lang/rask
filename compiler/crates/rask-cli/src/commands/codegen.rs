@@ -334,6 +334,10 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         eprintln!("{}: {}", output::error_label(), e);
         process::exit(1);
     }
+    if let Err(e) = codegen.declare_stdlib_functions() {
+        eprintln!("{}: {}", output::error_label(), e);
+        process::exit(1);
+    }
     if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
         eprintln!("{}: {}", output::error_label(), e);
         process::exit(1);
