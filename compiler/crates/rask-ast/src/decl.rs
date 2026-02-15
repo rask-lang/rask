@@ -247,8 +247,8 @@ pub struct PackageDecl {
 #[derive(Debug, Clone)]
 pub struct DepDecl {
     pub name: String,
-    /// Version constraint (e.g., "^2.0"), empty for path-only deps.
-    pub version: String,
+    /// Version constraint (e.g., "^2.0"). None for path-only deps.
+    pub version: Option<String>,
     /// Local path dependency.
     pub path: Option<String>,
     /// Git repository URL.
