@@ -43,7 +43,7 @@ func process(data: Vec<u8>) -> i32 {
 
 ## Opt-In Warnings
 
-Off by default. Enable with `@warn(warning_name)` on items or project-wide in `rask.build`.
+Off by default. Enable with `@warn(warning_name)` on items or project-wide in `build.rk`.
 
 | Rule | Code | ID | Check |
 |------|------|----|-------|
@@ -69,7 +69,7 @@ Three levels. More specific wins.
 | Rule | Description |
 |------|-------------|
 | **CF1: Attribute-level** | `@allow`, `@warn`, `@deny` on any item or block; cascades into nested items |
-| **CF2: Package-level** | `warnings` section in `rask.build` sets project-wide defaults |
+| **CF2: Package-level** | `warnings` section in `build.rk` sets project-wide defaults |
 | **CF3: CLI-level** | `--deny-warnings` promotes all warnings to errors |
 
 <!-- test: skip -->
@@ -88,7 +88,7 @@ extend Server {
 }
 ```
 
-Package-level configuration in `rask.build`:
+Package-level configuration in `build.rk`:
 
 <!-- test: skip -->
 ```rask
@@ -115,7 +115,7 @@ package "my-server" "1.0.0" {
 |------|-------------|
 | **P1: Inline wins** | `@allow` on item always suppresses (even with `--deny-warnings`) |
 | **P2: Deny on item** | `@deny` on item always promotes to error |
-| **P3: Package overrides default** | `rask.build` config overrides per-warning defaults |
+| **P3: Package overrides default** | `build.rk` config overrides per-warning defaults |
 | **P4: CLI promotes remaining** | `--deny-warnings` promotes anything not explicitly `@allow`'d |
 
 ## Warning Codes
