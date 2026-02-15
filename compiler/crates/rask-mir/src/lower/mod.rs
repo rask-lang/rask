@@ -1393,7 +1393,8 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         assert!(has_branch(&f));
-        assert!(find_call(&f, "next"));
+        // Range for-loops desugar to counter-based while (no "next" call)
+        assert!(find_call(&f, "process"));
     }
 
     #[test]
