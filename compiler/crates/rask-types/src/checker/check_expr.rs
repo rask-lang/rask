@@ -763,19 +763,41 @@ impl TypeChecker {
         // Validate call-site annotations before type inference
         self.check_call_annotations(func, args, span);
 
-        // Track generic call sites: if the callee has type params, create
-        // fresh vars and record them so monomorphization can resolve them.
-        if let ExprKind::Ident(name) = &func.kind {
-            if let Some(type_params) = self.fn_type_params.get(name).cloned() {
-                let fresh_vars: Vec<Type> = type_params
-                    .iter()
-                    .map(|_| self.ctx.fresh_var())
-                    .collect();
-                self.pending_call_type_args.push((func.id, fresh_vars));
-            }
-        }
+        // For generic function calls, create fresh type vars for each type param
+        // and build a substitution map (param name → fresh var). After getting
+        // the function type, we apply this substitution so that UnresolvedNamed("T")
+        // in the param/return types becomes the fresh var. Constraint solving then
+        // links the fresh vars to concrete types from the call arguments.
+        let generic_subst: Option<Vec<(String, Type)>> = if let ExprKind::Ident(_) = &func.kind {
+            // Resolve the callee's SymbolId, then look up its type params
+            self.resolved.resolutions.get(&func.id)
+                .and_then(|sym_id| self.fn_type_params.get(sym_id).cloned())
+                .map(|type_params| {
+                    let pairs: Vec<(String, Type)> = type_params.into_iter()
+                        .map(|name| {
+                            let fresh = self.ctx.fresh_var();
+                            (name, fresh)
+                        })
+                        .collect();
+                    let fresh_vars: Vec<Type> = pairs.iter().map(|(_, v)| v.clone()).collect();
+                    self.pending_call_type_args.push((func.id, fresh_vars));
+                    pairs
+                })
+        } else {
+            None
+        };
 
         let func_ty = self.infer_expr(func);
+
+        // Substitute type param names with fresh vars in the function signature
+        let func_ty = if let Some(ref pairs) = generic_subst {
+            let subst: std::collections::HashMap<&str, Type> = pairs.iter()
+                .map(|(k, v)| (k.as_str(), v.clone()))
+                .collect();
+            Self::substitute_type_params(&func_ty, &subst)
+        } else {
+            func_ty
+        };
 
         match func_ty {
             Type::Fn { ref params, ref ret } => {

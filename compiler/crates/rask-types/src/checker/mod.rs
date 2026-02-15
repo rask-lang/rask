@@ -60,8 +60,10 @@ pub struct TypeChecker {
     /// Pending generic call sites: (call NodeId, fresh type vars for type params).
     /// Resolved after constraint solving to populate TypedProgram.call_type_args.
     pub(super) pending_call_type_args: Vec<(NodeId, Vec<Type>)>,
-    /// Function name → type param names (populated during declaration collection).
-    pub(super) fn_type_params: HashMap<String, Vec<String>>,
+    /// SymbolId → type param names for generic functions.
+    /// Keyed by SymbolId (not name) to avoid collisions between
+    /// same-named functions in different scopes.
+    pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
 }
 
 impl TypeChecker {

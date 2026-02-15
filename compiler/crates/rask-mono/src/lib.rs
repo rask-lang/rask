@@ -55,15 +55,17 @@ pub fn monomorphize(
 
     mono.run();
 
-    // Compute layouts for all referenced struct/enum types
+    // Compute layouts for concrete (non-generic) struct/enum types.
+    // Generic types need concrete type_args for correct field sizes;
+    // their layouts are computed per-instantiation, not here.
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
     for decl in decls {
         match &decl.kind {
-            DeclKind::Struct(_) => {
+            DeclKind::Struct(s) if s.type_params.is_empty() => {
                 struct_layouts.push(compute_struct_layout(decl, &[]));
             }
-            DeclKind::Enum(_) => {
+            DeclKind::Enum(e) if e.type_params.is_empty() => {
                 enum_layouts.push(compute_enum_layout(decl, &[]));
             }
             _ => {}
