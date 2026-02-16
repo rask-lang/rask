@@ -100,6 +100,8 @@ impl Resolver {
         let builtin_modules = [
             ("io", BuiltinModuleKind::Io),
             ("fs", BuiltinModuleKind::Fs),
+            ("cli", BuiltinModuleKind::Cli),
+            ("std", BuiltinModuleKind::Std),
             ("json", BuiltinModuleKind::Json),
             ("random", BuiltinModuleKind::Random),
             ("time", BuiltinModuleKind::Time),

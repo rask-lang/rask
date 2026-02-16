@@ -313,11 +313,13 @@ impl Desugarer {
             // Literals and identifiers don't need desugaring
             ExprKind::Int(_, _)
             | ExprKind::Float(_, _)
-            | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Ident(_)
             => {}
+            ExprKind::String(_) => {
+                // String interpolation desugaring handled below
+            }
         }
 
         // Then, transform operators if applicable
@@ -390,6 +392,82 @@ impl Desugarer {
             }
             // Not and Ref remain as unary
         }
+
+        // Desugar string interpolation: "hello {name}" → "hello ".concat(name.to_string())
+        if let ExprKind::String(s) = &expr.kind {
+            if s.contains('{') {
+                if let Some(desugared) = self.desugar_string_interpolation(s, span) {
+                    expr.kind = desugared;
+                }
+            }
+        }
+    }
+
+    /// Parse string interpolation and produce a concat chain.
+    ///
+    /// `"hello {name}, you are {age}"` becomes:
+    /// `"hello ".concat(name.to_string()).concat(", you are ").concat(age.to_string())`
+    fn desugar_string_interpolation(&mut self, s: &str, span: rask_ast::Span) -> Option<ExprKind> {
+        let segments = parse_interpolation_segments(s)?;
+
+        // Build expressions for each segment
+        let mut exprs: Vec<Expr> = Vec::new();
+        for seg in &segments {
+            match seg {
+                InterpSegment::Literal(text) => {
+                    exprs.push(Expr {
+                        id: self.fresh_id(),
+                        kind: ExprKind::String(text.clone()),
+                        span,
+                    });
+                }
+                InterpSegment::Expr(expr_str) => {
+                    // Parse the expression using the real lexer/parser
+                    let lex = rask_lexer::Lexer::new(expr_str).tokenize();
+                    if !lex.errors.is_empty() {
+                        return None; // Parse error — leave as raw string
+                    }
+                    let mut parser = rask_parser::Parser::new(lex.tokens);
+                    let parsed = parser.parse_expr().ok()?;
+
+                    // Wrap in to_string() call
+                    let to_string_call = Expr {
+                        id: self.fresh_id(),
+                        kind: ExprKind::MethodCall {
+                            object: Box::new(parsed),
+                            method: "to_string".to_string(),
+                            type_args: None,
+                            args: vec![],
+                        },
+                        span,
+                    };
+                    exprs.push(to_string_call);
+                }
+            }
+        }
+
+        if exprs.is_empty() {
+            return None;
+        }
+        if exprs.len() == 1 {
+            return Some(exprs.remove(0).kind);
+        }
+
+        // Chain with concat: first.concat(second).concat(third)...
+        let mut result = exprs.remove(0);
+        for seg_expr in exprs {
+            result = Expr {
+                id: self.fresh_id(),
+                kind: ExprKind::MethodCall {
+                    object: Box::new(result),
+                    method: "concat".to_string(),
+                    type_args: None,
+                    args: vec![CallArg { mode: ArgMode::Default, expr: seg_expr }],
+                },
+                span,
+            };
+        }
+        Some(result.kind)
     }
 
     fn desugar_match_arm(&mut self, arm: &mut MatchArm) {
@@ -437,9 +515,73 @@ fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
     }
 }
 
+/// Segment of an interpolated string.
+enum InterpSegment {
+    Literal(String),
+    Expr(String),
+}
+
+/// Parse a string containing `{expr}` interpolation into segments.
+///
+/// Returns `None` if no interpolation is found.
+fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
+    let mut segments = Vec::new();
+    let mut literal = String::new();
+    let mut chars = s.chars().peekable();
+    let mut has_interp = false;
+
+    while let Some(c) = chars.next() {
+        if c == '{' {
+            has_interp = true;
+            if !literal.is_empty() {
+                segments.push(InterpSegment::Literal(std::mem::take(&mut literal)));
+            }
+            let mut expr_str = String::new();
+            let mut depth = 1;
+            for ch in chars.by_ref() {
+                if ch == '{' {
+                    depth += 1;
+                    expr_str.push(ch);
+                } else if ch == '}' {
+                    depth -= 1;
+                    if depth == 0 { break; }
+                    expr_str.push(ch);
+                } else {
+                    expr_str.push(ch);
+                }
+            }
+            segments.push(InterpSegment::Expr(expr_str));
+        } else {
+            literal.push(c);
+        }
+    }
+    if !literal.is_empty() {
+        segments.push(InterpSegment::Literal(literal));
+    }
+
+    if has_interp { Some(segments) } else { None }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // TODO: Add tests for desugaring
+    #[test]
+    fn test_parse_interpolation_segments() {
+        let segs = parse_interpolation_segments("hello {name}").unwrap();
+        assert_eq!(segs.len(), 2);
+        assert!(matches!(&segs[0], InterpSegment::Literal(s) if s == "hello "));
+        assert!(matches!(&segs[1], InterpSegment::Expr(s) if s == "name"));
+    }
+
+    #[test]
+    fn test_no_interpolation() {
+        assert!(parse_interpolation_segments("hello world").is_none());
+    }
+
+    #[test]
+    fn test_multiple_segments() {
+        let segs = parse_interpolation_segments("a {x} b {y} c").unwrap();
+        assert_eq!(segs.len(), 5);
+    }
 }

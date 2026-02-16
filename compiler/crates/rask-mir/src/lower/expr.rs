@@ -225,6 +225,31 @@ impl<'a> MirLowerer<'a> {
                             return Ok((MirOperand::Local(result_local), enum_ty));
                         }
 
+                        // .variants() on enum types: build a Vec of tag values
+                        if method == "variants" && args.is_empty() {
+                            if let Some((_idx, layout)) = self.ctx.find_enum(name) {
+                                // Create a new Vec
+                                let vec_local = self.builder.alloc_temp(MirType::I64);
+                                self.builder.push_stmt(MirStmt::Call {
+                                    dst: Some(vec_local),
+                                    func: FunctionRef { name: "Vec_new".to_string() },
+                                    args: vec![],
+                                });
+                                // Push each variant's tag value
+                                for variant in &layout.variants {
+                                    self.builder.push_stmt(MirStmt::Call {
+                                        dst: None,
+                                        func: FunctionRef { name: "push".to_string() },
+                                        args: vec![
+                                            MirOperand::Local(vec_local),
+                                            MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                                        ],
+                                    });
+                                }
+                                return Ok((MirOperand::Local(vec_local), MirType::I64));
+                            }
+                        }
+
                         // Static method on a type: Vec.new(), string.new()
                         let is_known_type = self.ctx.find_struct(name).is_some()
                             || self.ctx.find_enum(name).is_some()
@@ -288,6 +313,39 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // concat(): string concatenation from interpolation desugaring
+                if method == "concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
+                    let (arg_op, _) = self.lower_expr(&args[0].expr)?;
+                    let result_local = self.builder.alloc_temp(MirType::String);
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef { name: "concat".to_string() },
+                        args: vec![obj_op, arg_op],
+                    });
+                    return Ok((MirOperand::Local(result_local), MirType::String));
+                }
+
+                // to_string(): route to type-specific runtime function
+                if method == "to_string" && args.is_empty() {
+                    let func_name = match &obj_ty {
+                        MirType::String => {
+                            // String.to_string() is identity
+                            return Ok((obj_op, MirType::String));
+                        }
+                        MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8
+                        | MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "i64_to_string",
+                        MirType::Bool => "bool_to_string",
+                        _ => "i64_to_string", // fallback
+                    };
+                    let result_local = self.builder.alloc_temp(MirType::String);
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef { name: func_name.to_string() },
+                        args: vec![obj_op],
+                    });
+                    return Ok((MirOperand::Local(result_local), MirType::String));
+                }
+
                 // Regular method call
                 let mut all_args = vec![obj_op];
                 for arg in args {
@@ -312,6 +370,25 @@ impl<'a> MirLowerer<'a> {
 
             // Field access
             ExprKind::Field { object, field } => {
+                // Enum variant access: Color.Red (no parens, fieldless variant)
+                if let ExprKind::Ident(name) = &object.kind {
+                    if !self.locals.contains_key(name) {
+                        if let Some((idx, layout)) = self.ctx.find_enum(name) {
+                            if let Some(variant) = layout.variants.iter().find(|v| v.name == *field) {
+                                let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                                let result_local = self.builder.alloc_temp(enum_ty.clone());
+                                // Store discriminant tag
+                                self.builder.push_stmt(MirStmt::Store {
+                                    addr: result_local,
+                                    offset: layout.tag_offset,
+                                    value: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                                });
+                                return Ok((MirOperand::Local(result_local), enum_ty));
+                            }
+                        }
+                    }
+                }
+
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
                 // Resolve field index and type from struct layout
@@ -983,50 +1060,109 @@ impl<'a> MirLowerer<'a> {
 
     /// Match expression lowering (spec L2).
     ///
-    /// ```text
-    /// [current]  tag = enum_tag(scrutinee); switch tag → arm blocks
-    /// [arm_0]    bind payload; result = body; goto merge
-    /// [arm_1]    bind payload; result = body; goto merge
-    /// [merge]    continue with result
-    /// ```
+    /// Handles both enum matches (extract tag, switch on discriminant)
+    /// and value matches (switch on scrutinee directly).
     fn lower_match(
         &mut self,
         scrutinee: &Expr,
         arms: &[rask_ast::expr::MatchArm],
     ) -> Result<TypedOperand, LoweringError> {
-        let (scrutinee_op, _) = self.lower_expr(scrutinee)?;
+        use rask_ast::expr::Pattern;
 
-        // Extract tag
-        let tag_local = self.builder.alloc_temp(MirType::U8);
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: tag_local,
-            rvalue: MirRValue::EnumTag {
-                value: scrutinee_op.clone(),
-            },
-        });
+        let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
+
+        let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
+
+        // Determine the switch value
+        let switch_val = if is_enum {
+            let tag_local = self.builder.alloc_temp(MirType::U8);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: tag_local,
+                rvalue: MirRValue::EnumTag {
+                    value: scrutinee_op.clone(),
+                },
+            });
+            MirOperand::Local(tag_local)
+        } else {
+            scrutinee_op.clone()
+        };
 
         let merge_block = self.builder.create_block();
         let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
 
-        let cases: Vec<(u64, BlockId)> = arm_blocks
-            .iter()
-            .enumerate()
-            .map(|(i, &block)| (i as u64, block))
-            .collect();
+        // Build switch cases: map pattern → (value, block)
+        let mut cases: Vec<(u64, BlockId)> = Vec::new();
+        let mut default_block = merge_block;
+
+        for (i, arm) in arms.iter().enumerate() {
+            match &arm.pattern {
+                Pattern::Wildcard => {
+                    default_block = arm_blocks[i];
+                }
+                Pattern::Ident(name) => {
+                    // Qualified enum variant: "Color.Red" → resolve tag
+                    if let Some(tag) = self.resolve_pattern_tag(name) {
+                        cases.push((tag, arm_blocks[i]));
+                    } else {
+                        // Binding variable — acts as default
+                        default_block = arm_blocks[i];
+                    }
+                }
+                Pattern::Constructor { name, .. } => {
+                    // Resolve enum variant tag from layout
+                    if let Some(tag) = self.resolve_pattern_tag(name) {
+                        cases.push((tag, arm_blocks[i]));
+                    } else {
+                        cases.push((i as u64, arm_blocks[i]));
+                    }
+                }
+                Pattern::Literal(lit_expr) => {
+                    if let ExprKind::Int(v, _) = &lit_expr.kind {
+                        cases.push((*v as u64, arm_blocks[i]));
+                    } else if let ExprKind::Bool(b) = &lit_expr.kind {
+                        cases.push((if *b { 1 } else { 0 }, arm_blocks[i]));
+                    } else {
+                        cases.push((i as u64, arm_blocks[i]));
+                    }
+                }
+                _ => {
+                    cases.push((i as u64, arm_blocks[i]));
+                }
+            }
+        }
 
         self.builder.terminate(MirTerminator::Switch {
-            value: MirOperand::Local(tag_local),
+            value: switch_val,
             cases,
-            default: merge_block,
+            default: default_block,
         });
 
-        // Lower each arm — infer result type from first arm
+        // Lower each arm
         let mut result_ty = MirType::Void;
-        let result_local = self.builder.alloc_temp(MirType::I32); // Placeholder, updated below
+        let result_local = self.builder.alloc_temp(MirType::I64);
         for (i, arm) in arms.iter().enumerate() {
             self.builder.switch_to_block(arm_blocks[i]);
 
-            // TODO: Bind pattern variables (extract payload fields from scrutinee)
+            // Bind pattern variables for enum payloads
+            if is_enum {
+                if let Pattern::Constructor { fields, .. } = &arm.pattern {
+                    for (j, field_pat) in fields.iter().enumerate() {
+                        if let Pattern::Ident(binding) = field_pat {
+                            let payload_ty = MirType::I64; // fallback
+                            let payload_local = self.builder.alloc_local(binding.clone(), payload_ty.clone());
+                            self.builder.push_stmt(MirStmt::Assign {
+                                dst: payload_local,
+                                rvalue: MirRValue::Field {
+                                    base: scrutinee_op.clone(),
+                                    field_index: j as u32,
+                                },
+                            });
+                            self.locals.insert(binding.clone(), (payload_local, payload_ty));
+                        }
+                    }
+                }
+            }
+
             let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
             if i == 0 {
                 result_ty = arm_ty;
@@ -1043,6 +1179,21 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Resolve enum variant name to its tag value from the layout.
+    /// Handles "Color.Red" → 0, "Color.Green" → 1, etc.
+    fn resolve_pattern_tag(&self, name: &str) -> Option<u64> {
+        // Pattern name could be "Color.Red" (qualified) or just "Red" (variant only)
+        let parts: Vec<&str> = name.splitn(2, '.').collect();
+        let (enum_name, variant_name) = if parts.len() == 2 {
+            (parts[0], parts[1])
+        } else {
+            return None;
+        };
+        let (_, layout) = self.ctx.find_enum(enum_name)?;
+        let variant = layout.variants.iter().find(|v| v.name == variant_name)?;
+        Some(variant.tag)
     }
 
     /// Block expression: lower each statement, last expression is the value.
