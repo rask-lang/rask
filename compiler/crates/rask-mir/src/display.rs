@@ -154,8 +154,9 @@ impl fmt::Display for MirStmt {
             MirStmt::SourceLocation { line, col } => {
                 write!(f, "// {}:{}", line, col)
             }
-            MirStmt::ClosureCreate { dst, func_name, captures } => {
-                write!(f, "_{} = closure({}, [", dst.0, func_name)?;
+            MirStmt::ClosureCreate { dst, func_name, captures, heap } => {
+                let alloc = if *heap { "heap" } else { "stack" };
+                write!(f, "_{} = closure[{}]({}, [", dst.0, alloc, func_name)?;
                 for (i, cap) in captures.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
                     write!(f, "_{}@{}", cap.local_id.0, cap.offset)?;
@@ -174,6 +175,9 @@ impl fmt::Display for MirStmt {
             }
             MirStmt::LoadCapture { dst, env_ptr, offset } => {
                 write!(f, "_{} = load_capture(_{}+{})", dst.0, env_ptr.0, offset)
+            }
+            MirStmt::ClosureDrop { closure } => {
+                write!(f, "closure_drop(_{}))", closure.0)
             }
         }
     }

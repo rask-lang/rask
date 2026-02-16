@@ -45,12 +45,14 @@ pub enum MirStmt {
         line: u32,
         col: u32,
     },
-    /// Create a closure value: { func_ptr, env_ptr }.
+    /// Create a closure value: heap-allocated `[func_ptr | captures...]`.
     /// `captures` lists the locals whose values are stored into the environment.
+    /// `heap` controls allocation strategy: true = heap (escaping), false = stack (local-only).
     ClosureCreate {
         dst: LocalId,
         func_name: String,
         captures: Vec<ClosureCapture>,
+        heap: bool,
     },
     /// Call through a closure value (indirect call with env_ptr prepended).
     ClosureCall {
@@ -63,6 +65,10 @@ pub enum MirStmt {
         dst: LocalId,
         env_ptr: LocalId,
         offset: u32,
+    },
+    /// Free a heap-allocated closure. Emitted before returns for owned closures.
+    ClosureDrop {
+        closure: LocalId,
     },
 }
 

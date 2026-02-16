@@ -261,6 +261,11 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
                                         total_errors += mir_errors;
 
+                                        // Closure optimization: escape analysis + drop insertion
+                                        for func in &mut mir_functions {
+                                            rask_mir::optimize_closures(func);
+                                        }
+
                                         if mir_errors == 0 && !mir_functions.is_empty() {
                                             let codegen_result = match opts.target {
                                                 Some(ref t) => rask_codegen::CodeGenerator::new_with_target(t),

@@ -323,6 +323,11 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         process::exit(1);
     }
 
+    // Closure optimization: escape analysis + drop insertion
+    for func in &mut mir_functions {
+        rask_mir::optimize_closures(func);
+    }
+
     // Cranelift codegen
     let mut codegen = match rask_codegen::CodeGenerator::new() {
         Ok(cg) => cg,
