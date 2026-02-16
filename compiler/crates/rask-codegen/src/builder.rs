@@ -372,7 +372,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Closure support ──────────────────────────────────────────
 
-            MirStmt::ClosureCreate { dst, func_name, captures } => {
+            MirStmt::ClosureCreate { dst, func_name, captures, heap } => {
                 // Build environment layout from captures
                 let env_layout = crate::closures::ClosureEnvLayout {
                     size: captures.last()
@@ -390,12 +390,19 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
                 let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
-                // Heap-allocate closure: [func_ptr | captures...]
-                let alloc_ref = func_refs.get("rask_alloc")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
-                let closure_ptr = crate::closures::allocate_closure(
-                    builder, func_ptr, &env_layout, var_map, *alloc_ref,
-                )?;
+                let closure_ptr = if *heap {
+                    // Escaping closure: heap-allocate via rask_alloc
+                    let alloc_ref = func_refs.get("rask_alloc")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+                    crate::closures::allocate_closure_heap(
+                        builder, func_ptr, &env_layout, var_map, *alloc_ref,
+                    )?
+                } else {
+                    // Non-escaping closure: stack-allocate
+                    crate::closures::allocate_closure_stack(
+                        builder, func_ptr, &env_layout, var_map,
+                    )?
+                };
 
                 let var = var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -468,6 +475,16 @@ impl<'a> FunctionBuilder<'a> {
                         "LoadCapture destination variable not found".to_string()
                     ))?;
                 builder.def_var(*var, val);
+            }
+
+            MirStmt::ClosureDrop { closure } => {
+                let closure_val = builder.use_var(*var_map.get(closure)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "ClosureDrop closure variable not found".to_string()
+                    ))?);
+                let free_ref = func_refs.get("rask_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                crate::closures::free_closure(builder, closure_val, *free_ref);
             }
         }
         Ok(())

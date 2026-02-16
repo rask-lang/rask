@@ -324,21 +324,30 @@ FIX 2: Remove the borrow from the closure:
 
 ## Implementation
 
-### Heap-Allocated Closure Blocks
+### Closure Block Layout
 
-All closures are heap-allocated as a single contiguous block:
+All closures use a single contiguous block:
 
 ```
 [func_ptr (8 bytes) | captured_var_0 | captured_var_1 | ...]
 ```
 
-The closure value passed around is a single pointer to this block. When calling through a closure, `closure_ptr + 8` is passed as the environment pointer — the implicit first argument to the closure function. Captured variables are loaded from offsets relative to that environment pointer.
+The closure value is a pointer to this block. When calling through a closure, `closure_ptr + 8` is the environment pointer — implicit first argument to the closure function. Captured variables live at known offsets relative to that pointer.
 
-Heap allocation means storable closures (CL1) can be returned from functions, stored in structs, and sent to `spawn()`. There's no escape analysis — every closure gets the same treatment. This trades a small allocation cost for simplicity and correctness.
+### Escape Analysis
 
-**Cleanup:** Closure blocks are freed when the closure value is dropped. (TODO: automatic drop emission isn't wired up yet — closures currently leak. This will be addressed when general drop semantics land.)
+MIR lowering initially marks every closure `heap: true`. A per-function optimization pass (`optimize_closures`) then downgrades non-escaping closures to stack allocation:
 
-**Future optimization:** Immediate closures (CL2) don't capture and could skip allocation entirely. Local-only closures (CL3) could use stack allocation since they can't escape. These are optimization opportunities, not correctness issues.
+| Escape condition | Result |
+|-----------------|--------|
+| Closure appears in `Return` value | Stays `heap: true` |
+| Closure passed as `Call` argument | Stays `heap: true` |
+| Closure stored via `Store` | Stays `heap: true` |
+| Only used via `ClosureCall` | Downgraded to `heap: false` (stack) |
+
+Stack-allocated closures use a Cranelift stack slot — no runtime allocator call, no cleanup needed. Heap-allocated closures call `rask_alloc` and get a matching `ClosureDrop` (which calls `rask_free`) inserted before every return path where the closure isn't the return value.
+
+This is conservative local analysis: no cross-function tracking, no dataflow. A closure that's only called locally but happens to be passed to another function stays heap-allocated. That's the right tradeoff — correctness over cleverness.
 
 ## Appendix (non-normative)
 

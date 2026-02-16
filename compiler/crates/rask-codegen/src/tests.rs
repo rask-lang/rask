@@ -1290,16 +1290,15 @@ mod tests {
     // ═══════════════════════════════════════════════════════════
 
     #[test]
-    fn codegen_closure_create_no_captures() {
-        // Closure with no captures: heap-allocates 8 bytes for func_ptr only.
+    fn codegen_closure_stack_no_captures() {
+        // Non-escaping closure with no captures: stack-allocated.
         //
         //   closure_fn(env: ptr, x: i64) -> i64 { return x }
         //   main() -> i64 {
-        //     _0 = ClosureCreate { func: closure_fn, captures: [] }
+        //     _0 = ClosureCreate[stack] { func: closure_fn, captures: [] }
         //     _1 = ClosureCall(_0, 42)
         //     return _1
         //   }
-        use rask_mir::ClosureCapture;
 
         let closure_fn = MirFunction {
             name: "main__closure_0".to_string(),
@@ -1332,6 +1331,7 @@ mod tests {
                         dst: LocalId(0),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
+                        heap: false,
                     },
                     MirStmt::ClosureCall {
                         dst: Some(LocalId(1)),
@@ -1410,6 +1410,7 @@ mod tests {
                                 size: 8,
                             },
                         ],
+                        heap: false,
                     },
                     MirStmt::ClosureCall {
                         dst: Some(LocalId(2)),
@@ -1486,6 +1487,7 @@ mod tests {
                         captures: vec![
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
                         ],
+                        heap: true,
                     },
                 ], ret(Some(local_op(1)))),
             ],
@@ -1521,6 +1523,68 @@ mod tests {
         ).unwrap();
         gen.gen_function(&closure_fn).unwrap();
         gen.gen_function(&make_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
+    #[test]
+    fn codegen_closure_drop() {
+        // Heap closure created and dropped before returning a different value.
+        //
+        //   closure_fn(env: ptr) -> i64 { return 1 }
+        //   main() -> i64 {
+        //     _0 = 99
+        //     _1 = closure[heap](closure_fn, [_0])
+        //     closure_drop(_1)
+        //     return 0
+        //   }
+        use rask_mir::ClosureCapture;
+
+        let closure_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+            ],
+            blocks: vec![
+                block(0, vec![], ret(Some(MirOperand::Constant(MirConst::Int(1))))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),  // captured val
+                temp(1, MirType::Ptr),  // closure
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(99)))),
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                        ],
+                        heap: true,
+                    },
+                    MirStmt::ClosureDrop {
+                        closure: LocalId(1),
+                    },
+                ], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
+        gen.gen_function(&closure_fn).unwrap();
         gen.gen_function(&main_fn).unwrap();
     }
 

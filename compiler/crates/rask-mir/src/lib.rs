@@ -6,6 +6,7 @@
 //! It uses basic blocks with statements and terminators.
 
 mod builder;
+mod closures;
 mod display;
 mod function;
 mod operand;
@@ -15,6 +16,7 @@ mod types;
 pub mod lower;
 
 pub use builder::BlockBuilder;
+pub use closures::optimize_closures;
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use operand::{BinOp, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use stmt::{ClosureCapture, MirStmt, MirTerminator};
