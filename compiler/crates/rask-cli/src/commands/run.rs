@@ -2,87 +2,21 @@
 //! Execution commands: run, test, benchmark.
 
 use colored::Colorize;
-use rask_diagnostics::{Diagnostic, ToDiagnostic};
-use std::fs;
+use rask_diagnostics::ToDiagnostic;
 use std::process;
 
-use crate::{output, Format, show_diagnostics};
+use rask_diagnostics::formatter::DiagnosticFormatter;
+
+use crate::{output, show_diagnostics, Format};
 
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
-        }
-    };
+    let result = super::pipeline::run_frontend(path, format);
 
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-
-    if !lex_result.is_ok() {
-        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "lex", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-
-    if !parse_result.is_ok() {
-        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "parse", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    rask_desugar::desugar(&mut parse_result.decls);
-
-    // Name resolution
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
-        Ok(r) => r,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "resolve", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Type checking
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "typecheck", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Ownership checking
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "ownership", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    // Run interpreter
     let mut interp = rask_interp::Interpreter::with_args(program_args);
-    match interp.run(&parse_result.decls) {
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
+    }
+    match interp.run(&result.decls) {
         Ok(_) => {}
         Err(diag) if matches!(diag.error, rask_interp::RuntimeError::Exit(..)) => {
             if let rask_interp::RuntimeError::Exit(code) = diag.error {
@@ -91,7 +25,15 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
         }
         Err(diag) => {
             let diagnostic = diag.to_diagnostic();
-            show_diagnostics(&[diagnostic], &source, path, "runtime", format);
+            if let Some(source) = &result.source {
+                show_diagnostics(&[diagnostic], source, path, "runtime", format);
+            } else if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
+                let file_name = file_path.to_string_lossy();
+                let fmt = DiagnosticFormatter::new(&source).with_file_name(&file_name);
+                eprintln!("{}", fmt.format(&diagnostic));
+            } else {
+                eprintln!("{}: {}", output::error_label(), diagnostic.message);
+            }
             if format == Format::Human {
                 eprintln!("\n{}", output::banner_fail("Runtime", 1));
             }
@@ -101,79 +43,13 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
 }
 
 pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
-        }
-    };
-
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-
-    if !lex_result.is_ok() {
-        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "lex", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-
-    if !parse_result.is_ok() {
-        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "parse", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    rask_desugar::desugar(&mut parse_result.decls);
-
-    // Name resolution
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
-        Ok(r) => r,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "resolve", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Type checking
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "typecheck", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Ownership checking
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "ownership", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
-        }
-        process::exit(1);
-    }
+    let result = super::pipeline::run_frontend(path, format);
 
     let mut interp = rask_interp::Interpreter::new();
-    let results = interp.run_tests(&parse_result.decls, filter.as_deref());
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
+    }
+    let results = interp.run_tests(&result.decls, filter.as_deref());
 
     if results.is_empty() {
         if format == Format::Human {
@@ -190,22 +66,22 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
         let mut failed = 0;
         let mut total_duration = std::time::Duration::ZERO;
 
-        for result in &results {
-            total_duration += result.duration;
-            if result.passed {
+        for r in &results {
+            total_duration += r.duration;
+            if r.passed {
                 passed += 1;
                 println!("  {} {} {}",
                     output::status_pass(),
-                    result.name,
-                    format!("({}ms)", result.duration.as_millis()).dimmed(),
+                    r.name,
+                    format!("({}ms)", r.duration.as_millis()).dimmed(),
                 );
             } else {
                 failed += 1;
                 println!("  {} {}",
                     output::status_fail(),
-                    result.name,
+                    r.name,
                 );
-                for err in &result.errors {
+                for err in &r.errors {
                     println!("      {}", err.red());
                 }
             }
@@ -229,7 +105,6 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
 
 /// Compile a .rk file to a temp executable and run it.
 pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format) {
-    // Compile to a temp file (PID suffix prevents race conditions)
     let tmp_dir = std::env::temp_dir();
     let bin_name = std::path::Path::new(path)
         .file_stem()
@@ -241,12 +116,10 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format) {
     // Compile quietly — suppress the "Compiled →" banner (errors still show)
     super::codegen::cmd_compile(path, Some(&bin_str), format, true);
 
-    // Execute
     let status = process::Command::new(&bin_str)
         .args(&program_args)
         .status();
 
-    // Clean up
     let _ = std::fs::remove_file(&bin_path);
 
     match status {
@@ -263,79 +136,13 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format) {
 }
 
 pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
-        }
-    };
-
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-
-    if !lex_result.is_ok() {
-        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "lex", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-
-    if !parse_result.is_ok() {
-        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "parse", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    rask_desugar::desugar(&mut parse_result.decls);
-
-    // Name resolution
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
-        Ok(r) => r,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "resolve", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Type checking
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "typecheck", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Ownership checking
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        let diags: Vec<Diagnostic> = ownership_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "ownership", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Ownership", ownership_result.errors.len()));
-        }
-        process::exit(1);
-    }
+    let result = super::pipeline::run_frontend(path, format);
 
     let mut interp = rask_interp::Interpreter::new();
-    let results = interp.run_benchmarks(&parse_result.decls, filter.as_deref());
+    if !result.package_names.is_empty() {
+        interp.register_packages(&result.package_names);
+    }
+    let results = interp.run_benchmarks(&result.decls, filter.as_deref());
 
     if results.is_empty() {
         if format == Format::Human {
@@ -348,26 +155,45 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
     if format == Format::Human {
         println!("{} Benchmarking {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
 
-        for result in &results {
-            let ops_per_sec = if result.mean.as_nanos() > 0 {
-                1_000_000_000 / result.mean.as_nanos()
+        for r in &results {
+            let ops_per_sec = if r.mean.as_nanos() > 0 {
+                1_000_000_000 / r.mean.as_nanos()
             } else {
                 0
             };
             println!("  {} ({} iterations)",
-                result.name,
-                result.iterations,
+                r.name,
+                r.iterations,
             );
             println!("      min: {:>10.3}us  max: {:>10.3}us",
-                result.min.as_nanos() as f64 / 1000.0,
-                result.max.as_nanos() as f64 / 1000.0,
+                r.min.as_nanos() as f64 / 1000.0,
+                r.max.as_nanos() as f64 / 1000.0,
             );
             println!("     mean: {:>10.3}us  median: {:>7.3}us  ({} ops/sec)",
-                result.mean.as_nanos() as f64 / 1000.0,
-                result.median.as_nanos() as f64 / 1000.0,
+                r.mean.as_nanos() as f64 / 1000.0,
+                r.median.as_nanos() as f64 / 1000.0,
                 ops_per_sec,
             );
             println!();
         }
+    }
+}
+
+/// Match a diagnostic to a source file by span validity.
+fn find_diagnostic_file<'a>(
+    d: &rask_diagnostics::Diagnostic,
+    source_files: &'a [(std::path::PathBuf, String)],
+) -> Option<(&'a std::path::PathBuf, &'a String)> {
+    let end = d.labels.iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .map(|l| l.span.end)?;
+    let candidates: Vec<_> = source_files.iter()
+        .filter(|(_, src)| end <= src.len() && !src.is_empty())
+        .collect();
+    if candidates.len() == 1 {
+        let (p, s) = candidates[0];
+        Some((p, s))
+    } else {
+        None
     }
 }

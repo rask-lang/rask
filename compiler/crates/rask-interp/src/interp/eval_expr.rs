@@ -257,6 +257,18 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
+                // Package-qualified call: lib.greet() → look up lib$greet
+                if let Value::Package(pkg_name) = &receiver {
+                    let prefixed = format!("{}${}", pkg_name, method);
+                    if let Some(func) = self.functions.get(&prefixed).cloned() {
+                        return self.call_function(&func, arg_vals);
+                    }
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::UndefinedVariable(method.clone()),
+                        expr.span,
+                    ));
+                }
+
                 self.call_method(receiver, method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -523,6 +535,55 @@ impl Interpreter {
                                 expr.span
                             )),
                         }
+                    }
+                    // Package field access: lib.Color → look up lib$Color
+                    Value::Package(pkg_name) => {
+                        let prefixed = format!("{}${}", pkg_name, field);
+                        // Enums and structs both resolve to Value::Type so
+                        // `lib.Color.Red` works through the normal enum
+                        // variant dispatch on the next `.Red` access.
+                        if self.enums.contains_key(&prefixed)
+                            || self.struct_decls.contains_key(&prefixed)
+                            || self.methods.contains_key(&prefixed)
+                        {
+                            return Ok(Value::Type(prefixed));
+                        }
+                        if let Some(func) = self.functions.get(&prefixed) {
+                            return Ok(Value::Function { name: func.name.clone() });
+                        }
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::UndefinedVariable(field.clone()),
+                            expr.span,
+                        ))
+                    }
+                    // Type-level field access: handles lib.Color.Red after
+                    // lib.Color resolved to Value::Type("lib$Color").
+                    Value::Type(type_name) => {
+                        if let Some(enum_decl) = self.enums.get(&type_name).cloned() {
+                            if let Some(variant) = enum_decl.variants.iter().find(|v| v.name == *field) {
+                                let field_count = variant.fields.len();
+                                if field_count == 0 {
+                                    return Ok(Value::Enum {
+                                        name: type_name,
+                                        variant: field.clone(),
+                                        fields: vec![],
+                                    });
+                                } else {
+                                    return Ok(Value::EnumConstructor {
+                                        enum_name: type_name,
+                                        variant_name: field.clone(),
+                                        field_count,
+                                    });
+                                }
+                            }
+                        }
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::TypeError(format!(
+                                "type '{}' has no field '{}'",
+                                type_name, field
+                            )),
+                            expr.span,
+                        ))
                     }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(

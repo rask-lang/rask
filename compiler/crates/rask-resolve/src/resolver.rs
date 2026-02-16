@@ -26,6 +26,8 @@ pub struct Resolver {
     lazy_imports: HashMap<String, Vec<String>>,
     /// Maps struct/enum base names to their type params (for extend blocks)
     type_param_map: HashMap<String, Vec<TypeParam>>,
+    /// Public symbols exported by each external package.
+    package_exports: HashMap<PackageId, HashMap<String, SymbolId>>,
 }
 
 impl Resolver {
@@ -41,6 +43,7 @@ impl Resolver {
             imported_symbols: HashSet::new(),
             lazy_imports: HashMap::new(),
             type_param_map: HashMap::new(),
+            package_exports: HashMap::new(),
         };
 
         resolver.register_builtins();
@@ -223,8 +226,14 @@ impl Resolver {
         resolver.current_package = Some(current_package);
 
         for pkg in registry.packages() {
-            let pkg_name = pkg.name.clone();
-            resolver.package_bindings.insert(pkg_name, pkg.id);
+            resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
+        }
+
+        // Collect public symbols from external packages
+        for pkg in registry.packages() {
+            if pkg.id != current_package {
+                resolver.collect_package_exports(pkg);
+            }
         }
 
         resolver.collect_declarations(decls);
@@ -238,6 +247,112 @@ impl Resolver {
         } else {
             Err(resolver.errors)
         }
+    }
+
+    // =========================================================================
+    // Cross-Package Export Collection
+    // =========================================================================
+
+    /// Collect public symbols from an external package into `package_exports`.
+    fn collect_package_exports(&mut self, pkg: &crate::Package) {
+        let mut exports = HashMap::new();
+
+        for decl in pkg.all_decls() {
+            match &decl.kind {
+                DeclKind::Fn(f) if f.is_pub => {
+                    let base = Self::base_name(&f.name).to_string();
+                    let sym_id = self.symbols.insert(
+                        base.clone(),
+                        SymbolKind::Function {
+                            params: vec![],
+                            ret_ty: f.ret_ty.clone(),
+                            context_clauses: f.context_clauses.clone(),
+                        },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(base, sym_id);
+                }
+                DeclKind::Struct(s) if s.is_pub => {
+                    let base = Self::base_name(&s.name).to_string();
+                    let sym_id = self.symbols.insert(
+                        base.clone(),
+                        SymbolKind::Struct { fields: vec![] },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    let mut field_syms = Vec::new();
+                    for field in &s.fields {
+                        let field_sym = self.symbols.insert(
+                            field.name.clone(),
+                            SymbolKind::Field { parent: sym_id },
+                            Some(field.ty.clone()),
+                            Span::new(0, 0),
+                            field.is_pub,
+                        );
+                        field_syms.push((field.name.clone(), field_sym));
+                    }
+                    if let Some(sym) = self.symbols.get_mut(sym_id) {
+                        sym.kind = SymbolKind::Struct { fields: field_syms };
+                    }
+                    exports.insert(base, sym_id);
+                }
+                DeclKind::Enum(e) if e.is_pub => {
+                    let base = Self::base_name(&e.name).to_string();
+                    let sym_id = self.symbols.insert(
+                        base.clone(),
+                        SymbolKind::Enum { variants: vec![] },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    let mut variant_syms = Vec::new();
+                    for variant in &e.variants {
+                        let v_sym = self.symbols.insert(
+                            variant.name.clone(),
+                            SymbolKind::EnumVariant { enum_id: sym_id },
+                            None,
+                            Span::new(0, 0),
+                            true,
+                        );
+                        variant_syms.push((variant.name.clone(), v_sym));
+                        exports.insert(variant.name.clone(), v_sym);
+                    }
+                    if let Some(sym) = self.symbols.get_mut(sym_id) {
+                        sym.kind = SymbolKind::Enum { variants: variant_syms };
+                    }
+                    exports.insert(base, sym_id);
+                }
+                DeclKind::Trait(t) if t.is_pub => {
+                    let sym_id = self.symbols.insert(
+                        t.name.clone(),
+                        SymbolKind::Trait {
+                            methods: vec![],
+                            super_traits: t.super_traits.clone(),
+                        },
+                        None,
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(t.name.clone(), sym_id);
+                }
+                DeclKind::Const(c) if c.is_pub => {
+                    let sym_id = self.symbols.insert(
+                        c.name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        c.ty.clone(),
+                        Span::new(0, 0),
+                        true,
+                    );
+                    exports.insert(c.name.clone(), sym_id);
+                }
+                _ => {}
+            }
+        }
+
+        self.package_exports.insert(pkg.id, exports);
     }
 
     // =========================================================================
@@ -465,11 +580,23 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
-            } else if self.package_bindings.contains_key(pkg_name) {
-                // External package import — register as a module-like binding
+            } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
+                // External package import — register as a package namespace
+                if import_decl.is_glob {
+                    // Glob import: bring all public symbols directly into scope
+                    if let Some(exports) = self.package_exports.get(&pkg_id).cloned() {
+                        for (name, sym_id) in &exports {
+                            if let Err(e) = self.scopes.define(name.clone(), *sym_id, span) {
+                                self.errors.push(e);
+                            }
+                            self.imported_symbols.insert(name.clone());
+                        }
+                    }
+                    return;
+                }
                 let sym_id = self.symbols.insert(
                     binding_name.clone(),
-                    SymbolKind::Variable { mutable: false },
+                    SymbolKind::ExternalPackage { package_id: pkg_id },
                     None,
                     span,
                     false,
@@ -488,6 +615,8 @@ impl Resolver {
                 self.lazy_imports.insert(binding_name, path.clone());
             }
         } else {
+            // Multi-segment import: import pkg.Name or import stdlib.Name
+            let pkg_name = &path[0];
             let symbol_name = path.last().unwrap();
             let binding_name = import_decl.alias.as_ref().unwrap_or(symbol_name).clone();
 
@@ -496,7 +625,24 @@ impl Resolver {
                 return;
             }
 
-            // Define the imported symbol in scope so bare references resolve
+            // Try to resolve from external package exports
+            if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
+                if let Some(exports) = self.package_exports.get(&pkg_id) {
+                    if let Some(&exported_sym) = exports.get(symbol_name) {
+                        // Bind the actual exported symbol into scope
+                        if let Err(e) = self.scopes.define(binding_name.clone(), exported_sym, span) {
+                            self.errors.push(e);
+                        }
+                        self.imported_symbols.insert(binding_name.clone());
+                        if import_decl.is_lazy {
+                            self.lazy_imports.insert(binding_name, path.clone());
+                        }
+                        return;
+                    }
+                }
+            }
+
+            // Fallback: stdlib or unresolvable multi-segment import
             let sym_id = self.symbols.insert(
                 binding_name.clone(),
                 SymbolKind::Variable { mutable: false },
@@ -906,7 +1052,27 @@ impl Resolver {
                     self.resolve_expr(&arg.expr);
                 }
             }
-            ExprKind::MethodCall { object, args, .. } => {
+            ExprKind::MethodCall { object, method, args, .. } => {
+                // Check for calls on external packages: lib.greet()
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(sym_id) = self.scopes.lookup(name) {
+                        if let Some(sym) = self.symbols.get(sym_id) {
+                            if let SymbolKind::ExternalPackage { package_id } = &sym.kind {
+                                let pkg_id = *package_id;
+                                self.resolutions.insert(object.id, sym_id);
+                                if let Some(exports) = self.package_exports.get(&pkg_id) {
+                                    if let Some(&method_sym) = exports.get(method) {
+                                        self.resolutions.insert(expr.id, method_sym);
+                                    }
+                                }
+                                for arg in args {
+                                    self.resolve_expr(&arg.expr);
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
                 self.resolve_expr(object);
                 for arg in args {
                     self.resolve_expr(&arg.expr);
@@ -914,13 +1080,28 @@ impl Resolver {
             }
             ExprKind::Field { object, field } => {
                 if let ExprKind::Ident(name) = &object.kind {
+                    // Check for qualified access on external packages
+                    if let Some(sym_id) = self.scopes.lookup(name) {
+                        if let Some(sym) = self.symbols.get(sym_id) {
+                            if let SymbolKind::ExternalPackage { package_id } = &sym.kind {
+                                let pkg_id = *package_id;
+                                self.resolutions.insert(object.id, sym_id);
+                                if let Some(exports) = self.package_exports.get(&pkg_id) {
+                                    if let Some(&field_sym) = exports.get(field) {
+                                        self.resolutions.insert(expr.id, field_sym);
+                                    }
+                                    // No error for missing field — type checker handles it
+                                }
+                                return;
+                            }
+                        }
+                    }
+
                     if self.imported_symbols.contains(name) {
-                        let _ = field;
                         return;
                     }
                     // Skip resolution for primitive type constants (u64.MAX, etc.)
                     if Self::is_primitive_type(name) {
-                        let _ = field;
                         return;
                     }
                 }
@@ -1000,10 +1181,24 @@ impl Resolver {
                 if let Some(sym_id) = self.scopes.lookup(name) {
                     self.resolutions.insert(expr.id, sym_id);
                 } else if name.contains('.') {
-                    // Qualified struct variant: Enum.Variant { ... }
+                    // Qualified name: Enum.Variant or pkg.Struct
                     let parts: Vec<&str> = name.splitn(2, '.').collect();
                     if let Some(sym_id) = self.scopes.lookup(parts[0]) {
-                        self.resolutions.insert(expr.id, sym_id);
+                        // Check if this is a package-qualified struct literal
+                        if let Some(sym) = self.symbols.get(sym_id) {
+                            if let SymbolKind::ExternalPackage { package_id } = &sym.kind {
+                                let pkg_id = *package_id;
+                                if let Some(exports) = self.package_exports.get(&pkg_id) {
+                                    if let Some(&struct_sym) = exports.get(parts[1]) {
+                                        self.resolutions.insert(expr.id, struct_sym);
+                                    }
+                                }
+                            } else {
+                                self.resolutions.insert(expr.id, sym_id);
+                            }
+                        } else {
+                            self.resolutions.insert(expr.id, sym_id);
+                        }
                     } else {
                         self.errors.push(ResolveError::undefined(name.clone(), expr.span));
                     }
@@ -1393,5 +1588,209 @@ mod tests {
 
         let result = Resolver::resolve_package(&decls, &registry, main_pkg);
         assert!(result.is_ok(), "Package with import should resolve");
+    }
+
+    fn make_pub_fn_decl(name: &str) -> Decl {
+        Decl {
+            id: NodeId(100),
+            kind: DeclKind::Fn(FnDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                params: vec![],
+                ret_ty: Some("string".to_string()),
+                context_clauses: vec![],
+                body: vec![],
+                is_pub: true,
+                is_comptime: false,
+                is_unsafe: false,
+                attrs: vec![],
+            }),
+            span: Span::new(0, 10),
+        }
+    }
+
+    fn make_pub_struct_decl(name: &str) -> Decl {
+        use rask_ast::decl::{Field, StructDecl};
+        Decl {
+            id: NodeId(200),
+            kind: DeclKind::Struct(StructDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                fields: vec![
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), is_pub: true },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), is_pub: true },
+                ],
+                methods: vec![],
+                is_pub: true,
+                attrs: vec![],
+            }),
+            span: Span::new(0, 10),
+        }
+    }
+
+    #[test]
+    fn test_cross_package_public_fn() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        // Library package with a public function
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![make_pub_fn_decl("greet")],
+        );
+
+        // App package imports the lib
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            make_import_decl(vec!["lib"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Cross-package import should resolve: {:?}", result.err());
+
+        // Verify the import created an ExternalPackage symbol
+        let resolved = result.unwrap();
+        let lib_sym = resolved.symbols.iter()
+            .find(|s| s.name == "lib")
+            .expect("lib symbol should exist");
+        assert!(
+            matches!(lib_sym.kind, SymbolKind::ExternalPackage { .. }),
+            "lib should be ExternalPackage, got {:?}",
+            lib_sym.kind
+        );
+    }
+
+    #[test]
+    fn test_cross_package_private_not_visible() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        // Library with a private function (make_fn_decl creates non-public)
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![make_fn_decl("internal_helper")],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            // Try to import a specific private symbol
+            make_import_decl(vec!["lib", "internal_helper"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        // This should still resolve (the import falls through to the fallback path)
+        // but the symbol won't be the actual function — it'll be a dummy Variable
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Import of non-public symbol should not error at resolve time");
+    }
+
+    #[test]
+    fn test_cross_package_unqualified_import() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![make_pub_fn_decl("greet")],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            // import lib.greet — should put "greet" directly in scope
+            make_import_decl(vec!["lib", "greet"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Unqualified import should resolve: {:?}", result.err());
+
+        // Verify greet is in scope as a Function symbol (not a dummy Variable)
+        let resolved = result.unwrap();
+        let greet_sym = resolved.symbols.iter()
+            .find(|s| s.name == "greet")
+            .expect("greet symbol should exist in scope");
+        assert!(
+            matches!(greet_sym.kind, SymbolKind::Function { .. }),
+            "greet should be Function, got {:?}",
+            greet_sym.kind
+        );
+    }
+
+    #[test]
+    fn test_cross_package_struct() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![make_pub_struct_decl("Point")],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            make_import_decl(vec!["lib", "Point"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Struct import should resolve: {:?}", result.err());
+
+        let resolved = result.unwrap();
+        let point_sym = resolved.symbols.iter()
+            .find(|s| s.name == "Point")
+            .expect("Point symbol should exist");
+        assert!(
+            matches!(point_sym.kind, SymbolKind::Struct { .. }),
+            "Point should be Struct, got {:?}",
+            point_sym.kind
+        );
+    }
+
+    #[test]
+    fn test_single_file_resolve_unchanged() {
+        // Verify that resolve() (not resolve_package) still works identically
+        let decls = vec![
+            make_import_decl(vec!["io"], None, false, false),
+            make_fn_decl("main"),
+        ];
+        let result = Resolver::resolve(&decls);
+        assert!(result.is_ok(), "Single-file resolve should still work");
     }
 }

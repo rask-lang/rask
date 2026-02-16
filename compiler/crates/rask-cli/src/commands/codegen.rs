@@ -2,112 +2,21 @@
 //! Code generation commands: mono, mir, compile.
 
 use colored::Colorize;
-use rask_diagnostics::{Diagnostic, ToDiagnostic};
 use rask_mono::MonoProgram;
-use std::fs;
 use std::path::Path;
 use std::process;
 
-use crate::{output, show_diagnostics, Format};
+use crate::{output, Format};
 
-/// Run the full front-end pipeline: lex → parse → desugar → resolve →
-/// typecheck → ownership → monomorphize. Exits on error.
-/// Returns (MonoProgram, TypedProgram) for code generation.
+/// Run the full front-end pipeline + monomorphize. Exits on error.
 fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "{}: reading {}: {}",
-                output::error_label(),
-                output::file_path(path),
-                e
-            );
-            process::exit(1);
-        }
-    };
-
-    // Lex
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
-    if !lex_result.is_ok() {
-        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "lex", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
-        }
-        process::exit(1);
-    }
-
-    // Parse
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
-    if !parse_result.is_ok() {
-        let diags: Vec<Diagnostic> =
-            parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "parse", format);
-        if format == Format::Human {
-            eprintln!(
-                "\n{}",
-                output::banner_fail("Parse", parse_result.errors.len())
-            );
-        }
-        process::exit(1);
-    }
-
-    // Desugar
-    rask_desugar::desugar(&mut parse_result.decls);
-
-    // Resolve
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
-        Ok(r) => r,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "resolve", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Resolve", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Typecheck
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
-        Ok(t) => t,
-        Err(errors) => {
-            let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            show_diagnostics(&diags, &source, path, "typecheck", format);
-            if format == Format::Human {
-                eprintln!("\n{}", output::banner_fail("Typecheck", errors.len()));
-            }
-            process::exit(1);
-        }
-    };
-
-    // Ownership
-    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
-    if !ownership_result.is_ok() {
-        let diags: Vec<Diagnostic> = ownership_result
-            .errors
-            .iter()
-            .map(|e| e.to_diagnostic())
-            .collect();
-        show_diagnostics(&diags, &source, path, "ownership", format);
-        if format == Format::Human {
-            eprintln!(
-                "\n{}",
-                output::banner_fail("Ownership", ownership_result.errors.len())
-            );
-        }
-        process::exit(1);
-    }
+    let mut result = super::pipeline::run_frontend(path, format);
 
     // Hidden parameter pass — desugar `using` clauses into explicit params
-    // Runs after type checking, before monomorphization (comp.hidden-params/HP1)
-    rask_hidden_params::desugar_hidden_params(&mut parse_result.decls);
+    rask_hidden_params::desugar_hidden_params(&mut result.decls);
 
     // Monomorphize
-    let mono = match rask_mono::monomorphize(&typed, &parse_result.decls) {
+    let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
         Ok(m) => m,
         Err(e) => {
             eprintln!("{}: monomorphization failed: {:?}", output::error_label(), e);
@@ -115,7 +24,7 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
         }
     };
 
-    (mono, typed)
+    (mono, result.typed)
 }
 
 /// Dump monomorphization output for a single file.
@@ -364,12 +273,19 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     let bin_path = match output_path {
         Some(p) => p.to_string(),
         None => {
-            // Default: strip .rk extension from input
-            let stem = Path::new(path)
-                .file_stem()
+            let p = Path::new(path);
+            let stem = p.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("a.out");
-            stem.to_string()
+
+            // If in a project context (build.rk found), output to build/debug/
+            if let Some(project_root) = super::pipeline::find_project_root_from(path) {
+                let out_dir = project_root.join("build").join("debug");
+                let _ = std::fs::create_dir_all(&out_dir);
+                out_dir.join(stem).to_string_lossy().to_string()
+            } else {
+                stem.to_string()
+            }
         }
     };
     let obj_path = format!("{}.o", bin_path);

@@ -403,6 +403,13 @@ impl Interpreter {
         }
     }
 
+    /// Register external package names so `pkg.func()` works at runtime.
+    pub fn register_packages(&mut self, names: &[String]) {
+        for name in names {
+            self.env.define(name.clone(), Value::Package(name.clone()));
+        }
+    }
+
     pub fn run(&mut self, decls: &[Decl]) -> Result<Value, RuntimeDiagnostic> {
         let registered = self.register_declarations(decls)
             .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;

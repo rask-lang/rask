@@ -45,6 +45,8 @@ pub struct SourceFile {
     pub path: PathBuf,
     /// Parsed declarations from this file.
     pub decls: Vec<Decl>,
+    /// Original source text (for diagnostics).
+    pub source: String,
 }
 
 /// Registry of all discovered packages.
@@ -161,8 +163,10 @@ fn collect_rk_files(dir: &Path) -> Result<(Vec<PathBuf>, Vec<PathBuf>), PackageE
 }
 
 /// Lex and parse a list of .rk file paths into SourceFiles.
+/// Chains NodeIds across files to ensure uniqueness when decls are combined.
 fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> {
     let mut source_files = Vec::new();
+    let mut next_id: u32 = 0;
     for file_path in paths {
         let source = fs::read_to_string(&file_path)
             .map_err(|e| PackageError::Io(e, file_path.clone()))?;
@@ -176,8 +180,9 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
             });
         }
 
-        let mut parser = rask_parser::Parser::new(lex_result.tokens);
+        let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
         let parse_result = parser.parse();
+        next_id = parser.next_node_id();
         if !parse_result.is_ok() {
             return Err(PackageError::Parse {
                 file: file_path,
@@ -187,6 +192,7 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
 
         source_files.push(SourceFile {
             path: file_path,
+            source,
             decls: parse_result.decls,
         });
     }
@@ -457,6 +463,28 @@ impl PackageRegistry {
             path: path.clone(),
             root_dir,
             files: Vec::new(),
+            imports: Vec::new(),
+            manifest: None,
+            build_decls: Vec::new(),
+            is_external: false,
+        };
+        self.register_package(package, path)
+    }
+
+    #[cfg(test)]
+    pub fn add_package_with_decls(
+        &mut self,
+        name: String,
+        path: Vec<String>,
+        root_dir: std::path::PathBuf,
+        decls: Vec<Decl>,
+    ) -> PackageId {
+        let package = Package {
+            id: PackageId(0),
+            name: name.clone(),
+            path: path.clone(),
+            root_dir: root_dir.clone(),
+            files: vec![SourceFile { path: root_dir.join("lib.rk"), source: String::new(), decls }],
             imports: Vec::new(),
             manifest: None,
             build_decls: Vec::new(),
