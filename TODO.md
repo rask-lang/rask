@@ -54,7 +54,7 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 3. **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against. Green thread scheduler exists in `rask-rt/green/` but isn't integrated into the spawn path.
 
-4. ~~**Closure escape handling**~~ — Done. Escape analysis downgrades non-escaping closures to stack; heap closures get `ClosureDrop` before returns. Cross-function analysis (`optimize_all_closures`) checks if callee parameters escape — borrow-only callees (e.g., `forEach`) get proper caller-side drops, ownership-taking callees (e.g., `spawn`, runtime functions) suppress drops. Remaining gaps: untested edge cases (nested closures, closures in loops/match arms), concurrency integration blocked on runtime (#3).
+4. ~~**Closure escape handling**~~ — Done. Escape analysis downgrades non-escaping closures to stack; heap closures get `ClosureDrop` before returns. Cross-function analysis (`optimize_all_closures`) checks if callee parameters escape — borrow-only callees (e.g., `forEach`) get proper caller-side drops, ownership-taking callees (e.g., `spawn`, runtime functions) suppress drops. Remaining gaps: concurrency integration blocked on runtime (#3). Note: `ClosureDrop` only inserts before `Return` terminators — heap closures created in loops that aren't fully transferred will leak per iteration. Not a problem for stack-allocated (non-escaping) closures.
 
 5. **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
 

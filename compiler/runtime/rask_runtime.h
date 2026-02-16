@@ -54,6 +54,8 @@ int64_t  rask_vec_pop(RaskVec *v, void *out);
 int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
 int64_t  rask_vec_reserve(RaskVec *v, int64_t additional);
+int64_t  rask_vec_is_empty(const RaskVec *v);
+RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 
 // ─── String ─────────────────────────────────────────────────
 // UTF-8 owned string, always null-terminated.
@@ -73,6 +75,21 @@ int64_t     rask_string_append_cstr(RaskString *s, const char *cstr);
 RaskString *rask_string_clone(const RaskString *s);
 int64_t     rask_string_eq(const RaskString *a, const RaskString *b);
 RaskString *rask_string_substr(const RaskString *s, int64_t start, int64_t end);
+RaskString *rask_string_concat(const RaskString *a, const RaskString *b);
+int64_t     rask_string_contains(const RaskString *haystack, const RaskString *needle);
+RaskString *rask_string_to_lowercase(const RaskString *s);
+int64_t     rask_string_starts_with(const RaskString *s, const RaskString *prefix);
+int64_t     rask_string_ends_with(const RaskString *s, const RaskString *suffix);
+RaskVec    *rask_string_lines(const RaskString *s);
+RaskString *rask_string_trim(const RaskString *s);
+RaskVec    *rask_string_split(const RaskString *s, const RaskString *sep);
+RaskString *rask_string_replace(const RaskString *s, const RaskString *from, const RaskString *to);
+int64_t     rask_string_parse_int(const RaskString *s);
+double      rask_string_parse_float(const RaskString *s);
+RaskString *rask_i64_to_string(int64_t val);
+RaskString *rask_bool_to_string(int64_t val);
+RaskString *rask_f64_to_string(double val);
+RaskString *rask_char_to_string(int32_t codepoint);
 
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
@@ -93,6 +110,10 @@ int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
 int64_t  rask_map_contains(const RaskMap *m, const void *key);
+int64_t  rask_map_is_empty(const RaskMap *m);
+void     rask_map_clear(RaskMap *m);
+RaskVec *rask_map_keys(const RaskMap *m);
+RaskVec *rask_map_values(const RaskMap *m);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
@@ -117,8 +138,58 @@ RaskHandle  rask_pool_insert(RaskPool *p, const void *elem);
 void       *rask_pool_get(const RaskPool *p, RaskHandle h);
 int64_t     rask_pool_remove(RaskPool *p, RaskHandle h, void *out);
 int64_t     rask_pool_is_valid(const RaskPool *p, RaskHandle h);
+RaskHandle  rask_pool_alloc(RaskPool *p);
+
+// Packed i64 handle interface for codegen (index:32 | gen:32, pool_id from pool ptr)
+int64_t     rask_pool_alloc_packed(RaskPool *p);
+void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
+int64_t     rask_pool_remove_packed(RaskPool *p, int64_t packed);
+int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
+
+// ─── FS module ──────────────────────────────────────────────
+// Higher-level file operations. Return FILE* or RaskString* as i64.
+
+int64_t     rask_fs_open(const RaskString *path);
+int64_t     rask_fs_create(const RaskString *path);
+RaskString *rask_fs_canonicalize(const RaskString *path);
+int64_t     rask_fs_copy(const RaskString *from, const RaskString *to);
+void        rask_fs_rename(const RaskString *from, const RaskString *to);
+void        rask_fs_remove(const RaskString *path);
+void        rask_fs_create_dir(const RaskString *path);
+void        rask_fs_create_dir_all(const RaskString *path);
+void        rask_fs_append_file(const RaskString *path, const RaskString *content);
+
+// ─── Net module ─────────────────────────────────────────────
+// Basic TCP socket operations.
+
+int64_t rask_net_tcp_listen(const RaskString *addr);
+
+// ─── JSON module ────────────────────────────────────────────
+// Encode helpers — used by codegen-generated struct serialization.
+
+typedef struct RaskJsonBuf RaskJsonBuf;
+
+RaskJsonBuf *rask_json_buf_new(void);
+void         rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const RaskString *val);
+void         rask_json_buf_add_i64(RaskJsonBuf *buf, const char *key, int64_t val);
+void         rask_json_buf_add_f64(RaskJsonBuf *buf, const char *key, double val);
+void         rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val);
+RaskString  *rask_json_buf_finish(RaskJsonBuf *buf);
+
+RaskString  *rask_json_encode_string(const RaskString *s);
+RaskString  *rask_json_encode_i64(int64_t val);
+
+// Decode helpers — minimal JSON object parser.
+typedef struct RaskJsonObj RaskJsonObj;
+
+RaskJsonObj *rask_json_parse(const RaskString *s);
+RaskString  *rask_json_get_string(RaskJsonObj *obj, const char *key);
+int64_t      rask_json_get_i64(RaskJsonObj *obj, const char *key);
+double       rask_json_get_f64(RaskJsonObj *obj, const char *key);
+int8_t       rask_json_get_bool(RaskJsonObj *obj, const char *key);
+int64_t      rask_json_decode(const RaskString *s);
 
 // ─── CLI args ───────────────────────────────────────────────
 

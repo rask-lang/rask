@@ -3,8 +3,8 @@
 //! Function builder — lowers MIR to Cranelift IR.
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, StackSlotData, StackSlotKind};
-use cranelift_codegen::ir::condcodes::IntCC;
+use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::{HashMap, HashSet};
 
@@ -12,6 +12,16 @@ use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRV
 use rask_mono::{StructLayout, EnumLayout};
 use crate::types::mir_to_cranelift_type;
 use crate::{CodegenError, CodegenResult};
+
+/// Result of adapting a stdlib call for the typed runtime API.
+enum CallAdapt {
+    /// No special post-call handling needed
+    None,
+    /// Result is void* — load the i64 value from the returned pointer
+    DerefResult,
+    /// Pop-style: value written to this stack slot by callee
+    PopOutParam(StackSlot),
+}
 
 pub struct FunctionBuilder<'a> {
     func: &'a mut Function,
@@ -193,7 +203,7 @@ impl<'a> FunctionBuilder<'a> {
 
                 let mut val = Self::lower_rvalue(
                     builder, rvalue, var_map, locals, Some(dst_ty),
-                    struct_layouts, enum_layouts, string_globals,
+                    struct_layouts, enum_layouts, string_globals, func_refs,
                 )?;
 
                 let val_ty = builder.func.dfg.value_type(val);
@@ -209,7 +219,7 @@ impl<'a> FunctionBuilder<'a> {
             MirStmt::Store { addr, offset, value } => {
                 let addr_val = builder.use_var(*var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
-                let val = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
 
                 let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
@@ -222,7 +232,7 @@ impl<'a> FunctionBuilder<'a> {
                         if i > 0 {
                             let sp = Self::lower_operand_typed(
                                 builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
-                                var_map, Some(types::I64), string_globals,
+                                var_map, Some(types::I64), string_globals, func_refs,
                             )?;
                             let print_str = func_refs.get("rask_print_string")
                                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
@@ -235,7 +245,7 @@ impl<'a> FunctionBuilder<'a> {
                         let ext_func = &builder.func.dfg.ext_funcs[*fr];
                         let sig = &builder.func.dfg.signatures[ext_func.signature];
                         let expected_ty = sig.params.first().map(|p| p.value_type);
-                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
+                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals, func_refs)?;
                         if let Some(expected) = expected_ty {
                             let actual = builder.func.dfg.value_type(val);
                             if actual != expected {
@@ -259,7 +269,7 @@ impl<'a> FunctionBuilder<'a> {
                 } else if func.name == "assert" {
                     // assert(cond) — branch on condition, trap if false
                     if let Some(arg) = args.first() {
-                        let cond = Self::lower_operand(builder, arg, var_map, string_globals)?;
+                        let cond = Self::lower_operand(builder, arg, var_map, string_globals, func_refs)?;
                         let ok_block = builder.create_block();
                         let fail_block = builder.create_block();
                         builder.ins().brif(cond, ok_block, &[], fail_block, &[]);
@@ -284,49 +294,84 @@ impl<'a> FunctionBuilder<'a> {
                     let func_ref = func_refs.get(&func.name)
                         .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
 
-                    // Look up the callee's signature to get expected parameter types
+                    // Lower MIR args to Cranelift values
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for a in args.iter() {
+                        let val = Self::lower_operand_typed(builder, a, var_map, Some(types::I64), string_globals, func_refs)?;
+                        let actual = builder.func.dfg.value_type(val);
+                        let converted = if actual != types::I64 && actual.is_int() {
+                            Self::convert_value(builder, val, actual, types::I64)
+                        } else {
+                            val
+                        };
+                        arg_vals.push(converted);
+                    }
+
+                    // Adapt args for typed runtime API
+                    let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals);
+
+                    // Re-read signature after adaptation (arg count may have changed)
                     let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
                     let sig = &builder.func.dfg.signatures[ext_func.signature];
                     let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
 
-                    let mut arg_vals = Vec::with_capacity(args.len());
-                    for (i, a) in args.iter().enumerate() {
-                        let expected_ty = param_types.get(i).copied();
-                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals)?;
-                        if let Some(expected) = expected_ty {
-                            let actual = builder.func.dfg.value_type(val);
+                    // Convert arg types to match the declared signature
+                    for (i, val) in arg_vals.iter_mut().enumerate() {
+                        if let Some(&expected) = param_types.get(i) {
+                            let actual = builder.func.dfg.value_type(*val);
                             if actual != expected {
-                                val = Self::convert_value(builder, val, actual, expected);
+                                *val = Self::convert_value(builder, *val, actual, expected);
                             }
                         }
-                        arg_vals.push(val);
                     }
 
                     let call_inst = builder.ins().call(*func_ref, &arg_vals);
 
                     if let Some(dst_id) = dst {
-                        let results = builder.inst_results(call_inst);
                         let var = var_map.get(dst_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "Call destination variable not found".to_string()
                             ))?;
-                        if !results.is_empty() {
-                            let result_val = results[0];
-                            let dst_local = locals.iter().find(|l| l.id == *dst_id);
-                            let mut val = result_val;
-                            if let Some(local) = dst_local {
-                                let dst_ty = mir_to_cranelift_type(&local.ty)?;
-                                let val_ty = builder.func.dfg.value_type(val);
-                                if val_ty != dst_ty {
-                                    val = Self::convert_value(builder, val, val_ty, dst_ty);
+
+                        // Post-call result handling
+                        let val = match adapt {
+                            CallAdapt::DerefResult => {
+                                // Result is void* — load the i64 value from it
+                                let results = builder.inst_results(call_inst);
+                                if !results.is_empty() {
+                                    let ptr = results[0];
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
                                 }
                             }
-                            builder.def_var(*var, val);
+                            CallAdapt::PopOutParam(ss) => {
+                                // Value was written to stack slot by callee
+                                builder.ins().stack_load(types::I64, ss, 0)
+                            }
+                            _ => {
+                                let results = builder.inst_results(call_inst);
+                                if !results.is_empty() {
+                                    results[0]
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                }
+                            }
+                        };
+
+                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let final_val = if let Some(local) = dst_local {
+                            let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                            let val_ty = builder.func.dfg.value_type(val);
+                            if val_ty != dst_ty {
+                                Self::convert_value(builder, val, val_ty, dst_ty)
+                            } else {
+                                val
+                            }
                         } else {
-                            // Void call — define dest as zero to keep SSA valid
-                            let zero = builder.ins().iconst(types::I64, 0);
-                            builder.def_var(*var, zero);
-                        }
+                            val
+                        };
+                        builder.def_var(*var, final_val);
                     }
                 }
             }
@@ -454,7 +499,7 @@ impl<'a> FunctionBuilder<'a> {
                 // Lower arg values
                 let mut arg_vals = Vec::new();
                 for a in args {
-                    let val = Self::lower_operand(builder, a, var_map, string_globals)?;
+                    let val = Self::lower_operand(builder, a, var_map, string_globals, func_refs)?;
                     arg_vals.push(val);
                 }
 
@@ -575,8 +620,11 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(local) = locals.iter().find(|l| l.id == *id) {
                     match &local.ty {
                         MirType::Bool => "rask_print_bool",
-                        MirType::F64 | MirType::F32 => "rask_print_f64",
+                        MirType::F32 => "rask_print_f32",
+                        MirType::F64 => "rask_print_f64",
+                        MirType::Char => "rask_print_char",
                         MirType::String => "rask_print_string",
+                        MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64 => "rask_print_u64",
                         _ => "rask_print_i64",
                     }
                 } else {
@@ -604,10 +652,11 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &[StructLayout],
         enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
+        func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<Value> {
         match rvalue {
             MirRValue::Use(op) => {
-                Self::lower_operand_typed(builder, op, var_map, expected_ty, string_globals)
+                Self::lower_operand_typed(builder, op, var_map, expected_ty, string_globals, func_refs)
             }
 
             MirRValue::BinaryOp { op, left, right } => {
@@ -616,10 +665,17 @@ impl<'a> FunctionBuilder<'a> {
                 );
 
                 let operand_ty = if is_comparison { None } else { expected_ty };
-                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty, string_globals)?;
+                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty, string_globals, func_refs)?;
                 let lhs_ty = builder.func.dfg.value_type(lhs_val);
-                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals)?;
+                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals, func_refs)?;
                 let rhs_ty = builder.func.dfg.value_type(rhs_val);
+
+                let is_float = lhs_ty.is_float();
+
+                // Check if the left operand has an unsigned MIR type
+                let is_unsigned = Self::operand_mir_type(left, locals)
+                    .map(|t| t.is_unsigned())
+                    .unwrap_or(false);
 
                 // Widen narrower operand if integer types differ
                 let (lhs_val, rhs_val) = if lhs_ty != rhs_ty && lhs_ty.is_int() && rhs_ty.is_int() {
@@ -628,36 +684,76 @@ impl<'a> FunctionBuilder<'a> {
                     } else {
                         (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
                     }
+                } else if lhs_ty != rhs_ty && is_float {
+                    // Promote narrower float
+                    if lhs_ty.bits() < rhs_ty.bits() {
+                        (builder.ins().fpromote(rhs_ty, lhs_val), rhs_val)
+                    } else {
+                        (lhs_val, builder.ins().fpromote(lhs_ty, rhs_val))
+                    }
                 } else {
                     (lhs_val, rhs_val)
                 };
 
-                let result = match op {
-                    BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
-                    BinOp::Sub => builder.ins().isub(lhs_val, rhs_val),
-                    BinOp::Mul => builder.ins().imul(lhs_val, rhs_val),
-                    BinOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
-                    BinOp::Mod => builder.ins().srem(lhs_val, rhs_val),
-                    BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
-                    BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
-                    BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
-                    BinOp::Shl => builder.ins().ishl(lhs_val, rhs_val),
-                    BinOp::Shr => builder.ins().sshr(lhs_val, rhs_val),
-                    BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
-                    BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
-                    BinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val),
-                    BinOp::Le => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val),
-                    BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val),
-                    BinOp::Ge => builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val),
-                    BinOp::And | BinOp::Or => return Err(CodegenError::UnsupportedFeature(format!("Logical op {:?} should be lowered to branches in MIR", op))),
+                let result = if is_float {
+                    match op {
+                        BinOp::Add => builder.ins().fadd(lhs_val, rhs_val),
+                        BinOp::Sub => builder.ins().fsub(lhs_val, rhs_val),
+                        BinOp::Mul => builder.ins().fmul(lhs_val, rhs_val),
+                        BinOp::Div => builder.ins().fdiv(lhs_val, rhs_val),
+                        BinOp::Mod => {
+                            // fmod: a - trunc(a/b) * b
+                            let div = builder.ins().fdiv(lhs_val, rhs_val);
+                            let trunc = builder.ins().trunc(div);
+                            let prod = builder.ins().fmul(trunc, rhs_val);
+                            builder.ins().fsub(lhs_val, prod)
+                        }
+                        BinOp::Eq => builder.ins().fcmp(FloatCC::Equal, lhs_val, rhs_val),
+                        BinOp::Ne => builder.ins().fcmp(FloatCC::NotEqual, lhs_val, rhs_val),
+                        BinOp::Lt => builder.ins().fcmp(FloatCC::LessThan, lhs_val, rhs_val),
+                        BinOp::Le => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_val, rhs_val),
+                        BinOp::Gt => builder.ins().fcmp(FloatCC::GreaterThan, lhs_val, rhs_val),
+                        BinOp::Ge => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_val, rhs_val),
+                        BinOp::And | BinOp::Or => return Err(CodegenError::UnsupportedFeature(format!("Logical op {:?} should be lowered to branches in MIR", op))),
+                        _ => return Err(CodegenError::UnsupportedFeature(format!("Bitwise op {:?} not valid on floats", op))),
+                    }
+                } else {
+                    match op {
+                        BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
+                        BinOp::Sub => builder.ins().isub(lhs_val, rhs_val),
+                        BinOp::Mul => builder.ins().imul(lhs_val, rhs_val),
+                        BinOp::Div if is_unsigned => builder.ins().udiv(lhs_val, rhs_val),
+                        BinOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
+                        BinOp::Mod if is_unsigned => builder.ins().urem(lhs_val, rhs_val),
+                        BinOp::Mod => builder.ins().srem(lhs_val, rhs_val),
+                        BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
+                        BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
+                        BinOp::BitXor => builder.ins().bxor(lhs_val, rhs_val),
+                        BinOp::Shl => builder.ins().ishl(lhs_val, rhs_val),
+                        BinOp::Shr if is_unsigned => builder.ins().ushr(lhs_val, rhs_val),
+                        BinOp::Shr => builder.ins().sshr(lhs_val, rhs_val),
+                        BinOp::Eq => builder.ins().icmp(IntCC::Equal, lhs_val, rhs_val),
+                        BinOp::Ne => builder.ins().icmp(IntCC::NotEqual, lhs_val, rhs_val),
+                        BinOp::Lt if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThan, lhs_val, rhs_val),
+                        BinOp::Lt => builder.ins().icmp(IntCC::SignedLessThan, lhs_val, rhs_val),
+                        BinOp::Le if is_unsigned => builder.ins().icmp(IntCC::UnsignedLessThanOrEqual, lhs_val, rhs_val),
+                        BinOp::Le => builder.ins().icmp(IntCC::SignedLessThanOrEqual, lhs_val, rhs_val),
+                        BinOp::Gt if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThan, lhs_val, rhs_val),
+                        BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val),
+                        BinOp::Ge if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, lhs_val, rhs_val),
+                        BinOp::Ge => builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val),
+                        BinOp::And | BinOp::Or => return Err(CodegenError::UnsupportedFeature(format!("Logical op {:?} should be lowered to branches in MIR", op))),
+                    }
                 };
                 Ok(result)
             }
 
             MirRValue::UnaryOp { op, operand } => {
-                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty, string_globals)?;
+                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty, string_globals, func_refs)?;
+                let val_ty = builder.func.dfg.value_type(val);
 
                 let result = match op {
+                    UnaryOp::Neg if val_ty.is_float() => builder.ins().fneg(val),
                     UnaryOp::Neg => builder.ins().ineg(val),
                     // Logical NOT: XOR with 1 to flip the boolean bit.
                     // bnot flips all bits which is wrong for booleans
@@ -673,7 +769,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::Cast { value, target_ty } => {
-                let val = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 Ok(Self::convert_value(builder, val, val_ty, target))
@@ -681,7 +777,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // Struct/enum field access: load from base pointer + field offset
             MirRValue::Field { base, field_index } => {
-                let base_val = Self::lower_operand(builder, base, var_map, string_globals)?;
+                let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
                 let base_ty = Self::operand_mir_type(base, locals);
                 let load_ty = expected_ty.unwrap_or(types::I64);
 
@@ -725,7 +821,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // Enum discriminant extraction: load tag byte from base pointer
             MirRValue::EnumTag { value } => {
-                let ptr_val = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let ptr_val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
                 let base_ty = Self::operand_mir_type(value, locals);
 
                 let (tag_offset, tag_cranelift_ty) = match &base_ty {
@@ -783,7 +879,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // Pointer dereference: load the value pointed to by the operand
             MirRValue::Deref(operand) => {
-                let ptr_val = Self::lower_operand(builder, operand, var_map, string_globals)?;
+                let ptr_val = Self::lower_operand(builder, operand, var_map, string_globals, func_refs)?;
                 let load_ty = expected_ty.unwrap_or(types::I64);
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, ptr_val, 0))
@@ -807,7 +903,7 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
-                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals)?;
+                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
             }
 
             MirTerminator::Goto { target } => {
@@ -817,7 +913,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Branch { cond, then_block, else_block } => {
-                let mut cond_val = Self::lower_operand(builder, cond, var_map, string_globals)?;
+                let mut cond_val = Self::lower_operand(builder, cond, var_map, string_globals, func_refs)?;
 
                 let cond_ty = builder.func.dfg.value_type(cond_val);
                 if cond_ty == types::I8 {
@@ -832,7 +928,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Switch { value, cases, default } => {
-                let raw_scrutinee = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let raw_scrutinee = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
                 // Extend to i64 if the scrutinee is a narrower type (e.g. u8 enum tag)
                 let scrutinee_val = {
                     let val_ty = builder.func.dfg.value_type(raw_scrutinee);
@@ -891,7 +987,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
 
-                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals)?;
+                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
             }
         }
         Ok(())
@@ -904,10 +1000,11 @@ impl<'a> FunctionBuilder<'a> {
         ret_ty: &MirType,
         var_map: &HashMap<LocalId, Variable>,
         string_globals: &HashMap<String, GlobalValue>,
+        func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<()> {
         if let Some(val_op) = value {
             let expected_ty = mir_to_cranelift_type(ret_ty)?;
-            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals)?;
+            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals, func_refs)?;
             let actual_ty = builder.func.dfg.value_type(val);
             let final_val = if actual_ty != expected_ty {
                 Self::convert_value(builder, val, actual_ty, expected_ty)
@@ -921,13 +1018,118 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    /// Store a value to a stack slot and return its address.
+    /// Used for pointer-based calling convention (typed runtime API).
+    fn value_to_ptr(builder: &mut ClifFunctionBuilder, val: Value) -> Value {
+        let ss = builder.create_sized_stack_slot(StackSlotData::new(
+            StackSlotKind::ExplicitSlot, 8, 0,
+        ));
+        builder.ins().stack_store(val, ss, 0);
+        builder.ins().stack_addr(types::I64, ss, 0)
+    }
+
+    /// Adapt stdlib call args for the typed runtime API.
+    /// Injects elem_size args, wraps values as pointers, adds out-params.
+    /// Returns the post-call adaptation needed.
+    fn adapt_stdlib_call(
+        builder: &mut ClifFunctionBuilder,
+        func_name: &str,
+        args: &mut Vec<Value>,
+    ) -> CallAdapt {
+        match func_name {
+            // Constructors: inject elem_size / key_size+val_size
+            "Vec_new" => {
+                let elem_size = builder.ins().iconst(types::I64, 8);
+                args.insert(0, elem_size);
+                CallAdapt::None
+            }
+            "Map_new" => {
+                let key_size = builder.ins().iconst(types::I64, 8);
+                let val_size = builder.ins().iconst(types::I64, 8);
+                args.insert(0, key_size);
+                args.insert(1, val_size);
+                CallAdapt::None
+            }
+            "Pool_new" => {
+                let elem_size = builder.ins().iconst(types::I64, 8);
+                args.insert(0, elem_size);
+                CallAdapt::None
+            }
+
+            // Vec push/set: wrap value arg as pointer
+            "push" => {
+                // args: [vec, value] → [vec, &value]
+                if args.len() >= 2 {
+                    let val = args[1];
+                    args[1] = Self::value_to_ptr(builder, val);
+                }
+                CallAdapt::None
+            }
+            "set" => {
+                // args: [vec, index, value] → [vec, index, &value]
+                if args.len() >= 3 {
+                    let val = args[2];
+                    args[2] = Self::value_to_ptr(builder, val);
+                }
+                CallAdapt::None
+            }
+
+            // Vec pop: add out-param, load result from it
+            "pop" => {
+                // args: [vec] → [vec, &out]
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.push(addr);
+                CallAdapt::PopOutParam(ss)
+            }
+
+            // Vec get/index: result is void*, deref to get value
+            "get" | "index" => CallAdapt::DerefResult,
+
+            // Map insert: wrap key and value as pointers
+            "insert" => {
+                // args: [map, key, value] → [map, &key, &value]
+                if args.len() >= 3 {
+                    let key = args[1];
+                    let val = args[2];
+                    args[1] = Self::value_to_ptr(builder, key);
+                    args[2] = Self::value_to_ptr(builder, val);
+                }
+                CallAdapt::None
+            }
+
+            // Map contains_key/remove: wrap key as pointer
+            "contains_key" | "map_remove" => {
+                if args.len() >= 2 {
+                    let key = args[1];
+                    args[1] = Self::value_to_ptr(builder, key);
+                }
+                CallAdapt::None
+            }
+
+            // Map get: wrap key as pointer, deref result
+            "map_get" => {
+                if args.len() >= 2 {
+                    let key = args[1];
+                    args[1] = Self::value_to_ptr(builder, key);
+                }
+                CallAdapt::DerefResult
+            }
+
+            _ => CallAdapt::None,
+        }
+    }
+
     fn lower_operand(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
         var_map: &HashMap<LocalId, Variable>,
         string_globals: &HashMap<String, GlobalValue>,
+        func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<Value> {
-        Self::lower_operand_typed(builder, op, var_map, None, string_globals)
+        Self::lower_operand_typed(builder, op, var_map, None, string_globals, func_refs)
     }
 
     fn lower_operand_typed(
@@ -936,6 +1138,7 @@ impl<'a> FunctionBuilder<'a> {
         var_map: &HashMap<LocalId, Variable>,
         expected_ty: Option<Type>,
         string_globals: &HashMap<String, GlobalValue>,
+        func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<Value> {
         match op {
             MirOperand::Local(local_id) => {
@@ -973,12 +1176,18 @@ impl<'a> FunctionBuilder<'a> {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
                     MirConst::String(s) => {
-                        // Look up the pre-created data section global for this string.
-                        // Returns a pointer (i64) to null-terminated bytes.
+                        // String constants: get raw char* from data section,
+                        // then wrap in RaskString via rask_string_from().
                         if let Some(gv) = string_globals.get(s.as_str()) {
-                            Ok(builder.ins().global_value(types::I64, *gv))
+                            let raw_ptr = builder.ins().global_value(types::I64, *gv);
+                            if let Some(string_from_ref) = func_refs.get("string_from") {
+                                let call = builder.ins().call(*string_from_ref, &[raw_ptr]);
+                                let results = builder.inst_results(call);
+                                Ok(results[0])
+                            } else {
+                                Ok(raw_ptr)
+                            }
                         } else {
-                            // Fallback: no data registered — emit null pointer
                             Ok(builder.ins().iconst(types::I64, 0))
                         }
                     }

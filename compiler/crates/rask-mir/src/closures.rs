@@ -273,7 +273,7 @@ fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockId, MirBlock, MirLocal, MirType};
+    use crate::{BlockId, MirBlock, MirConst, MirLocal, MirType};
     use crate::operand::FunctionRef;
 
     fn temp(id: u32, ty: MirType) -> MirLocal {
@@ -533,5 +533,419 @@ mod tests {
 
         assert!(get_heap(&fns[0]), "unknown callee forces heap");
         assert!(has_drop(&fns[0]), "local use prevents transfer — drop needed");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Edge cases: nested closures
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn nested_closures_both_local_only() {
+        // Outer closure and inner closure, both only used via ClosureCall.
+        // Both should be downgraded to stack, no drops.
+        //
+        //   f__closure_0(env) -> i64 {
+        //     _1 = ClosureCreate[heap] { func: "f__closure_1" }   // inner
+        //     _2 = ClosureCall(_1)
+        //     return _2
+        //   }
+        //   f() -> i64 {
+        //     _0 = ClosureCreate[heap] { func: "f__closure_0" }   // outer
+        //     _1 = ClosureCall(_0)
+        //     return _1
+        //   }
+
+        let outer_closure = MirFunction {
+            name: "f__closure_0".to_string(),
+            params: vec![param(0, MirType::Ptr)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                param(0, MirType::Ptr),
+                temp(1, MirType::Ptr),   // inner closure
+                temp(2, MirType::I64),   // call result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_1".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], ret(Some(MirOperand::Local(LocalId(2))))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let f_fn = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![temp(0, MirType::Ptr), temp(1, MirType::I64)],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(0),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(1)),
+                        closure: LocalId(0),
+                        args: vec![],
+                    },
+                ], ret(Some(MirOperand::Local(LocalId(1))))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut fns = vec![outer_closure, f_fn];
+        optimize_all_closures(&mut fns);
+
+        let outer = &fns[0];
+        let f = &fns[1];
+
+        // Inner closure (in outer_closure body) → stack
+        let inner_heap = outer.blocks[0].statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        assert!(!inner_heap, "inner closure should be stack-allocated");
+
+        // Outer closure (in f) → stack
+        assert!(!get_heap(f), "outer closure should be stack-allocated");
+    }
+
+    #[test]
+    fn nested_closure_inner_returned_from_outer() {
+        // Inner closure returned from outer → inner must stay heap.
+        // Outer only used via ClosureCall → stack.
+        //
+        //   f__closure_0(env) -> ptr {
+        //     _1 = ClosureCreate[heap] { func: "f__closure_1" }
+        //     return _1   // ← inner escapes
+        //   }
+        //   f() -> i64 {
+        //     _0 = ClosureCreate[heap] { func: "f__closure_0" }
+        //     _1 = ClosureCall(_0)   // returns ptr to inner
+        //     _2 = ClosureCall(_1)   // call the inner
+        //     return _2
+        //   }
+
+        let outer_closure = MirFunction {
+            name: "f__closure_0".to_string(),
+            params: vec![param(0, MirType::Ptr)],
+            ret_ty: MirType::Ptr,
+            locals: vec![
+                param(0, MirType::Ptr),
+                temp(1, MirType::Ptr),   // inner closure
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_1".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                ], ret(Some(MirOperand::Local(LocalId(1))))),  // return inner
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let f_fn = MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::Ptr),  // outer closure
+                temp(1, MirType::Ptr),  // inner (from ClosureCall)
+                temp(2, MirType::I64),  // final result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(0),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(1)),
+                        closure: LocalId(0),
+                        args: vec![],
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], ret(Some(MirOperand::Local(LocalId(2))))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut fns = vec![outer_closure, f_fn];
+        optimize_all_closures(&mut fns);
+
+        let outer = &fns[0];
+        let f = &fns[1];
+
+        // Inner closure returned from outer → must stay heap
+        let inner_heap = outer.blocks[0].statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        assert!(inner_heap, "inner closure returned from outer must stay heap");
+
+        // Outer closure only used via ClosureCall → stack
+        assert!(!get_heap(f), "outer closure (only ClosureCall) should be stack");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Edge cases: closures in loops
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn closure_in_loop_body_local_only() {
+        // Closure created in a loop body, only used via ClosureCall.
+        // Should be stack-allocated (no leak concern with stack).
+        //
+        //   f() -> i64 {
+        //     block0: _0 = 0; goto block1
+        //     block1: branch(_0 < 10, block2, block3)
+        //     block2:
+        //       _1 = ClosureCreate[heap] { captures: [] }
+        //       _2 = ClosureCall(_1)
+        //       _0 = _0 + 1
+        //       goto block1
+        //     block3: return _0
+        //   }
+
+        let mut fns = vec![MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),  // counter
+                temp(1, MirType::Ptr),  // closure
+                temp(2, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                block(0, vec![], MirTerminator::Goto { target: BlockId(1) }),
+                block(1, vec![], MirTerminator::Branch {
+                    cond: MirOperand::Local(LocalId(0)),
+                    then_block: BlockId(2),
+                    else_block: BlockId(3),
+                }),
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], MirTerminator::Goto { target: BlockId(1) }),
+                block(3, vec![], ret(Some(MirOperand::Local(LocalId(0))))),
+            ],
+            entry_block: BlockId(0),
+        }];
+
+        optimize_all_closures(&mut fns);
+
+        // Closure only used in ClosureCall → stack (safe even in loop)
+        let loop_block = &fns[0].blocks[2];
+        let heap = loop_block.statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        assert!(!heap, "loop-body closure with only local use should be stack");
+    }
+
+    #[test]
+    fn closure_in_loop_body_transferred() {
+        // Closure in loop body passed to unknown callee (e.g., register_callback).
+        // Must be heap-allocated. Ownership transferred each iteration → no drop.
+        //
+        //   block2:
+        //     _1 = ClosureCreate[heap] { captures: [] }
+        //     Call(register, [_1])
+        //     goto block1
+
+        let mut fns = vec![MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                temp(0, MirType::I64),
+                temp(1, MirType::Ptr),
+            ],
+            blocks: vec![
+                block(0, vec![], MirTerminator::Goto { target: BlockId(1) }),
+                block(1, vec![], MirTerminator::Branch {
+                    cond: MirOperand::Local(LocalId(0)),
+                    then_block: BlockId(2),
+                    else_block: BlockId(3),
+                }),
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::Call {
+                        dst: None,
+                        func: FunctionRef { name: "register".to_string() },
+                        args: vec![MirOperand::Local(LocalId(1))],
+                    },
+                ], MirTerminator::Goto { target: BlockId(1) }),
+                block(3, vec![], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        }];
+
+        optimize_all_closures(&mut fns);
+
+        let loop_block = &fns[0].blocks[2];
+        let heap = loop_block.statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        assert!(heap, "closure passed to unknown callee must stay heap");
+
+        // Ownership transferred to register → no drop anywhere
+        let any_drop = fns[0].blocks.iter()
+            .flat_map(|b| &b.statements)
+            .any(|s| matches!(s, MirStmt::ClosureDrop { .. }));
+        assert!(!any_drop, "ownership transferred — no drop needed");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Edge cases: closures in match arms
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn closures_in_different_match_arms_local_only() {
+        // Two closures created in different match arms, both only used
+        // via ClosureCall. Both should be stack-allocated.
+        //
+        //   block0: switch(x, [(0, block1), (1, block2)], block3)
+        //   block1: _1 = ClosureCreate; _2 = ClosureCall(_1); goto block3
+        //   block2: _3 = ClosureCreate; _4 = ClosureCall(_3); goto block3
+        //   block3: return 0
+
+        let mut fns = vec![MirFunction {
+            name: "f".to_string(),
+            params: vec![param(0, MirType::I64)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                param(0, MirType::I64),
+                temp(1, MirType::Ptr),   // closure in arm 1
+                temp(2, MirType::I64),   // call result 1
+                temp(3, MirType::Ptr),   // closure in arm 2
+                temp(4, MirType::I64),   // call result 2
+            ],
+            blocks: vec![
+                block(0, vec![], MirTerminator::Switch {
+                    value: MirOperand::Local(LocalId(0)),
+                    cases: vec![(0, BlockId(1)), (1, BlockId(2))],
+                    default: BlockId(3),
+                }),
+                block(1, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], MirTerminator::Goto { target: BlockId(3) }),
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(3),
+                        func_name: "f__closure_1".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(4)),
+                        closure: LocalId(3),
+                        args: vec![],
+                    },
+                ], MirTerminator::Goto { target: BlockId(3) }),
+                block(3, vec![], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
+            ],
+            entry_block: BlockId(0),
+        }];
+
+        optimize_all_closures(&mut fns);
+
+        // Both closures only used in ClosureCall → both stack
+        let arm1_heap = fns[0].blocks[1].statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        let arm2_heap = fns[0].blocks[2].statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+
+        assert!(!arm1_heap, "match arm 1 closure should be stack");
+        assert!(!arm2_heap, "match arm 2 closure should be stack");
+    }
+
+    #[test]
+    fn closure_in_match_arm_escaping() {
+        // One match arm returns a closure, the other doesn't.
+        // The returned closure must stay heap.
+        //
+        //   block0: branch(x, block1, block2)
+        //   block1: _1 = ClosureCreate[heap]; return _1   ← escapes
+        //   block2: return null_ptr
+
+        let mut fns = vec![MirFunction {
+            name: "f".to_string(),
+            params: vec![param(0, MirType::I64)],
+            ret_ty: MirType::Ptr,
+            locals: vec![
+                param(0, MirType::I64),
+                temp(1, MirType::Ptr),  // closure
+            ],
+            blocks: vec![
+                block(0, vec![], MirTerminator::Branch {
+                    cond: MirOperand::Local(LocalId(0)),
+                    then_block: BlockId(1),
+                    else_block: BlockId(2),
+                }),
+                block(1, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                ], ret(Some(MirOperand::Local(LocalId(1))))),
+                block(2, vec![],
+                    ret(Some(MirOperand::Constant(MirConst::Int(0))))),
+            ],
+            entry_block: BlockId(0),
+        }];
+
+        optimize_all_closures(&mut fns);
+
+        let heap = fns[0].blocks[1].statements.iter().find_map(|s| {
+            if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
+        }).unwrap();
+        assert!(heap, "closure returned from match arm must stay heap");
     }
 }

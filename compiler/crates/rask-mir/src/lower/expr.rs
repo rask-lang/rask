@@ -16,6 +16,7 @@ use rask_ast::{
     stmt::{Stmt, StmtKind},
     token::{FloatSuffix, IntSuffix},
 };
+use rask_mono::StructLayout;
 
 impl<'a> MirLowerer<'a> {
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
@@ -202,7 +203,7 @@ impl<'a> MirLowerer<'a> {
                 object,
                 method,
                 args,
-                ..
+                type_args,
             } => {
                 // When the object is a type name (not a local variable), intercept
                 // before lowering it as a value expression.
@@ -277,6 +278,49 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
 
+                        // json.encode — expand struct serialization at MIR level
+                        if name == "json" && method == "encode" && args.len() == 1 {
+                            let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
+                            if let MirType::Struct(StructLayoutId(id)) = &arg_ty {
+                                if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
+                                    return self.lower_json_encode_struct(arg_op, layout.clone());
+                                }
+                            }
+                            // Non-struct: string or integer
+                            let helper = if matches!(arg_ty, MirType::String) {
+                                "json_encode_string"
+                            } else {
+                                "json_encode_i64"
+                            };
+                            let result_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef { name: helper.to_string() },
+                                args: vec![arg_op],
+                            });
+                            return Ok((MirOperand::Local(result_local), MirType::I64));
+                        }
+
+                        // json.decode<T> — expand struct deserialization at MIR level
+                        if name == "json" && method == "decode" && args.len() == 1 {
+                            let (str_op, _) = self.lower_expr(&args[0].expr)?;
+                            if let Some(ta) = type_args {
+                                if let Some(target_name) = ta.first() {
+                                    if let Some((_, layout)) = self.ctx.find_struct(target_name) {
+                                        return self.lower_json_decode_struct(str_op, layout.clone());
+                                    }
+                                }
+                            }
+                            // Fallback: opaque decode
+                            let result_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef { name: "json_decode".to_string() },
+                                args: vec![str_op],
+                            });
+                            return Ok((MirOperand::Local(result_local), MirType::I64));
+                        }
+
                         // Static method on a type: Vec.new(), string.new()
                         let is_known_type = self.ctx.find_struct(name).is_some()
                             || self.ctx.find_enum(name).is_some()
@@ -293,7 +337,7 @@ impl<'a> MirLowerer<'a> {
                                 .func_sigs
                                 .get(&func_name)
                                 .map(|s| s.ret_ty.clone())
-                                .unwrap_or_else(|| self.ctx.resolve_type_str(name));
+                                .unwrap_or(MirType::I64);
                             let result_local = self.builder.alloc_temp(ret_ty.clone());
                             self.builder.push_stmt(MirStmt::Call {
                                 dst: Some(result_local),
@@ -1583,5 +1627,111 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(ok_val), ok_ty))
+    }
+
+    /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
+    fn lower_json_encode_struct(
+        &mut self,
+        struct_op: MirOperand,
+        layout: StructLayout,
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_types::Type;
+
+        let buf = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(buf),
+            func: FunctionRef { name: "json_buf_new".to_string() },
+            args: vec![],
+        });
+
+        for (idx, field) in layout.fields.iter().enumerate() {
+            let field_val = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: field_val,
+                rvalue: MirRValue::Field {
+                    base: struct_op.clone(),
+                    field_index: idx as u32,
+                },
+            });
+
+            let helper = match &field.ty {
+                Type::String => "json_buf_add_string",
+                Type::Bool => "json_buf_add_bool",
+                Type::F32 | Type::F64 => "json_buf_add_f64",
+                _ => "json_buf_add_i64",
+            };
+
+            self.builder.push_stmt(MirStmt::Call {
+                dst: None,
+                func: FunctionRef { name: helper.to_string() },
+                args: vec![
+                    MirOperand::Local(buf),
+                    MirOperand::Constant(MirConst::String(field.name.clone())),
+                    MirOperand::Local(field_val),
+                ],
+            });
+        }
+
+        let result = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(result),
+            func: FunctionRef { name: "json_buf_finish".to_string() },
+            args: vec![MirOperand::Local(buf)],
+        });
+
+        Ok((MirOperand::Local(result), MirType::I64))
+    }
+
+    /// Expand `json.decode<T>(str)` into json_parse + field extraction + struct construction.
+    fn lower_json_decode_struct(
+        &mut self,
+        str_op: MirOperand,
+        layout: StructLayout,
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_types::Type;
+
+        // Parse JSON string into opaque object
+        let parsed = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(parsed),
+            func: FunctionRef { name: "json_parse".to_string() },
+            args: vec![str_op],
+        });
+
+        // Find struct type ID for result
+        let struct_id = self.ctx.find_struct(&layout.name)
+            .map(|(id, _)| StructLayoutId(id));
+        let struct_ty = struct_id
+            .map(MirType::Struct)
+            .unwrap_or(MirType::I64);
+
+        // Allocate struct and extract each field
+        let result = self.builder.alloc_temp(struct_ty.clone());
+        for (_idx, field) in layout.fields.iter().enumerate() {
+            let helper = match &field.ty {
+                Type::String => "json_get_string",
+                Type::Bool => "json_get_bool",
+                Type::F32 | Type::F64 => "json_get_f64",
+                _ => "json_get_i64",
+            };
+
+            let field_val = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(field_val),
+                func: FunctionRef { name: helper.to_string() },
+                args: vec![
+                    MirOperand::Local(parsed),
+                    MirOperand::Constant(MirConst::String(field.name.clone())),
+                ],
+            });
+
+            self.builder.push_stmt(MirStmt::Store {
+                addr: result,
+                offset: field.offset,
+                value: MirOperand::Local(field_val),
+            });
+        }
+
+        Ok((MirOperand::Local(result), struct_ty))
     }
 }
