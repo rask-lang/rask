@@ -261,10 +261,8 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
                                         total_errors += mir_errors;
 
-                                        // Closure optimization: escape analysis + drop insertion
-                                        for func in &mut mir_functions {
-                                            rask_mir::optimize_closures(func);
-                                        }
+                                        // Closure optimization: escape analysis + cross-function ownership + drops
+                                        rask_mir::optimize_all_closures(&mut mir_functions);
 
                                         if mir_errors == 0 && !mir_functions.is_empty() {
                                             let codegen_result = match opts.target {

@@ -30,19 +30,49 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ---
 
+## Recently Completed (2026-02-16)
+
+- [x] **Float codegen** — `fadd`/`fsub`/`fmul`/`fdiv`/`fneg` + `fcmp` with `FloatCC`. Previously all float ops used integer instructions.
+- [x] **Unsigned codegen** — `udiv`/`urem`/`ushr` + unsigned `icmp` for U8/U16/U32/U64. Previously always signed.
+- [x] **Type-correct printing** — `rask_print_f32`, `rask_print_char` (UTF-8), `rask_print_u64`. Previously F32→F64 implicit, no char print, unsigned printed as signed.
+- [x] **Iterator skip** — `rask_iter_skip` now creates a new Vec skipping N elements. Was a no-op stub.
+- [x] **Map operations** — `get`, `remove`, `len`, `is_empty`, `clear`, `keys`, `values` in runtime + dispatch. Previously only `new`/`insert`/`contains_key`.
+- [x] **String operations** — `split`, `parse_int`, `parse_float`, `substr`, `ends_with`, `replace` in runtime + dispatch. Also `f64_to_string`, `char_to_string`.
+- [x] **MirType helpers** — `is_float()`, `is_unsigned()` on MirType for codegen instruction selection.
+
 ## Active Work — Phase 5: Code Generation Completeness
 
-### Next up
+### Next session priorities
 
-- [ ] **Stdlib module calls in codegen** — `cli.parse()`, `fs.read()`, `io.stdin()` etc. Module-qualified names aren't resolved in MIR. The C runtime already has backing functions; this is plumbing.
-- [ ] **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against.
-- [ ] **Closure escape handling** — Closures are stack-allocated. Escaping closures (returned, passed to spawn) dangle. Needs heap allocation or escape analysis.
-- [ ] **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
+1. **Runtime type migration** — The big architectural debt. Two parallel C implementations exist:
+   - Old i64-based (inline in `runtime.c`) — currently linked and used
+   - New typed (`vec.c`, `string.c`, `map.c`, `pool.c` + `rask_runtime.h`) — proper structs with `elem_size`, not linked
+   - Steps: update `link.rs` to compile the separate `.c` files, update dispatch signatures to match typed API, remove old i64 duplicates from `runtime.c`
+   - See `dispatch.rs` lines 9-25 for the full migration plan
+
+2. **Stdlib module calls in codegen** — `cli.parse()`, `fs.read()`, `io.stdin()` etc. Module-qualified names aren't resolved in MIR. The C runtime already has backing functions (`rask_cli_args`, `rask_fs_read_lines`, etc. are in dispatch.rs); the gap is MIR lowering losing the module prefix.
+
+3. **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against. Green thread scheduler exists in `rask-rt/green/` but isn't integrated into the spawn path.
+
+4. ~~**Closure escape handling**~~ — Done. Escape analysis downgrades non-escaping closures to stack; heap closures get `ClosureDrop` before returns. Cross-function analysis (`optimize_all_closures`) checks if callee parameters escape — borrow-only callees (e.g., `forEach`) get proper caller-side drops, ownership-taking callees (e.g., `spawn`, runtime functions) suppress drops. Remaining gaps: untested edge cases (nested closures, closures in loops/match arms), concurrency integration blocked on runtime (#3).
+
+5. **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
+
+### Smaller items to pick off
+
+- [ ] **Spec-test type checking** — `rask-spec-test/runner.rs` only lexes+parses, so `compile-fail` tests can't verify type errors. Wire the type checker into the test runner.
+- [ ] **Complex assignment targets** — `a[i].field = val` fails in MIR lowering (`rask-mir/lower/stmt.rs:84`). Only `Ident` and `Field` targets work.
+- [ ] **Iterator protocol** — `iter()` returns identity (clone), no real iterator abstraction. Need at minimum `map`, `filter`, `collect`.
+- [ ] **Rng type** — Completely unimplemented in interpreter (`rask-interp/stdlib/mod.rs:147`). Returns error for all methods.
+- [ ] **Array elem_ty** — `rask-mir/lower/expr.rs:809` has `let _ = elem_ty; // TODO: Use for proper array type`.
+- [ ] **Niche optimization** — `rask-mono/layout.rs:60` — Handle/Reference could be smaller.
+- [ ] **100+ skipped spec test blocks** — loops (11), ensure (9), ranges (3), comptime (5), and many more across stdlib specs.
 
 ### Known codegen limitations (not blocking, track for later)
 
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
 - CleanupReturn inlines cleanup blocks — works but duplicates cleanup code. Fine for now, revisit if code size matters.
+- `map_err` dispatch is a pass-through (no closure application). Needs closure dispatch infrastructure.
 
 ---
 
