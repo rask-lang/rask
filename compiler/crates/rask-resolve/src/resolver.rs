@@ -58,6 +58,7 @@ impl Resolver {
             ("print", BuiltinFunctionKind::Print, None),
             ("panic", BuiltinFunctionKind::Panic, Some("!")),
             ("format", BuiltinFunctionKind::Format, None),
+            ("spawn", BuiltinFunctionKind::Spawn, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
