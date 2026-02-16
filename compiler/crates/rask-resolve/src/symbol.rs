@@ -3,6 +3,7 @@
 
 use rask_ast::Span;
 use rask_ast::decl::ContextClause;
+use crate::package::PackageId;
 
 /// Unique identifier for a symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,6 +74,11 @@ pub enum SymbolKind {
     BuiltinModule {
         /// The built-in module kind.
         module: BuiltinModuleKind,
+    },
+    /// An external package namespace (for `import pkg` where pkg is a real package).
+    ExternalPackage {
+        /// The PackageId this namespace refers to.
+        package_id: PackageId,
     },
 }
 

@@ -259,6 +259,8 @@ pub enum Value {
     },
     /// Module (fs, io, cli, std, env)
     Module(ModuleKind),
+    /// User package namespace (for cross-package qualified access)
+    Package(String),
     /// Open file handle (Option allows close to invalidate)
     File(Arc<Mutex<Option<StdFile>>>),
     /// Closure (captured environment + params + body)
@@ -332,6 +334,7 @@ impl Value {
             Value::TypeConstructor { .. } => "type",
             Value::EnumConstructor { .. } => "enum constructor",
             Value::Module(_) => "module",
+            Value::Package(_) => "package",
             Value::File(_) => "File",
             Value::Closure { .. } => "closure",
             Value::Duration(_) => "Duration",
@@ -551,6 +554,7 @@ impl fmt::Display for Value {
                 ModuleKind::Async => write!(f, "<module async>"),
                 ModuleKind::Thread => write!(f, "<module thread>"),
             },
+            Value::Package(name) => write!(f, "<package {}>", name),
             Value::File(file) => {
                 if file.lock().unwrap().is_some() {
                     write!(f, "<file>")

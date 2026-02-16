@@ -28,7 +28,18 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: 0, pending_decls: Vec::new() }
+        Self::new_with_start_id(tokens, 0)
+    }
+
+    /// Create a parser with a custom starting NodeId.
+    /// Used by multi-file parsing to ensure unique NodeIds across files.
+    pub fn new_with_start_id(tokens: Vec<Token>, start_id: u32) -> Self {
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new() }
+    }
+
+    /// Return the next available NodeId (for chaining across files).
+    pub fn next_node_id(&self) -> u32 {
+        self.next_node_id
     }
 
     fn next_id(&mut self) -> NodeId {

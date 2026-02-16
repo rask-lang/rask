@@ -257,6 +257,17 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(e, expr.span));
                 }
 
+                // Package-qualified call: lib.greet() → call greet()
+                if let Value::Package(_) = &receiver {
+                    if let Some(func) = self.functions.get(method).cloned() {
+                        return self.call_function(&func, arg_vals);
+                    }
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::UndefinedVariable(method.clone()),
+                        expr.span,
+                    ));
+                }
+
                 self.call_method(receiver, method, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -523,6 +534,31 @@ impl Interpreter {
                                 expr.span
                             )),
                         }
+                    }
+                    // Package field access: lib.Point → look up as enum or struct
+                    Value::Package(_) => {
+                        if let Some(enum_decl) = self.enums.get(field).cloned() {
+                            // Return an enum constructor for fieldless or an EnumConstructor
+                            if let Some(variant) = enum_decl.variants.first() {
+                                if variant.fields.is_empty() {
+                                    return Ok(Value::Enum {
+                                        name: field.clone(),
+                                        variant: variant.name.clone(),
+                                        fields: vec![],
+                                    });
+                                }
+                            }
+                        }
+                        if self.struct_decls.contains_key(field) || self.methods.contains_key(field) {
+                            return Ok(Value::Type(field.clone()));
+                        }
+                        if let Some(func) = self.functions.get(field) {
+                            return Ok(Value::Function { name: func.name.clone() });
+                        }
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::UndefinedVariable(field.clone()),
+                            expr.span,
+                        ))
                     }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
