@@ -198,6 +198,7 @@ impl LanguageServer for Backend {
                             rask_resolve::SymbolKind::BuiltinType { .. } => "Built-in Type",
                             rask_resolve::SymbolKind::BuiltinFunction { .. } => "Built-in Function",
                             rask_resolve::SymbolKind::BuiltinModule { .. } => "Built-in Module",
+                            rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
                         };
                         contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
                     }

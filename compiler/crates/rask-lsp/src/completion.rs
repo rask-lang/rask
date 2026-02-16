@@ -129,6 +129,9 @@ impl Backend {
                 rask_resolve::SymbolKind::BuiltinModule { .. } => {
                     (CompletionItemKind::MODULE, "module".to_string())
                 }
+                rask_resolve::SymbolKind::ExternalPackage { .. } => {
+                    (CompletionItemKind::MODULE, "package".to_string())
+                }
                 rask_resolve::SymbolKind::Field { .. } => continue,
             };
 

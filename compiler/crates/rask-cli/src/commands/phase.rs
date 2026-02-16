@@ -135,7 +135,15 @@ pub fn cmd_resolve(path: &str, format: Format) {
         process::exit(1);
     }
 
-    match rask_resolve::resolve(&parse_result.decls) {
+    // Use package resolution if in a multi-file context
+    let resolve_result = if let Some(mut pkg_ctx) = super::pipeline::detect_package(path) {
+        rask_desugar::desugar(&mut pkg_ctx.all_decls);
+        rask_resolve::resolve_package(&pkg_ctx.all_decls, &pkg_ctx.registry, pkg_ctx.root_id)
+    } else {
+        rask_resolve::resolve(&parse_result.decls)
+    };
+
+    match resolve_result {
         Ok(resolved) => {
             if format == Format::Human {
                 println!("{} Symbols ({}) {}\n", "===".dimmed(), resolved.symbols.iter().count(), "===".dimmed());
