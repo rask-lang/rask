@@ -121,6 +121,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
+        // ── Conversion to string ──────────────────────────────
+        StdlibEntry {
+            mir_name: "i64_to_string",
+            c_name: "rask_i64_to_string",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "bool_to_string",
+            c_name: "rask_bool_to_string",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+
         // ── Map operations ─────────────────────────────────────
         StdlibEntry {
             mir_name: "Map_new",
@@ -222,6 +236,34 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "contains",
             c_name: "rask_string_contains",
             params: &[types::I64, types::I64],
+            ret_ty: Some(types::I8),
+        },
+
+        // ── IO module ───────────────────────────────────────────
+        StdlibEntry {
+            mir_name: "io_read_line",
+            c_name: "rask_io_read_line",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── More FS module ──────────────────────────────────────
+        StdlibEntry {
+            mir_name: "fs_read_file",
+            c_name: "rask_fs_read_file",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "fs_write_file",
+            c_name: "rask_fs_write_file",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "fs_exists",
+            c_name: "rask_fs_exists",
+            params: &[types::I64],
             ret_ty: Some(types::I8),
         },
     ]

@@ -184,6 +184,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "eq" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a == b)) }
+            "to_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "bool".to_string(),
                 method: method.to_string(),

@@ -178,6 +178,11 @@ impl TypeChecker {
             return self.unify(&ty, &ret, span);
         }
 
+        // to_string() on any type returns string
+        if method == "to_string" && args.is_empty() {
+            return self.unify(&ret, &Type::String, span);
+        }
+
         match &ty {
             Type::Var(_) => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -470,6 +475,10 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             "push" | "push_str" => self.unify(ret, &Type::Unit, span),
+            "concat" if args.len() == 1 => {
+                self.unify(&args[0], &Type::String, span)?;
+                self.unify(ret, &Type::String, span)
+            }
             _ => Ok(false),
         }
     }

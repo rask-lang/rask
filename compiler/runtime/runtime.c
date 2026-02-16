@@ -279,6 +279,25 @@ int64_t rask_string_concat(int64_t a_ptr, int64_t b_ptr) {
     return (int64_t)result;
 }
 
+// ─── Conversion to string ─────────────────────────────────────────
+
+int64_t rask_i64_to_string(int64_t val) {
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%lld", (long long)val);
+    char *s = (char *)malloc(strlen(buf) + 1);
+    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
+    strcpy(s, buf);
+    return (int64_t)s;
+}
+
+int64_t rask_bool_to_string(int64_t val) {
+    const char *src = val ? "true" : "false";
+    char *s = (char *)malloc(strlen(src) + 1);
+    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
+    strcpy(s, src);
+    return (int64_t)s;
+}
+
 // ─── Map ─────────────────────────────────────────────────────────
 // Simple linear-scan hash map: { capacity: i64, len: i64, keys: i64*, values: i64* }
 
@@ -432,6 +451,55 @@ int64_t rask_fs_read_lines(int64_t path_ptr) {
 
     fclose(f);
     return vec;
+}
+
+// ─── IO module ────────────────────────────────────────────────────
+
+int64_t rask_io_read_line(void) {
+    char buf[4096];
+    if (!fgets(buf, sizeof(buf), stdin)) {
+        return (int64_t)"";
+    }
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
+    if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
+    char *s = (char *)malloc(len + 1);
+    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
+    memcpy(s, buf, len + 1);
+    return (int64_t)s;
+}
+
+// ─── More FS module ───────────────────────────────────────────────
+
+int64_t rask_fs_read_file(int64_t path_ptr) {
+    const char *path = path_ptr ? (const char *)path_ptr : "";
+    FILE *f = fopen(path, "rb");
+    if (!f) return (int64_t)"";
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) { fclose(f); return (int64_t)""; }
+    fread(buf, 1, (size_t)size, f);
+    buf[size] = '\0';
+    fclose(f);
+    return (int64_t)buf;
+}
+
+void rask_fs_write_file(int64_t path_ptr, int64_t content_ptr) {
+    const char *path = path_ptr ? (const char *)path_ptr : "";
+    const char *content = content_ptr ? (const char *)content_ptr : "";
+    FILE *f = fopen(path, "wb");
+    if (!f) return;
+    fwrite(content, 1, strlen(content), f);
+    fclose(f);
+}
+
+int8_t rask_fs_exists(int64_t path_ptr) {
+    const char *path = path_ptr ? (const char *)path_ptr : "";
+    FILE *f = fopen(path, "r");
+    if (f) { fclose(f); return 1; }
+    return 0;
 }
 
 // ─── Entry point ──────────────────────────────────────────────────
