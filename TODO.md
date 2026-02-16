@@ -10,39 +10,51 @@
 
 **Monomorphization + MIR:** Complete. Struct/enum layouts, generic instantiation, reachability analysis, full AST→MIR lowering with type inference. 94 tests.
 
-**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool → C runtime). Closures. Integer widening. For-range loops. 35 codegen tests.
+**Cranelift backend:** String interpolation (desugared at compile time), enum pattern matching, for-in loops (index-based lowering), stdlib module calls (cli, fs, io, std, string → C runtime), closure escape analysis (heap vs stack allocation). 35+ codegen tests.
+
+**C runtime:** Vec, String, Map, Pool, I/O, CLI args, threads (OS-level spawn/join/cancel), buffered+unbuffered channels, Mutex, Shared (RwLock), panic handler with backtraces, swappable allocator with stats tracking.
 
 **Tooling:** LSP, formatter, linter, test runner, describe, explain — all done.
 
 ### What compiles natively today
 
-Hello world, string ops, structs with field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow.
+Hello world, string ops, structs with field access, for/while/for-in loops, closures (mixed-type captures, escape analysis), Vec/Map/Pool operations, enum construction + pattern matching, string interpolation, multi-function programs, arithmetic, control flow.
 
 ### Validation programs
 
 | Program | Interpreter | Native |
 |---------|-------------|--------|
-| grep clone | Runs | No (needs stdlib module calls) |
-| Text editor | Runs | No (needs stdlib module calls) |
-| Game loop | Runs | No (needs stdlib module calls) |
-| HTTP server | Runs | No (needs concurrency runtime) |
+| grep clone | Runs | No (needs struct methods, remaining I/O wiring) |
+| Text editor | Runs | No (needs struct methods, file I/O) |
+| Game loop | Runs | No (needs struct methods) |
+| HTTP server | Runs | No (needs concurrency codegen wiring) |
 | Sensor processor | Typechecks | No (needs SIMD codegen) |
 
 ---
 
 ## Active Work — Phase 5: Code Generation Completeness
 
+### Done
+
+- [x] **Stdlib module calls in codegen** — `cli.args()`, `fs.read_lines()`, `fs.read_file()`, `fs.write_file()`, `fs.exists()`, `io.read_line()`, `std.exit()`, string methods all dispatch to C runtime.
+- [x] **Closure escape analysis** — Per-function analysis determines heap vs stack allocation. Escaping closures (returned, passed to calls, stored) get heap-allocated. Non-escaping closures use stack slots. `ClosureDrop` inserted for cleanup.
+- [x] **Concurrency runtime** — OS threads (spawn/join/cancel), buffered+unbuffered channels, Mutex, Shared<T>, panic handler, allocator. All built as C runtime, ready to link.
+- [x] **String interpolation** — Desugared to `.concat()` + `.to_string()` calls at compile time.
+- [x] **Enum pattern matching** — Variant tag resolution, switch lowering with comparison chains.
+- [x] **For-in loops** — Lowered to index-based while loops (avoids iterator state machines).
+
 ### Next up
 
-- [ ] **Stdlib module calls in codegen** — `cli.parse()`, `fs.read()`, `io.stdin()` etc. Module-qualified names aren't resolved in MIR. The C runtime already has backing functions; this is plumbing.
-- [ ] **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against.
-- [ ] **Closure escape handling** — Closures are stack-allocated. Escaping closures (returned, passed to spawn) dangle. Needs heap allocation or escape analysis.
+- [ ] **Struct methods in codegen** — `extend Type { func method(self) }` calls aren't wired through codegen. This blocks most validation programs.
+- [ ] **Concurrency codegen wiring** — Runtime primitives exist in C but `spawn()`, `join()`, channel ops aren't lowered from MIR to C runtime calls yet.
 - [ ] **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
 
 ### Known codegen limitations (not blocking, track for later)
 
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
 - CleanupReturn inlines cleanup blocks — works but duplicates cleanup code. Fine for now, revisit if code size matters.
+- Trait dispatch not wired to runtime closures.
+- Unsafe blocks / raw pointers not lowered.
 
 ---
 
