@@ -18,15 +18,15 @@
 
 ### What compiles natively today
 
-Hello world, string ops, structs with field access, for/while/for-in loops, closures (mixed-type captures, escape analysis), Vec/Map/Pool operations, enum construction + pattern matching, string interpolation, multi-function programs, arithmetic, control flow.
+Hello world, string ops, structs with field access and methods, for/while/for-in loops, closures (mixed-type captures, escape analysis), Vec/Map/Pool operations, enum construction + pattern matching, string interpolation, multi-function programs, arithmetic, control flow.
 
 ### Validation programs
 
 | Program | Interpreter | Native |
 |---------|-------------|--------|
-| grep clone | Runs | No (needs struct methods, remaining I/O wiring) |
-| Text editor | Runs | No (needs struct methods, file I/O) |
-| Game loop | Runs | No (needs struct methods) |
+| grep clone | Runs | Not tested — needs attempt, likely close |
+| Text editor | Runs | Not tested — needs attempt |
+| Game loop | Runs | Not tested — needs attempt |
 | HTTP server | Runs | No (needs concurrency codegen wiring) |
 | Sensor processor | Typechecks | No (needs SIMD codegen) |
 
@@ -42,12 +42,13 @@ Hello world, string ops, structs with field access, for/while/for-in loops, clos
 - [x] **String interpolation** — Desugared to `.concat()` + `.to_string()` calls at compile time.
 - [x] **Enum pattern matching** — Variant tag resolution, switch lowering with comparison chains.
 - [x] **For-in loops** — Lowered to index-based while loops (avoids iterator state machines).
+- [x] **Struct methods** — `extend Type { func method(self) }` works through regular function call lowering.
 
 ### Next up
 
-- [ ] **Struct methods in codegen** — `extend Type { func method(self) }` calls aren't wired through codegen. This blocks most validation programs.
-- [ ] **Concurrency codegen wiring** — Runtime primitives exist in C but `spawn()`, `join()`, channel ops aren't lowered from MIR to C runtime calls yet.
-- [ ] **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
+1. **Try compiling validation programs natively** — grep, editor, game loop should be close. Attempt each, fix whatever breaks. This reveals real gaps instead of guessing.
+2. **Concurrency codegen wiring** — `spawn()` MIR lowering is a dummy (returns constant 0). Need real MIR statements for spawn/join/channels and dispatch table entries to call the C runtime (`rask_task_spawn`, `rask_task_join`, `rask_channel_send`, `rask_channel_recv`).
+3. **Monomorphization reachability for methods** — `ExprKind::MethodCall` is visited but methods aren't enqueued. Works now because all functions get compiled, but will break when only reachable functions are emitted.
 
 ### Known codegen limitations (not blocking, track for later)
 

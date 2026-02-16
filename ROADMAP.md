@@ -20,15 +20,13 @@
 
 ## What compiles natively today
 
-Hello world, string ops, structs, field access, for/while/for-in loops, closures (escape analysis, mixed-type captures), Vec/Map/Pool operations, enum construction + pattern matching, string interpolation, multi-function programs, arithmetic, control flow.
+Hello world, string ops, structs (field access + methods), for/while/for-in loops, closures (escape analysis, mixed-type captures), Vec/Map/Pool operations, enum construction + pattern matching, string interpolation, multi-function programs, arithmetic, control flow.
 
-## What's left
+## What's next
 
-### Native codegen gaps
-
-- **Struct methods** — `extend Type { func method(self) }` not wired through codegen. Blocks grep, editor, game loop validation programs.
-- **Concurrency codegen wiring** — C runtime has threads/channels/mutex, but codegen doesn't lower `spawn()`, `join()`, channel ops to those calls yet. Blocks HTTP server.
-- **SIMD** — no vector operations codegen'd. Blocks sensor processor.
+1. **Try compiling validation programs natively** — grep, editor, game loop should be close. Attempt each, fix what breaks.
+2. **Concurrency codegen wiring** — C runtime has threads/channels/mutex, but `spawn()` MIR lowering is a dummy. Need real MIR statements and dispatch table entries. Blocks HTTP server.
+3. **SIMD** — no vector operations codegen'd. Blocks sensor processor.
 
 ### Build system
 
