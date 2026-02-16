@@ -50,7 +50,10 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
    - Steps: update `link.rs` to compile the separate `.c` files, update dispatch signatures to match typed API, remove old i64 duplicates from `runtime.c`
    - See `dispatch.rs` lines 9-25 for the full migration plan
 
-2. **Stdlib module calls in codegen** — `cli.parse()`, `fs.read()`, `io.stdin()` etc. Module-qualified names aren't resolved in MIR. The C runtime already has backing functions (`rask_cli_args`, `rask_fs_read_lines`, etc. are in dispatch.rs); the gap is MIR lowering losing the module prefix.
+2. ~~**Stdlib module calls in codegen**~~ — Done. Module-qualified names (`cli.args()`, `fs.open()`, `json.encode()`, `net.tcp_listen()`, etc.) now resolve through MIR to dispatch to C runtime functions. Type checker and MIR lowerer module lists are synced (`cli`, `fs`, `io`, `std`, `json`, `net`). `json.encode` expands structs at MIR level using field layout; `json.decode<T>` parses flat JSON objects into structs. Remaining gaps:
+   - **Import resolution** — `import json`, `import net` fail because the resolver doesn't know about builtin modules (only the type checker does). http_api_server.rk blocked on this.
+   - **File methods** — `fs.open()` returns FILE* as i64 but validation programs call `file.lines()`, `file.close()` etc. Need File type with method dispatch.
+   - **Nested JSON** — `json.encode` only handles flat structs (no nested objects/arrays). `json.decode` is limited to flat `{string|number|bool}` fields.
 
 3. **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against. Green thread scheduler exists in `rask-rt/green/` but isn't integrated into the spawn path.
 
