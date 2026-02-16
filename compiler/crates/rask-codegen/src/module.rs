@@ -219,6 +219,29 @@ impl CodeGenerator {
             self.func_ids.insert("rask_io_close".to_string(), id);
         }
 
+        // ─── Allocator (used by closure heap allocation) ─────────
+
+        // rask_alloc(size: i64) -> i64 (pointer)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_alloc", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_alloc".to_string(), id);
+        }
+
+        // rask_free(ptr: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_free", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_free".to_string(), id);
+        }
+
         Ok(())
     }
 

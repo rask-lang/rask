@@ -322,6 +322,24 @@ FIX 2: Remove the borrow from the closure:
 
 ---
 
+## Implementation
+
+### Heap-Allocated Closure Blocks
+
+All closures are heap-allocated as a single contiguous block:
+
+```
+[func_ptr (8 bytes) | captured_var_0 | captured_var_1 | ...]
+```
+
+The closure value passed around is a single pointer to this block. When calling through a closure, `closure_ptr + 8` is passed as the environment pointer — the implicit first argument to the closure function. Captured variables are loaded from offsets relative to that environment pointer.
+
+Heap allocation means storable closures (CL1) can be returned from functions, stored in structs, and sent to `spawn()`. There's no escape analysis — every closure gets the same treatment. This trades a small allocation cost for simplicity and correctness.
+
+**Cleanup:** Closure blocks are freed when the closure value is dropped. (TODO: automatic drop emission isn't wired up yet — closures currently leak. This will be addressed when general drop semantics land.)
+
+**Future optimization:** Immediate closures (CL2) don't capture and could skip allocation entirely. Local-only closures (CL3) could use stack allocation since they can't escape. These are optimization opportunities, not correctness issues.
+
 ## Appendix (non-normative)
 
 ### Rationale

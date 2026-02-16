@@ -1285,6 +1285,245 @@ mod tests {
         assert_eq!(layout.captures.len(), 3);
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // Closure heap allocation
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_closure_create_no_captures() {
+        // Closure with no captures: heap-allocates 8 bytes for func_ptr only.
+        //
+        //   closure_fn(env: ptr, x: i64) -> i64 { return x }
+        //   main() -> i64 {
+        //     _0 = ClosureCreate { func: closure_fn, captures: [] }
+        //     _1 = ClosureCall(_0, 42)
+        //     return _1
+        //   }
+        use rask_mir::ClosureCapture;
+
+        let closure_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            blocks: vec![
+                block(0, vec![], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::Ptr),  // closure
+                temp(1, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(0),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![],
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(1)),
+                        closure: LocalId(0),
+                        args: vec![MirOperand::Constant(MirConst::Int(42))],
+                    },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
+        gen.gen_function(&closure_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
+    #[test]
+    fn codegen_closure_create_with_captures() {
+        // Closure capturing a variable: heap-allocates func_ptr + capture.
+        //
+        //   closure_fn(env: ptr) -> i64 {
+        //     _2 = LoadCapture(env, offset=0)  // load captured 'factor'
+        //     return _2
+        //   }
+        //   main() -> i64 {
+        //     _0: i64 = 10          // factor
+        //     _1 = ClosureCreate { func: closure_fn, captures: [_0] }
+        //     _2 = ClosureCall(_1)
+        //     return _2
+        //   }
+        use rask_mir::ClosureCapture;
+
+        let closure_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                temp(1, MirType::I64), // loaded capture
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::LoadCapture {
+                        dst: LocalId(1),
+                        env_ptr: LocalId(0),
+                        offset: 0,
+                    },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),  // factor
+                temp(1, MirType::Ptr),  // closure
+                temp(2, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(10)))),
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![
+                            ClosureCapture {
+                                local_id: LocalId(0),
+                                offset: 0,
+                                size: 8,
+                            },
+                        ],
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
+        gen.gen_function(&closure_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
+    #[test]
+    fn codegen_closure_returned_from_function() {
+        // Closure returned from a function — the key case that required
+        // heap allocation. With stack allocation this would be a dangling pointer.
+        //
+        //   closure_fn(env: ptr) -> i64 {
+        //     _1 = LoadCapture(env, offset=0)
+        //     return _1
+        //   }
+        //   make_closure() -> ptr {
+        //     _0 = 99
+        //     _1 = ClosureCreate { func: closure_fn, captures: [_0] }
+        //     return _1           // ← escapes! needs heap allocation
+        //   }
+        //   main() -> i64 {
+        //     _0 = make_closure()
+        //     _1 = ClosureCall(_0)
+        //     return _1
+        //   }
+        use rask_mir::ClosureCapture;
+
+        let closure_fn = MirFunction {
+            name: "make_closure__closure_0".to_string(),
+            params: vec![local(0, "__env", MirType::Ptr, true)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                temp(1, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::LoadCapture {
+                        dst: LocalId(1),
+                        env_ptr: LocalId(0),
+                        offset: 0,
+                    },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let make_fn = MirFunction {
+            name: "make_closure".to_string(),
+            params: vec![],
+            ret_ty: MirType::Ptr,
+            locals: vec![
+                temp(0, MirType::I64),  // captured value
+                temp(1, MirType::Ptr),  // closure
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(99)))),
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "make_closure__closure_0".to_string(),
+                        captures: vec![
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                        ],
+                    },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::Ptr),  // closure from make_closure
+                temp(1, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    call(Some(0), "make_closure", vec![]),
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(1)),
+                        closure: LocalId(0),
+                        args: vec![],
+                    },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(
+            &dummy_mono(),
+            &[closure_fn.clone(), make_fn.clone(), main_fn.clone()],
+        ).unwrap();
+        gen.gen_function(&closure_fn).unwrap();
+        gen.gen_function(&make_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
 
     /// CodeGenerator with runtime + stdlib declared (for tests needing stdlib).

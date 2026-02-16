@@ -373,7 +373,7 @@ impl<'a> FunctionBuilder<'a> {
             // ── Closure support ──────────────────────────────────────────
 
             MirStmt::ClosureCreate { dst, func_name, captures } => {
-                // Build environment: stack-allocate captured variables
+                // Build environment layout from captures
                 let env_layout = crate::closures::ClosureEnvLayout {
                     size: captures.last()
                         .map(|c| c.offset + c.size)
@@ -384,15 +384,18 @@ impl<'a> FunctionBuilder<'a> {
                         size: c.size,
                     }).collect(),
                 };
-                let env_ptr = crate::closures::allocate_env(builder, &env_layout, var_map)?;
 
                 // Get function pointer for the closure function
                 let func_ref = func_refs.get(func_name)
                     .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
                 let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
-                // Build the closure struct: { func_ptr, env_ptr }
-                let closure_ptr = crate::closures::create_closure(builder, func_ptr, env_ptr);
+                // Heap-allocate closure: [func_ptr | captures...]
+                let alloc_ref = func_refs.get("rask_alloc")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+                let closure_ptr = crate::closures::allocate_closure(
+                    builder, func_ptr, &env_layout, var_map, *alloc_ref,
+                )?;
 
                 let var = var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
