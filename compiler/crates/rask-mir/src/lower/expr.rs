@@ -1308,12 +1308,14 @@ impl<'a> MirLowerer<'a> {
 
         self.synthesized_functions.push(closure_fn);
 
-        // 5. In the parent function, emit ClosureCreate
+        // 5. In the parent function, emit ClosureCreate (heap by default;
+        //    the closure optimization pass downgrades to stack when safe).
         let result_local = self.builder.alloc_temp(MirType::Ptr);
         self.builder.push_stmt(MirStmt::ClosureCreate {
             dst: result_local,
             func_name: closure_name,
             captures,
+            heap: true,
         });
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
