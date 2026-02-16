@@ -192,6 +192,18 @@ impl<'a> MirLowerer<'a> {
             rvalue: MirRValue::Use(init_op),
         });
 
+        // Track collection element types for for-in iteration heuristics
+        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                match (obj_name.as_str(), method.as_str()) {
+                    ("cli", "args") | ("fs", "read_lines") => {
+                        self.collection_elem_types.insert(name.to_string(), MirType::String);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
         // Track closure bindings and alias the func_sig so callers can
         // look up the return type by variable name.
         if is_closure {
@@ -282,50 +294,69 @@ impl<'a> MirLowerer<'a> {
             return self.lower_for_range(label, binding, start.as_deref(), end.as_deref(), *inclusive, body);
         }
 
-        // Generic iterator protocol (Vec iteration, etc.)
+        // Index-based iteration: for item in collection { ... }
+        // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection.get(_i); ...; _i += 1 }
         let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
-        let iter_local = self.builder.alloc_temp(iter_ty);
+        let collection = self.builder.alloc_temp(iter_ty.clone());
         self.builder.push_stmt(MirStmt::Assign {
-            dst: iter_local,
+            dst: collection,
             rvalue: MirRValue::Use(iter_op),
+        });
+
+        // _len = collection.len()
+        let len_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(len_local),
+            func: FunctionRef { name: "len".to_string() },
+            args: vec![MirOperand::Local(collection)],
+        });
+
+        // _i = 0
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
         });
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
+        let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
-        });
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
 
+        // check: _i < _len
         self.builder.switch_to_block(check_block);
-        let next_result = self.builder.alloc_temp(MirType::I32);
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(next_result),
-            func: FunctionRef {
-                name: "next".to_string(),
+        let cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: cond,
+            rvalue: MirRValue::BinaryOp {
+                op: BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len_local),
             },
-            args: vec![MirOperand::Local(iter_local)],
         });
         self.builder.terminate(MirTerminator::Branch {
-            cond: MirOperand::Local(next_result),
+            cond: MirOperand::Local(cond),
             then_block: body_block,
             else_block: exit_block,
         });
 
+        // body: item = collection.get(_i)
         self.builder.switch_to_block(body_block);
         let elem_ty = self.extract_iterator_elem_type(iter_expr)
             .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
         self.locals.insert(binding.to_string(), (binding_local, elem_ty));
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: binding_local,
-            rvalue: MirRValue::Use(MirOperand::Local(next_result)),
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(binding_local),
+            func: FunctionRef { name: "get".to_string() },
+            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
         });
 
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
-            continue_block: check_block,
+            continue_block: inc_block,
             exit_block,
             result_local: None,
         });
@@ -333,9 +364,24 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto {
-            target: check_block,
+        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+
+        // inc: _i = _i + 1
+        self.builder.switch_to_block(inc_block);
+        let incremented = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: incremented,
+            rvalue: MirRValue::BinaryOp {
+                op: BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
         });
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Local(incremented)),
+        });
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
