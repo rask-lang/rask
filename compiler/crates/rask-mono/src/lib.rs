@@ -98,7 +98,7 @@ pub enum MonomorphizeError {
 mod tests {
     use super::*;
     use rask_ast::decl::{
-        Decl, DeclKind, EnumDecl, FnDecl, Param, StructDecl, TypeParam, Variant, Field,
+        Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, Param, StructDecl, TypeParam, Variant, Field,
     };
     use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -541,5 +541,275 @@ mod tests {
         let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
         assert!(names.contains(&"a"));
         assert!(names.contains(&"b"));
+    }
+
+    // ── Method reachability ─────────────────────────────────────
+
+    fn method_call_expr(object: Expr, method: &str, args: Vec<Expr>) -> Expr {
+        Expr {
+            id: NodeId(300),
+            kind: ExprKind::MethodCall {
+                object: Box::new(object),
+                method: method.to_string(),
+                type_args: None,
+                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
+            },
+            span: sp(),
+        }
+    }
+
+    fn make_method(name: &str, params: Vec<(&str, &str)>, ret_ty: Option<&str>, body: Vec<Stmt>) -> FnDecl {
+        FnDecl {
+            name: name.to_string(),
+            type_params: vec![],
+            params: params
+                .into_iter()
+                .map(|(n, ty)| Param {
+                    name: n.to_string(),
+                    name_span: sp(),
+                    ty: ty.to_string(),
+                    is_take: false,
+                    is_mutate: false,
+                    default: None,
+                })
+                .collect(),
+            ret_ty: ret_ty.map(|s| s.to_string()),
+            context_clauses: vec![],
+            body,
+            is_pub: false,
+            is_comptime: false,
+            is_unsafe: false,
+            attrs: vec![],
+        }
+    }
+
+    #[test]
+    fn method_call_on_type_enqueues_static_method() {
+        // main calls Point.new() — static method on struct
+        let decls = vec![
+            make_fn(
+                "main",
+                vec![],
+                None,
+                vec![
+                    expr_stmt(method_call_expr(ident_expr("Point"), "new", vec![])),
+                    return_stmt(None),
+                ],
+            ),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Struct(StructDecl {
+                    name: "Point".to_string(),
+                    type_params: vec![],
+                    fields: vec![
+                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                    ],
+                    methods: vec![
+                        make_method("new", vec![], Some("Point"), vec![return_stmt(None)]),
+                    ],
+                    is_pub: false,
+                    attrs: vec![],
+                }),
+                span: sp(),
+            },
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"main"));
+        assert!(names.contains(&"Point_new"), "static method should be reachable: {:?}", names);
+    }
+
+    #[test]
+    fn method_call_on_value_enqueues_instance_method() {
+        // main calls p.distance() — instance method via bare name
+        let decls = vec![
+            make_fn(
+                "main",
+                vec![],
+                None,
+                vec![
+                    expr_stmt(method_call_expr(ident_expr("p"), "distance", vec![])),
+                    return_stmt(None),
+                ],
+            ),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Impl(ImplDecl {
+                    trait_name: None,
+                    target_ty: "Point".to_string(),
+                    methods: vec![
+                        make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
+                    ],
+                }),
+                span: sp(),
+            },
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"main"));
+        // Instance call on "p" enqueues via bare name → Point_distance (from method_by_bare_name)
+        assert!(names.contains(&"Point_distance"), "instance method should be reachable: {:?}", names);
+    }
+
+    #[test]
+    fn method_in_impl_block_reachable() {
+        // main calls Counter.increment() via extend block
+        let decls = vec![
+            make_fn(
+                "main",
+                vec![],
+                None,
+                vec![
+                    expr_stmt(method_call_expr(ident_expr("Counter"), "increment", vec![])),
+                    return_stmt(None),
+                ],
+            ),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Impl(ImplDecl {
+                    trait_name: None,
+                    target_ty: "Counter".to_string(),
+                    methods: vec![
+                        make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),
+                    ],
+                }),
+                span: sp(),
+            },
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"Counter_increment"), "impl method should be reachable: {:?}", names);
+    }
+
+    #[test]
+    fn unreachable_method_excluded() {
+        // main doesn't call any methods — dead_method should be excluded
+        let decls = vec![
+            make_fn("main", vec![], None, vec![return_stmt(None)]),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Struct(StructDecl {
+                    name: "Widget".to_string(),
+                    type_params: vec![],
+                    fields: vec![],
+                    methods: vec![
+                        make_method("dead_method", vec![], None, vec![return_stmt(None)]),
+                    ],
+                    is_pub: false,
+                    attrs: vec![],
+                }),
+                span: sp(),
+            },
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        assert_eq!(mono.results.len(), 1);
+        assert_eq!(mono.results[0].name, "main");
+    }
+
+    #[test]
+    fn method_body_transitively_discovers_calls() {
+        // main → Point.new() → helper() (transitive through method body)
+        let decls = vec![
+            make_fn(
+                "main",
+                vec![],
+                None,
+                vec![
+                    expr_stmt(method_call_expr(ident_expr("Point"), "new", vec![])),
+                    return_stmt(None),
+                ],
+            ),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Struct(StructDecl {
+                    name: "Point".to_string(),
+                    type_params: vec![],
+                    fields: vec![],
+                    methods: vec![
+                        make_method("new", vec![], Some("Point"), vec![
+                            expr_stmt(call_expr("helper", vec![])),
+                            return_stmt(None),
+                        ]),
+                    ],
+                    is_pub: false,
+                    attrs: vec![],
+                }),
+                span: sp(),
+            },
+            make_fn("helper", vec![], None, vec![return_stmt(None)]),
+            make_fn("unused", vec![], None, vec![return_stmt(None)]),
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"main"));
+        assert!(names.contains(&"Point_new"));
+        assert!(names.contains(&"helper"), "transitive call from method body should be discovered");
+        assert!(!names.contains(&"unused"));
+    }
+
+    #[test]
+    fn enum_method_reachable() {
+        // main calls Color.default()
+        let decls = vec![
+            make_fn(
+                "main",
+                vec![],
+                None,
+                vec![
+                    expr_stmt(method_call_expr(ident_expr("Color"), "default", vec![])),
+                    return_stmt(None),
+                ],
+            ),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Enum(EnumDecl {
+                    name: "Color".to_string(),
+                    type_params: vec![],
+                    variants: vec![
+                        Variant { name: "Red".to_string(), fields: vec![] },
+                        Variant { name: "Blue".to_string(), fields: vec![] },
+                    ],
+                    methods: vec![
+                        make_method("default", vec![], Some("Color"), vec![return_stmt(None)]),
+                    ],
+                    is_pub: false,
+                }),
+                span: sp(),
+            },
+        ];
+
+        let empty_type_args = std::collections::HashMap::new();
+        let mut mono = Monomorphizer::new(&decls, &empty_type_args);
+        mono.add_entry("main");
+        mono.run();
+
+        let names: Vec<&str> = mono.results.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"Color_default"), "enum method should be reachable: {:?}", names);
     }
 }
