@@ -5,6 +5,8 @@ use colored::Colorize;
 use rask_diagnostics::ToDiagnostic;
 use std::process;
 
+use rask_diagnostics::formatter::DiagnosticFormatter;
+
 use crate::{output, show_diagnostics, Format};
 
 pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
@@ -25,6 +27,10 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
             let diagnostic = diag.to_diagnostic();
             if let Some(source) = &result.source {
                 show_diagnostics(&[diagnostic], source, path, "runtime", format);
+            } else if let Some((file_path, source)) = find_diagnostic_file(&diagnostic, &result.source_files) {
+                let file_name = file_path.to_string_lossy();
+                let fmt = DiagnosticFormatter::new(&source).with_file_name(&file_name);
+                eprintln!("{}", fmt.format(&diagnostic));
             } else {
                 eprintln!("{}: {}", output::error_label(), diagnostic.message);
             }
@@ -170,5 +176,24 @@ pub fn cmd_benchmark(path: &str, filter: Option<String>, format: Format) {
             );
             println!();
         }
+    }
+}
+
+/// Match a diagnostic to a source file by span validity.
+fn find_diagnostic_file<'a>(
+    d: &rask_diagnostics::Diagnostic,
+    source_files: &'a [(std::path::PathBuf, String)],
+) -> Option<(&'a std::path::PathBuf, &'a String)> {
+    let end = d.labels.iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .map(|l| l.span.end)?;
+    let candidates: Vec<_> = source_files.iter()
+        .filter(|(_, src)| end <= src.len() && !src.is_empty())
+        .collect();
+    if candidates.len() == 1 {
+        let (p, s) = candidates[0];
+        Some((p, s))
+    } else {
+        None
     }
 }
