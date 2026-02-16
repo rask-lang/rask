@@ -171,6 +171,39 @@ impl BuiltinModules {
         });
         modules.insert("json".to_string(), json_methods);
 
+        // cli module
+        let mut cli_methods = Vec::new();
+        // cli.args() -> Vec<string>
+        cli_methods.push(ModuleMethodSig {
+            name: "args".to_string(),
+            params: vec![],
+            ret: Type::UnresolvedNamed("Vec<string>".to_string()),
+        });
+        modules.insert("cli".to_string(), cli_methods);
+
+        // io module
+        let mut io_methods = Vec::new();
+        // io.read_line() -> string or IoError
+        io_methods.push(ModuleMethodSig {
+            name: "read_line".to_string(),
+            params: vec![],
+            ret: Type::Result {
+                ok: Box::new(Type::String),
+                err: Box::new(io_error_ty.clone()),
+            },
+        });
+        modules.insert("io".to_string(), io_methods);
+
+        // std module
+        let mut std_methods = Vec::new();
+        // std.exit(code: i64) -> ()
+        std_methods.push(ModuleMethodSig {
+            name: "exit".to_string(),
+            params: vec![Type::I64],
+            ret: Type::Unit,
+        });
+        modules.insert("std".to_string(), std_methods);
+
         Self { modules }
     }
 

@@ -112,3 +112,19 @@ int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
     if (!v) return -1;
     return vec_grow(v, v->len + additional);
 }
+
+int64_t rask_vec_is_empty(const RaskVec *v) {
+    return (!v || v->len == 0) ? 1 : 0;
+}
+
+// skip(vec, n) — returns a new Vec with the first n elements removed.
+RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
+    if (!src) return rask_vec_new(8);
+    if (n < 0) n = 0;
+    int64_t new_len = src->len - n;
+    if (new_len <= 0) return rask_vec_new(src->elem_size);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len);
+    memcpy(dst->data, src->data + n * src->elem_size, (size_t)(new_len * src->elem_size));
+    dst->len = new_len;
+    return dst;
+}
