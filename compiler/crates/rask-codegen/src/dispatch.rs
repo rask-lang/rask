@@ -194,6 +194,36 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
+
+        // ── Stdlib module calls ─────────────────────────────────
+        // cli.args() → Vec of string pointers
+        StdlibEntry {
+            mir_name: "cli_args",
+            c_name: "rask_cli_args",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+        // std.exit(code)
+        StdlibEntry {
+            mir_name: "std_exit",
+            c_name: "rask_exit",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        // fs.read_lines(path) → Vec of string pointers
+        StdlibEntry {
+            mir_name: "fs_read_lines",
+            c_name: "rask_fs_read_lines",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // string.contains(haystack, needle) → bool
+        StdlibEntry {
+            mir_name: "contains",
+            c_name: "rask_string_contains",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I8),
+        },
     ]
 }
 

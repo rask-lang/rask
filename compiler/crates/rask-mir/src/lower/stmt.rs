@@ -4,6 +4,7 @@
 
 use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
+    operand::{BinOp, MirConst},
     FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
@@ -268,7 +269,7 @@ impl<'a> MirLowerer<'a> {
         Ok(())
     }
 
-    /// For loop: desugar to iterator + while.
+    /// For loop: counter-based while for ranges, iterator protocol otherwise.
     fn lower_for(
         &mut self,
         label: Option<&str>,
@@ -276,6 +277,12 @@ impl<'a> MirLowerer<'a> {
         iter_expr: &Expr,
         body: &[Stmt],
     ) -> Result<(), LoweringError> {
+        // Range expressions desugar to a simple counter loop
+        if let ExprKind::Range { start, end, inclusive } = &iter_expr.kind {
+            return self.lower_for_range(label, binding, start.as_deref(), end.as_deref(), *inclusive, body);
+        }
+
+        // Generic iterator protocol (Vec iteration, etc.)
         let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
         let iter_local = self.builder.alloc_temp(iter_ty);
         self.builder.push_stmt(MirStmt::Assign {
@@ -292,7 +299,7 @@ impl<'a> MirLowerer<'a> {
         });
 
         self.builder.switch_to_block(check_block);
-        let next_result = self.builder.alloc_temp(MirType::I32); // TODO: Option type
+        let next_result = self.builder.alloc_temp(MirType::I32);
         self.builder.push_stmt(MirStmt::Call {
             dst: Some(next_result),
             func: FunctionRef {
@@ -307,7 +314,6 @@ impl<'a> MirLowerer<'a> {
         });
 
         self.builder.switch_to_block(body_block);
-        // Infer element type from iterator's raw type info
         let elem_ty = self.extract_iterator_elem_type(iter_expr)
             .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
@@ -330,6 +336,102 @@ impl<'a> MirLowerer<'a> {
         self.builder.terminate(MirTerminator::Goto {
             target: check_block,
         });
+
+        self.loop_stack.pop();
+        self.builder.switch_to_block(exit_block);
+        Ok(())
+    }
+
+    /// Range for-loop: `for i in start..end` desugars to a counter-based while.
+    fn lower_for_range(
+        &mut self,
+        label: Option<&str>,
+        binding: &str,
+        start: Option<&Expr>,
+        end: Option<&Expr>,
+        inclusive: bool,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let (start_op, start_ty) = if let Some(s) = start {
+            self.lower_expr(s)?
+        } else {
+            (MirOperand::Constant(MirConst::Int(0)), MirType::I64)
+        };
+        let (end_op, _) = if let Some(e) = end {
+            self.lower_expr(e)?
+        } else {
+            return Err(LoweringError::InvalidConstruct("Unbounded range in for loop".to_string()));
+        };
+
+        // Mutable counter initialized to start
+        let counter = self.builder.alloc_local(binding.to_string(), start_ty.clone());
+        self.locals.insert(binding.to_string(), (counter, start_ty.clone()));
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: counter,
+            rvalue: MirRValue::Use(start_op),
+        });
+
+        // Evaluate end once
+        let end_local = self.builder.alloc_temp(start_ty);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: end_local,
+            rvalue: MirRValue::Use(end_op),
+        });
+
+        let check_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let inc_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        self.builder.switch_to_block(check_block);
+
+        // counter < end (or <= for inclusive)
+        let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
+        let cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: cond,
+            rvalue: MirRValue::BinaryOp {
+                op: cmp_op,
+                left: MirOperand::Local(counter),
+                right: MirOperand::Local(end_local),
+            },
+        });
+        self.builder.terminate(MirTerminator::Branch {
+            cond: MirOperand::Local(cond),
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        self.builder.switch_to_block(body_block);
+        self.loop_stack.push(LoopContext {
+            label: label.map(|s| s.to_string()),
+            continue_block: inc_block,
+            exit_block,
+            result_local: None,
+        });
+
+        for stmt in body {
+            self.lower_stmt(stmt)?;
+        }
+        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+
+        // counter = counter + 1
+        self.builder.switch_to_block(inc_block);
+        let incremented = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: incremented,
+            rvalue: MirRValue::BinaryOp {
+                op: BinOp::Add,
+                left: MirOperand::Local(counter),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        });
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: counter,
+            rvalue: MirRValue::Use(MirOperand::Local(incremented)),
+        });
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);

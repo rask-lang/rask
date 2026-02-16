@@ -128,7 +128,7 @@ impl<'a> MirLowerer<'a> {
                         let ret_ty = self.func_sigs
                             .get(&func_name)
                             .map(|s| s.ret_ty.clone())
-                            .unwrap_or(MirType::I32);
+                            .unwrap_or(MirType::I64);
                         let result_local = self.builder.alloc_temp(ret_ty.clone());
                         self.builder.push_stmt(MirStmt::ClosureCall {
                             dst: Some(result_local),
@@ -143,7 +143,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(&func_name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or(MirType::I32);
+                    .unwrap_or(MirType::I64);
 
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
 
@@ -298,7 +298,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(method)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or(MirType::I32);
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
@@ -798,7 +798,7 @@ impl<'a> MirLowerer<'a> {
                     .func_sigs
                     .get(name)
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or(MirType::I32);
+                    .unwrap_or(MirType::I64);
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
