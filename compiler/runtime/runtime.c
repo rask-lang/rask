@@ -384,6 +384,56 @@ void rask_pool_free(int64_t pool_ptr, int64_t handle) {
     pool->occupied[index] = 0;
 }
 
+// ─── String helpers ───────────────────────────────────────────────
+
+int8_t rask_string_contains(int64_t haystack_ptr, int64_t needle_ptr) {
+    const char *haystack = haystack_ptr ? (const char *)haystack_ptr : "";
+    const char *needle   = needle_ptr   ? (const char *)needle_ptr   : "";
+    return strstr(haystack, needle) != NULL ? 1 : 0;
+}
+
+// ─── CLI module ───────────────────────────────────────────────────
+// cli.args() → Vec of string pointers (uses stored argc/argv).
+
+extern int64_t rask_args_count(void);
+extern const char *rask_args_get(int64_t index);
+
+int64_t rask_cli_args(void) {
+    int64_t vec = rask_vec_new();
+    int64_t count = rask_args_count();
+    for (int64_t i = 0; i < count; i++) {
+        const char *arg = rask_args_get(i);
+        rask_vec_push(vec, (int64_t)arg);
+    }
+    return vec;
+}
+
+// ─── FS module ────────────────────────────────────────────────────
+// fs.read_lines(path) → Vec of heap-allocated line strings.
+
+int64_t rask_fs_read_lines(int64_t path_ptr) {
+    int64_t vec = rask_vec_new();
+    const char *path = path_ptr ? (const char *)path_ptr : "";
+
+    FILE *f = fopen(path, "r");
+    if (!f) return vec;
+
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), f)) {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
+        if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
+
+        char *line = (char *)malloc(len + 1);
+        if (!line) { fclose(f); return vec; }
+        memcpy(line, buf, len + 1);
+        rask_vec_push(vec, (int64_t)line);
+    }
+
+    fclose(f);
+    return vec;
+}
+
 // ─── Entry point ──────────────────────────────────────────────────
 
 int main(int argc, char **argv) {

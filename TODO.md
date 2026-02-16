@@ -35,23 +35,19 @@ I've specified all core language semantics:
 
 **Monomorphization + MIR Lowering:** ✅ Implemented. Struct/enum layouts with real field types (threaded from AST), generic instantiation, reachability analysis, full AST→MIR lowering. Type inference for expressions (loops, ensure, try/unwrap, tuple destructure) using context from layouts. `rask mir` command prints readable MIR. Simple programs lower correctly.
 
-**Cranelift Backend:** 🟡 In progress (new `rask-codegen` crate). Most codegen working:
-- ✅ Function signatures and basic blocks
-- ✅ Integer/float constants and variables
-- ✅ Binary ops (arithmetic, bitwise, comparisons)
-- ✅ Unary ops (neg, not)
-- ✅ Type conversions (b1↔i8, integer truncate/extend)
-- ✅ Return statements with type matching
-- ✅ Simple programs compile and execute (arithmetic: 10+20*2→60)
-- ✅ Control flow with branches (if-expressions, chained/nested ifs, mutable variable merging)
-- ✅ Function calls, loops, strings, struct/enum field access, ref/deref, stack allocation
-- ✅ Object file emission, runtime function linking (print, I/O, exit, panic)
-- ✅ All MIR statements implemented: ResourceRegister/Consume/ScopeCheck, PoolCheckedAccess, EnsurePush/Pop (no-op), CleanupReturn (inlines cleanup chain)
-- ✅ Stdlib method dispatch — bare MIR names → C runtime functions (Vec, String, Map, Pool, resource tracking)
-- ✅ Closure environment infrastructure — layout tracking, stack allocation, indirect calls (ready for MIR integration)
-- ✅ C runtime (runtime.c) — print, I/O, Vec, String, Map, Pool, resource tracking, pool checked access
-- ❌ Closure codegen integration — closures.rs has infrastructure but MIR doesn't emit closure constructs yet
-- ❌ End-to-end compile+link+run — individual pieces work, not yet wired together
+**Cranelift Backend:** 🟢 Functional for core programs. `rask compile` and `rask run --native` work end-to-end.
+- ✅ Full pipeline: lex → parse → resolve → typecheck → ownership → mono → MIR → Cranelift → link → executable
+- ✅ All MIR statements/terminators implemented, including closures (ClosureCreate/ClosureCall/LoadCapture)
+- ✅ Stdlib dispatch wired into compile pipeline (Vec, String, Map, Pool → C runtime)
+- ✅ MirType::String preserves string type through pipeline, print dispatches correctly
+- ✅ C runtime (runtime.c) — print, I/O, Vec, String, Map, Pool, resource tracking, args
+- ✅ Stdlib type constructors (`Vec.new()`, `Map.new()`) and enum constructors (`Shape.Circle(5)`)
+- ✅ Integer widening coercion (i32→i64 at call sites, returns, binary ops)
+- ✅ For-range loops — counter-based while, no runtime function needed
+- ❌ Stdlib module calls (`cli.parse()`, `fs.read()`) — module namespaces not in MIR
+
+**What compiles and runs natively today:**
+- hello world, string variables, multi-function programs, structs with field access, for-range loops, while loops, closures (including mixed-type captures), Vec/Map/Pool operations, enum construction, arithmetic, control flow
 
 **Known codegen limitations (tracked for future work):**
 - Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
@@ -312,8 +308,15 @@ Move from interpreter to actual compiled output.
   - [x] Stdlib method dispatch (dispatch.rs): Vec, String, Map, Pool, resource tracking → C runtime
   - [x] Closure environment infrastructure (closures.rs): layout, allocation, indirect calls
   - [x] C runtime (runtime.c): print, exit, panic, I/O, Vec, String, Map, Pool, resource tracking, pool checked access
-  - [ ] Wire end-to-end: `rask build` → mono → MIR → codegen → link → executable
-  - [ ] Closure codegen integration — MIR doesn't emit closure constructs yet
+  - [x] Wire end-to-end: `rask compile` → mono → MIR → codegen → link → executable (basic programs work)
+  - [x] Closure codegen integration — MIR emits ClosureCreate/ClosureCall/LoadCapture, codegen handles them
+  - [x] Stdlib dispatch wired into compile pipeline (declare_stdlib_functions() called)
+  - [x] MirType::String preserves string identity, print(string_var) dispatches correctly
+  - [x] Stdlib type constructors in MIR — `Vec.new()`, `Map.new()`, enum constructors
+  - [x] Integer widening coercion — i32→i64 accepted at call sites, returns, binary ops
+  - [x] Cross-type binary ops — codegen auto-widens narrower operand
+  - [x] For-range loops — counter-based while desugar, no runtime function needed
+  - [ ] Stdlib module calls — module namespaces (`cli`, `fs`, `io`) not in MIR
 - [ ] Build `rask-rt` runtime library — allocator, panic, concurrency primitives (collections already in runtime.c)
 
 **Deferred (not blocking v1.0):**
