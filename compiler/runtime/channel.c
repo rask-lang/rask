@@ -412,3 +412,54 @@ void rask_recver_drop(RaskRecver *rx) {
         channel_maybe_destroy(ch);
     }
 }
+
+// ─── i64-based codegen wrappers ────────────────────────────
+// The dispatch table passes all values as i64. These wrappers bridge
+// between i64 calling convention and the typed channel API.
+
+int64_t rask_channel_new_i64(int64_t capacity) {
+    RaskSender *tx;
+    RaskRecver *rx;
+    rask_channel_new(sizeof(int64_t), capacity, &tx, &rx);
+
+    // Pack sender + receiver into a heap pair [tx, rx]
+    void **pair = (void **)rask_alloc(16);
+    pair[0] = tx;
+    pair[1] = rx;
+    return (int64_t)(intptr_t)pair;
+}
+
+int64_t rask_channel_get_tx(int64_t pair) {
+    void **p = (void **)(intptr_t)pair;
+    return (int64_t)(intptr_t)p[0];
+}
+
+int64_t rask_channel_get_rx(int64_t pair) {
+    void **p = (void **)(intptr_t)pair;
+    return (int64_t)(intptr_t)p[1];
+}
+
+int64_t rask_channel_send_i64(int64_t tx, int64_t value) {
+    return rask_channel_send((RaskSender *)(intptr_t)tx, &value);
+}
+
+int64_t rask_channel_recv_i64(int64_t rx) {
+    int64_t data = 0;
+    int64_t status = rask_channel_recv((RaskRecver *)(intptr_t)rx, &data);
+    if (status != RASK_CHAN_OK) {
+        rask_panic("recv on closed channel");
+    }
+    return data;
+}
+
+void rask_sender_drop_i64(int64_t tx) {
+    rask_sender_drop((RaskSender *)(intptr_t)tx);
+}
+
+void rask_recver_drop_i64(int64_t rx) {
+    rask_recver_drop((RaskRecver *)(intptr_t)rx);
+}
+
+int64_t rask_sender_clone_i64(int64_t tx) {
+    return (int64_t)(intptr_t)rask_sender_clone((RaskSender *)(intptr_t)tx);
+}

@@ -114,6 +114,8 @@ pub enum BuiltinFunctionKind {
     Panic,
     /// format - string formatting
     Format,
+    /// spawn - spawn a concurrent task
+    Spawn,
 }
 
 /// Built-in module kinds (stdlib modules).

@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     operand::MirConst, stmt::ClosureCapture, types::{EnumLayoutId, StructLayoutId}, BlockBuilder,
-    BlockId, FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
+    BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
@@ -857,15 +857,9 @@ impl<'a> MirLowerer<'a> {
                 self.lower_block(body)
             }
 
-            // Spawn
+            // Spawn — synthesize a closure function and call rask_closure_spawn
             ExprKind::Spawn { body } => {
-                let result_local = self.builder.alloc_temp(MirType::Ptr);
-                let _body_val = self.lower_block(body)?;
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-                });
-                Ok((MirOperand::Local(result_local), MirType::Ptr))
+                self.lower_spawn(body)
             }
 
             // Block call (e.g., spawn_raw { ... })
@@ -1319,6 +1313,123 @@ impl<'a> MirLowerer<'a> {
         });
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
+    /// Spawn lowering: synthesize a closure function from the body block,
+    /// emit ClosureCreate + Call to rask_closure_spawn.
+    ///
+    /// The closure function has signature `fn(env_ptr: ptr)` — no params, void return.
+    /// rask_closure_spawn extracts func_ptr from the closure, spawns an OS thread,
+    /// and frees the closure allocation when the task completes.
+    fn lower_spawn(
+        &mut self,
+        body: &[Stmt],
+    ) -> Result<TypedOperand, LoweringError> {
+        // 1. Collect free variables from the spawn body block
+        let free_vars = self.collect_free_vars_block(body);
+
+        // 2. Generate unique name for the spawn function
+        let spawn_name = format!("{}__spawn_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        // 3. Build the closure environment layout
+        let mut captures = Vec::new();
+        let mut env_offset = 0u32;
+        for (_name, local_id, ty) in &free_vars {
+            let size = mir_type_size(ty);
+            let aligned_offset = (env_offset + 7) & !7;
+            captures.push(ClosureCapture {
+                local_id: *local_id,
+                offset: aligned_offset,
+                size,
+            });
+            env_offset = aligned_offset + size;
+        }
+
+        // 4. Synthesize a MIR function for the spawn body.
+        //    Signature: fn spawn_name(env_ptr: ptr) -> void
+        let mut spawn_builder = BlockBuilder::new(spawn_name.clone(), MirType::Void);
+
+        // env_ptr is the implicit first parameter (standard closure convention)
+        let env_param_id = spawn_builder.add_param("__env".to_string(), MirType::Ptr);
+
+        // Emit LoadCapture for each free variable
+        let mut spawn_locals = std::collections::HashMap::new();
+        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+            let cap = &captures[i];
+            let local_id = spawn_builder.alloc_local(name.clone(), ty.clone());
+            spawn_builder.push_stmt(MirStmt::LoadCapture {
+                dst: local_id,
+                env_ptr: env_param_id,
+                offset: cap.offset,
+            });
+            spawn_locals.insert(name.clone(), (local_id, ty.clone()));
+        }
+
+        // Lower the body statements using a temporary lowerer
+        {
+            let saved_builder = std::mem::replace(&mut self.builder, spawn_builder);
+            let saved_locals = std::mem::replace(&mut self.locals, spawn_locals);
+            let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+
+            let mut body_result = Ok(());
+            for stmt in body {
+                if let Err(e) = self.lower_stmt(stmt) {
+                    body_result = Err(e);
+                    break;
+                }
+            }
+
+            // Restore parent state
+            spawn_builder = std::mem::replace(&mut self.builder, saved_builder);
+            self.locals = saved_locals;
+            self.loop_stack = saved_loop_stack;
+
+            body_result?;
+
+            // Add implicit void return if unterminated
+            if spawn_builder.current_block_unterminated() {
+                spawn_builder.terminate(MirTerminator::Return { value: None });
+            }
+        }
+
+        let spawn_fn = spawn_builder.finish();
+
+        // Register the spawn function signature
+        self.func_sigs.insert(spawn_name.clone(), super::FuncSig {
+            ret_ty: MirType::Void,
+        });
+        self.synthesized_functions.push(spawn_fn);
+
+        // 5. In the parent function, emit ClosureCreate + rask_closure_spawn call
+        let closure_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::ClosureCreate {
+            dst: closure_local,
+            func_name: spawn_name,
+            captures,
+            heap: true,
+        });
+
+        let handle_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(handle_local),
+            func: FunctionRef { name: "spawn".to_string() },
+            args: vec![MirOperand::Local(closure_local)],
+        });
+
+        Ok((MirOperand::Local(handle_local), MirType::Ptr))
+    }
+
+    /// Collect free variables from a block of statements (no params to bind).
+    fn collect_free_vars_block(
+        &self,
+        body: &[Stmt],
+    ) -> Vec<(String, LocalId, MirType)> {
+        let mut free = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let bound = std::collections::HashSet::new();
+        self.walk_free_vars_block(body, &bound, &mut seen, &mut free);
+        free
     }
 
     /// Try expression lowering (spec L3).
