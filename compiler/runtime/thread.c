@@ -200,3 +200,45 @@ void rask_sleep_ns(int64_t ns) {
     ts.tv_nsec = ns % 1000000000LL;
     nanosleep(&ts, NULL);
 }
+
+// ─── Codegen wrappers ──────────────────────────────────────
+// Closure-aware spawn for the MIR codegen layer.
+// Closure layout: [func_ptr(8) | captures...]
+// The wrapper extracts func/env, runs the task, and frees the closure.
+
+typedef struct {
+    RaskTaskFn     func;
+    void          *env;
+    void          *alloc_base;  // closure allocation to free after task
+} RaskSpawnCtx;
+
+static void closure_spawn_entry(void *arg) {
+    RaskSpawnCtx *ctx = (RaskSpawnCtx *)arg;
+    RaskTaskFn func = ctx->func;
+    void *env = ctx->env;
+    void *alloc_base = ctx->alloc_base;
+    free(ctx);
+
+    func(env);
+    rask_free(alloc_base);
+}
+
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
+    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
+    void *env = (char *)closure_ptr + 8;
+
+    RaskSpawnCtx *ctx = (RaskSpawnCtx *)malloc(sizeof(RaskSpawnCtx));
+    if (!ctx) {
+        fprintf(stderr, "rask: spawn context alloc failed\n");
+        abort();
+    }
+    ctx->func = func;
+    ctx->env = env;
+    ctx->alloc_base = closure_ptr;
+
+    return rask_task_spawn(closure_spawn_entry, ctx);
+}
+
+int64_t rask_task_join_simple(void *h) {
+    return rask_task_join((RaskTaskHandle *)h, NULL);
+}

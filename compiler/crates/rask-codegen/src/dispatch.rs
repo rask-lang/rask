@@ -266,6 +266,88 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64],
             ret_ty: Some(types::I8),
         },
+
+        // ── Concurrency: spawn/join/detach ──────────────────────────
+        StdlibEntry {
+            mir_name: "spawn",
+            c_name: "rask_closure_spawn",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "join",
+            c_name: "rask_task_join_simple",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "detach",
+            c_name: "rask_task_detach",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_task_cancelled",
+            c_name: "rask_task_cancelled",
+            params: &[],
+            ret_ty: Some(types::I8),
+        },
+        StdlibEntry {
+            mir_name: "rask_sleep_ns",
+            c_name: "rask_sleep_ns",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+
+        // ── Concurrency: channels ──────────────────────────────────
+        StdlibEntry {
+            mir_name: "Channel_new",
+            c_name: "rask_channel_new_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "channel_tx",
+            c_name: "rask_channel_get_tx",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "channel_rx",
+            c_name: "rask_channel_get_rx",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "send",
+            c_name: "rask_channel_send_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "recv",
+            c_name: "rask_channel_recv_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "sender_clone",
+            c_name: "rask_sender_clone_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "sender_drop",
+            c_name: "rask_sender_drop_i64",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "recver_drop",
+            c_name: "rask_recver_drop_i64",
+            params: &[types::I64],
+            ret_ty: None,
+        },
     ]
 }
 

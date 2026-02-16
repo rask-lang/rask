@@ -171,6 +171,13 @@ int8_t rask_task_cancelled(void);
 // Sleep the current thread for the given number of nanoseconds.
 void rask_sleep_ns(int64_t ns);
 
+// Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
+// Extracts func/env, runs the task, and frees the closure allocation on completion.
+RaskTaskHandle *rask_closure_spawn(void *closure_ptr);
+
+// Simplified join: no panic message output. Returns 0 on success, -1 on panic.
+int64_t rask_task_join_simple(void *h);
+
 // ─── Channels ──────────────────────────────────────────────
 // Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).
 // Reference-counted sender/receiver halves. Close-on-drop.
@@ -208,6 +215,16 @@ RaskSender *rask_sender_clone(RaskSender *tx);
 // Drop sender/receiver. Closes the channel half when refcount hits zero.
 void rask_sender_drop(RaskSender *tx);
 void rask_recver_drop(RaskRecver *rx);
+
+// i64-based channel wrappers for codegen dispatch table.
+int64_t rask_channel_new_i64(int64_t capacity);
+int64_t rask_channel_get_tx(int64_t pair);
+int64_t rask_channel_get_rx(int64_t pair);
+int64_t rask_channel_send_i64(int64_t tx, int64_t value);
+int64_t rask_channel_recv_i64(int64_t rx);
+void    rask_sender_drop_i64(int64_t tx);
+void    rask_recver_drop_i64(int64_t rx);
+int64_t rask_sender_clone_i64(int64_t tx);
 
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
