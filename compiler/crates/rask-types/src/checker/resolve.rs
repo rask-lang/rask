@@ -178,6 +178,11 @@ impl TypeChecker {
             return self.unify(&ty, &ret, span);
         }
 
+        // to_string() on any type returns string
+        if method == "to_string" && args.is_empty() {
+            return self.unify(&ret, &Type::String, span);
+        }
+
         match &ty {
             Type::Var(_) => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -260,6 +265,25 @@ impl TypeChecker {
                             progress = true;
                         }
                         Ok(progress)
+                    } else if method == "variants" && args.is_empty() {
+                        // .variants() on fieldless enums returns Vec of all variant values (E7-E8)
+                        let is_fieldless = self.types.get(*type_id).map(|def| {
+                            if let TypeDef::Enum { variants, .. } = def {
+                                variants.iter().all(|(_, fields)| fields.is_empty())
+                            } else {
+                                false
+                            }
+                        }).unwrap_or(false);
+                        if is_fieldless {
+                            let vec_ty = Type::Slice(Box::new(ty));
+                            self.unify(&vec_ty, &ret, span)
+                        } else {
+                            Err(TypeError::NoSuchMethod {
+                                ty,
+                                method: "variants (requires fieldless enum)".to_string(),
+                                span,
+                            })
+                        }
                     } else {
                         Err(TypeError::NoSuchMethod {
                             ty,
@@ -451,6 +475,10 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             "push" | "push_str" => self.unify(ret, &Type::Unit, span),
+            "concat" if args.len() == 1 => {
+                self.unify(&args[0], &Type::String, span)?;
+                self.unify(ret, &Type::String, span)
+            }
             _ => Ok(false),
         }
     }

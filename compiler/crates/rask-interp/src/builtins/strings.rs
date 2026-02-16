@@ -52,6 +52,12 @@ impl Interpreter {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
+            "concat" => {
+                let other = self.expect_string(&args, 0)?;
+                let mut result = s.lock().unwrap().clone();
+                result.push_str(&other);
+                Ok(Value::String(Arc::new(Mutex::new(result))))
+            }
             "to_owned" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone()))))
             }

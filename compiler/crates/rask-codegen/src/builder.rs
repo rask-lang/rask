@@ -249,6 +249,37 @@ impl<'a> FunctionBuilder<'a> {
                             .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
                         builder.ins().call(*nl, &[]);
                     }
+                    // print/println return void — define dest as zero if needed
+                    if let Some(dst_id) = dst {
+                        if let Some(var) = var_map.get(dst_id) {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.def_var(*var, zero);
+                        }
+                    }
+                } else if func.name == "assert" {
+                    // assert(cond) — branch on condition, trap if false
+                    if let Some(arg) = args.first() {
+                        let cond = Self::lower_operand(builder, arg, var_map, string_globals)?;
+                        let ok_block = builder.create_block();
+                        let fail_block = builder.create_block();
+                        builder.ins().brif(cond, ok_block, &[], fail_block, &[]);
+
+                        builder.seal_block(fail_block);
+                        builder.switch_to_block(fail_block);
+                        let assert_fn = func_refs.get("assert_fail")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                        builder.ins().call(*assert_fn, &[]);
+                        builder.ins().trap(TrapCode::user(0).unwrap());
+
+                        builder.seal_block(ok_block);
+                        builder.switch_to_block(ok_block);
+                    }
+                    if let Some(dst_id) = dst {
+                        if let Some(var) = var_map.get(dst_id) {
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.def_var(*var, zero);
+                        }
+                    }
                 } else {
                     let func_ref = func_refs.get(&func.name)
                         .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
@@ -275,13 +306,12 @@ impl<'a> FunctionBuilder<'a> {
 
                     if let Some(dst_id) = dst {
                         let results = builder.inst_results(call_inst);
+                        let var = var_map.get(dst_id)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "Call destination variable not found".to_string()
+                            ))?;
                         if !results.is_empty() {
                             let result_val = results[0];
-                            let var = var_map.get(dst_id)
-                                .ok_or_else(|| CodegenError::UnsupportedFeature(
-                                    "Call destination variable not found".to_string()
-                                ))?;
-
                             let dst_local = locals.iter().find(|l| l.id == *dst_id);
                             let mut val = result_val;
                             if let Some(local) = dst_local {
@@ -292,6 +322,10 @@ impl<'a> FunctionBuilder<'a> {
                                 }
                             }
                             builder.def_var(*var, val);
+                        } else {
+                            // Void call — define dest as zero to keep SSA valid
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.def_var(*var, zero);
                         }
                     }
                 }
@@ -778,9 +812,20 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Switch { value, cases, default } => {
-                let scrutinee_val = Self::lower_operand(builder, value, var_map, string_globals)?;
+                let raw_scrutinee = Self::lower_operand(builder, value, var_map, string_globals)?;
+                // Extend to i64 if the scrutinee is a narrower type (e.g. u8 enum tag)
+                let scrutinee_val = {
+                    let val_ty = builder.func.dfg.value_type(raw_scrutinee);
+                    if val_ty != types::I64 && val_ty.is_int() {
+                        builder.ins().uextend(types::I64, raw_scrutinee)
+                    } else {
+                        raw_scrutinee
+                    }
+                };
 
-                let mut current_block = builder.current_block().unwrap();
+                // Create comparison chain: each case gets a brif, falling through to next
+                // Don't seal MIR blocks here — the final seal-all loop handles them
+                let mut comparison_blocks = Vec::new();
 
                 for (value, target_id) in cases {
                     let target_block = block_map.get(target_id)
@@ -790,17 +835,20 @@ impl<'a> FunctionBuilder<'a> {
                     let cond = builder.ins().icmp(IntCC::Equal, scrutinee_val, cmp_val);
 
                     let next_block = builder.create_block();
+                    comparison_blocks.push(next_block);
 
                     builder.ins().brif(cond, *target_block, &[], next_block, &[]);
                     builder.switch_to_block(next_block);
-                    builder.seal_block(current_block);
-                    current_block = next_block;
                 }
 
                 let default_block = block_map.get(default)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Switch default block not found".to_string()))?;
                 builder.ins().jump(*default_block, &[]);
-                builder.seal_block(current_block);
+
+                // Seal comparison chain blocks (these aren't MIR blocks)
+                for block in comparison_blocks {
+                    builder.seal_block(block);
+                }
             }
 
             MirTerminator::Unreachable => {

@@ -896,6 +896,8 @@ name = "rask-desugar"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-lexer",
+ "rask-parser",
 ]
 
 [[package]]
