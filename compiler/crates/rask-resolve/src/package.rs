@@ -45,6 +45,8 @@ pub struct SourceFile {
     pub path: PathBuf,
     /// Parsed declarations from this file.
     pub decls: Vec<Decl>,
+    /// Original source text (for diagnostics).
+    pub source: String,
 }
 
 /// Registry of all discovered packages.
@@ -190,6 +192,7 @@ fn parse_rk_files(paths: Vec<PathBuf>) -> Result<Vec<SourceFile>, PackageError> 
 
         source_files.push(SourceFile {
             path: file_path,
+            source,
             decls: parse_result.decls,
         });
     }
@@ -481,7 +484,7 @@ impl PackageRegistry {
             name: name.clone(),
             path: path.clone(),
             root_dir: root_dir.clone(),
-            files: vec![SourceFile { path: root_dir.join("lib.rk"), decls }],
+            files: vec![SourceFile { path: root_dir.join("lib.rk"), source: String::new(), decls }],
             imports: Vec::new(),
             manifest: None,
             build_decls: Vec::new(),
