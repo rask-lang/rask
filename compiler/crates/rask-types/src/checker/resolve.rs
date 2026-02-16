@@ -260,6 +260,25 @@ impl TypeChecker {
                             progress = true;
                         }
                         Ok(progress)
+                    } else if method == "variants" && args.is_empty() {
+                        // .variants() on fieldless enums returns Vec of all variant values (E7-E8)
+                        let is_fieldless = self.types.get(*type_id).map(|def| {
+                            if let TypeDef::Enum { variants, .. } = def {
+                                variants.iter().all(|(_, fields)| fields.is_empty())
+                            } else {
+                                false
+                            }
+                        }).unwrap_or(false);
+                        if is_fieldless {
+                            let vec_ty = Type::Slice(Box::new(ty));
+                            self.unify(&vec_ty, &ret, span)
+                        } else {
+                            Err(TypeError::NoSuchMethod {
+                                ty,
+                                method: "variants (requires fieldless enum)".to_string(),
+                                span,
+                            })
+                        }
                     } else {
                         Err(TypeError::NoSuchMethod {
                             ty,

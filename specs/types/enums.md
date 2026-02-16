@@ -311,12 +311,38 @@ const tree = Node(own Leaf(1), own Leaf(2))  // `own` = visible allocation
 
 `Owned<T>` is linear—must consume exactly once. Drop deallocates automatically.
 
+## Variant Iteration
+
+Fieldless enums (all variants have zero fields) support `.variants()`, which returns a `Vec` of all variant values in declaration order.
+
+| Rule | Description |
+|------|-------------|
+| **E7: Variant iteration** | `EnumName.variants()` returns `Vec<EnumName>` with all variants in declaration order |
+| **E8: Fieldless constraint** | `.variants()` is a compile error if any variant has fields |
+
+```rask
+enum Color { Red, Green, Blue }
+
+const all = Color.variants()       // [Color.Red, Color.Green, Color.Blue]
+
+for color in Color.variants() {
+    println(color)                 // Red, Green, Blue
+}
+```
+
+Enums with payloads cannot use `.variants()` — there's no way to construct values without data:
+
+```rask
+enum Shape { Circle(f64), Rect { w: f64, h: f64 } }
+Shape.variants()  // ❌ Compile error: variants() requires fieldless enum
+```
+
 ## Discriminant Access
 
 | Rule | Description |
 |------|-------------|
-| **E7: Discriminant access** | `discriminant(e)` returns zero-indexed variant index as `u16` |
-| **E8: Null-pointer optimization** | Compiler applies niche optimization automatically; `@layout(C)` disables it |
+| **E9: Discriminant access** | `discriminant(e)` returns zero-indexed variant index as `u16` |
+| **E10: Null-pointer optimization** | Compiler applies niche optimization automatically; `@layout(C)` disables it |
 
 ```rask
 enum Status { Pending, Done, Failed }
@@ -352,7 +378,7 @@ enum Never {}  // Cannot be constructed
 
 | Rule | Description |
 |------|-------------|
-| **E9: Empty enum** | Zero-size, uninhabited; cannot be constructed; match needs no arms |
+| **E11: Empty enum** | Zero-size, uninhabited; cannot be constructed; match needs no arms |
 
 | Property | Behavior |
 |----------|----------|
@@ -371,7 +397,10 @@ const value = infallible().unwrap()  // Cannot panic (compiler knows)
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Empty enum | E9 | Zero-size, uninhabited, match needs no arms |
+| Empty enum | E11 | Zero-size, uninhabited, match needs no arms |
+| `.variants()` on fieldless enum | E7 | Returns `Vec` of all variant values |
+| `.variants()` on enum with payloads | E8 | Compile error |
+| `.variants()` on empty enum | E7,E11 | Returns empty `Vec` |
 | Single-variant enum | E2 | Valid, discriminant may be optimized away |
 | Zero-sized payload | E1 | `enum Foo { A(()), B }` — unit optimized to `{ A, B }` |
 | >65536 variants | E3 | Compile error: "enum exceeds variant limit" |

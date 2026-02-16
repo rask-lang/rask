@@ -168,6 +168,28 @@ impl Interpreter {
             } => {
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(name).cloned() {
+                        // .variants() — return Vec of all fieldless variant values
+                        if method == "variants" {
+                            let has_payload = enum_decl.variants.iter().any(|v| !v.fields.is_empty());
+                            if has_payload {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "variants() requires fieldless enum, but `{}` has variants with fields",
+                                        name
+                                    )),
+                                    expr.span
+                                ));
+                            }
+                            let values: Vec<Value> = enum_decl.variants.iter().map(|v| {
+                                Value::Enum {
+                                    name: name.clone(),
+                                    variant: v.name.clone(),
+                                    fields: vec![],
+                                }
+                            }).collect();
+                            return Ok(Value::Vec(Arc::new(Mutex::new(values))));
+                        }
+
                         if let Some(variant) = enum_decl.variants.iter().find(|v| &v.name == method)
                         {
                             let field_count = variant.fields.len();
