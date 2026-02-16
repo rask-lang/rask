@@ -120,6 +120,8 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
 fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format) -> FrontendResult {
     rask_desugar::desugar(&mut pkg_ctx.all_decls);
 
+    // Resolver handles external packages via collect_package_exports —
+    // only pass root package decls here to avoid double registration.
     let resolved = match rask_resolve::resolve_package(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,
@@ -128,7 +130,6 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         Ok(r) => r,
         Err(errors) => {
             let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
-            // Multi-file diagnostics: show error messages without source underlines
             for d in &diags {
                 eprintln!("{}: {}", output::error_label(), d.message);
                 if let Some(fix) = &d.fix {
@@ -141,6 +142,18 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
             process::exit(1);
         }
     };
+
+    // Merge external package declarations so the typechecker and ownership
+    // checker can see struct/enum/fn definitions from dependencies.
+    let mut package_names = Vec::new();
+    for pkg in pkg_ctx.registry.packages() {
+        if pkg.id != pkg_ctx.root_id {
+            package_names.push(pkg.name.clone());
+            for decl in pkg.all_decls() {
+                pkg_ctx.all_decls.push(decl.clone());
+            }
+        }
+    }
 
     let typed = match rask_types::typecheck(resolved, &pkg_ctx.all_decls) {
         Ok(t) => t,
@@ -168,22 +181,10 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         process::exit(1);
     }
 
-    // Collect external package names and their declarations for the interpreter
-    let mut package_names = Vec::new();
-    let mut decls = std::mem::take(&mut pkg_ctx.all_decls);
-    for pkg in pkg_ctx.registry.packages() {
-        if pkg.id != pkg_ctx.root_id {
-            package_names.push(pkg.name.clone());
-            for decl in pkg.all_decls() {
-                decls.push(decl.clone());
-            }
-        }
-    }
-
     let _ = path; // used for context only, not for reading in package mode
 
     FrontendResult {
-        decls,
+        decls: std::mem::take(&mut pkg_ctx.all_decls),
         typed,
         source: None,
         package_names,
@@ -192,14 +193,10 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
 
 /// Detect whether a .rk file belongs to a multi-file package.
 ///
-/// Three-tier detection:
-/// 1. Walk up from the file's directory looking for `build.rk`, stopping at
-///    `.git` or filesystem root. If found, that directory is the project root
-///    with full package context (deps, manifest, build scripts).
-/// 2. If no `build.rk` found, check if the file's own directory has sibling
-///    `.rk` files. If yes, treat the directory as a simple package (all files
-///    combined, no external deps).
-/// 3. Lone `.rk` file with no siblings — returns None (single-file mode).
+/// Walks up from the file's directory looking for `build.rk`, stopping at
+/// `.git` or filesystem root. If found, that directory is the project root
+/// with full package context (deps, manifest, build scripts).
+/// No `build.rk` means single-file mode.
 pub fn detect_package(file_path: &str) -> Option<PackageContext> {
     let path = Path::new(file_path);
     let file_dir = path.parent()?;
