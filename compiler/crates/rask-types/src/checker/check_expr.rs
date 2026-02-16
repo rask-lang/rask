@@ -82,6 +82,9 @@ impl TypeChecker {
                     ty
                 } else if let Some(&sym_id) = self.resolved.resolutions.get(&expr.id) {
                     self.get_symbol_type(sym_id)
+                } else if let Some(type_id) = self.types.get_type_id(name) {
+                    // Imported type name (struct/enum) without resolver entry
+                    Type::Named(type_id)
                 } else {
                     Type::Error
                 }
