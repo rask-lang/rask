@@ -505,6 +505,14 @@ impl Interpreter {
                     })
                 }
             }
+            // Comptime: freeze a Vec into a fixed-size array (identity in interpreter)
+            "freeze" => {
+                let cloned = v.lock().unwrap().clone();
+                Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
+            }
+            "to_string" => {
+                Ok(Value::String(Arc::new(Mutex::new(format!("{}", Value::Vec(Arc::clone(v)))))))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Vec".to_string(),
                 method: method.to_string(),

@@ -214,6 +214,10 @@ impl TypeChecker {
                     self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
                 })
             }
+            // panic() is divergent — it never returns
+            ExprKind::Call { func, .. } => {
+                matches!(&func.kind, ExprKind::Ident(name) if name == "panic")
+            }
             _ => false,
         }
     }

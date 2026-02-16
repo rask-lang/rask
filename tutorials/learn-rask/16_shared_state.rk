@@ -36,7 +36,7 @@ import sync.Relaxed
 // --- Example ---
 
 func example_shared() -> () or Error {
-    with Multitasking {
+    using Multitasking {
         const counter = Shared.new(0)
 
         const h1 = spawn(|| {
