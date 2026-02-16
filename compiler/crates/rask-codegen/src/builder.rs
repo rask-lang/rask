@@ -269,7 +269,7 @@ impl<'a> FunctionBuilder<'a> {
                         let assert_fn = func_refs.get("assert_fail")
                             .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                         builder.ins().call(*assert_fn, &[]);
-                        builder.ins().trap(TrapCode::user(0).unwrap());
+                        builder.ins().trap(TrapCode::user(1).unwrap());
 
                         builder.seal_block(ok_block);
                         builder.switch_to_block(ok_block);
@@ -872,7 +872,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::Unreachable => {
-                builder.ins().trap(TrapCode::user(0).unwrap());
+                builder.ins().trap(TrapCode::user(1).unwrap());
             }
 
             MirTerminator::CleanupReturn { value, cleanup_chain } => {

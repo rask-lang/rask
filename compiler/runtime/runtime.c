@@ -403,12 +403,62 @@ void rask_pool_free(int64_t pool_ptr, int64_t handle) {
     pool->occupied[index] = 0;
 }
 
+// ─── Clone (shallow copy for i64-sized values) ───────────────────
+// Strings and collection handles are pointer-sized; clone is identity.
+int64_t rask_clone(int64_t value) { return value; }
+
+// ─── Iterator stubs ──────────────────────────────────────────────
+// skip(vec, n) — stub: returns vec unchanged (no slicing yet)
+int64_t rask_iter_skip(int64_t vec, int64_t n) { (void)n; return vec; }
+
 // ─── String helpers ───────────────────────────────────────────────
 
 int8_t rask_string_contains(int64_t haystack_ptr, int64_t needle_ptr) {
     const char *haystack = haystack_ptr ? (const char *)haystack_ptr : "";
     const char *needle   = needle_ptr   ? (const char *)needle_ptr   : "";
     return strstr(haystack, needle) != NULL ? 1 : 0;
+}
+
+int64_t rask_string_to_lowercase(int64_t str_ptr) {
+    const char *s = str_ptr ? (const char *)str_ptr : "";
+    size_t len = strlen(s);
+    char *out = (char *)malloc(len + 1);
+    for (size_t i = 0; i <= len; i++)
+        out[i] = (s[i] >= 'A' && s[i] <= 'Z') ? s[i] + 32 : s[i];
+    return (int64_t)out;
+}
+
+int8_t rask_string_starts_with(int64_t str_ptr, int64_t prefix_ptr) {
+    const char *s = str_ptr ? (const char *)str_ptr : "";
+    const char *p = prefix_ptr ? (const char *)prefix_ptr : "";
+    size_t plen = strlen(p);
+    return strncmp(s, p, plen) == 0 ? 1 : 0;
+}
+
+int64_t rask_string_lines(int64_t str_ptr) {
+    int64_t vec = rask_vec_new();
+    const char *s = str_ptr ? (const char *)str_ptr : "";
+    while (*s) {
+        const char *end = strchr(s, '\n');
+        size_t len = end ? (size_t)(end - s) : strlen(s);
+        char *line = (char *)malloc(len + 1);
+        memcpy(line, s, len);
+        line[len] = '\0';
+        rask_vec_push(vec, (int64_t)line);
+        s = end ? end + 1 : s + len;
+    }
+    return vec;
+}
+
+int64_t rask_string_trim(int64_t str_ptr) {
+    const char *s = str_ptr ? (const char *)str_ptr : "";
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+    size_t len = strlen(s);
+    while (len > 0 && (s[len-1] == ' ' || s[len-1] == '\t' || s[len-1] == '\n' || s[len-1] == '\r')) len--;
+    char *out = (char *)malloc(len + 1);
+    memcpy(out, s, len);
+    out[len] = '\0';
+    return (int64_t)out;
 }
 
 // ─── CLI module ───────────────────────────────────────────────────

@@ -3,8 +3,9 @@
 //! Expression lowering.
 
 use super::{
-    binop_result_type, is_type_constructor_name, lower_binop, lower_unaryop, mir_type_size,
-    operator_method_to_binop, operator_method_to_unaryop, LoweringError, MirLowerer, TypedOperand,
+    binop_result_type, is_type_constructor_name, is_variant_name, lower_binop, lower_unaryop,
+    mir_type_size, operator_method_to_binop, operator_method_to_unaryop, LoweringError,
+    MirLowerer, TypedOperand,
 };
 use crate::{
     operand::MirConst, stmt::ClosureCapture, types::{EnumLayoutId, StructLayoutId}, BlockBuilder,
@@ -48,13 +49,17 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Char(c) => Ok((MirOperand::Constant(MirConst::Char(*c)), MirType::Char)),
             ExprKind::Bool(b) => Ok((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
 
-            // Variable reference
-            ExprKind::Ident(name) => self
-                .locals
-                .get(name)
-                .cloned()
-                .map(|(id, ty)| (MirOperand::Local(id), ty))
-                .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone())),
+            // Variable reference (or bare enum variant like None)
+            ExprKind::Ident(name) => {
+                if let Some((id, ty)) = self.locals.get(name).cloned() {
+                    Ok((MirOperand::Local(id), ty))
+                } else if name == "None" {
+                    // Fieldless variant → tag-only value (tag 1 for None)
+                    Ok((MirOperand::Constant(MirConst::Int(1)), MirType::Ptr))
+                } else {
+                    Err(LoweringError::UnresolvedVariable(name.clone()))
+                }
+            }
 
             // Binary operations (only &&/|| survive desugar)
             ExprKind::Binary { op, left, right } => {
@@ -137,6 +142,28 @@ impl<'a> MirLowerer<'a> {
                         });
                         return Ok((MirOperand::Local(result_local), ret_ty));
                     }
+                }
+
+                // Built-in variant constructors: Ok(v), Err(v), Some(v)
+                match func_name.as_str() {
+                    "Ok" | "Some" | "Err" => {
+                        let tag = self.variant_tag(&func_name);
+                        let result_local = self.builder.alloc_temp(MirType::Ptr);
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(tag)),
+                        });
+                        if let Some(payload) = arg_operands.first() {
+                            self.builder.push_stmt(MirStmt::Store {
+                                addr: result_local,
+                                offset: 8,
+                                value: payload.clone(),
+                            });
+                        }
+                        return Ok((MirOperand::Local(result_local), MirType::Ptr));
+                    }
+                    _ => {}
                 }
 
                 let ret_ty = self
@@ -385,6 +412,12 @@ impl<'a> MirLowerer<'a> {
                                 });
                                 return Ok((MirOperand::Local(result_local), enum_ty));
                             }
+                        }
+                        // Unknown enum type (built-in Error, etc.) — produce a
+                        // tag-only stub so codegen can proceed.
+                        if is_type_constructor_name(name) {
+                            let tag = self.variant_tag(field);
+                            return Ok((MirOperand::Constant(MirConst::Int(tag)), MirType::Ptr));
                         }
                     }
                 }
@@ -1067,8 +1100,39 @@ impl<'a> MirLowerer<'a> {
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
 
+        // Detect Result/Option via raw type info from type checker
+        let is_result_or_option = if !is_enum {
+            self.ctx.lookup_raw_type(scrutinee.id).map_or(false, |ty| {
+                matches!(ty, rask_types::Type::Result { .. } | rask_types::Type::Option(_))
+            })
+        } else {
+            false
+        };
+
+        // Pattern-based detection: if any arm uses a known variant pattern,
+        // treat the match as tagged dispatch even without type info.
+        let patterns_imply_enum = if !is_enum && !is_result_or_option {
+            arms.iter().any(|arm| match &arm.pattern {
+                Pattern::Constructor { name, .. } => is_variant_name(name),
+                Pattern::Ident(name) => {
+                    self.resolve_pattern_tag(name).is_some()
+                        || matches!(name.as_str(), "Ok" | "Err" | "Some" | "None")
+                }
+                _ => false,
+            })
+        } else {
+            false
+        };
+        let has_tag = is_enum || is_result_or_option || patterns_imply_enum;
+
+        // Extract payload types for Result/Option
+        let ok_payload_ty = self.extract_payload_type(scrutinee)
+            .unwrap_or(MirType::I64);
+        let err_payload_ty = self.extract_err_type(scrutinee)
+            .unwrap_or(MirType::I64);
+
         // Determine the switch value
-        let switch_val = if is_enum {
+        let switch_val = if has_tag {
             let tag_local = self.builder.alloc_temp(MirType::U8);
             self.builder.push_stmt(MirStmt::Assign {
                 dst: tag_local,
@@ -1094,18 +1158,21 @@ impl<'a> MirLowerer<'a> {
                     default_block = arm_blocks[i];
                 }
                 Pattern::Ident(name) => {
-                    // Qualified enum variant: "Color.Red" → resolve tag
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
+                    } else if has_tag && is_variant_name(name) {
+                        // Bare variant name (Ok, None, etc.) → use well-known tag
+                        cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
                     } else {
                         // Binding variable — acts as default
                         default_block = arm_blocks[i];
                     }
                 }
                 Pattern::Constructor { name, .. } => {
-                    // Resolve enum variant tag from layout
                     if let Some(tag) = self.resolve_pattern_tag(name) {
                         cases.push((tag, arm_blocks[i]));
+                    } else if has_tag {
+                        cases.push((self.variant_tag(name) as u64, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
@@ -1138,12 +1205,36 @@ impl<'a> MirLowerer<'a> {
             self.builder.switch_to_block(arm_blocks[i]);
 
             // Bind pattern variables for enum payloads
-            if is_enum {
-                if let Pattern::Constructor { fields, .. } = &arm.pattern {
+            if has_tag {
+                if let Pattern::Constructor { name, fields } = &arm.pattern {
+                    // Determine field types from enum layout or Result/Option
+                    let variant_fields: Option<Vec<(MirType, u32)>> =
+                        if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
+                            self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
+                                layout.variants.iter().find(|v| v.name == *name).map(|v| {
+                                    v.fields.iter().map(|f| {
+                                        (self.ctx.type_to_mir(&f.ty), f.offset)
+                                    }).collect()
+                                })
+                            })
+                        } else {
+                            None
+                        };
+
                     for (j, field_pat) in fields.iter().enumerate() {
                         if let Pattern::Ident(binding) = field_pat {
-                            let payload_ty = MirType::I64; // fallback
-                            let payload_local = self.builder.alloc_local(binding.clone(), payload_ty.clone());
+                            let field_ty = if let Some(ref vf) = variant_fields {
+                                vf.get(j).map(|(ty, _)| ty.clone()).unwrap_or(MirType::I64)
+                            } else {
+                                // Result/Option: use payload type based on variant
+                                match name.as_str() {
+                                    "Err" => err_payload_ty.clone(),
+                                    _ => ok_payload_ty.clone(),
+                                }
+                            };
+                            let payload_local = self.builder.alloc_local(
+                                binding.clone(), field_ty.clone(),
+                            );
                             self.builder.push_stmt(MirStmt::Assign {
                                 dst: payload_local,
                                 rvalue: MirRValue::Field {
@@ -1151,7 +1242,7 @@ impl<'a> MirLowerer<'a> {
                                     field_index: j as u32,
                                 },
                             });
-                            self.locals.insert(binding.clone(), (payload_local, payload_ty));
+                            self.locals.insert(binding.clone(), (payload_local, field_ty));
                         }
                     }
                 }
@@ -1162,13 +1253,17 @@ impl<'a> MirLowerer<'a> {
                 result_ty = arm_ty;
             }
 
-            self.builder.push_stmt(MirStmt::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(body_val),
-            });
-            self.builder.terminate(MirTerminator::Goto {
-                target: merge_block,
-            });
+            // Only emit Assign+Goto if the arm body didn't already terminate
+            // (e.g., via return, break, or continue).
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(body_val),
+                });
+                self.builder.terminate(MirTerminator::Goto {
+                    target: merge_block,
+                });
+            }
         }
 
         self.builder.switch_to_block(merge_block);

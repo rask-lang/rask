@@ -101,6 +101,30 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
+        // ── Subscript (desugared from args[0] → args.index(0)) ─
+        StdlibEntry {
+            mir_name: "index",
+            c_name: "rask_vec_get",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Iterator stubs ─────────────────────────────────────
+        // iter() on Vec returns the Vec itself (identity)
+        StdlibEntry {
+            mir_name: "iter",
+            c_name: "rask_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // skip(n) on iterator — stub: ignores n, returns vec unchanged
+        StdlibEntry {
+            mir_name: "skip",
+            c_name: "rask_iter_skip",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
         // ── String operations ──────────────────────────────────
         StdlibEntry {
             mir_name: "string_new",
@@ -117,6 +141,39 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "concat",
             c_name: "rask_string_concat",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── String methods ────────────────────────────────────
+        StdlibEntry {
+            mir_name: "to_lowercase",
+            c_name: "rask_string_to_lowercase",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "starts_with",
+            c_name: "rask_string_starts_with",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I8),
+        },
+        StdlibEntry {
+            mir_name: "lines",
+            c_name: "rask_string_lines",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "trim",
+            c_name: "rask_string_trim",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // map_err(result, closure) — stub: returns result unchanged
+        StdlibEntry {
+            mir_name: "map_err",
+            c_name: "rask_iter_skip",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
@@ -265,6 +322,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             c_name: "rask_fs_exists",
             params: &[types::I64],
             ret_ty: Some(types::I8),
+        },
+
+        // ── Clone (shallow copy for i64-sized values) ───────────────
+        StdlibEntry {
+            mir_name: "clone",
+            c_name: "rask_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
         },
 
         // ── Concurrency: spawn/join/detach ──────────────────────────

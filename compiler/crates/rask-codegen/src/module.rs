@@ -433,7 +433,7 @@ impl CodeGenerator {
         // Define the function in the module
         self.module
             .define_function(*func_id, &mut self.ctx)
-            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
         Ok(())
     }
