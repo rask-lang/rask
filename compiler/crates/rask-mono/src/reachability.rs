@@ -12,7 +12,7 @@
 use crate::instantiate::instantiate_function;
 use crate::MonoFunction;
 use rask_ast::{
-    decl::{Decl, DeclKind},
+    decl::{Decl, DeclKind, FnDecl},
     expr::{Expr, ExprKind},
     stmt::{Stmt, StmtKind},
 };
@@ -30,6 +30,12 @@ struct WorkItem {
 pub struct Monomorphizer<'a> {
     /// Lookup table: function name → original declaration
     fn_table: HashMap<String, &'a Decl>,
+    /// Methods extracted from struct/enum/impl declarations (owned).
+    /// Keyed by qualified name: "Type_method".
+    method_table: HashMap<String, Decl>,
+    /// Reverse lookup: bare method name → list of qualified names.
+    /// Used to resolve instance method calls where receiver type is unknown.
+    method_by_bare_name: HashMap<String, Vec<String>>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<Type>>,
     /// Already processed (name, type_args) pairs
@@ -40,17 +46,71 @@ pub struct Monomorphizer<'a> {
     pub results: Vec<MonoFunction>,
 }
 
+/// Wrap a method FnDecl as a top-level Decl and register it under its
+/// qualified name (Type_method). Also records the bare→qualified mapping.
+fn register_method(
+    type_name: &str,
+    method: &FnDecl,
+    parent_decl: &Decl,
+    method_table: &mut HashMap<String, Decl>,
+    method_by_bare_name: &mut HashMap<String, Vec<String>>,
+) {
+    let qualified = format!("{}_{}", type_name, method.name);
+    let wrapped = Decl {
+        id: parent_decl.id,
+        kind: DeclKind::Fn(method.clone()),
+        span: parent_decl.span,
+    };
+    method_table.insert(qualified.clone(), wrapped);
+    method_by_bare_name
+        .entry(method.name.clone())
+        .or_default()
+        .push(qualified);
+}
+
 impl<'a> Monomorphizer<'a> {
     pub fn new(decls: &'a [Decl], call_type_args: &'a HashMap<NodeId, Vec<Type>>) -> Self {
         let mut fn_table = HashMap::new();
+        let mut method_table = HashMap::new();
+        let mut method_by_bare_name: HashMap<String, Vec<String>> = HashMap::new();
+
         for decl in decls {
-            if let DeclKind::Fn(f) = &decl.kind {
-                fn_table.insert(f.name.clone(), decl);
+            match &decl.kind {
+                DeclKind::Fn(f) => {
+                    fn_table.insert(f.name.clone(), decl);
+                }
+                DeclKind::Struct(s) => {
+                    for method in &s.methods {
+                        register_method(
+                            &s.name, method, decl,
+                            &mut method_table, &mut method_by_bare_name,
+                        );
+                    }
+                }
+                DeclKind::Enum(e) => {
+                    for method in &e.methods {
+                        register_method(
+                            &e.name, method, decl,
+                            &mut method_table, &mut method_by_bare_name,
+                        );
+                    }
+                }
+                DeclKind::Impl(i) => {
+                    for method in &i.methods {
+                        register_method(
+                            &i.target_ty, method, decl,
+                            &mut method_table, &mut method_by_bare_name,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
 
         Self {
             fn_table,
+            method_table,
+            method_by_bare_name,
             call_type_args,
             seen: HashMap::new(),
             queue: VecDeque::new(),
@@ -81,7 +141,10 @@ impl<'a> Monomorphizer<'a> {
 
             let original = match self.fn_table.get(&item.name) {
                 Some(decl) => *decl,
-                None => continue, // External or unknown function
+                None => match self.method_table.get(&item.name) {
+                    Some(decl) => decl,
+                    None => continue, // External or unknown function
+                },
             };
 
             // Instantiate: if type_args present, clone AST with substitution.
@@ -191,7 +254,25 @@ impl<'a> Monomorphizer<'a> {
                     self.visit_expr(&arg.expr);
                 }
             }
-            ExprKind::MethodCall { object, args, .. } => {
+            ExprKind::MethodCall { object, method, args, .. } => {
+                let type_args = self.call_type_args
+                    .get(&expr.id)
+                    .cloned()
+                    .unwrap_or_default();
+
+                // Static method call: Type.method() → enqueue "Type_method"
+                if let ExprKind::Ident(name) = &object.kind {
+                    self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                }
+
+                // Instance method call: value.method() → enqueue all methods
+                // with this bare name (conservative; receiver type unknown here)
+                if let Some(qualified_names) = self.method_by_bare_name.get(method) {
+                    for qname in qualified_names.clone() {
+                        self.enqueue(qname, type_args.clone());
+                    }
+                }
+
                 self.visit_expr(object);
                 for arg in args {
                     self.visit_expr(&arg.expr);
