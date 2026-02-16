@@ -11,3 +11,4 @@ pub mod tools;
 pub mod specs;
 pub mod deps;
 pub mod watch;
+pub mod pipeline;
