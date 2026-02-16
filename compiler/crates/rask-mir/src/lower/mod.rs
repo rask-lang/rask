@@ -210,7 +210,7 @@ impl<'a> MirLowerer<'a> {
         }
 
         let mut lowerer = MirLowerer {
-            builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty),
+            builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
             func_sigs,
             loop_stack: Vec::new(),
@@ -234,9 +234,15 @@ impl<'a> MirLowerer<'a> {
             lowerer.lower_stmt(stmt)?;
         }
 
-        // Implicit void return for functions that don't explicitly return
+        // Implicit return for functions that don't explicitly return.
+        // Void functions get `return`, non-void get Unreachable (caller
+        // must ensure all paths return explicitly).
         if lowerer.builder.current_block_unterminated() {
-            lowerer.builder.terminate(MirTerminator::Return { value: None });
+            if matches!(ret_ty, MirType::Void) {
+                lowerer.builder.terminate(MirTerminator::Return { value: None });
+            } else {
+                lowerer.builder.terminate(MirTerminator::Unreachable);
+            }
         }
 
         let main_fn = lowerer.builder.finish();
@@ -770,7 +776,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
 }
 
 /// Check if a name is a known enum variant (not a variable binding).
-fn is_variant_name(name: &str) -> bool {
+pub(crate) fn is_variant_name(name: &str) -> bool {
     matches!(name, "Some" | "None" | "Ok" | "Err")
         || name.contains('.')  // Qualified variant like "Status.Active"
         || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
