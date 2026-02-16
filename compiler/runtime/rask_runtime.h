@@ -10,7 +10,29 @@
 #include <stddef.h>
 
 // ─── Allocator ──────────────────────────────────────────────
+// Swappable allocator with optional stats tracking.
+// Default uses malloc/realloc/free. Call rask_allocator_set() before any
+// allocations to swap in a custom allocator.
 
+typedef struct {
+    void *(*alloc)(int64_t size, void *ctx);
+    void *(*realloc)(void *ptr, int64_t old_size, int64_t new_size, void *ctx);
+    void  (*free)(void *ptr, void *ctx);
+    void  *ctx;
+} RaskAllocator;
+
+typedef struct {
+    int64_t alloc_count;
+    int64_t free_count;
+    int64_t bytes_allocated;
+    int64_t bytes_freed;
+    int64_t peak_bytes;
+} RaskAllocStats;
+
+void  rask_allocator_set(const RaskAllocator *a);
+void  rask_alloc_stats(RaskAllocStats *out);
+
+// These use the active allocator (default: malloc/free).
 void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
@@ -103,5 +125,125 @@ int64_t     rask_pool_is_valid(const RaskPool *p, RaskHandle h);
 void        rask_args_init(int argc, char **argv);
 int64_t     rask_args_count(void);
 const char *rask_args_get(int64_t index);
+
+// ─── Panic ─────────────────────────────────────────────────
+// Structured panic: aborts in main thread, catchable in spawned tasks.
+// Spawned tasks use setjmp/longjmp to convert panics into JoinError.
+
+#define RASK_PANIC_MSG_MAX 512
+
+_Noreturn void rask_panic(const char *msg);
+_Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// Install/remove panic handler for the current thread.
+// Used internally by rask_spawn — not part of the public API.
+typedef struct RaskPanicCtx RaskPanicCtx;
+RaskPanicCtx *rask_panic_install(void);
+void          rask_panic_remove(void);
+
+// ─── Threads ───────────────────────────────────────────────
+// Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
+// TaskHandle is affine — must be joined, detached, or cancelled.
+
+typedef struct RaskTaskHandle RaskTaskHandle;
+
+// Function signature for spawned tasks: takes environment pointer.
+typedef void (*RaskTaskFn)(void *env);
+
+// Spawn a new OS thread running func(env). Caller must join/detach/cancel.
+RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env);
+
+// Block until task finishes. Returns 0 on success, -1 on panic.
+// On panic, if msg_out is non-NULL, receives a heap-allocated panic message
+// (caller must free). Consumes the handle.
+int64_t rask_task_join(RaskTaskHandle *h, char **msg_out);
+
+// Detach the task (fire-and-forget). Consumes the handle.
+void rask_task_detach(RaskTaskHandle *h);
+
+// Request cooperative cancellation, then wait for the task to finish.
+// Returns 0 on success, -1 on panic. Consumes the handle.
+int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
+
+// Check if the current task has been cancelled. Returns 1 if cancelled.
+int8_t rask_task_cancelled(void);
+
+// Sleep the current thread for the given number of nanoseconds.
+void rask_sleep_ns(int64_t ns);
+
+// ─── Channels ──────────────────────────────────────────────
+// Bounded ring buffer (capacity > 0) or rendezvous (capacity == 0).
+// Reference-counted sender/receiver halves. Close-on-drop.
+
+typedef struct RaskChannel RaskChannel;
+typedef struct RaskSender  RaskSender;
+typedef struct RaskRecver  RaskRecver;
+
+// Status codes for channel operations.
+#define RASK_CHAN_OK     0
+#define RASK_CHAN_CLOSED -1
+#define RASK_CHAN_FULL   -2
+#define RASK_CHAN_EMPTY  -3
+
+// Create a channel. capacity=0 for rendezvous (unbuffered).
+// Returns sender and receiver through out-params.
+void rask_channel_new(int64_t elem_size, int64_t capacity,
+                      RaskSender **tx_out, RaskRecver **rx_out);
+
+// Blocking send. Copies elem_size bytes from data into the channel.
+// Returns RASK_CHAN_OK or RASK_CHAN_CLOSED.
+int64_t rask_channel_send(RaskSender *tx, const void *data);
+
+// Blocking receive. Copies elem_size bytes from channel into data_out.
+// Returns RASK_CHAN_OK or RASK_CHAN_CLOSED.
+int64_t rask_channel_recv(RaskRecver *rx, void *data_out);
+
+// Non-blocking variants.
+int64_t rask_channel_try_send(RaskSender *tx, const void *data);
+int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out);
+
+// Clone a sender (increment refcount). Multiple producers supported.
+RaskSender *rask_sender_clone(RaskSender *tx);
+
+// Drop sender/receiver. Closes the channel half when refcount hits zero.
+void rask_sender_drop(RaskSender *tx);
+void rask_recver_drop(RaskRecver *rx);
+
+// ─── Mutex ─────────────────────────────────────────────────
+// Exclusive access wrapper. Closure-based: data accessed only inside lock.
+// Wraps pthread_mutex (conc.sync/MX1-MX2).
+
+typedef struct RaskMutex RaskMutex;
+
+// Callback for lock/read/write: receives pointer to the protected data.
+typedef void (*RaskAccessFn)(void *data, void *ctx);
+
+RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size);
+void       rask_mutex_free(RaskMutex *m);
+
+// Acquire lock, call f(data, ctx), release lock.
+void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
+
+// Non-blocking. Returns 1 if lock acquired (and f was called), 0 otherwise.
+int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
+
+// ─── Shared (RwLock) ───────────────────────────────────────
+// Multiple-reader / exclusive-writer wrapper (conc.sync/SY1, R1-R3).
+// Wraps pthread_rwlock.
+
+typedef struct RaskShared RaskShared;
+
+RaskShared *rask_shared_new(const void *initial_data, int64_t data_size);
+void        rask_shared_free(RaskShared *s);
+
+// Shared read access — multiple concurrent readers allowed.
+void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx);
+
+// Exclusive write access — blocks until all readers finish.
+void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx);
+
+// Non-blocking variants. Return 1 if access granted, 0 otherwise.
+int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx);
+int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx);
 
 #endif // RASK_RUNTIME_H

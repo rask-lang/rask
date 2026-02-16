@@ -4,24 +4,39 @@
 use std::path::Path;
 use std::process;
 
+/// Runtime C source files to compile and link.
+const RUNTIME_SOURCES: &[&str] = &[
+    "runtime.c",
+    "args.c",
+    "alloc.c",
+    "panic.c",
+    "thread.c",
+    "channel.c",
+    "sync.c",
+];
+
 /// Find the runtime C files, compile them, and link with the object file.
 pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
     let runtime_dir = find_runtime_dir()?;
-    let runtime_c = runtime_dir.join("runtime.c");
-    let args_c = runtime_dir.join("args.c");
 
-    if !args_c.exists() {
-        return Err(format!(
-            "missing args.c in {} — runtime is incomplete",
-            runtime_dir.display()
-        ));
+    for src in RUNTIME_SOURCES {
+        if !runtime_dir.join(src).exists() {
+            return Err(format!(
+                "missing {} in {} — runtime is incomplete",
+                src,
+                runtime_dir.display()
+            ));
+        }
     }
 
-    let status = process::Command::new("cc")
-        .arg(&runtime_c)
-        .arg(&args_c)
-        .arg(obj_path)
-        .args(["-o", bin_path, "-no-pie"])
+    let mut cmd = process::Command::new("cc");
+    for src in RUNTIME_SOURCES {
+        cmd.arg(runtime_dir.join(src));
+    }
+    cmd.arg(obj_path);
+    cmd.args(["-o", bin_path, "-no-pie", "-lpthread"]);
+
+    let status = cmd
         .status()
         .map_err(|e| format!("failed to run cc: {}", e))?;
 
