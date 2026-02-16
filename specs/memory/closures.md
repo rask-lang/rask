@@ -322,6 +322,33 @@ FIX 2: Remove the borrow from the closure:
 
 ---
 
+## Implementation
+
+### Closure Block Layout
+
+All closures use a single contiguous block:
+
+```
+[func_ptr (8 bytes) | captured_var_0 | captured_var_1 | ...]
+```
+
+The closure value is a pointer to this block. When calling through a closure, `closure_ptr + 8` is the environment pointer — implicit first argument to the closure function. Captured variables live at known offsets relative to that pointer.
+
+### Escape Analysis
+
+MIR lowering initially marks every closure `heap: true`. A per-function optimization pass (`optimize_closures`) then downgrades non-escaping closures to stack allocation:
+
+| Escape condition | Result |
+|-----------------|--------|
+| Closure appears in `Return` value | Stays `heap: true` |
+| Closure passed as `Call` argument | Stays `heap: true` |
+| Closure stored via `Store` | Stays `heap: true` |
+| Only used via `ClosureCall` | Downgraded to `heap: false` (stack) |
+
+Stack-allocated closures use a Cranelift stack slot — no runtime allocator call, no cleanup needed. Heap-allocated closures call `rask_alloc` and get a matching `ClosureDrop` (which calls `rask_free`) inserted before every return path where the closure isn't the return value.
+
+This is conservative local analysis: no cross-function tracking, no dataflow. A closure that's only called locally but happens to be passed to another function stays heap-allocated. That's the right tradeoff — correctness over cleverness.
+
 ## Appendix (non-normative)
 
 ### Rationale
