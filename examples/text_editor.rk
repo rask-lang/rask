@@ -56,7 +56,7 @@ extend Document {
         for line in file.lines() {
             const text = try line
             const h = try doc.lines.insert(Line { text: text })
-            try doc.line_order.push(h)
+            doc.line_order.push(h)
         }
         return Ok(doc)
     }
@@ -74,12 +74,12 @@ extend Document {
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> () or Error {
         const h = try self.lines.insert(Line { text: text.clone() })
-        const raw_pos = (after + 1) as usize
+        const raw_pos = after + 1
         const insert_pos = if raw_pos > self.line_order.len(): self.line_order.len() else: raw_pos
-        try self.line_order.insert(insert_pos, h)
+        self.line_order.insert(insert_pos, h)
 
         // Record for undo
-        try self.undo_stack.push(EditCommand.InsertLine(after: after, text: text))
+        self.undo_stack.push(EditCommand.InsertLine(after: after, text: text))
         self.redo_stack.clear()
         self.modified = true
     }
@@ -88,11 +88,11 @@ extend Document {
     func delete_line(self, at: i32) -> () or Error {
         if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
 
-        const h = self.line_order.remove(at as usize)
+        const h = self.line_order.remove(at as i64)
         const deleted = self.lines.remove(h).unwrap()
 
         // Record for undo
-        try self.undo_stack.push(EditCommand.DeleteLine(at: at, deleted_text: deleted.text))
+        self.undo_stack.push(EditCommand.DeleteLine(at: at, deleted_text: deleted.text))
         self.redo_stack.clear()
         self.modified = true
     }
@@ -106,7 +106,7 @@ extend Document {
         self.lines[h].text = new_text.clone()
 
         // Record for undo
-        try self.undo_stack.push(EditCommand.ModifyLine(at: at, old_text: old_text, new_text: new_text))
+        self.undo_stack.push(EditCommand.ModifyLine(at: at, old_text: old_text, new_text: new_text))
         self.redo_stack.clear()
         self.modified = true
     }
@@ -120,7 +120,7 @@ extend Document {
 
         // Apply inverse without recording to undo stack
         try self.apply_command_silent(cmd.inverse())
-        try self.redo_stack.push(cmd)
+        self.redo_stack.push(cmd)
         return Ok(true)
     }
 
@@ -133,7 +133,7 @@ extend Document {
 
         // Apply command without recording to undo stack
         try self.apply_command_silent(cmd.clone())
-        try self.undo_stack.push(cmd)
+        self.undo_stack.push(cmd)
         return Ok(true)
     }
 
@@ -142,11 +142,11 @@ extend Document {
         match cmd {
             InsertLine(after, text) => {
                 const h = try self.lines.insert(Line { text: text })
-                try self.line_order.insert((after + 1) as usize, h)
+                self.line_order.insert(after + 1, h)
             }
             DeleteLine(at, _) => {
-                const h = self.line_order.remove(at as usize)
-                self.lines.remove(h)
+                const h = self.line_order.remove(at as i64)
+                self.lines.remove(h).ok()
             }
             ModifyLine(at, _, new_text) => {
                 const h = self.line_order[at as usize]
@@ -194,7 +194,7 @@ enum EditorCommand {
 func parse_command(input: string) -> Option<EditorCommand> {
     const parts: Vec<string> = Vec.new()
     for part in input.trim().split_whitespace() {
-        try parts.push(part.to_owned())
+        parts.push(part.to_owned())
     }
     if parts.is_empty(): return None
 

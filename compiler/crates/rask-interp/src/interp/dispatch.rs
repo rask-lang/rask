@@ -131,7 +131,7 @@ impl Interpreter {
             Value::Module(module) => self.call_module_method(module, method, args),
             #[cfg(not(target_arch = "wasm32"))]
             Value::File(f) => self.call_file_method(f, method, args),
-            Value::Duration(nanos) => self.call_duration_method(*nanos, method),
+            Value::Duration(nanos) => self.call_duration_method(*nanos, method, args),
             Value::Instant(instant) => self.call_instant_method(instant, method, args),
             #[cfg(not(target_arch = "wasm32"))]
             Value::Struct { name, fields, .. } if name == "Metadata" => {

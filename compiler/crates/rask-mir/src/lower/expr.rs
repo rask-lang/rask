@@ -1975,7 +1975,23 @@ impl<'a> MirLowerer<'a> {
                 let mut expr = inner;
                 loop {
                     match &expr.kind {
-                        ExprKind::MethodCall { object, .. } => { expr = object; }
+                        ExprKind::MethodCall { object, method, .. } => {
+                            // Module.function() pattern (e.g. fs.read_file)
+                            if let ExprKind::Ident(mod_name) = &object.kind {
+                                if super::is_type_constructor_name(mod_name) {
+                                    let func_name = format!("{}_{}", mod_name, method);
+                                    let ret = self.func_sigs.get(&func_name)
+                                        .map(|s| s.ret_ty.clone())
+                                        .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                                    return match ret {
+                                        MirType::Result { ok, .. } => Some(*ok),
+                                        MirType::Option(inner) => Some(*inner),
+                                        _ => None,
+                                    };
+                                }
+                            }
+                            expr = object;
+                        }
                         ExprKind::Call { func, .. } => {
                             let name = match &func.kind {
                                 ExprKind::Ident(n) => n.clone(),

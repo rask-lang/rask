@@ -1075,25 +1075,19 @@ impl Interpreter {
             (TypeConstructorKind::Channel, "buffered") => {
                 let cap = self.expect_int(&args, 0)? as usize;
                 let (tx, rx) = mpsc::sync_channel::<Value>(cap);
-                let mut fields = HashMap::new();
-                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
-                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
-                Ok(Value::Struct {
-                    name: "ChannelPair".to_string(),
-                    fields,
-                    resource_id: None,
-                })
+                let tuple = vec![
+                    Value::Sender(Arc::new(Mutex::new(tx))),
+                    Value::Receiver(Arc::new(Mutex::new(rx))),
+                ];
+                Ok(Value::Vec(Arc::new(Mutex::new(tuple))))
             }
             (TypeConstructorKind::Channel, "unbuffered") => {
                 let (tx, rx) = mpsc::sync_channel::<Value>(0);
-                let mut fields = HashMap::new();
-                fields.insert("sender".to_string(), Value::Sender(Arc::new(Mutex::new(tx))));
-                fields.insert("receiver".to_string(), Value::Receiver(Arc::new(Mutex::new(rx))));
-                Ok(Value::Struct {
-                    name: "ChannelPair".to_string(),
-                    fields,
-                    resource_id: None,
-                })
+                let tuple = vec![
+                    Value::Sender(Arc::new(Mutex::new(tx))),
+                    Value::Receiver(Arc::new(Mutex::new(rx))),
+                ];
+                Ok(Value::Vec(Arc::new(Mutex::new(tuple))))
             }
             (TypeConstructorKind::Map, "new") => {
                 Ok(Value::Map(Arc::new(Mutex::new(Vec::new()))))

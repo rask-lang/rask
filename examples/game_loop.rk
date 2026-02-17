@@ -140,7 +140,7 @@ func collision_system(mutate state: GameState) {
             const min_dist = e1.collider.radius + e2.collider.radius
 
             if dist < min_dist {
-                handle_collision(state, h1, h2)
+                handle_collision(mutate state, h1, h2)
             }
         }
     }
@@ -275,14 +275,14 @@ func main() -> () or Error {
 
             // Parallel physics: split entity updates across thread pool
             // Each thread processes a batch of entities
-            parallel_movement_system(state, dt, NUM_PHYSICS_THREADS)
+            parallel_movement_system(mutate state, dt, NUM_PHYSICS_THREADS)
 
             // Collision runs single-threaded (needs to see all entities)
-            collision_system(state)
+            collision_system(mutate state)
 
             // Game logic on main thread
-            spawn_timer = spawn_system(state, spawn_timer + dt)
-            cleanup_system(state)
+            spawn_timer = spawn_system(mutate state, spawn_timer + dt)
+            cleanup_system(mutate state)
 
             accumulator -= dt
         }
@@ -310,5 +310,4 @@ func main() -> () or Error {
         println("Demo complete! Final Score: {state.score}")
     }
 
-    return Result.Ok(())
 }

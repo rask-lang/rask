@@ -125,30 +125,41 @@ pool.modify(h, |entity| {
 
 ## Iteration
 
-Pool supports value mode (borrowed elements) and handle mode (mutation/removal).
+Pools yield handles by default — consistent with their identity-based design. Handles are the primary abstraction; if you just need values, use `.values()`.
 
-**Value mode (default)** — read-only iteration:
+**Handle mode (default)** — snapshot iteration, safe for mutation and removal:
+
 ```rask
-for entity in pool {
+for h in pool {
+    pool[h].update()
+    if pool[h].expired {
+        pool.remove(h)      // Safe: iterating a snapshot
+    }
+}
+```
+
+`for h in pool` copies all active handles into a temporary Vec, then iterates it. The pool is not borrowed during iteration, so mutation and removal are always safe.
+
+| Rule | Description |
+|------|-------------|
+| **PF1: Current removal OK** | Removing the current element is always safe |
+| **PF2: Other removal OK** | Removing other elements is safe |
+| **PF3: Insertion ignored** | Elements inserted during iteration are not visited |
+| **PF4: No double-visit** | Each existing element visited at most once |
+
+**Value mode** — `pool.values()` provides read-only borrowed iteration:
+```rask
+for entity in pool.values() {
     print(entity.name)
     entity.render()
 }
 ```
 
-**Handle mode** — `pool.handles()` provides iteration with safe removal:
-
-| Rule | Description |
-|------|-------------|
-| **PF1: Current removal OK** | Removing the current element is always safe |
-| **PF2: Other removal OK** | Removing other elements is safe (cursor adjusts) |
-| **PF3: Insertion deferred** | Insertions during iteration may or may not be visited |
-| **PF4: No double-visit** | Each existing element visited at most once |
-
+**Entries mode** — `pool.entries()` yields both:
 ```rask
-for h in pool.handles() {
-    pool[h].update()
-    if pool[h].expired {
-        pool.remove(h)      // Safe during iteration
+for (h, entity) in pool.entries() {
+    if entity.expired {
+        pool.remove(h)
     }
 }
 ```

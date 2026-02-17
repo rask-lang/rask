@@ -67,21 +67,55 @@ func process() -> () or Error {
 **Forgetting to consume:**
 <!-- test: compile-fail -->
 ```rask
+@resource
+struct DbConn {
+    handle: i32
+}
+
+extend DbConn {
+    func open(path: string) -> DbConn or Error {
+        return Ok(DbConn { handle: 1 })
+    }
+
+    func read_all(self) -> string or Error {
+        return Ok("data")
+    }
+
+    func close(take self) -> () or Error {
+        return Ok(())
+    }
+}
+
 func bad() -> () or Error {
-    const file = try File.open("data.txt")
-    const data = try file.read_all()
+    const conn = try DbConn.open("data.txt")
+    const data = try conn.read_all()
     Ok(())
-    // ERROR: file not consumed before scope exit
+    // ERROR: conn not consumed before scope exit
 }
 ```
 
 **Double consumption:**
 <!-- test: compile-fail -->
 ```rask
+@resource
+struct DbConn {
+    handle: i32
+}
+
+extend DbConn {
+    func open(path: string) -> DbConn or Error {
+        return Ok(DbConn { handle: 1 })
+    }
+
+    func close(take self) -> () or Error {
+        return Ok(())
+    }
+}
+
 func also_bad() -> () or Error {
-    const file = try File.open("data.txt")
-    try file.close()
-    try file.close()    // ERROR: file already consumed
+    const conn = try DbConn.open("data.txt")
+    try conn.close()
+    try conn.close()    // ERROR: conn already consumed
     Ok(())
 }
 ```

@@ -87,6 +87,31 @@ ERROR [std.time/S1]: sleep failed
 WHY: Platform-specific sleep failure (rare).
 ```
 
+## Arithmetic and Comparison
+
+| Rule | Description |
+|------|-------------|
+| **A1: Instant shift** | `instant + duration -> Instant`, `instant - duration -> Instant` |
+| **A2: Instant difference** | `instant - instant -> Duration` |
+| **A3: Duration arithmetic** | `duration + duration -> Duration`, `duration - duration -> Duration` |
+| **A4: Comparison** | `<`, `<=`, `>`, `>=`, `==` on same-type pairs (Instant/Instant or Duration/Duration) |
+
+Both types are nanosecond i64 internally — arithmetic is native integer ops. No overflow checking (wraps).
+
+<!-- test: skip -->
+```rask
+import time
+
+const start = time.Instant.now()
+time.sleep(time.Duration.from_millis(10))
+const end = time.Instant.now()
+
+const elapsed = end - start           // Duration
+const later = start + elapsed         // Instant
+const d2 = elapsed + elapsed          // Duration
+const before = end > start            // true
+```
+
 ## Edge Cases
 
 | Case | Behavior | Rule |
@@ -120,9 +145,7 @@ WHY: Platform-specific sleep failure (rare).
 ### Deferred
 
 - `SystemTime` — wall-clock with UNIX epoch, serializable
-- Duration arithmetic: `d1 + d2`, `d1 - d2`, `d1 * n`, `d1 / n`
-- Duration comparison: `d1 < d2`, `d1 == d2`
-- Instant subtraction: `instant1 - instant2 -> Duration`
+- Duration scaling: `d1 * n`, `d1 / n`
 
 ### See Also
 

@@ -316,6 +316,7 @@ impl Desugarer {
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
             | ExprKind::Ident(_)
+            | ExprKind::Null
             => {}
             ExprKind::String(_) => {
                 // String interpolation desugaring handled below

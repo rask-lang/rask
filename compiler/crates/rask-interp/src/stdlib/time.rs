@@ -43,6 +43,7 @@ impl Interpreter {
         &self,
         nanos: u64,
         method: &str,
+        args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
             "as_secs" => Ok(Value::Int((nanos / 1_000_000_000) as i64)),
@@ -51,6 +52,57 @@ impl Interpreter {
             "as_nanos" => Ok(Value::Int(nanos as i64)),
             "as_secs_f32" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
             "as_secs_f64" => Ok(Value::Float(nanos as f64 / 1_000_000_000.0)),
+            // Arithmetic
+            "add" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(nanos.wrapping_add(other)))
+            }
+            "sub" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(nanos.wrapping_sub(other)))
+            }
+            // Comparisons
+            "eq" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(nanos == other))
+            }
+            "lt" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(nanos < other))
+            }
+            "le" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(nanos <= other))
+            }
+            "gt" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(nanos > other))
+            }
+            "ge" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(nanos >= other))
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Duration".to_string(),
                 method: method.to_string(),
@@ -79,6 +131,67 @@ impl Interpreter {
             "elapsed" => {
                 let duration = instant.elapsed();
                 Ok(Value::Duration(duration.as_nanos() as u64))
+            }
+            // Arithmetic: instant + duration -> Instant
+            "add" => {
+                let dur_nanos = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_duration()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Instant(*instant + std::time::Duration::from_nanos(dur_nanos)))
+            }
+            // Subtraction: instant - instant -> Duration, instant - duration -> Instant
+            "sub" => {
+                let arg = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?;
+                match arg {
+                    Value::Instant(other) => {
+                        let duration = instant.duration_since(*other);
+                        Ok(Value::Duration(duration.as_nanos() as u64))
+                    }
+                    Value::Duration(dur_nanos) => {
+                        Ok(Value::Instant(*instant - std::time::Duration::from_nanos(*dur_nanos)))
+                    }
+                    _ => Err(RuntimeError::TypeError(
+                        format!("Instant.sub expects Instant or Duration, got {}", arg.type_name()),
+                    )),
+                }
+            }
+            // Comparisons
+            "eq" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(*instant == other))
+            }
+            "lt" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(*instant < other))
+            }
+            "le" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(*instant <= other))
+            }
+            "gt" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(*instant > other))
+            }
+            "ge" => {
+                let other = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_instant()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Bool(*instant >= other))
             }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Instant".to_string(),

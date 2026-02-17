@@ -81,6 +81,7 @@ fn dummy_value(type_name: &str) -> Value {
         },
         "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
             handle: Mutex::new(None),
+            receiver: Mutex::new(None),
         })),
         "Sender" => {
             let (tx, _rx) = mpsc::sync_channel(1);
@@ -122,10 +123,20 @@ fn module_kind(name: &str) -> ModuleKind {
 
 #[test]
 fn all_registered_type_methods_implemented() {
+    use rask_stdlib::registry::{is_codegen_only_type, codegen_only_methods};
+
     let mut interp = Interpreter::new();
     for &type_name in rask_stdlib::registry::REGISTERED_TYPES {
+        // Skip types that only exist for native codegen
+        if is_codegen_only_type(type_name) {
+            continue;
+        }
         let dummy = dummy_value(type_name);
+        let skip = codegen_only_methods(type_name);
         for &method in rask_stdlib::registry::type_method_names(type_name) {
+            if skip.contains(&method) {
+                continue;
+            }
             assert!(
                 interp.has_method_dispatch(dummy.clone(), method),
                 "{type_name}.{method} registered in rask-stdlib but interpreter returns NoSuchMethod"

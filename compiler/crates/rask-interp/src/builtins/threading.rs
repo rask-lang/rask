@@ -85,7 +85,7 @@ impl Interpreter {
     }
 
     /// Handle TaskHandle method calls.
-    /// In interpreter, TaskHandle has same implementation as ThreadHandle (OS threads).
+    /// Tasks submitted to a thread pool use the receiver channel; otherwise fall back to join handle.
     pub(crate) fn call_task_handle_method(
         &mut self,
         handle: &Arc<ThreadHandleInner>,
@@ -94,16 +94,15 @@ impl Interpreter {
         match method {
             "join" => {
                 self.consume_handle(handle);
-                let jh = handle.handle.lock().unwrap().take();
-                match jh {
-                    Some(jh) => match jh.join() {
-                        // Thread succeeded - return Ok(value)
+                // Try receiver first (pool-submitted tasks)
+                let rx = handle.receiver.lock().unwrap().take();
+                if let Some(rx) = rx {
+                    return match rx.recv() {
                         Ok(Ok(val)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![val],
                         }),
-                        // Thread returned error - wrap in JoinError::Panicked
                         Ok(Err(msg)) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
@@ -113,7 +112,37 @@ impl Interpreter {
                                 fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
                             }],
                         }),
-                        // Thread panicked - return Err(JoinError::Panicked)
+                        Err(_) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(
+                                    "task channel closed".to_string(),
+                                )))],
+                            }],
+                        }),
+                    };
+                }
+                // Fall back to OS thread handle
+                let jh = handle.handle.lock().unwrap().take();
+                match jh {
+                    Some(jh) => match jh.join() {
+                        Ok(Ok(val)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![val],
+                        }),
+                        Ok(Err(msg)) => Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Err".to_string(),
+                            fields: vec![Value::Enum {
+                                name: "JoinError".to_string(),
+                                variant: "Panicked".to_string(),
+                                fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                            }],
+                        }),
                         Err(_) => Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Err".to_string(),
@@ -126,7 +155,6 @@ impl Interpreter {
                             }],
                         }),
                     },
-                    // Handle already consumed - return Err(JoinError::Panicked) with message
                     None => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
@@ -143,6 +171,7 @@ impl Interpreter {
             "detach" => {
                 self.consume_handle(handle);
                 let _ = handle.handle.lock().unwrap().take();
+                let _ = handle.receiver.lock().unwrap().take();
                 Ok(Value::Unit)
             }
             "cancel" => {

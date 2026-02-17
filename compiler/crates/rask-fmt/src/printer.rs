@@ -860,7 +860,17 @@ impl<'a> Printer<'a> {
                     self.emit(": ");
                 }
                 self.emit("for ");
-                self.emit(binding);
+                match binding {
+                    ForBinding::Single(name) => self.emit(name),
+                    ForBinding::Tuple(names) => {
+                        self.emit("(");
+                        for (i, name) in names.iter().enumerate() {
+                            if i > 0 { self.emit(", "); }
+                            self.emit(name);
+                        }
+                        self.emit(")");
+                    }
+                }
                 self.emit(" in ");
                 self.format_expr(iter);
                 self.emit(" {");
@@ -932,7 +942,7 @@ impl<'a> Printer<'a> {
 
     fn format_expr_inner(&mut self, expr: &Expr, parent_prec: Option<u8>) {
         match &expr.kind {
-            ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) | ExprKind::Char(_) => {
+            ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) | ExprKind::Char(_) | ExprKind::Null => {
                 let text = self.source_text(expr.span).to_string();
                 self.emit(&text);
             }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Statement execution.
 
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
 use crate::value::Value;
 
@@ -171,7 +171,7 @@ impl Interpreter {
                         let end_val = if inclusive { end + 1 } else { end };
                         for i in start..end_val {
                             self.env.push_scope();
-                            self.env.define(binding.clone(), Value::Int(i));
+                            self.define_for_binding(binding, Value::Int(i));
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(diag) if matches!(diag.error, RuntimeError::Break) => {
@@ -195,7 +195,7 @@ impl Interpreter {
                         let items: Vec<Value> = v.lock().unwrap().clone();
                         for item in items {
                             self.env.push_scope();
-                            self.env.define(binding.clone(), item);
+                            self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(diag) if matches!(diag.error, RuntimeError::Break) => {
@@ -216,18 +216,26 @@ impl Interpreter {
                         Ok(Value::Unit)
                     }
                     Value::Pool(p) => {
-                        // Value mode: yield borrowed elements
+                        // Handle mode (default): yield handles as snapshot
                         let pool = p.lock().unwrap();
+                        let pool_id = pool.pool_id;
                         let items: Vec<Value> = pool
                             .slots
                             .iter()
-                            .filter_map(|(_gen, slot)| slot.clone())
+                            .enumerate()
+                            .filter_map(|(i, (gen, slot))| {
+                                slot.as_ref().map(|_| Value::Handle {
+                                    pool_id,
+                                    index: i as u32,
+                                    generation: *gen,
+                                })
+                            })
                             .collect();
                         drop(pool);
 
                         for item in items {
                             self.env.push_scope();
-                            self.env.define(binding.clone(), item);
+                            self.define_for_binding(binding, item);
                             match self.exec_stmts(body) {
                                 Ok(_) => {}
                                 Err(diag) if matches!(diag.error, RuntimeError::Break) => {
@@ -253,7 +261,7 @@ impl Interpreter {
                                 .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))? {
                                 Some(item) => {
                                     self.env.push_scope();
-                                    self.env.define(binding.clone(), item);
+                                    self.define_for_binding(binding, item);
                                     match self.exec_stmts(body) {
                                         Ok(_) => {}
                                         Err(diag) if matches!(diag.error, RuntimeError::Break) => {
@@ -296,6 +304,31 @@ impl Interpreter {
             }
 
             _ => Ok(Value::Unit),
+        }
+    }
+
+    fn define_for_binding(&mut self, binding: &ForBinding, value: Value) {
+        match binding {
+            ForBinding::Single(name) => self.env.define(name.clone(), value),
+            ForBinding::Tuple(names) => {
+                // Destructure tuple/array value into bindings
+                if let Value::Vec(v) = &value {
+                    let items = v.lock().unwrap();
+                    for (i, name) in names.iter().enumerate() {
+                        let val = items.get(i).cloned().unwrap_or(Value::Unit);
+                        self.env.define(name.clone(), val);
+                    }
+                } else {
+                    // Single value bound to first name, rest get Unit
+                    for (i, name) in names.iter().enumerate() {
+                        if i == 0 {
+                            self.env.define(name.clone(), value.clone());
+                        } else {
+                            self.env.define(name.clone(), Value::Unit);
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -159,9 +159,12 @@ pub enum ModuleKind {
     Thread, // thread.Thread, thread.ThreadPool
 }
 
-/// Inner state for a spawned thread handle.
+/// Inner state for a spawned thread/task handle.
 pub struct ThreadHandleInner {
+    /// OS thread join handle (used for raw thread::spawn)
     pub handle: Mutex<Option<std::thread::JoinHandle<Result<Value, String>>>>,
+    /// Result channel (used for tasks submitted to a thread pool)
+    pub receiver: Mutex<Option<mpsc::Receiver<Result<Value, String>>>>,
 }
 
 impl fmt::Debug for ThreadHandleInner {
@@ -188,10 +191,47 @@ impl fmt::Debug for ThreadPoolInner {
     }
 }
 
-/// Multitasking runtime (in interpreter, just tracks that we're in async context).
+/// Multitasking runtime — bounded thread pool for spawn() tasks.
 pub struct MultitaskingRuntime {
-    /// Number of worker threads (unused in interpreter, just for compatibility).
     pub workers: usize,
+    pub sender: Mutex<Option<mpsc::Sender<PoolTask>>>,
+    pub pool_threads: Mutex<Vec<std::thread::JoinHandle<()>>>,
+}
+
+impl MultitaskingRuntime {
+    pub fn new(workers: usize) -> Self {
+        let (tx, rx) = mpsc::channel::<PoolTask>();
+        let rx = Arc::new(Mutex::new(rx));
+
+        let mut threads = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let rx = Arc::clone(&rx);
+            threads.push(std::thread::spawn(move || {
+                loop {
+                    let task = rx.lock().unwrap().recv();
+                    match task {
+                        Ok(task) => (task.work)(),
+                        Err(_) => break, // Channel closed
+                    }
+                }
+            }));
+        }
+
+        Self {
+            workers,
+            sender: Mutex::new(Some(tx)),
+            pool_threads: Mutex::new(threads),
+        }
+    }
+
+    /// Shut down the pool: drop sender, join all workers.
+    pub fn shutdown(&self) {
+        *self.sender.lock().unwrap() = None;
+        let mut threads = self.pool_threads.lock().unwrap();
+        for t in threads.drain(..) {
+            let _ = t.join();
+        }
+    }
 }
 
 impl fmt::Debug for MultitaskingRuntime {
