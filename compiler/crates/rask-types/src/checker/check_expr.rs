@@ -943,6 +943,26 @@ impl TypeChecker {
             }
         }
 
+        // Type-level namespaces: Vec.new(), Map.new(), Rng.new(), Pool.new()
+        // These are type names, not variables — skip ESAD borrow check and
+        // emit UnresolvedNamed directly instead of calling infer_expr
+        // (which would return Type::Error for unregistered type names).
+        if let ExprKind::Ident(name) = &object.kind {
+            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng") {
+                let obj_ty = Type::UnresolvedNamed(name.clone());
+                let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
+                let ret_ty = self.ctx.fresh_var();
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: obj_ty,
+                    method: method.to_string(),
+                    args: arg_types,
+                    ret: ret_ty.clone(),
+                    span,
+                });
+                return ret_ty;
+            }
+        }
+
         // ESAD Phase 1: Push borrow for the object being called
         if let ExprKind::Ident(var_name) = &object.kind {
             let mode = self.method_borrow_mode(var_name, method);

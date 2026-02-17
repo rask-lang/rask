@@ -319,6 +319,26 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Pool" => {
                 self.resolve_pool_static_method(&method, &args, &ret, span)
             }
+            // Vec<T>
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Vec" => {
+                self.resolve_vec_method(type_args, &method, &args, &ret, span)
+            }
+            // Vec (bare, for static constructors like Vec.new())
+            Type::UnresolvedNamed(name) if name == "Vec" => {
+                self.resolve_vec_static_method(&method, &args, &ret, span)
+            }
+            // Map<K, V>
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Map" => {
+                self.resolve_map_method(type_args, &method, &args, &ret, span)
+            }
+            // Map (bare, for static constructors like Map.new())
+            Type::UnresolvedNamed(name) if name == "Map" => {
+                self.resolve_map_static_method(&method, &args, &ret, span)
+            }
+            // Rng (no type params — static and instance methods)
+            Type::UnresolvedNamed(name) if name == "Rng" => {
+                self.resolve_rng_method(&method, &args, &ret, span)
+            }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
@@ -931,6 +951,248 @@ impl TypeChecker {
                     span,
                 })
             }
+        }
+    }
+
+    /// Resolve static methods on bare Vec (e.g. Vec.new()).
+    pub(super) fn resolve_vec_static_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "new" if args.is_empty() => {
+                let fresh = self.ctx.fresh_var();
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedNamed("Vec".to_string()),
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve instance methods on Vec<T>.
+    pub(super) fn resolve_vec_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+
+        let self_ty = Type::UnresolvedGeneric {
+            name: "Vec".to_string(),
+            args: type_args.to_vec(),
+        };
+
+        match method {
+            "push" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            "pop" if args.is_empty() => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            "len" if args.is_empty() => {
+                self.unify(ret, &Type::I64, span)
+            }
+            "get" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            "set" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let _ = self.unify(&args[1], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            "clear" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            "is_empty" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            "capacity" if args.is_empty() => {
+                self.unify(ret, &Type::I64, span)
+            }
+            "iter" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
+            }
+            "skip" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &self_ty, span)
+            }
+            "collect" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve static methods on bare Map (e.g. Map.new()).
+    pub(super) fn resolve_map_static_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "new" if args.is_empty() => {
+                let fresh_k = self.ctx.fresh_var();
+                let fresh_v = self.ctx.fresh_var();
+                let map_ty = Type::UnresolvedGeneric {
+                    name: "Map".to_string(),
+                    args: vec![
+                        GenericArg::Type(Box::new(fresh_k)),
+                        GenericArg::Type(Box::new(fresh_v)),
+                    ],
+                };
+                self.unify(ret, &map_ty, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedNamed("Map".to_string()),
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve instance methods on Map<K, V>.
+    pub(super) fn resolve_map_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let key_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+        let val_type = if let Some(GenericArg::Type(t)) = type_args.get(1) {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+
+        match method {
+            "insert" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &key_type, span);
+                let _ = self.unify(&args[1], &val_type, span);
+                self.unify(ret, &Type::I64, span)
+            }
+            "contains_key" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &key_type, span);
+                self.unify(ret, &Type::Bool, span)
+            }
+            "get" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &key_type, span);
+                let opt_ty = Type::Option(Box::new(val_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            "remove" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &key_type, span);
+                self.unify(ret, &Type::I64, span)
+            }
+            "len" if args.is_empty() => {
+                self.unify(ret, &Type::I64, span)
+            }
+            "is_empty" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            "clear" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            "keys" if args.is_empty() => {
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(key_type))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
+            "values" if args.is_empty() => {
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(val_type))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedGeneric {
+                    name: "Map".to_string(),
+                    args: type_args.to_vec(),
+                },
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Resolve methods on Rng (both static and instance — no type params).
+    pub(super) fn resolve_rng_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let rng_ty = Type::UnresolvedNamed("Rng".to_string());
+
+        match method {
+            "new" if args.is_empty() => {
+                self.unify(ret, &rng_ty, span)
+            }
+            "from_seed" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &rng_ty, span)
+            }
+            "u64" if args.is_empty() => {
+                self.unify(ret, &Type::U64, span)
+            }
+            "i64" if args.is_empty() => {
+                self.unify(ret, &Type::I64, span)
+            }
+            "f64" if args.is_empty() => {
+                self.unify(ret, &Type::F64, span)
+            }
+            "f32" if args.is_empty() => {
+                self.unify(ret, &Type::F32, span)
+            }
+            "bool" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            "range" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let _ = self.unify(&args[1], &Type::I64, span);
+                self.unify(ret, &Type::I64, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: rng_ty,
+                method: method.to_string(),
+                span,
+            }),
         }
     }
 }
