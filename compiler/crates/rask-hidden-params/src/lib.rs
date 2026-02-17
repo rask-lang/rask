@@ -428,7 +428,14 @@ impl HiddenParamPass {
             // Phase 6 (BLK1-BLK4): Desugar `using` blocks
             ExprKind::UsingBlock { name, args, body } => {
                 if name == "Multitasking" || name == "multitasking" {
-                    self.desugar_multitasking_block(expr);
+                    // Keep UsingBlock intact — MIR lowering emits
+                    // rask_runtime_init/rask_runtime_shutdown directly.
+                    self.rewrite_stmts(
+                        match &mut expr.kind {
+                            ExprKind::UsingBlock { body, .. } => body,
+                            _ => unreachable!(),
+                        }
+                    );
                 } else if name == "ThreadPool" {
                     // ThreadPool blocks keep their structure for now — the
                     // interpreter handles them directly and the compiled path
@@ -578,95 +585,8 @@ impl HiddenParamPass {
         }
     }
 
-    /// Desugar `using Multitasking { body }` into:
-    /// ```text
-    /// {
-    ///   const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
-    ///   const __using_result = { body }
-    ///   __ctx_runtime.__shutdown()
-    ///   __using_result
-    /// }
-    /// ```
-    /// Body value is captured before shutdown so block expressions work.
-    fn desugar_multitasking_block(&mut self, expr: &mut Expr) {
-        let span = expr.span;
-
-        // Extract the body before rewriting
-        let body = match &mut expr.kind {
-            ExprKind::UsingBlock { body, .. } => std::mem::take(body),
-            _ => return,
-        };
-
-        // Rewrite body statements (recursive)
-        let mut body = body;
-        self.rewrite_stmts(&mut body);
-
-        // const __ctx_runtime = RuntimeContext.__new(ContextMode.ThreadBacked)
-        let ctx_init = Stmt {
-            id: self.fresh_id(),
-            kind: StmtKind::Const {
-                name: "__ctx_runtime".to_string(),
-                name_span: span,
-                ty: Some("RuntimeContext".to_string()),
-                init: Expr {
-                    id: self.fresh_id(),
-                    kind: ExprKind::Ident("__runtime_context_new".to_string()),
-                    span,
-                },
-            },
-            span,
-        };
-
-        // const __using_result = { body }
-        let capture_result = Stmt {
-            id: self.fresh_id(),
-            kind: StmtKind::Const {
-                name: "__using_result".to_string(),
-                name_span: span,
-                ty: None,
-                init: Expr {
-                    id: self.fresh_id(),
-                    kind: ExprKind::Block(body),
-                    span,
-                },
-            },
-            span,
-        };
-
-        // __ctx_runtime.__shutdown()
-        let ctx_shutdown = Stmt {
-            id: self.fresh_id(),
-            kind: StmtKind::Expr(Expr {
-                id: self.fresh_id(),
-                kind: ExprKind::MethodCall {
-                    object: Box::new(Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::Ident("__ctx_runtime".to_string()),
-                        span,
-                    }),
-                    method: "__shutdown".to_string(),
-                    type_args: None,
-                    args: vec![],
-                },
-                span,
-            }),
-            span,
-        };
-
-        // __using_result (produce the captured value)
-        let yield_result = Stmt {
-            id: self.fresh_id(),
-            kind: StmtKind::Expr(Expr {
-                id: self.fresh_id(),
-                kind: ExprKind::Ident("__using_result".to_string()),
-                span,
-            }),
-            span,
-        };
-
-        let block_stmts = vec![ctx_init, capture_result, ctx_shutdown, yield_result];
-        expr.kind = ExprKind::Block(block_stmts);
-    }
+    // desugar_multitasking_block removed — MIR lowering now emits
+    // rask_runtime_init/rask_runtime_shutdown directly.
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

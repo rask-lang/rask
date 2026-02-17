@@ -4,7 +4,7 @@
 
 use super::{
     binop_result_type, is_type_constructor_name, is_variant_name, lower_binop, lower_unaryop,
-    mir_type_size, operator_method_to_binop, operator_method_to_unaryop, LoweringError,
+    operator_method_to_binop, operator_method_to_unaryop, LoweringError,
     MirLowerer, TypedOperand,
 };
 use crate::{
@@ -527,7 +527,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     lowered.push(elem_op);
                 }
-                let elem_size = mir_type_size(&elem_ty);
+                let elem_size = elem_ty.size();
                 let array_ty = MirType::Array {
                     elem: Box::new(elem_ty),
                     len: elems.len() as u32,
@@ -549,7 +549,7 @@ impl<'a> MirLowerer<'a> {
                 let mut offset = 0u32;
                 for elem in elems.iter() {
                     let (elem_op, elem_ty) = self.lower_expr(elem)?;
-                    let elem_size = mir_type_size(&elem_ty);
+                    let elem_size = elem_ty.size();
                     let elem_align = elem_size.max(1);
                     // Align offset for this element
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
@@ -919,9 +919,26 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), target_ty))
             }
 
-            // Using block
-            ExprKind::UsingBlock { body, .. } => {
-                self.lower_block(body)
+            // Using block — emit runtime init/shutdown for Multitasking
+            ExprKind::UsingBlock { name, body, .. } => {
+                if name == "Multitasking" || name == "multitasking" {
+                    // rask_runtime_init(0) — 0 = auto-detect worker count
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: None,
+                        func: FunctionRef { name: "rask_runtime_init".to_string() },
+                        args: vec![MirOperand::Constant(crate::operand::MirConst::Int(0))],
+                    });
+                    let result = self.lower_block(body);
+                    // rask_runtime_shutdown()
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: None,
+                        func: FunctionRef { name: "rask_runtime_shutdown".to_string() },
+                        args: vec![],
+                    });
+                    result
+                } else {
+                    self.lower_block(body)
+                }
             }
 
             // With-as binding
@@ -1370,7 +1387,7 @@ impl<'a> MirLowerer<'a> {
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
-            let size = mir_type_size(ty);
+            let size = ty.size();
             // 8-byte alignment
             let aligned_offset = (env_offset + 7) & !7;
             captures.push(ClosureCapture {
@@ -1479,7 +1496,7 @@ impl<'a> MirLowerer<'a> {
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
-            let size = mir_type_size(ty);
+            let size = ty.size();
             let aligned_offset = (env_offset + 7) & !7;
             captures.push(ClosureCapture {
                 local_id: *local_id,
@@ -1538,29 +1555,92 @@ impl<'a> MirLowerer<'a> {
 
         let spawn_fn = spawn_builder.finish();
 
-        // Register the spawn function signature
-        self.func_sigs.insert(spawn_name.clone(), super::FuncSig {
-            ret_ty: MirType::Void,
-        });
-        self.synthesized_functions.push(spawn_fn);
+        // Try the state machine transform for yield-point-containing spawns
+        if let Some(sm_result) = crate::transform::state_machine::transform(&spawn_fn) {
+            // Register the poll function
+            let poll_name = sm_result.poll_fn.name.clone();
+            self.func_sigs.insert(poll_name.clone(), super::FuncSig {
+                ret_ty: MirType::I32,
+            });
+            self.synthesized_functions.push(sm_result.poll_fn);
 
-        // 5. In the parent function, emit ClosureCreate + rask_closure_spawn call
-        let closure_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::ClosureCreate {
-            dst: closure_local,
-            func_name: spawn_name,
-            captures,
-            heap: true,
-        });
+            // Allocate state struct, init tag = 0, store captured vars
+            let state_ptr = self.builder.alloc_temp(MirType::Ptr);
+            let state_size_val = sm_result.state_size as i64;
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(state_ptr),
+                func: FunctionRef { name: "rask_alloc".to_string() },
+                args: vec![MirOperand::Constant(crate::operand::MirConst::Int(state_size_val))],
+            });
 
-        let handle_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(handle_local),
-            func: FunctionRef { name: "spawn".to_string() },
-            args: vec![MirOperand::Local(closure_local)],
-        });
+            // Store state_tag = 0
+            self.builder.push_stmt(MirStmt::Store {
+                addr: state_ptr,
+                offset: 0,
+                value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+            });
 
-        Ok((MirOperand::Local(handle_local), MirType::Ptr))
+            // Store captured variables into the state struct.
+            // capture_stores maps (env_offset → state_offset). Match each
+            // entry to the ClosureCapture with the same env_offset to find
+            // the parent's local_id.
+            for &(env_offset, state_offset) in &sm_result.capture_stores {
+                if let Some(cap) = captures.iter().find(|c| c.offset == env_offset) {
+                    self.builder.push_stmt(MirStmt::Store {
+                        addr: state_ptr,
+                        offset: state_offset,
+                        value: MirOperand::Local(cap.local_id),
+                    });
+                }
+            }
+
+            // Emit: rask_green_spawn(poll_fn, state_ptr, state_size)
+            let poll_fn_ptr = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: poll_fn_ptr,
+                rvalue: MirRValue::Use(MirOperand::Constant(
+                    crate::operand::MirConst::String(poll_name),
+                )),
+            });
+
+            let handle_local = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(handle_local),
+                func: FunctionRef { name: "rask_green_spawn".to_string() },
+                args: vec![
+                    MirOperand::Local(poll_fn_ptr),
+                    MirOperand::Local(state_ptr),
+                    MirOperand::Constant(crate::operand::MirConst::Int(state_size_val)),
+                ],
+            });
+
+            Ok((MirOperand::Local(handle_local), MirType::Ptr))
+        } else {
+            // No yield points — use the closure bridge
+            // Register the spawn function signature
+            self.func_sigs.insert(spawn_name.clone(), super::FuncSig {
+                ret_ty: MirType::Void,
+            });
+            self.synthesized_functions.push(spawn_fn);
+
+            // Emit ClosureCreate + rask_green_closure_spawn call
+            let closure_local = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::ClosureCreate {
+                dst: closure_local,
+                func_name: spawn_name,
+                captures,
+                heap: true,
+            });
+
+            let handle_local = self.builder.alloc_temp(MirType::Ptr);
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(handle_local),
+                func: FunctionRef { name: "spawn".to_string() },
+                args: vec![MirOperand::Local(closure_local)],
+            });
+
+            Ok((MirOperand::Local(handle_local), MirType::Ptr))
+        }
     }
 
     /// Collect free variables from a block of statements (no params to bind).
