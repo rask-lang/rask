@@ -620,7 +620,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         StdlibEntry {
             mir_name: "rask_sleep_ns",
-            c_name: "rask_sleep_ns",
+            c_name: "rask_green_sleep_ns",
             params: &[types::I64],
             ret_ty: None,
         },
