@@ -1,20 +1,15 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// Minimal Rask runtime — provides built-in functions for native-compiled programs.
-// Linked with the object file produced by rask-codegen.
+// Rask runtime — print functions, I/O, resource tracking, and entry point.
+// Collection and string implementations live in vec.c, map.c, pool.c, string.c.
 
+#include "rask_runtime.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
-
-// Don't include rask_runtime.h here — it declares the typed API (RaskVec*, etc.)
-// which conflicts with the i64-based signatures below. Once codegen migrates to
-// the typed implementations (vec.c, string.c, etc.), this file's inline
-// definitions should be removed and the header included instead.
-extern void rask_args_init(int argc, char **argv);
 
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
@@ -33,9 +28,35 @@ void rask_print_f64(double val) {
     printf("%g", val);
 }
 
-void rask_print_string(const char *ptr) {
-    if (ptr) {
-        fputs(ptr, stdout);
+void rask_print_f32(float val) {
+    printf("%g", (double)val);
+}
+
+void rask_print_char(int32_t codepoint) {
+    if (codepoint < 0x80) {
+        putchar(codepoint);
+    } else if (codepoint < 0x800) {
+        putchar(0xC0 | (codepoint >> 6));
+        putchar(0x80 | (codepoint & 0x3F));
+    } else if (codepoint < 0x10000) {
+        putchar(0xE0 | (codepoint >> 12));
+        putchar(0x80 | ((codepoint >> 6) & 0x3F));
+        putchar(0x80 | (codepoint & 0x3F));
+    } else {
+        putchar(0xF0 | (codepoint >> 18));
+        putchar(0x80 | ((codepoint >> 12) & 0x3F));
+        putchar(0x80 | ((codepoint >> 6) & 0x3F));
+        putchar(0x80 | (codepoint & 0x3F));
+    }
+}
+
+void rask_print_u64(uint64_t val) {
+    printf("%llu", (unsigned long long)val);
+}
+
+void rask_print_string(const RaskString *s) {
+    if (s) {
+        fputs(rask_string_ptr(s), stdout);
     }
 }
 
@@ -129,313 +150,32 @@ void rask_resource_scope_check(int64_t scope_depth) {
     }
 }
 
-// ─── Pool helpers ────────────────────────────────────────────────
-// Handle format: lower 32 bits = index, upper 32 bits = generation.
-// Pool memory layout: { capacity: i64, gen_array: i64*, data: i64*, occupied: i8* }
-
-struct rask_pool_header {
-    int64_t  capacity;
-    int64_t *gen_array;
-    int64_t *data;
-    int8_t  *occupied;
-};
-
-// Validate a pool handle, abort on any mismatch. Returns the unpacked index.
-static int32_t pool_validate(int64_t pool_ptr, int64_t handle, const char *op) {
-    if (!pool_ptr) {
-        fprintf(stderr, "panic: pool %s on null pool\n", op);
-        abort();
-    }
-    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
-    int32_t index      = (int32_t)(handle & 0xFFFFFFFF);
-    int32_t generation = (int32_t)((handle >> 32) & 0xFFFFFFFF);
-
-    if (index < 0 || index >= pool->capacity) {
-        fprintf(stderr, "panic: pool %s index %d out of bounds (capacity %lld)\n",
-                op, index, (long long)pool->capacity);
-        abort();
-    }
-    if (!pool->occupied[index]) {
-        fprintf(stderr, "panic: pool %s on freed slot (index %d)\n", op, index);
-        abort();
-    }
-    if (pool->gen_array[index] != generation) {
-        fprintf(stderr, "panic: pool %s with stale handle (index %d, expected gen %lld, got %d)\n",
-                op, index, (long long)pool->gen_array[index], generation);
-        abort();
-    }
-    return index;
-}
-
-int64_t rask_pool_checked_access(int64_t pool_ptr, int64_t handle) {
-    int32_t index = pool_validate(pool_ptr, handle, "access");
-    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
-    return (int64_t)&pool->data[index];
-}
-
-// ─── Vec ─────────────────────────────────────────────────────────
-// Dynamic array: { capacity: i64, len: i64, data: i64* }
-
-struct rask_vec {
-    int64_t  capacity;
-    int64_t  len;
-    int64_t *data;
-};
-
-int64_t rask_vec_new(void) {
-    struct rask_vec *v = (struct rask_vec *)malloc(sizeof(struct rask_vec));
-    if (!v) { fprintf(stderr, "panic: Vec alloc failed\n"); abort(); }
-    v->capacity = 8;
-    v->len = 0;
-    v->data = (int64_t *)malloc(8 * sizeof(int64_t));
-    if (!v->data) { fprintf(stderr, "panic: Vec alloc failed\n"); abort(); }
-    return (int64_t)v;
-}
-
-void rask_vec_push(int64_t vec_ptr, int64_t value) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    if (v->len >= v->capacity) {
-        v->capacity *= 2;
-        v->data = (int64_t *)realloc(v->data, (size_t)v->capacity * sizeof(int64_t));
-        if (!v->data) { fprintf(stderr, "panic: Vec realloc failed\n"); abort(); }
-    }
-    v->data[v->len++] = value;
-}
-
-int64_t rask_vec_pop(int64_t vec_ptr) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    if (v->len == 0) {
-        fprintf(stderr, "panic: pop on empty Vec\n");
-        abort();
-    }
-    return v->data[--v->len];
-}
-
-int64_t rask_vec_len(int64_t vec_ptr) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    return v->len;
-}
-
-int64_t rask_vec_get(int64_t vec_ptr, int64_t index) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    if (index < 0 || index >= v->len) {
-        fprintf(stderr, "panic: Vec index %lld out of bounds (len %lld)\n",
-                (long long)index, (long long)v->len);
-        abort();
-    }
-    return v->data[index];
-}
-
-void rask_vec_set(int64_t vec_ptr, int64_t index, int64_t value) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    if (index < 0 || index >= v->len) {
-        fprintf(stderr, "panic: Vec index %lld out of bounds (len %lld)\n",
-                (long long)index, (long long)v->len);
-        abort();
-    }
-    v->data[index] = value;
-}
-
-void rask_vec_clear(int64_t vec_ptr) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    v->len = 0;
-}
-
-int8_t rask_vec_is_empty(int64_t vec_ptr) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    return v->len == 0 ? 1 : 0;
-}
-
-int64_t rask_vec_capacity(int64_t vec_ptr) {
-    struct rask_vec *v = (struct rask_vec *)vec_ptr;
-    return v->capacity;
-}
-
-// ─── String ──────────────────────────────────────────────────────
-// Heap-allocated null-terminated C string wrappers.
-
-int64_t rask_string_new(void) {
-    char *s = (char *)malloc(1);
-    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
-    s[0] = '\0';
-    return (int64_t)s;
-}
-
-int64_t rask_string_len(int64_t str_ptr) {
-    if (!str_ptr) return 0;
-    return (int64_t)strlen((const char *)str_ptr);
-}
-
-int64_t rask_string_concat(int64_t a_ptr, int64_t b_ptr) {
-    const char *a = a_ptr ? (const char *)a_ptr : "";
-    const char *b = b_ptr ? (const char *)b_ptr : "";
-    size_t a_len = strlen(a);
-    size_t b_len = strlen(b);
-    char *result = (char *)malloc(a_len + b_len + 1);
-    if (!result) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
-    memcpy(result, a, a_len);
-    memcpy(result + a_len, b, b_len);
-    result[a_len + b_len] = '\0';
-    return (int64_t)result;
-}
-
-// ─── Conversion to string ─────────────────────────────────────────
-
-int64_t rask_i64_to_string(int64_t val) {
-    char buf[32];
-    snprintf(buf, sizeof(buf), "%lld", (long long)val);
-    char *s = (char *)malloc(strlen(buf) + 1);
-    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
-    strcpy(s, buf);
-    return (int64_t)s;
-}
-
-int64_t rask_bool_to_string(int64_t val) {
-    const char *src = val ? "true" : "false";
-    char *s = (char *)malloc(strlen(src) + 1);
-    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
-    strcpy(s, src);
-    return (int64_t)s;
-}
-
-// ─── Map ─────────────────────────────────────────────────────────
-// Simple linear-scan hash map: { capacity: i64, len: i64, keys: i64*, values: i64* }
-
-struct rask_map {
-    int64_t  capacity;
-    int64_t  len;
-    int64_t *keys;
-    int64_t *values;
-    int8_t  *occupied;
-};
-
-int64_t rask_map_new(void) {
-    struct rask_map *m = (struct rask_map *)malloc(sizeof(struct rask_map));
-    if (!m) { fprintf(stderr, "panic: Map alloc failed\n"); abort(); }
-    m->capacity = 16;
-    m->len = 0;
-    m->keys = (int64_t *)calloc((size_t)m->capacity, sizeof(int64_t));
-    m->values = (int64_t *)calloc((size_t)m->capacity, sizeof(int64_t));
-    m->occupied = (int8_t *)calloc((size_t)m->capacity, sizeof(int8_t));
-    if (!m->keys || !m->values || !m->occupied) {
-        fprintf(stderr, "panic: Map alloc failed\n"); abort();
-    }
-    return (int64_t)m;
-}
-
-void rask_map_insert(int64_t map_ptr, int64_t key, int64_t value) {
-    struct rask_map *m = (struct rask_map *)map_ptr;
-    // Check for existing key
-    for (int64_t i = 0; i < m->capacity; i++) {
-        if (m->occupied[i] && m->keys[i] == key) {
-            m->values[i] = value;
-            return;
-        }
-    }
-    // Find empty slot
-    for (int64_t i = 0; i < m->capacity; i++) {
-        if (!m->occupied[i]) {
-            m->keys[i] = key;
-            m->values[i] = value;
-            m->occupied[i] = 1;
-            m->len++;
-            return;
-        }
-    }
-    // Full — grow (simple doubling)
-    int64_t old_cap = m->capacity;
-    m->capacity *= 2;
-    m->keys = (int64_t *)realloc(m->keys, (size_t)m->capacity * sizeof(int64_t));
-    m->values = (int64_t *)realloc(m->values, (size_t)m->capacity * sizeof(int64_t));
-    m->occupied = (int8_t *)realloc(m->occupied, (size_t)m->capacity * sizeof(int8_t));
-    if (!m->keys || !m->values || !m->occupied) {
-        fprintf(stderr, "panic: Map realloc failed\n"); abort();
-    }
-    memset(m->occupied + old_cap, 0, (size_t)(m->capacity - old_cap) * sizeof(int8_t));
-    m->keys[old_cap] = key;
-    m->values[old_cap] = value;
-    m->occupied[old_cap] = 1;
-    m->len++;
-}
-
-int8_t rask_map_contains_key(int64_t map_ptr, int64_t key) {
-    struct rask_map *m = (struct rask_map *)map_ptr;
-    for (int64_t i = 0; i < m->capacity; i++) {
-        if (m->occupied[i] && m->keys[i] == key) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
-// ─── Pool ────────────────────────────────────────────────────────
-
-int64_t rask_pool_new(void) {
-    struct rask_pool_header *pool = (struct rask_pool_header *)calloc(1, sizeof(struct rask_pool_header));
-    if (!pool) { fprintf(stderr, "panic: pool alloc failed\n"); abort(); }
-    int64_t cap = 64;
-    pool->capacity  = cap;
-    pool->gen_array = (int64_t *)calloc((size_t)cap, sizeof(int64_t));
-    pool->data      = (int64_t *)calloc((size_t)cap, sizeof(int64_t));
-    pool->occupied  = (int8_t *)calloc((size_t)cap, sizeof(int8_t));
-    if (!pool->gen_array || !pool->data || !pool->occupied) {
-        fprintf(stderr, "panic: pool alloc failed\n"); abort();
-    }
-    return (int64_t)pool;
-}
-
-int64_t rask_pool_alloc(int64_t pool_ptr) {
-    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
-    for (int64_t i = 0; i < pool->capacity; i++) {
-        if (!pool->occupied[i]) {
-            pool->occupied[i] = 1;
-            pool->gen_array[i]++;
-            return (int64_t)((uint32_t)i | ((uint64_t)pool->gen_array[i] << 32));
-        }
-    }
-    fprintf(stderr, "panic: pool full\n");
-    abort();
-}
-
-void rask_pool_free(int64_t pool_ptr, int64_t handle) {
-    int32_t index = pool_validate(pool_ptr, handle, "free");
-    struct rask_pool_header *pool = (struct rask_pool_header *)pool_ptr;
-    pool->occupied[index] = 0;
-}
-
-// ─── String helpers ───────────────────────────────────────────────
-
-int8_t rask_string_contains(int64_t haystack_ptr, int64_t needle_ptr) {
-    const char *haystack = haystack_ptr ? (const char *)haystack_ptr : "";
-    const char *needle   = needle_ptr   ? (const char *)needle_ptr   : "";
-    return strstr(haystack, needle) != NULL ? 1 : 0;
-}
+// ─── Clone (shallow copy for i64-sized values) ───────────────────
+// Strings and collection handles are pointer-sized; clone is identity.
+int64_t rask_clone(int64_t value) { return value; }
 
 // ─── CLI module ───────────────────────────────────────────────────
-// cli.args() → Vec of string pointers (uses stored argc/argv).
+// cli.args() → Vec of RaskString* pointers.
 
-extern int64_t rask_args_count(void);
-extern const char *rask_args_get(int64_t index);
-
-int64_t rask_cli_args(void) {
-    int64_t vec = rask_vec_new();
+RaskVec *rask_cli_args(void) {
+    RaskVec *v = rask_vec_new(sizeof(RaskString *));
     int64_t count = rask_args_count();
     for (int64_t i = 0; i < count; i++) {
         const char *arg = rask_args_get(i);
-        rask_vec_push(vec, (int64_t)arg);
+        RaskString *s = rask_string_from(arg);
+        rask_vec_push(v, &s);
     }
-    return vec;
+    return v;
 }
 
 // ─── FS module ────────────────────────────────────────────────────
-// fs.read_lines(path) → Vec of heap-allocated line strings.
 
-int64_t rask_fs_read_lines(int64_t path_ptr) {
-    int64_t vec = rask_vec_new();
-    const char *path = path_ptr ? (const char *)path_ptr : "";
+RaskVec *rask_fs_read_lines(const RaskString *path) {
+    RaskVec *v = rask_vec_new(sizeof(RaskString *));
+    const char *p = path ? rask_string_ptr(path) : "";
 
-    FILE *f = fopen(path, "r");
-    if (!f) return vec;
+    FILE *f = fopen(p, "r");
+    if (!f) return v;
 
     char buf[4096];
     while (fgets(buf, sizeof(buf), f)) {
@@ -443,63 +183,441 @@ int64_t rask_fs_read_lines(int64_t path_ptr) {
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
         if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
 
-        char *line = (char *)malloc(len + 1);
-        if (!line) { fclose(f); return vec; }
-        memcpy(line, buf, len + 1);
-        rask_vec_push(vec, (int64_t)line);
+        RaskString *line = rask_string_from_bytes(buf, (int64_t)len);
+        rask_vec_push(v, &line);
     }
 
     fclose(f);
-    return vec;
+    return v;
 }
 
 // ─── IO module ────────────────────────────────────────────────────
 
-int64_t rask_io_read_line(void) {
+RaskString *rask_io_read_line(void) {
     char buf[4096];
     if (!fgets(buf, sizeof(buf), stdin)) {
-        return (int64_t)"";
+        return rask_string_new();
     }
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
     if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
-    char *s = (char *)malloc(len + 1);
-    if (!s) { fprintf(stderr, "panic: string alloc failed\n"); abort(); }
-    memcpy(s, buf, len + 1);
-    return (int64_t)s;
+    return rask_string_from_bytes(buf, (int64_t)len);
 }
 
 // ─── More FS module ───────────────────────────────────────────────
 
-int64_t rask_fs_read_file(int64_t path_ptr) {
-    const char *path = path_ptr ? (const char *)path_ptr : "";
-    FILE *f = fopen(path, "rb");
-    if (!f) return (int64_t)"";
+RaskString *rask_fs_read_file(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    FILE *f = fopen(p, "rb");
+    if (!f) return rask_string_new();
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *buf = (char *)malloc((size_t)size + 1);
-    if (!buf) { fclose(f); return (int64_t)""; }
+    if (!buf) { fclose(f); return rask_string_new(); }
     fread(buf, 1, (size_t)size, f);
     buf[size] = '\0';
     fclose(f);
-    return (int64_t)buf;
+    RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
+    free(buf);
+    return s;
 }
 
-void rask_fs_write_file(int64_t path_ptr, int64_t content_ptr) {
-    const char *path = path_ptr ? (const char *)path_ptr : "";
-    const char *content = content_ptr ? (const char *)content_ptr : "";
-    FILE *f = fopen(path, "wb");
+void rask_fs_write_file(const RaskString *path, const RaskString *content) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    const char *c = content ? rask_string_ptr(content) : "";
+    int64_t clen = content ? rask_string_len(content) : 0;
+    FILE *f = fopen(p, "wb");
     if (!f) return;
-    fwrite(content, 1, strlen(content), f);
+    fwrite(c, 1, (size_t)clen, f);
     fclose(f);
 }
 
-int8_t rask_fs_exists(int64_t path_ptr) {
-    const char *path = path_ptr ? (const char *)path_ptr : "";
-    FILE *f = fopen(path, "r");
+int8_t rask_fs_exists(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    FILE *f = fopen(p, "r");
     if (f) { fclose(f); return 1; }
     return 0;
+}
+
+// ─── More FS module ───────────────────────────────────────────────
+
+int64_t rask_fs_open(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    FILE *f = fopen(p, "r");
+    return (int64_t)(uintptr_t)f;
+}
+
+int64_t rask_fs_create(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    FILE *f = fopen(p, "w");
+    return (int64_t)(uintptr_t)f;
+}
+
+RaskString *rask_fs_canonicalize(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    char resolved[4096];
+    char *r = realpath(p, resolved);
+    if (!r) return rask_string_new();
+    return rask_string_from(resolved);
+}
+
+int64_t rask_fs_copy(const RaskString *from, const RaskString *to) {
+    const char *src = from ? rask_string_ptr(from) : "";
+    const char *dst = to ? rask_string_ptr(to) : "";
+    FILE *in = fopen(src, "rb");
+    if (!in) return -1;
+    FILE *out = fopen(dst, "wb");
+    if (!out) { fclose(in); return -1; }
+    char buf[4096];
+    int64_t total = 0;
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), in)) > 0) {
+        fwrite(buf, 1, n, out);
+        total += (int64_t)n;
+    }
+    fclose(in);
+    fclose(out);
+    return total;
+}
+
+void rask_fs_rename(const RaskString *from, const RaskString *to) {
+    const char *s = from ? rask_string_ptr(from) : "";
+    const char *d = to ? rask_string_ptr(to) : "";
+    rename(s, d);
+}
+
+void rask_fs_remove(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    remove(p);
+}
+
+#include <sys/stat.h>
+
+void rask_fs_create_dir(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    mkdir(p, 0755);
+}
+
+void rask_fs_create_dir_all(const RaskString *path) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    char tmp[4096];
+    snprintf(tmp, sizeof(tmp), "%s", p);
+    for (char *c = tmp + 1; *c; c++) {
+        if (*c == '/') {
+            *c = '\0';
+            mkdir(tmp, 0755);
+            *c = '/';
+        }
+    }
+    mkdir(tmp, 0755);
+}
+
+void rask_fs_append_file(const RaskString *path, const RaskString *content) {
+    const char *p = path ? rask_string_ptr(path) : "";
+    const char *c = content ? rask_string_ptr(content) : "";
+    int64_t clen = content ? rask_string_len(content) : 0;
+    FILE *f = fopen(p, "ab");
+    if (!f) return;
+    fwrite(c, 1, (size_t)clen, f);
+    fclose(f);
+}
+
+// ─── Net module ───────────────────────────────────────────────────
+
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+int64_t rask_net_tcp_listen(const RaskString *addr) {
+    const char *a = addr ? rask_string_ptr(addr) : "0.0.0.0:0";
+
+    // Parse "host:port"
+    char host[256] = "0.0.0.0";
+    int port = 0;
+    const char *colon = strrchr(a, ':');
+    if (colon) {
+        size_t hlen = (size_t)(colon - a);
+        if (hlen > 0 && hlen < sizeof(host)) {
+            memcpy(host, a, hlen);
+            host[hlen] = '\0';
+        }
+        port = atoi(colon + 1);
+    }
+
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons((uint16_t)port);
+    inet_pton(AF_INET, host, &sa.sin_addr);
+
+    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        close(fd);
+        return -1;
+    }
+    if (listen(fd, 128) < 0) {
+        close(fd);
+        return -1;
+    }
+    return (int64_t)fd;
+}
+
+// ─── JSON module ──────────────────────────────────────────────────
+
+// Growable JSON buffer
+struct RaskJsonBuf {
+    char *data;
+    int64_t len;
+    int64_t cap;
+    int field_count;
+};
+
+static void json_buf_grow(struct RaskJsonBuf *b, int64_t needed) {
+    if (b->len + needed <= b->cap) return;
+    int64_t new_cap = b->cap * 2;
+    if (new_cap < b->len + needed) new_cap = b->len + needed;
+    b->data = (char *)realloc(b->data, (size_t)new_cap);
+    b->cap = new_cap;
+}
+
+static void json_buf_append(struct RaskJsonBuf *b, const char *s, int64_t len) {
+    json_buf_grow(b, len);
+    memcpy(b->data + b->len, s, (size_t)len);
+    b->len += len;
+}
+
+static void json_buf_append_cstr(struct RaskJsonBuf *b, const char *s) {
+    json_buf_append(b, s, (int64_t)strlen(s));
+}
+
+static void json_buf_append_escaped(struct RaskJsonBuf *b, const char *s, int64_t len) {
+    json_buf_append(b, "\"", 1);
+    for (int64_t i = 0; i < len; i++) {
+        char c = s[i];
+        switch (c) {
+            case '"':  json_buf_append(b, "\\\"", 2); break;
+            case '\\': json_buf_append(b, "\\\\", 2); break;
+            case '\n': json_buf_append(b, "\\n", 2); break;
+            case '\r': json_buf_append(b, "\\r", 2); break;
+            case '\t': json_buf_append(b, "\\t", 2); break;
+            default:   json_buf_append(b, &c, 1); break;
+        }
+    }
+    json_buf_append(b, "\"", 1);
+}
+
+RaskJsonBuf *rask_json_buf_new(void) {
+    RaskJsonBuf *b = (RaskJsonBuf *)malloc(sizeof(RaskJsonBuf));
+    b->cap = 256;
+    b->data = (char *)malloc((size_t)b->cap);
+    b->len = 0;
+    b->field_count = 0;
+    json_buf_append_cstr(b, "{");
+    return b;
+}
+
+void rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const RaskString *val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_cstr(buf, ":");
+    if (val) {
+        json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
+    } else {
+        json_buf_append_cstr(buf, "null");
+    }
+    buf->field_count++;
+}
+
+void rask_json_buf_add_i64(RaskJsonBuf *buf, const char *key, int64_t val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    char num[32];
+    snprintf(num, sizeof(num), ":%lld", (long long)val);
+    json_buf_append_cstr(buf, num);
+    buf->field_count++;
+}
+
+void rask_json_buf_add_f64(RaskJsonBuf *buf, const char *key, double val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    char num[64];
+    snprintf(num, sizeof(num), ":%g", val);
+    json_buf_append_cstr(buf, num);
+    buf->field_count++;
+}
+
+void rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_cstr(buf, val ? ":true" : ":false");
+    buf->field_count++;
+}
+
+RaskString *rask_json_buf_finish(RaskJsonBuf *buf) {
+    json_buf_append_cstr(buf, "}");
+    RaskString *s = rask_string_from_bytes(buf->data, buf->len);
+    free(buf->data);
+    free(buf);
+    return s;
+}
+
+RaskString *rask_json_encode_string(const RaskString *s) {
+    struct RaskJsonBuf b;
+    b.cap = 256;
+    b.data = (char *)malloc((size_t)b.cap);
+    b.len = 0;
+    b.field_count = 0;
+    if (s) {
+        json_buf_append_escaped(&b, rask_string_ptr(s), rask_string_len(s));
+    } else {
+        json_buf_append_cstr(&b, "null");
+    }
+    RaskString *result = rask_string_from_bytes(b.data, b.len);
+    free(b.data);
+    return result;
+}
+
+RaskString *rask_json_encode_i64(int64_t val) {
+    char buf[32];
+    int len = snprintf(buf, sizeof(buf), "%lld", (long long)val);
+    return rask_string_from_bytes(buf, (int64_t)len);
+}
+
+// ─── JSON decode ──────────────────────────────────────────────────
+
+#define JSON_MAX_FIELDS 64
+
+struct RaskJsonField {
+    char key[128];
+    enum { JSON_STRING, JSON_NUMBER, JSON_BOOL } type;
+    union {
+        RaskString *str_val;
+        double num_val;
+        int8_t bool_val;
+    };
+};
+
+struct RaskJsonObj {
+    struct RaskJsonField fields[JSON_MAX_FIELDS];
+    int count;
+};
+
+static void json_skip_ws(const char **p) {
+    while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
+}
+
+static RaskString *json_parse_string(const char **p) {
+    if (**p != '"') return rask_string_new();
+    (*p)++;
+    RaskString *s = rask_string_new();
+    while (**p && **p != '"') {
+        if (**p == '\\' && *(*p + 1)) {
+            char c = *(*p + 1);
+            switch (c) {
+                case '"': case '\\': case '/':
+                    rask_string_push_byte(s, (uint8_t)c); break;
+                case 'n': rask_string_push_byte(s, '\n'); break;
+                case 't': rask_string_push_byte(s, '\t'); break;
+                case 'r': rask_string_push_byte(s, '\r'); break;
+                default: rask_string_push_byte(s, (uint8_t)c); break;
+            }
+            *p += 2;
+        } else {
+            rask_string_push_byte(s, (uint8_t)**p);
+            (*p)++;
+        }
+    }
+    if (**p == '"') (*p)++;
+    return s;
+}
+
+RaskJsonObj *rask_json_parse(const RaskString *s) {
+    RaskJsonObj *obj = (RaskJsonObj *)calloc(1, sizeof(RaskJsonObj));
+    if (!s) return obj;
+
+    const char *p = rask_string_ptr(s);
+    json_skip_ws(&p);
+    if (*p != '{') return obj;
+    p++;
+
+    while (*p && *p != '}' && obj->count < JSON_MAX_FIELDS) {
+        json_skip_ws(&p);
+        if (*p == '}') break;
+        if (*p == ',') { p++; json_skip_ws(&p); }
+
+        if (*p != '"') break;
+        RaskString *key = json_parse_string(&p);
+        struct RaskJsonField *f = &obj->fields[obj->count];
+        snprintf(f->key, sizeof(f->key), "%s", rask_string_ptr(key));
+        rask_string_free(key);
+
+        json_skip_ws(&p);
+        if (*p != ':') break;
+        p++;
+        json_skip_ws(&p);
+
+        if (*p == '"') {
+            f->type = JSON_STRING;
+            f->str_val = json_parse_string(&p);
+        } else if (*p == 't' || *p == 'f') {
+            f->type = JSON_BOOL;
+            if (strncmp(p, "true", 4) == 0) { f->bool_val = 1; p += 4; }
+            else if (strncmp(p, "false", 5) == 0) { f->bool_val = 0; p += 5; }
+        } else if (*p == 'n' && strncmp(p, "null", 4) == 0) {
+            f->type = JSON_STRING;
+            f->str_val = NULL;
+            p += 4;
+        } else {
+            f->type = JSON_NUMBER;
+            char *end;
+            f->num_val = strtod(p, &end);
+            p = end;
+        }
+        obj->count++;
+    }
+    return obj;
+}
+
+static struct RaskJsonField *json_find_field(RaskJsonObj *obj, const char *key) {
+    if (!obj) return NULL;
+    for (int i = 0; i < obj->count; i++) {
+        if (strcmp(obj->fields[i].key, key) == 0) return &obj->fields[i];
+    }
+    return NULL;
+}
+
+RaskString *rask_json_get_string(RaskJsonObj *obj, const char *key) {
+    struct RaskJsonField *f = json_find_field(obj, key);
+    if (!f || f->type != JSON_STRING) return rask_string_new();
+    return f->str_val ? rask_string_clone(f->str_val) : rask_string_new();
+}
+
+int64_t rask_json_get_i64(RaskJsonObj *obj, const char *key) {
+    struct RaskJsonField *f = json_find_field(obj, key);
+    if (!f || f->type != JSON_NUMBER) return 0;
+    return (int64_t)f->num_val;
+}
+
+double rask_json_get_f64(RaskJsonObj *obj, const char *key) {
+    struct RaskJsonField *f = json_find_field(obj, key);
+    if (!f || f->type != JSON_NUMBER) return 0.0;
+    return f->num_val;
+}
+
+int8_t rask_json_get_bool(RaskJsonObj *obj, const char *key) {
+    struct RaskJsonField *f = json_find_field(obj, key);
+    if (!f || f->type != JSON_BOOL) return 0;
+    return f->bool_val;
+}
+
+int64_t rask_json_decode(const RaskString *s) {
+    return (int64_t)(uintptr_t)rask_json_parse(s);
 }
 
 // ─── Entry point ──────────────────────────────────────────────────

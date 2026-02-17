@@ -232,10 +232,8 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         process::exit(1);
     }
 
-    // Closure optimization: escape analysis + drop insertion
-    for func in &mut mir_functions {
-        rask_mir::optimize_closures(func);
-    }
+    // Closure optimization: escape analysis + cross-function ownership transfer + drop insertion
+    rask_mir::optimize_all_closures(&mut mir_functions);
 
     // Cranelift codegen
     let mut codegen = match rask_codegen::CodeGenerator::new() {

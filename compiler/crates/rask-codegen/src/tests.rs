@@ -1588,6 +1588,319 @@ mod tests {
         gen.gen_function(&main_fn).unwrap();
     }
 
+    // ═══════════════════════════════════════════════════════════
+    // Closure edge cases: nested, loops, match arms
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn codegen_nested_closure_captures() {
+        // Inner closure captures a variable that the outer closure captured.
+        //
+        //   inner(env) -> i64 {
+        //     _1 = LoadCapture(env, 0)    // inner reads outer's captured 'x'
+        //     return _1
+        //   }
+        //   outer(env) -> i64 {
+        //     _1 = LoadCapture(env, 0)    // outer loads captured 'x'
+        //     _2 = ClosureCreate[stack](inner, captures=[_1])
+        //     _3 = ClosureCall(_2)
+        //     return _3
+        //   }
+        //   main() -> i64 {
+        //     _0 = 42
+        //     _1 = ClosureCreate[stack](outer, captures=[_0])
+        //     _2 = ClosureCall(_1)
+        //     return _2
+        //   }
+        use rask_mir::ClosureCapture;
+
+        let inner_fn = MirFunction {
+            name: "main__closure_1".to_string(),
+            params: vec![local(0, "__env", MirType::Ptr, true)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                temp(1, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 },
+                ], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let outer_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![local(0, "__env", MirType::Ptr, true)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                temp(1, MirType::I64),  // loaded capture
+                temp(2, MirType::Ptr),  // inner closure
+                temp(3, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    MirStmt::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 },
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(2),
+                        func_name: "main__closure_1".to_string(),
+                        captures: vec![
+                            ClosureCapture { local_id: LocalId(1), offset: 0, size: 8 },
+                        ],
+                        heap: false,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(3)),
+                        closure: LocalId(2),
+                        args: vec![],
+                    },
+                ], ret(Some(local_op(3)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),  // x
+                temp(1, MirType::Ptr),  // outer closure
+                temp(2, MirType::I64),  // result
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(42)))),
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![
+                            ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
+                        ],
+                        heap: false,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
+        gen.gen_function(&inner_fn).unwrap();
+        gen.gen_function(&outer_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
+    #[test]
+    fn codegen_closure_in_loop_body() {
+        // Closure created inside a loop body (new allocation per iteration).
+        //
+        //   closure_fn(env, x: i64) -> i64 { return x }
+        //   main() -> i64 {
+        //     block0: _0 = 0; goto block1
+        //     block1: branch(_0 < 3, block2, block3)
+        //     block2:
+        //       _1 = ClosureCreate[stack](closure_fn, captures=[])
+        //       _2 = ClosureCall(_1, _0)
+        //       _0 = _0 + 1
+        //       goto block1
+        //     block3: return _0
+        //   }
+
+        let closure_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            blocks: vec![
+                block(0, vec![], ret(Some(local_op(1)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![],
+            ret_ty: MirType::I64,
+            locals: vec![
+                temp(0, MirType::I64),  // counter
+                temp(1, MirType::Ptr),  // closure
+                temp(2, MirType::I64),  // call result
+                temp(3, MirType::I64),  // cond
+            ],
+            blocks: vec![
+                // block0: init
+                block(0, vec![
+                    assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(0)))),
+                ], goto(1)),
+                // block1: loop condition
+                block(1, vec![
+                    assign(3, MirRValue::BinaryOp {
+                        op: BinOp::Lt,
+                        left: local_op(0),
+                        right: MirOperand::Constant(MirConst::Int(3)),
+                    }),
+                ], branch(local_op(3), 2, 3)),
+                // block2: loop body — closure per iteration
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![],
+                        heap: false,
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![local_op(0)],
+                    },
+                    assign(0, MirRValue::BinaryOp {
+                        op: BinOp::Add,
+                        left: local_op(0),
+                        right: MirOperand::Constant(MirConst::Int(1)),
+                    }),
+                ], goto(1)),
+                // block3: exit
+                block(3, vec![], ret(Some(local_op(0)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let all_fns = [closure_fn.clone(), main_fn.clone()];
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
+        gen.gen_function(&closure_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
+    #[test]
+    fn codegen_closure_in_match_arm() {
+        // Closures created in different match arm blocks.
+        //
+        //   add_fn(env, x: i64) -> i64 { return x + 1 }
+        //   sub_fn(env, x: i64) -> i64 { return x - 1 }
+        //   main(flag: i64) -> i64 {
+        //     block0: branch(flag, block1, block2)
+        //     block1: _1 = ClosureCreate(add_fn); goto block3
+        //     block2: _1 = ClosureCreate(sub_fn); goto block3
+        //     block3: _2 = ClosureCall(_1, 10); return _2
+        //   }
+
+        let add_fn = MirFunction {
+            name: "main__closure_0".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+                temp(2, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(2, MirRValue::BinaryOp {
+                        op: BinOp::Add,
+                        left: local_op(1),
+                        right: MirOperand::Constant(MirConst::Int(1)),
+                    }),
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let sub_fn = MirFunction {
+            name: "main__closure_1".to_string(),
+            params: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+            ],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "__env", MirType::Ptr, true),
+                local(1, "x", MirType::I64, true),
+                temp(2, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![
+                    assign(2, MirRValue::BinaryOp {
+                        op: BinOp::Sub,
+                        left: local_op(1),
+                        right: MirOperand::Constant(MirConst::Int(1)),
+                    }),
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let main_fn = MirFunction {
+            name: "main".to_string(),
+            params: vec![local(0, "flag", MirType::I64, true)],
+            ret_ty: MirType::I64,
+            locals: vec![
+                local(0, "flag", MirType::I64, true),
+                temp(1, MirType::Ptr),  // closure (assigned in both arms)
+                temp(2, MirType::I64),  // call result
+            ],
+            blocks: vec![
+                // block0: dispatch
+                block(0, vec![], branch(local_op(0), 1, 2)),
+                // block1: arm 1 — add closure
+                block(1, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_0".to_string(),
+                        captures: vec![],
+                        heap: false,
+                    },
+                ], goto(3)),
+                // block2: arm 2 — sub closure
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "main__closure_1".to_string(),
+                        captures: vec![],
+                        heap: false,
+                    },
+                ], goto(3)),
+                // block3: merge — call whichever closure was created
+                block(3, vec![
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![MirOperand::Constant(MirConst::Int(10))],
+                    },
+                ], ret(Some(local_op(2)))),
+            ],
+            entry_block: BlockId(0),
+        };
+
+        let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];
+        let mut gen = CodeGenerator::new().unwrap();
+        gen.declare_runtime_functions().unwrap();
+        gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
+        gen.gen_function(&add_fn).unwrap();
+        gen.gen_function(&sub_fn).unwrap();
+        gen.gen_function(&main_fn).unwrap();
+    }
+
     // ── Helpers ──────────────────────────────────────────────────
 
     /// CodeGenerator with runtime + stdlib declared (for tests needing stdlib).

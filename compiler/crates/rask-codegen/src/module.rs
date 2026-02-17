@@ -139,6 +139,36 @@ impl CodeGenerator {
             self.func_ids.insert("rask_print_f64".to_string(), id);
         }
 
+        // rask_print_f32(val: f32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::F32));
+            let id = self.module
+                .declare_function("rask_print_f32", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_f32".to_string(), id);
+        }
+
+        // rask_print_char(codepoint: i32) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I32));
+            let id = self.module
+                .declare_function("rask_print_char", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_char".to_string(), id);
+        }
+
+        // rask_print_u64(val: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64));
+            let id = self.module
+                .declare_function("rask_print_u64", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_print_u64".to_string(), id);
+        }
+
         // rask_exit(code: i64) -> void
         {
             let mut sig = self.module.make_signature();
@@ -433,7 +463,7 @@ impl CodeGenerator {
         // Define the function in the module
         self.module
             .define_function(*func_id, &mut self.ctx)
-            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
         Ok(())
     }

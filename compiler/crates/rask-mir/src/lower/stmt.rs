@@ -5,6 +5,7 @@
 use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
     operand::{BinOp, MirConst},
+    types::StructLayoutId,
     FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
@@ -50,9 +51,47 @@ impl<'a> MirLowerer<'a> {
                             rvalue: MirRValue::Use(val_op),
                         });
                     }
+                    // Field assignment: obj.field = value → Store at field offset
+                    ExprKind::Field { object, field } => {
+                        let (obj_op, obj_ty) = self.lower_expr(object)?;
+                        let offset = if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                            if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
+                                layout.fields.iter()
+                                    .find(|f| f.name == *field)
+                                    .map(|f| f.offset)
+                                    .unwrap_or(0)
+                            } else { 0 }
+                        } else { 0 };
+                        let base_local = match obj_op {
+                            MirOperand::Local(id) => id,
+                            _ => {
+                                let tmp = self.builder.alloc_temp(obj_ty);
+                                self.builder.push_stmt(MirStmt::Assign {
+                                    dst: tmp,
+                                    rvalue: MirRValue::Use(obj_op),
+                                });
+                                tmp
+                            }
+                        };
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: base_local,
+                            offset,
+                            value: val_op,
+                        });
+                    }
+                    // Index assignment: a[i] = val → set(a, i, val)
+                    ExprKind::Index { object, index } => {
+                        let (obj_op, _obj_ty) = self.lower_expr(object)?;
+                        let (idx_op, _) = self.lower_expr(index)?;
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: None,
+                            func: FunctionRef { name: "set".to_string() },
+                            args: vec![obj_op, idx_op, val_op],
+                        });
+                    }
                     _ => {
                         return Err(LoweringError::InvalidConstruct(
-                            "Complex assignment targets not yet supported".to_string(),
+                            format!("unsupported assignment target: {:?}", target.kind),
                         ));
                     }
                 }

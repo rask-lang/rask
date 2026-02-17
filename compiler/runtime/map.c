@@ -203,3 +203,36 @@ int64_t rask_map_remove(RaskMap *m, const void *key) {
 int64_t rask_map_contains(const RaskMap *m, const void *key) {
     return rask_map_get(m, key) != NULL;
 }
+
+int64_t rask_map_is_empty(const RaskMap *m) {
+    return (!m || m->len == 0) ? 1 : 0;
+}
+
+void rask_map_clear(RaskMap *m) {
+    if (!m) return;
+    memset(m->states, MAP_EMPTY, (size_t)m->cap);
+    m->len = 0;
+    m->tombstones = 0;
+}
+
+RaskVec *rask_map_keys(const RaskMap *m) {
+    RaskVec *v = rask_vec_new(m ? m->key_size : 8);
+    if (!m) return v;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) {
+            rask_vec_push(v, m->keys + i * m->key_size);
+        }
+    }
+    return v;
+}
+
+RaskVec *rask_map_values(const RaskMap *m) {
+    RaskVec *v = rask_vec_new(m ? m->val_size : 8);
+    if (!m) return v;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) {
+            rask_vec_push(v, m->vals + i * m->val_size);
+        }
+    }
+    return v;
+}

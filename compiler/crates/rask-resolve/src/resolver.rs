@@ -567,6 +567,14 @@ impl Resolver {
                 "env" => Some(BuiltinModuleKind::Env),
                 "cli" => Some(BuiltinModuleKind::Cli),
                 "std" => Some(BuiltinModuleKind::Std),
+                "json" => Some(BuiltinModuleKind::Json),
+                "random" => Some(BuiltinModuleKind::Random),
+                "time" => Some(BuiltinModuleKind::Time),
+                "math" => Some(BuiltinModuleKind::Math),
+                "path" => Some(BuiltinModuleKind::Path),
+                "os" => Some(BuiltinModuleKind::Os),
+                "net" => Some(BuiltinModuleKind::Net),
+                "core" => Some(BuiltinModuleKind::Core),
                 _ => None,
             };
 

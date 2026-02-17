@@ -139,3 +139,63 @@ int64_t rask_pool_remove(RaskPool *p, RaskHandle h, void *out) {
 int64_t rask_pool_is_valid(const RaskPool *p, RaskHandle h) {
     return pool_validate(p, h);
 }
+
+// ─── Packed i64 handle interface (codegen) ─────────────────
+// Codegen currently represents handles as i64 (index:32 | gen:32).
+// These functions bridge to the typed pool API by reconstructing
+// the pool_id from the pool pointer.
+
+static int64_t handle_pack(RaskHandle h) {
+    return (int64_t)((uint64_t)h.index | ((uint64_t)h.generation << 32));
+}
+
+static RaskHandle handle_unpack(const RaskPool *p, int64_t packed) {
+    RaskHandle h;
+    h.pool_id = p->pool_id;
+    h.index = (uint32_t)(packed & 0xFFFFFFFF);
+    h.generation = (uint32_t)((packed >> 32) & 0xFFFFFFFF);
+    return h;
+}
+
+int64_t rask_pool_alloc_packed(RaskPool *p) {
+    RaskHandle h = rask_pool_alloc(p);
+    return handle_pack(h);
+}
+
+void *rask_pool_get_packed(const RaskPool *p, int64_t packed) {
+    return rask_pool_get(p, handle_unpack(p, packed));
+}
+
+int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
+    return rask_pool_remove(p, handle_unpack(p, packed), NULL);
+}
+
+int64_t rask_pool_is_valid_packed(const RaskPool *p, int64_t packed) {
+    return rask_pool_is_valid(p, handle_unpack(p, packed));
+}
+
+// Allocate a zero-initialized slot and return a handle to it.
+RaskHandle rask_pool_alloc(RaskPool *p) {
+    RaskHandle h = RASK_HANDLE_INVALID;
+    if (!p) return h;
+
+    // Grow if no free slots
+    if (p->free_head < 0) {
+        int64_t new_cap = p->cap ? p->cap * 2 : 4;
+        pool_grow(p, new_cap);
+    }
+
+    // Pop from free list
+    int32_t idx = p->free_head;
+    p->free_head = p->slots[idx].next_free;
+    p->slots[idx].occupied = 1;
+
+    // Zero-initialize element data
+    memset(p->data + idx * p->elem_size, 0, (size_t)p->elem_size);
+    p->len++;
+
+    h.pool_id = p->pool_id;
+    h.index = (uint32_t)idx;
+    h.generation = p->slots[idx].generation;
+    return h;
+}

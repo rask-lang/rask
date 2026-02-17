@@ -58,6 +58,9 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         Type::Option(inner) => {
             // TODO: Niche optimization for Handle/Reference
+            // Option<Handle<T>> can use pool_id=0 as None sentinel (12 bytes, no tag).
+            // Requires: (1) layout returns inner size here, (2) codegen emits niche
+            // checks instead of tag reads, (3) pool.c starts pool_id from 1.
             let (size, align) = type_size_align(inner);
             // Naive layout: u8 tag + padding + payload
             let tag_size = 1u32;
