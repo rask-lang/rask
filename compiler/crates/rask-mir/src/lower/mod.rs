@@ -22,6 +22,28 @@ use std::collections::HashMap;
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
 
+/// An iterator chain recognized from AST method call nesting.
+///
+/// vec.iter().filter(|x| pred(x)).map(|x| transform(x))
+///  ↓source    ↓adapters[0]        ↓adapters[1]
+///
+/// Fused into a single index-based loop at MIR level.
+pub(crate) struct IterChain<'a> {
+    /// Source collection (the `.iter()` receiver)
+    pub source: &'a Expr,
+    /// Adapter operations in application order
+    pub adapters: Vec<IterAdapter<'a>>,
+}
+
+/// A single iterator adapter operation.
+pub(crate) enum IterAdapter<'a> {
+    Filter { closure: &'a Expr },
+    Map { closure: &'a Expr },
+    Take { count: &'a Expr },
+    Skip { count: &'a Expr },
+    Enumerate,
+}
+
 /// Function signature for type inference
 #[derive(Clone)]
 struct FuncSig {
@@ -144,6 +166,37 @@ impl<'a> MirContext<'a> {
     pub fn lookup_raw_type(&self, node_id: NodeId) -> Option<&Type> {
         self.node_types.get(&node_id)
     }
+
+    /// Extract stdlib type prefix for method name qualification.
+    ///
+    /// Returns the type prefix (e.g. "Vec", "Map", "string") used to build
+    /// qualified method names like "Vec_push", "Map_get", "string_len".
+    /// Without qualification, bare names like "get" or "len" are ambiguous
+    /// across Vec, Map, String, and Pool.
+    pub fn stdlib_type_prefix(ty: &Type) -> Option<&'static str> {
+        match ty {
+            Type::String => Some("string"),
+            Type::UnresolvedNamed(name) => match name.as_str() {
+                "Vec" => Some("Vec"),
+                "Map" => Some("Map"),
+                "Pool" => Some("Pool"),
+                "Rng" => Some("Rng"),
+                "File" => Some("File"),
+                _ => None,
+            },
+            Type::UnresolvedGeneric { name, .. } => match name.as_str() {
+                "Vec" => Some("Vec"),
+                "Map" => Some("Map"),
+                "Pool" => Some("Pool"),
+                "Rng" => Some("Rng"),
+                "File" => Some("File"),
+                _ => None,
+            },
+            Type::Result { .. } => Some("Result"),
+            Type::Option(_) => Some("Option"),
+            _ => None,
+        }
+    }
 }
 
 pub struct MirLowerer<'a> {
@@ -167,6 +220,9 @@ pub struct MirLowerer<'a> {
     /// Collection element types: variable name → element MirType
     /// Used to propagate element types through for-in iteration after mono.
     collection_elem_types: HashMap<String, MirType>,
+    /// Variable name → stdlib type prefix (e.g. "Rng", "File", "Vec")
+    /// Used as fallback when the type checker leaves types unresolved.
+    local_type_prefix: HashMap<String, String>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -230,6 +286,28 @@ impl<'a> MirLowerer<'a> {
             ("json_encode", MirType::I64),
             ("json_decode", MirType::I64),
             ("net_tcp_listen", MirType::I64),
+            // Rng type methods
+            ("Rng_new", MirType::I64),
+            ("Rng_from_seed", MirType::I64),
+            ("Rng_u64", MirType::I64),
+            ("Rng_i64", MirType::I64),
+            ("Rng_f64", MirType::I64),
+            ("Rng_f32", MirType::I64),
+            ("Rng_bool", MirType::I64),
+            ("Rng_range", MirType::I64),
+            // Random module convenience
+            ("random_f64", MirType::I64),
+            ("random_f32", MirType::I64),
+            ("random_i64", MirType::I64),
+            ("random_bool", MirType::I64),
+            ("random_range", MirType::I64),
+            // File instance methods
+            ("File_close", MirType::Void),
+            ("File_read_all", MirType::I64),
+            ("File_read_text", MirType::I64),
+            ("File_write", MirType::Void),
+            ("File_write_line", MirType::Void),
+            ("File_lines", MirType::I64),
         ] {
             func_sigs.entry(name.to_string()).or_insert(FuncSig { ret_ty: ret });
         }
@@ -245,6 +323,7 @@ impl<'a> MirLowerer<'a> {
             parent_name: fn_decl.name.clone(),
             closure_locals: std::collections::HashSet::new(),
             collection_elem_types: HashMap::new(),
+            local_type_prefix: HashMap::new(),
         };
 
         // Add parameters
@@ -789,7 +868,22 @@ pub(crate) fn is_variant_name(name: &str) -> bool {
 /// (`cli`, `fs`, `std`, `io`) that support static method syntax.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        || matches!(name, "string" | "cli" | "fs" | "std" | "io" | "json" | "net")
+        || matches!(name, "string" | "cli" | "fs" | "std" | "io" | "json" | "net" | "random")
+}
+
+/// Map a qualified function name to the stdlib type prefix of its return value.
+///
+/// When the type checker can't resolve concrete types (leaves `Var(TypeVarId(...))`),
+/// the MIR lowerer uses this to track which type a local holds, so later
+/// method calls get correctly qualified (e.g. `rng.range()` → `Rng_range`).
+fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
+    match func_name {
+        "fs_open" | "fs_create" => Some("File"),
+        "File_lines" | "File_read_all" | "fs_read_lines" | "cli_args"
+        | "string_split" | "Map_keys" | "Map_values" => Some("Vec"),
+        "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
+        _ => None,
+    }
 }
 
 /// Determine result type for a binary operation.

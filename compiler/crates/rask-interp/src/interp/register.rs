@@ -32,13 +32,23 @@ impl Interpreter {
             }
             // Async module members
             (ModuleKind::Async, "spawn") => {
-                // Define spawn as a builtin function that forwards to async.spawn
-                // For now, we'll use a special builtin
                 self.env.define(alias.to_string(), Value::Builtin(BuiltinKind::AsyncSpawn));
             }
-            // Future: Add more module members as needed
+            // Module type exports
+            (ModuleKind::Random, "Rng") => {
+                self.env.define(alias.to_string(), Value::Type("Rng".to_string()));
+            }
+            (ModuleKind::Time, "Instant") => {
+                self.env.define(alias.to_string(), Value::Type("Instant".to_string()));
+            }
+            (ModuleKind::Time, "Duration") => {
+                self.env.define(alias.to_string(), Value::Type("Duration".to_string()));
+            }
+            (ModuleKind::Path, "Path") => {
+                self.env.define(alias.to_string(), Value::Type("Path".to_string()));
+            }
             _ => {
-                // Unknown member - ignore for now (could warn)
+                // Unknown member - ignore
             }
         }
     }
@@ -147,6 +157,14 @@ impl Interpreter {
             .define("panic".to_string(), Value::Builtin(BuiltinKind::Panic));
         self.env
             .define("format".to_string(), Value::Builtin(BuiltinKind::Format));
+
+        // Builtin types (always in scope, matching resolver builtins)
+        self.env
+            .define("Rng".to_string(), Value::Type("Rng".to_string()));
+        self.env
+            .define("File".to_string(), Value::Type("File".to_string()));
+        self.env
+            .define("f32x8".to_string(), Value::Type("f32x8".to_string()));
 
         self.env.define(
             "Some".to_string(),

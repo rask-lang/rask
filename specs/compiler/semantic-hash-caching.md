@@ -38,7 +38,7 @@ The compiler creates a fingerprint (hash) of each function's simplified code tre
 | Internal compiler IDs | Bookkeeping, not semantics |
 | Import syntax style | Resolves identically |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // These two functions have IDENTICAL semantic hashes:
 func compute(data: Vec<i32>) -> i32 {

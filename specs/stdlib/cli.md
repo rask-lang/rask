@@ -74,7 +74,7 @@ func main() -> () or CliError {
 |------|-------------|
 | **E1: CliError** | Builder `.parse()` returns `CliError` on invalid input |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum CliError {
     MissingRequired(string)    // required option not provided

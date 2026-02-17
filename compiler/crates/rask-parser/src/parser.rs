@@ -375,19 +375,94 @@ impl Parser {
 
     pub fn parse(&mut self) -> ParseResult {
         let mut decls = Vec::new();
+        let mut top_level_stmts: Vec<Stmt> = Vec::new();
         self.skip_newlines();
 
         while !self.at_end() || !self.pending_decls.is_empty() {
+            // Save position to retry as statement if declaration parse fails
+            let saved_pos = self.pos;
+            let saved_errors = self.errors.len();
+
             match self.parse_decl() {
                 Ok(decl) => decls.push(decl),
-                Err(e) => {
-                    if !self.record_error(e) {
-                        break;
+                Err(_decl_err) => {
+                    // Reset to saved position and try parsing as a statement
+                    self.pos = saved_pos;
+                    self.errors.truncate(saved_errors);
+
+                    // Reject mutable bindings at top level
+                    if matches!(self.current_kind(), TokenKind::Let) {
+                        let err = ParseError {
+                            span: self.current().span,
+                            message: "mutable 'let' bindings are not allowed at the top level".to_string(),
+                            hint: Some("use 'const' for immutable bindings, or move into a function".to_string()),
+                        };
+                        if !self.record_error(err) { break; }
+                        self.synchronize();
+                    } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "pub") {
+                        let err = ParseError {
+                            span: self.current().span,
+                            message: "unknown keyword 'pub'".to_string(),
+                            hint: Some("use 'public' instead of 'pub'".to_string()),
+                        };
+                        if !self.record_error(err) { break; }
+                        self.synchronize();
+                    } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "fn") {
+                        let err = ParseError {
+                            span: self.current().span,
+                            message: "unknown keyword 'fn'".to_string(),
+                            hint: Some("use 'func' instead of 'fn'".to_string()),
+                        };
+                        if !self.record_error(err) { break; }
+                        self.synchronize();
+                    } else {
+                        match self.parse_stmt() {
+                            Ok(stmt) => top_level_stmts.push(stmt),
+                            Err(stmt_err) => {
+                                if !self.record_error(stmt_err) {
+                                    break;
+                                }
+                                self.synchronize();
+                            }
+                        }
                     }
-                    self.synchronize();
                 }
             }
             self.skip_newlines();
+        }
+
+        // Wrap top-level statements in a synthetic main function
+        if !top_level_stmts.is_empty() {
+            let has_main = decls.iter().any(|d| matches!(&d.kind,
+                DeclKind::Fn(f) if f.name == "main" || f.attrs.contains(&"entry".to_string())));
+            if has_main {
+                self.errors.push(ParseError {
+                    span: top_level_stmts[0].span,
+                    message: "top-level statements cannot coexist with an explicit main function".to_string(),
+                    hint: Some("move statements into main() or remove the main function".to_string()),
+                });
+            } else {
+                let span = Span::new(
+                    top_level_stmts.first().map(|s| s.span.start).unwrap_or(0),
+                    top_level_stmts.last().map(|s| s.span.end).unwrap_or(0),
+                );
+                decls.push(Decl {
+                    id: self.next_id(),
+                    kind: DeclKind::Fn(FnDecl {
+                        name: "main".to_string(),
+                        type_params: vec![],
+                        params: vec![],
+                        ret_ty: None,
+                        context_clauses: vec![],
+                        body: top_level_stmts,
+                        is_pub: false,
+                        is_comptime: false,
+                        is_unsafe: false,
+                        attrs: vec!["entry".to_string()],
+                    }),
+                    span,
+                });
+            }
         }
 
         ParseResult {

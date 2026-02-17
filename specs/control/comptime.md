@@ -368,7 +368,7 @@ FIX: Call .freeze() to convert to const data:
 ## Examples
 
 ### Lookup Table Generation
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 comptime func crc8_table() -> [u8; 256] {
     const table = [0u8; 256]

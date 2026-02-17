@@ -135,7 +135,7 @@ test "known issue #123" {
 | **T14: Doc extraction** | Code blocks in doc comments are extracted and run as tests |
 | **T15: Block tags** | ` ``` ` or ` ```rask ` = compiled and run; ` ```no_run ` = compiled only; ` ```ignore ` = skipped |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 /// Adds two numbers.
 ///

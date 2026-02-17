@@ -14,7 +14,7 @@
 | **C2: JSON** | `--format json` — machine-readable JSON |
 | **C3: Private** | `--all` — include private items (`"public": false`) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // rask describe src/server.rk
 // rask describe src/server.rk --format json

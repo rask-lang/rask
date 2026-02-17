@@ -1,6 +1,6 @@
 # Rask — Status & Roadmap
 
-## Current State (2026-02-16)
+## Current State (2026-02-17)
 
 **Language design:** Complete. 70+ spec files, all core semantics stable.
 
@@ -8,15 +8,15 @@
 
 **Interpreter:** Fully functional. 15+ stdlib modules. 4/5 validation programs run (grep, editor, game loop, HTTP server). Sensor processor typechecks but doesn't run (SIMD not interpreted).
 
-**Monomorphization + MIR:** Complete. Struct/enum layouts, generic instantiation, reachability analysis, full AST→MIR lowering with type inference. 94 tests.
+**Monomorphization + MIR:** Complete. Struct/enum layouts, generic instantiation, reachability analysis, full AST→MIR lowering with type inference. 104 tests.
 
-**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool → C runtime). Closures. Integer widening. For-range loops. 35 codegen tests.
+**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool, Rng, File → C runtime). Closures. Integer widening. For-range loops. 42 codegen tests.
 
 **Tooling:** LSP, formatter, linter, test runner, describe, explain — all done.
 
 ### What compiles natively today
 
-Hello world, string ops, structs with field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow.
+Hello world, string ops, structs with field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow, Rng (seeded + module-level), File I/O (open/read_all/lines/write), nested JSON encoding, array literals/indexing/iteration/repeat, iterator chains (`.iter().filter().map().collect()` and 6 other terminals).
 
 ### Validation programs
 
@@ -30,52 +30,59 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ---
 
-## Recently Completed (2026-02-16)
+## Recently Completed (2026-02-17)
 
-- [x] **Float codegen** — `fadd`/`fsub`/`fmul`/`fdiv`/`fneg` + `fcmp` with `FloatCC`. Previously all float ops used integer instructions.
-- [x] **Unsigned codegen** — `udiv`/`urem`/`ushr` + unsigned `icmp` for U8/U16/U32/U64. Previously always signed.
-- [x] **Type-correct printing** — `rask_print_f32`, `rask_print_char` (UTF-8), `rask_print_u64`. Previously F32→F64 implicit, no char print, unsigned printed as signed.
-- [x] **Iterator skip** — `rask_iter_skip` now creates a new Vec skipping N elements. Was a no-op stub.
-- [x] **Map operations** — `get`, `remove`, `len`, `is_empty`, `clear`, `keys`, `values` in runtime + dispatch. Previously only `new`/`insert`/`contains_key`.
-- [x] **String operations** — `split`, `parse_int`, `parse_float`, `substr`, `ends_with`, `replace` in runtime + dispatch. Also `f64_to_string`, `char_to_string`.
-- [x] **MirType helpers** — `is_float()`, `is_unsigned()` on MirType for codegen instruction selection.
+- **Iterator codegen** — Inline expansion at MIR level. `.iter().filter(|x| pred).map(|x| f(x))` chains recognized and fused into index-based loops with inlined closure bodies. Zero runtime overhead — no iterator objects, no dispatch table entries. Terminals: `.collect()`, `.fold()`, `.any()`, `.all()`, `.count()`, `.sum()`, `.find()`. `for-in` over chains works too.
+- **Top-level statement support** — Parser accepts bare statements (`println(x)`, `for i in 0..10 {}`, `const x = 42`) at top level, wraps them in a synthetic `func main()`. `let` (mutable) rejected with clear error. 50 spec tests unskipped (126 total, 124 pass).
+- **Rng codegen** — xoshiro256++ in `random.c`. Instance methods (`Rng.from_seed()`, `rng.range()`, etc.) and module convenience (`random.range()`, `random.bool()`) dispatch through to C runtime. Compiles to native.
+- **File instance methods** — `file.lines()`, `file.read_all()`, `file.write()`, `file.write_line()`, `file.close()` wired from MIR dispatch to C runtime functions. Compiles to native.
+- **Closure leak in loops** — `ClosureDrop` now inserts at loop back-edges (Goto/Branch), not just before Return terminators. Heap closures in loops no longer leak per iteration.
+- **Nested JSON** — `json.encode` handles nested struct fields via recursive MIR lowering + `json_buf_add_raw` C helper.
+- **Array codegen** — `arr.len()` constant-folds at compile time. `arr[i]` and `arr[i] = val` lower to `MirRValue::ArrayIndex` / `MirStmt::ArrayStore` (direct pointer arithmetic, no runtime calls). `for item in arr` uses array length + ArrayIndex. `[val; N]` expands to N stores. All array operations are structural — no dispatch table entries.
+- **Rng.from_seed() in interpreter** — `Rng`, `File`, `f32x8` registered as builtin types in interpreter (matching resolver builtins). Selective imports (`import random.Rng`, `import time.Instant`, etc.) also work.
+- **Local type prefix tracking** — MIR lowerer tracks stdlib type prefixes through variable bindings (e.g. `const rng = Rng.from_seed(42)` → rng has prefix "Rng"). Fixes method dispatch for Rng, File, and chained calls like `file.lines().len()`. Also fixes Vec method dispatch that was silently broken in codegen.
+- **Lazy iterator protocol** — 9 adapter variants (Vec, Map, Filter, Enumerate, Take, Skip, Range, FlatMap, Zip), 16 methods, `for-in` loop support in interpreter.
+- **Rng type (interpreter)** — xoshiro256++ PRNG with `Rng.new()`, `Rng.from_seed()`, instance methods (u64, i64, f64, f32, bool, range, shuffle, choice).
+- **Import resolution** — All 13 builtin modules resolve in the resolver (was only 5).
+- **Spec-test type checking** — `compile`/`compile-fail` tests now run resolve + typecheck. 76/76 pass.
+- **Complex assignment targets** — `a[i] = val` lowers to `set(a, i, val)` in MIR.
+- **Array elem_ty** — `array_repeat` passes elem_size to runtime. `elem_size_for_type()` computes sizes from MirType.
+- **File/Rng stdlib types** — Method definitions registered in `rask-stdlib/types.rs` for type checker.
+- **Closure escape analysis** — Non-escaping closures stack-allocated; heap closures get `ClosureDrop` before returns.
+- **Stdlib module calls in codegen** — Module-qualified names resolve through MIR to C runtime dispatch.
+- **Green task scheduler** — Work-stealing scheduler with io_uring/epoll I/O engine (C runtime).
+- **Typed C runtime** — `vec.c`/`map.c`/`pool.c`/`string.c` replace inline i64 implementations.
 
 ## Active Work — Phase 5: Code Generation Completeness
 
 ### Next session priorities
 
-1. **Runtime type migration** — The big architectural debt. Two parallel C implementations exist:
-   - Old i64-based (inline in `runtime.c`) — currently linked and used
-   - New typed (`vec.c`, `string.c`, `map.c`, `pool.c` + `rask_runtime.h`) — proper structs with `elem_size`, not linked
-   - Steps: update `link.rs` to compile the separate `.c` files, update dispatch signatures to match typed API, remove old i64 duplicates from `runtime.c`
-   - See `dispatch.rs` lines 9-25 for the full migration plan
+1. **Runtime type migration cleanup** — Mostly Done. Typed C files (`vec.c`, `map.c`, `pool.c`, `string.c`) are linked. Old i64 duplicates still in `runtime.c` need removing. Dispatch signatures need updating to match typed API. See `dispatch.rs` lines 9-25.
 
-2. ~~**Stdlib module calls in codegen**~~ — Done. Module-qualified names (`cli.args()`, `fs.open()`, `json.encode()`, `net.tcp_listen()`, etc.) now resolve through MIR to dispatch to C runtime functions. Type checker and MIR lowerer module lists are synced (`cli`, `fs`, `io`, `std`, `json`, `net`). `json.encode` expands structs at MIR level using field layout; `json.decode<T>` parses flat JSON objects into structs. Remaining gaps:
-   - **Import resolution** — `import json`, `import net` fail because the resolver doesn't know about builtin modules (only the type checker does). http_api_server.rk blocked on this.
-   - **File methods** — `fs.open()` returns FILE* as i64 but validation programs call `file.lines()`, `file.close()` etc. Need File type with method dispatch.
-   - **Nested JSON** — `json.encode` only handles flat structs (no nested objects/arrays). `json.decode` is limited to flat `{string|number|bool}` fields.
+2. **Codegen gaps** — Stdlib module calls work (module-qualified names resolve through MIR to C runtime dispatch). Remaining:
+   - ~~**File methods**~~ Done. `file.lines()`, `file.read_all()`, `file.write()`, etc. compile to native.
+   - ~~**Nested JSON**~~ Done. `json.encode` handles nested structs via recursive lowering.
+   - ~~**Array codegen**~~ Done. `arr.len()` constant-folds, `arr[i]`/`arr[i]=val` use direct pointer arithmetic, `for-in` and `[val;N]` work.
 
-3. **Concurrency runtime (rask-rt)** — spawn, join, channels, Shared<T>/Mutex as native code. Interpreter has the semantics, need C or Rust implementations that compiled programs can link against. Green thread scheduler exists in `rask-rt/green/` but isn't integrated into the spawn path.
+3. **Concurrency runtime (rask-rt)** — Mostly Done. spawn, join, channels, Shared<T>/Mutex as native code. Green thread scheduler + io_uring/epoll engine exist but aren't integrated into the spawn path.
 
-4. ~~**Closure escape handling**~~ — Done. Escape analysis downgrades non-escaping closures to stack; heap closures get `ClosureDrop` before returns. Cross-function analysis (`optimize_all_closures`) checks if callee parameters escape — borrow-only callees (e.g., `forEach`) get proper caller-side drops, ownership-taking callees (e.g., `spawn`, runtime functions) suppress drops. Remaining gaps: concurrency integration blocked on runtime (#3). Note: `ClosureDrop` only inserts before `Return` terminators — heap closures created in loops that aren't fully transferred will leak per iteration. Not a problem for stack-allocated (non-escaping) closures.
-
-5. **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
+4. **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
 
 ### Smaller items to pick off
 
-- [ ] **Spec-test type checking** — `rask-spec-test/runner.rs` only lexes+parses, so `compile-fail` tests can't verify type errors. Wire the type checker into the test runner.
-- [ ] **Complex assignment targets** — `a[i].field = val` fails in MIR lowering (`rask-mir/lower/stmt.rs:84`). Only `Ident` and `Field` targets work.
-- [ ] **Iterator protocol** — `iter()` returns identity (clone), no real iterator abstraction. Need at minimum `map`, `filter`, `collect`.
-- [ ] **Rng type** — Completely unimplemented in interpreter (`rask-interp/stdlib/mod.rs:147`). Returns error for all methods.
-- [ ] **Array elem_ty** — `rask-mir/lower/expr.rs:809` has `let _ = elem_ty; // TODO: Use for proper array type`.
-- [ ] **Niche optimization** — `rask-mono/layout.rs:60` — Handle/Reference could be smaller.
-- [ ] **100+ skipped spec test blocks** — loops (11), ensure (9), ranges (3), comptime (5), and many more across stdlib specs.
+- [ ] **Niche optimization** — `rask-mono/layout.rs:60` — Option<Handle<T>> can use pool_id=0 as None sentinel. Blocked on Handle<T> not being a real type in the type checker yet (pool_id already starts from 1 in pool.c).
+- [x] **Top-level statement support** — Done. Parser accepts bare statements, `const`, and expressions at top level. `let` rejected with clear error. Wraps in synthetic `func main()`. 50 spec tests unskipped (126 total, 124 pass).
+- [x] **Iterator codegen** — Done. Inline expansion at MIR level: `.iter().filter().map()` chains fuse into index-based loops with inlined closures. Zero runtime overhead (no iterator objects, no dispatch). Terminals: `.collect()`, `.fold()`, `.any()`, `.all()`, `.count()`, `.sum()`, `.find()`. `for-in` over chains works too.
+- [x] **Rng codegen** — Done. `random.c` (xoshiro256++), dispatch entries, linker wiring. `Rng.from_seed()` + module convenience both compile.
+- [x] **Closure leak in loops** — Done. Back-edge detection inserts `ClosureDrop` at loop boundaries.
+- [x] **Rng.from_seed() in interpreter** — Done. Builtin types (Rng, File, f32x8) registered in interpreter, matching resolver.
 
 ### Known codegen limitations (not blocking, track for later)
 
-- Stdlib dispatch uses bare names (`push`, `len`, `get`) — ambiguous without type info. Needs qualified names or type-directed dispatch when monomorphizer evolves.
+- ~~Stdlib dispatch uses bare names — ambiguous without type info.~~ Fixed: type-qualified dispatch (`Vec_push`, `Map_get`, `string_contains`, etc.) using node_types from type checker + local_type_prefix fallback.
 - CleanupReturn inlines cleanup blocks — works but duplicates cleanup code. Fine for now, revisit if code size matters.
-- `map_err` dispatch is a pass-through (no closure application). Needs closure dispatch infrastructure.
+- ~~`map_err` dispatch is a pass-through.~~ Fixed: inline MIR expansion branches on Result tag, calls closure on Err payload via `ClosureCall`. Non-closure `map_err` (variant constructors) still uses pass-through stub.
+- Type checker leaves many builtin types as `Var(TypeVarId(...))` — local_type_prefix in MIR lowerer compensates but only works for direct variable references, not chained expressions like `Vec.new().len()`.
 
 ---
 
@@ -93,8 +100,8 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ### Remaining
 
-- [x] **Build system** — output dirs, `rask add`/`remove`, watch mode, cross-compilation. `build.rk` manifest exists, not wired end-to-end. See [build.md](specs/structure/build.md).
-- [x] **Package manager** — directory-based imports work initially, registry/versioning later.
+- [ ] **Build system** — output dirs, `rask add`/`remove`, watch mode, cross-compilation. `build.rk` manifest exists, not wired end-to-end. See [build.md](specs/structure/build.md).
+- [ ] **Package manager** — directory-based imports work initially, registry/versioning later.
 
 ---
 

@@ -79,15 +79,29 @@ impl<'a> MirLowerer<'a> {
                             value: val_op,
                         });
                     }
-                    // Index assignment: a[i] = val → set(a, i, val)
+                    // Index assignment: a[i] = val
                     ExprKind::Index { object, index } => {
-                        let (obj_op, _obj_ty) = self.lower_expr(object)?;
+                        let (obj_op, obj_ty) = self.lower_expr(object)?;
                         let (idx_op, _) = self.lower_expr(index)?;
-                        self.builder.push_stmt(MirStmt::Call {
-                            dst: None,
-                            func: FunctionRef { name: "set".to_string() },
-                            args: vec![obj_op, idx_op, val_op],
-                        });
+
+                        if let MirType::Array { ref elem, .. } = obj_ty {
+                            // Fixed-size array: direct store at base + index * elem_size
+                            if let MirOperand::Local(base_id) = obj_op {
+                                self.builder.push_stmt(MirStmt::ArrayStore {
+                                    base: base_id,
+                                    index: idx_op,
+                                    elem_size: elem.size(),
+                                    value: val_op,
+                                });
+                            }
+                        } else {
+                            // Vec/Map: dispatch through runtime
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: None,
+                                func: FunctionRef { name: "Vec_set".to_string() },
+                                args: vec![obj_op, idx_op, val_op],
+                            });
+                        }
                     }
                     _ => {
                         return Err(LoweringError::InvalidConstruct(
@@ -243,6 +257,48 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Track stdlib type prefix for variables assigned from type constructors,
+        // known module functions, or method calls on tracked variables,
+        // so later method calls dispatch correctly.
+        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                if super::is_type_constructor_name(obj_name) {
+                    // Type.method() → prefix is the type name (Rng, Vec, etc.)
+                    if super::MirContext::stdlib_type_prefix(
+                        &rask_types::Type::UnresolvedNamed(obj_name.clone())
+                    ).is_some() {
+                        self.local_type_prefix.insert(name.to_string(), obj_name.clone());
+                    } else {
+                        // Module function (fs.open) → check return type prefix
+                        let func_name = format!("{}_{}", obj_name, method);
+                        if let Some(prefix) = super::func_return_type_prefix(&func_name) {
+                            self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                        }
+                    }
+                } else if let Some(obj_prefix) = self.local_type_prefix.get(obj_name).cloned() {
+                    // Instance method on tracked variable (file.lines() → File_lines)
+                    let func_name = format!("{}_{}", obj_prefix, method);
+                    if let Some(prefix) = super::func_return_type_prefix(&func_name) {
+                        self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                    }
+                }
+            }
+        }
+        // Iterator terminal .collect() returns a Vec
+        if let ExprKind::MethodCall { method, .. } = &init.kind {
+            if method == "collect" {
+                self.local_type_prefix.insert(name.to_string(), "Vec".to_string());
+            }
+        }
+        // Also track for simple function calls (e.g. cli.args())
+        if let ExprKind::Call { func, .. } = &init.kind {
+            if let ExprKind::Ident(func_name) = &func.kind {
+                if let Some(prefix) = super::func_return_type_prefix(func_name) {
+                    self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                }
+            }
+        }
+
         // Track closure bindings and alias the func_sig so callers can
         // look up the return type by variable name.
         if is_closure {
@@ -333,9 +389,21 @@ impl<'a> MirLowerer<'a> {
             return self.lower_for_range(label, binding, start.as_deref(), end.as_deref(), *inclusive, body);
         }
 
+        // Iterator chain: for x in vec.iter().filter(...).map(...) { ... }
+        // Fuse into index loop with inlined adapter closures.
+        if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
+            return self.lower_for_iter_chain(label, binding, &chain, body);
+        }
+
         // Index-based iteration: for item in collection { ... }
-        // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection.get(_i); ...; _i += 1 }
+        // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection[_i]; ...; _i += 1 }
         let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
+        let is_array = matches!(&iter_ty, MirType::Array { .. });
+        let (array_len, array_elem_size) = match &iter_ty {
+            MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
+            _ => (None, None),
+        };
+
         let collection = self.builder.alloc_temp(iter_ty.clone());
         self.builder.push_stmt(MirStmt::Assign {
             dst: collection,
@@ -344,11 +412,19 @@ impl<'a> MirLowerer<'a> {
 
         // _len = collection.len()
         let len_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(len_local),
-            func: FunctionRef { name: "len".to_string() },
-            args: vec![MirOperand::Local(collection)],
-        });
+        if let Some(arr_len) = array_len {
+            // Fixed-size array: compile-time constant length
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: len_local,
+                rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(arr_len as i64))),
+            });
+        } else {
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(len_local),
+                func: FunctionRef { name: "Vec_len".to_string() },
+                args: vec![MirOperand::Local(collection)],
+            });
+        }
 
         // _i = 0
         let idx = self.builder.alloc_temp(MirType::I64);
@@ -381,17 +457,29 @@ impl<'a> MirLowerer<'a> {
             else_block: exit_block,
         });
 
-        // body: item = collection.get(_i)
+        // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
         let elem_ty = self.extract_iterator_elem_type(iter_expr)
             .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
         self.locals.insert(binding.to_string(), (binding_local, elem_ty));
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(binding_local),
-            func: FunctionRef { name: "get".to_string() },
-            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
-        });
+        if is_array {
+            // Fixed-size array: direct memory load
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: binding_local,
+                rvalue: MirRValue::ArrayIndex {
+                    base: MirOperand::Local(collection),
+                    index: MirOperand::Local(idx),
+                    elem_size: array_elem_size.unwrap_or(8),
+                },
+            });
+        } else {
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(binding_local),
+                func: FunctionRef { name: "Vec_get".to_string() },
+                args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
+            });
+        }
 
         self.loop_stack.push(LoopContext {
             label: label.map(|s| s.to_string()),
@@ -613,5 +701,46 @@ impl<'a> MirLowerer<'a> {
                     LoweringError::InvalidConstruct(format!("No loop with label '{}'", lbl))
                 }),
         }
+    }
+
+    /// For-in over an iterator chain: fused index loop with inlined adapters.
+    fn lower_for_iter_chain(
+        &mut self,
+        label: Option<&str>,
+        binding: &str,
+        chain: &super::IterChain<'_>,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let setup = self.setup_iter_chain_loop(chain)?;
+        let (final_op, final_ty) = self.apply_iter_adapters(
+            chain, MirOperand::Local(setup.elem_local), setup.elem_ty.clone(),
+            setup.inc_block, setup.idx,
+        )?;
+
+        // Bind final value to the loop variable
+        let binding_local = self.builder.alloc_local(binding.to_string(), final_ty.clone());
+        self.locals.insert(binding.to_string(), (binding_local, final_ty));
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: binding_local,
+            rvalue: MirRValue::Use(final_op),
+        });
+
+        self.loop_stack.push(super::LoopContext {
+            label: label.map(|s| s.to_string()),
+            continue_block: setup.inc_block,
+            exit_block: setup.exit_block,
+            result_local: None,
+        });
+
+        for stmt in body {
+            self.lower_stmt(stmt)?;
+        }
+
+        self.builder.terminate(MirTerminator::Goto { target: setup.inc_block });
+        self.loop_stack.pop();
+
+        self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
+        self.builder.switch_to_block(setup.exit_block);
+        Ok(())
     }
 }

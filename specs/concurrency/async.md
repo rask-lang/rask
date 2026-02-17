@@ -116,7 +116,7 @@ const results = try group.join_all()
 | **C3: Composable** | `using Multitasking, ThreadPool { }` enables both (desugars to nested blocks) |
 | **C4: Block exit** | Exiting a `using` block waits for non-detached tasks |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 using Multitasking(workers: 4) { }
 using ThreadPool(workers: 8) { }
@@ -289,7 +289,7 @@ FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
 
 ### Channel Error Types
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum SendError { Closed }
 enum RecvError { Closed }

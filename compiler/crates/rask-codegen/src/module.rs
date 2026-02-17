@@ -385,6 +385,10 @@ impl CodeGenerator {
             rask_mir::MirRValue::EnumTag { value } => self.register_operand_string(value, counter),
             rask_mir::MirRValue::Deref(op) => self.register_operand_string(op, counter),
             rask_mir::MirRValue::Ref(_) => Ok(()),
+            rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
+                self.register_operand_string(base, counter)?;
+                self.register_operand_string(index, counter)
+            }
         }
     }
 

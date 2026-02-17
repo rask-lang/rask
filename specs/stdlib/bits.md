@@ -103,7 +103,7 @@ cursor += buffer[cursor..].write_u8(1)
 |------|-------------|
 | **E1: ParseError** | Parsing operations return `T or ParseError` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum ParseError {
     UnexpectedEnd { expected: usize, actual: usize }

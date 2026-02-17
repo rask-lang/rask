@@ -49,6 +49,12 @@ pub enum MirRValue {
     EnumTag {
         value: MirOperand,
     },
+    /// Load element from a fixed-size array: base_ptr + index * elem_size
+    ArrayIndex {
+        base: MirOperand,
+        index: MirOperand,
+        elem_size: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

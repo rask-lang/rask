@@ -211,7 +211,7 @@ func transfer(db: Database, from: AccountId, to: AccountId, amount: i64) -> () o
 
 Cleaning up pools of linear resources:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func process_many_files(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
@@ -231,7 +231,7 @@ func process_many_files(paths: Vec<string>) -> () or Error {
 
 Errors during cleanup (e.g., `close()` fails) are ignored by default (ER1). If cleanup errors matter, explicitly `take_all` before returning:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func process_many_files_careful(paths: Vec<string>) -> () or Error {
     let files: Pool<File> = Pool.new()
@@ -375,7 +375,7 @@ Both files guaranteed to close on any exit path.
 
 **Pattern 2: Transaction (ensure + explicit consumption)**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func modify_database(db: Database) -> () or Error {
     const tx = try db.begin()

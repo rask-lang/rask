@@ -34,7 +34,7 @@
 | `{:0>10}` | `format("{:0>10}", 42)` | `"0000000042"` |
 | `{:.3}` | `format("{:.3}", 3.14159)` | `"3.142"` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const hex = format("0x{:08X}", 0xDEAD)
 const table = format("{:<10} {:>8}", "Name", "Score")
@@ -49,7 +49,7 @@ const table = format("{:<10} {:>8}", "Name", "Score")
 | **D3: Structs opt-in** | Structs do NOT auto-implement `Display` — must add via `extend Type with Display` |
 | **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Display` not implemented |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
@@ -69,7 +69,7 @@ extend Point with Display {
 | **G3: Override** | Auto-derived `Debug` can be overridden via `extend Type with Debug` |
 | **G4: Debug format** | `format("{:?}", x)` calls `debug_string()` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
@@ -157,7 +157,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 
 **Tabular output:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 println(format("{:<20} {:>10} {:>10}", "Item", "Qty", "Price"))
 println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
@@ -165,7 +165,7 @@ println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 
 **Custom Display with hex:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Color { r: u8, g: u8, b: u8 }
 

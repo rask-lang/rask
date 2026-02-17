@@ -107,6 +107,10 @@ pub enum BuiltinTypeKind {
     Owned,
     /// f32x8 - SIMD vector type (8 x f32)
     F32x8,
+    /// Rng - random number generator
+    Rng,
+    /// File - file handle
+    File,
 }
 
 /// Built-in function kinds.

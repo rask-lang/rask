@@ -65,7 +65,7 @@ Atomic types provide safe, data-race-free shared memory access with explicit mem
 
 **Mental model:** Release-Acquire forms a "happens-before" relationship. All writes before the Release are visible after the Acquire.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Thread A (producer):          Thread B (consumer):
 //   data = 42                     while !ready.load(Acquire) {}
@@ -321,7 +321,7 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 
 **Performance hierarchy (fastest to slowest):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Relaxed < Acquire = Release < AcqRel < SeqCst
 ```

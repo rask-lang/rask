@@ -148,6 +148,27 @@ int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
 
+// ─── Rng (random) ───────────────────────────────────────────
+// xoshiro256++ PRNG. 32-byte state, heap-allocated.
+
+typedef struct RaskRng RaskRng;
+
+RaskRng *rask_rng_new(void);
+RaskRng *rask_rng_from_seed(int64_t seed);
+int64_t  rask_rng_u64(RaskRng *rng);
+int64_t  rask_rng_i64(RaskRng *rng);
+double   rask_rng_f64(RaskRng *rng);
+double   rask_rng_f32(RaskRng *rng);
+int64_t  rask_rng_bool(RaskRng *rng);
+int64_t  rask_rng_range(RaskRng *rng, int64_t lo, int64_t hi);
+
+// Module-level convenience (thread-local PRNG)
+double   rask_random_f64(void);
+double   rask_random_f32(void);
+int64_t  rask_random_i64(void);
+int64_t  rask_random_bool(void);
+int64_t  rask_random_range(int64_t lo, int64_t hi);
+
 // ─── FS module ──────────────────────────────────────────────
 // Higher-level file operations. Return FILE* or RaskString* as i64.
 
@@ -160,6 +181,15 @@ void        rask_fs_remove(const RaskString *path);
 void        rask_fs_create_dir(const RaskString *path);
 void        rask_fs_create_dir_all(const RaskString *path);
 void        rask_fs_append_file(const RaskString *path, const RaskString *content);
+
+// ─── File instance methods ──────────────────────────────────
+// Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
+
+void        rask_file_close(int64_t file);
+RaskString *rask_file_read_all(int64_t file);
+void        rask_file_write(int64_t file, const RaskString *content);
+void        rask_file_write_line(int64_t file, const RaskString *content);
+RaskVec    *rask_file_lines(int64_t file);
 
 // ─── Net module ─────────────────────────────────────────────
 // Basic TCP socket operations.
@@ -176,6 +206,7 @@ void         rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const R
 void         rask_json_buf_add_i64(RaskJsonBuf *buf, const char *key, int64_t val);
 void         rask_json_buf_add_f64(RaskJsonBuf *buf, const char *key, double val);
 void         rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val);
+void         rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *raw_json);
 RaskString  *rask_json_buf_finish(RaskJsonBuf *buf);
 
 RaskString  *rask_json_encode_string(const RaskString *s);

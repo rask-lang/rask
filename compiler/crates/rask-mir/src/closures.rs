@@ -238,26 +238,85 @@ fn find_transferred_closures(
     passed_or_stored.difference(&used_locally).copied().collect()
 }
 
-/// Insert ClosureDrop statements before Return terminators for heap-allocated
-/// closures that aren't the return value on that path.
+/// Insert ClosureDrop statements before Return terminators and loop back-edges
+/// for heap-allocated closures that aren't the return value on that path.
 fn insert_closure_drops(func: &mut MirFunction, heap_closures: &HashSet<LocalId>) {
+    // Track which block creates which heap closure
+    let mut closure_block: HashMap<LocalId, usize> = HashMap::new();
+    for (idx, block) in func.blocks.iter().enumerate() {
+        for stmt in &block.statements {
+            if let MirStmt::ClosureCreate { dst, .. } = stmt {
+                if heap_closures.contains(dst) {
+                    closure_block.insert(*dst, idx);
+                }
+            }
+        }
+    }
+
     let mut drops_to_insert: Vec<(usize, Vec<LocalId>)> = Vec::new();
 
     for (block_idx, block) in func.blocks.iter().enumerate() {
-        let returned_local = match &block.terminator {
-            MirTerminator::Return { value: Some(MirOperand::Local(id)) } => Some(*id),
-            MirTerminator::CleanupReturn { value: Some(MirOperand::Local(id)), .. } => Some(*id),
-            MirTerminator::Return { .. } | MirTerminator::CleanupReturn { .. } => None,
-            _ => continue,
-        };
+        match &block.terminator {
+            // Return: drop all heap closures except the return value
+            MirTerminator::Return { value } | MirTerminator::CleanupReturn { value, .. } => {
+                let returned_local = match value {
+                    Some(MirOperand::Local(id)) => Some(*id),
+                    _ => None,
+                };
+                let to_drop: Vec<LocalId> = heap_closures.iter()
+                    .filter(|id| Some(**id) != returned_local)
+                    .copied()
+                    .collect();
+                if !to_drop.is_empty() {
+                    drops_to_insert.push((block_idx, to_drop));
+                }
+            }
 
-        let to_drop: Vec<LocalId> = heap_closures.iter()
-            .filter(|id| Some(**id) != returned_local)
-            .copied()
-            .collect();
+            // Back-edge: drop closures created in the loop body
+            MirTerminator::Goto { target } => {
+                let target_idx = func.blocks.iter().position(|b| b.id == *target);
+                if let Some(tidx) = target_idx {
+                    if tidx <= block_idx {
+                        // Back-edge detected. Drop closures created between
+                        // the target and this block (i.e., in the loop body).
+                        let to_drop: Vec<LocalId> = heap_closures.iter()
+                            .filter(|id| {
+                                closure_block.get(id)
+                                    .map(|&cidx| cidx >= tidx && cidx <= block_idx)
+                                    .unwrap_or(false)
+                            })
+                            .copied()
+                            .collect();
+                        if !to_drop.is_empty() {
+                            drops_to_insert.push((block_idx, to_drop));
+                        }
+                    }
+                }
+            }
 
-        if !to_drop.is_empty() {
-            drops_to_insert.push((block_idx, to_drop));
+            // Branch back-edge (less common but possible)
+            MirTerminator::Branch { then_block, else_block, .. } => {
+                for target in [then_block, else_block] {
+                    let target_idx = func.blocks.iter().position(|b| b.id == *target);
+                    if let Some(tidx) = target_idx {
+                        if tidx <= block_idx {
+                            let to_drop: Vec<LocalId> = heap_closures.iter()
+                                .filter(|id| {
+                                    closure_block.get(id)
+                                        .map(|&cidx| cidx >= tidx && cidx <= block_idx)
+                                        .unwrap_or(false)
+                                })
+                                .copied()
+                                .collect();
+                            if !to_drop.is_empty() {
+                                drops_to_insert.push((block_idx, to_drop));
+                            }
+                        }
+                    }
+                }
+            }
+
+            _ => {}
         }
     }
 
@@ -947,5 +1006,78 @@ mod tests {
             if let MirStmt::ClosureCreate { heap, .. } = s { Some(*heap) } else { None }
         }).unwrap();
         assert!(heap, "closure returned from match arm must stay heap");
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Loop back-edge drops
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn closure_in_loop_escaping_and_local_gets_back_edge_drop() {
+        // Closure in loop body: passed to unknown callee AND used locally.
+        // Must be heap. Not transferred (local use). Drop at back-edge.
+        //
+        //   block0: goto block1
+        //   block1: branch(cond, block2, block3)
+        //   block2:
+        //     _1 = ClosureCreate[heap]
+        //     Call(run, [_1])         ← unknown callee → escaping
+        //     _2 = ClosureCall(_1)    ← local use → not transferred
+        //     goto block1             ← back-edge: drop _1 here
+        //   block3: return void
+
+        let mut fns = vec![MirFunction {
+            name: "f".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                temp(0, MirType::I64),
+                temp(1, MirType::Ptr),
+                temp(2, MirType::I64),
+            ],
+            blocks: vec![
+                block(0, vec![], MirTerminator::Goto { target: BlockId(1) }),
+                block(1, vec![], MirTerminator::Branch {
+                    cond: MirOperand::Local(LocalId(0)),
+                    then_block: BlockId(2),
+                    else_block: BlockId(3),
+                }),
+                block(2, vec![
+                    MirStmt::ClosureCreate {
+                        dst: LocalId(1),
+                        func_name: "f__closure_0".to_string(),
+                        captures: vec![],
+                        heap: true,
+                    },
+                    MirStmt::Call {
+                        dst: None,
+                        func: FunctionRef { name: "run".to_string() },
+                        args: vec![MirOperand::Local(LocalId(1))],
+                    },
+                    MirStmt::ClosureCall {
+                        dst: Some(LocalId(2)),
+                        closure: LocalId(1),
+                        args: vec![],
+                    },
+                ], MirTerminator::Goto { target: BlockId(1) }),
+                block(3, vec![], ret(None)),
+            ],
+            entry_block: BlockId(0),
+        }];
+
+        optimize_all_closures(&mut fns);
+
+        let loop_block = &fns[0].blocks[2];
+        assert!(
+            loop_block.statements.iter().any(|s| matches!(s, MirStmt::ClosureDrop { .. })),
+            "back-edge block should have ClosureDrop for leaked closure"
+        );
+
+        // Also should have drop at return block
+        let exit_block = &fns[0].blocks[3];
+        assert!(
+            exit_block.statements.iter().any(|s| matches!(s, MirStmt::ClosureDrop { .. })),
+            "return block should also have ClosureDrop"
+        );
     }
 }

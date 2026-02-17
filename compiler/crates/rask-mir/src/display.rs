@@ -111,6 +111,9 @@ impl fmt::Display for MirRValue {
             MirRValue::EnumTag { value } => {
                 write!(f, "tag({})", value)
             }
+            MirRValue::ArrayIndex { base, index, elem_size } => {
+                write!(f, "{}[{} * {}]", base, index, elem_size)
+            }
         }
     }
 }
@@ -178,6 +181,9 @@ impl fmt::Display for MirStmt {
             }
             MirStmt::ClosureDrop { closure } => {
                 write!(f, "closure_drop(_{}))", closure.0)
+            }
+            MirStmt::ArrayStore { base, index, elem_size, value } => {
+                write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }
         }
     }

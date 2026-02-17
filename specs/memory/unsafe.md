@@ -139,7 +139,7 @@ func caller() {
 | `Send` | Type can be transferred to another thread |
 | `Sync` | Type can be shared (via &T) between threads |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 unsafe trait Send {}
 unsafe trait Sync {}

@@ -44,7 +44,7 @@ Package role is determined by presence of `func main()`. No manifest flags, no d
 | **AR2: Program name** | `args[0]` is program name (like C) |
 | **AR3: UTF-8** | Arguments are always valid UTF-8 |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 public func main(args: Args) {
     for arg in args {
@@ -120,7 +120,7 @@ ERROR [struct.targets/EP1]: entry point not public
 ### Examples
 
 **Minimal executable:**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 public func main() {
     print("hello")

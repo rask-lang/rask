@@ -121,7 +121,7 @@ All Copy types are also Clone. Not all Clone types are Copy.
 
 **Generic constraint propagation:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Pair<T> {
     first: T,

@@ -50,7 +50,7 @@ comptime {
 | `fields<T>()` | `-> []FieldInfo` | All fields of a struct (compile error if not a struct) |
 | `has_field<T>(name: string)` | `-> bool` | Whether struct has a field with this name |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct FieldInfo {
     name: string
@@ -68,7 +68,7 @@ struct FieldInfo {
 | `methods<T>()` | `-> []MethodInfo` | All methods of a type |
 | `has_method<T>(name: string)` | `-> bool` | Whether type has a method with this name |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct MethodInfo {
     name: string
@@ -93,7 +93,7 @@ struct MethodInfo {
 |----------|-----------|-------------|
 | `variants<T>()` | `-> []VariantInfo` | All variants of an enum (compile error if not an enum) |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct VariantInfo {
     name: string
@@ -150,7 +150,7 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 
 **Derive-style code generation** — the primary use case:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 import std.reflect
 

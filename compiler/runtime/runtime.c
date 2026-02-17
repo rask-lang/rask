@@ -323,6 +323,64 @@ void rask_fs_append_file(const RaskString *path, const RaskString *content) {
     fclose(f);
 }
 
+// ─── File instance methods ────────────────────────────────────────
+// Operate on FILE* handles returned by rask_fs_open / rask_fs_create.
+
+void rask_file_close(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (f) fclose(f);
+}
+
+RaskString *rask_file_read_all(int64_t file) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return rask_string_new();
+    // Read from current position to end
+    long start = ftell(f);
+    fseek(f, 0, SEEK_END);
+    long end = ftell(f);
+    fseek(f, start, SEEK_SET);
+    long size = end - start;
+    char *buf = (char *)malloc((size_t)size + 1);
+    if (!buf) return rask_string_new();
+    fread(buf, 1, (size_t)size, f);
+    buf[size] = '\0';
+    RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
+    free(buf);
+    return s;
+}
+
+void rask_file_write(int64_t file, const RaskString *content) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f || !content) return;
+    fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
+}
+
+void rask_file_write_line(int64_t file, const RaskString *content) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return;
+    if (content) {
+        fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
+    }
+    fputc('\n', f);
+}
+
+RaskVec *rask_file_lines(int64_t file) {
+    RaskVec *v = rask_vec_new(sizeof(RaskString *));
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f) return v;
+    // Rewind to start
+    fseek(f, 0, SEEK_SET);
+    char buf[4096];
+    while (fgets(buf, sizeof(buf), f)) {
+        size_t len = strlen(buf);
+        if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
+        if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
+        RaskString *line = rask_string_from_bytes(buf, (int64_t)len);
+        rask_vec_push(v, &line);
+    }
+    return v;
+}
+
 // ─── Net module ───────────────────────────────────────────────────
 
 #include <sys/socket.h>
@@ -456,6 +514,18 @@ void rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, key, (int64_t)strlen(key));
     json_buf_append_cstr(buf, val ? ":true" : ":false");
+    buf->field_count++;
+}
+
+void rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *raw_json) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_cstr(buf, ":");
+    if (raw_json) {
+        json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
+    } else {
+        json_buf_append_cstr(buf, "null");
+    }
     buf->field_count++;
 }
 

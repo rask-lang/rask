@@ -181,7 +181,7 @@ Avoids constructing on stack then moving. Useful for large types.
 
 Slices (`[]T`) are ephemeral fat pointers that can't be stored. `SliceDescriptor<T>` stores the "recipe" instead.
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct SliceDescriptor<T> {
     handle: Handle<T>,    // 8 bytes

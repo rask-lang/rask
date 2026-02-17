@@ -20,6 +20,7 @@ const RUNTIME_SOURCES: &[&str] = &[
     "green.c",
     "io_uring_engine.c",
     "io_epoll_engine.c",
+    "random.c",
 ];
 
 /// Find the runtime C files, compile them, and link with the object file.
