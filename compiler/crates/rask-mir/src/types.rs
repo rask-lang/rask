@@ -27,6 +27,8 @@ pub enum MirType {
         len: u32,
     },
     FuncPtr(SignatureId),
+    /// Handle<T> — pool handle, packed as i64 (index:32 | gen:32) in current codegen.
+    Handle,
 }
 
 impl MirType {
@@ -37,7 +39,8 @@ impl MirType {
             MirType::Bool | MirType::I8 | MirType::U8 => 1,
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
+            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
+            | MirType::Handle => 8,
             MirType::String => 16,
             MirType::Struct(_) | MirType::Enum(_) => 8,
             MirType::Array { elem, len } => elem.size() * len,

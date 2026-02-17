@@ -5,7 +5,7 @@
 use super::{
     binop_result_type, is_type_constructor_name, is_variant_name, lower_binop, lower_unaryop,
     operator_method_to_binop, operator_method_to_unaryop, LoweringError,
-    MirLowerer, TypedOperand,
+    MirLowerer, TypedOperand, HANDLE_NONE_SENTINEL,
 };
 use crate::{
     operand::MirConst, stmt::ClosureCapture, types::{EnumLayoutId, StructLayoutId}, BlockBuilder,
@@ -55,8 +55,12 @@ impl<'a> MirLowerer<'a> {
                 if let Some((id, ty)) = self.locals.get(name).cloned() {
                     Ok((MirOperand::Local(id), ty))
                 } else if name == "None" {
-                    // Fieldless variant → tag-only value (tag 1 for None)
-                    Ok((MirOperand::Constant(MirConst::Int(1)), MirType::Ptr))
+                    // Niche: Option<Handle<T>> uses sentinel instead of tag
+                    if self.is_niche_option_expr(expr) {
+                        Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
+                    } else {
+                        Ok((MirOperand::Constant(MirConst::Int(1)), MirType::Ptr))
+                    }
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
                 }
@@ -147,6 +151,12 @@ impl<'a> MirLowerer<'a> {
 
                 // Built-in variant constructors: Ok(v), Err(v), Some(v)
                 match func_name.as_str() {
+                    "Some" if self.is_niche_option_expr(expr) => {
+                        // Niche: Some(handle) is just the handle value
+                        let val = arg_operands.into_iter().next()
+                            .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+                        return Ok((val, MirType::Handle));
+                    }
                     "Ok" | "Some" | "Err" => {
                         let tag = self.variant_tag(&func_name);
                         let result_local = self.builder.alloc_temp(MirType::Ptr);
@@ -664,12 +674,9 @@ impl<'a> MirLowerer<'a> {
                 then_branch,
                 else_branch,
             } => {
+                let is_niche = self.is_niche_option_expr(expr);
                 let (val, _) = self.lower_expr(expr)?;
-                let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
+                let tag = self.emit_option_tag(&val, is_niche);
 
                 // Compare tag against expected variant
                 let expected = self.pattern_tag(pattern);
@@ -697,7 +704,7 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(then_block);
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
-                self.bind_pattern_payload(pattern, val, payload_ty);
+                self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
                 self.builder.push_stmt(MirStmt::Assign {
@@ -733,12 +740,9 @@ impl<'a> MirLowerer<'a> {
                 pattern,
                 else_branch,
             } => {
+                let is_niche = self.is_niche_option_expr(expr);
                 let (val, _) = self.lower_expr(expr)?;
-                let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
+                let tag = self.emit_option_tag(&val, is_niche);
 
                 let expected = self.pattern_tag(pattern);
                 let matches = self.builder.alloc_temp(MirType::Bool);
@@ -770,13 +774,9 @@ impl<'a> MirLowerer<'a> {
                 self.builder.switch_to_block(ok_block);
                 let payload_ty = self.extract_payload_type(expr)
                     .unwrap_or(MirType::I64);
-                self.bind_pattern_payload(pattern, val.clone(), payload_ty.clone());
+                self.bind_pattern_payload_niche(pattern, val.clone(), payload_ty.clone(), is_niche);
                 // Extract the payload value for the result
-                let payload = self.builder.alloc_temp(payload_ty.clone());
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: payload,
-                    rvalue: MirRValue::Field { base: val, field_index: 0 },
-                });
+                let payload = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
                 self.builder.switch_to_block(merge_block);
@@ -785,12 +785,9 @@ impl<'a> MirLowerer<'a> {
 
             // Pattern test (expr is Pattern) — evaluates to bool
             ExprKind::IsPattern { expr: inner, pattern } => {
+                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _ty) = self.lower_expr(inner)?;
-                let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag,
-                    rvalue: MirRValue::EnumTag { value: val },
-                });
+                let tag = self.emit_option_tag(&val, is_niche);
                 let expected = self.pattern_tag(pattern);
                 let result = self.builder.alloc_temp(MirType::Bool);
                 self.builder.push_stmt(MirStmt::Assign {
@@ -809,12 +806,9 @@ impl<'a> MirLowerer<'a> {
 
             // Unwrap (postfix !) - panic on None/Err
             ExprKind::Unwrap { expr: inner, message: _ } => {
+                let is_niche = self.is_niche_option_expr(inner);
                 let (val, _inner_ty) = self.lower_expr(inner)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
+                let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let ok_block = self.builder.create_block();
                 let panic_block = self.builder.create_block();
@@ -833,25 +827,17 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::Unreachable);
 
                 self.builder.switch_to_block(ok_block);
-                // Infer payload type from the Option/Result being unwrapped
                 let payload_ty = self.extract_payload_type(inner)
                     .unwrap_or(MirType::I64);
-                let result_local = self.builder.alloc_temp(payload_ty.clone());
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field { base: val, field_index: 0 },
-                });
+                let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 Ok((MirOperand::Local(result_local), payload_ty))
             }
 
             // Null coalescing (a ?? b)
             ExprKind::NullCoalesce { value, default } => {
+                let is_niche = self.is_niche_option_expr(value);
                 let (val, _) = self.lower_expr(value)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
+                let tag_local = self.emit_option_tag(&val, is_niche);
 
                 let some_block = self.builder.create_block();
                 let none_block = self.builder.create_block();
@@ -864,14 +850,9 @@ impl<'a> MirLowerer<'a> {
                 });
 
                 self.builder.switch_to_block(some_block);
-                // Infer payload type from the Option being coalesced
                 let payload_ty = self.extract_payload_type(value)
                     .unwrap_or(MirType::I64);
-                let result_local = self.builder.alloc_temp(payload_ty.clone());
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Field { base: val, field_index: 0 },
-                });
+                let result_local = self.emit_option_payload(val, payload_ty.clone(), is_niche);
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
                 self.builder.switch_to_block(none_block);
@@ -943,12 +924,9 @@ impl<'a> MirLowerer<'a> {
 
             // Optional chaining (a?.b)
             ExprKind::OptionalField { object, field: _ } => {
+                let is_niche = self.is_niche_option_expr(object);
                 let (obj, _) = self.lower_expr(object)?;
-                let tag_local = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: tag_local,
-                    rvalue: MirRValue::EnumTag { value: obj.clone() },
-                });
+                let tag_local = self.emit_option_tag(&obj, is_niche);
 
                 let some_block = self.builder.create_block();
                 let none_block = self.builder.create_block();
@@ -965,9 +943,14 @@ impl<'a> MirLowerer<'a> {
                 });
 
                 self.builder.switch_to_block(some_block);
+                let rvalue = if is_niche {
+                    MirRValue::Use(obj)
+                } else {
+                    MirRValue::Field { base: obj, field_index: 0 }
+                };
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: result_local,
-                    rvalue: MirRValue::Field { base: obj, field_index: 0 },
+                    rvalue,
                 });
                 self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
@@ -1244,6 +1227,7 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<TypedOperand, LoweringError> {
         use rask_ast::expr::Pattern;
 
+        let is_niche = self.is_niche_option_expr(scrutinee);
         let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
@@ -1271,7 +1255,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             false
         };
-        let has_tag = is_enum || is_result_or_option || patterns_imply_enum;
+        let has_tag = is_enum || is_result_or_option || patterns_imply_enum || is_niche;
 
         // Extract payload types for Result/Option
         let ok_payload_ty = self.extract_payload_type(scrutinee)
@@ -1281,13 +1265,7 @@ impl<'a> MirLowerer<'a> {
 
         // Determine the switch value
         let switch_val = if has_tag {
-            let tag_local = self.builder.alloc_temp(MirType::U8);
-            self.builder.push_stmt(MirStmt::Assign {
-                dst: tag_local,
-                rvalue: MirRValue::EnumTag {
-                    value: scrutinee_op.clone(),
-                },
-            });
+            let tag_local = self.emit_option_tag(&scrutinee_op, is_niche);
             MirOperand::Local(tag_local)
         } else {
             scrutinee_op.clone()
@@ -1383,12 +1361,18 @@ impl<'a> MirLowerer<'a> {
                             let payload_local = self.builder.alloc_local(
                                 binding.clone(), field_ty.clone(),
                             );
-                            self.builder.push_stmt(MirStmt::Assign {
-                                dst: payload_local,
-                                rvalue: MirRValue::Field {
+                            let rvalue = if is_niche {
+                                // Niche: the scrutinee IS the payload
+                                MirRValue::Use(scrutinee_op.clone())
+                            } else {
+                                MirRValue::Field {
                                     base: scrutinee_op.clone(),
                                     field_index: j as u32,
-                                },
+                                }
+                            };
+                            self.builder.push_stmt(MirStmt::Assign {
+                                dst: payload_local,
+                                rvalue,
                             });
                             self.locals.insert(binding.clone(), (payload_local, field_ty));
                         }
@@ -2008,7 +1992,7 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::String | MirType::FuncPtr(_) => 8,
+            | MirType::String | MirType::FuncPtr(_) | MirType::Handle => 8,
             MirType::Struct(StructLayoutId(id)) => {
                 self.ctx.struct_layouts.get(*id as usize)
                     .map(|l| l.size as i64)

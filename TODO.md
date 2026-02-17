@@ -57,20 +57,11 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ### Next session priorities
 
-1. **Runtime type migration cleanup** — Mostly Done. Typed C files (`vec.c`, `map.c`, `pool.c`, `string.c`) are linked. Old i64 duplicates still in `runtime.c` need removing. Dispatch signatures need updating to match typed API. See `dispatch.rs` lines 9-25.
-
-2. **Codegen gaps** — Stdlib module calls work (module-qualified names resolve through MIR to C runtime dispatch). Remaining:
-   - ~~**File methods**~~ Done. `file.lines()`, `file.read_all()`, `file.write()`, etc. compile to native.
-   - ~~**Nested JSON**~~ Done. `json.encode` handles nested structs via recursive lowering.
-   - ~~**Array codegen**~~ Done. `arr.len()` constant-folds, `arr[i]`/`arr[i]=val` use direct pointer arithmetic, `for-in` and `[val;N]` work.
-
-3. **Concurrency runtime (rask-rt)** — Mostly Done. spawn, join, channels, Shared<T>/Mutex as native code. Green thread scheduler + io_uring/epoll engine exist but aren't integrated into the spawn path.
-
 4. **Native validation programs** — Get all 5 validation programs compiling and running natively. This is the milestone that proves the backend works.
 
 ### Smaller items to pick off
 
-- [ ] **Niche optimization** — `rask-mono/layout.rs:60` — Option<Handle<T>> can use pool_id=0 as None sentinel. Blocked on Handle<T> not being a real type in the type checker yet (pool_id already starts from 1 in pool.c).
+- [x] **Niche optimization** — Done. `Option<Handle<T>>` uses all-ones sentinel (-1) as None. Layout reports 8 bytes (no tag). MIR lowering emits compare-to-sentinel instead of EnumTag reads.
 - [x] **Top-level statement support** — Done. Parser accepts bare statements, `const`, and expressions at top level. `let` rejected with clear error. Wraps in synthetic `func main()`. 50 spec tests unskipped (126 total, 124 pass).
 - [x] **Iterator codegen** — Done. Inline expansion at MIR level: `.iter().filter().map()` chains fuse into index-based loops with inlined closures. Zero runtime overhead (no iterator objects, no dispatch). Terminals: `.collect()`, `.fold()`, `.any()`, `.all()`, `.count()`, `.sum()`, `.find()`. `for-in` over chains works too.
 - [x] **Rng codegen** — Done. `random.c` (xoshiro256++), dispatch entries, linker wiring. `Rng.from_seed()` + module convenience both compile.

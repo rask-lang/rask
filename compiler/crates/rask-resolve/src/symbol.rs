@@ -99,6 +99,8 @@ pub enum BuiltinTypeKind {
     Channel,
     /// Pool<T> - arena allocator for graph structures
     Pool,
+    /// Handle<T> - typed reference into a Pool<T>
+    Handle,
     /// Atomic<T> - atomic operations
     Atomic,
     /// Shared<T> - shared state with interior mutability

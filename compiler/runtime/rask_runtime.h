@@ -148,6 +148,11 @@ int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
 
+// Packed sentinel for Option<Handle<T>> niche optimization.
+// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
+// Option<Handle<T>> uses this as None; any other i64 is Some(handle).
+#define RASK_HANDLE_PACKED_NONE ((int64_t)-1)
+
 // ─── Rng (random) ───────────────────────────────────────────
 // xoshiro256++ PRNG. 32-byte state, heap-allocated.
 
