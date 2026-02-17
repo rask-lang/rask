@@ -6,13 +6,43 @@ use cranelift::prelude::*;
 use rask_mir::MirType;
 use crate::CodegenResult;
 
+/// Map a type annotation string to MirType for extern function signatures.
+///
+/// Handles primitive types and raw pointers used in FFI declarations.
+/// Not a full type resolver — only covers types valid in extern "C" signatures.
+pub fn type_string_to_mir(s: &str) -> MirType {
+    let s = s.trim();
+    if s.starts_with('*') {
+        return MirType::Ptr;
+    }
+    match s {
+        "i8" => MirType::I8,
+        "i16" => MirType::I16,
+        "i32" => MirType::I32,
+        "i64" => MirType::I64,
+        "u8" => MirType::U8,
+        "u16" => MirType::U16,
+        "u32" => MirType::U32,
+        "u64" => MirType::U64,
+        "f32" => MirType::F32,
+        "f64" => MirType::F64,
+        "bool" => MirType::Bool,
+        "()" => MirType::Void,
+        _ => MirType::I64, // default to pointer-sized
+    }
+}
+
 /// Translate MirType to Cranelift IR type.
 ///
 /// Rule B3: Structs/enums become pointers in function signatures.
 /// Inside function bodies, we allocate stack slots for aggregates.
 pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
     match ty {
-        MirType::Void => Ok(types::I64), // Void is 0-sized, use i64 as placeholder
+        // Void locals are declared as i64 because Cranelift requires a concrete type.
+        // Call sites skip storing to void-typed destinations (builder.rs), so these
+        // variables are never written or read in practice. Function return signatures
+        // already omit Void (module.rs).
+        MirType::Void => Ok(types::I64),
         MirType::Bool => Ok(types::I8),
         MirType::I8 => Ok(types::I8),
         MirType::I16 => Ok(types::I16),
@@ -32,6 +62,12 @@ pub fn mir_to_cranelift_type(ty: &MirType) -> CodegenResult<Type> {
         MirType::Array { .. } => Ok(types::I64), // Pointer to array
         MirType::FuncPtr(_) => Ok(types::I64), // Function pointer
         MirType::Handle => Ok(types::I64),     // Packed handle (index:32 | gen:32)
+        MirType::Tuple(_) => Ok(types::I64),   // Pointer to tuple on stack
+        MirType::Slice(_) => Ok(types::I64),   // Pointer to (ptr, len) pair
+        MirType::Option(_) => Ok(types::I64),  // Pointer to tagged union
+        MirType::Result { .. } => Ok(types::I64), // Pointer to tagged union
+        MirType::Union(_) => Ok(types::I64),   // Pointer to union
+        MirType::SimdVector { .. } => Ok(types::I64), // Pointer to SIMD buffer
     }
 }
 

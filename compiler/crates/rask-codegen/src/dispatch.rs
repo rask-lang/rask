@@ -35,15 +35,28 @@ pub struct StdlibEntry {
     pub ret_ty: Option<Type>,
 }
 
+/// Leak a String to get a &'static str. Used for dynamically generated
+/// dispatch entry names (atomic types). Called once at startup, small and bounded.
+fn leak_str(s: &str) -> &'static str {
+    Box::leak(s.to_string().into_boxed_str())
+}
+
 /// Build the complete stdlib dispatch table.
 pub fn stdlib_entries() -> Vec<StdlibEntry> {
-    vec![
+    let mut entries = vec![
         // ── Vec operations ─────────────────────────────────────
         // rask_vec_new(elem_size: i64) → RaskVec*
         StdlibEntry {
             mir_name: "Vec_new",
             c_name: "rask_vec_new",
             params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_vec_from_static(data: ptr, count: i64) → RaskVec*
+        StdlibEntry {
+            mir_name: "rask_vec_from_static",
+            c_name: "rask_vec_from_static",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_push(v: RaskVec*, elem: const void*) → i64
@@ -103,6 +116,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
+        // rask_vec_insert_at(v: RaskVec*, index: i64, elem: const void*) → i64
+        StdlibEntry {
+            mir_name: "Vec_insert",
+            c_name: "rask_vec_insert_at",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_vec_remove_at(v: RaskVec*, index: i64, out: void*) → i64
+        StdlibEntry {
+            mir_name: "Vec_remove",
+            c_name: "rask_vec_remove_at",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
         // ── Subscript (desugared from args[0] → args.index(0)) ─
         // Bare "index" kept: desugaring doesn't have receiver type info
         StdlibEntry {
@@ -118,14 +146,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
-        // ── Iterator stubs ─────────────────────────────────────
-        // iter() on Vec returns the Vec itself (identity)
-        StdlibEntry {
-            mir_name: "Vec_iter",
-            c_name: "rask_clone",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-        },
+        // ── Iterator runtime support ──────────────────────────────
+        // Vec_iter is not needed — iterator chains are fused at MIR level.
         // rask_iter_skip(src: const RaskVec*, n: i64) → RaskVec*
         StdlibEntry {
             mir_name: "Vec_skip",
@@ -153,6 +175,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "string_len",
             c_name: "rask_string_len",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_string_ptr(s: const RaskString*) → const char*
+        StdlibEntry {
+            mir_name: "string_as_ptr",
+            c_name: "rask_string_ptr",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
@@ -189,18 +218,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
-        // map_err with closures is expanded inline in MIR lowering.
-        // Non-closure map_err (e.g. variant constructors) still uses this stub.
-        StdlibEntry {
-            mir_name: "Result_map_err",
-            c_name: "rask_clone",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-        },
+        // Result_map_err: both closure and variant constructor forms
+        // are expanded inline at MIR level (lower_map_err / lower_map_err_constructor).
         StdlibEntry {
             mir_name: "string_split",
             c_name: "rask_string_split",
             params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "string_split_whitespace",
+            c_name: "rask_string_split_whitespace",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
@@ -361,6 +390,34 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "Pool_get",
             c_name: "rask_pool_get_packed",
             params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // Pool[handle] index access → same as Pool_get
+        StdlibEntry {
+            mir_name: "Pool_index",
+            c_name: "rask_pool_get_packed",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_pool_handles_packed(p: const RaskPool*) → RaskVec*
+        StdlibEntry {
+            mir_name: "Pool_handles",
+            c_name: "rask_pool_handles_packed",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_pool_values(p: const RaskPool*) → RaskVec*
+        StdlibEntry {
+            mir_name: "Pool_values",
+            c_name: "rask_pool_values",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // rask_pool_drain(p: RaskPool*) → RaskVec*
+        StdlibEntry {
+            mir_name: "Pool_drain",
+            c_name: "rask_pool_drain",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
         },
 
@@ -614,6 +671,57 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: None,
         },
 
+        // ── Time module ─────────────────────────────────────────────
+        // Instant = i64 nanoseconds, Duration = i64 nanoseconds.
+        StdlibEntry {
+            mir_name: "Instant_now",
+            c_name: "rask_time_Instant_now",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Instant_elapsed",
+            c_name: "rask_time_Instant_elapsed",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Instant_duration_since",
+            c_name: "rask_time_Instant_duration_since",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Duration_from_nanos",
+            c_name: "rask_time_Duration_from_nanos",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Duration_from_millis",
+            c_name: "rask_time_Duration_from_millis",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Duration_as_nanos",
+            c_name: "rask_time_Duration_as_nanos",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Duration_as_secs",
+            c_name: "rask_time_Duration_as_secs",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Duration_as_secs_f64",
+            c_name: "rask_time_Duration_as_secs_f64",
+            params: &[types::I64],
+            ret_ty: Some(types::F64),
+        },
+
         // ── Net module ──────────────────────────────────────────────
         StdlibEntry {
             mir_name: "net_tcp_listen",
@@ -714,10 +822,37 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
-        // ── Clone (shallow copy for i64-sized values) ───────────────
+        // ── Clone ────────────────────────────────────────────────────
+        // Shallow copy for i64-sized values (scalars, handles)
         StdlibEntry {
             mir_name: "clone",
             c_name: "rask_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // Deep clone for collections — copies element bytes
+        StdlibEntry {
+            mir_name: "Vec_clone",
+            c_name: "rask_vec_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Map_clone",
+            c_name: "rask_map_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "string_clone",
+            c_name: "rask_string_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        // string.to_owned() → alias for clone
+        StdlibEntry {
+            mir_name: "string_to_owned",
+            c_name: "rask_string_clone",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
@@ -848,14 +983,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
-        // ── Green-aware sleep ────────────────────────────────────────
-        StdlibEntry {
-            mir_name: "rask_green_sleep_ns",
-            c_name: "rask_green_sleep_ns",
-            params: &[types::I64],
-            ret_ty: None,
-        },
-
         // ── Ensure hooks (LIFO cleanup) ──────────────────────────────
         StdlibEntry {
             mir_name: "rask_ensure_push",
@@ -879,6 +1006,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── Concurrency: channels ──────────────────────────────────
+        // Channel construction (MIR produces Channel_buffered / Channel_unbuffered)
+        StdlibEntry {
+            mir_name: "Channel_buffered",
+            c_name: "rask_channel_new_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Channel_unbuffered",
+            c_name: "rask_channel_new_i64",
+            params: &[types::I64],  // builder injects capacity=0
+            ret_ty: Some(types::I64),
+        },
+        // Legacy name kept for backward compat
         StdlibEntry {
             mir_name: "Channel_new",
             c_name: "rask_channel_new_i64",
@@ -897,16 +1038,37 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
+
+        // Sender methods (qualified: Sender_send, etc.)
         StdlibEntry {
-            mir_name: "send",
+            mir_name: "Sender_send",
             c_name: "rask_channel_send_i64",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "recv",
-            c_name: "rask_channel_recv_i64",
+            mir_name: "Sender_try_send",
+            c_name: "rask_channel_try_send_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Sender_clone",
+            c_name: "rask_sender_clone_i64",
             params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Sender_drop",
+            c_name: "rask_sender_drop_i64",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        // Legacy bare names
+        StdlibEntry {
+            mir_name: "send",
+            c_name: "rask_channel_send_i64",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
@@ -921,13 +1083,337 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64],
             ret_ty: None,
         },
+
+        // Receiver methods (qualified: Receiver_recv, etc.)
+        StdlibEntry {
+            mir_name: "Receiver_recv",
+            c_name: "rask_channel_recv_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Receiver_try_recv",
+            c_name: "rask_channel_try_recv_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Receiver_drop",
+            c_name: "rask_recver_drop_i64",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        // Legacy bare names
+        StdlibEntry {
+            mir_name: "recv",
+            c_name: "rask_channel_recv_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
         StdlibEntry {
             mir_name: "recver_drop",
             c_name: "rask_recver_drop_i64",
             params: &[types::I64],
             ret_ty: None,
         },
-    ]
+
+        // ── Concurrency: Shared<T> ──────────────────────────────────
+        StdlibEntry {
+            mir_name: "Shared_new",
+            c_name: "rask_shared_new_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Shared_read",
+            c_name: "rask_shared_read_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Shared_write",
+            c_name: "rask_shared_write_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Shared_clone",
+            c_name: "rask_shared_clone_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Shared_drop",
+            c_name: "rask_shared_drop_i64",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+    ];
+
+    // ── Atomic operations ──────────────────────────────────
+    // All integer atomics (I8..U64, Usize, Isize) share rask_atomic_int_* C functions.
+    // AtomicBool uses rask_atomic_bool_* C functions.
+    // Entries generated per type name so MIR qualified names resolve correctly.
+
+    let int_atomic_types = [
+        "AtomicI8", "AtomicU8", "AtomicI16", "AtomicU16",
+        "AtomicI32", "AtomicU32", "AtomicI64", "AtomicU64",
+        "AtomicUsize", "AtomicIsize",
+    ];
+
+    for ty in &int_atomic_types {
+        // Construction
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_new", ty)),
+            c_name: "rask_atomic_int_new",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        });
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_default", ty)),
+            c_name: "rask_atomic_int_default",
+            params: &[],
+            ret_ty: Some(types::I64),
+        });
+        // Load / Store / Swap
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_load", ty)),
+            c_name: "rask_atomic_int_load",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_store", ty)),
+            c_name: "rask_atomic_int_store",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+        });
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_swap", ty)),
+            c_name: "rask_atomic_int_swap",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // CAS — (ptr, expected, desired, success_ord, fail_ord, out_ok_ptr)
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_compare_exchange", ty)),
+            c_name: "rask_atomic_int_compare_exchange",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_compare_exchange_weak", ty)),
+            c_name: "rask_atomic_int_compare_exchange_weak",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // Fetch operations — (ptr, val, ordering)
+        for op in &[
+            "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
+            "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
+        ] {
+            entries.push(StdlibEntry {
+                mir_name: leak_str(&format!("{}_{}", ty, op)),
+                c_name: leak_str(&format!("rask_atomic_int_{}", op)),
+                params: &[types::I64, types::I64, types::I64],
+                ret_ty: Some(types::I64),
+            });
+        }
+        // into_inner
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_into_inner", ty)),
+            c_name: "rask_atomic_int_into_inner",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        });
+    }
+
+    // AtomicBool — separate C functions
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_new", c_name: "rask_atomic_bool_new",
+        params: &[types::I64], ret_ty: Some(types::I64),
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_default", c_name: "rask_atomic_bool_default",
+        params: &[], ret_ty: Some(types::I64),
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_load", c_name: "rask_atomic_bool_load",
+        params: &[types::I64, types::I64], ret_ty: Some(types::I64),
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_store", c_name: "rask_atomic_bool_store",
+        params: &[types::I64, types::I64, types::I64], ret_ty: None,
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_swap", c_name: "rask_atomic_bool_swap",
+        params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64),
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_compare_exchange", c_name: "rask_atomic_bool_compare_exchange",
+        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+        ret_ty: Some(types::I64),
+    });
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_compare_exchange_weak", c_name: "rask_atomic_bool_compare_exchange_weak",
+        params: &[types::I64, types::I64, types::I64, types::I64, types::I64, types::I64],
+        ret_ty: Some(types::I64),
+    });
+    for op in &["fetch_and", "fetch_or", "fetch_xor", "fetch_nand"] {
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("AtomicBool_{}", op)),
+            c_name: leak_str(&format!("rask_atomic_bool_{}", op)),
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+    }
+    entries.push(StdlibEntry {
+        mir_name: "AtomicBool_into_inner", c_name: "rask_atomic_bool_into_inner",
+        params: &[types::I64], ret_ty: Some(types::I64),
+    });
+
+    // Fences
+    entries.push(StdlibEntry {
+        mir_name: "fence", c_name: "rask_fence",
+        params: &[types::I64], ret_ty: None,
+    });
+    entries.push(StdlibEntry {
+        mir_name: "compiler_fence", c_name: "rask_compiler_fence",
+        params: &[types::I64], ret_ty: None,
+    });
+
+    // ── SIMD vector operations ──────────────────────────────
+    // Float vector types: f32x4, f32x8, f64x2, f64x4
+    // Scalar args/returns are F64 (ABI), vec args/returns are I64 (pointer).
+    for simd_type in &["f32x4", "f32x8", "f64x2", "f64x4"] {
+        // splat(scalar) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_splat", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_splat", simd_type)),
+            params: &[types::F64],
+            ret_ty: Some(types::I64),
+        });
+        // load(src_ptr) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_load", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_load", simd_type)),
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // store(vec, dst_ptr) → void
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_store", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_store", simd_type)),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        });
+        // Binary: add, sub, mul, div(vec, vec) → vec
+        for op in &["add", "sub", "mul", "div"] {
+            entries.push(StdlibEntry {
+                mir_name: leak_str(&format!("{}_{}", simd_type, op)),
+                c_name: leak_str(&format!("rask_simd_{}_{}", simd_type, op)),
+                params: &[types::I64, types::I64],
+                ret_ty: Some(types::I64),
+            });
+        }
+        // scale(vec, scalar) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_scale", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_scale", simd_type)),
+            params: &[types::I64, types::F64],
+            ret_ty: Some(types::I64),
+        });
+        // Reductions: sum, product, min, max(vec) → scalar
+        for op in &["sum", "product", "min", "max"] {
+            entries.push(StdlibEntry {
+                mir_name: leak_str(&format!("{}_{}", simd_type, op)),
+                c_name: leak_str(&format!("rask_simd_{}_{}", simd_type, op)),
+                params: &[types::I64],
+                ret_ty: Some(types::F64),
+            });
+        }
+        // get(vec, index) → scalar
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_get", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_get", simd_type)),
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::F64),
+        });
+        // set(vec, index, val) → void
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_set", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_set", simd_type)),
+            params: &[types::I64, types::I64, types::F64],
+            ret_ty: None,
+        });
+    }
+
+    // Integer vector types: i32x4, i32x8
+    // Scalar args/returns are I64, vec args/returns are I64 (pointer).
+    for simd_type in &["i32x4", "i32x8"] {
+        // splat(scalar) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_splat", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_splat", simd_type)),
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // load(src_ptr) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_load", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_load", simd_type)),
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // store(vec, dst_ptr) → void
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_store", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_store", simd_type)),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        });
+        // Binary: add, sub, mul, div(vec, vec) → vec
+        for op in &["add", "sub", "mul", "div"] {
+            entries.push(StdlibEntry {
+                mir_name: leak_str(&format!("{}_{}", simd_type, op)),
+                c_name: leak_str(&format!("rask_simd_{}_{}", simd_type, op)),
+                params: &[types::I64, types::I64],
+                ret_ty: Some(types::I64),
+            });
+        }
+        // scale(vec, scalar) → vec
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_scale", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_scale", simd_type)),
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // Reductions: sum, product, min, max(vec) → scalar
+        for op in &["sum", "product", "min", "max"] {
+            entries.push(StdlibEntry {
+                mir_name: leak_str(&format!("{}_{}", simd_type, op)),
+                c_name: leak_str(&format!("rask_simd_{}_{}", simd_type, op)),
+                params: &[types::I64],
+                ret_ty: Some(types::I64),
+            });
+        }
+        // get(vec, index) → scalar
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_get", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_get", simd_type)),
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        });
+        // set(vec, index, val) → void
+        entries.push(StdlibEntry {
+            mir_name: leak_str(&format!("{}_set", simd_type)),
+            c_name: leak_str(&format!("rask_simd_{}_set", simd_type)),
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+        });
+    }
+
+    entries
 }
 
 /// Declare all stdlib functions in a Cranelift module.

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
-use crate::types::mir_to_cranelift_type;
+use crate::types::{mir_to_cranelift_type, type_string_to_mir};
 use crate::{CodegenError, CodegenResult};
 
 pub struct CodeGenerator {
@@ -24,6 +24,8 @@ pub struct CodeGenerator {
     enum_layouts: Vec<EnumLayout>,
     /// String literal data (content → DataId in the object module)
     string_data: HashMap<String, cranelift_module::DataId>,
+    /// Comptime global data (const name → DataId in the object module)
+    pub comptime_data: HashMap<String, cranelift_module::DataId>,
 }
 
 impl CodeGenerator {
@@ -48,6 +50,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            comptime_data: HashMap::new(),
         })
     }
 
@@ -84,6 +87,7 @@ impl CodeGenerator {
             struct_layouts: Vec::new(),
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
+            comptime_data: HashMap::new(),
         })
     }
 
@@ -197,6 +201,45 @@ impl CodeGenerator {
             self.func_ids.insert("assert_fail".to_string(), id);
         }
 
+        // panic_unwrap_at(file: ptr, line: i32, col: i32) -> void (diverges)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_panic_unwrap_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_unwrap_at".to_string(), id);
+        }
+
+        // assert_fail_at(file: ptr, line: i32, col: i32) -> void (diverges)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_assert_fail_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("assert_fail_at".to_string(), id);
+        }
+
+        // pool_get_checked(pool: i64, handle: i64, file: ptr, line: i32, col: i32) -> ptr
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // pool
+            sig.params.push(AbiParam::new(types::I64)); // packed handle
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.returns.push(AbiParam::new(types::I64)); // element ptr
+            let id = self.module
+                .declare_function("rask_pool_get_checked", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("pool_get_checked".to_string(), id);
+        }
+
         // ─── I/O functions ──────────────────────────────────────
 
         // rask_io_write(fd: i64, buf: i64, len: i64) -> i64
@@ -283,6 +326,35 @@ impl CodeGenerator {
         crate::dispatch::declare_stdlib(&mut self.module, &mut self.func_ids)
     }
 
+    /// Declare extern "C" functions as imported symbols.
+    ///
+    /// Each extern decl becomes a Cranelift function import with the declared
+    /// parameter and return types. The linker resolves these to actual symbols.
+    pub fn declare_extern_functions(&mut self, extern_decls: &[crate::ExternFuncSig]) -> CodegenResult<()> {
+        for decl in extern_decls {
+            // Skip if already declared (e.g. a runtime function with the same name)
+            if self.func_ids.contains_key(&decl.name) {
+                continue;
+            }
+            let mut sig = self.module.make_signature();
+            for param_ty in &decl.param_types {
+                let mir_ty = type_string_to_mir(param_ty);
+                let cl_ty = mir_to_cranelift_type(&mir_ty)?;
+                sig.params.push(AbiParam::new(cl_ty));
+            }
+            if let Some(ret) = &decl.ret_ty {
+                let mir_ty = type_string_to_mir(ret);
+                let cl_ty = mir_to_cranelift_type(&mir_ty)?;
+                sig.returns.push(AbiParam::new(cl_ty));
+            }
+            let func_id = self.module
+                .declare_function(&decl.name, Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert(decl.name.clone(), func_id);
+        }
+        Ok(())
+    }
+
     /// Declare all functions first (for forward references).
     pub fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
         // Store layouts for use during code generation
@@ -304,8 +376,11 @@ impl CodeGenerator {
                 sig.returns.push(AbiParam::new(ret_ty));
             }
 
-            // Rename "main" to "rask_main" to avoid conflict with C runtime's main()
-            let export_name = if mir_fn.name == "main" {
+            // extern "C" functions keep their exact name for C ABI compatibility.
+            // Regular "main" is renamed to "rask_main" to avoid conflict with C runtime's main().
+            let export_name = if mir_fn.is_extern_c {
+                &mir_fn.name
+            } else if mir_fn.name == "main" {
                 "rask_main"
             } else {
                 &mir_fn.name
@@ -419,8 +494,59 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Register a string as a data section (if not already registered).
+    pub fn register_string(&mut self, s: &str) -> CodegenResult<()> {
+        if self.string_data.contains_key(s) {
+            return Ok(());
+        }
+        let name = format!(".str.srcfile.{}", self.string_data.len());
+        let data_id = self.module
+            .declare_data(&name, Linkage::Local, false, false)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        let mut bytes = s.as_bytes().to_vec();
+        bytes.push(0);
+        let mut desc = DataDescription::new();
+        desc.define(bytes.into_boxed_slice());
+
+        self.module
+            .define_data(data_id, &desc)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.string_data.insert(s.to_string(), data_id);
+        Ok(())
+    }
+
+    /// Register comptime-evaluated global constants as data sections.
+    pub fn register_comptime_globals(
+        &mut self,
+        globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    ) -> CodegenResult<()> {
+        for (name, meta) in globals {
+            let data_name = format!(".comptime.{}", name);
+            let data_id = self.module
+                .declare_data(&data_name, Linkage::Local, false, false)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+            let mut desc = DataDescription::new();
+            desc.define(meta.bytes.clone().into_boxed_slice());
+
+            self.module
+                .define_data(data_id, &desc)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+            self.comptime_data.insert(name.clone(), data_id);
+        }
+        Ok(())
+    }
+
     /// Generate code for a single MIR function.
     pub fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()> {
+        // Pre-register source file string for runtime panic locations
+        if let Some(ref src_file) = mir_fn.source_file {
+            self.register_string(src_file)?;
+        }
+
         let func_id = self.func_ids.get(&mir_fn.name)
             .ok_or_else(|| CodegenError::FunctionNotFound(mir_fn.name.clone()))?;
 
@@ -453,6 +579,13 @@ impl CodeGenerator {
             string_globals.insert(content.clone(), gv);
         }
 
+        // Pre-import comptime data globals into this function
+        let mut comptime_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (name, data_id) in &self.comptime_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            comptime_globals.insert(name.clone(), gv);
+        }
+
         // Build the function
         let mut builder = FunctionBuilder::new(
             &mut self.ctx.func,
@@ -461,6 +594,7 @@ impl CodeGenerator {
             &self.struct_layouts,
             &self.enum_layouts,
             &string_globals,
+            &comptime_globals,
         )?;
         builder.build()?;
 
