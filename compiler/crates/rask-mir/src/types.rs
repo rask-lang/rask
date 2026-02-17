@@ -29,6 +29,27 @@ pub enum MirType {
     FuncPtr(SignatureId),
     /// Handle<T> — pool handle, packed as i64 (index:32 | gen:32) in current codegen.
     Handle,
+    /// Tuple type — struct-like layout with positional fields.
+    /// Stored as (field types, total byte size).
+    Tuple(Vec<MirType>),
+    /// Slice — pointer + length (fat pointer).
+    Slice(Box<MirType>),
+    /// Option<T> — tagged union: u8 tag (0=None, 1=Some) + payload.
+    /// Size = 8 (tag aligned) + payload size, rounded to 8-byte alignment.
+    Option(Box<MirType>),
+    /// Result<T, E> — tagged union: u8 tag (0=Ok, 1=Err) + max(T, E) payload.
+    Result {
+        ok: Box<MirType>,
+        err: Box<MirType>,
+    },
+    /// Union of error types — tracks variant sizes for layout.
+    Union(Vec<MirType>),
+    /// SIMD vector: elem × lanes (e.g., F32 × 8 = f32x8).
+    /// Passed as pointer in codegen (like structs/arrays).
+    SimdVector {
+        elem: Box<MirType>,
+        lanes: u32,
+    },
 }
 
 impl MirType {
@@ -44,6 +65,30 @@ impl MirType {
             MirType::String => 16,
             MirType::Struct(_) | MirType::Enum(_) => 8,
             MirType::Array { elem, len } => elem.size() * len,
+            MirType::Tuple(fields) => {
+                let mut offset = 0u32;
+                for f in fields {
+                    let align = f.align();
+                    offset = (offset + align - 1) & !(align - 1);
+                    offset += f.size();
+                }
+                // Round up to max alignment
+                let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
+                (offset + max_align - 1) & !(max_align - 1)
+            }
+            MirType::Slice(_) => 16, // ptr (8) + len (8)
+            MirType::Option(inner) => {
+                // tag (8 bytes, aligned) + payload
+                8 + inner.size()
+            }
+            MirType::Result { ok, err } => {
+                // tag (8 bytes, aligned) + max(ok, err) payload
+                8 + ok.size().max(err.size())
+            }
+            MirType::Union(variants) => {
+                variants.iter().map(|v| v.size()).max().unwrap_or(0)
+            }
+            MirType::SimdVector { elem, lanes } => elem.size() * lanes,
         }
     }
 
@@ -53,6 +98,8 @@ impl MirType {
             MirType::Bool | MirType::I8 | MirType::U8 | MirType::Void => 1,
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
+            MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
+            MirType::Slice(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
             _ => 8,
         }
     }

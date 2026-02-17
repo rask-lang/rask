@@ -731,7 +731,7 @@ mod tests {
     fn no_yield_points_returns_none() {
         let func = make_test_spawn_fn(vec![MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "work".to_string() },
+            func: FunctionRef::internal("work".to_string()),
             args: vec![],
         }]);
         assert!(!has_yield_points(&func));
@@ -742,7 +742,7 @@ mod tests {
     fn detects_yield_point() {
         let func = make_test_spawn_fn(vec![MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1_000_000))],
         }]);
         assert!(has_yield_points(&func));
@@ -752,7 +752,7 @@ mod tests {
     fn blocking_channel_ops_are_not_yield_points() {
         let func = make_test_spawn_fn(vec![MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_channel_send_async".to_string() },
+            func: FunctionRef::internal("rask_channel_send_async".to_string()),
             args: vec![
                 MirOperand::Constant(MirConst::Int(0)),
                 MirOperand::Constant(MirConst::Int(42)),
@@ -773,12 +773,12 @@ mod tests {
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1_000_000))],
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "print_i64".to_string() },
+            func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(x)],
         });
         builder.terminate(MirTerminator::Return { value: None });
@@ -815,13 +815,13 @@ mod tests {
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
         });
         // Only x used after yield
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "print_i64".to_string() },
+            func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(x)],
         });
         builder.terminate(MirTerminator::Return { value: None });
@@ -845,27 +845,27 @@ mod tests {
 
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "work1".to_string() },
+            func: FunctionRef::internal("work1".to_string()),
             args: vec![],
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "work2".to_string() },
+            func: FunctionRef::internal("work2".to_string()),
             args: vec![],
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_yield".to_string() },
+            func: FunctionRef::internal("rask_yield".to_string()),
             args: vec![],
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "work3".to_string() },
+            func: FunctionRef::internal("work3".to_string()),
             args: vec![],
         });
         builder.terminate(MirTerminator::Return { value: None });
@@ -893,13 +893,13 @@ mod tests {
         });
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
         });
         // Use captured var after yield
         builder.push_stmt(MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "print_i64".to_string() },
+            func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(captured)],
         });
         builder.terminate(MirTerminator::Return { value: None });
@@ -921,7 +921,7 @@ mod tests {
     fn poll_fn_loads_tag_via_load_capture() {
         let func = make_test_spawn_fn(vec![MirStmt::Call {
             dst: None,
-            func: FunctionRef { name: "rask_green_sleep_ns".to_string() },
+            func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(100))],
         }]);
 

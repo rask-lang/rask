@@ -13,7 +13,7 @@ use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
     decl::{Decl, DeclKind},
     expr::{BinOp, Expr, ExprKind, UnaryOp},
-    NodeId,
+    LineMap, NodeId, Span,
 };
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type;
@@ -74,21 +74,48 @@ struct LoopContext {
     result_local: Option<LocalId>,
 }
 
+/// Metadata for a comptime-evaluated global constant.
+#[derive(Debug, Clone)]
+pub struct ComptimeGlobalMeta {
+    pub bytes: Vec<u8>,
+    /// Element count (for Vec/Array globals)
+    pub elem_count: usize,
+    /// Type prefix for method dispatch ("Vec", "Array", etc.)
+    pub type_prefix: String,
+}
+
 /// Layout context for MIR lowering — struct/enum metadata from monomorphization.
 pub struct MirContext<'a> {
     pub struct_layouts: &'a [StructLayout],
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
+    /// Comptime-evaluated global constants (name → metadata).
+    /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
+    pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
+    /// Names of extern "C" functions — calls emit FunctionRef::extern_c().
+    pub extern_funcs: &'a std::collections::HashSet<String>,
+    /// Line map for converting byte offsets to line:col (None in tests)
+    pub line_map: Option<&'a LineMap>,
+    /// Source file path for runtime error messages (None in tests)
+    pub source_file: Option<&'a str>,
 }
 
 impl<'a> MirContext<'a> {
     /// Empty context for tests that don't need layouts or type information.
     pub fn empty_with_map(map: &'a HashMap<NodeId, Type>) -> MirContext<'a> {
+        static EMPTY_COMPTIME: std::sync::LazyLock<HashMap<String, ComptimeGlobalMeta>> =
+            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
             node_types: map,
+            comptime_globals: &EMPTY_COMPTIME,
+            extern_funcs: &EMPTY_EXTERNS,
+            line_map: None,
+            source_file: None,
         }
     }
 
@@ -126,6 +153,31 @@ impl<'a> MirContext<'a> {
             "string" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
+                // "T or E" → Result<T, E>
+                if let Some(or_pos) = name.find(" or ") {
+                    let ok_str = name[..or_pos].trim();
+                    let err_str = name[or_pos + 4..].trim();
+                    return MirType::Result {
+                        ok: Box::new(self.resolve_type_str(ok_str)),
+                        err: Box::new(self.resolve_type_str(err_str)),
+                    };
+                }
+                // "Result<T, E>" → MirType::Result
+                if let Some(inner) = name.strip_prefix("Result<").and_then(|s| s.strip_suffix('>')) {
+                    // Split on top-level comma (respecting nested <...>)
+                    if let Some(comma) = find_top_level_comma(inner) {
+                        let ok_str = inner[..comma].trim();
+                        let err_str = inner[comma + 1..].trim();
+                        return MirType::Result {
+                            ok: Box::new(self.resolve_type_str(ok_str)),
+                            err: Box::new(self.resolve_type_str(err_str)),
+                        };
+                    }
+                }
+                // "Option<T>" → MirType::Option
+                if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
+                    return MirType::Option(Box::new(self.resolve_type_str(inner)));
+                }
                 if let Some((idx, _)) = self.find_struct(name) {
                     MirType::Struct(StructLayoutId(idx))
                 } else if let Some((idx, _)) = self.find_enum(name) {
@@ -168,9 +220,35 @@ impl<'a> MirContext<'a> {
             Type::Option(inner)
                 if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle")
                 => MirType::Handle,
-            // Compound types not yet lowered to MIR — pointer representation
-            Type::Fn { .. } | Type::Tuple(_) | Type::Array { .. } | Type::Slice(_)
-            | Type::Option(_) | Type::Result { .. } | Type::Union(_) => MirType::Ptr,
+            // Raw pointers and function types are pointer-sized
+            Type::RawPtr(_) | Type::Fn { .. } => MirType::Ptr,
+            // Tuple → struct-like layout with positional fields
+            Type::Tuple(fields) => {
+                MirType::Tuple(fields.iter().map(|t| self.type_to_mir(t)).collect())
+            }
+            // Array → real array with element type and length
+            Type::Array { elem, len } => MirType::Array {
+                elem: Box::new(self.type_to_mir(elem)),
+                len: *len as u32,
+            },
+            // Slice → fat pointer (ptr + len)
+            Type::Slice(elem) => MirType::Slice(Box::new(self.type_to_mir(elem))),
+            // Option<T> → tagged union (tag + payload)
+            Type::Option(inner) => MirType::Option(Box::new(self.type_to_mir(inner))),
+            // Result<T, E> → tagged union (tag + max(T, E) payload)
+            Type::Result { ok, err } => MirType::Result {
+                ok: Box::new(self.type_to_mir(ok)),
+                err: Box::new(self.type_to_mir(err)),
+            },
+            // Union → tracks variant sizes
+            Type::Union(variants) => {
+                MirType::Union(variants.iter().map(|t| self.type_to_mir(t)).collect())
+            }
+            // SIMD vector → MirType::SimdVector
+            Type::SimdVector { elem, lanes } => MirType::SimdVector {
+                elem: Box::new(self.type_to_mir(elem)),
+                lanes: *lanes as u32,
+            },
             // Should not reach MIR lowering
             Type::Var(_) | Type::Error => MirType::Ptr,
         }
@@ -201,6 +279,27 @@ impl<'a> MirContext<'a> {
                 "Pool" => Some("Pool"),
                 "Rng" => Some("Rng"),
                 "File" => Some("File"),
+                "AtomicBool" => Some("AtomicBool"),
+                "AtomicI8" => Some("AtomicI8"),
+                "AtomicU8" => Some("AtomicU8"),
+                "AtomicI16" => Some("AtomicI16"),
+                "AtomicU16" => Some("AtomicU16"),
+                "AtomicI32" => Some("AtomicI32"),
+                "AtomicU32" => Some("AtomicU32"),
+                "AtomicI64" => Some("AtomicI64"),
+                "AtomicU64" => Some("AtomicU64"),
+                "AtomicUsize" => Some("AtomicUsize"),
+                "AtomicIsize" => Some("AtomicIsize"),
+                "f32x4" => Some("f32x4"),
+                "f32x8" => Some("f32x8"),
+                "f64x2" => Some("f64x2"),
+                "f64x4" => Some("f64x4"),
+                "i32x4" => Some("i32x4"),
+                "i32x8" => Some("i32x8"),
+                "Shared" => Some("Shared"),
+                "Channel" => Some("Channel"),
+                "Sender" => Some("Sender"),
+                "Receiver" => Some("Receiver"),
                 _ => None,
             },
             Type::UnresolvedGeneric { name, .. } => match name.as_str() {
@@ -210,10 +309,39 @@ impl<'a> MirContext<'a> {
                 "Handle" => Some("Handle"),
                 "Rng" => Some("Rng"),
                 "File" => Some("File"),
+                "Shared" => Some("Shared"),
+                "Channel" => Some("Channel"),
+                "Sender" => Some("Sender"),
+                "Receiver" => Some("Receiver"),
                 _ => None,
             },
             Type::Result { .. } => Some("Result"),
             Type::Option(_) => Some("Option"),
+            Type::RawPtr(_) => Some("Ptr"),
+            _ => None,
+        }
+    }
+
+    /// Extract type prefix for method name qualification, including user types.
+    ///
+    /// Extends `stdlib_type_prefix` to also handle user-defined struct/enum
+    /// types from extend blocks. Monomorphization produces qualified names
+    /// like "Person_greet"; this ensures MIR calls match.
+    pub fn type_prefix(ty: &Type) -> Option<String> {
+        if let Some(s) = Self::stdlib_type_prefix(ty) {
+            return Some(s.to_string());
+        }
+        match ty {
+            Type::UnresolvedNamed(name)
+                if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
+            {
+                Some(name.clone())
+            }
+            Type::UnresolvedGeneric { name, .. }
+                if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
+            {
+                Some(name.clone())
+            }
             _ => None,
         }
     }
@@ -252,10 +380,24 @@ impl<'a> MirLowerer<'a> {
     /// `ctx` provides struct/enum layout data for resolving field types and offsets.
     ///
     /// Returns the lowered function plus any synthesized closure functions.
+    /// Lower a monomorphized function declaration to MIR.
+    ///
+    /// `qualified_name` overrides the function name from the AST. Needed because
+    /// monomorphization produces qualified names like "Document_new" while the
+    /// AST FnDecl still has bare "new".
     pub fn lower_function(
         decl: &Decl,
         all_decls: &[Decl],
         ctx: &MirContext,
+    ) -> Result<Vec<MirFunction>, LoweringError> {
+        Self::lower_function_named(decl, all_decls, ctx, None)
+    }
+
+    pub fn lower_function_named(
+        decl: &Decl,
+        all_decls: &[Decl],
+        ctx: &MirContext,
+        qualified_name: Option<&str>,
     ) -> Result<Vec<MirFunction>, LoweringError> {
         let fn_decl = match &decl.kind {
             DeclKind::Fn(f) => f,
@@ -275,13 +417,24 @@ impl<'a> MirLowerer<'a> {
         // Build function signature table from all declarations
         let mut func_sigs = HashMap::new();
         for d in all_decls {
-            if let DeclKind::Fn(f) = &d.kind {
-                let sig_ret = f
-                    .ret_ty
-                    .as_deref()
-                    .map(|s| ctx.resolve_type_str(s))
-                    .unwrap_or(MirType::Void);
-                func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
+            match &d.kind {
+                DeclKind::Fn(f) => {
+                    let sig_ret = f
+                        .ret_ty
+                        .as_deref()
+                        .map(|s| ctx.resolve_type_str(s))
+                        .unwrap_or(MirType::Void);
+                    func_sigs.insert(f.name.clone(), FuncSig { ret_ty: sig_ret });
+                }
+                DeclKind::Extern(ext) => {
+                    let sig_ret = ext
+                        .ret_ty
+                        .as_deref()
+                        .map(|s| ctx.resolve_type_str(s))
+                        .unwrap_or(MirType::Void);
+                    func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret });
+                }
+                _ => {}
             }
         }
 
@@ -332,15 +485,19 @@ impl<'a> MirLowerer<'a> {
             func_sigs.entry(name.to_string()).or_insert(FuncSig { ret_ty: ret });
         }
 
+        let func_name = qualified_name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| fn_decl.name.clone());
+
         let mut lowerer = MirLowerer {
-            builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty.clone()),
+            builder: BlockBuilder::new(func_name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
             func_sigs,
             loop_stack: Vec::new(),
             ctx,
             synthesized_functions: Vec::new(),
             closure_counter: 0,
-            parent_name: fn_decl.name.clone(),
+            parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
             collection_elem_types: HashMap::new(),
             local_type_prefix: HashMap::new(),
@@ -369,10 +526,23 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        let main_fn = lowerer.builder.finish();
+        let mut main_fn = lowerer.builder.finish();
+        main_fn.is_extern_c = fn_decl.abi.is_some();
+        main_fn.source_file = ctx.source_file.map(|s| s.to_string());
         let mut result = vec![main_fn];
+        for f in &mut lowerer.synthesized_functions {
+            f.source_file = ctx.source_file.map(|s| s.to_string());
+        }
         result.extend(lowerer.synthesized_functions);
         Ok(result)
+    }
+
+    /// Emit a SourceLocation statement for the given span (if line_map is available).
+    fn emit_source_location(&mut self, span: &Span) {
+        if let Some(line_map) = self.ctx.line_map {
+            let (line, col) = line_map.offset_to_line_col(span.start);
+            self.builder.push_stmt(MirStmt::SourceLocation { line, col });
+        }
     }
 
     /// Look up the type of an expression from the type checker.
@@ -398,6 +568,9 @@ impl<'a> MirLowerer<'a> {
                 }
                 Type::Array { elem, .. } => return Some(self.ctx.type_to_mir(elem)),
                 Type::Slice(elem) => return Some(self.ctx.type_to_mir(elem)),
+                // Pool iteration yields handles (packed i64)
+                Type::UnresolvedNamed(n) if n == "Pool" => return Some(MirType::I64),
+                Type::UnresolvedGeneric { name, .. } if name == "Pool" => return Some(MirType::I64),
                 _ => {}
             }
         }
@@ -756,7 +929,7 @@ impl<'a> MirLowerer<'a> {
             }
             // Literals — no free variables
             ExprKind::Int(..) | ExprKind::Float(..) | ExprKind::String(..)
-            | ExprKind::Char(..) | ExprKind::Bool(..) => {}
+            | ExprKind::Char(..) | ExprKind::Bool(..) | ExprKind::Null => {}
         }
     }
 
@@ -791,7 +964,7 @@ impl<'a> MirLowerer<'a> {
         seen: &mut std::collections::HashSet<String>,
         free: &mut Vec<(String, LocalId, MirType)>,
     ) {
-        use rask_ast::stmt::StmtKind;
+        use rask_ast::stmt::{ForBinding, StmtKind};
         match &stmt.kind {
             StmtKind::Expr(e) => self.walk_free_vars(e, bound, seen, free),
             StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
@@ -819,7 +992,12 @@ impl<'a> MirLowerer<'a> {
             StmtKind::For { binding, iter, body, .. } => {
                 self.walk_free_vars(iter, bound, seen, free);
                 let mut inner_bound = bound.clone();
-                inner_bound.insert(binding.clone());
+                match binding {
+                    ForBinding::Single(name) => { inner_bound.insert(name.clone()); }
+                    ForBinding::Tuple(names) => {
+                        for name in names { inner_bound.insert(name.clone()); }
+                    }
+                }
                 self.walk_free_vars_block(body, &inner_bound, seen, free);
             }
             StmtKind::Loop { body, .. } => {
@@ -957,7 +1135,10 @@ pub(crate) fn is_variant_name(name: &str) -> bool {
 /// (`cli`, `fs`, `std`, `io`) that support static method syntax.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        || matches!(name, "string" | "cli" | "fs" | "std" | "io" | "json" | "net" | "random")
+        || matches!(name,
+            "string" | "cli" | "fs" | "std" | "io" | "json" | "net" | "random" | "time"
+            | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
+        )
 }
 
 /// Map a qualified function name to the stdlib type prefix of its return value.
@@ -971,6 +1152,97 @@ fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
         "File_lines" | "File_read_all" | "fs_read_lines" | "cli_args"
         | "string_split" | "Map_keys" | "Map_values" => Some("Vec"),
         "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
+        _ if func_name.starts_with("AtomicBool_") => Some("AtomicBool"),
+        _ if func_name.starts_with("f32x4_") && !is_scalar_return(func_name) => Some("f32x4"),
+        _ if func_name.starts_with("f32x8_") && !is_scalar_return(func_name) => Some("f32x8"),
+        _ if func_name.starts_with("f64x2_") && !is_scalar_return(func_name) => Some("f64x2"),
+        _ if func_name.starts_with("f64x4_") && !is_scalar_return(func_name) => Some("f64x4"),
+        _ if func_name.starts_with("i32x4_") && !is_scalar_return(func_name) => Some("i32x4"),
+        _ if func_name.starts_with("i32x8_") && !is_scalar_return(func_name) => Some("i32x8"),
+        _ => None,
+    }
+}
+
+/// SIMD methods that return a scalar, not a vector.
+fn is_scalar_return(func_name: &str) -> bool {
+    func_name.ends_with("_sum")
+        || func_name.ends_with("_product")
+        || func_name.ends_with("_min")
+        || func_name.ends_with("_max")
+        || func_name.ends_with("_get")
+        || func_name.ends_with("_store")
+        || func_name.ends_with("_set")
+}
+
+/// Return type for known stdlib functions that don't return I64.
+/// Supplements func_sigs (which only has user-defined functions).
+fn stdlib_return_mir_type(func_name: &str) -> MirType {
+    // Functions returning Result types
+    match func_name {
+        "fs_read_file" | "fs_read_lines" => return MirType::Result {
+            ok: Box::new(MirType::String),
+            err: Box::new(MirType::String),
+        },
+        _ => {}
+    }
+    // Pointer methods
+    match func_name {
+        "Ptr_add" | "Ptr_sub" | "Ptr_offset" | "Ptr_cast" => return MirType::Ptr,
+        "Ptr_is_null" => return MirType::Bool,
+        _ => {}
+    }
+    // SIMD float reductions return F64
+    if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
+        if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
+            return MirType::F64;
+        }
+    }
+    // String-returning functions
+    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
+        || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
+        || func_name.ends_with("_replace") || func_name.ends_with("_substring")
+        || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
+    {
+        return MirType::String;
+    }
+    if func_name == "i64_to_string" || func_name == "f64_to_string"
+        || func_name == "bool_to_string" || func_name == "char_to_string"
+    {
+        return MirType::String;
+    }
+    // Bool-returning functions
+    if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
+        || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
+    {
+        return MirType::Bool;
+    }
+    MirType::I64
+}
+
+/// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).
+/// Find the first comma at nesting depth 0 (respecting `<...>` brackets).
+fn find_top_level_comma(s: &str) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {
+    match ty {
+        MirType::F64 | MirType::F32 => Some("f64"),
+        MirType::String => Some("string"),
+        MirType::Bool => Some("bool"),
+        MirType::Char => Some("char"),
+        // Ptr is too generic — user-defined types become Ptr in MIR,
+        // so local_type_prefix or type-checker lookup should provide the name.
+        MirType::Ptr => None,
         _ => None,
     }
 }
@@ -1000,7 +1272,7 @@ mod tests {
     use crate::{operand::MirConst, MirRValue, MirStmt};
     use rask_ast::decl::{Decl, DeclKind, FnDecl, Param};
     use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind, MatchArm, Pattern};
-    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
     use rask_ast::{NodeId, Span};
 
     // ── AST construction helpers ────────────────────────────────
@@ -1165,7 +1437,7 @@ mod tests {
             id: NodeId(206),
             kind: StmtKind::For {
                 label: None,
-                binding: binding.to_string(),
+                binding: ForBinding::Single(binding.to_string()),
                 iter,
                 body,
             },
@@ -1234,6 +1506,7 @@ mod tests {
                 is_pub: false,
                 is_comptime: false,
                 is_unsafe: false,
+                abi: None,
                 attrs: vec![],
             }),
             span: sp(),
@@ -1861,10 +2134,16 @@ mod tests {
 
         let enum_layouts = vec![shape_enum];
         let node_types = HashMap::new();
+        let comptime_globals = HashMap::new();
+        let extern_funcs = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            comptime_globals: &comptime_globals,
+            extern_funcs: &extern_funcs,
+            line_map: None,
+            source_file: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -1899,10 +2178,16 @@ mod tests {
 
         let enum_layouts = vec![color_enum];
         let node_types = HashMap::new();
+        let comptime_globals = HashMap::new();
+        let extern_funcs = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            comptime_globals: &comptime_globals,
+            extern_funcs: &extern_funcs,
+            line_map: None,
+            source_file: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -1943,10 +2228,16 @@ mod tests {
 
         let enum_layouts = vec![msg_enum];
         let node_types = HashMap::new();
+        let comptime_globals = HashMap::new();
+        let extern_funcs = std::collections::HashSet::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            comptime_globals: &comptime_globals,
+            extern_funcs: &extern_funcs,
+            line_map: None,
+            source_file: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![

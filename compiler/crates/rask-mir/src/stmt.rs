@@ -77,6 +77,11 @@ pub enum MirStmt {
         elem_size: u32,
         value: MirOperand,
     },
+    /// Load the address of a comptime global data section.
+    GlobalRef {
+        dst: LocalId,
+        name: String,
+    },
 }
 
 /// A captured variable in a closure environment.

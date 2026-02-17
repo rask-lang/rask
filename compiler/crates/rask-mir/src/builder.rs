@@ -25,6 +25,8 @@ impl BlockBuilder {
                 terminator: MirTerminator::Unreachable,
             }],
             entry_block,
+            is_extern_c: false,
+            source_file: None,
         };
 
         Self {
