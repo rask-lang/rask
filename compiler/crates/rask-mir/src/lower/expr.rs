@@ -1564,7 +1564,7 @@ impl<'a> MirLowerer<'a> {
             });
             self.synthesized_functions.push(sm_result.poll_fn);
 
-            // Allocate state struct, store initial tag = 0, captured vars
+            // Allocate state struct, init tag = 0, store captured vars
             let state_ptr = self.builder.alloc_temp(MirType::Ptr);
             let state_size_val = sm_result.state_size as i64;
             self.builder.push_stmt(MirStmt::Call {
@@ -1580,18 +1580,16 @@ impl<'a> MirLowerer<'a> {
                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
             });
 
-            // Store captured variables into the state struct
-            for field in &sm_result.state_fields {
-                if let Some(orig_local_id) = field.local_id {
-                    // Find the capture that corresponds to this local
-                    if let Some(cap) = captures.iter().find(|c| c.local_id == orig_local_id) {
-                        let _ = cap; // the local is in scope — just store it
-                    }
-                    // Store the local's current value into the state struct
+            // Store captured variables into the state struct.
+            // capture_stores maps (env_offset → state_offset). Match each
+            // entry to the ClosureCapture with the same env_offset to find
+            // the parent's local_id.
+            for &(env_offset, state_offset) in &sm_result.capture_stores {
+                if let Some(cap) = captures.iter().find(|c| c.offset == env_offset) {
                     self.builder.push_stmt(MirStmt::Store {
                         addr: state_ptr,
-                        offset: field.offset,
-                        value: MirOperand::Local(orig_local_id),
+                        offset: state_offset,
+                        value: MirOperand::Local(cap.local_id),
                     });
                 }
             }
