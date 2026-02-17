@@ -28,6 +28,7 @@ impl fmt::Display for MirType {
             MirType::Enum(id) => write!(f, "enum#{}", id.0),
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
+            MirType::Handle => write!(f, "handle"),
         }
     }
 }

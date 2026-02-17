@@ -80,6 +80,7 @@ impl Resolver {
             ("Error", BuiltinTypeKind::Error),
             ("Channel", BuiltinTypeKind::Channel),
             ("Pool", BuiltinTypeKind::Pool),
+            ("Handle", BuiltinTypeKind::Handle),
             ("Atomic", BuiltinTypeKind::Atomic),
             ("Shared", BuiltinTypeKind::Shared),
             ("Owned", BuiltinTypeKind::Owned),

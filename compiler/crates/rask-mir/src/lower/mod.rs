@@ -7,7 +7,7 @@ mod stmt;
 
 use crate::{
     BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, BlockId,
-    LocalId,
+    LocalId, operand::MirConst,
 };
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
@@ -21,6 +21,19 @@ use std::collections::HashMap;
 
 /// Typed expression result from lowering
 type TypedOperand = (MirOperand, MirType);
+
+/// Sentinel value representing None for niche-optimized Option<Handle<T>>.
+/// All bits set (index=UINT32_MAX, gen=UINT32_MAX) — impossible for a real handle.
+pub(crate) const HANDLE_NONE_SENTINEL: i64 = -1;
+
+/// Check if a raw Type is Option<Handle<T>> (eligible for niche optimization).
+pub(crate) fn is_niche_option_handle(ty: &Type) -> bool {
+    if let Type::Option(inner) = ty {
+        matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle")
+    } else {
+        false
+    }
+}
 
 /// An iterator chain recognized from AST method call nesting.
 ///
@@ -144,11 +157,17 @@ impl<'a> MirContext<'a> {
             Type::Never => MirType::Void,
             // Named types — look up in struct/enum layouts by name
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
+            // Handle<T> → packed i64 handle
+            Type::UnresolvedGeneric { name, .. } if name == "Handle" => MirType::Handle,
             // Resolved named types — need monomorphization name, fall back to Ptr
             Type::Named(_) | Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
+            // Niche-optimized: Option<Handle<T>> → plain i64 handle (-1 = None)
+            Type::Option(inner)
+                if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle")
+                => MirType::Handle,
             // Compound types not yet lowered to MIR — pointer representation
             Type::Fn { .. } | Type::Tuple(_) | Type::Array { .. } | Type::Slice(_)
             | Type::Option(_) | Type::Result { .. } | Type::Union(_) => MirType::Ptr,
@@ -188,6 +207,7 @@ impl<'a> MirContext<'a> {
                 "Vec" => Some("Vec"),
                 "Map" => Some("Map"),
                 "Pool" => Some("Pool"),
+                "Handle" => Some("Handle"),
                 "Rng" => Some("Rng"),
                 "File" => Some("File"),
                 _ => None,
@@ -466,6 +486,58 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Check if an expression's type is niche-optimized Option<Handle<T>>.
+    fn is_niche_option_expr(&self, expr: &Expr) -> bool {
+        self.ctx.lookup_raw_type(expr.id)
+            .map(|ty| is_niche_option_handle(ty))
+            .unwrap_or(false)
+    }
+
+    /// Emit a tag-equivalent check for an option value.
+    ///
+    /// Returns a local that is 0 for Some, non-zero for None — matching
+    /// the tag convention used by branches. Works for both niche-optimized
+    /// (compare-to-sentinel) and tagged union (EnumTag load) options.
+    fn emit_option_tag(&mut self, value: &MirOperand, is_niche: bool) -> LocalId {
+        if is_niche {
+            let result = self.builder.alloc_temp(MirType::U8);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: result,
+                rvalue: MirRValue::BinaryOp {
+                    op: crate::operand::BinOp::Eq,
+                    left: value.clone(),
+                    right: MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
+                },
+            });
+            result
+        } else {
+            let result = self.builder.alloc_temp(MirType::U8);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: result,
+                rvalue: MirRValue::EnumTag { value: value.clone() },
+            });
+            result
+        }
+    }
+
+    /// Extract payload from an option value into a new local.
+    /// Niche: the handle value IS the payload. Tagged: load field 0.
+    fn emit_option_payload(
+        &mut self,
+        value: MirOperand,
+        payload_ty: MirType,
+        is_niche: bool,
+    ) -> LocalId {
+        let result = self.builder.alloc_temp(payload_ty);
+        let rvalue = if is_niche {
+            MirRValue::Use(value)
+        } else {
+            MirRValue::Field { base: value, field_index: 0 }
+        };
+        self.builder.push_stmt(MirStmt::Assign { dst: result, rvalue });
+        result
+    }
+
     /// Bind pattern payload variables into the current scope.
     ///
     /// After confirming a tag match, extracts payload fields from the
@@ -476,6 +548,17 @@ impl<'a> MirLowerer<'a> {
         value: MirOperand,
         payload_ty: MirType,
     ) {
+        self.bind_pattern_payload_niche(pattern, value, payload_ty, false);
+    }
+
+    /// Bind pattern payload — with niche awareness.
+    fn bind_pattern_payload_niche(
+        &mut self,
+        pattern: &rask_ast::expr::Pattern,
+        value: MirOperand,
+        payload_ty: MirType,
+        is_niche: bool,
+    ) {
         use rask_ast::expr::Pattern;
         match pattern {
             Pattern::Constructor { fields, .. } => {
@@ -484,12 +567,18 @@ impl<'a> MirLowerer<'a> {
                         let field_ty = payload_ty.clone();
                         let local = self.builder.alloc_local(name.clone(), field_ty.clone());
                         self.locals.insert(name.clone(), (local, field_ty));
-                        self.builder.push_stmt(MirStmt::Assign {
-                            dst: local,
-                            rvalue: MirRValue::Field {
+                        let rvalue = if is_niche {
+                            // Niche: the value IS the payload
+                            MirRValue::Use(value.clone())
+                        } else {
+                            MirRValue::Field {
                                 base: value.clone(),
                                 field_index: i as u32,
-                            },
+                            }
+                        };
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: local,
+                            rvalue,
                         });
                     }
                     // Wildcard, Literal in field position — skip binding

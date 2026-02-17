@@ -57,10 +57,12 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
         Type::String => (16, 8), // Fat pointer: ptr + len
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         Type::Option(inner) => {
-            // TODO: Niche optimization for Handle/Reference
-            // Option<Handle<T>> can use pool_id=0 as None sentinel (12 bytes, no tag).
-            // Requires: (1) layout returns inner size here, (2) codegen emits niche
-            // checks instead of tag reads, (3) pool.c starts pool_id from 1.
+            // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
+            // All-ones (-1 as i64) means None; any other value is Some(handle).
+            // Same size as bare Handle<T> — no tag byte needed.
+            if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
+                return (8, 8);
+            }
             let (size, align) = type_size_align(inner);
             // Naive layout: u8 tag + padding + payload
             let tag_size = 1u32;
@@ -100,6 +102,9 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
             // For now, assume pointer-sized (will be fixed during layout phase)
             (8, 8)
         }
+        // Handle<T>, Pool<T>, etc. — generic builtins with known sizes
+        Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8), // Pointer to pool
         Type::Var(_) | Type::UnresolvedGeneric { .. } => {
             panic!("Unresolved type in layout computation: {:?}", ty)
         }
@@ -443,6 +448,30 @@ mod tests {
         let (size, align) = type_size_align(&Type::Option(Box::new(Type::I8)));
         assert_eq!(align, 1);
         assert_eq!(size, 2);
+    }
+
+    #[test]
+    fn option_handle_niche_optimized() {
+        // Option<Handle<T>> uses niche sentinel — same size as Handle (8 bytes, no tag)
+        let handle_ty = Type::UnresolvedGeneric {
+            name: "Handle".to_string(),
+            args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
+        };
+        let (size, align) = type_size_align(&Type::Option(Box::new(handle_ty)));
+        assert_eq!(size, 8);
+        assert_eq!(align, 8);
+    }
+
+    #[test]
+    fn handle_size() {
+        // Handle<T> is 8 bytes (packed i64: index:32 | gen:32)
+        let handle_ty = Type::UnresolvedGeneric {
+            name: "Handle".to_string(),
+            args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
+        };
+        let (size, align) = type_size_align(&handle_ty);
+        assert_eq!(size, 8);
+        assert_eq!(align, 8);
     }
 
     #[test]

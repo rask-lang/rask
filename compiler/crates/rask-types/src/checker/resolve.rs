@@ -303,6 +303,22 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
                 self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
             }
+            // Pool<T>
+            Type::UnresolvedGeneric { name, args: type_args } if name == "Pool" => {
+                self.resolve_pool_method(type_args, &method, &args, &ret, span)
+            }
+            // Handle<T> — value type, no methods
+            Type::UnresolvedGeneric { name, .. } if name == "Handle" => {
+                Err(TypeError::NoSuchMethod {
+                    ty,
+                    method,
+                    span,
+                })
+            }
+            // Pool (bare, for static constructors like Pool.new())
+            Type::UnresolvedNamed(name) if name == "Pool" => {
+                self.resolve_pool_static_method(&method, &args, &ret, span)
+            }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
@@ -827,6 +843,93 @@ impl TypeChecker {
                     span,
                 });
                 Ok(false)
+            }
+        }
+    }
+
+    /// Resolve methods on Pool<T> instances.
+    pub(super) fn resolve_pool_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+            *t.clone()
+        } else {
+            self.ctx.fresh_var()
+        };
+
+        match method {
+            // pool.alloc(value: T) -> Handle<T>
+            "alloc" | "insert" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                let handle_ty = Type::UnresolvedGeneric {
+                    name: "Handle".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner_type))],
+                };
+                self.unify(ret, &handle_ty, span)
+            }
+            // pool.get(h: Handle<T>) -> T?
+            "get" if args.len() == 1 => {
+                let result_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &result_ty, span)
+            }
+            // pool.remove(h: Handle<T>) -> T?
+            "remove" if args.len() == 1 => {
+                let result_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &result_ty, span)
+            }
+            // pool.len() -> u64
+            "len" if args.is_empty() => {
+                self.unify(ret, &Type::U64, span)
+            }
+            // pool.is_empty() -> bool
+            "is_empty" if args.is_empty() => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            _ => {
+                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                    ty: Type::UnresolvedGeneric {
+                        name: "Pool".to_string(),
+                        args: type_args.to_vec(),
+                    },
+                    method: method.to_string(),
+                    args: args.to_vec(),
+                    ret: ret.clone(),
+                    span,
+                });
+                Ok(false)
+            }
+        }
+    }
+
+    /// Resolve static methods on bare Pool (e.g. Pool.new()).
+    pub(super) fn resolve_pool_static_method(
+        &mut self,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            // Pool.new() -> Pool<T> where T is fresh
+            "new" if args.is_empty() => {
+                let fresh = self.ctx.fresh_var();
+                let pool_ty = Type::UnresolvedGeneric {
+                    name: "Pool".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh))],
+                };
+                self.unify(ret, &pool_ty, span)
+            }
+            _ => {
+                Err(TypeError::NoSuchMethod {
+                    ty: Type::UnresolvedNamed("Pool".to_string()),
+                    method: method.to_string(),
+                    span,
+                })
             }
         }
     }
