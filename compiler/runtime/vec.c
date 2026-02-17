@@ -37,6 +37,18 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     return v;
 }
 
+RaskVec *rask_vec_from_static(const char *data, int64_t count) {
+    int64_t elem_size = 8; // all comptime values are i64
+    RaskVec *v = (RaskVec *)rask_alloc(sizeof(RaskVec));
+    v->len = count;
+    v->cap = count;
+    v->elem_size = elem_size;
+    int64_t total = elem_size * count;
+    v->data = (char *)rask_alloc(total);
+    memcpy(v->data, data, total);
+    return v;
+}
+
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
     rask_free(v->data);
@@ -115,6 +127,48 @@ int64_t rask_vec_reserve(RaskVec *v, int64_t additional) {
 
 int64_t rask_vec_is_empty(const RaskVec *v) {
     return (!v || v->len == 0) ? 1 : 0;
+}
+
+int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
+    if (!v || index < 0 || index > v->len) return -1;
+    if (vec_grow(v, v->len + 1) != 0) return -1;
+    // Shift elements right to make room
+    int64_t to_move = v->len - index;
+    if (to_move > 0) {
+        memmove(v->data + (index + 1) * v->elem_size,
+                v->data + index * v->elem_size,
+                (size_t)(to_move * v->elem_size));
+    }
+    memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
+    v->len++;
+    return 0;
+}
+
+int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
+    if (!v || index < 0 || index >= v->len) return -1;
+    if (out) {
+        memcpy(out, v->data + index * v->elem_size, (size_t)v->elem_size);
+    }
+    // Shift elements left
+    int64_t remaining = v->len - index - 1;
+    if (remaining > 0) {
+        memmove(v->data + index * v->elem_size,
+                v->data + (index + 1) * v->elem_size,
+                (size_t)(remaining * v->elem_size));
+    }
+    v->len--;
+    return 0;
+}
+
+// clone — deep copy of the Vec (copies element bytes, not deep-cloning elements).
+RaskVec *rask_vec_clone(const RaskVec *src) {
+    if (!src) return rask_vec_new(8);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, src->len);
+    if (src->len > 0) {
+        memcpy(dst->data, src->data, (size_t)(src->len * src->elem_size));
+    }
+    dst->len = src->len;
+    return dst;
 }
 
 // skip(vec, n) — returns a new Vec with the first n elements removed.

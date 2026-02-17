@@ -236,3 +236,14 @@ RaskVec *rask_map_values(const RaskMap *m) {
     }
     return v;
 }
+
+RaskMap *rask_map_clone(const RaskMap *m) {
+    if (!m) return rask_map_new(8, 8);
+    RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) {
+            rask_map_insert(dst, m->keys + i * m->key_size, m->vals + i * m->val_size);
+        }
+    }
+    return dst;
+}

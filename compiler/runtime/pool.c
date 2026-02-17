@@ -166,12 +166,64 @@ void *rask_pool_get_packed(const RaskPool *p, int64_t packed) {
     return rask_pool_get(p, handle_unpack(p, packed));
 }
 
+void *rask_pool_get_checked(const RaskPool *p, int64_t packed,
+                            const char *file, int32_t line, int32_t col) {
+    void *result = rask_pool_get(p, handle_unpack(p, packed));
+    if (!result) {
+        rask_panic_at(file, line, col, "pool access with invalid handle");
+    }
+    return result;
+}
+
 int64_t rask_pool_remove_packed(RaskPool *p, int64_t packed) {
     return rask_pool_remove(p, handle_unpack(p, packed), NULL);
 }
 
 int64_t rask_pool_is_valid_packed(const RaskPool *p, int64_t packed) {
     return rask_pool_is_valid(p, handle_unpack(p, packed));
+}
+
+RaskVec *rask_pool_handles_packed(const RaskPool *p) {
+    RaskVec *v = rask_vec_new(8);
+    if (!p) return v;
+    for (int64_t i = 0; i < p->cap; i++) {
+        if (!p->slots[i].occupied) continue;
+        RaskHandle h;
+        h.pool_id = p->pool_id;
+        h.index = (uint32_t)i;
+        h.generation = p->slots[i].generation;
+        int64_t packed = handle_pack(h);
+        rask_vec_push(v, &packed);
+    }
+    return v;
+}
+
+RaskVec *rask_pool_values(const RaskPool *p) {
+    RaskVec *v = rask_vec_new(p ? p->elem_size : 8);
+    if (!p) return v;
+    for (int64_t i = 0; i < p->cap; i++) {
+        if (!p->slots[i].occupied) continue;
+        rask_vec_push(v, p->data + i * p->elem_size);
+    }
+    return v;
+}
+
+RaskVec *rask_pool_drain(RaskPool *p) {
+    RaskVec *v = rask_vec_new(p ? p->elem_size : 8);
+    if (!p) return v;
+    for (int64_t i = 0; i < p->cap; i++) {
+        if (!p->slots[i].occupied) continue;
+        rask_vec_push(v, p->data + i * p->elem_size);
+        // Free the slot
+        if (p->slots[i].generation < UINT32_MAX) {
+            p->slots[i].generation++;
+        }
+        p->slots[i].occupied = 0;
+        p->slots[i].next_free = p->free_head;
+        p->free_head = (int32_t)i;
+        p->len--;
+    }
+    return v;
 }
 
 // Allocate a zero-initialized slot and return a handle to it.

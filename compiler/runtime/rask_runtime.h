@@ -44,6 +44,7 @@ typedef struct RaskVec RaskVec;
 
 RaskVec *rask_vec_new(int64_t elem_size);
 RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap);
+RaskVec *rask_vec_from_static(const char *data, int64_t count);
 void     rask_vec_free(RaskVec *v);
 int64_t  rask_vec_len(const RaskVec *v);
 int64_t  rask_vec_capacity(const RaskVec *v);
@@ -55,7 +56,10 @@ int64_t  rask_vec_remove(RaskVec *v, int64_t index);
 void     rask_vec_clear(RaskVec *v);
 int64_t  rask_vec_reserve(RaskVec *v, int64_t additional);
 int64_t  rask_vec_is_empty(const RaskVec *v);
+int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
+int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
+RaskVec *rask_vec_clone(const RaskVec *v);
 
 // ─── String ─────────────────────────────────────────────────
 // UTF-8 owned string, always null-terminated.
@@ -83,6 +87,7 @@ int64_t     rask_string_ends_with(const RaskString *s, const RaskString *suffix)
 RaskVec    *rask_string_lines(const RaskString *s);
 RaskString *rask_string_trim(const RaskString *s);
 RaskVec    *rask_string_split(const RaskString *s, const RaskString *sep);
+RaskVec    *rask_string_split_whitespace(const RaskString *s);
 RaskString *rask_string_replace(const RaskString *s, const RaskString *from, const RaskString *to);
 int64_t     rask_string_parse_int(const RaskString *s);
 double      rask_string_parse_float(const RaskString *s);
@@ -114,6 +119,7 @@ int64_t  rask_map_is_empty(const RaskMap *m);
 void     rask_map_clear(RaskMap *m);
 RaskVec *rask_map_keys(const RaskMap *m);
 RaskVec *rask_map_values(const RaskMap *m);
+RaskMap *rask_map_clone(const RaskMap *m);
 
 // Built-in hash/eq functions
 uint64_t rask_hash_bytes(const void *key, int64_t key_size);
@@ -143,8 +149,13 @@ RaskHandle  rask_pool_alloc(RaskPool *p);
 // Packed i64 handle interface for codegen (index:32 | gen:32, pool_id from pool ptr)
 int64_t     rask_pool_alloc_packed(RaskPool *p);
 void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
+void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
+                                  const char *file, int32_t line, int32_t col);
 int64_t     rask_pool_remove_packed(RaskPool *p, int64_t packed);
 int64_t     rask_pool_is_valid_packed(const RaskPool *p, int64_t packed);
+RaskVec    *rask_pool_handles_packed(const RaskPool *p);
+RaskVec    *rask_pool_values(const RaskPool *p);
+RaskVec    *rask_pool_drain(RaskPool *p);
 
 #define RASK_HANDLE_INVALID ((RaskHandle){0, UINT32_MAX, 0})
 
@@ -196,6 +207,18 @@ void        rask_file_write(int64_t file, const RaskString *content);
 void        rask_file_write_line(int64_t file, const RaskString *content);
 RaskVec    *rask_file_lines(int64_t file);
 
+// ─── Time module ────────────────────────────────────────────
+// Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
+
+int64_t rask_time_Instant_now(void);
+int64_t rask_time_Instant_elapsed(int64_t instant_ns);
+int64_t rask_time_Duration_from_nanos(int64_t ns);
+int64_t rask_time_Duration_from_millis(int64_t ms);
+int64_t rask_time_Duration_as_nanos(int64_t duration_ns);
+int64_t rask_time_Duration_as_secs(int64_t duration_ns);
+double  rask_time_Duration_as_secs_f64(int64_t duration_ns);
+int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
+
 // ─── Net module ─────────────────────────────────────────────
 // Basic TCP socket operations.
 
@@ -240,7 +263,15 @@ const char *rask_args_get(int64_t index);
 #define RASK_PANIC_MSG_MAX 512
 
 _Noreturn void rask_panic(const char *msg);
+_Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
+                             const char *msg);
 _Noreturn void rask_panic_fmt(const char *fmt, ...);
+
+// Location-aware panic wrappers for codegen
+void rask_panic_unwrap(void);
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col);
+void rask_assert_fail(void);
+void rask_assert_fail_at(const char *file, int32_t line, int32_t col);
 
 // Install/remove panic handler for the current thread.
 // Used internally by rask_spawn — not part of the public API.
@@ -361,6 +392,8 @@ int64_t rask_channel_recv_i64(int64_t rx);
 void    rask_sender_drop_i64(int64_t tx);
 void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
+int64_t rask_channel_try_send_i64(int64_t tx, int64_t value);
+int64_t rask_channel_try_recv_i64(int64_t rx);
 
 // ─── Async I/O (dual-path: green task or blocking) ──────────
 // Inside a green task, these submit async ops and return PENDING.
@@ -426,5 +459,13 @@ void rask_shared_write(RaskShared *s, RaskAccessFn f, void *ctx);
 // Non-blocking variants. Return 1 if access granted, 0 otherwise.
 int64_t rask_shared_try_read(RaskShared *s, RaskAccessFn f, void *ctx);
 int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx);
+
+// i64-based Shared wrappers for codegen dispatch table.
+// Closure layout matches closures.rs: [func_ptr(8) | env...].
+int64_t rask_shared_new_i64(int64_t value);
+int64_t rask_shared_read_i64(int64_t shared, int64_t closure);
+int64_t rask_shared_write_i64(int64_t shared, int64_t closure);
+int64_t rask_shared_clone_i64(int64_t shared);
+void    rask_shared_drop_i64(int64_t shared);
 
 #endif // RASK_RUNTIME_H

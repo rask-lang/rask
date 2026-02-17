@@ -71,13 +71,19 @@ void rask_exit(int64_t code) {
 }
 
 void rask_panic_unwrap(void) {
-    fprintf(stderr, "panic: called unwrap on None/Err value\n");
-    abort();
+    rask_panic("called unwrap on None/Err value");
 }
 
 void rask_assert_fail(void) {
-    fprintf(stderr, "panic: assertion failed\n");
-    abort();
+    rask_panic("assertion failed");
+}
+
+void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col) {
+    rask_panic_at(file, line, col, "called unwrap on None/Err value");
+}
+
+void rask_assert_fail_at(const char *file, int32_t line, int32_t col) {
+    rask_panic_at(file, line, col, "assertion failed");
 }
 
 // ─── I/O primitives ──────────────────────────────────────────────
