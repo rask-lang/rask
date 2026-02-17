@@ -132,6 +132,9 @@ impl Backend {
                 rask_resolve::SymbolKind::ExternalPackage { .. } => {
                     (CompletionItemKind::MODULE, "package".to_string())
                 }
+                rask_resolve::SymbolKind::ExternFunction { .. } => {
+                    (CompletionItemKind::FUNCTION, "extern func".to_string())
+                }
                 rask_resolve::SymbolKind::Field { .. } => continue,
             };
 

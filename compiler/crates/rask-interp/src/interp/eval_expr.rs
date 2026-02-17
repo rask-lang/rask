@@ -650,6 +650,18 @@ impl Interpreter {
                             .map_err(|e| RuntimeDiagnostic::new(RuntimeError::Panic(e), expr.span))?;
                         Ok(pool.slots[idx].1.as_ref().unwrap().clone())
                     }
+                    (Value::Map(m), _) => {
+                        let map = m.lock().unwrap();
+                        for (k, v) in map.iter() {
+                            if Self::value_eq(k, &idx) {
+                                return Ok(v.clone());
+                            }
+                        }
+                        Err(RuntimeDiagnostic::new(
+                            RuntimeError::Panic("key not found in map".to_string()),
+                            expr.span,
+                        ))
+                    }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "cannot index {} with {}",
@@ -915,6 +927,7 @@ impl Interpreter {
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
+                    receiver: Mutex::new(None),
                 })))
             }
 
@@ -980,6 +993,7 @@ impl Interpreter {
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
+                    receiver: Mutex::new(None),
                 })))
             }
 
@@ -1061,19 +1075,18 @@ impl Interpreter {
                         .map_err(|e| RuntimeDiagnostic::new(RuntimeError::TypeError(e), expr.span))? as usize
                 };
 
-                let runtime = Arc::new(MultitaskingRuntime {
-                    workers: num_workers,
-                });
+                let runtime = Arc::new(MultitaskingRuntime::new(num_workers));
 
                 self.env.push_scope();
                 let scope_depth = self.env.scope_depth();
-                self.env.define("__multitasking_ctx".to_string(), Value::MultitaskingRuntime(runtime));
+                self.env.define("__multitasking_ctx".to_string(), Value::MultitaskingRuntime(runtime.clone()));
 
                 let mut result = Value::Unit;
                 for stmt in body {
                     match self.exec_stmt(stmt) {
                         Ok(val) => result = val,
                         Err(e) => {
+                            runtime.shutdown();
                             self.env.pop_scope();
                             return Err(e);
                         }
@@ -1082,6 +1095,7 @@ impl Interpreter {
 
                 // Check for unconsumed handles (conc.async/H1)
                 if let Err(msg) = self.resource_tracker.check_scope_exit(scope_depth) {
+                    runtime.shutdown();
                     self.env.pop_scope();
                     return Err(RuntimeDiagnostic::new(
                         RuntimeError::Panic(msg),
@@ -1089,6 +1103,7 @@ impl Interpreter {
                     ));
                 }
 
+                runtime.shutdown();
                 self.env.pop_scope();
                 Ok(result)
             }
@@ -1097,24 +1112,58 @@ impl Interpreter {
                 let body = body.clone();
                 let captured = self.env.capture();
                 let child = self.spawn_child(captured);
+                let in_multitasking = self.env.get("__multitasking_ctx").is_some();
 
-                let join_handle = std::thread::spawn(move || {
-                    let mut interp = child;
-                    let mut result = Value::Unit;
-                    for stmt in &body {
-                        match interp.exec_stmt(stmt) {
-                            Ok(val) => result = val,
-                            Err(e) => return Err(format!("{}", e)),
+                let handle_inner = if in_multitasking {
+                    // Submit to the multitasking thread pool
+                    let (result_tx, result_rx) = std::sync::mpsc::channel();
+                    let task = PoolTask {
+                        work: Box::new(move || {
+                            let mut interp = child;
+                            let mut result = Value::Unit;
+                            for stmt in &body {
+                                match interp.exec_stmt(stmt) {
+                                    Ok(val) => result = val,
+                                    Err(e) => {
+                                        let _ = result_tx.send(Err(format!("{}", e)));
+                                        return;
+                                    }
+                                }
+                            }
+                            let _ = result_tx.send(Ok(result));
+                        }),
+                    };
+
+                    if let Some(Value::MultitaskingRuntime(rt)) = self.env.get("__multitasking_ctx") {
+                        let sender = rt.sender.lock().unwrap();
+                        if let Some(tx) = sender.as_ref() {
+                            let _ = tx.send(task);
                         }
                     }
-                    Ok(result)
-                });
 
-                // Return TaskHandle when inside using Multitasking, ThreadHandle otherwise
-                let handle_inner = Arc::new(ThreadHandleInner {
-                    handle: Mutex::new(Some(join_handle)),
-                });
-                let in_multitasking = self.env.get("__multitasking_ctx").is_some();
+                    Arc::new(ThreadHandleInner {
+                        handle: Mutex::new(None),
+                        receiver: Mutex::new(Some(result_rx)),
+                    })
+                } else {
+                    // Outside multitasking: spawn OS thread directly
+                    let join_handle = std::thread::spawn(move || {
+                        let mut interp = child;
+                        let mut result = Value::Unit;
+                        for stmt in &body {
+                            match interp.exec_stmt(stmt) {
+                                Ok(val) => result = val,
+                                Err(e) => return Err(format!("{}", e)),
+                            }
+                        }
+                        Ok(result)
+                    });
+
+                    Arc::new(ThreadHandleInner {
+                        handle: Mutex::new(Some(join_handle)),
+                        receiver: Mutex::new(None),
+                    })
+                };
 
                 // Register handle for affine tracking (conc.async/H1)
                 let ptr = Arc::as_ptr(&handle_inner) as usize;

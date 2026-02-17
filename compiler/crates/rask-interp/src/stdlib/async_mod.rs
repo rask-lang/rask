@@ -29,9 +29,11 @@ impl Interpreter {
                         body,
                         captured_env,
                     } => {
-                        // Check for using Multitasking context
-                        // TODO: Implement this check when context system is complete
-                        // For now, treat as Thread.spawn for compatibility
+                        if self.env.get("__multitasking_ctx").is_none() {
+                            return Err(RuntimeError::TypeError(
+                                "spawn() requires 'using Multitasking' context".to_string(),
+                            ));
+                        }
 
                         if !params.is_empty() {
                             return Err(RuntimeError::TypeError(
@@ -52,9 +54,16 @@ impl Interpreter {
                             }
                         });
 
-                        Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
+                        let handle_inner = Arc::new(ThreadHandleInner {
                             handle: Mutex::new(Some(join_handle)),
-                        })))
+                            receiver: Mutex::new(None),
+                        });
+
+                        // Register for affine tracking (conc.async/H1)
+                        let ptr = Arc::as_ptr(&handle_inner) as usize;
+                        self.resource_tracker.register_handle(ptr, "TaskHandle", self.env.scope_depth());
+
+                        Ok(Value::TaskHandle(handle_inner))
                     }
                     _ => Err(RuntimeError::TypeError(format!(
                         "spawn expects a closure, got {}",

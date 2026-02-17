@@ -145,9 +145,20 @@ impl Interpreter {
 
                 let result = self.eval_expr(body).map_err(|diag| diag.error);
 
-                // Write back mutations to the shared value
-                if let Some(updated) = self.env.get(&param_name) {
-                    *guard = updated.clone();
+                // Write back: use closure return value if available,
+                // fall back to checking environment mutations
+                match &result {
+                    Err(RuntimeError::Return(v)) => {
+                        *guard = v.clone();
+                    }
+                    Ok(v) if !matches!(v, Value::Unit) => {
+                        *guard = v.clone();
+                    }
+                    _ => {
+                        if let Some(updated) = self.env.get(&param_name) {
+                            *guard = updated.clone();
+                        }
+                    }
                 }
 
                 self.env.pop_scope();

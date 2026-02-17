@@ -29,7 +29,7 @@ extend SpscRingBuffer<T, N> {
 
     // Called from interrupt context - must be lock-free and allocation-free
     @no_alloc
-    func try_push(self, value: T) -> bool {
+    func try_push(self, take value: T) -> bool {
         const write = self.write_idx.load(Ordering.Relaxed)
         const next_write = (write + 1) % N
 
@@ -294,7 +294,8 @@ func interrupt_handler(
         while time.Instant.now().duration_since(start_time).as_nanos() <
               next_sample_time.duration_since(start_time).as_nanos() {
             // Spin - in real embedded this would be WFI (wait for interrupt)
-            core.hint.spin_loop()
+            //wait
+            
         }
 
         const now_ns = time.Instant.now().duration_since(start_time).as_nanos()
@@ -500,7 +501,8 @@ func main() -> () or Error {
         // Spin-wait for next cycle (more precise than sleep)
         next_process_time = start_time + time.Duration.from_nanos(process_period_ns * cycle)
         while time.Instant.now() < next_process_time {
-            core.hint.spin_loop()
+            
+            //sleep or spin wait
         }
     }
 

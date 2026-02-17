@@ -159,6 +159,7 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [rejected-features.md](rejected-features.md) | Why I didn't add: async/await, algebraic effects, lifetimes, supervision |
 | [tooling/describe-schema.md](tooling/describe-schema.md) | `rask describe` JSON schema for module API summaries |
 | [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
+| [tooling/debugging.md](tooling/debugging.md) | Debugging strategy: DWARF, time-travel, pool inspectors |
 
 ## Compiler — Compiler internals
 

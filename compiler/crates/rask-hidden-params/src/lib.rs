@@ -581,6 +581,7 @@ impl HiddenParamPass {
             | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
+            | ExprKind::Null
             | ExprKind::Ident(_) => {}
         }
     }
@@ -875,6 +876,7 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
         | ExprKind::String(_)
         | ExprKind::Char(_)
         | ExprKind::Bool(_)
+        | ExprKind::Null
         | ExprKind::Ident(_) => {}
     }
 }

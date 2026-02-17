@@ -176,6 +176,7 @@ impl Interpreter {
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
+                    receiver: Mutex::new(None),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(
@@ -232,6 +233,7 @@ impl Interpreter {
                 // Return TaskHandle (not ThreadHandle) for type distinction
                 let handle_inner = Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
+                    receiver: Mutex::new(None),
                 });
 
                 // Register handle for affine tracking (conc.async/H1)
@@ -326,6 +328,7 @@ impl Interpreter {
 
                 Ok(Value::ThreadHandle(Arc::new(ThreadHandleInner {
                     handle: Mutex::new(Some(join_handle)),
+                    receiver: Mutex::new(None),
                 })))
             }
             _ => Err(RuntimeError::TypeError(format!(
