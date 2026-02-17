@@ -93,6 +93,24 @@ _Noreturn void rask_panic(const char *msg) {
     abort();
 }
 
+_Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
+                             const char *msg) {
+    char buf[RASK_PANIC_MSG_MAX];
+    snprintf(buf, sizeof(buf), "%s:%d:%d: %s",
+             file ? file : "<unknown>", line, col,
+             msg ? msg : "(unknown panic)");
+
+    if (panic_ctx.active) {
+        panic_ctx.message = strdup(buf);
+        panic_ctx.active = 0;
+        longjmp(panic_ctx.buf, 1);
+    }
+
+    fprintf(stderr, "panic at %s\n", buf);
+    print_backtrace();
+    abort();
+}
+
 _Noreturn void rask_panic_fmt(const char *fmt, ...) {
     char buf[RASK_PANIC_MSG_MAX];
     va_list args;

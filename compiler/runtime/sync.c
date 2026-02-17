@@ -11,6 +11,7 @@
 #include "rask_runtime.h"
 
 #include <stdlib.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <pthread.h>
@@ -74,6 +75,7 @@ struct RaskShared {
     pthread_rwlock_t lock;
     void            *data;
     int64_t          data_size;
+    _Atomic int64_t  refcount;
 };
 
 RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
@@ -95,12 +97,14 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
         abort();
     }
 
+    atomic_store(&s->refcount, 1);
     memcpy(s->data, initial_data, (size_t)data_size);
     return s;
 }
 
 void rask_shared_free(RaskShared *s) {
     if (!s) return;
+    if (atomic_fetch_sub(&s->refcount, 1) > 1) return;
     pthread_rwlock_destroy(&s->lock);
     free(s->data);
     free(s);
@@ -134,4 +138,55 @@ int64_t rask_shared_try_write(RaskShared *s, RaskAccessFn f, void *ctx) {
         return 1;
     }
     return 0;
+}
+
+// ─── i64-based codegen wrappers ────────────────────────────
+//
+// Rask closure layout (see closures.rs): [func_ptr | env...]
+// Calling convention: func_ptr(env_ptr, args...) where env_ptr = closure + 8.
+
+#define CLOSURE_FUNC(cl)  (*(int64_t *)(intptr_t)(cl))
+#define CLOSURE_ENV(cl)   ((cl) + 8)
+
+typedef int64_t (*RaskClosureFn1)(int64_t env, int64_t arg);
+typedef void    (*RaskClosureVoidFn1)(int64_t env, int64_t arg);
+
+int64_t rask_shared_new_i64(int64_t value) {
+    RaskShared *s = rask_shared_new(&value, sizeof(int64_t));
+    return (int64_t)(intptr_t)s;
+}
+
+int64_t rask_shared_read_i64(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+    int64_t env = CLOSURE_ENV(closure);
+
+    pthread_rwlock_rdlock(&s->lock);
+    int64_t data = *(int64_t *)s->data;
+    int64_t result = fn(env, data);
+    pthread_rwlock_unlock(&s->lock);
+    return result;
+}
+
+int64_t rask_shared_write_i64(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+    int64_t env = CLOSURE_ENV(closure);
+
+    pthread_rwlock_wrlock(&s->lock);
+    int64_t data = *(int64_t *)s->data;
+    int64_t new_data = fn(env, data);
+    *(int64_t *)s->data = new_data;
+    pthread_rwlock_unlock(&s->lock);
+    return new_data;
+}
+
+int64_t rask_shared_clone_i64(int64_t shared) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    atomic_fetch_add(&s->refcount, 1);
+    return shared;
+}
+
+void rask_shared_drop_i64(int64_t shared) {
+    rask_shared_free((RaskShared *)(intptr_t)shared);
 }

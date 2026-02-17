@@ -464,6 +464,19 @@ int64_t rask_sender_clone_i64(int64_t tx) {
     return (int64_t)(intptr_t)rask_sender_clone((RaskSender *)(intptr_t)tx);
 }
 
+int64_t rask_channel_try_send_i64(int64_t tx, int64_t value) {
+    return rask_channel_try_send((RaskSender *)(intptr_t)tx, &value);
+}
+
+int64_t rask_channel_try_recv_i64(int64_t rx) {
+    int64_t data = 0;
+    int64_t status = rask_channel_try_recv((RaskRecver *)(intptr_t)rx, &data);
+    if (status != RASK_CHAN_OK) {
+        return status;
+    }
+    return data;
+}
+
 // ─── Async channel ops (yield-based for green tasks) ─────────
 //
 // Try non-blocking send/recv. If would block, yield and retry.

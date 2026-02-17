@@ -266,6 +266,26 @@ RaskVec *rask_string_split(const RaskString *s, const RaskString *sep) {
     return v;
 }
 
+RaskVec *rask_string_split_whitespace(const RaskString *s) {
+    RaskVec *v = rask_vec_new(sizeof(RaskString *));
+    if (!s || s->len == 0) return v;
+    const char *p = s->data;
+    const char *end = p + s->len;
+    while (p < end) {
+        // Skip whitespace
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+            p++;
+        if (p >= end) break;
+        // Find end of token
+        const char *start = p;
+        while (p < end && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+            p++;
+        RaskString *tok = rask_string_from_bytes(start, p - start);
+        rask_vec_push(v, &tok);
+    }
+    return v;
+}
+
 RaskString *rask_string_replace(const RaskString *s, const RaskString *from, const RaskString *to) {
     if (!s) return rask_string_new();
     if (!from || from->len == 0) return rask_string_clone(s);
