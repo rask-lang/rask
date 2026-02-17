@@ -1,31 +1,33 @@
 <!-- id: type.traits -->
 <!-- status: decided -->
-<!-- summary: Opt-in runtime polymorphism via `any Trait` with vtable dispatch -->
+<!-- summary: Opt-in runtime polymorphism via `any Trait` with function pointer dispatch -->
 <!-- depends: types/structs.md, types/generics.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Traits
 
-Monomorphization by default; `any Trait` for explicit runtime polymorphism when different types share a collection.
+Code specialization by default — each type gets its own optimized copy. Use `any Trait` for explicit runtime polymorphism when different types need to share a collection.
 
-## Object Safety
+## Which Traits Work with `any`
+
+Not every trait can be used with `any`. The compiler needs to build a function pointer table (vtable) for the trait's methods, and some method signatures make that impossible.
 
 | Rule | Description |
 |------|-------------|
-| **TR1: Object-safe methods** | Methods must take `self` and use only concrete types |
+| **TR1: `any`-compatible methods** | Methods must take `self` and use only concrete types |
 | **TR2: No Self return** | Methods returning `Self` prevent `any` usage |
 | **TR3: No generic methods** | Generic methods prevent `any` usage |
 | **TR4: No associated types** | Associated types prevent `any` usage (MVP) |
 
 <!-- test: parse -->
 ```rask
-// Object-safe: can use with any
+// any-compatible: can use with `any`
 trait Widget {
     draw(self)
     size(self) -> (i32, i32)
 }
 
-// NOT object-safe: cannot use with any
+// NOT any-compatible: cannot use with `any`
 trait Clonable {
     clone(self) -> Self  // Returns Self
 }
@@ -59,19 +61,19 @@ func render_all(widgets: []any Widget) {
 
 | Rule | Description |
 |------|-------------|
-| **TR9: Vtable dispatch** | `any Trait` method calls go through a vtable (function pointer table) |
+| **TR9: Vtable dispatch** | `any Trait` method calls go through a vtable — a table of function pointers, one per method |
 | **TR10: Two-word value** | `any Trait` stores a data pointer and a vtable pointer |
 
 ## Cost
 
-| Aspect | Monomorphization | `any Trait` |
+| Aspect | Specialized code | `any Trait` |
 |--------|------------------|-------------|
 | Method call | Direct call | Indirect (vtable lookup) |
 | Inlining | Yes | No |
 | Code size | One copy per type | One copy total |
 | Flexibility | Same-type only | Heterogeneous |
 
-Overhead is one pointer indirection per call. Negligible for handlers, UI, plugins. For tight inner loops, prefer monomorphization or enums.
+Overhead is one pointer indirection per call. Negligible for handlers, UI, plugins. For tight inner loops, prefer generics (specialized code) or enums.
 
 ## Edge Cases
 
@@ -85,9 +87,9 @@ Overhead is one pointer indirection per call. Negligible for handlers, UI, plugi
 
 ## Error Messages
 
-**Using non-object-safe trait with `any` [TR2]:**
+**Using incompatible trait with `any` [TR2]:**
 ```
-ERROR [type.traits/TR2]: trait `Clonable` is not object-safe
+ERROR [type.traits/TR2]: trait `Clonable` is not compatible with `any`
    |
 5  |  let c: any Clonable = value
    |             ^^^^^^^^ `clone` returns `Self`
@@ -158,9 +160,9 @@ extend Container {
 
 ### Rationale
 
-**TR1–TR4 (object safety):** `any` erases the concrete type at runtime. Methods that depend on knowing the concrete type — returning `Self`, using generic parameters — can't work through a vtable. These restrictions match what's mechanically possible, not arbitrary limits.
+**TR1–TR4 (`any` compatibility):** `any` erases the concrete type at runtime. Methods that depend on knowing the concrete type — returning `Self`, using generic parameters — can't work through a vtable. These restrictions match what's mechanically possible, not arbitrary limits.
 
-**TR9 (vtable dispatch):** The cost is explicit. You write `any Trait`, you get indirection. No hidden polymorphism, no surprise performance cliffs. Monomorphization remains the default for zero-overhead generics.
+**TR9 (vtable dispatch):** The cost is explicit. You write `any Trait`, you get indirection. No hidden polymorphism, no surprise performance cliffs. Specialized code generation remains the default for zero-overhead generics.
 
 ### Patterns & Guidance
 
@@ -180,7 +182,7 @@ extend Container {
 |-----------|-------------|
 | All items same type | Regular generics `[]T` |
 | Known set of types | Enum with variants |
-| Performance critical hot loop | Monomorphization or enum |
+| Performance critical hot loop | Generics (specialized code) or enum |
 | Need type-specific fields | Enum or separate collections |
 
 **Comparison with enums:**
@@ -257,6 +259,6 @@ extend App {
 ### See Also
 
 - [Structs](structs.md) — Method syntax, `extend` blocks (`type.structs`)
-- [Generics](generics.md) — Monomorphization, trait bounds (`type.generics`)
+- [Generics](generics.md) — Code specialization, trait bounds (`type.generics`)
 - [Enums](enums.md) — Closed-set alternative (`type.enums`)
 - [Ownership](../memory/ownership.md) — Value ownership model (`mem.ownership`)

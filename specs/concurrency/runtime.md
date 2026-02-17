@@ -21,8 +21,8 @@ Rask's async runtime is an **M:N green task scheduler** with transparent I/O pau
 - **Work-stealing scheduler**: Per-thread FIFO queues with random victim stealing for load balance
 - **Event loop**: Central reactor (epoll/kqueue) for I/O multiplexing
 - **Context-aware I/O**: Stdlib functions detect `using Multitasking` context via hidden parameters
-- **No function coloring**: Same function works in async and sync contexts
-- **Affine handles**: Must join or detach (runtime panic if dropped)
+- **No async/await split**: Same function works in async and sync contexts (no "function coloring")
+- **Must-use handles**: Must join or detach (runtime panic if dropped)
 
 **Current interpreter:** Uses OS threads for spawn(), not green tasks. No M:N scheduler or event loop. Full runtime planned for compiled version. See [§15](#implementation-notes-for-interpreter) for details.
 
@@ -311,7 +311,7 @@ func spawn<T>(closure: || -> T) -> TaskHandle<T> {
         local_queue.push(task.clone())
     }
 
-    // Return affine handle (S4, H1)
+    // Return must-use handle (S4, H1)
     return TaskHandle {
         task: task,
         consumed: false,
@@ -2159,7 +2159,7 @@ Planned for compiled version:
 2. M:N scheduler implementation (work-stealing queues)
 3. Reactor (mio integration)
 4. Context parameter desugaring (similar to Pool<T>)
-5. Static affine handle checking (linear types in type system)
+5. Static must-use handle checking (must-consume types in type system)
 
 Interpreter remains as-is (OS threads) for semantics validation and examples.
 
@@ -2243,8 +2243,8 @@ I prioritize understandable, correct implementations over exotic optimizations. 
 
 **Summary:**
 - Rask is simpler than tokio (fewer queue types, single reactor)
-- More structured than Go (affine handles, no goroutine leaks)
-- Balances ergonomics (no function coloring) with transparency (explicit contexts)
+- More structured than Go (must-use handles, no goroutine leaks)
+- Balances ergonomics (no async/await split) with transparency (explicit contexts)
 
 ---
 
@@ -2335,7 +2335,7 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 
 **Critical requirements for v1.0:**
 - ✅ Reactor bottleneck documented (100k ops/sec limit in Phase 1)
-- ⚠️ Static affine checking (linear types in compiler)
+- ⚠️ Static must-use checking (must-consume types in compiler)
 - ⚠️ Debugger/LSP tooling (for hidden parameters)
 - ⚠️ Timer implementation (sleep, timeout, intervals)
 
@@ -2349,12 +2349,12 @@ This spec defines the **M:N green task runtime** that realizes Rask's async sema
 
 **Phase 1 (Prototype - Current Spec):**
 - Single reactor (100k ops/sec)
-- Runtime affine checks (panics)
+- Runtime must-use checks (panics)
 - Basic tooling (compiler errors only)
 
 **Phase 2 (Production - Planned):**
 - Per-thread reactors (1M+ ops/sec)
-- Static affine checking (linear types)
+- Static must-use checking (must-consume types)
 - Full tooling suite (debugger, LSP, linter)
 - Timer wheel implementation
 

@@ -1,11 +1,11 @@
 <!-- id: conc.async -->
 <!-- status: decided -->
-<!-- summary: Green tasks with affine handles, no function coloring, explicit resource declaration -->
+<!-- summary: Green tasks with must-use handles, no async/await split, explicit resource declaration -->
 <!-- depends: memory/ownership.md, memory/context-clauses.md, memory/resource-types.md -->
 
 # Execution Model
 
-Green tasks with affine handles. No function coloring. Explicit resource declaration.
+Green tasks with must-use handles. No async/await split — the same function works whether called from a green task or sync code. Explicit resource declaration.
 
 ## Spawn Constructs
 
@@ -14,7 +14,7 @@ Green tasks with affine handles. No function coloring. Explicit resource declara
 | **S1: Green task** | `spawn(|| {})` creates a green task; requires `using Multitasking` |
 | **S2: Pooled thread** | `ThreadPool.spawn(|| {})` runs on thread pool; requires `using ThreadPool` |
 | **S3: Raw thread** | `Thread.spawn(|| {})` creates OS thread; no context required |
-| **S4: Affine handle** | All spawn forms return affine handles — must be joined or detached |
+| **S4: Must-use handle** | All spawn forms return handles that must be joined or detached — dropping one is a compile error |
 
 ```rask
 func main() -> () or Error {
@@ -35,7 +35,7 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 }
 ```
 
-## Affine Handles
+## Must-Use Handles
 
 | Rule | Description |
 |------|-------------|
@@ -272,9 +272,9 @@ FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
 
 ### Rationale
 
-**S4 (affine handles):** I wanted compile-time tracking of spawned tasks. Go's fire-and-forget `go` is ergonomic but loses track of goroutines — forgotten tasks are silent bugs. Affine handles make the choice explicit: `.join()` or `.detach()`.
+**S4 (must-use handles):** I wanted compile-time tracking of spawned tasks. Go's fire-and-forget `go` is ergonomic but loses track of goroutines — forgotten tasks are silent bugs. Must-use handles make the choice explicit: `.join()` or `.detach()`. (In type theory these are called "affine types" — values that must be used at most once.)
 
-**IO1 (transparent pausing):** No function coloring means no ecosystem split. The same function works whether called from a green task or sync context. IDEs show pause points — transparency through tooling, not syntax.
+**IO1 (transparent pausing):** No async/await split means no ecosystem split. The same function works whether called from a green task or sync context. IDEs show pause points — transparency through tooling, not syntax.
 
 **CH1 (non-linear channels):** Channels aren't `@resource` types. Fire-and-forget patterns (`.detach()` tasks) would require close ceremony. Go's channels drop without explicit close. Matches `ensure` philosophy — explicit handling available, implicit path simple.
 
@@ -283,9 +283,9 @@ FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
 | Aspect | Go | Rask |
 |--------|-----|------|
 | Spawn syntax | `go func()` | `spawn(|| { }).detach()` |
-| Track tasks | Manual (WaitGroup) | Compile-time (affine) |
+| Track tasks | Manual (WaitGroup) | Compile-time (must-use handles) |
 | Forgotten tasks | Silent | Compile error |
-| Function coloring | No | No |
+| Async/sync split | No | No |
 
 ### Channel Error Types
 
@@ -318,7 +318,7 @@ enum TryRecvError { Empty, Closed }
 | TC (Transparency) | >= 0.90 | `using Multitasking`, `using ThreadPool`, spawns all visible |
 | ED (Ergonomic Delta) | <= 1.2 | Close to Go ergonomics |
 | SN (Syntactic Noise) | <= 0.30 | No `.await`, no boilerplate |
-| MC (Mechanical Correctness) | >= 0.90 | Affine handles catch forgotten tasks |
+| MC (Mechanical Correctness) | >= 0.90 | Must-use handles catch forgotten tasks |
 
 ### See Also
 

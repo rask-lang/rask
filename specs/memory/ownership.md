@@ -1,6 +1,6 @@
 <!-- id: mem.ownership -->
 <!-- status: decided -->
-<!-- summary: Single owner, move semantics, handle-based indirection -->
+<!-- summary: Single owner, value transfer for large types, handle-based indirection -->
 <!-- depends: memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
 
@@ -13,8 +13,8 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 | Rule | Description |
 |------|-------------|
 | **O1: Single owner** | Every value has exactly one owner at any time |
-| **O2: Move on assignment** | For non-Copy types, assignment transfers ownership |
-| **O3: Invalid after move** | Source binding is invalid after move; use is compile error |
+| **O2: Move on assignment** | For large types (>16 bytes), assignment transfers the value — the original variable becomes unusable |
+| **O3: Invalid after move** | Using the original variable after a move is a compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 
 <!-- test: skip -->
@@ -37,7 +37,7 @@ Tasks are isolated. No shared mutable memory.
 | **T1: Send transfers** | Sending on channel transfers ownership |
 | **T2: No shared mut** | Cannot share mutable references across tasks |
 | **T2.1: Closure-based OK** | `Shared<T>` and `Mutex<T>` provide cross-task mutable access via closures |
-| **T3: Borrows don't cross** | Block-scoped borrows cannot be sent to other tasks |
+| **T3: Borrows don't cross** | Block-scoped views cannot be sent to other tasks |
 
 Rule T2.1 clarification: `Shared<T>` and `Mutex<T>` don't violate T2 because they provide *operation-scoped* access through closures, not storable mutable references. When the closure returns, access is released. See `conc.sync`.
 
@@ -60,7 +60,7 @@ received.process()              // OK: we own it now
 |------|-------------|
 | **D1: Invalidates binding** | Using the binding after `discard` is a compile error |
 | **D2: Non-Copy only** | `discard` on Copy types is a warning (they're trivially dropped) |
-| **D3: Not for linear resources** | `@resource` types must be consumed properly — `discard` on them is a compile error. Use the type's consuming method (`.close()`, `.release()`, etc.) |
+| **D3: Not for resources** | `@resource` types must be consumed properly — `discard` on them is a compile error. Use the type's consuming method (`.close()`, `.release()`, etc.) |
 
 <!-- test: skip -->
 ```rask
@@ -79,10 +79,10 @@ discard data   // Explicit: data dropped here, not at end of scope
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Borrow from temporary | S4 | Temporary lifetime extended to match borrow |
+| Borrow from temporary | S4 | Temporary duration extended to match borrow |
 | Move in one branch | O3 | Value invalid in all subsequent code |
 | Clone of borrowed | — | Allowed (creates independent copy) |
-| Linear value in error path | R1 | Must be consumed or in `ensure`; compiler tracks |
+| Resource in error path | R1 | Must be consumed or in `ensure`; compiler tracks |
 
 ---
 
@@ -90,7 +90,7 @@ discard data   // Explicit: data dropped here, not at end of scope
 
 ### Rationale
 
-**O1–O4 (single ownership):** I wanted "safety without annotation." Strict ownership plus scoped borrowing that can't escape eliminates use-after-free, dangling pointers, and data races — no lifetime parameters in signatures.
+**O1–O4 (single ownership):** I wanted "safety without annotation." Strict ownership plus scoped borrowing that can't escape eliminates use-after-free, dangling pointers, and data races — no scope parameters in function signatures.
 
 **D1–D3 (discard):** `_ = value` moves into a wildcard but doesn't communicate intent. `discard` says "I know this has value and I'm deliberately dropping it." It's the ownership equivalent of `// intentionally unused`.
 
