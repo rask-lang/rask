@@ -1,17 +1,17 @@
 <!-- id: comp.semantic-hash -->
 <!-- status: decided -->
-<!-- summary: Merkle-tree semantic hashing of desugared AST for incremental monomorphization caching -->
+<!-- summary: Fingerprinting functions for incremental compilation — skip recompiling code that hasn't meaningfully changed -->
 <!-- depends: compiler/codegen.md, types/generics.md, control/comptime.md -->
 
 # Semantic Hash Caching
 
-Compiler computes structural hash of each function's desugared AST, normalizing away cosmetic differences. Callee hashes incorporated into caller hashes, forming a Merkle tree. Monomorphized code keyed by `(function_identity, type_arguments, semantic_hash)`. Two-tier caching: per-file parse cache and per-instantiation monomorphization cache.
+The compiler creates a fingerprint (hash) of each function's simplified code tree — after expanding shortcuts like `a + b` → `a.add(b)` (desugaring), but before type checking. Variable renames, comments, and whitespace are stripped out so cosmetic changes don't trigger recompilation. Each function's fingerprint includes the fingerprints of every function it calls (forming a Merkle tree — any change propagates upward). Specialized generic code is keyed by `(function_identity, type_arguments, semantic_hash)`. Two tiers: per-file parse cache and per-specialization code cache.
 
 ## Hash Inputs
 
 | Rule | Description |
 |------|-------------|
-| **H1: Desugared AST** | Hash operates on desugared AST — after operator desugaring, before type checking |
+| **H1: Simplified AST** | Hash operates on the simplified code tree — after expanding operators to method calls, before type checking |
 | **H2: Structural content** | AST node kind, control flow structure, literal values, callee identity, type annotations, parameter modes, field names, pattern structure, attributes |
 | **H3: Cosmetic exclusion** | Comments, whitespace, local variable names, source spans, internal compiler IDs, import syntax style excluded |
 | **H4: Variable normalization** | Local bindings replaced with positional scope indices; renaming produces same hash |
@@ -59,7 +59,7 @@ func compute(items: Vec<i32>) -> i32 {
 | Rule | Description |
 |------|-------------|
 | **MK1: Callee incorporation** | Each function's hash incorporates its direct callees' hashes |
-| **MK2: Transitive propagation** | Change at any depth propagates upward automatically |
+| **MK2: Transitive propagation** | A change anywhere propagates upward automatically — if a helper function changes, everything calling it gets a new fingerprint |
 | **MK3: Topological order** | Hashes computed in reverse topological order (leaves first) |
 | **MK4: SCC grouping** | Mutually recursive functions hashed as single group; any change invalidates all members |
 
@@ -82,22 +82,22 @@ If `compare()` changes: `compare()` hash changes, `swap()` hash changes, `sort<T
 | Rule | Description |
 |------|-------------|
 | **CT1: Package tier** | Parsed + resolved AST cached per file; keyed by file content hash |
-| **CT2: Instantiation tier** | Monomorphized, type-checked, ownership-verified AST cached; keyed by full composite key |
+| **CT2: Specialization tier** | Type-checked, ownership-verified specialized AST cached; keyed by full composite key |
 | **CT3: Quick path** | If no source files changed and upstream metadata unchanged, skip entire package |
 
 | Tier | Cached artifact | Cache key | When invalidated |
 |------|----------------|-----------|-----------------|
 | Package | Parsed + resolved AST per file | File content hash | Source file bytes change |
-| Instantiation | Monomorphized, type-checked, ownership-verified AST | Full composite key (CK2) | Any component of cache key changes |
+| Specialization | Type-checked, ownership-verified specialized AST | Full composite key (CK2) | Any component of cache key changes |
 
 ## Invalidation
 
 | Rule | Description |
 |------|-------------|
 | **IV1: Cosmetic changes** | Whitespace, comments, variable renames do not invalidate |
-| **IV2: Body logic change** | Invalidates that function's hash + all callers via Merkle propagation |
+| **IV2: Body logic change** | Invalidates that function's fingerprint + all callers (propagates up the tree) |
 | **IV3: Signature change** | Public signature change forces downstream recompile |
-| **IV4: Type definition change** | Struct field added/removed invalidates all instantiations using that type |
+| **IV4: Type definition change** | Struct field added/removed invalidates all specializations using that type |
 | **IV5: Trait change** | Trait method added/changed invalidates all generic functions bounded by that trait |
 | **IV6: Compiler version** | Entire cache invalidated on version mismatch |
 | **IV7: Build profile** | Debug/release does not invalidate instantiation tier (profile-independent) |
@@ -144,7 +144,7 @@ If `compare()` changes: `compare()` hash changes, `swap()` hash changes, `sort<T
 | Closure captures | Capture list part of AST structure, included in hash | H2 |
 | Default parameter values | Default expression hashed as part of function signature | H2 |
 | Trait default methods | Hashed separately; override produces different hash than default | IV5 |
-| `any Trait` dispatch | Not monomorphized, not cached at instantiation tier | CK2 |
+| `any Trait` dispatch | Not specialized per type, not cached at specialization tier | CK2 |
 | `comptime if` branches | Both branches hashed (dead branch elimination is codegen concern) | H2 |
 | `unsafe` blocks | Hashed normally (semantically meaningful) | H2 |
 | Cross-package private function | Not exported in metadata | CP1 |
@@ -173,9 +173,9 @@ FIX: This is expected. Recompilation happens automatically.
 
 ### Rationale
 
-**H1 (desugared AST):** Desugared AST is the first semantically stable representation. Operators normalized to method calls (`a + b` becomes `a.add(b)`), but type information not injected yet. Hashing post-typecheck would be fragile to type inference implementation changes. Hashing pre-desugar would make `a + b` and `a.add(b)` produce different hashes for identical semantics.
+**H1 (simplified AST):** The simplified (desugared) AST is the first semantically stable representation. Operators are normalized to method calls (`a + b` becomes `a.add(b)`), but type information isn't injected yet. Hashing post-typecheck would be fragile to type inference implementation changes. Hashing pre-simplification would make `a + b` and `a.add(b)` produce different hashes for identical semantics.
 
-**CT2 (cache monomorphized AST, not machine code):** Machine code depends on optimization level and target architecture. Monomorphized, type-checked, ownership-verified AST is valid across debug/release and different targets. Codegen is fast. Type checking and ownership verification are expensive.
+**CT2 (cache specialized AST, not machine code):** Machine code depends on optimization level and target architecture. Type-checked, ownership-verified specialized AST is valid across debug/release and different targets. Codegen is fast. Type checking and ownership verification are expensive.
 
 **MK4 (SCC grouping):** Mutual recursion means behaviors are intertwined. Conservative but correct to invalidate all members on any change.
 
@@ -198,12 +198,12 @@ func process() {
 
 Build 1: `collections` exports `sort` body hash = `0xABCD`. `myapp` caches `sort<i32>` with that key.
 
-Build 2: Developer changes `sort`'s algorithm. Hash changes to `0xEF01`. Cache miss -- recompile.
+Build 2: Developer changes `sort`'s algorithm. Fingerprint changes to `0xEF01`. Cache miss -- recompile.
 
-Build 3: Developer renames a local inside `sort`. Hash stays `0xEF01` (variable names normalized). Cache hit -- skip.
+Build 3: Developer renames a local inside `sort`. Fingerprint stays `0xEF01` (variable names normalized). Cache hit -- skip.
 
 ### See Also
 
-- `comp.codegen` — Pipeline where monomorphization and caching integrate
-- `type.generics` — Monomorphization that semantic hashing optimizes
+- `comp.codegen` — Pipeline where code specialization and caching integrate
+- `type.generics` — Code specialization (monomorphization) that semantic hashing optimizes
 - `ctrl.comptime` — Comptime memoization uses same hash infrastructure

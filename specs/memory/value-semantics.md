@@ -80,7 +80,7 @@ const user4 = user3              // Moves, user3 invalid
 | Unique identifiers | Duplication is semantically wrong |
 | Capabilities/tokens | Implicit copy would violate access control |
 | API contracts | Force callers to explicitly clone |
-| Linear-like semantics | Small types that should behave like resources |
+| Must-use semantics | Small types that should behave like resources |
 
 ## Copy Trait and Generics
 
@@ -144,7 +144,7 @@ const p6 = p5                              // ERROR: move, not copy
 | Case | Rule | Handling |
 |------|------|----------|
 | Struct with all Copy fields but >16 bytes | VS1 | Move-only (size exceeds threshold) |
-| Generic type instantiation | VS5 | Copy derived at monomorphization time |
+| Generic type usage | VS5 | Copy derived when the compiler generates code for a specific type |
 | Removing `@unique` from a type | U1 | Non-breaking change (makes type more permissive) |
 | Copy type in `take` parameter | — | Value is copied in; `take` is semantically redundant but allowed |
 

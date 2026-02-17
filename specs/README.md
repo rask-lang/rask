@@ -4,7 +4,8 @@ Organized by what each category does.
 
 ## Reading Order
 
-**New to Rask?** Start here:
+**New to Rask?** Start here. If you hit unfamiliar terms, check the [Glossary](GLOSSARY.md).
+
 1. [memory/ownership.md](memory/ownership.md) — Single ownership, move semantics
 2. [memory/value-semantics.md](memory/value-semantics.md) — Copy vs move, 16-byte threshold
 3. [memory/borrowing.md](memory/borrowing.md) — One rule: views last as long as source is stable

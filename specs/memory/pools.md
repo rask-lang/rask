@@ -76,7 +76,7 @@ pool.modify(h, |v| ...)  // Returns Option<R>
 
 ## Expression-Scoped Access
 
-Pool access follows instant-view borrowing rules (`mem.borrowing/B1`). Borrow released at semicolon.
+Pool access follows statement-scoped borrowing rules (`mem.borrowing/B1`). View released at the semicolon.
 
 ```rask
 pool[h].health -= damage     // Borrow released
@@ -85,7 +85,7 @@ if pool[h].health <= 0 {     // New borrow
 }
 ```
 
-Aliased handles are safe because each `pool[h]` creates an independent expression-scoped borrow:
+Aliased handles are safe because each `pool[h]` creates an independent statement-scoped view:
 
 ```rask
 const h1 = try pool.insert(entity)
