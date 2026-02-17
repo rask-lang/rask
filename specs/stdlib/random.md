@@ -37,7 +37,7 @@ rng.shuffle(items)
 | **C1: Thread-local RNG** | `random.*` functions use a thread-local system-seeded Rng |
 | **C2: Same API** | `random.u64()`, `random.range(lo, hi)`, `random.f64()`, `random.bool()`, `random.shuffle(vec)`, `random.choice(vec)` mirror instance methods |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 import random
 

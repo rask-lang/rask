@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::{PoolData, TypeConstructorKind, Value};
+use crate::value::{IteratorState, PoolData, TypeConstructorKind, Value};
 
 /// Helper function to check if a value is truthy.
 fn is_truthy(val: &Value) -> bool {
@@ -59,7 +59,13 @@ impl Interpreter {
             }
             "is_empty" => Ok(Value::Bool(v.lock().unwrap().is_empty())),
             "clear" => { v.lock().unwrap().clear(); Ok(Value::Unit) }
-            "iter" => Ok(Value::Vec(Arc::clone(v))),
+            "iter" => {
+                let state = IteratorState::Vec {
+                    items: Arc::clone(v),
+                    index: 0,
+                };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
+            }
             "skip" => {
                 let n = self.expect_int(&args, 0)? as usize;
                 let skipped: Vec<Value> = v.lock().unwrap().iter().skip(n).cloned().collect();

@@ -843,14 +843,18 @@ impl<'a> MirLowerer<'a> {
             ExprKind::ArrayRepeat { value, count } => {
                 let (val, elem_ty) = self.lower_expr(value)?;
                 let (cnt, _) = self.lower_expr(count)?;
-                let result_ty = MirType::Ptr; // Dynamic array
+                // Dynamic-length array — use Ptr since Array { elem, len }
+                // requires compile-time length. Element type is preserved
+                // in elem_ty for future DynamicArray MirType variant.
+                let result_ty = MirType::Ptr;
                 let result_local = self.builder.alloc_temp(result_ty.clone());
+                // Pass elem size to array_repeat for proper allocation
+                let elem_size = self.elem_size_for_type(&elem_ty);
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
                     func: FunctionRef { name: "array_repeat".to_string() },
-                    args: vec![val, cnt],
+                    args: vec![val, cnt, MirOperand::Constant(MirConst::Int(elem_size))],
                 });
-                let _ = elem_ty; // TODO: Use for proper array type
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
@@ -1733,5 +1737,28 @@ impl<'a> MirLowerer<'a> {
         }
 
         Ok((MirOperand::Local(result), struct_ty))
+    }
+
+    /// Size in bytes for a MIR type (used for runtime allocation).
+    fn elem_size_for_type(&self, ty: &MirType) -> i64 {
+        match ty {
+            MirType::Bool | MirType::I8 | MirType::U8 => 1,
+            MirType::I16 | MirType::U16 => 2,
+            MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
+            MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
+            | MirType::String | MirType::FuncPtr(_) => 8,
+            MirType::Struct(StructLayoutId(id)) => {
+                self.ctx.struct_layouts.get(*id as usize)
+                    .map(|l| l.size as i64)
+                    .unwrap_or(8)
+            }
+            MirType::Enum(EnumLayoutId(id)) => {
+                self.ctx.enum_layouts.get(*id as usize)
+                    .map(|l| l.size as i64)
+                    .unwrap_or(8)
+            }
+            MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
+            MirType::Void => 0,
+        }
     }
 }

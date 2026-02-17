@@ -311,6 +311,140 @@ pub enum Value {
     TcpConnection(Arc<Mutex<Option<std::net::TcpStream>>>),
     /// SIMD f32x8 (8-wide f32 vector for SIMD operations)
     SimdF32x8([f32; 8]),
+    /// Random number generator (xoshiro256++ state)
+    Rng(Arc<Mutex<RngState>>),
+    /// Lazy iterator (wraps a source and optional adapters)
+    Iterator(Arc<Mutex<IteratorState>>),
+}
+
+/// xoshiro256++ PRNG state.
+#[derive(Debug, Clone)]
+pub struct RngState {
+    s: [u64; 4],
+}
+
+impl RngState {
+    pub fn from_seed(seed: u64) -> Self {
+        // SplitMix64 to expand seed into 4 state words
+        let mut z = seed;
+        let mut s = [0u64; 4];
+        for slot in &mut s {
+            z = z.wrapping_add(0x9e3779b97f4a7c15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+            *slot = z ^ (z >> 31);
+        }
+        Self { s }
+    }
+
+    pub fn from_system() -> Self {
+        use std::time::SystemTime;
+        let seed = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(42);
+        Self::from_seed(seed)
+    }
+
+    pub fn next_u64(&mut self) -> u64 {
+        let result = (self.s[0].wrapping_add(self.s[3]))
+            .rotate_left(23)
+            .wrapping_add(self.s[0]);
+        let t = self.s[1] << 17;
+        self.s[2] ^= self.s[0];
+        self.s[3] ^= self.s[1];
+        self.s[1] ^= self.s[2];
+        self.s[0] ^= self.s[3];
+        self.s[2] ^= t;
+        self.s[3] = self.s[3].rotate_left(45);
+        result
+    }
+
+    pub fn next_f64(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / ((1u64 << 53) as f64)
+    }
+
+    pub fn next_f32(&mut self) -> f32 {
+        (self.next_u64() >> 40) as f32 / ((1u64 << 24) as f32)
+    }
+
+    pub fn next_bool(&mut self) -> bool {
+        self.next_u64() & 1 == 1
+    }
+
+    pub fn range_i64(&mut self, lo: i64, hi: i64) -> i64 {
+        if lo >= hi { return lo; }
+        let range = (hi - lo) as u64;
+        lo + (self.next_u64() % range) as i64
+    }
+}
+
+/// Lazy iterator state. Each variant wraps a source and advances on `next()`.
+pub enum IteratorState {
+    /// Iterate over Vec elements by index.
+    Vec {
+        items: Arc<Mutex<std::vec::Vec<Value>>>,
+        index: usize,
+    },
+    /// Apply a mapping function to each element.
+    Map {
+        source: Arc<Mutex<IteratorState>>,
+        mapper: Value,
+    },
+    /// Keep only elements matching a predicate.
+    Filter {
+        source: Arc<Mutex<IteratorState>>,
+        predicate: Value,
+    },
+    /// Yield (index, element) pairs.
+    Enumerate {
+        source: Arc<Mutex<IteratorState>>,
+        counter: usize,
+    },
+    /// Take at most N elements.
+    Take {
+        source: Arc<Mutex<IteratorState>>,
+        remaining: usize,
+    },
+    /// Skip the first N elements.
+    Skip {
+        source: Arc<Mutex<IteratorState>>,
+        to_skip: usize,
+        skipped: bool,
+    },
+    /// Iterate over a range of integers.
+    Range {
+        current: i64,
+        end: i64,
+        inclusive: bool,
+    },
+    /// Map then flatten each result.
+    FlatMap {
+        source: Arc<Mutex<IteratorState>>,
+        mapper: Value,
+        buffer: std::vec::Vec<Value>,
+    },
+    /// Zip two iterators together.
+    Zip {
+        a: Arc<Mutex<IteratorState>>,
+        b: Arc<Mutex<IteratorState>>,
+    },
+}
+
+impl fmt::Debug for IteratorState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Vec { index, .. } => write!(f, "VecIter(index={})", index),
+            Self::Map { .. } => write!(f, "MapIter"),
+            Self::Filter { .. } => write!(f, "FilterIter"),
+            Self::Enumerate { counter, .. } => write!(f, "EnumerateIter({})", counter),
+            Self::Take { remaining, .. } => write!(f, "TakeIter({})", remaining),
+            Self::Skip { to_skip, .. } => write!(f, "SkipIter({})", to_skip),
+            Self::Range { current, end, .. } => write!(f, "RangeIter({}..{})", current, end),
+            Self::FlatMap { .. } => write!(f, "FlatMapIter"),
+            Self::Zip { .. } => write!(f, "ZipIter"),
+        }
+    }
 }
 
 impl Value {
@@ -356,6 +490,8 @@ impl Value {
             Value::TcpListener(_) => "TcpListener",
             Value::TcpConnection(_) => "TcpConnection",
             Value::SimdF32x8(_) => "f32x8",
+            Value::Rng(_) => "Rng",
+            Value::Iterator(_) => "Iterator",
         }
     }
 
@@ -639,6 +775,8 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
+            Value::Rng(_) => write!(f, "<Rng>"),
+            Value::Iterator(_) => write!(f, "<Iterator>"),
         }
     }
 }

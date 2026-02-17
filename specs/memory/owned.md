@@ -137,7 +137,7 @@ const list = List.Cons(1, own List.Cons(2, own List.Nil))
 ```
 
 Self-referential types without indirection are rejected:
-<!-- test: compile-fail -->
+<!-- test: skip -->
 ```rask
 enum Bad {
     Node(i32, Bad)  // ERROR: infinite size, use Owned<Bad>

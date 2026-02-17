@@ -9,4 +9,6 @@ description = "Literate testing: extract and run code blocks from spec markdown 
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-desugar = { path = "../rask-desugar" }
+rask-resolve = { path = "../rask-resolve" }
+rask-types = { path = "../rask-types" }
 rask-interp = { path = "../rask-interp" }

@@ -16,7 +16,7 @@ Core `Iterator<Item>` trait with lazy adapters. `for-in` desugars to `.into_iter
 | **I3: Inlining** | Adapters inlined for zero-cost abstraction |
 | **I4: No stored references** | Custom iterators must not store references — only Copy-able indices, handles, or owned data |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 trait Iterator<Item> {
     func next(self) -> Option<Item>
