@@ -4,6 +4,11 @@
 
 use rask_ast::decl::Decl;
 use rask_types::Type;
+use std::collections::HashMap;
+
+/// Cache of already-computed type layouts, keyed by type name.
+/// Used so struct fields referencing other user-defined types get correct sizes.
+pub type LayoutCache = HashMap<String, (u32, u32)>;
 
 /// Struct memory layout
 #[derive(Debug, Clone)]
@@ -45,34 +50,32 @@ pub struct VariantLayout {
     pub fields: Vec<FieldLayout>,
 }
 
-/// Get size and alignment for a type (after monomorphization)
-pub fn type_size_align(ty: &Type) -> (u32, u32) {
+/// Get size and alignment for a type (after monomorphization).
+/// `cache` maps type names to already-computed (size, align) for user-defined types.
+pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
     match ty {
         Type::Unit => (0, 1),
         Type::Bool | Type::I8 | Type::U8 => (1, 1),
         Type::I16 | Type::U16 => (2, 2),
         Type::I32 | Type::U32 | Type::F32 => (4, 4),
         Type::I64 | Type::U64 | Type::F64 => (8, 8),
+        Type::I128 | Type::U128 => (16, 16),
         Type::Char => (4, 4), // Unicode scalar value
         Type::String => (16, 8), // Fat pointer: ptr + len
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         Type::Option(inner) => {
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
-            // All-ones (-1 as i64) means None; any other value is Some(handle).
-            // Same size as bare Handle<T> — no tag byte needed.
             if matches!(inner.as_ref(), Type::UnresolvedGeneric { name, .. } if name == "Handle") {
                 return (8, 8);
             }
-            let (size, align) = type_size_align(inner);
-            // Naive layout: u8 tag + padding + payload
+            let (size, align) = type_size_align(inner, cache);
             let tag_size = 1u32;
             let payload_offset = align_up(tag_size, align);
             (payload_offset + size, align.max(1))
         }
         Type::Result { ok, err } => {
-            // u8 tag + padding + max(ok_size, err_size)
-            let (ok_size, ok_align) = type_size_align(ok);
-            let (err_size, err_align) = type_size_align(err);
+            let (ok_size, ok_align) = type_size_align(ok, cache);
+            let (err_size, err_align) = type_size_align(err, cache);
             let max_size = ok_size.max(err_size);
             let max_align = ok_align.max(err_align);
             let tag_size = 1u32;
@@ -80,11 +83,10 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
             (payload_offset + max_size, max_align.max(1))
         }
         Type::Tuple(types) => {
-            // Layout like a struct with anonymous fields
             let mut offset = 0u32;
             let mut max_align = 1u32;
             for ty in types {
-                let (size, align) = type_size_align(ty);
+                let (size, align) = type_size_align(ty, cache);
                 max_align = max_align.max(align);
                 offset = align_up(offset, align);
                 offset += size;
@@ -93,33 +95,85 @@ pub fn type_size_align(ty: &Type) -> (u32, u32) {
             (total_size, max_align)
         }
         Type::Array { elem, len } => {
-            let (elem_size, elem_align) = type_size_align(elem);
+            let (elem_size, elem_align) = type_size_align(elem, cache);
             (elem_size * (*len as u32), elem_align)
         }
         Type::Fn { .. } => (8, 8), // Function pointer
         Type::Named(_) | Type::Generic { .. } => {
-            // Must be resolved through type table
-            // For now, assume pointer-sized (will be fixed during layout phase)
+            // Named types carry a TypeId — can't resolve by name here.
+            // Assume pointer-sized; struct/enum layouts are computed separately.
             (8, 8)
         }
-        // Handle<T>, Pool<T>, etc. — generic builtins with known sizes
+        // Generic builtins with known sizes
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8), // Pointer to pool
-        Type::Var(_) | Type::UnresolvedGeneric { .. } => {
-            panic!("Unresolved type in layout computation: {:?}", ty)
-        }
-        Type::UnresolvedNamed(_) => {
-            // Named type not yet resolved to a layout — assume pointer-sized
+        Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Vec" => (24, 8), // ptr + len + cap
+        Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
+        Type::UnresolvedGeneric { name, .. } if name == "Rng" => (8, 8),  // Pointer to rng state
+        Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
+        Type::UnresolvedGeneric { name, args } => {
+            eprintln!(
+                "warning: unresolved generic type in layout: {}<{} arg(s)>, defaulting to (8, 8)",
+                name,
+                args.len()
+            );
             (8, 8)
         }
-        Type::Union(_) => {
-            // Union of error types - same as largest error
-            // For now, assume pointer-sized
-            (16, 8)
+        Type::Var(id) => {
+            eprintln!(
+                "warning: type variable ?{} in layout computation, defaulting to (8, 8)",
+                id.0
+            );
+            (8, 8)
+        }
+        Type::UnresolvedNamed(name) => {
+            match name.as_str() {
+                "string" => (16, 8),
+                "bool" => (1, 1),
+                "i8" | "u8" => (1, 1),
+                "i16" | "u16" => (2, 2),
+                "i32" | "u32" | "f32" => (4, 4),
+                "i64" | "u64" | "f64" => (8, 8),
+                "char" => (4, 4),
+                _ => {
+                    // Look up user-defined types from the layout cache
+                    if let Some(&cached) = cache.get(name.as_str()) {
+                        cached
+                    } else {
+                        eprintln!(
+                            "warning: unknown type '{}' in layout, defaulting to (8, 8)",
+                            name
+                        );
+                        (8, 8)
+                    }
+                }
+            }
+        }
+        Type::Union(variants) => {
+            let mut max_size = 0u32;
+            let mut max_align = 1u32;
+            for v in variants {
+                let (s, a) = type_size_align(v, cache);
+                max_size = max_size.max(s);
+                max_align = max_align.max(a);
+            }
+            if max_size == 0 {
+                (8, 8)
+            } else {
+                (max_size, max_align)
+            }
+        }
+        Type::SimdVector { elem, lanes } => {
+            let (elem_size, _) = type_size_align(elem, cache);
+            let total = elem_size * *lanes as u32;
+            (total, total.min(32)) // natural SIMD alignment, cap at 32
         }
         Type::Never => (0, 1),
-        Type::Error => panic!("Error type in layout computation"),
-        _ => (8, 8), // Default for unknown types
+        Type::RawPtr(_) => (8, 8), // Pointer-sized
+        Type::Error => {
+            eprintln!("warning: Error type in layout computation, defaulting to (8, 8)");
+            (8, 8)
+        }
     }
 }
 
@@ -184,7 +238,7 @@ fn resolve_field_type(
 }
 
 /// Compute struct layout with field offsets (spec rules S1-S4)
-pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLayout {
+pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
     use rask_ast::decl::DeclKind;
 
     let struct_decl = match &struct_def.kind {
@@ -202,7 +256,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLay
     for field in &struct_decl.fields {
         let field_ty = resolve_field_type(&field.ty, &subst);
 
-        let (field_size, field_align) = type_size_align(&field_ty);
+        let (field_size, field_align) = type_size_align(&field_ty, cache);
         max_align = max_align.max(field_align);
 
         // S3: Align offset for this field
@@ -231,7 +285,7 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type]) -> StructLay
 }
 
 /// Compute enum layout with tag and variant payloads (spec rules E1-E6)
-pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
+pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> EnumLayout {
     use rask_ast::decl::DeclKind;
 
     let enum_decl = match &enum_def.kind {
@@ -249,7 +303,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
     } else {
         Type::U16
     };
-    let (tag_size, tag_align) = type_size_align(&tag_ty);
+    let (tag_size, tag_align) = type_size_align(&tag_ty, cache);
 
     // Compute size and alignment of each variant payload
     let mut max_payload_size = 0u32;
@@ -267,7 +321,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type]) -> EnumLayout {
             let mut field_offset = 0u32;
             for field in &variant.fields {
                 let field_ty = resolve_field_type(&field.ty, &subst);
-                let (size, align) = type_size_align(&field_ty);
+                let (size, align) = type_size_align(&field_ty, cache);
 
                 payload_align = payload_align.max(align);
                 field_offset = align_up(field_offset, align);
@@ -401,43 +455,52 @@ mod tests {
 
     // ── type_size_align ─────────────────────────────────────────
 
+    fn empty_cache() -> LayoutCache {
+        LayoutCache::new()
+    }
+
+    /// Shorthand: type_size_align with empty cache (for primitive tests)
+    fn tsa(ty: &Type) -> (u32, u32) {
+        type_size_align(ty, &empty_cache())
+    }
+
     #[test]
     fn primitive_sizes() {
-        assert_eq!(type_size_align(&Type::Bool), (1, 1));
-        assert_eq!(type_size_align(&Type::I8), (1, 1));
-        assert_eq!(type_size_align(&Type::U8), (1, 1));
-        assert_eq!(type_size_align(&Type::I16), (2, 2));
-        assert_eq!(type_size_align(&Type::U16), (2, 2));
-        assert_eq!(type_size_align(&Type::I32), (4, 4));
-        assert_eq!(type_size_align(&Type::U32), (4, 4));
-        assert_eq!(type_size_align(&Type::F32), (4, 4));
-        assert_eq!(type_size_align(&Type::I64), (8, 8));
-        assert_eq!(type_size_align(&Type::U64), (8, 8));
-        assert_eq!(type_size_align(&Type::F64), (8, 8));
-        assert_eq!(type_size_align(&Type::Char), (4, 4));
+        assert_eq!(tsa(&Type::Bool), (1, 1));
+        assert_eq!(tsa(&Type::I8), (1, 1));
+        assert_eq!(tsa(&Type::U8), (1, 1));
+        assert_eq!(tsa(&Type::I16), (2, 2));
+        assert_eq!(tsa(&Type::U16), (2, 2));
+        assert_eq!(tsa(&Type::I32), (4, 4));
+        assert_eq!(tsa(&Type::U32), (4, 4));
+        assert_eq!(tsa(&Type::F32), (4, 4));
+        assert_eq!(tsa(&Type::I64), (8, 8));
+        assert_eq!(tsa(&Type::U64), (8, 8));
+        assert_eq!(tsa(&Type::F64), (8, 8));
+        assert_eq!(tsa(&Type::Char), (4, 4));
     }
 
     #[test]
     fn string_is_fat_pointer() {
-        let (size, align) = type_size_align(&Type::String);
+        let (size, align) = tsa(&Type::String);
         assert_eq!(size, 16);
         assert_eq!(align, 8);
     }
 
     #[test]
     fn unit_is_zero_size() {
-        assert_eq!(type_size_align(&Type::Unit), (0, 1));
+        assert_eq!(tsa(&Type::Unit), (0, 1));
     }
 
     #[test]
     fn never_is_zero_size() {
-        assert_eq!(type_size_align(&Type::Never), (0, 1));
+        assert_eq!(tsa(&Type::Never), (0, 1));
     }
 
     #[test]
     fn option_i32_layout() {
         // u8 tag (1) + padding to align 4 + i32 payload (4) = 8
-        let (size, align) = type_size_align(&Type::Option(Box::new(Type::I32)));
+        let (size, align) = tsa(&Type::Option(Box::new(Type::I32)));
         assert_eq!(align, 4);
         assert_eq!(size, 8); // 1 tag + 3 padding + 4 payload
     }
@@ -445,7 +508,7 @@ mod tests {
     #[test]
     fn option_i8_layout() {
         // u8 tag (1) + i8 payload (1) = 2
-        let (size, align) = type_size_align(&Type::Option(Box::new(Type::I8)));
+        let (size, align) = tsa(&Type::Option(Box::new(Type::I8)));
         assert_eq!(align, 1);
         assert_eq!(size, 2);
     }
@@ -457,7 +520,7 @@ mod tests {
             name: "Handle".to_string(),
             args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
         };
-        let (size, align) = type_size_align(&Type::Option(Box::new(handle_ty)));
+        let (size, align) = tsa(&Type::Option(Box::new(handle_ty)));
         assert_eq!(size, 8);
         assert_eq!(align, 8);
     }
@@ -469,7 +532,7 @@ mod tests {
             name: "Handle".to_string(),
             args: vec![rask_types::GenericArg::Type(Box::new(Type::I32))],
         };
-        let (size, align) = type_size_align(&handle_ty);
+        let (size, align) = tsa(&handle_ty);
         assert_eq!(size, 8);
         assert_eq!(align, 8);
     }
@@ -477,7 +540,7 @@ mod tests {
     #[test]
     fn result_i32_i64_layout() {
         // u8 tag (1) + padding to 8 + max(4, 8) = 16
-        let (size, align) = type_size_align(&Type::Result {
+        let (size, align) = tsa(&Type::Result {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I64),
         });
@@ -487,7 +550,7 @@ mod tests {
 
     #[test]
     fn result_same_types() {
-        let (size, align) = type_size_align(&Type::Result {
+        let (size, align) = tsa(&Type::Result {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I32),
         });
@@ -498,14 +561,14 @@ mod tests {
     #[test]
     fn tuple_layout() {
         // (i32, i64) → offset 0: i32(4), pad to 8, offset 8: i64(8) → total 16
-        let (size, align) = type_size_align(&Type::Tuple(vec![Type::I32, Type::I64]));
+        let (size, align) = tsa(&Type::Tuple(vec![Type::I32, Type::I64]));
         assert_eq!(align, 8);
         assert_eq!(size, 16);
     }
 
     #[test]
     fn tuple_i8_i8() {
-        let (size, align) = type_size_align(&Type::Tuple(vec![Type::I8, Type::I8]));
+        let (size, align) = tsa(&Type::Tuple(vec![Type::I8, Type::I8]));
         assert_eq!(align, 1);
         assert_eq!(size, 2);
     }
@@ -513,7 +576,7 @@ mod tests {
     #[test]
     fn array_layout() {
         // [i32; 5] → 4 * 5 = 20, align 4
-        let (size, align) = type_size_align(&Type::Array {
+        let (size, align) = tsa(&Type::Array {
             elem: Box::new(Type::I32),
             len: 5,
         });
@@ -523,7 +586,7 @@ mod tests {
 
     #[test]
     fn fn_pointer_size() {
-        let (size, align) = type_size_align(&Type::Fn {
+        let (size, align) = tsa(&Type::Fn {
             params: vec![Type::I32],
             ret: Box::new(Type::I32),
         });
@@ -531,12 +594,38 @@ mod tests {
         assert_eq!(align, 8);
     }
 
+    #[test]
+    fn cache_resolves_user_defined_type() {
+        let mut cache = LayoutCache::new();
+        cache.insert("Color".to_string(), (1, 1));
+        let (size, align) = type_size_align(&Type::UnresolvedNamed("Color".to_string()), &cache);
+        assert_eq!(size, 1);
+        assert_eq!(align, 1);
+    }
+
+    #[test]
+    fn struct_field_uses_cache() {
+        // Struct Inner { x: i32, y: i32 } → size 8, align 4
+        // Struct Outer { inner: Inner, z: i32 }
+        // Without cache: Inner defaults to (8,8) → wrong
+        // With cache: Inner resolved to (8,4)
+        let mut cache = LayoutCache::new();
+        cache.insert("Inner".to_string(), (8, 4));
+        let decl = make_struct("Outer", vec![("inner", "Inner"), ("z", "i32")]);
+        let layout = compute_struct_layout(&decl, &[], &cache);
+        assert_eq!(layout.fields[0].size, 8); // Inner
+        assert_eq!(layout.fields[0].align, 4);
+        assert_eq!(layout.fields[1].offset, 8); // z at offset 8
+        assert_eq!(layout.size, 12); // 8 + 4 = 12
+        assert_eq!(layout.align, 4);
+    }
+
     // ── compute_struct_layout ───────────────────────────────────
 
     #[test]
     fn empty_struct() {
         let decl = make_struct("Empty", vec![]);
-        let layout = compute_struct_layout(&decl, &[]);
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Empty");
         assert_eq!(layout.size, 0);
         assert_eq!(layout.align, 1);
@@ -545,9 +634,8 @@ mod tests {
 
     #[test]
     fn single_field_struct() {
-        // All fields currently default to i32 (placeholder)
         let decl = make_struct("Point", vec![("x", "i32")]);
-        let layout = compute_struct_layout(&decl, &[]);
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Point");
         assert_eq!(layout.size, 4);
         assert_eq!(layout.align, 4);
@@ -560,7 +648,7 @@ mod tests {
     #[test]
     fn two_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32"), ("y", "i32")]);
-        let layout = compute_struct_layout(&decl, &[]);
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.size, 8);
         assert_eq!(layout.align, 4);
         assert_eq!(layout.fields[0].offset, 0);
@@ -576,7 +664,7 @@ mod tests {
             "Color",
             vec![("Red", vec![]), ("Green", vec![]), ("Blue", vec![])],
         );
-        let layout = compute_enum_layout(&decl, &[]);
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Color");
         assert_eq!(layout.tag_offset, 0); // E1: tag first
         assert_eq!(layout.variants.len(), 3);
@@ -594,7 +682,7 @@ mod tests {
             "Shape",
             vec![("Circle", vec!["i32"]), ("Rect", vec!["i32", "i32"])],
         );
-        let layout = compute_enum_layout(&decl, &[]);
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
@@ -622,7 +710,7 @@ mod tests {
                 ("Pair", vec!["i32", "i32"]),
             ],
         );
-        let layout = compute_enum_layout(&decl, &[]);
+        let layout = compute_enum_layout(&decl, &[], &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
         assert_eq!(layout.variants[1].payload_size, 4);

@@ -13,6 +13,30 @@ use rask_ast::{
 use rask_types::Type;
 use std::collections::HashMap;
 
+/// Split a comma-separated type argument string, respecting nested angle brackets.
+/// e.g. "Vec<i32>, E" → ["Vec<i32>", "E"]
+fn split_type_args(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        parts.push(last);
+    }
+    parts
+}
+
 /// Type substitutor - clones AST while replacing type parameters
 struct TypeSubstitutor {
     /// Mapping from type parameter name to concrete type
@@ -39,15 +63,66 @@ impl TypeSubstitutor {
         id
     }
 
-    /// Substitute type parameter name with concrete type
+    /// Substitute type parameter names with concrete types.
+    ///
+    /// Handles bare names ("T"), compound generics ("Vec<T>", "Result<T, E>"),
+    /// option shorthand ("T?"), and result infix ("T or E").
     fn substitute_type_string(&self, type_str: &str) -> String {
-        // Simple substitution - replace type parameter names
-        // TODO: Handle complex types like Vec<T>, Result<T, E>
-        if let Some(ty) = self.substitutions.get(type_str) {
-            format!("{}", ty)
-        } else {
-            type_str.to_string()
+        let s = type_str.trim();
+
+        // Exact match on a type parameter name
+        if let Some(ty) = self.substitutions.get(s) {
+            return format!("{}", ty);
         }
+
+        // Option shorthand: "T?" → substitute T, re-append "?"
+        if let Some(inner) = s.strip_suffix('?') {
+            let inner_sub = self.substitute_type_string(inner);
+            return format!("{}?", inner_sub);
+        }
+
+        // Result infix: "T or E" → substitute both sides
+        if let Some(idx) = s.find(" or ") {
+            let ok_part = self.substitute_type_string(&s[..idx]);
+            let err_part = self.substitute_type_string(&s[idx + 4..]);
+            return format!("{} or {}", ok_part, err_part);
+        }
+
+        // Compound generic: "Name<A, B, ...>" → substitute each argument
+        if let Some(open) = s.find('<') {
+            if s.ends_with('>') {
+                let base = &s[..open];
+                let args_str = &s[open + 1..s.len() - 1];
+                let substituted_args = split_type_args(args_str)
+                    .iter()
+                    .map(|a| self.substitute_type_string(a))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // Substitute the base name itself in case it's a type param
+                let base_sub = if let Some(ty) = self.substitutions.get(base) {
+                    format!("{}", ty)
+                } else {
+                    base.to_string()
+                };
+                return format!("{}<{}>", base_sub, substituted_args);
+            }
+        }
+
+        // Tuple: "(A, B)" → substitute each element
+        if s.starts_with('(') && s.ends_with(')') {
+            let inner = &s[1..s.len() - 1];
+            if inner.is_empty() {
+                return s.to_string(); // unit "()"
+            }
+            let substituted = split_type_args(inner)
+                .iter()
+                .map(|a| self.substitute_type_string(a))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!("({})", substituted);
+        }
+
+        s.to_string()
     }
 
     fn clone_decl(&mut self, decl: &Decl) -> Decl {
@@ -55,9 +130,46 @@ impl TypeSubstitutor {
             id: self.fresh_id(),
             kind: match &decl.kind {
                 DeclKind::Fn(fn_decl) => DeclKind::Fn(self.clone_fn_decl(fn_decl)),
-                _ => panic!("Only function declarations supported for instantiation"),
+                DeclKind::Struct(s) => DeclKind::Struct(self.clone_struct_decl(s)),
+                DeclKind::Enum(e) => DeclKind::Enum(self.clone_enum_decl(e)),
+                // Other declaration kinds don't contain type parameters to substitute
+                other => other.clone(),
             },
             span: decl.span.clone(),
+        }
+    }
+
+    fn clone_struct_decl(&mut self, s: &rask_ast::decl::StructDecl) -> rask_ast::decl::StructDecl {
+        rask_ast::decl::StructDecl {
+            name: s.name.clone(),
+            type_params: Vec::new(), // Removed after instantiation
+            fields: s.fields.iter().map(|f| rask_ast::decl::Field {
+                name: f.name.clone(),
+                name_span: f.name_span.clone(),
+                ty: self.substitute_type_string(&f.ty),
+                is_pub: f.is_pub,
+            }).collect(),
+            methods: s.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
+            is_pub: s.is_pub,
+            attrs: s.attrs.clone(),
+        }
+    }
+
+    fn clone_enum_decl(&mut self, e: &rask_ast::decl::EnumDecl) -> rask_ast::decl::EnumDecl {
+        rask_ast::decl::EnumDecl {
+            name: e.name.clone(),
+            type_params: Vec::new(), // Removed after instantiation
+            variants: e.variants.iter().map(|v| rask_ast::decl::Variant {
+                name: v.name.clone(),
+                fields: v.fields.iter().map(|f| rask_ast::decl::Field {
+                    name: f.name.clone(),
+                    name_span: f.name_span.clone(),
+                    ty: self.substitute_type_string(&f.ty),
+                    is_pub: f.is_pub,
+                }).collect(),
+            }).collect(),
+            methods: e.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
+            is_pub: e.is_pub,
         }
     }
 
@@ -75,6 +187,7 @@ impl TypeSubstitutor {
             is_pub: fn_decl.is_pub,
             is_comptime: fn_decl.is_comptime,
             is_unsafe: fn_decl.is_unsafe,
+            abi: fn_decl.abi.clone(),
             attrs: fn_decl.attrs.clone(),
         }
     }
@@ -213,6 +326,7 @@ impl TypeSubstitutor {
                 ExprKind::String(s) => ExprKind::String(s.clone()),
                 ExprKind::Char(c) => ExprKind::Char(*c),
                 ExprKind::Bool(b) => ExprKind::Bool(*b),
+                ExprKind::Null => ExprKind::Null,
 
                 // Variables
                 ExprKind::Ident(name) => ExprKind::Ident(name.clone()),
@@ -485,15 +599,21 @@ impl TypeSubstitutor {
     }
 }
 
-/// Instantiate a generic function with concrete type arguments.
+/// Instantiate a generic declaration with concrete type arguments.
 ///
-/// Clones the function AST and replaces all type parameters with concrete types.
+/// Clones the AST and replaces all type parameters with concrete types.
+/// Works for functions, structs, and enums.
 pub fn instantiate_function(decl: &Decl, type_args: &[Type]) -> Decl {
-    let fn_decl = match &decl.kind {
-        DeclKind::Fn(f) => f,
-        _ => panic!("Expected function declaration"),
+    let type_params = match &decl.kind {
+        DeclKind::Fn(f) => &f.type_params,
+        DeclKind::Struct(s) => &s.type_params,
+        DeclKind::Enum(e) => &e.type_params,
+        _ => {
+            // No type parameters to substitute — return a clone
+            return decl.clone();
+        }
     };
 
-    let mut substitutor = TypeSubstitutor::new(&fn_decl.type_params, type_args);
+    let mut substitutor = TypeSubstitutor::new(type_params, type_args);
     substitutor.clone_decl(decl)
 }
