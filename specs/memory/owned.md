@@ -137,7 +137,7 @@ const list = List.Cons(1, own List.Cons(2, own List.Nil))
 ```
 
 Self-referential types without indirection are rejected:
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum Bad {
     Node(i32, Bad)  // ERROR: infinite size, use Owned<Bad>
@@ -148,7 +148,7 @@ enum Bad {
 
 Pattern matching on `Owned<T>` can destructure and consume:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum Expr {
     Num(i32)
@@ -281,7 +281,7 @@ FIX: Use the new binding instead:
 
 **AST pattern:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum Stmt {
     Let(string, Owned<Expr>)

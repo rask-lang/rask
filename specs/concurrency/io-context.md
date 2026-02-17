@@ -35,7 +35,7 @@ __ctx.__shutdown()
 
 ### Phase A (OS threads, `conc.strategy/A1`)
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Minimal marker — enough to thread through call chains
 struct RuntimeContext {
@@ -51,7 +51,7 @@ In Phase A, `RuntimeContext` is a marker. I/O functions receive it but ignore it
 
 ### Phase B (M:N green tasks, `conc.runtime`)
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct RuntimeContext {
     mode: ContextMode
@@ -199,7 +199,7 @@ The key insight: trait dispatch and context threading are orthogonal. The compil
 | **IO10: IoError.Cancelled** | New variant for cancellation during I/O |
 | **IO11: No RuntimePoisoned in Phase A** | Phase A doesn't have a reactor that can poison. Phase B adds `IoError.RuntimePoisoned` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Extended IoError (additions from this spec)
 enum IoError {

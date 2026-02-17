@@ -36,7 +36,7 @@ Single `os` module for process and platform interaction: env vars, args, exit, p
 | **I1: Platform** | `os.platform()` returns `"linux"`, `"macos"`, `"windows"`, or `"wasm"` |
 | **I2: Architecture** | `os.arch()` returns `"x86_64"`, `"aarch64"`, or `"wasm32"` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 import os
 

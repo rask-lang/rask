@@ -17,7 +17,7 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 | **O3: Invalid after move** | Using the original variable after a move is a compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const a = Vec.new()
 const b = a              // a moved to b

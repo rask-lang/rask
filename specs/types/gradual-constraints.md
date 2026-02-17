@@ -60,7 +60,7 @@ func find_best(items: Vec<Record>, score_fn) -> Record {
 
 **Level 3 — Fully explicit (publishing):**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 public func find_best<T: Copy, U: Comparable>(items: Vec<T>, score_fn: |T| -> U) -> T {
     let best = items[0]

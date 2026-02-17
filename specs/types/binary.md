@@ -16,7 +16,7 @@
 | **B3: MSB-first** | Bits packed MSB-first (network byte order) |
 | **B4: Final byte** | Unused bits in final byte zeroed on build, ignored on parse |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 @binary
 struct IpHeader {

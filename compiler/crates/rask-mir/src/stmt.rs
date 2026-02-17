@@ -70,6 +70,13 @@ pub enum MirStmt {
     ClosureDrop {
         closure: LocalId,
     },
+    /// Store into a fixed-size array element: base_ptr[index * elem_size] = value
+    ArrayStore {
+        base: LocalId,
+        index: MirOperand,
+        elem_size: u32,
+        value: MirOperand,
+    },
 }
 
 /// A captured variable in a closure environment.

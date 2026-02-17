@@ -165,7 +165,7 @@ func kill(h: Handle<Player>) using players: Pool<Player> {
 | **CC9: Immediate closure inheritance** | Expression-scoped closures (iterators, immediate callbacks) inherit enclosing contexts |
 | **CC10: Storable closure exclusion** | Storable closures cannot use auto-resolution — pools must be explicit parameters |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // CC9: expression-scoped inherits context
 func process_all(handles: Vec<Handle<Player>>) using Pool<Player> {

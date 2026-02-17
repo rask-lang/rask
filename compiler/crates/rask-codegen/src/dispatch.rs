@@ -2,9 +2,11 @@
 
 //! Stdlib method dispatch — maps MIR call names to C runtime functions.
 //!
-//! After monomorphization, stdlib method calls arrive at codegen as bare
-//! names (e.g., "push", "len"). This module maps those names to C runtime
-//! functions in the typed implementations (vec.c, map.c, pool.c, string.c).
+//! After monomorphization, stdlib method calls arrive at codegen as
+//! type-qualified names (e.g., "Vec_push", "Map_get", "string_len").
+//! Qualification happens in MIR lowering using type info from the checker.
+//! This module maps those names to C runtime functions in the typed
+//! implementations (vec.c, map.c, pool.c, string.c).
 //!
 //! ## Calling convention
 //!
@@ -46,64 +48,71 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // rask_vec_push(v: RaskVec*, elem: const void*) → i64
         StdlibEntry {
-            mir_name: "push",
+            mir_name: "Vec_push",
             c_name: "rask_vec_push",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_pop(v: RaskVec*, out: void*) → i64
         StdlibEntry {
-            mir_name: "pop",
+            mir_name: "Vec_pop",
             c_name: "rask_vec_pop",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_len(v: const RaskVec*) → i64
         StdlibEntry {
-            mir_name: "len",
+            mir_name: "Vec_len",
             c_name: "rask_vec_len",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_get(v: const RaskVec*, index: i64) → void*
         StdlibEntry {
-            mir_name: "get",
+            mir_name: "Vec_get",
             c_name: "rask_vec_get",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_set(v: RaskVec*, index: i64, elem: const void*)
         StdlibEntry {
-            mir_name: "set",
+            mir_name: "Vec_set",
             c_name: "rask_vec_set",
             params: &[types::I64, types::I64, types::I64],
             ret_ty: None,
         },
         // rask_vec_clear(v: RaskVec*)
         StdlibEntry {
-            mir_name: "clear",
+            mir_name: "Vec_clear",
             c_name: "rask_vec_clear",
             params: &[types::I64],
             ret_ty: None,
         },
         // rask_vec_is_empty(v: const RaskVec*) → i64
         StdlibEntry {
-            mir_name: "is_empty",
+            mir_name: "Vec_is_empty",
             c_name: "rask_vec_is_empty",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_vec_capacity(v: const RaskVec*) → i64
         StdlibEntry {
-            mir_name: "capacity",
+            mir_name: "Vec_capacity",
             c_name: "rask_vec_capacity",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
 
         // ── Subscript (desugared from args[0] → args.index(0)) ─
+        // Bare "index" kept: desugaring doesn't have receiver type info
         StdlibEntry {
             mir_name: "index",
+            c_name: "rask_vec_get",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Vec_index",
             c_name: "rask_vec_get",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
@@ -112,14 +121,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── Iterator stubs ─────────────────────────────────────
         // iter() on Vec returns the Vec itself (identity)
         StdlibEntry {
-            mir_name: "iter",
+            mir_name: "Vec_iter",
             c_name: "rask_clone",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_iter_skip(src: const RaskVec*, n: i64) → RaskVec*
         StdlibEntry {
-            mir_name: "skip",
+            mir_name: "Vec_skip",
             c_name: "rask_iter_skip",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
@@ -157,75 +166,75 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── String methods ────────────────────────────────────
         StdlibEntry {
-            mir_name: "to_lowercase",
+            mir_name: "string_to_lowercase",
             c_name: "rask_string_to_lowercase",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "starts_with",
+            mir_name: "string_starts_with",
             c_name: "rask_string_starts_with",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "lines",
+            mir_name: "string_lines",
             c_name: "rask_string_lines",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "trim",
+            mir_name: "string_trim",
             c_name: "rask_string_trim",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
-        // map_err(result, closure) — pass-through (error mapping requires closure dispatch)
+        // map_err with closures is expanded inline in MIR lowering.
+        // Non-closure map_err (e.g. variant constructors) still uses this stub.
         StdlibEntry {
-            mir_name: "map_err",
+            mir_name: "Result_map_err",
             c_name: "rask_clone",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "split",
+            mir_name: "string_split",
             c_name: "rask_string_split",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "parse_int",
+            mir_name: "string_parse_int",
             c_name: "rask_string_parse_int",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "parse_float",
+            mir_name: "string_parse_float",
             c_name: "rask_string_parse_float",
             params: &[types::I64],
             ret_ty: Some(types::F64),
         },
         StdlibEntry {
-            mir_name: "substr",
+            mir_name: "string_substr",
             c_name: "rask_string_substr",
             params: &[types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "ends_with",
+            mir_name: "string_ends_with",
             c_name: "rask_string_ends_with",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "replace",
+            mir_name: "string_replace",
             c_name: "rask_string_replace",
             params: &[types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
-        // string.contains(haystack, needle) → i64
         StdlibEntry {
-            mir_name: "contains",
+            mir_name: "string_contains",
             c_name: "rask_string_contains",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
@@ -267,58 +276,58 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // rask_map_insert(m: RaskMap*, key: const void*, val: const void*) → i64
         StdlibEntry {
-            mir_name: "insert",
+            mir_name: "Map_insert",
             c_name: "rask_map_insert",
             params: &[types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_map_contains(m: const RaskMap*, key: const void*) → i64
         StdlibEntry {
-            mir_name: "contains_key",
+            mir_name: "Map_contains_key",
             c_name: "rask_map_contains",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_map_get(m: const RaskMap*, key: const void*) → void*
         StdlibEntry {
-            mir_name: "map_get",
+            mir_name: "Map_get",
             c_name: "rask_map_get",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_map_remove(m: RaskMap*, key: const void*) → i64
         StdlibEntry {
-            mir_name: "map_remove",
+            mir_name: "Map_remove",
             c_name: "rask_map_remove",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "map_len",
+            mir_name: "Map_len",
             c_name: "rask_map_len",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "map_is_empty",
+            mir_name: "Map_is_empty",
             c_name: "rask_map_is_empty",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "map_clear",
+            mir_name: "Map_clear",
             c_name: "rask_map_clear",
             params: &[types::I64],
             ret_ty: None,
         },
         StdlibEntry {
-            mir_name: "map_keys",
+            mir_name: "Map_keys",
             c_name: "rask_map_keys",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
-            mir_name: "map_values",
+            mir_name: "Map_values",
             c_name: "rask_map_values",
             params: &[types::I64],
             ret_ty: Some(types::I64),
@@ -335,21 +344,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
         // rask_pool_alloc_packed(p: RaskPool*) → i64 packed handle
         StdlibEntry {
-            mir_name: "pool_alloc",
+            mir_name: "Pool_alloc",
             c_name: "rask_pool_alloc_packed",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_pool_remove_packed(p: RaskPool*, packed: i64) → i64
         StdlibEntry {
-            mir_name: "pool_free",
+            mir_name: "Pool_remove",
             c_name: "rask_pool_remove_packed",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
         },
         // rask_pool_get_packed(p: const RaskPool*, packed: i64) → void*
         StdlibEntry {
-            mir_name: "pool_get",
+            mir_name: "Pool_get",
             c_name: "rask_pool_get_packed",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
@@ -377,9 +386,129 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Pool checked access (runtime safety) ──────────────
         StdlibEntry {
-            mir_name: "rask_pool_checked_access",
+            mir_name: "Pool_checked_access",
             c_name: "rask_pool_get_packed",
             params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Rng operations ────────────────────────────────────────
+        StdlibEntry {
+            mir_name: "Rng_new",
+            c_name: "rask_rng_new",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_from_seed",
+            c_name: "rask_rng_from_seed",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_u64",
+            c_name: "rask_rng_u64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_i64",
+            c_name: "rask_rng_i64",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_f64",
+            c_name: "rask_rng_f64",
+            params: &[types::I64],
+            ret_ty: Some(types::F64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_f32",
+            c_name: "rask_rng_f32",
+            params: &[types::I64],
+            ret_ty: Some(types::F64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_bool",
+            c_name: "rask_rng_bool",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "Rng_range",
+            c_name: "rask_rng_range",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Random module convenience functions ───────────────────
+        StdlibEntry {
+            mir_name: "random_f64",
+            c_name: "rask_random_f64",
+            params: &[],
+            ret_ty: Some(types::F64),
+        },
+        StdlibEntry {
+            mir_name: "random_f32",
+            c_name: "rask_random_f32",
+            params: &[],
+            ret_ty: Some(types::F64),
+        },
+        StdlibEntry {
+            mir_name: "random_i64",
+            c_name: "rask_random_i64",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "random_bool",
+            c_name: "rask_random_bool",
+            params: &[],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "random_range",
+            c_name: "rask_random_range",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── File instance methods ─────────────────────────────────
+        StdlibEntry {
+            mir_name: "File_close",
+            c_name: "rask_file_close",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "File_read_all",
+            c_name: "rask_file_read_all",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "File_read_text",
+            c_name: "rask_file_read_all",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "File_write",
+            c_name: "rask_file_write",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "File_write_line",
+            c_name: "rask_file_write_line",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "File_lines",
+            c_name: "rask_file_lines",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
         },
 
@@ -533,6 +662,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_buf_add_bool",
             c_name: "rask_json_buf_add_bool",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "json_buf_add_raw",
+            c_name: "rask_json_buf_add_raw",
             params: &[types::I64, types::I64, types::I64],
             ret_ty: None,
         },

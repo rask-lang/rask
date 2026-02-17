@@ -225,6 +225,19 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().store(flags, val, addr_val, *offset as i32);
             }
 
+            // Array element store: base_ptr[index * elem_size] = value
+            MirStmt::ArrayStore { base, index, elem_size, value } => {
+                let base_val = builder.use_var(*var_map.get(base)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature("ArrayStore: base not found".to_string()))?);
+                let idx_val = Self::lower_operand_typed(builder, index, var_map, Some(types::I64), string_globals, func_refs)?;
+                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
+                let offset = builder.ins().imul(idx_val, elem_sz);
+                let addr = builder.ins().iadd(base_val, offset);
+                let flags = MemFlags::new();
+                builder.ins().store(flags, val, addr, 0);
+            }
+
             MirStmt::Call { dst, func, args } => {
                 // Builtin print/println — dispatch per-arg to typed runtime functions
                 if func.name == "print" || func.name == "println" {
@@ -427,8 +440,8 @@ impl<'a> FunctionBuilder<'a> {
             // ── Pool checked access ────────────────────────────────────
             MirStmt::PoolCheckedAccess { dst, pool, handle } => {
                 // rask_pool_checked_access(pool, handle) → element_ptr
-                let func_ref = func_refs.get("rask_pool_checked_access")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_pool_checked_access".to_string()))?;
+                let func_ref = func_refs.get("Pool_checked_access")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
                 let pool_val = builder.use_var(*var_map.get(pool)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Pool variable not found".to_string()
@@ -884,6 +897,18 @@ impl<'a> FunctionBuilder<'a> {
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, ptr_val, 0))
             }
+
+            // Array element access: base_ptr + index * elem_size → load
+            MirRValue::ArrayIndex { base, index, elem_size } => {
+                let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
+                let idx_val = Self::lower_operand_typed(builder, index, var_map, Some(types::I64), string_globals, func_refs)?;
+                let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
+                let offset = builder.ins().imul(idx_val, elem_sz);
+                let addr = builder.ins().iadd(base_val, offset);
+                let load_ty = expected_ty.unwrap_or(types::I64);
+                let flags = MemFlags::new();
+                Ok(builder.ins().load(load_ty, flags, addr, 0))
+            }
         }
     }
 
@@ -1057,7 +1082,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Vec push/set: wrap value arg as pointer
-            "push" => {
+            "Vec_push" => {
                 // args: [vec, value] → [vec, &value]
                 if args.len() >= 2 {
                     let val = args[1];
@@ -1065,7 +1090,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
                 CallAdapt::None
             }
-            "set" => {
+            "Vec_set" => {
                 // args: [vec, index, value] → [vec, index, &value]
                 if args.len() >= 3 {
                     let val = args[2];
@@ -1075,7 +1100,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Vec pop: add out-param, load result from it
-            "pop" => {
+            "Vec_pop" => {
                 // args: [vec] → [vec, &out]
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,
@@ -1086,10 +1111,10 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Vec get/index: result is void*, deref to get value
-            "get" | "index" => CallAdapt::DerefResult,
+            "Vec_get" | "Vec_index" | "index" => CallAdapt::DerefResult,
 
             // Map insert: wrap key and value as pointers
-            "insert" => {
+            "Map_insert" => {
                 // args: [map, key, value] → [map, &key, &value]
                 if args.len() >= 3 {
                     let key = args[1];
@@ -1101,7 +1126,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Map contains_key/remove: wrap key as pointer
-            "contains_key" | "map_remove" => {
+            "Map_contains_key" | "Map_remove" => {
                 if args.len() >= 2 {
                     let key = args[1];
                     args[1] = Self::value_to_ptr(builder, key);
@@ -1110,13 +1135,16 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Map get: wrap key as pointer, deref result
-            "map_get" => {
+            "Map_get" => {
                 if args.len() >= 2 {
                     let key = args[1];
                     args[1] = Self::value_to_ptr(builder, key);
                 }
                 CallAdapt::DerefResult
             }
+
+            // Pool get: result is void*, deref to get value
+            "Pool_get" | "Pool_checked_access" => CallAdapt::DerefResult,
 
             _ => CallAdapt::None,
         }

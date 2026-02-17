@@ -87,7 +87,7 @@ func main() {
 | **RE3: Public only** | Can't export non-public items |
 | **RE4: No cycles** | Export cycles detected at import graph construction |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 export internal.parser.Parser
 export internal.lexer.Lexer
@@ -215,7 +215,7 @@ extend Printer with ast.Visitor {
 ```
 
 **Self-referential types with handles (not trait objects):**
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Node {
     value: i32

@@ -34,7 +34,7 @@ Source → Lexer → Tokens → Parser → AST
 | **M4: Transitive** | If an instantiated function calls other generics, add to work queue until fixpoint |
 | **M5: Cache integration** | Monomorphized AST cached by `(function_id, [type_args], body_semantic_hash, [type_definition_hashes])` per `comp.semantic-hash` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 // Monomorphized output (conceptual)
 // MonoFunction { name: "sort$i32", type_args: [i32], body: ... }

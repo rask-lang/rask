@@ -15,7 +15,7 @@ Two layers: untyped `JsonValue` enum for dynamic JSON, compiler-generated struct
 | **J2: f64 numbers** | All JSON numbers stored as `f64`. Integers up to 2^53 are exact; larger lose precision |
 | **J3: JsonError** | Parse, type, and missing-field errors reported via `JsonError` enum |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 enum JsonValue {
     Null

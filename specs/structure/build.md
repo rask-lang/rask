@@ -134,7 +134,7 @@ func build(ctx: BuildContext) -> () or Error {
 
 ### BuildContext API
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct BuildContext {
     public package_name: string
@@ -396,7 +396,7 @@ func build(ctx: BuildContext) -> () or Error {
 
 ## Expanded BuildContext
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct BuildContext {
     public package_name: string

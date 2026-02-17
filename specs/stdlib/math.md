@@ -118,7 +118,7 @@ FIX: Use math.sin(x) instead.
 
 **Distance and angle:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 import math
 

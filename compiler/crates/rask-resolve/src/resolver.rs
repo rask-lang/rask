@@ -84,6 +84,8 @@ impl Resolver {
             ("Shared", BuiltinTypeKind::Shared),
             ("Owned", BuiltinTypeKind::Owned),
             ("f32x8", BuiltinTypeKind::F32x8),
+            ("Rng", BuiltinTypeKind::Rng),
+            ("File", BuiltinTypeKind::File),
         ];
 
         for (name, builtin) in builtin_types {

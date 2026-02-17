@@ -55,7 +55,7 @@ for i in 0..10 {
 | **SP3: Zero step** | Compile error |
 | **SP4: Uneven step** | Last value before exceeding bound |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 for i in (0..100).step(2) { }      // 0, 2, 4, ..., 98
 for i in (10..0).step(-1) { }      // 10, 9, 8, ..., 1

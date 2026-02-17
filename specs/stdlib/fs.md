@@ -54,7 +54,7 @@ extend File {
 | `fs.append_file` | `(path: string, content: string) -> () or IoError` |
 | `fs.exists` | `(path: string) -> bool` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const content = try fs.read_file("config.txt")
 try fs.write_file("output.txt", "hello world")
@@ -118,7 +118,7 @@ ensure file.close()
 
 ## Metadata and DirEntry
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 struct Metadata {
     size: u64

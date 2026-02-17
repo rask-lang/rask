@@ -81,7 +81,7 @@ FIX: Use rng.range(5, 6) for a single value.
 
 **Deterministic tests:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 test "shuffle is deterministic with seed" {
     const rng = Rng.from_seed(12345)
@@ -93,7 +93,7 @@ test "shuffle is deterministic with seed" {
 
 **Weighted random selection:**
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func weighted_choice(weights: Vec<f64>) -> i64 {
     let r = random.f64() * weights.iter().sum()
