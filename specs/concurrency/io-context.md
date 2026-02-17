@@ -5,7 +5,7 @@
 
 # I/O Context Integration
 
-Stdlib I/O functions accept a hidden `RuntimeContext` parameter. When present, I/O is non-blocking (task parks). When absent, I/O blocks the thread. Same function, two code paths, no function coloring.
+Stdlib I/O functions accept a hidden `RuntimeContext` parameter. When present, I/O is non-blocking (task parks). When absent, I/O blocks the thread. Same function, two code paths, no async/await split.
 
 ## RuntimeContext Type
 

@@ -4,15 +4,15 @@ Concurrency model for Rask.
 
 ## Design Philosophy
 
-**Go-like ergonomics, compile-time safety.** Spawn syntax with affine handles. Forgotten tasks become compile errors.
+**Go-like ergonomics, compile-time safety.** Spawn syntax with must-use handles. Forgotten tasks become compile errors.
 
 **Concurrency vs parallelism:**
 - **Concurrency** (green tasks): Interleaved execution on few threads. I/O-bound work.
 - **Parallelism** (thread pool): Simultaneous execution. CPU-bound work.
 
-**No function coloring.** Functions work the same way regardless of I/O. Pausing happens automatically—IDEs show pause points as ghost annotations. No ecosystem split.
+**No async/await split.** Functions work the same way regardless of I/O — no "function coloring" that forces separate async and sync versions. Pausing happens automatically—IDEs show pause points as ghost annotations. No ecosystem split.
 
-**Affine handles.** All spawn constructs return handles that must be consumed (joined or detached). Forgetting one is a compile error.
+**Must-use handles.** All spawn constructs return handles that must be consumed (joined or detached). Forgetting one is a compile error.
 
 **Explicit resources.** `using Multitasking { }` and `using ThreadPool { }` declare available capabilities.
 
@@ -128,9 +128,9 @@ try h.join()
 - `using Multitasking { }` creates M:N scheduler for green tasks
 - `using ThreadPool { }` creates thread pool for CPU work
 - Configuration via numbers: `Multitasking(workers: N)`, `ThreadPool(workers: N)`
-- Affine handles must be joined or detached
+- Must-use handles must be joined or detached
 - `.join()` pauses in async mode, blocks in sync mode
 - Tasks own their data—no shared mutable state
 - Channels work everywhere—pause in async, block in sync
-- No function coloring, no async/await keywords
+- No async/await split, no function coloring
 - Sync mode is default—multitasking optional for CLI/embedded

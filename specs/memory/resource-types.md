@@ -6,7 +6,7 @@
 
 # Resource Types
 
-`@resource` marks types that must be consumed exactly once. Compiler enforces it. `ensure` provides deferred consumption.
+`@resource` marks types that must be consumed exactly once — you can't forget to close a file or commit a transaction. The compiler enforces it. `ensure` provides deferred consumption. (These are sometimes called "linear types" in academic literature.)
 
 ## Declaration
 
@@ -342,7 +342,7 @@ func handle_connections(pool: Pool<Connection>) -> () or Error {
 
 ### Rationale
 
-**R1–R4 (must-consume):** Resource types prevent leaks by construction. Unlike RAII (automatic destructors), resources need explicit consumption — cleanup is visible while still guaranteed.
+**R1–R4 (must-consume):** Resource types prevent leaks by construction. Unlike RAII (automatic destructors, as in C++ or Rust), resources need explicit consumption — cleanup is visible while still guaranteed.
 
 **R4 (ensure):** `ensure` bridges resources with error handling: commit to cleanup early, then use `try` freely knowing it'll happen.
 

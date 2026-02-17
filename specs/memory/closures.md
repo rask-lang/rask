@@ -1,27 +1,27 @@
 <!-- id: mem.closures -->
 <!-- status: decided -->
-<!-- summary: Three closure kinds — storable (by value), immediate (outer scope), local-only (scoped borrows) -->
+<!-- summary: Three closure kinds — stored (by value), inline (outer scope), scoped (block-limited borrows) -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Closures
 
-Closures capture by value (copy/move) for storage, access outer scope directly for immediate use, or capture scoped borrows for local-only use. Kind is determined by usage context, not by annotation.
+When a closure uses a variable from outside its body, that variable is *captured* — copied or moved into the closure so it's available when the closure runs later. Closures capture by value (copy/move) for storage, access the outer scope directly for inline use, or capture borrows for scoped use. The kind is inferred from how you use the closure, not by annotation.
 
 ## Closure Kinds
 
 | Rule | Kind | Capture | Storage | Use Cases |
 |------|------|---------|---------|-----------|
-| **CL1: Storable** | Storable | By value (copy/move) | Can be stored, returned, sent cross-task | Callbacks, event handlers, async tasks |
-| **CL2: Immediate** | Immediate | None (accesses outer scope) | Cannot store | Iterator adapters, inline callbacks |
-| **CL3: Local-only** | Local-only | By value + borrows | Scoped to borrow source | Closures capturing slices, temporary refs |
+| **CL1: Stored** | Stored | By value (copy/move) | Can be stored, returned, sent cross-task | Callbacks, event handlers, async tasks |
+| **CL2: Inline** | Inline | None (accesses outer scope) | Cannot store | Iterator adapters, inline callbacks |
+| **CL3: Scoped** | Scoped | By value + borrows | Limited to borrow's block | Closures capturing slices, temporary refs |
 
 Kind is inferred from context:
-- Used inline in an expression chain &rarr; immediate
-- Stored/returned, captures only owned values &rarr; storable
-- Stored/assigned, captures borrows &rarr; local-only
+- Used inline in an expression chain &rarr; inline
+- Stored/returned, captures only owned values &rarr; stored
+- Stored/assigned, captures borrows &rarr; scoped
 
-## Storable Closures
+## Stored Closures
 
 Capture by value (copy or move), never by reference. Can be stored in variables, structs, or returned.
 
@@ -57,7 +57,7 @@ button.on_click(|event| {
 })
 ```
 
-**Capture mutation:** Storable closures capture by copy, so mutating a captured value only mutates the closure's copy. Use Pool + Handle for shared mutable state.
+**Capture mutation:** Stored closures capture by copy, so mutating a captured value only mutates the closure's copy. Use Pool + Handle for shared mutable state.
 
 <!-- test: skip -->
 ```rask
@@ -75,13 +75,13 @@ increment(state)
 increment(state)
 ```
 
-## Immediate Closures
+## Inline Closures
 
-Access outer scope directly without capturing. Must be called immediately within the expression.
+Access outer scope directly without capturing. Must be consumed within the expression — they can't be stored or returned.
 
 | Rule | Description |
 |------|-------------|
-| **CL6: No capture** | Closure accesses outer scope directly, does not capture |
+| **CL6: No capture** | Closure reads/writes the outer scope directly, does not copy values in |
 | **CL7: Must execute** | Must be called before expression completes |
 | **CL8: Cannot store** | Compile error if assigned to variable or returned |
 | **CL9: Aliasing rules** | Mutable access excludes other access during execution (`mem.borrowing/S5`) |
@@ -98,7 +98,7 @@ items.filter(|i| vec[*i].active)
 // vec still valid after chain
 ```
 
-Mutable access with immediate execution:
+Mutable access with inline execution:
 
 <!-- test: skip -->
 ```rask
@@ -122,33 +122,33 @@ for i in items.filter(|i| vec[*i].active) {
     process(i)
 }
 
-// Illegal: stored closure accesses outer scope
+// Illegal: storing an inline closure
 const f = items.filter(|i| vec[*i].active)
 //        ^^^^^^^^^ ERROR: closure accesses 'vec' but iterator is stored
 ```
 
-## Local-Only Closures
+## Scoped Closures
 
-Closures that capture block-scoped borrows (slices, struct field references). Must not escape the borrow's scope.
+Closures that capture block-scoped borrows (slices, struct field references). Can't escape the block where the borrowed data lives.
 
 | Rule | Description |
 |------|-------------|
-| **CL4: Scope inheritance** | Closure inherits the innermost scope constraint from all captured borrows |
+| **CL4: Scope inheritance** | Closure is limited to the innermost block of all its captured borrows |
 | **CL5: No escape** | Cannot return, store in struct, or send cross-task |
 
 The compiler determines scope constraints through local analysis only:
 
 | Step | What Happens |
 |------|--------------|
-| Borrow creation | `s[0..3]` creates a slice with implicit scope marker tied to `s` |
-| Closure creation | Compiler analyzes captures; scope markers make the closure scope-constrained |
-| Assignment check | Scope-constrained closures must be assigned in the same or inner scope |
-| Return/store check | Scope-constrained closures cannot be returned, stored in structs, or sent cross-task |
+| Borrow creation | `s[0..3]` creates a slice tied to `s`'s block |
+| Closure creation | Compiler sees the closure captures a borrow — marks it scoped |
+| Assignment check | Scoped closures must be assigned in the same or inner block |
+| Return/store check | Scoped closures cannot be returned, stored in structs, or sent cross-task |
 
 <!-- test: skip -->
 ```rask
 const s = get_string()
-const slice = s[0..3]               // scope-constrained to s's scope
+const slice = s[0..3]               // scoped to s's block
 const f = || process(slice)         // f inherits scope constraint
 f()                                 // OK: called in same scope
 return f                            // ERROR: cannot escape scope (CL5)
@@ -188,9 +188,9 @@ execute_now(f)                    // OK: execute_now consumes f immediately
 
 | Rule | Description |
 |------|-------------|
-| **CL10: Constraint propagation** | Scope constraints propagate through generic type parameters at monomorphization |
+| **CL10: Constraint propagation** | Scope constraints propagate through generic type parameters when the compiler generates specialized code |
 
-No special annotations needed. Functions that don't store their generic closure argument work with scope-constrained closures automatically. Functions that store the argument produce a compile error at the storage site.
+No special annotations needed. Functions that don't store their generic closure argument work with scoped closures automatically. Functions that store the argument produce a compile error at the storage site.
 
 <!-- test: skip -->
 ```rask
@@ -200,23 +200,23 @@ func run_twice<F: Fn()>(f: F) {
 }  // F dropped, never stored - works with scope-constrained closures
 
 func store_callback<F: Fn()>(f: F) {
-    const holder = Holder { callback: f }  // ERROR if F is scope-constrained (CL5)
+    const holder = Holder { callback: f }  // ERROR if F is scoped (CL5)
 }
 
 const slice = s[0..3]
-const greet = || print(slice)   // scope-constrained
+const greet = || print(slice)   // scoped (captures a borrow)
 
 run_twice(greet)              // OK: run_twice doesn't store F
 store_callback(greet)         // ERROR: store_callback tries to store F
 ```
 
-The error surfaces inside `store_callback` at the storage site, not at the call site. Functions don't need to declare whether they store or execute immediately.
+The error surfaces inside `store_callback` at the storage site, not at the call site. Functions don't need to declare whether they store or consume inline.
 
 ## Error Messages
 
-**Immediate closure stored [CL8]:**
+**Inline closure stored [CL8]:**
 ```
-ERROR [mem.closures/CL8]: immediate closure cannot be stored
+ERROR [mem.closures/CL8]: inline closure cannot be stored
    |
 5  |  let f = items.filter(|i| vec[*i].active)
    |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
@@ -235,9 +235,9 @@ FIX 2: Capture by value instead:
    |  let f = items.filter(|i| active_set.contains(i))
 ```
 
-**Local-only closure escapes [CL5]:**
+**Scoped closure escapes [CL5]:**
 ```
-ERROR [mem.closures/CL5]: scope-constrained closure cannot escape
+ERROR [mem.closures/CL5]: scoped closure cannot escape
    |
 3  |  let slice = s[0..3]
    |              ^^^^^^^ borrowed from 's' (line 2)
@@ -260,7 +260,7 @@ FIX 2: Capture owned data instead:
 5  |  return f                          // OK: no scoped borrows
 ```
 
-**Scope-constrained closure assigned to outer variable [CL4]:**
+**Scoped closure assigned to outer variable [CL4]:**
 ```
 ERROR [mem.closures/CL4]: closure outlives its captured borrow
    |
@@ -284,15 +284,15 @@ FIX: Create the closure inside the scope:
 6  |      inner_closure()
 ```
 
-**Generic function stores scope-constrained closure [CL10]:**
+**Generic function stores scoped closure [CL10]:**
 ```
-ERROR [mem.closures/CL10]: cannot store scope-constrained type
+ERROR [mem.closures/CL10]: cannot store scoped type
    |
 // in store_callback<F>:
 3  |  let holder = Holder { callback: f }
    |                        ^^^^^^^^^^^^ F is scope-constrained
 
-Note: called with scope-constrained closure at:
+Note: called with scoped closure at:
 10 |  store_callback(greet)
    |                 ^^^^^ 'greet' captures borrowed 'slice' (line 8)
 
@@ -312,13 +312,13 @@ FIX 2: Remove the borrow from the closure:
 | Case | Rule | Handling |
 |------|------|----------|
 | Closure captures move-only type | CL1 | Type moved into closure, source invalid |
-| Closure captures linear type | CL1 | Linear must be consumed within closure or transferred out |
+| Closure captures resource type | CL1 | Resource must be consumed within closure or transferred out |
 | Nested closures | CL1 | Each level captures from its immediate outer scope |
 | Async closure | CL1 | Treated as storable; captured values moved in |
 | Clone inside closure | CL1 | Creates independent copy |
-| Storable closure captures borrow | CL3 | Closure becomes local-only |
-| Pure closure (no captures, no outer access) | CL1 | Storable by default |
-| Mutable access in immediate closure | CL9 | Aliasing XOR mutation applies during execution |
+| Stored closure captures borrow | CL3 | Closure becomes scoped |
+| Pure closure (no captures, no outer access) | CL1 | Stored by default |
+| Mutable access in inline closure | CL9 | Exclusive access rule applies during execution |
 
 ---
 
@@ -347,19 +347,19 @@ MIR lowering initially marks every closure `heap: true`. A per-function optimiza
 
 Stack-allocated closures use a Cranelift stack slot — no runtime allocator call, no cleanup needed. Heap-allocated closures call `rask_alloc` and get a matching `ClosureDrop` (which calls `rask_free`) inserted before every return path where the closure isn't the return value.
 
-This is conservative local analysis: no cross-function tracking, no dataflow. A closure that's only called locally but happens to be passed to another function stays heap-allocated. That's the right tradeoff — correctness over cleverness.
+This is conservative local analysis: no cross-function tracking, no dataflow. A closure that's only called locally but happens to be passed to another function stays heap-allocated. Correctness over cleverness.
 
 ## Appendix (non-normative)
 
 ### Rationale
 
-**CL1 (storable capture by value):** I chose capture-by-value to make closures self-contained and thread-safe. The tradeoff is more `.clone()` calls and the Pool+Handle pattern for shared mutable state. I think that's better than reference-capturing closures that drag lifetime annotations into everything.
+**CL1 (stored, capture by value):** I chose capture-by-value to make closures self-contained and thread-safe. The tradeoff is more `.clone()` calls and the Pool+Handle pattern for shared mutable state. I think that's better than reference-capturing closures that drag scope annotations into everything.
 
-**CL2 (immediate closures):** Iterator chains like `.filter(|x| ...).map(|x| ...)` need access to surrounding scope without the overhead of capturing. Immediate closures give you this with the constraint that the closure can't escape the expression. This covers the most common closure pattern (iterator adapters) with zero ceremony.
+**CL2 (inline closures):** Iterator chains like `.filter(|x| ...).map(|x| ...)` need access to surrounding scope without the overhead of capturing. Inline closures give you this with the constraint that the closure can't escape the expression. This covers the most common closure pattern (iterator adapters) with zero ceremony.
 
-**CL3–CL5 (local-only scope constraints):** A storable closure that happens to capture a borrow becomes scope-constrained. This is enforced through type-level scope markers, not escape analysis. All checks are local to the function — no cross-function tracking needed.
+**CL3–CL5 (scoped closures):** A stored closure that happens to capture a borrow becomes scoped. This is enforced through type-level scope markers, not escape analysis. All checks are local to the function — no cross-function tracking needed.
 
-**CL10 (generic propagation):** Functions don't need to declare "I execute immediately" vs "I store." The constraint propagates through generics at monomorphization, and violations surface where storage is attempted. This keeps function signatures clean.
+**CL10 (generic propagation):** Functions don't need to declare "I consume inline" vs "I store." The constraint propagates through generics when specialized code is generated, and violations surface where storage is attempted. This keeps function signatures clean.
 
 ### Metaphor: Closures as Luggage
 
@@ -367,9 +367,9 @@ A useful way to think about the three closure kinds:
 
 | Kind | Metaphor | Explanation |
 |------|----------|-------------|
-| Storable | Backpack | Packs copies of everything. Can go anywhere. |
-| Immediate | Hand-carry | Holding items directly. Must use now. |
-| Local-only | Day-trip bag | Packs some borrowed items. Can't leave the area those items came from. |
+| Stored | Backpack | Packs copies of everything. Can go anywhere. |
+| Inline | Hand-carry | Holding items directly. Must use now. |
+| Scoped | Day-trip bag | Packs some borrowed items. Can't leave the area those items came from. |
 
 ### Patterns & Guidance
 
@@ -421,38 +421,38 @@ app.run_with_state(state)
 
 | Scenario | Kind | Pattern |
 |----------|------|---------|
-| Iterator adapter | Immediate | `items.filter(\|i\| vec[*i].active)` |
-| Event handler (run now) | Immediate | `(try btn.on_click(\|e\| app.x += 1)).execute_now()` |
-| Event handler (stored) | Storable + params | `btn.on_click(\|e, app\| app[h].x += 1)` |
-| Async callback | Storable + params | `task.then(\|result, state\| state[h] = result)` |
+| Iterator adapter | Inline | `items.filter(\|i\| vec[*i].active)` |
+| Event handler (run now) | Inline | `(try btn.on_click(\|e\| app.x += 1)).execute_now()` |
+| Event handler (stored) | Stored + params | `btn.on_click(\|e, app\| app[h].x += 1)` |
+| Async callback | Stored + params | `task.then(\|result, state\| state[h] = result)` |
 | Pure transformation | Either | `\|x\| x * 2` (no outer access) |
-| Closure with slice (same scope) | Local-only | `let f = \|\| process(slice); f()` |
+| Closure with slice (same scope) | Scoped | `let f = \|\| process(slice); f()` |
 
 ### IDE Integration
 
 | Closure Kind | Ghost Annotation |
 |--------------|------------------|
-| Storable | `[storable]` |
-| Local-only | `[local-only, scoped to line N]` |
-| Immediate | `[immediate]` |
+| Stored | `[stored]` |
+| Scoped | `[scoped to line N]` |
+| Inline | `[inline]` |
 
 On hover over a closure, show captures:
 
 ```
 Closure captures:
-  slice: borrowed from 's' (line 3) -> makes closure local-only
+  slice: borrowed from 's' (line 3) -> makes closure scoped
   count: copied (i32, 4 bytes)
 
-Kind: Local-only (scoped to line 3)
+Kind: Scoped (to line 3)
 ```
 
-When the cursor is in a local-only closure, the IDE highlights the scope boundary it is constrained to.
+When the cursor is in a scoped closure, the IDE highlights the block boundary it's limited to.
 
 | Error | Quick Fix |
 |-------|-----------|
-| Immediate closure stored | "Use immediately" / "Clone captured values" |
-| Local-only closure escapes | "Move declaration into scope" / "Clone to owned" |
-| Generic stores scope-constrained | "Use non-storing alternative" |
+| Inline closure stored | "Use inline" / "Clone captured values" |
+| Scoped closure escapes | "Move declaration into scope" / "Clone to owned" |
+| Generic stores scoped closure | "Use non-storing alternative" |
 
 ### See Also
 

@@ -43,7 +43,7 @@ I want function-local compilation. Effects require whole-program analysis.
 
 ### They break resource safety
 
-Rask's safety is structural—linear resources, affine handles, block-scoped cleanup. `ensure` blocks run on all exits, LIFO order, guaranteed.
+Rask's safety is structural—must-consume resources, must-use handles, block-scoped cleanup. `ensure` blocks run on all exits, LIFO order, guaranteed.
 
 Effects introduce non-local jumps. Does the handler run before or after cleanup? What if an effect jumps past an `ensure` block? You need to reason about effect boundaries intersecting with resource scopes. Structural guarantees become ambiguous.
 
