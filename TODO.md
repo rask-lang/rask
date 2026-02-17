@@ -4,15 +4,17 @@
 
 **Language design:** Complete. 70+ spec files, all core semantics stable.
 
-**Frontend (Phases 1-4):** Complete. Lexer, parser, resolver, type checker, ownership checker all work. Union types, select, using clauses, linear resources, closure captures — all implemented.
+**Frontend (Phases 1-4):** Lexer, parser, resolver work. Type checker has significant gaps — no validation program passes `rask check` (see bugs below). Ownership checker implemented but linear resource enforcement missing.
 
-**Interpreter:** Fully functional. 15+ stdlib modules. 4/5 validation programs run (grep, editor, game loop, HTTP server). Sensor processor typechecks but doesn't run (SIMD not interpreted).
+**Interpreter:** 15+ stdlib modules. Previously ran 4/5 validation programs, but type checker regressions now block all 5 from running.
 
-**Monomorphization + MIR:** Complete. Struct/enum layouts, generic instantiation, reachability analysis, full AST→MIR lowering with type inference. 104 tests.
+**Monomorphization + MIR:** Struct/enum layouts, generic instantiation, reachability analysis, AST→MIR lowering. 104 tests. Has placeholder types for compound types and incomplete generic substitution.
 
 **Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool, Rng, File → C runtime). Closures. Integer widening. For-range loops. 42 codegen tests.
 
 **Tooling:** LSP, formatter, linter, test runner, describe, explain — all done.
+
+**Spec tests:** 126 total, 124 pass, 2 fail (resource-types.md — linear resource checker not enforced).
 
 ### What compiles natively today
 
@@ -20,13 +22,15 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ### Validation programs
 
-| Program | Interpreter | Native |
-|---------|-------------|--------|
-| grep clone | Runs | No (needs stdlib module calls) |
-| Text editor | Runs | No (needs stdlib module calls) |
-| Game loop | Runs | No (needs stdlib module calls) |
-| HTTP server | Runs | No (needs concurrency runtime) |
-| Sensor processor | Typechecks | No (needs SIMD codegen) |
+All 5 fail `rask check`. None compile natively.
+
+| Program | Errors | Blockers |
+|---------|--------|----------|
+| grep clone | 2 | Vec generic inference, match return type inference |
+| Text editor | 22 | Vec generic inference, missing Vec.insert/remove, try-on-non-Result, int type mismatch |
+| Game loop | 9 | Missing mutate annotations, Pool.insert return type, missing Pool.handles() |
+| HTTP server | 1 | `import async.spawn` false shadow conflict |
+| Sensor processor | 26 | Integer literal defaults to i32 (not u64/u8), float literal defaults to f64 (not f32), bad error spans pointing to line 1 |
 
 ---
 
@@ -73,7 +77,7 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 - ~~Stdlib dispatch uses bare names — ambiguous without type info.~~ Fixed: type-qualified dispatch (`Vec_push`, `Map_get`, `string_contains`, etc.) using node_types from type checker + local_type_prefix fallback.
 - CleanupReturn inlines cleanup blocks — works but duplicates cleanup code. Fine for now, revisit if code size matters.
 - ~~`map_err` dispatch is a pass-through.~~ Fixed: inline MIR expansion branches on Result tag, calls closure on Err payload via `ClosureCall`. Non-closure `map_err` (variant constructors) still uses pass-through stub.
-- Type checker leaves many builtin types as `Var(TypeVarId(...))` — local_type_prefix in MIR lowerer compensates but only works for direct variable references, not chained expressions like `Vec.new().len()`.
+- ~~Type checker leaves many builtin types as `Var(TypeVarId(...))` — local_type_prefix in MIR lowerer compensates but only works for direct variable references, not chained expressions like `Vec.new().len()`.~~ Fixed: type checker recognizes Vec, Map, Pool, Rng as type namespaces and resolves their methods directly (static + instance). `local_type_prefix` retained as fallback.
 
 ---
 

@@ -2,6 +2,10 @@ Keep docs short. In chat, explain things to me—I'm not a language architect ex
 
 Be critical, test all assumptions, scrutinize the design choices.
 
+Prefer long term proper fixes over quick-fixes. 
+
+Choose simple over easy
+
 # Working relationship
 
 - No sycophancy.
