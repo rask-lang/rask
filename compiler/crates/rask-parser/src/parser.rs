@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
 
@@ -458,6 +458,7 @@ impl Parser {
                         is_pub: false,
                         is_comptime: false,
                         is_unsafe: false,
+                        abi: None,
                         attrs: vec!["entry".to_string()],
                     }),
                     span,
@@ -516,7 +517,17 @@ impl Parser {
             TokenKind::Const => self.parse_const_decl(is_pub)?,
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
-            TokenKind::Extern => self.parse_extern_decl()?,
+            TokenKind::Extern => {
+                let mut kinds = self.parse_extern_decls()?;
+                let first = kinds.remove(0);
+                let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
+                let pending: Vec<Decl> = kinds.into_iter().map(|kind| {
+                    let id = self.next_id();
+                    Decl { id, kind, span: Span::new(start, end) }
+                }).collect();
+                self.pending_decls.extend(pending);
+                first
+            }
             TokenKind::Package => {
                 if is_pub || is_comptime || is_unsafe || !attrs.is_empty() {
                     return Err(ParseError {
@@ -623,7 +634,7 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, attrs }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs }))
     }
 
     fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
@@ -980,11 +991,13 @@ impl Parser {
                 name_suffix.push_str(": ");
                 name_suffix.push_str(&comptime_type);
             } else {
-                // Regular type parameter: `T` or `T: Trait`
+                // Regular type parameter: `T` or `T: Trait` or `T: A + B`
                 let mut bounds = vec![];
                 if self.match_token(&TokenKind::Colon) {
-                    // Parse trait bounds (simplified - just one for now)
                     bounds.push(self.expect_ident()?);
+                    while self.match_token(&TokenKind::Plus) {
+                        bounds.push(self.expect_ident()?);
+                    }
                 }
 
                 type_params.push(TypeParam {
@@ -1256,6 +1269,7 @@ impl Parser {
             is_pub: false,
             is_comptime: false,
             is_unsafe: false,
+            abi: None,
             attrs: vec![],
         })
     }
@@ -1449,32 +1463,65 @@ impl Parser {
         Ok(DeclKind::Benchmark(BenchmarkDecl { name, body }))
     }
 
-    fn parse_extern_decl(&mut self) -> Result<DeclKind, ParseError> {
+    /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.
+    /// Returns one or more extern declarations.
+    fn parse_extern_decls(&mut self) -> Result<Vec<DeclKind>, ParseError> {
         self.expect(&TokenKind::Extern)?;
-
-        // Parse ABI string (e.g., "C", "system")
         let abi = self.expect_string()?;
 
-        // Expect func keyword
+        // Block form: extern "C" { func ...; func ... }
+        self.skip_newlines();
+        if self.check(&TokenKind::LBrace) {
+            self.advance();
+            self.skip_newlines();
+            let mut decls = Vec::new();
+            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                self.expect(&TokenKind::Func)?;
+                decls.push(self.parse_extern_func(&abi)?);
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+            return Ok(decls);
+        }
+
+        // Single form: extern "C" func name(...)
         self.expect(&TokenKind::Func)?;
+        Ok(vec![self.parse_extern_func(&abi)?])
+    }
 
-        // Parse function name
+    /// Parse a single extern function — signature-only (import) or with body (export).
+    fn parse_extern_func(&mut self, abi: &str) -> Result<DeclKind, ParseError> {
         let name = self.expect_ident()?;
-
-        // Parse parameters
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
         self.skip_newlines();
         self.expect(&TokenKind::RParen)?;
-
-        // Parse optional return type
         let ret_ty = if self.match_token(&TokenKind::Arrow) {
             Some(self.parse_type_name()?)
         } else {
             None
         };
 
-        Ok(DeclKind::Extern(ExternDecl { abi, name, params, ret_ty }))
+        // If followed by a body, this is an exported function definition
+        self.skip_newlines();
+        if self.check(&TokenKind::LBrace) {
+            let body = self.parse_block_body()?;
+            return Ok(DeclKind::Fn(FnDecl {
+                name,
+                type_params: vec![],
+                params,
+                ret_ty,
+                context_clauses: vec![],
+                body,
+                is_pub: true,
+                is_comptime: false,
+                is_unsafe: false,
+                abi: Some(abi.to_string()),
+                attrs: vec![],
+            }));
+        }
+
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty }))
     }
 
     /// Parse a package block (struct.build/PK1-PK5).
@@ -1493,6 +1540,7 @@ impl Parser {
 
         let mut deps = Vec::new();
         let mut metadata = Vec::new();
+        let mut profiles = Vec::new();
 
         self.skip_newlines();
         if self.match_token(&TokenKind::LBrace) {
@@ -1540,22 +1588,27 @@ impl Parser {
                         // code-only feature (no block) is fine
                     }
                     TokenKind::Profile => {
-                        // profile "embedded" { ... } — skip entirely for now
+                        // profile "embedded" { key: "value", ... }
                         self.advance();
-                        let _profile_name = self.expect_string()?;
+                        let profile_name = self.expect_string()?;
+                        let mut settings = Vec::new();
                         self.skip_newlines();
                         if self.match_token(&TokenKind::LBrace) {
-                            let mut depth = 1;
-                            while depth > 0 && !self.at_end() {
-                                match self.current_kind() {
-                                    TokenKind::LBrace => depth += 1,
-                                    TokenKind::RBrace => depth -= 1,
-                                    _ => {}
+                            self.skip_newlines();
+                            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                                if matches!(self.current_kind(), TokenKind::Ident(_)) {
+                                    let key = self.expect_ident()?;
+                                    self.expect(&TokenKind::Colon)?;
+                                    let value = self.expect_string()?;
+                                    settings.push((key, value));
+                                } else {
+                                    self.advance();
                                 }
-                                if depth > 0 { self.advance(); }
+                                self.skip_newlines();
                             }
                             self.expect(&TokenKind::RBrace)?;
                         }
+                        profiles.push(ProfileDecl { name: profile_name, settings });
                     }
                     TokenKind::Ident(_) => {
                         // metadata: key: "value"
@@ -1573,7 +1626,7 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(DeclKind::Package(PackageDecl { name, version, deps, metadata }))
+        Ok(DeclKind::Package(PackageDecl { name, version, deps, metadata, profiles }))
     }
 
     /// Parse a single dep item inside a package block.
@@ -2059,7 +2112,19 @@ impl Parser {
 
     fn parse_for_stmt(&mut self, label: Option<String>) -> Result<StmtKind, ParseError> {
         self.expect(&TokenKind::For)?;
-        let binding = self.expect_ident()?;
+
+        let binding = if self.match_token(&TokenKind::LParen) {
+            let mut names = Vec::new();
+            loop {
+                names.push(self.expect_ident()?);
+                if !self.match_token(&TokenKind::Comma) { break; }
+            }
+            self.expect(&TokenKind::RParen)?;
+            ForBinding::Tuple(names)
+        } else {
+            ForBinding::Single(self.expect_ident()?)
+        };
+
         self.expect(&TokenKind::In)?;
         let iter = self.parse_expr_no_braces()?;
         let body = if self.match_token(&TokenKind::Colon) {
@@ -2263,7 +2328,7 @@ impl Parser {
             TokenKind::Null => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Ident("null".to_string()), span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Null, span: Span::new(start, end) })
             }
 
             TokenKind::Ident(name) => {

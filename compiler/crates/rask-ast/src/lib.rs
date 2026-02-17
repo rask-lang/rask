@@ -10,7 +10,7 @@ pub mod expr;
 pub mod stmt;
 pub mod decl;
 
-pub use span::Span;
+pub use span::{Span, LineMap};
 
 /// Unique identifier for AST nodes.
 ///

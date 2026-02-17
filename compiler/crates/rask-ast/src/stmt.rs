@@ -12,6 +12,15 @@ pub struct Stmt {
     pub span: Span,
 }
 
+/// Binding pattern in a for-in loop.
+#[derive(Debug, Clone)]
+pub enum ForBinding {
+    /// Single variable: `for x in ...`
+    Single(String),
+    /// Tuple destructuring: `for (h, v) in ...`
+    Tuple(Vec<String>),
+}
+
 /// The kind of statement.
 #[derive(Debug, Clone)]
 pub enum StmtKind {
@@ -74,7 +83,7 @@ pub enum StmtKind {
     /// For-in loop
     For {
         label: Option<String>,
-        binding: String,
+        binding: ForBinding,
         iter: Expr,
         body: Vec<Stmt>,
     },
