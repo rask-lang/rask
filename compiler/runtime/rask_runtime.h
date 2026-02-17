@@ -212,6 +212,35 @@ typedef struct RaskPanicCtx RaskPanicCtx;
 RaskPanicCtx *rask_panic_install(void);
 void          rask_panic_remove(void);
 
+// ─── Green scheduler (M:N) ──────────────────────────────────
+// Work-stealing scheduler with io_uring/epoll I/O engine.
+// Tasks are stackless state machines: poll_fn(state, ctx) → 0=READY, 1=PENDING.
+
+void      rask_runtime_init(int64_t worker_count);
+void      rask_runtime_shutdown(void);
+
+// Spawn a green task. poll_fn signature: int (*)(void *state, void *task_ctx).
+// state is heap-allocated, freed by scheduler on completion.
+void     *rask_green_spawn(void *poll_fn, void *state, int64_t state_size);
+int64_t   rask_green_join(void *handle);
+void      rask_green_detach(void *handle);
+int64_t   rask_green_cancel(void *handle);
+
+// Closure-based spawn (bridge for codegen before state machine transform).
+void     *rask_green_closure_spawn(void *closure_ptr);
+
+// Yield helpers — called by state machines to pause on I/O.
+void      rask_yield_read(int fd, void *buf, size_t len);
+void      rask_yield_write(int fd, const void *buf, size_t len);
+void      rask_yield_accept(int listen_fd);
+void      rask_yield_timeout(uint64_t ns);
+
+// Cooperative yield — re-enqueue current task for later polling.
+void      rask_yield(void);
+
+// Check cancel flag for the current green task.
+int       rask_green_task_is_cancelled(void);
+
 // ─── Threads ───────────────────────────────────────────────
 // Phase A concurrency: one OS thread per spawn (conc.strategy/A1).
 // TaskHandle is affine — must be joined, detached, or cancelled.
