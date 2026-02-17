@@ -701,31 +701,6 @@ fn collect_pattern_names(
     }
 }
 
-// =================================================================
-// MIR type size (for computing offsets in aggregates)
-// =================================================================
-
-/// Return byte size for a MirType. Used for array/tuple/struct store offsets.
-fn mir_type_size(ty: &MirType) -> u32 {
-    match ty {
-        MirType::Void => 0,
-        MirType::Bool | MirType::I8 | MirType::U8 => 1,
-        MirType::I16 | MirType::U16 => 2,
-        MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::String => 16,
-        MirType::Struct(id) => {
-            // Can't look up the layout without context — fallback to pointer size
-            let _ = id;
-            8
-        }
-        MirType::Enum(id) => {
-            let _ = id;
-            8
-        }
-        MirType::Array { elem, len } => mir_type_size(elem) * len,
-    }
-}
 
 // =================================================================
 // Operator mappings
