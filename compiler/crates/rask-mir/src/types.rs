@@ -29,6 +29,18 @@ pub enum MirType {
     FuncPtr(SignatureId),
 }
 
+impl MirType {
+    /// True for F32 and F64.
+    pub fn is_float(&self) -> bool {
+        matches!(self, MirType::F32 | MirType::F64)
+    }
+
+    /// True for unsigned integer types.
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, MirType::U8 | MirType::U16 | MirType::U32 | MirType::U64)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StructLayoutId(pub u32);
 

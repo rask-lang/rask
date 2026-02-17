@@ -144,9 +144,7 @@ impl Interpreter {
             "Instant" | "Duration" => self.call_time_type_method(type_name, method, args),
             "Path" => self.call_path_type_method(method, args),
             "f32x8" => self.call_simd_type_method(method, args),
-            "Rng" => Err(RuntimeError::TypeError(format!(
-                "Rng.{} is not yet implemented", method
-            ))),
+            "Rng" => self.call_rng_type_method(method, args),
             "Thread" => {
                 if method == "spawn" {
                     self.spawn_os_thread(args)

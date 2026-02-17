@@ -234,6 +234,36 @@ pub fn result_methods() -> &'static [MethodDef] {
     ]
 }
 
+/// Get methods for File
+pub fn file_methods() -> &'static [MethodDef] {
+    &[
+        MethodDef { name: "read_all", takes_self: true, params: &[], ret_ty: "Result<string, IoError>" },
+        MethodDef { name: "read_text", takes_self: true, params: &[], ret_ty: "Result<string, IoError>" },
+        MethodDef { name: "write", takes_self: true, params: &[("data", "string")], ret_ty: "Result<(), IoError>" },
+        MethodDef { name: "write_line", takes_self: true, params: &[("data", "string")], ret_ty: "Result<(), IoError>" },
+        MethodDef { name: "lines", takes_self: true, params: &[], ret_ty: "Result<Vec<string>, IoError>" },
+        MethodDef { name: "close", takes_self: true, params: &[], ret_ty: "()" },
+    ]
+}
+
+/// Get methods for Rng
+pub fn rng_methods() -> &'static [MethodDef] {
+    &[
+        // Static
+        MethodDef { name: "new", takes_self: false, params: &[], ret_ty: "Rng" },
+        MethodDef { name: "from_seed", takes_self: false, params: &[("seed", "i64")], ret_ty: "Rng" },
+        // Instance
+        MethodDef { name: "u64", takes_self: true, params: &[], ret_ty: "i64" },
+        MethodDef { name: "i64", takes_self: true, params: &[], ret_ty: "i64" },
+        MethodDef { name: "f64", takes_self: true, params: &[], ret_ty: "f64" },
+        MethodDef { name: "f32", takes_self: true, params: &[], ret_ty: "f64" },
+        MethodDef { name: "bool", takes_self: true, params: &[], ret_ty: "bool" },
+        MethodDef { name: "range", takes_self: true, params: &[("low", "i64"), ("high", "i64")], ret_ty: "i64" },
+        MethodDef { name: "shuffle", takes_self: true, params: &[("vec", "Vec<T>")], ret_ty: "()" },
+        MethodDef { name: "choice", takes_self: true, params: &[("vec", "Vec<T>")], ret_ty: "Option<T>" },
+    ]
+}
+
 /// Look up a method by type name and method name
 pub fn lookup_method(type_name: &str, method_name: &str) -> Option<&'static MethodDef> {
     let methods: &[MethodDef] = match type_name {
@@ -243,6 +273,8 @@ pub fn lookup_method(type_name: &str, method_name: &str) -> Option<&'static Meth
         "Pool" => pool_methods(),
         "Option" => option_methods(),
         "Result" => result_methods(),
+        "File" => file_methods(),
+        "Rng" => rng_methods(),
         _ => return None,
     };
 

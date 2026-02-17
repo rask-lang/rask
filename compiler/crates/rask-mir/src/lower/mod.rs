@@ -209,8 +209,33 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Inject signatures for stdlib module methods so return types resolve
+        for (name, ret) in [
+            ("cli_args", MirType::I64),
+            ("io_read_line", MirType::I64),
+            ("std_exit", MirType::Void),
+            ("fs_open", MirType::I64),
+            ("fs_create", MirType::I64),
+            ("fs_read_file", MirType::I64),
+            ("fs_write_file", MirType::Void),
+            ("fs_read_lines", MirType::I64),
+            ("fs_exists", MirType::Bool),
+            ("fs_canonicalize", MirType::I64),
+            ("fs_copy", MirType::I64),
+            ("fs_rename", MirType::Void),
+            ("fs_remove", MirType::Void),
+            ("fs_create_dir", MirType::Void),
+            ("fs_create_dir_all", MirType::Void),
+            ("fs_append_file", MirType::Void),
+            ("json_encode", MirType::I64),
+            ("json_decode", MirType::I64),
+            ("net_tcp_listen", MirType::I64),
+        ] {
+            func_sigs.entry(name.to_string()).or_insert(FuncSig { ret_ty: ret });
+        }
+
         let mut lowerer = MirLowerer {
-            builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty),
+            builder: BlockBuilder::new(fn_decl.name.clone(), ret_ty.clone()),
             locals: HashMap::new(),
             func_sigs,
             loop_stack: Vec::new(),
@@ -234,9 +259,15 @@ impl<'a> MirLowerer<'a> {
             lowerer.lower_stmt(stmt)?;
         }
 
-        // Implicit void return for functions that don't explicitly return
+        // Implicit return for functions that don't explicitly return.
+        // Void functions get `return`, non-void get Unreachable (caller
+        // must ensure all paths return explicitly).
         if lowerer.builder.current_block_unterminated() {
-            lowerer.builder.terminate(MirTerminator::Return { value: None });
+            if matches!(ret_ty, MirType::Void) {
+                lowerer.builder.terminate(MirTerminator::Return { value: None });
+            } else {
+                lowerer.builder.terminate(MirTerminator::Unreachable);
+            }
         }
 
         let main_fn = lowerer.builder.finish();
@@ -770,7 +801,7 @@ fn lower_unaryop(op: UnaryOp) -> crate::operand::UnaryOp {
 }
 
 /// Check if a name is a known enum variant (not a variable binding).
-fn is_variant_name(name: &str) -> bool {
+pub(crate) fn is_variant_name(name: &str) -> bool {
     matches!(name, "Some" | "None" | "Ok" | "Err")
         || name.contains('.')  // Qualified variant like "Status.Active"
         || name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
@@ -783,7 +814,7 @@ fn is_variant_name(name: &str) -> bool {
 /// (`cli`, `fs`, `std`, `io`) that support static method syntax.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        || matches!(name, "string" | "cli" | "fs" | "std" | "io")
+        || matches!(name, "string" | "cli" | "fs" | "std" | "io" | "json" | "net")
 }
 
 /// Determine result type for a binary operation.

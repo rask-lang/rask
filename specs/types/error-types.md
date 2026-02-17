@@ -41,7 +41,7 @@ enum Result<T, E> {
 | `T?` | `Option<T>` | might be absent |
 | `T or E` | `Result<T, E>` | might fail with E |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func read_file(path: string) -> string or IoError        // Result<string, IoError>
 func load() -> Config or (IoError | ParseError)           // Result<Config, IoError | ParseError>
@@ -78,7 +78,7 @@ Force unwrap uses operators, not methods:
 | **ER5: try binding** | `try` binds to full following expression including chains |
 | **ER6: try on Option** | `try` also works on `Option` — propagates `None` |
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 func process() -> Data or IoError {
     const file = try open(path)

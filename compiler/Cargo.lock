@@ -1047,6 +1047,8 @@ dependencies = [
  "rask-interp",
  "rask-lexer",
  "rask-parser",
+ "rask-resolve",
+ "rask-types",
 ]
 
 [[package]]

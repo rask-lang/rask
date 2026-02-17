@@ -13,6 +13,13 @@ const RUNTIME_SOURCES: &[&str] = &[
     "thread.c",
     "channel.c",
     "sync.c",
+    "vec.c",
+    "map.c",
+    "pool.c",
+    "string.c",
+    "green.c",
+    "io_uring_engine.c",
+    "io_epoll_engine.c",
 ];
 
 /// Find the runtime C files, compile them, and link with the object file.
