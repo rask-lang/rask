@@ -11,6 +11,7 @@ mod display;
 mod function;
 mod operand;
 mod stmt;
+pub mod transform;
 mod types;
 
 pub mod lower;

@@ -306,6 +306,9 @@ extern char    *rask_panic_take_message(void);
 
 // ─── Execute a single task ──────────────────────────────────
 
+// Forward declaration — ensure hooks run LIFO on task cancel/panic
+static void run_ensure_hooks(void);
+
 static void execute_task(GreenScheduler *s, GreenTask *t) {
     atomic_store_explicit(&t->task_state, TASK_STATE_RUNNING,
                           memory_order_release);
@@ -320,7 +323,8 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
         rask_panic_activate();
         poll_result = t->poll_fn(t->state, t);
     } else {
-        // Panicked
+        // Panicked — run cleanup hooks before completing
+        run_ensure_hooks();
         t->panic_msg = rask_panic_take_message();
         poll_result = RASK_POLL_READY;
         t->result = -1;
@@ -330,7 +334,8 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
     tl_current_task = NULL;
 
     if (poll_result == RASK_POLL_READY) {
-        // Task complete
+        // Task complete — run remaining ensure hooks
+        run_ensure_hooks();
         atomic_store_explicit(&t->task_state, TASK_STATE_COMPLETE,
                               memory_order_release);
         task_mark_complete(t);
@@ -690,4 +695,101 @@ void *rask_green_closure_spawn(void *closure_ptr) {
     ps->alloc_base = closure_ptr;
 
     return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
+}
+
+// ─── Async I/O wrappers (dual-path) ─────────────────────────
+//
+// Inside a green task: submit async I/O, result staged in GreenTask.
+// Outside a green task: fall back to blocking syscalls.
+
+#include <unistd.h>
+#include <sys/socket.h>
+#include <errno.h>
+
+int64_t rask_async_read(int fd, void *buf, int64_t len) {
+    GreenTask *t = tl_current_task;
+    if (t && g_sched && g_sched->io) {
+        // Green task path: submit async read, result in t->io_result/io_err
+        rask_yield_read(fd, buf, (size_t)len);
+        // On resume, io_result has bytes read (or -1 on error)
+        return t->io_result;
+    }
+    // Blocking fallback
+    ssize_t n = read(fd, buf, (size_t)len);
+    return (int64_t)n;
+}
+
+int64_t rask_async_write(int fd, const void *buf, int64_t len) {
+    GreenTask *t = tl_current_task;
+    if (t && g_sched && g_sched->io) {
+        rask_yield_write(fd, buf, (size_t)len);
+        return t->io_result;
+    }
+    ssize_t n = write(fd, buf, (size_t)len);
+    return (int64_t)n;
+}
+
+int64_t rask_async_accept(int listen_fd) {
+    GreenTask *t = tl_current_task;
+    if (t && g_sched && g_sched->io) {
+        rask_yield_accept(listen_fd);
+        return t->io_result;
+    }
+    int client = accept(listen_fd, NULL, NULL);
+    return (int64_t)client;
+}
+
+// ─── Green-aware sleep ──────────────────────────────────────
+
+void rask_green_sleep_ns(int64_t ns) {
+    GreenTask *t = tl_current_task;
+    if (t && g_sched) {
+        rask_yield_timeout((uint64_t)ns);
+        return;
+    }
+    // Blocking fallback
+    struct timespec ts;
+    ts.tv_sec  = ns / 1000000000LL;
+    ts.tv_nsec = ns % 1000000000LL;
+    nanosleep(&ts, NULL);
+}
+
+// ─── Ensure hooks (LIFO cleanup stack) ──────────────────────
+//
+// Per-task linked list of cleanup callbacks. Run LIFO on cancel.
+
+typedef struct EnsureHook {
+    void (*fn)(void *ctx);
+    void *ctx;
+    struct EnsureHook *next;
+} EnsureHook;
+
+static __thread EnsureHook *tl_ensure_stack = NULL;
+
+void rask_ensure_push(void (*fn)(void *), void *ctx) {
+    EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
+    if (!hook) return;
+    hook->fn   = fn;
+    hook->ctx  = ctx;
+    hook->next = tl_ensure_stack;
+    tl_ensure_stack = hook;
+}
+
+void rask_ensure_pop(void) {
+    EnsureHook *hook = tl_ensure_stack;
+    if (!hook) return;
+    tl_ensure_stack = hook->next;
+    free(hook);
+}
+
+// Run all ensure hooks LIFO (called on cancel/panic before task completes).
+static void run_ensure_hooks(void) {
+    while (tl_ensure_stack) {
+        EnsureHook *hook = tl_ensure_stack;
+        tl_ensure_stack = hook->next;
+        if (hook->fn) {
+            hook->fn(hook->ctx);
+        }
+        free(hook);
+    }
 }
