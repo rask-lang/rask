@@ -14,7 +14,7 @@ mod reachability;
 pub use instantiate::instantiate_function;
 pub use layout::{
     compute_enum_layout, compute_struct_layout, type_size_align, EnumLayout, FieldLayout,
-    StructLayout, VariantLayout,
+    LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::Monomorphizer;
 
@@ -58,15 +58,21 @@ pub fn monomorphize(
     // Compute layouts for concrete (non-generic) struct/enum types.
     // Generic types need concrete type_args for correct field sizes;
     // their layouts are computed per-instantiation, not here.
+    // Layout cache lets structs reference other user-defined types.
+    let mut layout_cache = LayoutCache::new();
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
     for decl in decls {
         match &decl.kind {
             DeclKind::Struct(s) if s.type_params.is_empty() => {
-                struct_layouts.push(compute_struct_layout(decl, &[]));
+                let layout = compute_struct_layout(decl, &[], &layout_cache);
+                layout_cache.insert(s.name.clone(), (layout.size, layout.align));
+                struct_layouts.push(layout);
             }
             DeclKind::Enum(e) if e.type_params.is_empty() => {
-                enum_layouts.push(compute_enum_layout(decl, &[]));
+                let layout = compute_enum_layout(decl, &[], &layout_cache);
+                layout_cache.insert(e.name.clone(), (layout.size, layout.align));
+                enum_layouts.push(layout);
             }
             _ => {}
         }
@@ -174,6 +180,7 @@ mod tests {
                 is_pub: false,
                 is_comptime: false,
                 is_unsafe: false,
+                abi: None,
                 attrs: vec![],
             }),
             span: sp(),
@@ -217,6 +224,7 @@ mod tests {
                 is_pub: false,
                 is_comptime: false,
                 is_unsafe: false,
+                abi: None,
                 attrs: vec![],
             }),
             span: sp(),
@@ -579,6 +587,7 @@ mod tests {
             is_pub: false,
             is_comptime: false,
             is_unsafe: false,
+            abi: None,
             attrs: vec![],
         }
     }

@@ -421,6 +421,7 @@ impl<'a> Monomorphizer<'a> {
             | ExprKind::String(_)
             | ExprKind::Char(_)
             | ExprKind::Bool(_)
+            | ExprKind::Null
             | ExprKind::Ident(_) => {}
         }
     }
