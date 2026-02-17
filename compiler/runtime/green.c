@@ -24,6 +24,8 @@
 #include <setjmp.h>
 #include <unistd.h>
 #include <sched.h>
+#include <sys/socket.h>
+#include <errno.h>
 
 // ─── Constants ──────────────────────────────────────────────
 
@@ -62,6 +64,9 @@ typedef struct GreenTask {
     // I/O result staging (set by I/O callback before re-enqueue)
     int64_t         io_result;
     int             io_err;
+
+    // Per-task ensure hook stack (LIFO cleanup on cancel/panic)
+    void           *ensure_stack;
 } GreenTask;
 
 // ─── Task handle (returned to user code) ────────────────────
@@ -304,12 +309,57 @@ extern jmp_buf *rask_panic_jmpbuf(void);
 extern void     rask_panic_activate(void);
 extern char    *rask_panic_take_message(void);
 
+// ─── Ensure hooks (LIFO cleanup stack) ──────────────────────
+//
+// Per-task linked list of cleanup callbacks. Run LIFO on cancel/panic.
+// During task execution tl_ensure_stack points to the active task's stack.
+// execute_task saves/restores it from GreenTask.ensure_stack on entry/exit
+// so hooks don't leak between tasks sharing a worker thread.
+
+typedef struct EnsureHook {
+    void (*fn)(void *ctx);
+    void *ctx;
+    struct EnsureHook *next;
+} EnsureHook;
+
+static __thread EnsureHook *tl_ensure_stack = NULL;
+
+void rask_ensure_push(void (*fn)(void *), void *ctx) {
+    EnsureHook *hook = (EnsureHook *)malloc(sizeof(EnsureHook));
+    if (!hook) return;
+    hook->fn   = fn;
+    hook->ctx  = ctx;
+    hook->next = tl_ensure_stack;
+    tl_ensure_stack = hook;
+}
+
+void rask_ensure_pop(void) {
+    EnsureHook *hook = tl_ensure_stack;
+    if (!hook) return;
+    tl_ensure_stack = hook->next;
+    free(hook);
+}
+
+static void run_ensure_hooks(void) {
+    while (tl_ensure_stack) {
+        EnsureHook *hook = tl_ensure_stack;
+        tl_ensure_stack = hook->next;
+        if (hook->fn) {
+            hook->fn(hook->ctx);
+        }
+        free(hook);
+    }
+}
+
 // ─── Execute a single task ──────────────────────────────────
 
 static void execute_task(GreenScheduler *s, GreenTask *t) {
     atomic_store_explicit(&t->task_state, TASK_STATE_RUNNING,
                           memory_order_release);
     tl_current_task = t;
+
+    // Restore per-task ensure hook stack (may have hooks from previous polls)
+    tl_ensure_stack = (EnsureHook *)t->ensure_stack;
 
     // Install panic handler for this task invocation
     rask_panic_install();
@@ -320,17 +370,26 @@ static void execute_task(GreenScheduler *s, GreenTask *t) {
         rask_panic_activate();
         poll_result = t->poll_fn(t->state, t);
     } else {
-        // Panicked
+        // Panicked — run cleanup hooks before completing
+        run_ensure_hooks();
         t->panic_msg = rask_panic_take_message();
         poll_result = RASK_POLL_READY;
         t->result = -1;
     }
 
     rask_panic_remove();
+
+    // Save ensure hook stack back to task before switching away
+    t->ensure_stack = tl_ensure_stack;
+    tl_ensure_stack = NULL;
     tl_current_task = NULL;
 
     if (poll_result == RASK_POLL_READY) {
-        // Task complete
+        // Task complete — run remaining ensure hooks
+        tl_ensure_stack = (EnsureHook *)t->ensure_stack;
+        t->ensure_stack = NULL;
+        run_ensure_hooks();
+
         atomic_store_explicit(&t->task_state, TASK_STATE_COMPLETE,
                               memory_order_release);
         task_mark_complete(t);
@@ -691,3 +750,39 @@ void *rask_green_closure_spawn(void *closure_ptr) {
 
     return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
 }
+
+// ─── I/O wrappers ───────────────────────────────────────────
+//
+// Blocking syscall wrappers. Async I/O inside green tasks requires the
+// state machine to call rask_yield_read/write/accept directly and return
+// PENDING — the I/O completion callback re-enqueues the task with io_result
+// populated. These wrappers exist for non-green contexts and for use by
+// channel retry loops that handle yielding internally.
+
+int64_t rask_async_read(int fd, void *buf, int64_t len) {
+    ssize_t n = read(fd, buf, (size_t)len);
+    return (int64_t)n;
+}
+
+int64_t rask_async_write(int fd, const void *buf, int64_t len) {
+    ssize_t n = write(fd, buf, (size_t)len);
+    return (int64_t)n;
+}
+
+int64_t rask_async_accept(int listen_fd) {
+    int client = accept(listen_fd, NULL, NULL);
+    return (int64_t)client;
+}
+
+// ─── Green-aware sleep ──────────────────────────────────────
+//
+// State machine code calls rask_yield_timeout directly and returns PENDING.
+// This wrapper is for non-yielding contexts (closure-based spawns, OS threads).
+
+void rask_green_sleep_ns(int64_t ns) {
+    struct timespec ts;
+    ts.tv_sec  = ns / 1000000000LL;
+    ts.tv_nsec = ns % 1000000000LL;
+    nanosleep(&ts, NULL);
+}
+

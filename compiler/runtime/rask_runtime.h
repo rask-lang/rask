@@ -326,6 +326,34 @@ void    rask_sender_drop_i64(int64_t tx);
 void    rask_recver_drop_i64(int64_t rx);
 int64_t rask_sender_clone_i64(int64_t tx);
 
+// ─── Async I/O (dual-path: green task or blocking) ──────────
+// Inside a green task, these submit async ops and return PENDING.
+// Outside a green task, they fall back to blocking syscalls.
+
+int64_t rask_async_read(int fd, void *buf, int64_t len);
+int64_t rask_async_write(int fd, const void *buf, int64_t len);
+int64_t rask_async_accept(int listen_fd);
+
+// ─── Async channels (yield-based) ──────────────────────────
+// Non-blocking try + yield loop for green tasks.
+// Outside green tasks, falls back to blocking channel ops.
+
+int64_t rask_channel_send_async(int64_t tx, int64_t value);
+int64_t rask_channel_recv_async(int64_t rx);
+
+// ─── Green-aware sleep ──────────────────────────────────────
+// Yields to scheduler in green tasks, blocking nanosleep otherwise.
+
+void rask_green_sleep_ns(int64_t ns);
+
+// ─── Ensure hooks (LIFO cleanup) ───────────────────────────
+// Per-task cleanup stack. Hooks run LIFO on cancel or panic.
+
+typedef void (*RaskEnsureFn)(void *ctx);
+
+void rask_ensure_push(RaskEnsureFn fn, void *ctx);
+void rask_ensure_pop(void);
+
 // ─── Mutex ─────────────────────────────────────────────────
 // Exclusive access wrapper. Closure-based: data accessed only inside lock.
 // Wraps pthread_mutex (conc.sync/MX1-MX2).

@@ -587,36 +587,160 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
         },
 
-        // ── Concurrency: spawn/join/detach ──────────────────────────
+        // ── Concurrency: spawn/join/detach (green scheduler) ────────
         StdlibEntry {
             mir_name: "spawn",
-            c_name: "rask_closure_spawn",
+            c_name: "rask_green_closure_spawn",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
             mir_name: "join",
-            c_name: "rask_task_join_simple",
+            c_name: "rask_green_join",
             params: &[types::I64],
             ret_ty: Some(types::I64),
         },
         StdlibEntry {
             mir_name: "detach",
-            c_name: "rask_task_detach",
+            c_name: "rask_green_detach",
             params: &[types::I64],
             ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "cancel",
+            c_name: "rask_green_cancel",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
         },
         StdlibEntry {
             mir_name: "rask_task_cancelled",
-            c_name: "rask_task_cancelled",
+            c_name: "rask_green_task_is_cancelled",
             params: &[],
-            ret_ty: Some(types::I8),
+            ret_ty: Some(types::I32),
         },
         StdlibEntry {
             mir_name: "rask_sleep_ns",
-            c_name: "rask_sleep_ns",
+            c_name: "rask_green_sleep_ns",
             params: &[types::I64],
             ret_ty: None,
+        },
+
+        // ── Concurrency: runtime init/shutdown ───────────────────────
+        StdlibEntry {
+            mir_name: "rask_runtime_init",
+            c_name: "rask_runtime_init",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_runtime_shutdown",
+            c_name: "rask_runtime_shutdown",
+            params: &[],
+            ret_ty: None,
+        },
+
+        // ── Concurrency: green spawn (poll-based state machine) ──────
+        StdlibEntry {
+            mir_name: "rask_green_spawn",
+            c_name: "rask_green_spawn",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Concurrency: yield helpers ───────────────────────────────
+        StdlibEntry {
+            mir_name: "rask_yield",
+            c_name: "rask_yield",
+            params: &[],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_yield_timeout",
+            c_name: "rask_yield_timeout",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_yield_read",
+            c_name: "rask_yield_read",
+            params: &[types::I32, types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_yield_write",
+            c_name: "rask_yield_write",
+            params: &[types::I32, types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_yield_accept",
+            c_name: "rask_yield_accept",
+            params: &[types::I32],
+            ret_ty: None,
+        },
+
+        // ── Async I/O (dual-path: green task or blocking) ─────────────
+        StdlibEntry {
+            mir_name: "rask_async_read",
+            c_name: "rask_async_read",
+            params: &[types::I32, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "rask_async_write",
+            c_name: "rask_async_write",
+            params: &[types::I32, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "rask_async_accept",
+            c_name: "rask_async_accept",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Async channels (yield-based) ─────────────────────────────
+        StdlibEntry {
+            mir_name: "rask_channel_send_async",
+            c_name: "rask_channel_send_async",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+        },
+        StdlibEntry {
+            mir_name: "rask_channel_recv_async",
+            c_name: "rask_channel_recv_async",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+        },
+
+        // ── Green-aware sleep ────────────────────────────────────────
+        StdlibEntry {
+            mir_name: "rask_green_sleep_ns",
+            c_name: "rask_green_sleep_ns",
+            params: &[types::I64],
+            ret_ty: None,
+        },
+
+        // ── Ensure hooks (LIFO cleanup) ──────────────────────────────
+        StdlibEntry {
+            mir_name: "rask_ensure_push",
+            c_name: "rask_ensure_push",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+        },
+        StdlibEntry {
+            mir_name: "rask_ensure_pop",
+            c_name: "rask_ensure_pop",
+            params: &[],
+            ret_ty: None,
+        },
+
+        // ── Memory allocation ─────────────────────────────────────────
+        StdlibEntry {
+            mir_name: "rask_alloc",
+            c_name: "rask_alloc",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
         },
 
         // ── Concurrency: channels ──────────────────────────────────

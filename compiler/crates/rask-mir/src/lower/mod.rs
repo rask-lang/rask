@@ -701,31 +701,6 @@ fn collect_pattern_names(
     }
 }
 
-// =================================================================
-// MIR type size (for computing offsets in aggregates)
-// =================================================================
-
-/// Return byte size for a MirType. Used for array/tuple/struct store offsets.
-fn mir_type_size(ty: &MirType) -> u32 {
-    match ty {
-        MirType::Void => 0,
-        MirType::Bool | MirType::I8 | MirType::U8 => 1,
-        MirType::I16 | MirType::U16 => 2,
-        MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::String => 16,
-        MirType::Struct(id) => {
-            // Can't look up the layout without context — fallback to pointer size
-            let _ = id;
-            8
-        }
-        MirType::Enum(id) => {
-            let _ = id;
-            8
-        }
-        MirType::Array { elem, len } => mir_type_size(elem) * len,
-    }
-}
 
 // =================================================================
 // Operator mappings
@@ -1831,5 +1806,57 @@ mod tests {
         let f = lower_one(&decl);
         assert!(find_assign_binop(&f));
         assert!(!find_call(&f, "i32_add"));
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Concurrency: using Multitasking {} emits runtime init/shutdown
+    // ═══════════════════════════════════════════════════════════
+
+    #[test]
+    fn lower_using_multitasking_emits_init_shutdown() {
+        let using_block = Expr {
+            id: NodeId(700),
+            kind: ExprKind::UsingBlock {
+                name: "Multitasking".to_string(),
+                args: vec![],
+                body: vec![
+                    expr_stmt(call_expr("work", vec![])),
+                ],
+            },
+            span: sp(),
+        };
+        let work = make_fn("work", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![
+            expr_stmt(using_block),
+            return_stmt(None),
+        ]);
+        let f = lower(&decl, &[decl.clone(), work]);
+        assert!(find_call(&f, "rask_runtime_init"), "missing rask_runtime_init call");
+        assert!(find_call(&f, "rask_runtime_shutdown"), "missing rask_runtime_shutdown call");
+        assert!(find_call(&f, "work"), "missing body work() call");
+    }
+
+    #[test]
+    fn lower_using_non_multitasking_no_init() {
+        let using_block = Expr {
+            id: NodeId(701),
+            kind: ExprKind::UsingBlock {
+                name: "ThreadPool".to_string(),
+                args: vec![],
+                body: vec![
+                    expr_stmt(call_expr("work", vec![])),
+                ],
+            },
+            span: sp(),
+        };
+        let work = make_fn("work", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![
+            expr_stmt(using_block),
+            return_stmt(None),
+        ]);
+        let f = lower(&decl, &[decl.clone(), work]);
+        assert!(!find_call(&f, "rask_runtime_init"), "ThreadPool should not emit init");
+        assert!(!find_call(&f, "rask_runtime_shutdown"), "ThreadPool should not emit shutdown");
+        assert!(find_call(&f, "work"));
     }
 }
