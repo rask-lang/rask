@@ -25,6 +25,8 @@ pub enum ExprKind {
     Char(char),
     /// Boolean literal
     Bool(bool),
+    /// Null pointer literal
+    Null,
     /// Identifier
     Ident(String),
     /// Binary operation

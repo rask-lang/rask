@@ -91,6 +91,8 @@ pub struct FnDecl {
     pub is_pub: bool,
     pub is_comptime: bool,
     pub is_unsafe: bool,
+    /// ABI for exported functions (e.g. `extern "C" func`)
+    pub abi: Option<String>,
     /// Attributes like `@entry`, `@inline`, etc.
     pub attrs: Vec<String>,
 }
@@ -241,6 +243,22 @@ pub struct PackageDecl {
     pub version: String,
     pub deps: Vec<DepDecl>,
     pub metadata: Vec<(String, String)>,
+    pub profiles: Vec<ProfileDecl>,
+}
+
+/// A build profile declaration inside a package block.
+///
+/// ```rask
+/// profile "embedded" {
+///     inherits: "release"
+///     opt_level: "z"
+///     panic: "abort"
+/// }
+/// ```
+#[derive(Debug, Clone)]
+pub struct ProfileDecl {
+    pub name: String,
+    pub settings: Vec<(String, String)>,
 }
 
 /// A dependency declaration inside a package block.
