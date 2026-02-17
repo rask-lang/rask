@@ -4,7 +4,7 @@
 
 use super::{
     binop_result_type, is_type_constructor_name, is_variant_name, lower_binop, lower_unaryop,
-    mir_type_size, operator_method_to_binop, operator_method_to_unaryop, LoweringError,
+    operator_method_to_binop, operator_method_to_unaryop, LoweringError,
     MirLowerer, TypedOperand,
 };
 use crate::{
@@ -527,7 +527,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     lowered.push(elem_op);
                 }
-                let elem_size = mir_type_size(&elem_ty);
+                let elem_size = elem_ty.size();
                 let array_ty = MirType::Array {
                     elem: Box::new(elem_ty),
                     len: elems.len() as u32,
@@ -549,7 +549,7 @@ impl<'a> MirLowerer<'a> {
                 let mut offset = 0u32;
                 for elem in elems.iter() {
                     let (elem_op, elem_ty) = self.lower_expr(elem)?;
-                    let elem_size = mir_type_size(&elem_ty);
+                    let elem_size = elem_ty.size();
                     let elem_align = elem_size.max(1);
                     // Align offset for this element
                     offset = (offset + elem_align - 1) & !(elem_align - 1);
@@ -1387,7 +1387,7 @@ impl<'a> MirLowerer<'a> {
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
-            let size = mir_type_size(ty);
+            let size = ty.size();
             // 8-byte alignment
             let aligned_offset = (env_offset + 7) & !7;
             captures.push(ClosureCapture {
@@ -1496,7 +1496,7 @@ impl<'a> MirLowerer<'a> {
         let mut captures = Vec::new();
         let mut env_offset = 0u32;
         for (_name, local_id, ty) in &free_vars {
-            let size = mir_type_size(ty);
+            let size = ty.size();
             let aligned_offset = (env_offset + 7) & !7;
             captures.push(ClosureCapture {
                 local_id: *local_id,

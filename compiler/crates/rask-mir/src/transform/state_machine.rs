@@ -336,28 +336,6 @@ fn compute_liveness(segments: &[Segment]) -> HashSet<LocalId> {
 
 // ── State struct layout ─────────────────────────────────────────────
 
-fn mir_type_size(ty: &MirType) -> u32 {
-    match ty {
-        MirType::Void => 0,
-        MirType::Bool | MirType::I8 | MirType::U8 => 1,
-        MirType::I16 | MirType::U16 => 2,
-        MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-        MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_) => 8,
-        MirType::String => 16,
-        MirType::Struct(_) | MirType::Enum(_) => 8,
-        MirType::Array { elem, len } => mir_type_size(elem) * len,
-    }
-}
-
-fn mir_type_align(ty: &MirType) -> u32 {
-    match ty {
-        MirType::Bool | MirType::I8 | MirType::U8 | MirType::Void => 1,
-        MirType::I16 | MirType::U16 => 2,
-        MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
-        _ => 8,
-    }
-}
-
 fn align_up(offset: u32, align: u32) -> u32 {
     (offset + align - 1) & !(align - 1)
 }
@@ -391,8 +369,8 @@ fn build_state_layout(
 
     // Captures — always included (needed by segment 0)
     for cap in captures {
-        let size = mir_type_size(&cap.ty);
-        let align = mir_type_align(&cap.ty);
+        let size = cap.ty.size();
+        let align = cap.ty.align();
         offset = align_up(offset, align);
 
         let name = func.locals.iter()
@@ -423,8 +401,8 @@ fn build_state_layout(
     for local_id in live_locals {
         let local = func.locals.iter().find(|l| l.id == local_id);
         let ty = local.map(|l| l.ty.clone()).unwrap_or(MirType::I64);
-        let size = mir_type_size(&ty);
-        let align = mir_type_align(&ty);
+        let size = ty.size();
+        let align = ty.align();
         offset = align_up(offset, align);
 
         let name = local

@@ -74,7 +74,7 @@ impl<'a> FunctionBuilder<'a> {
                 let size = match &l.ty {
                     MirType::Struct(id) => self.struct_layouts.get(id.0 as usize).map(|sl| sl.size),
                     MirType::Enum(id) => self.enum_layouts.get(id.0 as usize).map(|el| el.size),
-                    MirType::Array { elem, len } => Some(crate::types::mir_type_size(elem) * len),
+                    MirType::Array { elem, len } => Some(elem.size() * len),
                     _ => None,
                 };
                 size.filter(|&s| s > 0).map(|s| (l.id, s))
