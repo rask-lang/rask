@@ -29,6 +29,13 @@ pub enum TypeConstraint {
     },
 }
 
+/// Kind of unsuffixed literal (for deferred defaulting).
+#[derive(Debug, Clone, Copy)]
+pub enum LiteralKind {
+    Integer,
+    Float,
+}
+
 /// State for type inference and unification.
 #[derive(Debug, Default)]
 pub struct InferenceContext {
@@ -38,6 +45,8 @@ pub struct InferenceContext {
     pub(super) substitutions: HashMap<TypeVarId, Type>,
     /// Constraints collected during inference.
     pub(super) constraints: Vec<TypeConstraint>,
+    /// Type vars created for unsuffixed literals. Defaults applied after solving.
+    pub(super) literal_vars: HashMap<TypeVarId, LiteralKind>,
 }
 
 impl InferenceContext {
@@ -50,6 +59,29 @@ impl InferenceContext {
         let id = TypeVarId(self.next_var);
         self.next_var += 1;
         Type::Var(id)
+    }
+
+    /// Create a fresh type variable for an unsuffixed literal.
+    /// After constraint solving, unresolved literal vars default to i32/f64.
+    pub fn fresh_literal_var(&mut self, kind: LiteralKind) -> Type {
+        let id = TypeVarId(self.next_var);
+        self.next_var += 1;
+        self.literal_vars.insert(id, kind);
+        Type::Var(id)
+    }
+
+    /// Apply defaults for unresolved literal type vars.
+    pub fn apply_literal_defaults(&mut self) {
+        for (&var_id, &kind) in self.literal_vars.iter() {
+            // Only default if not yet resolved
+            if !self.substitutions.contains_key(&var_id) {
+                let default = match kind {
+                    LiteralKind::Integer => Type::I32,
+                    LiteralKind::Float => Type::F64,
+                };
+                self.substitutions.insert(var_id, default);
+            }
+        }
     }
 
     /// Add a constraint.

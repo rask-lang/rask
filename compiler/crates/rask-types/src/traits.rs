@@ -348,19 +348,38 @@ impl<'a> TraitChecker<'a> {
 
     /// Check if two method signatures match.
     fn signatures_match(&self, required: &MethodSig, found: &MethodSig) -> bool {
-        // Check self parameter
         if required.self_param != found.self_param {
             return false;
         }
 
-        // Check parameter count
         if required.params.len() != found.params.len() {
             return false;
         }
 
-        // Note: For full signature matching, we'd need to unify type variables
-        // and check parameter/return types. For now, we do a simpler check
-        // that the shapes match (same number of params).
+        // Check parameter modes and types per position.
+        // Type::Var represents Self in builtin trait signatures — skip type
+        // comparison when either side is a type variable.
+        for ((req_ty, req_mode), (found_ty, found_mode)) in
+            required.params.iter().zip(found.params.iter())
+        {
+            if req_mode != found_mode {
+                return false;
+            }
+            if !matches!(req_ty, Type::Var(_))
+                && !matches!(found_ty, Type::Var(_))
+                && req_ty != found_ty
+            {
+                return false;
+            }
+        }
+
+        // Check return type (skip type variables)
+        if !matches!(required.ret, Type::Var(_))
+            && !matches!(found.ret, Type::Var(_))
+            && required.ret != found.ret
+        {
+            return false;
+        }
 
         true
     }

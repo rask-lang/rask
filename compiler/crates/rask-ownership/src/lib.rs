@@ -10,13 +10,13 @@ mod state;
 mod error;
 
 pub use state::{BindingState, BorrowMode, BorrowScope, ActiveBorrow};
-pub use error::{OwnershipError, OwnershipErrorKind, AccessKind};
+pub use error::{OwnershipError, OwnershipErrorKind, AccessKind, MoveReason};
 
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_types::{Type, TypedProgram, extract_projection};
 
@@ -46,6 +46,8 @@ pub struct OwnershipChecker<'a> {
     current_block: u32,
     /// Current statement ID for instant borrows.
     current_stmt: u32,
+    /// Type of each binding, for generating move-reason diagnostics.
+    binding_types: HashMap<String, Type>,
     /// Bindings that are @resource types (must be consumed).
     resource_bindings: HashSet<String>,
     /// Resource bindings registered with `ensure` (consumption committed).
@@ -61,6 +63,7 @@ impl<'a> OwnershipChecker<'a> {
         Self {
             program,
             bindings: HashMap::new(),
+            binding_types: HashMap::new(),
             borrows: Vec::new(),
             current_block: 0,
             current_stmt: 0,
@@ -195,6 +198,9 @@ impl<'a> OwnershipChecker<'a> {
                 // let creates mutable binding - moves the value
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                    self.binding_types.insert(name.clone(), t);
+                }
                 // Track resource types
                 if let Some(ty_str) = ty {
                     if self.is_resource_type_name(ty_str) {
@@ -216,6 +222,9 @@ impl<'a> OwnershipChecker<'a> {
                 // const creates immutable binding - borrows the value
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
+                if let Some(t) = self.program.node_types.get(&init.id).cloned() {
+                    self.binding_types.insert(name.clone(), t);
+                }
                 // Track resource types
                 if let Some(ty_str) = ty {
                     if self.is_resource_type_name(ty_str) {
@@ -257,8 +266,16 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::For { label: _, binding, iter, body } => {
                 self.check_expr(iter);
-                // Register loop binding
-                self.bindings.insert(binding.clone(), BindingState::Owned);
+                match binding {
+                    ForBinding::Single(name) => {
+                        self.bindings.insert(name.clone(), BindingState::Owned);
+                    }
+                    ForBinding::Tuple(names) => {
+                        for name in names {
+                            self.bindings.insert(String::clone(name), BindingState::Owned);
+                        }
+                    }
+                }
                 self.check_block(body);
             }
             StmtKind::Loop { label: _, body } => {
@@ -295,10 +312,14 @@ impl<'a> OwnershipChecker<'a> {
                 // Check if this identifier is used after move
                 if let Some(state) = self.bindings.get(name) {
                     if let BindingState::Moved { at } = state {
+                        let reason = self.program.node_types.get(&expr.id)
+                            .map(|ty| self.move_reason(ty))
+                            .unwrap_or_else(|| self.move_reason_for(name));
                         self.errors.push(OwnershipError {
                             kind: OwnershipErrorKind::UseAfterMove {
                                 name: name.clone(),
                                 moved_at: *at,
+                                reason,
                             },
                             span: expr.span,
                         });
@@ -306,7 +327,7 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_)
-            | ExprKind::Char(_) | ExprKind::Bool(_) => {}
+            | ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null => {}
 
             ExprKind::Binary { left, op: _, right } => {
                 self.check_expr(left);
@@ -523,10 +544,12 @@ impl<'a> OwnershipChecker<'a> {
                                     return;
                                 }
                                 BindingState::Moved { at } => {
+                                    let reason = self.move_reason_for(&source_name);
                                     self.errors.push(OwnershipError {
                                         kind: OwnershipErrorKind::UseAfterMove {
                                             name: source_name.clone(),
                                             moved_at: *at,
+                                            reason,
                                         },
                                         span,
                                     });
@@ -612,10 +635,12 @@ impl<'a> OwnershipChecker<'a> {
                     }
                 }
                 BindingState::Moved { at } => {
+                    let reason = self.move_reason_for(&source_name);
                     self.errors.push(OwnershipError {
                         kind: OwnershipErrorKind::UseAfterMove {
                             name: source_name,
                             moved_at: *at,
+                            reason,
                         },
                         span,
                     });
@@ -689,6 +714,12 @@ impl<'a> OwnershipChecker<'a> {
             // Type variables: conservative
             Type::Var(_) => false,
 
+            // Raw pointers are always Copy (just an address)
+            Type::RawPtr(_) => true,
+
+            // SIMD vectors: NOT Copy (large, stack-allocated)
+            Type::SimdVector { .. } => false,
+
             // Unresolved types: conservative
             Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => false,
 
@@ -731,6 +762,74 @@ impl<'a> OwnershipChecker<'a> {
             // Pointers/references/slices: fat pointer
             Type::String | Type::Slice(_) | Type::Fn { .. } => 16,
             _ => 8,
+        }
+    }
+
+    /// Determine why a type is move-only (not Copy).
+    fn move_reason(&self, ty: &Type) -> MoveReason {
+        let type_name = format!("{}", ty);
+        match ty {
+            Type::String => MoveReason::OwnsHeapMemory { type_name },
+            Type::Generic { base, .. } => {
+                // Check if the base type is a heap-owning collection
+                let base_name = if let Some(def) = self.program.types.get(*base) {
+                    match def {
+                        rask_types::TypeDef::Struct { name, .. }
+                        | rask_types::TypeDef::Enum { name, .. } => Some(name.as_str()),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                if matches!(base_name, Some("Vec" | "Map" | "Pool")) {
+                    MoveReason::OwnsHeapMemory { type_name }
+                } else {
+                    MoveReason::Unknown
+                }
+            }
+            Type::Named(type_id) => {
+                if let Some(def) = self.program.types.get(*type_id) {
+                    match def {
+                        rask_types::TypeDef::Struct { fields, .. } => {
+                            let all_fields_copy = fields.iter().all(|(_, t)| self.is_copy(t));
+                            if all_fields_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        rask_types::TypeDef::Enum { variants, .. } => {
+                            let all_copy = variants.iter().all(|(_, data)| data.iter().all(|t| self.is_copy(t)));
+                            if all_copy {
+                                MoveReason::SizeExceedsThreshold { type_name, size: self.type_size(ty) }
+                            } else {
+                                MoveReason::OwnsHeapMemory { type_name }
+                            }
+                        }
+                        _ => MoveReason::Unknown,
+                    }
+                } else {
+                    MoveReason::Unknown
+                }
+            }
+            Type::Result { .. } | Type::Union(_) => MoveReason::OwnsHeapMemory { type_name },
+            _ => {
+                let size = self.type_size(ty);
+                if size > 16 {
+                    MoveReason::SizeExceedsThreshold { type_name, size }
+                } else {
+                    MoveReason::Unknown
+                }
+            }
+        }
+    }
+
+    /// Look up the move reason for a binding by name.
+    fn move_reason_for(&self, name: &str) -> MoveReason {
+        if let Some(ty) = self.binding_types.get(name) {
+            self.move_reason(ty)
+        } else {
+            MoveReason::Unknown
         }
     }
 

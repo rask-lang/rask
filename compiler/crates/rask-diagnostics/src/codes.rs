@@ -210,6 +210,9 @@ impl Default for ErrorCodeRegistry {
                 "E0805" => ("resource not consumed", Ownership,
                     "A resource-typed value (marked with @resource) wasn't properly consumed. Resource types must be explicitly closed, released, or passed to a consuming function.",
                     "func open_file() {\n    const f = fs.open(\"data.txt\")\n    // error: f not consumed (must call f.close())\n}"),
+                "E0806" => ("move from borrowed parameter", Ownership,
+                    "A borrowed parameter was used in a context that requires ownership. Parameters are borrowed by default — the caller retains ownership. Use `take` to transfer ownership into the function.",
+                    "func push(self, value: T) {\n    self.data[i] = value  // error: value is borrowed\n}\n// fix: func push(self, take value: T)"),
             },
         }
     }

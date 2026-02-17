@@ -9,7 +9,7 @@ use rask_resolve::{SymbolId, SymbolKind};
 use super::type_defs::TypeDef;
 use super::borrow::BorrowMode;
 use super::errors::TypeError;
-use super::inference::TypeConstraint;
+use super::inference::{LiteralKind, TypeConstraint};
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
 
@@ -62,7 +62,7 @@ impl TypeChecker {
                     Some(IntSuffix::U64) => Type::U64,
                     Some(IntSuffix::U128) => Type::U128,
                     Some(IntSuffix::Usize) => Type::U64,
-                    None => Type::I32, // Default to i32 when no expected type context
+                    None => self.ctx.fresh_literal_var(LiteralKind::Integer),
                 }
             }
             ExprKind::Float(_, suffix) => {
@@ -70,12 +70,13 @@ impl TypeChecker {
                 match suffix {
                     Some(FloatSuffix::F32) => Type::F32,
                     Some(FloatSuffix::F64) => Type::F64,
-                    None => Type::F64, // Default to f64 when no expected type context
+                    None => self.ctx.fresh_literal_var(LiteralKind::Float),
                 }
             }
             ExprKind::String(_) => Type::String,
             ExprKind::Char(_) => Type::Char,
             ExprKind::Bool(_) => Type::Bool,
+            ExprKind::Null => Type::RawPtr(Box::new(self.ctx.fresh_var())),
 
             ExprKind::Ident(name) => {
                 if let Some(ty) = self.lookup_local(name) {
@@ -293,14 +294,19 @@ impl TypeChecker {
                         if type_params.is_empty() {
                             // Non-generic struct: constrain directly
                             for field_init in fields {
-                                let field_ty = self.infer_expr(&field_init.value);
-                                if let Some((_, expected)) =
-                                    struct_fields.iter().find(|(n, _)| n == &field_init.name)
-                                {
+                                let expected_field = struct_fields.iter()
+                                    .find(|(n, _)| n == &field_init.name)
+                                    .map(|(_, t)| t.clone());
+                                let field_ty = if let Some(ref exp) = expected_field {
+                                    self.infer_expr_expecting(&field_init.value, exp)
+                                } else {
+                                    self.infer_expr(&field_init.value)
+                                };
+                                if let Some(expected) = expected_field {
                                     self.ctx.add_constraint(TypeConstraint::Equal(
-                                        expected.clone(),
+                                        expected,
                                         field_ty,
-                                        expr.span,
+                                        field_init.value.span,
                                     ));
                                 }
                             }
@@ -313,15 +319,19 @@ impl TypeChecker {
                             let subst = Self::build_type_param_subst(&type_params, &fresh_args);
 
                             for field_init in fields {
-                                let field_ty = self.infer_expr(&field_init.value);
-                                if let Some((_, expected)) =
-                                    struct_fields.iter().find(|(n, _)| n == &field_init.name)
-                                {
-                                    let substituted = Self::substitute_type_params(expected, &subst);
+                                let substituted = struct_fields.iter()
+                                    .find(|(n, _)| n == &field_init.name)
+                                    .map(|(_, t)| Self::substitute_type_params(t, &subst));
+                                let field_ty = if let Some(ref sub) = substituted {
+                                    self.infer_expr_expecting(&field_init.value, sub)
+                                } else {
+                                    self.infer_expr(&field_init.value)
+                                };
+                                if let Some(sub) = substituted {
                                     self.ctx.add_constraint(TypeConstraint::Equal(
-                                        substituted,
+                                        sub,
                                         field_ty,
-                                        expr.span,
+                                        field_init.value.span,
                                     ));
                                 }
                             }
@@ -437,11 +447,7 @@ impl TypeChecker {
                         }
                     }
                     _ => {
-                        self.errors.push(TypeError::Mismatch {
-                            expected: Type::Result {
-                                ok: Box::new(self.ctx.fresh_var()),
-                                err: Box::new(self.ctx.fresh_var()),
-                            },
+                        self.errors.push(TypeError::TryOnNonResult {
                             found: resolved,
                             span: expr.span,
                         });
@@ -516,15 +522,22 @@ impl TypeChecker {
             }
 
             ExprKind::Unsafe { body } => {
+                let was_unsafe = self.in_unsafe;
+                self.in_unsafe = true;
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                if let Some(last) = body.last() {
+                let result = if let Some(last) = body.last() {
                     if let StmtKind::Expr(e) = &last.kind {
-                        return self.infer_expr(e);
+                        self.infer_expr(e)
+                    } else {
+                        Type::Unit
                     }
-                }
-                Type::Unit
+                } else {
+                    Type::Unit
+                };
+                self.in_unsafe = was_unsafe;
+                result
             }
 
             ExprKind::Comptime { body } => {
@@ -763,6 +776,20 @@ impl TypeChecker {
             }
         }
 
+        // Extern function calls require unsafe context
+        if let ExprKind::Ident(_) = &func.kind {
+            if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
+                if let Some(sym) = self.resolved.symbols.get(sym_id) {
+                    if matches!(sym.kind, SymbolKind::ExternFunction { .. }) && !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: "extern function call".to_string(),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+
         // Validate call-site annotations before type inference
         self.check_call_annotations(func, args, span);
 
@@ -854,7 +881,8 @@ impl TypeChecker {
     }
 
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
-        matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format")
+        matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format"
+            | "fence" | "compiler_fence")
     }
 
     /// Validate that call-site annotations match parameter declarations.
@@ -1108,6 +1136,20 @@ impl TypeChecker {
                                     .and_then(|t| parse_type_string(t, &self.types).ok())
                             })
                         })
+                        .collect();
+                    let ret = ret_ty
+                        .as_ref()
+                        .and_then(|t| parse_type_string(t, &self.types).ok())
+                        .unwrap_or(Type::Unit);
+                    return Type::Fn {
+                        params: param_types,
+                        ret: Box::new(ret),
+                    };
+                }
+                SymbolKind::ExternFunction { params, ret_ty, .. } => {
+                    let param_types: Vec<_> = params
+                        .iter()
+                        .filter_map(|p| parse_type_string(p, &self.types).ok())
                         .collect();
                     let ret = ret_ty
                         .as_ref()

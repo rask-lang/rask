@@ -339,6 +339,14 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if name == "Rng" => {
                 self.resolve_rng_method(&method, &args, &ret, span)
             }
+            // Atomic types (AtomicBool, AtomicI8..AtomicU64, AtomicUsize, AtomicIsize)
+            Type::UnresolvedNamed(name) if Self::is_atomic_type(name) => {
+                self.resolve_atomic_method(name, &method, &args, &ret, span)
+            }
+            // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
+            Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
+                self.resolve_simd_method(name, &method, &args, &ret, span)
+            }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
@@ -707,6 +715,67 @@ impl TypeChecker {
             ("Duration", "from_nanos") if args.len() == 1 => {
                 self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
             }
+            ("Duration", "from_millis") if args.len() == 1 => {
+                self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
+            }
+
+            // Instant arithmetic: instant + duration -> Instant
+            ("Instant", "add") if args.len() == 1 => {
+                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
+                self.unify(&args[0], &duration_ty, span)?;
+                self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
+            }
+            // Instant subtraction: overloaded on argument type
+            //   instant - instant -> Duration
+            //   instant - duration -> Instant
+            ("Instant", "sub") if args.len() == 1 => {
+                let arg = self.ctx.apply(&args[0]);
+                let arg = self.resolve_named(&arg);
+                match &arg {
+                    Type::UnresolvedNamed(n) if n == "Instant" => {
+                        self.unify(ret, &Type::UnresolvedNamed("Duration".to_string()), span)
+                    }
+                    Type::UnresolvedNamed(n) if n == "Duration" => {
+                        self.unify(ret, &Type::UnresolvedNamed("Instant".to_string()), span)
+                    }
+                    Type::Var(_) => {
+                        // Argument type not yet resolved — defer
+                        self.ctx.add_constraint(TypeConstraint::HasMethod {
+                            ty: Type::UnresolvedNamed(type_name.to_string()),
+                            method: method.to_string(),
+                            args: args.to_vec(),
+                            ret: ret.clone(),
+                            span,
+                        });
+                        Ok(false)
+                    }
+                    _ => Err(TypeError::Mismatch {
+                        expected: Type::UnresolvedNamed("Instant".to_string()),
+                        found: arg.clone(),
+                        span,
+                    }),
+                }
+            }
+            // Instant comparisons
+            ("Instant", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
+                let instant_ty = Type::UnresolvedNamed("Instant".to_string());
+                self.unify(&args[0], &instant_ty, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+
+            // Duration arithmetic: duration +/- duration -> Duration
+            ("Duration", "add" | "sub") if args.len() == 1 => {
+                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
+                self.unify(&args[0], &duration_ty, span)?;
+                self.unify(ret, &duration_ty, span)
+            }
+            // Duration comparisons
+            ("Duration", "eq" | "lt" | "le" | "gt" | "ge") if args.len() == 1 => {
+                let duration_ty = Type::UnresolvedNamed("Duration".to_string());
+                self.unify(&args[0], &duration_ty, span)?;
+                self.unify(ret, &Type::Bool, span)
+            }
+
             // TcpListener
             ("TcpListener", "accept") if args.is_empty() => {
                 let result_type = Type::Result {
@@ -910,6 +979,18 @@ impl TypeChecker {
             "is_empty" if args.is_empty() => {
                 self.unify(ret, &Type::Bool, span)
             }
+            // pool.handles() -> Vec<Handle<T>>
+            "handles" if args.is_empty() => {
+                let handle_ty = Type::UnresolvedGeneric {
+                    name: "Handle".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner_type))],
+                };
+                let vec_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(handle_ty))],
+                };
+                self.unify(ret, &vec_ty, span)
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
@@ -1029,6 +1110,34 @@ impl TypeChecker {
             }
             "capacity" if args.is_empty() => {
                 self.unify(ret, &Type::I64, span)
+            }
+            // vec.insert(index, value) -> ()
+            "insert" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let _ = self.unify(&args[1], &inner_type, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.remove(index) -> T
+            "remove" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &inner_type, span)
+            }
+            // vec.chunks(size) -> Vec<Vec<T>>
+            "chunks" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let chunk_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner_type))],
+                };
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(chunk_ty))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.to_vec() -> Vec<T>
+            "to_vec" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
             }
             "iter" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
@@ -1190,6 +1299,238 @@ impl TypeChecker {
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: rng_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Check whether a type name is a concrete atomic type.
+    fn is_atomic_type(name: &str) -> bool {
+        matches!(
+            name,
+            "AtomicBool"
+                | "AtomicI8"
+                | "AtomicU8"
+                | "AtomicI16"
+                | "AtomicU16"
+                | "AtomicI32"
+                | "AtomicU32"
+                | "AtomicI64"
+                | "AtomicU64"
+                | "AtomicUsize"
+                | "AtomicIsize"
+        )
+    }
+
+    /// Map atomic type name to its value type.
+    fn atomic_value_type(name: &str) -> Type {
+        match name {
+            "AtomicBool" => Type::Bool,
+            "AtomicI8" => Type::I8,
+            "AtomicU8" => Type::U8,
+            "AtomicI16" => Type::I16,
+            "AtomicU16" => Type::U16,
+            "AtomicI32" => Type::I32,
+            "AtomicU32" => Type::U32,
+            "AtomicI64" => Type::I64,
+            "AtomicU64" => Type::U64,
+            "AtomicUsize" => Type::I64, // usize = i64 on 64-bit
+            "AtomicIsize" => Type::I64, // isize = i64 on 64-bit
+            _ => Type::I64,
+        }
+    }
+
+    /// True for integer atomic types (not AtomicBool).
+    fn is_integer_atomic(name: &str) -> bool {
+        name != "AtomicBool"
+    }
+
+    /// Resolve methods on atomic types (mem.atomics spec).
+    pub(super) fn resolve_atomic_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let val_ty = Self::atomic_value_type(type_name);
+        let self_ty = Type::UnresolvedNamed(type_name.to_string());
+        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+
+        match method {
+            // ── Construction ────────────────────────────────
+            "new" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &val_ty, span);
+                self.unify(ret, &self_ty, span)
+            }
+            "default" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
+            }
+
+            // ── Load / Store / Swap ─────────────────────────
+            "load" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &ordering_ty, span);
+                self.unify(ret, &val_ty, span)
+            }
+            "store" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &val_ty, span);
+                let _ = self.unify(&args[1], &ordering_ty, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+            "swap" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &val_ty, span);
+                let _ = self.unify(&args[1], &ordering_ty, span);
+                self.unify(ret, &val_ty, span)
+            }
+
+            // ── Compare-and-Exchange ────────────────────────
+            "compare_exchange" | "compare_exchange_weak" if args.len() == 4 => {
+                let _ = self.unify(&args[0], &val_ty, span);
+                let _ = self.unify(&args[1], &val_ty, span);
+                let _ = self.unify(&args[2], &ordering_ty, span);
+                let _ = self.unify(&args[3], &ordering_ty, span);
+                let result_ty = Type::Result {
+                    ok: Box::new(val_ty.clone()),
+                    err: Box::new(val_ty),
+                };
+                self.unify(ret, &result_ty, span)
+            }
+
+            // ── Integer fetch operations ────────────────────
+            "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
+                if args.len() == 2 && Self::is_integer_atomic(type_name) =>
+            {
+                let _ = self.unify(&args[0], &val_ty, span);
+                let _ = self.unify(&args[1], &ordering_ty, span);
+                self.unify(ret, &val_ty, span)
+            }
+
+            // ── Bitwise fetch (integers + bool) ─────────────
+            "fetch_and" | "fetch_or" | "fetch_xor" | "fetch_nand" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &val_ty, span);
+                let _ = self.unify(&args[1], &ordering_ty, span);
+                self.unify(ret, &val_ty, span)
+            }
+
+            // ── Non-atomic access ───────────────────────────
+            "into_inner" if args.is_empty() => {
+                self.unify(ret, &val_ty, span)
+            }
+
+            // ── Integer-only fetch on AtomicBool → error ────
+            "fetch_add" | "fetch_sub" | "fetch_max" | "fetch_min"
+                if !Self::is_integer_atomic(type_name) =>
+            {
+                Err(TypeError::NoSuchMethod {
+                    ty: self_ty,
+                    method: method.to_string(),
+                    span,
+                })
+            }
+
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    /// Check whether a type name is a SIMD vector type.
+    fn is_simd_type(name: &str) -> bool {
+        matches!(
+            name,
+            "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
+        )
+    }
+
+    /// Parse SIMD type name to (element Type, lane count).
+    fn simd_elem_type(name: &str) -> (Type, usize) {
+        match name {
+            "f32x4" => (Type::F32, 4),
+            "f32x8" => (Type::F32, 8),
+            "f64x2" => (Type::F64, 2),
+            "f64x4" => (Type::F64, 4),
+            "i32x4" => (Type::I32, 4),
+            "i32x8" => (Type::I32, 8),
+            _ => (Type::F32, 4), // unreachable given is_simd_type guard
+        }
+    }
+
+    /// Resolve methods on SIMD vector types (type.simd spec).
+    pub(super) fn resolve_simd_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let (elem_ty, lanes) = Self::simd_elem_type(type_name);
+        let self_ty = Type::UnresolvedNamed(type_name.to_string());
+        let vec_ty = Type::SimdVector {
+            elem: Box::new(elem_ty.clone()),
+            lanes,
+        };
+
+        match method {
+            // ── Construction ────────────────────────────────
+            // splat(scalar) → vec
+            "splat" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &elem_ty, span);
+                self.unify(ret, &self_ty, span)
+            }
+            // load(slice) → vec (static method)
+            "load" if args.len() == 1 => {
+                let slice_ty = Type::Slice(Box::new(elem_ty.clone()));
+                let _ = self.unify(&args[0], &slice_ty, span);
+                self.unify(ret, &self_ty, span)
+            }
+
+            // ── Memory ──────────────────────────────────────
+            // store(slice) → ()
+            "store" if args.len() == 1 => {
+                let slice_ty = Type::Slice(Box::new(elem_ty.clone()));
+                let _ = self.unify(&args[0], &slice_ty, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+
+            // ── Element-wise arithmetic ─────────────────────
+            // add(other) → vec, sub(other) → vec, mul(other) → vec, div(other) → vec
+            "add" | "sub" | "mul" | "div" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &self_ty, span);
+                self.unify(ret, &self_ty, span)
+            }
+
+            // ── Scalar broadcast ops ────────────────────────
+            // scale(scalar) → vec (multiply by scalar)
+            "scale" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &elem_ty, span);
+                self.unify(ret, &self_ty, span)
+            }
+
+            // ── Reductions ──────────────────────────────────
+            "sum" | "product" | "min" | "max" if args.is_empty() => {
+                self.unify(ret, &elem_ty, span)
+            }
+
+            // ── Lane access ─────────────────────────────────
+            // get(index) → elem
+            "get" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &elem_ty, span)
+            }
+            // set(index, value) → ()
+            "set" if args.len() == 2 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                let _ = self.unify(&args[1], &elem_ty, span);
+                self.unify(ret, &Type::Unit, span)
+            }
+
+            _ => Err(TypeError::NoSuchMethod {
+                ty: self_ty,
                 method: method.to_string(),
                 span,
             }),

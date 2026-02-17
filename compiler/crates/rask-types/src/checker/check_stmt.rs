@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Statement type checking.
 
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 
 use super::errors::TypeError;
 use super::inference::TypeConstraint;
@@ -67,6 +67,13 @@ impl TypeChecker {
                 self.clear_expression_borrows();
             }
             StmtKind::Assign { target, value } => {
+                // Deref write (*ptr = value) requires unsafe
+                if matches!(&target.kind, rask_ast::expr::ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }) && !self.in_unsafe {
+                    self.errors.push(TypeError::UnsafeRequired {
+                        operation: "pointer dereference write".to_string(),
+                        span: stmt.span,
+                    });
+                }
                 // Reject mutation of read-only parameters (default params are read-only)
                 if let Some(root) = Self::root_ident_name(target) {
                     if self.is_local_read_only(&root) {
@@ -131,7 +138,15 @@ impl TypeChecker {
                     Type::Array { elem, .. } | Type::Slice(elem) => *elem.clone(),
                     _ => self.ctx.fresh_var(),
                 };
-                self.define_local(binding.clone(), elem_ty);
+                match binding {
+                    ForBinding::Single(name) => self.define_local(name.clone(), elem_ty),
+                    ForBinding::Tuple(names) => {
+                        let vars: Vec<_> = names.iter().map(|_| self.ctx.fresh_var()).collect();
+                        for (name, var) in names.iter().zip(vars) {
+                            self.define_local(name.clone(), var);
+                        }
+                    }
+                }
                 for s in body {
                     self.check_stmt(s);
                 }
@@ -158,8 +173,21 @@ impl TypeChecker {
                     self.check_stmt(s);
                 }
             }
-            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
-                self.infer_expr(init);
+            StmtKind::LetTuple { names, init } | StmtKind::ConstTuple { names, init } => {
+                let init_ty = self.infer_expr(init);
+                // Bind each destructured name to its tuple element type
+                if let Type::Tuple(elems) = &init_ty {
+                    for (i, name) in names.iter().enumerate() {
+                        if let Some(elem_ty) = elems.get(i) {
+                            self.define_local(name.clone(), elem_ty.clone());
+                        }
+                    }
+                } else {
+                    // Not a known tuple type — bind all names as the inferred type
+                    for name in names {
+                        self.define_local(name.clone(), init_ty.clone());
+                    }
+                }
             }
             StmtKind::WhileLet { pattern, expr, body } => {
                 let value_ty = self.infer_expr(expr);

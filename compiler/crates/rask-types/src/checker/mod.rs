@@ -64,6 +64,8 @@ pub struct TypeChecker {
     /// Keyed by SymbolId (not name) to avoid collisions between
     /// same-named functions in different scopes.
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
+    /// Whether we're inside an `unsafe {}` block (for validating pointer ops and extern calls).
+    pub(super) in_unsafe: bool,
 }
 
 impl TypeChecker {
@@ -83,6 +85,7 @@ impl TypeChecker {
             persistent_borrows: Vec::new(),
             pending_call_type_args: Vec::new(),
             fn_type_params: HashMap::new(),
+            in_unsafe: false,
         }
     }
 
@@ -97,6 +100,9 @@ impl TypeChecker {
         self.pop_scope();
 
         self.solve_constraints();
+
+        // Default unresolved literal type vars (unsuffixed int → i32, float → f64)
+        self.ctx.apply_literal_defaults();
 
         let node_types: HashMap<_, _> = self
             .node_types
@@ -178,6 +184,10 @@ impl TypeChecker {
             TypeError::InfiniteType { var, ty, span } => TypeError::InfiniteType {
                 var,
                 ty: ctx.apply(&ty),
+                span,
+            },
+            TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
+                found: ctx.apply(&found),
                 span,
             },
             other => other,

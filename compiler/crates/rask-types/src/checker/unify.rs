@@ -189,6 +189,8 @@ impl TypeChecker {
 
             (Type::Slice(e1), Type::Slice(e2)) => self.unify(e1, e2, span),
 
+            (Type::RawPtr(inner1), Type::RawPtr(inner2)) => self.unify(inner1, inner2, span),
+
             // Union types: unify element-wise if same length
             (Type::Union(types1), Type::Union(types2)) => {
                 if types1.len() != types2.len() {
@@ -249,7 +251,27 @@ impl TypeChecker {
                 }
             }
 
+            // Unresolved generics with same name: unify args element-wise
+            (
+                Type::UnresolvedGeneric { name: n1, args: a1 },
+                Type::UnresolvedGeneric { name: n2, args: a2 },
+            ) if n1 == n2 && a1.len() == a2.len() => {
+                let mut progress = false;
+                for (arg1, arg2) in a1.iter().zip(a2.iter()) {
+                    if self.unify_generic_arg(arg1, arg2, span)? {
+                        progress = true;
+                    }
+                }
+                Ok(progress)
+            }
+
             (Type::UnresolvedNamed(_), _) | (_, Type::UnresolvedNamed(_)) => {
+                self.ctx
+                    .add_constraint(TypeConstraint::Equal(t1, t2, span));
+                Ok(false)
+            }
+
+            (Type::UnresolvedGeneric { .. }, _) | (_, Type::UnresolvedGeneric { .. }) => {
                 self.ctx
                     .add_constraint(TypeConstraint::Equal(t1, t2, span));
                 Ok(false)

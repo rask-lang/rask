@@ -3,7 +3,7 @@
 
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::{NodeId, Span};
 
@@ -82,11 +82,39 @@ impl Resolver {
             ("Pool", BuiltinTypeKind::Pool),
             ("Handle", BuiltinTypeKind::Handle),
             ("Atomic", BuiltinTypeKind::Atomic),
+            ("AtomicBool", BuiltinTypeKind::Atomic),
+            ("AtomicI8", BuiltinTypeKind::Atomic),
+            ("AtomicU8", BuiltinTypeKind::Atomic),
+            ("AtomicI16", BuiltinTypeKind::Atomic),
+            ("AtomicU16", BuiltinTypeKind::Atomic),
+            ("AtomicI32", BuiltinTypeKind::Atomic),
+            ("AtomicU32", BuiltinTypeKind::Atomic),
+            ("AtomicI64", BuiltinTypeKind::Atomic),
+            ("AtomicU64", BuiltinTypeKind::Atomic),
+            ("AtomicUsize", BuiltinTypeKind::Atomic),
+            ("AtomicIsize", BuiltinTypeKind::Atomic),
             ("Shared", BuiltinTypeKind::Shared),
             ("Owned", BuiltinTypeKind::Owned),
-            ("f32x8", BuiltinTypeKind::F32x8),
+            ("f32x4", BuiltinTypeKind::Simd),
+            ("f32x8", BuiltinTypeKind::Simd),
+            ("f64x2", BuiltinTypeKind::Simd),
+            ("f64x4", BuiltinTypeKind::Simd),
+            ("i32x4", BuiltinTypeKind::Simd),
+            ("i32x8", BuiltinTypeKind::Simd),
             ("Rng", BuiltinTypeKind::Rng),
             ("File", BuiltinTypeKind::File),
+            // Atomic types
+            ("AtomicBool", BuiltinTypeKind::Atomic),
+            ("AtomicI8", BuiltinTypeKind::Atomic),
+            ("AtomicU8", BuiltinTypeKind::Atomic),
+            ("AtomicI16", BuiltinTypeKind::Atomic),
+            ("AtomicU16", BuiltinTypeKind::Atomic),
+            ("AtomicI32", BuiltinTypeKind::Atomic),
+            ("AtomicU32", BuiltinTypeKind::Atomic),
+            ("AtomicI64", BuiltinTypeKind::Atomic),
+            ("AtomicU64", BuiltinTypeKind::Atomic),
+            ("AtomicUsize", BuiltinTypeKind::Atomic),
+            ("AtomicIsize", BuiltinTypeKind::Atomic),
         ];
 
         for (name, builtin) in builtin_types {
@@ -102,7 +130,10 @@ impl Resolver {
 
         self.register_builtin_enum("Option", &["Some", "None"]);
         self.register_builtin_enum("Result", &["Ok", "Err"]);
-        self.register_builtin_enum("Ordering", &["Less", "Equal", "Greater"]);
+        self.register_builtin_enum("Ordering", &[
+            "Less", "Equal", "Greater",                          // comparison
+            "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst", // memory
+        ]);
 
         let builtin_modules = [
             ("io", BuiltinModuleKind::Io),
@@ -117,6 +148,7 @@ impl Resolver {
             ("os", BuiltinModuleKind::Os),
             ("net", BuiltinModuleKind::Net),
             ("core", BuiltinModuleKind::Core),
+            ("async", BuiltinModuleKind::Async),
         ];
 
         for (name, module) in builtin_modules {
@@ -400,13 +432,19 @@ impl Resolver {
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
                 DeclKind::Package(_) => {}
                 DeclKind::Extern(extern_decl) => {
-                    // Declare extern functions in symbol table
+                    let param_types: Vec<String> = extern_decl.params.iter()
+                        .map(|p| p.ty.clone())
+                        .collect();
                     let sym_id = self.symbols.insert(
                         extern_decl.name.clone(),
-                        SymbolKind::Function { params: vec![], ret_ty: extern_decl.ret_ty.clone(), context_clauses: vec![] },
+                        SymbolKind::ExternFunction {
+                            abi: extern_decl.abi.clone(),
+                            params: param_types,
+                            ret_ty: extern_decl.ret_ty.clone(),
+                        },
                         None,
                         decl.span,
-                        false, // Extern functions are not pub-exported from module
+                        false,
                     );
                     if let Err(e) = self.scopes.define(extern_decl.name.clone(), sym_id, decl.span) {
                         self.errors.push(e);
@@ -578,6 +616,7 @@ impl Resolver {
                 "os" => Some(BuiltinModuleKind::Os),
                 "net" => Some(BuiltinModuleKind::Net),
                 "core" => Some(BuiltinModuleKind::Core),
+                "async" => Some(BuiltinModuleKind::Async),
                 _ => None,
             };
 
@@ -632,9 +671,21 @@ impl Resolver {
             let symbol_name = path.last().unwrap();
             let binding_name = import_decl.alias.as_ref().unwrap_or(symbol_name).clone();
 
-            if self.scopes.lookup(&binding_name).is_some() {
-                self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
-                return;
+            if let Some(existing_id) = self.scopes.lookup(&binding_name) {
+                // Allow imports to replace builtins (e.g. `import async.spawn`
+                // replaces the builtin `spawn`)
+                let is_builtin = self.symbols.get(existing_id).map_or(false, |sym| {
+                    matches!(
+                        sym.kind,
+                        SymbolKind::BuiltinFunction { .. }
+                            | SymbolKind::BuiltinType { .. }
+                            | SymbolKind::BuiltinModule { .. }
+                    )
+                });
+                if !is_builtin {
+                    self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
+                    return;
+                }
             }
 
             // Try to resolve from external package exports
@@ -654,16 +705,41 @@ impl Resolver {
                 }
             }
 
-            // Fallback: stdlib or unresolvable multi-segment import
-            let sym_id = self.symbols.insert(
-                binding_name.clone(),
-                SymbolKind::Variable { mutable: false },
-                None,
-                span,
-                false,
+            // Check if the package is a known stdlib module — if so, the imported
+            // symbol is a stdlib function/type being selectively imported.
+            let is_stdlib_module = matches!(pkg_name.as_str(),
+                "io" | "fs" | "env" | "cli" | "std" | "json" | "random"
+                | "time" | "math" | "path" | "os" | "net" | "core" | "async"
+                | "thread"
             );
-            if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
-                self.errors.push(e);
+
+            if is_stdlib_module {
+                // For stdlib imports like `import async.spawn`, the binding may
+                // already exist as a builtin. Accept it without redefinition.
+                if self.scopes.lookup(&binding_name).is_none() {
+                    let sym_id = self.symbols.insert(
+                        binding_name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                        self.errors.push(e);
+                    }
+                }
+            } else {
+                // Unknown package — create variable binding as fallback
+                let sym_id = self.symbols.insert(
+                    binding_name.clone(),
+                    SymbolKind::Variable { mutable: false },
+                    None,
+                    span,
+                    false,
+                );
+                if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                    self.errors.push(e);
+                }
             }
 
             self.imported_symbols.insert(binding_name.clone());
@@ -976,15 +1052,21 @@ impl Resolver {
             StmtKind::For { label, binding, iter, body } => {
                 self.resolve_expr(iter);
                 self.scopes.push(ScopeKind::Loop { label: label.clone() });
-                let sym_id = self.symbols.insert(
-                    binding.clone(),
-                    SymbolKind::Variable { mutable: false },
-                    None,
-                    stmt.span,
-                    false,
-                );
-                if let Err(e) = self.scopes.define(binding.clone(), sym_id, stmt.span) {
-                    self.errors.push(e);
+                let names = match binding {
+                    ForBinding::Single(name) => vec![name.clone()],
+                    ForBinding::Tuple(names) => names.clone(),
+                };
+                for name in &names {
+                    let sym_id = self.symbols.insert(
+                        name.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        stmt.span,
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(name.clone(), sym_id, stmt.span) {
+                        self.errors.push(e);
+                    }
                 }
                 for s in body {
                     self.resolve_stmt(s);
@@ -1032,7 +1114,7 @@ impl Resolver {
     fn resolve_expr(&mut self, expr: &Expr) {
         match &expr.kind {
             ExprKind::Int(_, _) | ExprKind::Float(_, _) | ExprKind::String(_) |
-            ExprKind::Char(_) | ExprKind::Bool(_) => {}
+            ExprKind::Char(_) | ExprKind::Bool(_) | ExprKind::Null => {}
             ExprKind::Ident(name) => {
                 match self.scopes.lookup(name) {
                     Some(sym_id) => {
@@ -1508,6 +1590,7 @@ mod tests {
                 is_pub: false,
                 is_comptime: false,
                 is_unsafe: false,
+                abi: None,
                 attrs: vec![],
             }),
             span: Span::new(0, 10),
@@ -1615,6 +1698,7 @@ mod tests {
                 is_pub: true,
                 is_comptime: false,
                 is_unsafe: false,
+                abi: None,
                 attrs: vec![],
             }),
             span: Span::new(0, 10),

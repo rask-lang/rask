@@ -33,6 +33,8 @@ pub fn vec_methods() -> &'static [MethodDef] {
         MethodDef { name: "push_or_panic", takes_self: true, params: &[("value", "T")], ret_ty: "()" },
         MethodDef { name: "pop", takes_self: true, params: &[], ret_ty: "Option<T>" },
         MethodDef { name: "clear", takes_self: true, params: &[], ret_ty: "()" },
+        MethodDef { name: "insert", takes_self: true, params: &[("index", "usize"), ("value", "T")], ret_ty: "()" },
+        MethodDef { name: "remove", takes_self: true, params: &[("index", "usize")], ret_ty: "T" },
         MethodDef { name: "reserve", takes_self: true, params: &[("additional", "usize")], ret_ty: "Result<(), AllocError>" },
 
         // Access

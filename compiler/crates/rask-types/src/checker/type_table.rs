@@ -49,6 +49,8 @@ impl TypeTable {
         self.builtins.insert("u16".to_string(), Type::U16);
         self.builtins.insert("u32".to_string(), Type::U32);
         self.builtins.insert("u64".to_string(), Type::U64);
+        self.builtins.insert("i128".to_string(), Type::I128);
+        self.builtins.insert("u128".to_string(), Type::U128);
         self.builtins.insert("f32".to_string(), Type::F32);
         self.builtins.insert("f64".to_string(), Type::F64);
         self.builtins.insert("bool".to_string(), Type::Bool);
@@ -186,6 +188,11 @@ impl TypeTable {
                 len: *len,
             },
             Type::Slice(elem) => Type::Slice(Box::new(self.resolve_type_names(elem))),
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+            },
+            Type::Union(types) => Type::Union(types.iter().map(|t| self.resolve_type_names(t)).collect()),
             other => other.clone(),
         }
     }
@@ -230,6 +237,10 @@ impl TypeTable {
             TypeError::InfiniteType { var, ty, span } => TypeError::InfiniteType {
                 var,
                 ty: self.resolve_type_names(&ty),
+                span,
+            },
+            TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
+                found: self.resolve_type_names(&found),
                 span,
             },
             other => other,

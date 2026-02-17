@@ -29,10 +29,13 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         "i64" | "i128" | "u128" | "f64" | "bool" | "char" | "string"
         | "Vec" | "Map" | "Pool" | "Handle"
         | "Result" | "Option"
+        | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
         "ThreadHandle" | "Sender" | "Receiver" | "Shared"
-        | "AtomicBool" | "AtomicUsize" | "AtomicU64"
+        | "AtomicBool" | "AtomicI8" | "AtomicU8"
+        | "AtomicI16" | "AtomicU16" | "AtomicI32" | "AtomicU32"
+        | "AtomicI64" | "AtomicU64" | "AtomicUsize" | "AtomicIsize"
         | "File" | "Metadata"
         | "TcpListener" | "TcpConnection"
         | "Instant" => StdlibLayer::Runtime,
@@ -171,9 +174,26 @@ const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const SENDER_METHODS: &[&str] = &["send"];
 const RECEIVER_METHODS: &[&str] = &["recv", "try_recv"];
 const SHARED_METHODS: &[&str] = &["read", "write", "clone"];
-const ATOMIC_BOOL_METHODS: &[&str] = &["load", "store"];
-const ATOMIC_USIZE_METHODS: &[&str] = &["load", "store"];
-const ATOMIC_U64_METHODS: &[&str] = &["load", "store"];
+const SIMD_METHODS: &[&str] = &[
+    "splat", "load", "store",
+    "add", "sub", "mul", "div", "scale",
+    "sum", "product", "min", "max",
+    "get", "set",
+];
+
+const ATOMIC_BOOL_METHODS: &[&str] = &[
+    "new", "default", "load", "store", "swap",
+    "compare_exchange", "compare_exchange_weak",
+    "fetch_and", "fetch_or", "fetch_xor", "fetch_nand",
+    "into_inner",
+];
+const ATOMIC_INT_METHODS: &[&str] = &[
+    "new", "default", "load", "store", "swap",
+    "compare_exchange", "compare_exchange_weak",
+    "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
+    "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
+    "into_inner",
+];
 
 // ---------------------------------------------------------------------------
 // Module-level functions
@@ -228,7 +248,10 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "Duration", "Instant",
     "Path", "Args",
     "ThreadHandle", "Sender", "Receiver", "Shared",
-    "AtomicBool", "AtomicUsize", "AtomicU64",
+    "AtomicBool", "AtomicI8", "AtomicU8",
+    "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
+    "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
+    "f32x4", "f32x8", "f64x2", "f64x4", "i32x4", "i32x8",
 ];
 
 /// All modules with registered functions.
@@ -266,8 +289,10 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,
         "AtomicBool" => ATOMIC_BOOL_METHODS,
-        "AtomicUsize" => ATOMIC_USIZE_METHODS,
-        "AtomicU64" => ATOMIC_U64_METHODS,
+        "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
+        | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicU64"
+        | "AtomicUsize" | "AtomicIsize" => ATOMIC_INT_METHODS,
+        "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" => SIMD_METHODS,
         _ => &[],
     }
 }
@@ -284,6 +309,37 @@ pub fn module_method_names(module: &str) -> &'static [&'static str] {
         "os" => OS_METHODS,
         "io" => IO_METHODS,
         "cli" => CLI_METHODS,
+        _ => &[],
+    }
+}
+
+/// Types that exist only for codegen — the interpreter doesn't dispatch them.
+/// Drift tests should skip these.
+pub fn is_codegen_only_type(type_name: &str) -> bool {
+    matches!(type_name,
+        "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
+        | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicIsize"
+        | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
+    )
+}
+
+/// Methods that exist only for codegen on types the interpreter partially covers.
+/// Returns methods to skip for drift testing.
+pub fn codegen_only_methods(type_name: &str) -> &'static [&'static str] {
+    match type_name {
+        "AtomicBool" => &[
+            "new", "default", "swap",
+            "compare_exchange", "compare_exchange_weak",
+            "fetch_and", "fetch_or", "fetch_xor", "fetch_nand",
+            "into_inner",
+        ],
+        "AtomicUsize" | "AtomicU64" => &[
+            "new", "default", "swap",
+            "compare_exchange", "compare_exchange_weak",
+            "fetch_add", "fetch_sub", "fetch_and", "fetch_or",
+            "fetch_xor", "fetch_nand", "fetch_max", "fetch_min",
+            "into_inner",
+        ],
         _ => &[],
     }
 }
