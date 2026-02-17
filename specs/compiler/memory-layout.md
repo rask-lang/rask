@@ -512,6 +512,6 @@ FIX: Use heap indirection or split into smaller chunks.
 ## See Also
 
 - `type.enums` — Enum semantics and discriminant rules
-- `type.traits` — Trait objects and object safety
+- `type.traits` — Trait objects and `any` compatibility
 - `mem.closures` — Closure capture semantics
 - `mem.value` — Copy vs move threshold (16 bytes)

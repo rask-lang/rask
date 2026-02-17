@@ -307,7 +307,7 @@ FIX: Process existing items first, or use an unbounded collection:
 
 **C2 (fallible allocation):** All allocations can fail. Returning the rejected value in the error lets callers retry or log without losing data.
 
-**C3 (expression-scoped):** Collections can grow/shrink, invalidating persistent views. Expression-scoped borrows kill this bug class. See `mem.borrowing/B1`.
+**C3 (statement-scoped):** Collections can grow/shrink, invalidating any held views. Statement-scoped borrows kill this bug class. See `mem.borrowing/B1`.
 
 **C4 (no linear resources):** Collection drop can't propagate errors from linear resource cleanup. `Pool<T>` with explicit consumption is the right pattern.
 

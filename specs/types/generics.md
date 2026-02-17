@@ -1,24 +1,24 @@
 <!-- id: type.generics -->
 <!-- status: decided -->
-<!-- summary: Structural traits, operator desugaring, compiler-verified clone, full monomorphization -->
+<!-- summary: Trait matching by shape, operator-to-method expansion, verified clone, code specialization per type -->
 <!-- depends: types/structs.md, types/enums.md, types/traits.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Generics and Traits
 
-Structural traits with local verification, operator-to-method desugaring, compiler-verified clone, full monomorphization, opt-in runtime polymorphism via `any Trait`.
+Traits match by shape — if your type has the right methods, it satisfies the trait. Operators like `a + b` expand to method calls. The compiler generates specialized code for each concrete type you use (this is called *monomorphization*). For mixed-type collections, opt into runtime dispatch with `any Trait`.
 
 ## Core Principles
 
 | Rule | Description |
 |------|-------------|
-| **G1: Structural satisfaction** | Type satisfies trait if it has all required methods with matching signatures |
-| **G2: Local verification** | Compiler checks satisfaction at each monomorphization site only |
+| **G1: Trait matching** | A type satisfies a trait if it has all the required methods with matching signatures — no explicit `extend` needed |
+| **G2: Checked at use site** | The compiler verifies trait matching when you call a generic function, not when you define it |
 | **G3: Body-local inference** | Non-public functions can have bounds inferred from body; see [Gradual Constraints](gradual-constraints.md) |
-| **G4: Operator desugaring** | `a + b` becomes `a.add(b)` before trait checking |
+| **G4: Operator expansion** | `a + b` becomes `a.add(b)` before trait checking |
 | **G5: Verified clone** | Compiler ensures clone produces deep copy; types with pointers require unsafe extend |
-| **G6: Full monomorphization** | Each `<T>` instantiation produces specialized code |
-| **G7: Runtime polymorphism opt-in** | `any Trait` for heterogeneous collections; vtable dispatch |
+| **G6: Code specialization** | Each `<T>` usage generates specialized code (monomorphization) — fast calls, but increases binary size |
+| **G7: Runtime polymorphism opt-in** | `any Trait` for heterogeneous collections; dispatch through function pointer table (vtable) |
 
 ## Trait Definition
 
@@ -67,10 +67,10 @@ func helper(item) { item.hash() }
 
 See [Gradual Constraints](gradual-constraints.md) for inference rules, smart error messages, and edge cases.
 
-## Structural Satisfaction
+## How Trait Matching Works
 
-Compiler checks (G1):
-1. Method exists on type (not free function)
+The compiler checks (G1) whether a type has all the methods a trait requires:
+1. Method exists on the type (not a free function)
 2. Parameter types match exactly
 3. Return type matches exactly
 4. Self parameter matches (value/mut/none)
@@ -81,7 +81,7 @@ Compiler checks (G1):
 | `func compare(self, other: T) -> i32` | `compare(self, other: T) -> Ordering` | No (return type mismatch) |
 | `func compare(a: T, b: T) -> Ordering` | `compare(self, other: T) -> Ordering` | No (free function, not method) |
 
-Types can provide explicit implementations to override defaults or satisfy `explicit trait`:
+Types can also provide explicit implementations to override defaults or satisfy `explicit trait`:
 
 ```rask
 extend Point with Comparable {
@@ -91,9 +91,9 @@ extend Point with Comparable {
 }
 ```
 
-## Operator Desugaring
+## Operator Expansion
 
-Compiler desugars operators before type checking (G4), then verifies method exists in trait bound.
+The compiler expands operators into method calls before type checking (G4), then verifies the method exists.
 
 | Operator | Desugars To | Trait Requirement |
 |----------|-------------|-------------------|
@@ -106,7 +106,7 @@ Compiler desugars operators before type checking (G4), then verifies method exis
 
 ## Compiler-Verified Clone
 
-Compiler auto-derives Clone where all fields implement Clone and no raw pointers exist (G5).
+The compiler auto-derives Clone where all fields implement Clone and no raw pointers exist (G5).
 
 | Rule | Description |
 |------|-------------|
@@ -137,12 +137,12 @@ Compiler infers `N` from array literals (`N = 2`) or known types (`arr: [f32; 5]
 
 Errors if lengths differ, inference ambiguous, or non-literal const without explicit parameter.
 
-## Linear Types in Traits
+## Must-Consume Types in Traits
 
-Linear resource types may be generic parameters. Pattern matching on `Option<Linear>` must bind the value (wildcards forbidden).
+Must-consume resource types (`@resource`) can be generic parameters. Pattern matching on `Option<Resource>` must bind the value — wildcards are forbidden because that would silently drop the resource.
 
-| Pattern | Linear Content | Valid |
-|---------|----------------|-------|
+| Pattern | Resource content | Valid |
+|---------|-----------------|-------|
 | `Some(f)` | Binds f | Yes, f must be consumed |
 | `Some(_)` | Wildcard | No, compile error |
 | `None` | No value | Yes, nothing to consume |
@@ -165,15 +165,15 @@ trait HashKey<T>: Hashable<T> {
 }
 ```
 
-## Monomorphization
+## Code Specialization (Monomorphization)
 
-Each instantiation produces specialized code (G6). Compiler verifies trait satisfaction at instantiation site. No whole-program analysis.
+When you call `sort<i32>` and `sort<string>`, the compiler generates two separate `sort` functions — one optimized for `i32`, one for `string` (G6). Trait matching is verified at each call site. No whole-program analysis.
 
 | Aspect | Behavior |
 |--------|----------|
-| Code size | Each instantiation generates new code (visible cost) |
-| Type checking | Performed per instantiation with concrete types |
-| Error location | Reported at instantiation site |
+| Code size | Each type usage generates its own copy of the function |
+| Type checking | Performed per usage with concrete types |
+| Error location | Reported at the call site |
 | Compilation | Incremental per compilation unit |
 
 ## Numeric Literals in Generics
@@ -197,10 +197,10 @@ func increment<T: Numeric>(val: T) -> T {
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Zero instantiations | G2 | Function body syntax-checked; type errors may be deferred |
+| Zero usages | G2 | Function body syntax-checked; type errors may be deferred |
 | Recursive generics | G6 | `Vec<Vec<T>>` allowed; compiler prevents infinite expansion |
 | Trait visibility | TD1 | Public by default; `priv trait` for module-private |
-| Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every instantiation |
+| Generic struct fields | G1 | `struct Foo<T: Comparable>` requires T: Comparable at every usage |
 | Negative constraints | — | Not in MVP; workaround via naming convention or separate functions |
 | Associated types | — | Not in MVP; deferred |
 | More than 2 type params | — | Not in MVP; traits limited to 1-2 parameters |
@@ -213,15 +213,15 @@ func increment<T: Numeric>(val: T) -> T {
 
 ### Rationale
 
-**G1 (structural satisfaction):** Explicit constraints catch errors early without whole-program analysis. Structural satisfaction avoids global coherence complexity.
+**G1 (trait matching):** Explicit constraints catch errors early without whole-program analysis. Matching by shape avoids needing to track trait implementations globally across the entire program.
 
-**G4 (operator desugaring):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
+**G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
 
 **G5 (verified clone):** Compiler-verified clone prevents aliasing bugs. Types with raw pointers can't silently claim to be cloneable.
 
-**G6 (full monomorphization):** Keeps costs transparent and compilation fast. Each instantiation is specialized — no hidden vtable overhead.
+**G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 
-**`explicit trait`:** Provides library stability when needed. Prevents accidental structural matches from breaking when method signatures evolve.
+**`explicit trait`:** Provides library stability when needed. Prevents accidental shape matches from breaking when method signatures evolve.
 
 ### Patterns & Guidance
 
@@ -260,13 +260,13 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 
 ### Integration Notes
 
-- **Memory model**: Generic ownership rules same as non-generic; move/copy determined per instantiation
-- **Type system**: Traits checked structurally at use site; no global coherence required (unless `explicit trait`)
-- **Concurrency**: Generic tasks can send owned generic values; traits verified per instantiation
-- **Compiler**: Monomorphization happens per compilation unit; no cross-unit analysis
-- **C interop**: Generic functions cannot be exported to C (no stable ABI); monomorphized wrappers required
-- **Error handling**: Generic functions with `T or E` work normally; linearity tracked per instantiation
-- **Closures**: Generics in closures capture by value; traits verified at closure instantiation
+- **Memory model**: Generic ownership rules same as non-generic; move/copy determined per concrete type
+- **Type system**: Traits checked by shape at use site; no global tracking required (unless `explicit trait`)
+- **Concurrency**: Generic tasks can send owned generic values; traits verified per concrete type
+- **Compiler**: Specialization happens per compilation unit; no cross-unit analysis
+- **C interop**: Generic functions cannot be exported to C (no stable ABI); specialized wrappers required
+- **Error handling**: Generic functions with `T or E` work normally; must-consume tracking per concrete type
+- **Closures**: Generics in closures capture by value; traits verified at closure usage
 - **Runtime polymorphism**: `any Trait` enables heterogeneous collections; see `type.traits`
 
 ### Standard Library Traits
@@ -287,4 +287,4 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 - [Structs](structs.md) — Struct definitions and methods (`type.structs`)
 - [Enums](enums.md) — Enum types (`type.enums`)
 - [Gradual Constraints](gradual-constraints.md) — Bound inference for private generics
-- [Resource Types](../memory/resource-types.md) — Linear types (`mem.resource-types`)
+- [Resource Types](../memory/resource-types.md) — Must-consume types (`mem.resource-types`)

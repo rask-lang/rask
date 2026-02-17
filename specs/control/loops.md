@@ -186,7 +186,7 @@ for item in vec.take_all() { body }
 
 **LP2 (index mode explicit):** Mutation requires explicit syntax (`0..vec.len()` or `.handles()`). This makes the mutation intent clear and matches the "transparency of cost" principle — you see you're doing index-based access, not value iteration.
 
-**LP3 (collection accessible):** Each element access in value mode is expression-scoped (per `mem.borrowing/V1`), so the collection remains accessible. No persistent borrow exists. This enables natural patterns without borrow conflicts.
+**LP3 (collection accessible):** Each element access in value mode is statement-scoped (per `mem.borrowing/V1`), so the collection remains accessible. No block-scoped borrow exists. This enables natural patterns without borrow conflicts.
 
 **LP7 (take_all):** Ownership transfer is explicit. `vec.take_all()` empties the collection and yields owned items. This prevents accidental consumption while keeping consuming iteration ergonomic.
 

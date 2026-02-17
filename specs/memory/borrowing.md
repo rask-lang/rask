@@ -1,24 +1,24 @@
 <!-- id: mem.borrowing -->
 <!-- status: decided -->
-<!-- summary: Block-scoped views for fixed sources, expression-scoped for growable -->
+<!-- summary: Block-scoped views for fixed-size sources, statement-scoped for growable -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
 
 # Borrowing
 
-Views last as long as the source is stable. Collections (Vec, Pool, Map) release views instantly. Fixed sources (strings, struct fields) keep views until block end.
+Views last as long as the source is stable. Collections (Vec, Pool, Map) release views at the end of the statement. Fixed sources (strings, struct fields) keep views until the block ends.
 
 | Rule | Source | View duration | Why |
 |------|--------|---------------|-----|
-| **B1: Growable = instant** | Vec, Pool, Map | Released at semicolon | Growing/shrinking could invalidate the view |
-| **B2: Fixed = persistent** | string, struct fields, arrays | Valid until block ends | Source can't change, so view stays valid |
+| **B1: Growable = statement-scoped** | Vec, Pool, Map | Released at semicolon | Growing/shrinking could invalidate the view |
+| **B2: Fixed = block-scoped** | string, struct fields, arrays | Valid until block ends | Source can't change, so view stays valid |
 
 ## Parameter and Receiver Borrows
 
 | Rule | Description |
 |------|-------------|
-| **B3: Call duration** | Function parameters and method receivers create persistent borrows for the call duration |
-| **B4: Element access follows source** | Indexing into a borrowed collection follows the collection's own rules (instant for Vec/Pool/Map) |
+| **B3: Call duration** | Function parameters and method receivers are borrowed for the call duration |
+| **B4: Element access follows source** | Indexing into a borrowed collection follows the collection's own rules (statement-scoped for Vec/Pool/Map) |
 
 | Annotation | Borrow Mode | Determined By |
 |------------|-------------|---------------|
@@ -29,25 +29,25 @@ Views last as long as the source is stable. Collections (Vec, Pool, Map) release
 <!-- test: skip -->
 ```rask
 func process(items: Vec<Item>) {
-    // items: persistent borrow (valid for entire function)
-    // items[0]: instant view (Vec can grow inside process)
+    // items: borrowed for entire function
+    // items[0]: statement-scoped view (Vec can grow inside process)
 
-    const first = items[0].name   // Copy out - instant view released
+    const first = items[0].name   // Copy out - view released at semicolon
     items.push(new_item)          // OK: no view held
 }
 ```
 
-## Persistent Views
+## Block-Scoped Views
 
-Views into fixed sources persist until block end.
+Views into fixed sources persist until the block ends.
 
 | Rule | Description |
 |------|-------------|
-| **S1: Block duration** | Stable borrow valid from creation until end of enclosing block |
+| **S1: Block duration** | View valid from creation until end of enclosing block |
 | **S2: Source outlives borrow** | Source must be valid for borrow's entire duration |
 | **S3: No escape** | Cannot store in struct, return, or send cross-task |
 | **S4: Duration extension** | Borrowing a temporary extends its duration to match borrow |
-| **S5: Aliasing XOR mutation** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
+| **S5: Exclusive access** | Source cannot be mutated while borrowed; mutable borrow excludes all other access |
 
 <!-- test: skip -->
 ```rask
@@ -58,7 +58,7 @@ validate(key)                // OK: key still valid
 process(key, value)          // OK: both valid
 ```
 
-**Lifetime extension (S4):**
+**Duration extension (S4):**
 <!-- test: skip -->
 ```rask
 const slice = get_string()[0..n]  // OK: temporary extended
@@ -91,7 +91,7 @@ process(slice)
 s.push('!')              // OK: no active borrow
 ```
 
-## Instant Views
+## Statement-Scoped Views
 
 Views into growable sources (Pool, Vec, Map) are released at the semicolon.
 
@@ -100,7 +100,7 @@ Views into growable sources (Pool, Vec, Map) are released at the semicolon.
 | **V1: Expression duration** | Access valid only within the expression |
 | **V2: Released at semicolon** | Access ends when statement completes |
 | **V3: Chain calls OK** | `pool[h].field.method()` is one expression |
-| **V4: Same aliasing rules** | Aliasing XOR mutation still applies within expression |
+| **V4: Same access rules** | Exclusive access rule still applies within expression |
 
 <!-- test: skip -->
 ```rask
@@ -112,7 +112,7 @@ if pool[h].health <= 0 {     // New view
 
 ## Multi-Statement Collection Access
 
-Volatile access prevents multi-statement operations on collection elements. Use closure-based access.
+Statement-scoped access prevents multi-statement operations on collection elements. Use closure-based access.
 
 | Method | Signature | Use Case |
 |--------|-----------|----------|
@@ -218,7 +218,9 @@ func update_score(state: GameState.{score}, points: i32) {
 
 See [types/structs.md](../types/structs.md) for projection type syntax (`type.structs/P1`).
 
-## Aliasing Rules
+## Access Rules
+
+Many read-only borrows can coexist, OR one mutable borrow can exist — but not both. This prevents one piece of code from modifying data while another is reading it.
 
 | Rule | Read borrow | Mutable borrow |
 |------|-------------|----------------|
@@ -226,7 +228,7 @@ See [types/structs.md](../types/structs.md) for projection type syntax (`type.st
 | **A2: Mutations** | Forbidden | Forbidden |
 | **A3: Count** | Unlimited | Exactly one |
 
-Aliasing XOR Mutation: multiple immutable borrows OK, one mutable borrow OK, mixed is an error.
+This is sometimes called "aliasing XOR mutation" — you can alias (have multiple references) or mutate, but not both at the same time.
 
 ## Borrow Checking
 
@@ -234,25 +236,25 @@ All checks are performed **locally** within the function. No cross-function anal
 
 | Check | When | Error |
 |-------|------|-------|
-| Lifetime validity | At borrow creation | "source doesn't live long enough" |
+| Duration validity | At borrow creation | "source doesn't live long enough" |
 | Aliasing violation | At conflicting access | "cannot mutate while borrowed" |
 | Escape attempt | At assignment/return | "borrow cannot escape scope" |
 
 ## Error Messages
 
-Error messages teach B1/B2 (growable vs fixed) and provide concrete fixes.
+Error messages explain growable vs fixed sources (B1/B2) and provide concrete fixes.
 
 **Holding a view from a growable source [V2]:**
 ```
 ERROR [mem.borrowing/V2]: cannot hold view from growable source
    |
 5  |  let entity = pool[h]
-   |               ^^^^^^^ Pool can grow/shrink - view must be instant
+   |               ^^^^^^^ Pool can grow/shrink - view released at semicolon
 6  |  entity.update()
    |  ^^^^^^ view already released
 
 WHY: Pool, Vec, and Map can grow or shrink, which would invalidate
-     any persistent view. Views are released at the semicolon.
+     any held view. Views are released at the semicolon.
 
 FIX: Copy the value out, or use a closure:
 
@@ -267,7 +269,7 @@ FIX: Copy the value out, or use a closure:
   })
 ```
 
-**Mutation during persistent view [S5]:**
+**Mutation during block-scoped view [S5]:**
 ```
 ERROR [mem.borrowing/S5]: cannot mutate source while viewed
    |
@@ -322,43 +324,43 @@ FIX: Collect handles first, then mutate:
 | Borrow across match arms | S1 | All arms see same borrow mode |
 | Clone of borrowed | — | Allowed (creates independent copy) |
 | Borrow of clone | — | Borrows the new copy, not original |
-| Volatile access in method chain | V3 | Access spans entire chain |
-| Mixed stable/volatile | B1, B2 | Each follows its source's rules |
+| Statement-scoped access in method chain | V3 | Access spans entire chain |
+| Mixed fixed/growable | B1, B2 | Each follows its source's rules |
 
 ## Quick Reference
 
 | Aspect | Fixed Sources | Growable Sources |
 |--------|---------------|------------------|
 | Types | string, struct fields, arrays | Pool, Vec, Map |
-| View duration | Until block ends | Until semicolon |
-| **Parameter borrows** | Persistent (call duration) | Persistent (call duration) |
-| **Indexing into param** | Persistent (fixed source) | Instant (growable source) |
+| View duration | Until block ends (block-scoped) | Until semicolon (statement-scoped) |
+| **Parameter borrows** | Block-scoped (call duration) | Block-scoped (call duration) |
+| **Indexing into param** | Block-scoped (fixed source) | Statement-scoped (growable source) |
 | Can store in `const`? | Yes | No (use inline or copy out) |
 | Multi-statement use? | Direct | Closure (`read`/`modify`) or copy out |
 | The test | Can't grow or shrink | Can grow or shrink |
 
 ## Examples
 
-### String Parsing (Persistent Borrow)
+### String Parsing (Block-Scoped)
 <!-- test: parse -->
 ```rask
 func parse_header(line: string) -> Option<(string, string)> {
     const colon = try line.find(':')
-    const key = line[0..colon].trim()      // Persistent borrow (S1)
-    const value = line[colon+1..].trim()   // Another persistent borrow
+    const key = line[0..colon].trim()      // Block-scoped view (S1)
+    const value = line[colon+1..].trim()   // Another block-scoped view
     Some((key.to_string(), value.to_string()))
 }
 ```
 
-### Entity Update (Instant Access)
+### Entity Update (Statement-Scoped Access)
 <!-- test: parse -->
 ```rask
 func update_combat(pool: Pool<Entity>) {
     let targets: Vec<Handle<Entity>> = find_targets(pool)
 
     for h in targets {
-        pool[h].health -= 10             // Instant access (V1)
-        if pool[h].health <= 0 {         // New instant access
+        pool[h].health -= 10             // Statement-scoped access (V1)
+        if pool[h].health <= 0 {         // New statement-scoped access
             pool.remove(h)               // No active borrow - OK
         }
     }
@@ -371,17 +373,17 @@ func update_combat(pool: Pool<Entity>) {
 
 ### Rationale
 
-**B1/B2 (instant vs persistent):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections release views instantly so you'll never write code that silently holds a dangling view. The error is immediate, the fix is obvious.
+**B1/B2 (statement-scoped vs block-scoped):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections release views at the semicolon so you'll never write code that silently holds a dangling view. The error is immediate, the fix is obvious.
 
-**S3 (no escape):** The cost is more `.to_string()` calls. I think that's better than lifetime annotations leaking into function signatures.
+**S3 (no escape):** The cost is more `.to_string()` calls. I think that's better than scope annotations leaking into function signatures.
 
-**Why collections have instant views:** Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Persistent views would dangle. Instant views kill this bug class.
+**Why collections use statement-scoped views:** Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Block-scoped views would dangle. Statement-scoped views kill this bug class.
 
-**Why strings have persistent views:** Strings don't change structure once created. Can't insert/remove chars without making a new string. Source can't change, so views stay valid. This enables multi-statement string parsing without copying.
+**Why strings use block-scoped views:** Strings don't change structure once created. Can't insert/remove chars without making a new string. Source can't change, so views stay valid. This enables multi-statement string parsing without copying.
 
 ### Patterns & Guidance
 
-**The pattern for collections:** Since collection views are instant (B1), multi-statement access uses one of two patterns:
+**The pattern for collections:** Since collection views are statement-scoped (B1), multi-statement access uses one of two patterns:
 
 <!-- test: skip -->
 ```rask
@@ -416,14 +418,14 @@ The IDE makes view durations visible through ghost annotations.
 
 | Context | Annotation |
 |---------|------------|
-| Persistent view | `[view: until line N]` |
-| Instant view | `[instant: released at ;]` |
+| Block-scoped view | `[view: until line N]` |
+| Statement-scoped view | `[view: released at ;]` |
 | Conflict site | `[conflict: viewed on line N]` |
 
 <!-- test: skip -->
 ```rask
-// Instant view (collection)
-const health = pool[h].health  // [instant: released at ;]
+// Statement-scoped view (collection)
+const health = pool[h].health  // [view: released at ;]
 if health <= 0 {             // view already released
     pool.remove(h)           // OK - no conflict
 }
@@ -431,7 +433,7 @@ if health <= 0 {             // view already released
 
 <!-- test: skip -->
 ```rask
-// Persistent view (string)
+// Block-scoped view (string)
 const key = line[0..eq]        // [view: until line 8]
 const value = line[eq+1..]     // [view: until line 8]
 validate(key)                // [uses view from line 3]

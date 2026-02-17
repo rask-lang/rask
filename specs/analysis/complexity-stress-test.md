@@ -97,7 +97,7 @@ func sync_physics(mutate world: GameWorld) {
 }
 ```
 
-**Concepts: 8** — cursor iteration, instant views, cross-pool handles, two pools active, @resource in pool, raw value extraction, safe FFI wrapper, borrowing modes.
+**Concepts: 8** — cursor iteration, statement-scoped views, cross-pool handles, two pools active, @resource in pool, raw value extraction, safe FFI wrapper, borrowing modes.
 
 **Friction:** Cross-pool handle chaining — three mechanism boundaries in four lines. **MARGINAL.**
 
@@ -127,7 +127,7 @@ func update_entities(mutate world: GameWorld) -> () or Error {
 }
 ```
 
-**Concepts: 10** — cursor iteration, instant views, move semantics, cross-pool handles, pool removal, @resource consumption, error handling, handle collection pattern, Pool\<@resource> rules, ownership transfer.
+**Concepts: 10** — cursor iteration, statement-scoped views, move semantics, cross-pool handles, pool removal, @resource consumption, error handling, handle collection pattern, Pool\<@resource> rules, ownership transfer.
 
 **The 4-step destruction dance is unavoidable:** remove entity → extract handle → remove body → consume body. Miss any step → compile error or runtime panic. **FAIL.**
 
@@ -180,7 +180,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
 }
 ```
 
-**Concepts: 12** — ThreadPool, spawn thread, affine handles, snapshot isolation, FrozenPool, freeze_ref, cross-pool handles, Send/Sync constraints, disjoint field access, error handling, @resource across threads, copy-on-write. **FAIL.**
+**Concepts: 12** — ThreadPool, spawn thread, must-use handles, snapshot isolation, FrozenPool, freeze_ref, cross-pool handles, Send/Sync constraints, disjoint field access, error handling, @resource across threads, copy-on-write. **FAIL.**
 
 ## Friction Points
 
@@ -235,5 +235,5 @@ If a function needs >3, restructure (pass struct, use field projections, split f
 - `mem.pools` — Pool\<T>, Handle\<T>, frozen pools, snapshots
 - `mem.resources` — @resource types, ensure cleanup
 - `mem.context` — context clauses
-- `conc.async` — spawn, affine handles
-- `mem.borrowing` — instant views, field projections
+- `conc.async` — spawn, must-use handles
+- `mem.borrowing` — statement-scoped views, field projections
