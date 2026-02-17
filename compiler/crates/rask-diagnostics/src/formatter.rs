@@ -18,12 +18,15 @@
 
 use colored::Colorize;
 
+use rask_ast::LineMap;
+
 use crate::{Diagnostic, Help, LabelStyle, Severity};
 
 /// Formats diagnostics for terminal output.
 pub struct DiagnosticFormatter<'a> {
     source: &'a str,
     file_name: Option<&'a str>,
+    line_map: LineMap,
 }
 
 /// A source line with its labels.
@@ -42,9 +45,11 @@ struct Annotation {
 
 impl<'a> DiagnosticFormatter<'a> {
     pub fn new(source: &'a str) -> Self {
+        let line_map = LineMap::new(source);
         Self {
             source,
             file_name: None,
+            line_map,
         }
     }
 
@@ -374,25 +379,13 @@ impl<'a> DiagnosticFormatter<'a> {
 
     /// Convert byte offset to (line, col), both 1-based.
     fn offset_to_line_col(&self, offset: usize) -> (usize, usize) {
-        let mut line = 1;
-        let mut col = 1;
-        for (i, ch) in self.source.char_indices() {
-            if i >= offset {
-                break;
-            }
-            if ch == '\n' {
-                line += 1;
-                col = 1;
-            } else {
-                col += 1;
-            }
-        }
-        (line, col)
+        let (line, col) = self.line_map.offset_to_line_col(offset);
+        (line as usize, col as usize)
     }
 
     /// Get source line text by 1-based line number.
     fn get_line(&self, line_num: usize) -> Option<&str> {
-        self.source.lines().nth(line_num - 1)
+        self.line_map.line_text(self.source, line_num as u32)
     }
 }
 

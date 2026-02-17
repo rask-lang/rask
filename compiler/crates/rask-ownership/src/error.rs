@@ -11,6 +11,21 @@ pub struct OwnershipError {
     pub span: Span,
 }
 
+/// Why a value was moved instead of copied.
+#[derive(Debug, Clone)]
+pub enum MoveReason {
+    /// Type exceeds the 16-byte copy threshold.
+    SizeExceedsThreshold { type_name: String, size: usize },
+    /// Type owns heap memory (String, Vec, Map, Pool).
+    OwnsHeapMemory { type_name: String },
+    /// Type is marked @unique.
+    Unique { type_name: String },
+    /// Type is marked @resource.
+    Resource { type_name: String },
+    /// Unknown or generic type.
+    Unknown,
+}
+
 /// The kind of ownership error.
 #[derive(Debug, Clone, Error)]
 pub enum OwnershipErrorKind {
@@ -19,6 +34,7 @@ pub enum OwnershipErrorKind {
     UseAfterMove {
         name: String,
         moved_at: Span,
+        reason: MoveReason,
     },
 
     /// Conflicting access to a value (e.g., trying to write while someone is reading).
@@ -53,6 +69,19 @@ pub enum OwnershipErrorKind {
     #[error("`{name}` must be used before the end of this block")]
     ResourceNotConsumed {
         name: String,
+    },
+
+    /// Trying to move a value out of a borrowed parameter.
+    #[error("cannot move `{name}` — parameter is borrowed, not owned")]
+    MoveFromBorrowedParam {
+        name: String,
+    },
+
+    /// Resource consumed more than once.
+    #[error("resource `{name}` already consumed")]
+    ResourceAlreadyConsumed {
+        name: String,
+        consumed_at: Span,
     },
 }
 

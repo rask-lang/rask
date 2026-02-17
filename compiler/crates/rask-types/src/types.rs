@@ -87,6 +87,13 @@ pub enum Type {
     Union(Vec<Type>),
     /// Type variable (for inference)
     Var(TypeVarId),
+    /// Raw pointer type (*T)
+    RawPtr(Box<Type>),
+    /// SIMD vector type: Vec[T, N] with shorthand aliases (f32x8, i32x4, etc.)
+    SimdVector {
+        elem: Box<Type>,
+        lanes: usize,
+    },
     /// Never type (for return, panic, etc.)
     Never,
     /// Error placeholder for recovery
@@ -212,6 +219,8 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::RawPtr(inner) => write!(f, "*{}", inner),
+            Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),
             Type::Error => write!(f, "<error>"),

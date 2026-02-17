@@ -33,6 +33,15 @@ pub enum SymbolKind {
         /// `using` context clauses.
         context_clauses: Vec<ContextClause>,
     },
+    /// An extern function (C FFI).
+    ExternFunction {
+        /// ABI string (e.g., "C").
+        abi: String,
+        /// Parameter type strings.
+        params: Vec<String>,
+        /// Return type as a string (None = void).
+        ret_ty: Option<String>,
+    },
     /// A struct type.
     Struct {
         /// Field names and their SymbolIds.
@@ -107,8 +116,8 @@ pub enum BuiltinTypeKind {
     Shared,
     /// Owned<T> - heap-allocated owned value
     Owned,
-    /// f32x8 - SIMD vector type (8 x f32)
-    F32x8,
+    /// SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
+    Simd,
     /// Rng - random number generator
     Rng,
     /// File - file handle
@@ -159,6 +168,8 @@ pub enum BuiltinModuleKind {
     Net,
     /// core - core utilities and constants
     Core,
+    /// async - async runtime (spawn, etc.)
+    Async,
 }
 
 /// A declared symbol.

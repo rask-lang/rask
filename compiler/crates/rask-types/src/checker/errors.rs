@@ -105,4 +105,14 @@ pub enum TypeError {
         param_index: usize,
         span: Span,
     },
+    #[error("`try` requires a Result or Option type, found {found}")]
+    TryOnNonResult {
+        found: Type,
+        span: Span,
+    },
+    #[error("{operation} requires `unsafe` block")]
+    UnsafeRequired {
+        operation: String,
+        span: Span,
+    },
 }

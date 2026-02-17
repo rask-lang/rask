@@ -7,7 +7,8 @@ use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::Span;
 
 use super::errors::TypeError;
-use super::parse_type::parse_type_string;
+use super::parse_type::{parse_type_string, extract_projection};
+use super::type_defs::TypeDef;
 use super::TypeChecker;
 
 use crate::types::Type;
@@ -29,7 +30,20 @@ impl TypeChecker {
                 }
                 continue;
             }
-            if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+            if let Ok(mut ty) = parse_type_string(&param.ty, &self.types) {
+                // Single-field projections resolve to the field's type:
+                // `entities: GameState.{entities}` → entities has type Pool<Entity>
+                if let Some(proj_fields) = extract_projection(&param.ty) {
+                    if proj_fields.len() == 1 {
+                        if let Type::Named(type_id) = &ty {
+                            if let Some(TypeDef::Struct { fields: struct_fields, .. }) = self.types.get(*type_id) {
+                                if let Some((_, field_ty)) = struct_fields.iter().find(|(n, _)| *n == proj_fields[0]) {
+                                    ty = field_ty.clone();
+                                }
+                            }
+                        }
+                    }
+                }
                 if param.is_mutate || param.is_take {
                     self.define_local(param.name.clone(), ty);
                 } else {

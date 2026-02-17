@@ -9,6 +9,8 @@
 
 use serde::Serialize;
 
+use rask_ast::LineMap;
+
 use crate::{codes::ErrorCodeRegistry, Diagnostic, LabelStyle};
 
 /// A complete JSON diagnostic report for a compilation run.
@@ -125,6 +127,7 @@ pub fn to_json_report(
     phase: &str,
 ) -> DiagnosticReport {
     let registry = ErrorCodeRegistry::default();
+    let line_map = LineMap::new(source);
     let mut error_count = 0;
     let mut warning_count = 0;
 
@@ -136,7 +139,7 @@ pub fn to_json_report(
                 crate::Severity::Warning => warning_count += 1,
                 crate::Severity::Note => {}
             }
-            to_json_diagnostic(d, source, &registry)
+            to_json_diagnostic(d, source, &line_map, &registry)
         })
         .collect();
 
@@ -154,6 +157,7 @@ pub fn to_json_report(
 fn to_json_diagnostic(
     diag: &Diagnostic,
     source: &str,
+    line_map: &LineMap,
     registry: &ErrorCodeRegistry,
 ) -> JsonDiagnostic {
     let severity = match diag.severity {
@@ -175,12 +179,12 @@ fn to_json_diagnostic(
         .find(|l| l.style == LabelStyle::Primary)
         .or(diag.labels.first())
         .map(|l| {
-            let (line, col) = offset_to_line_col(source, l.span.start);
+            let (line, col) = line_map.offset_to_line_col(l.span.start);
             SourceLocation {
-                line,
-                column: col,
+                line: line as usize,
+                column: col as usize,
                 byte_offset: l.span.start,
-                source_line: get_line(source, line).unwrap_or("").to_string(),
+                source_line: line_map.line_text(source, line).unwrap_or("").to_string(),
             }
         });
 
@@ -189,8 +193,8 @@ fn to_json_diagnostic(
         .labels
         .iter()
         .map(|l| {
-            let (start_line, start_col) = offset_to_line_col(source, l.span.start);
-            let (end_line, end_col) = offset_to_line_col(source, l.span.end);
+            let (start_line, start_col) = line_map.offset_to_line_col(l.span.start);
+            let (end_line, end_col) = line_map.offset_to_line_col(l.span.end);
             JsonLabel {
                 role: match l.style {
                     LabelStyle::Primary => "primary".to_string(),
@@ -198,16 +202,16 @@ fn to_json_diagnostic(
                 },
                 message: l.message.clone(),
                 start: LineCol {
-                    line: start_line,
-                    column: start_col,
+                    line: start_line as usize,
+                    column: start_col as usize,
                     byte_offset: l.span.start,
                 },
                 end: LineCol {
-                    line: end_line,
-                    column: end_col,
+                    line: end_line as usize,
+                    column: end_col as usize,
                     byte_offset: l.span.end,
                 },
-                source_line: get_line(source, start_line).unwrap_or("").to_string(),
+                source_line: line_map.line_text(source, start_line).unwrap_or("").to_string(),
             }
         })
         .collect();
@@ -215,8 +219,9 @@ fn to_json_diagnostic(
     // Suggestion
     let suggestion = diag.help.as_ref().and_then(|h| {
         h.suggestion.as_ref().map(|s| {
-            let (line, col) = offset_to_line_col(source, s.span.start);
-            let original_line = get_line(source, line).unwrap_or("");
+            let (line, col) = line_map.offset_to_line_col(s.span.start);
+            let col = col as usize;
+            let original_line = line_map.line_text(source, line).unwrap_or("");
             let span_len = s.span.end.saturating_sub(s.span.start);
             let prefix = &original_line[..col.saturating_sub(1).min(original_line.len())];
             let suffix_start = (col - 1 + span_len).min(original_line.len());
@@ -247,29 +252,6 @@ fn to_json_diagnostic(
         fix: diag.fix.clone(),
         why: diag.why.clone(),
     }
-}
-
-/// Convert byte offset to (line, col), both 1-based.
-fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
-    let mut line = 1;
-    let mut col = 1;
-    for (i, ch) in source.char_indices() {
-        if i >= offset {
-            break;
-        }
-        if ch == '\n' {
-            line += 1;
-            col = 1;
-        } else {
-            col += 1;
-        }
-    }
-    (line, col)
-}
-
-/// Get source line text by 1-based line number.
-fn get_line(source: &str, line_num: usize) -> Option<&str> {
-    source.lines().nth(line_num - 1)
 }
 
 /// Serialize a diagnostic report to pretty JSON.

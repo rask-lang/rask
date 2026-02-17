@@ -196,11 +196,11 @@ impl BuiltinModules {
 
         // std module
         let mut std_methods = Vec::new();
-        // std.exit(code: i64) -> ()
+        // std.exit(code: i64) -> ! (never returns)
         std_methods.push(ModuleMethodSig {
             name: "exit".to_string(),
             params: vec![Type::I64],
-            ret: Type::Unit,
+            ret: Type::Never,
         });
         modules.insert("std".to_string(), std_methods);
 

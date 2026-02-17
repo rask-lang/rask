@@ -75,6 +75,12 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         return Ok(Type::Slice(Box::new(inner)));
     }
 
+    // Raw pointer: *T
+    if s.starts_with('*') {
+        let inner = parse_type_string(&s[1..], types)?;
+        return Ok(Type::RawPtr(Box::new(inner)));
+    }
+
     if s.starts_with("func(") || s.starts_with("fn(") {
         return parse_fn_type(s, types);
     }

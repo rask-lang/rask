@@ -403,6 +403,18 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix("remove the annotation")
                     .with_why("annotations must match parameter declarations")
             }
+
+            TryOnNonResult { found, span } => {
+                Diagnostic::error(format!("`try` requires a Result type, found `{}`", found))
+                    .with_code("E0329")
+                    .with_primary(*span, "not a Result type")
+            }
+
+            UnsafeRequired { operation, span } => {
+                Diagnostic::error(format!("{} requires an `unsafe` block", operation))
+                    .with_code("E0330")
+                    .with_primary(*span, "unsafe operation outside unsafe block")
+            }
         }
     }
 }
@@ -494,18 +506,57 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
         use rask_ownership::OwnershipErrorKind::*;
 
         match &self.kind {
-            UseAfterMove { name, moved_at } => {
+            UseAfterMove { name, moved_at, reason } => {
+                use rask_ownership::MoveReason;
+                let (note, help) = match reason {
+                    MoveReason::SizeExceedsThreshold { type_name, size } => (
+                        format!(
+                            "`{}` is {} bytes (copy threshold is 16) — `let` moves instead of copying",
+                            type_name, size
+                        ),
+                        format!(
+                            "use `const` instead of `let` if you don't need to mutate, \
+                             or `{}.clone()` if you need an independent copy",
+                            name
+                        ),
+                    ),
+                    MoveReason::OwnsHeapMemory { type_name } => (
+                        format!(
+                            "`{}` owns heap memory — `let` moves instead of copying",
+                            type_name
+                        ),
+                        format!(
+                            "use `const` instead of `let` to borrow, \
+                             or `{}.clone()` for a deep copy",
+                            name
+                        ),
+                    ),
+                    MoveReason::Unique { type_name } => (
+                        format!("`{}` is @unique — implicit copy is disabled", type_name),
+                        format!(
+                            "use `const` to borrow, or `{}.clone()` for an explicit copy",
+                            name
+                        ),
+                    ),
+                    MoveReason::Resource { type_name } => (
+                        format!("`{}` is @resource — must be consumed exactly once", type_name),
+                        "restructure so the resource is only used once".to_string(),
+                    ),
+                    MoveReason::Unknown => (
+                        format!("`{}` was moved — `let` transfers ownership", name),
+                        format!(
+                            "use `const` instead of `let` to borrow, \
+                             or `{}.clone()` if you need a separate copy",
+                            name
+                        ),
+                    ),
+                };
                 Diagnostic::error(format!("use of moved value: `{}`", name))
                     .with_code("E0800")
                     .with_primary(self.span, "value used here after move")
                     .with_secondary(*moved_at, "value moved here")
-                    .with_note(format!(
-                        "`{}` was moved because ownership was transferred",
-                        name
-                    ))
-                    .with_help("consider cloning the value or using a `read` borrow instead")
-                    .with_fix("clone the value before the transfer, or use a `read` borrow instead")
-                    .with_why("`own` transfers ownership — the caller can no longer access the value")
+                    .with_note(note)
+                    .with_help(help)
             }
 
             BorrowConflict {
@@ -535,6 +586,25 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("concurrent read and write access to the same value would be a data race")
             }
 
+            MoveFromBorrowedParam { name } => {
+                Diagnostic::error(format!(
+                    "cannot move `{}` — parameter is borrowed, not owned",
+                    name
+                ))
+                .with_code("E0806")
+                .with_primary(self.span, "move occurs here")
+                .with_fix(format!("use `take {}` in the parameter list to transfer ownership", name))
+                .with_why("borrowed parameters can only be read — the caller retains ownership")
+            }
+
+            ResourceAlreadyConsumed { name, consumed_at } => {
+                Diagnostic::error(format!("resource `{}` already consumed", name))
+                    .with_code("E0807")
+                    .with_primary(self.span, "second use here")
+                    .with_secondary(*consumed_at, "resource consumed here")
+                    .with_why("resources must be consumed exactly once")
+            }
+
             MutateWhileBorrowed { name, borrow_span } => {
                 Diagnostic::error(format!(
                     "`{}` cannot be changed while it's being read",
@@ -543,8 +613,7 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_code("E0802")
                 .with_primary(self.span, "mutation occurs here")
                 .with_secondary(*borrow_span, "borrow is active here")
-                .with_help("wait until the borrow ends before mutating")
-                .with_fix("wait until the borrow ends before mutating")
+                .with_help(format!("restructure so the borrow ends before mutating, or use `{}.clone()` to work on an independent copy", name))
                 .with_why("mutation during an active borrow could invalidate the borrow's view of the data")
             }
 
