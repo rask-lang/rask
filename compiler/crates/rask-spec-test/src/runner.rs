@@ -68,11 +68,24 @@ fn run_compile_test(test: SpecTest) -> TestResult {
     };
 
     // Type check
-    if let Err(errors) = rask_types::typecheck(resolved, &parse_result.decls) {
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(errors) => {
+            return TestResult {
+                test,
+                passed: false,
+                message: format!("type check failed: {:?}", errors),
+            };
+        }
+    };
+
+    // Ownership check
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership_result.is_ok() {
         return TestResult {
             test,
             passed: false,
-            message: format!("type check failed: {:?}", errors),
+            message: format!("ownership check failed: {:?}", ownership_result.errors),
         };
     }
 
@@ -121,11 +134,24 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
     };
 
     // Type check
-    if rask_types::typecheck(resolved, &parse_result.decls).is_err() {
+    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        Ok(t) => t,
+        Err(_) => {
+            return TestResult {
+                test,
+                passed: true,
+                message: "failed at typecheck (expected)".to_string(),
+            };
+        }
+    };
+
+    // Ownership check
+    let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+    if !ownership_result.is_ok() {
         return TestResult {
             test,
             passed: true,
-            message: "failed at typecheck (expected)".to_string(),
+            message: "failed at ownership check (expected)".to_string(),
         };
     }
 

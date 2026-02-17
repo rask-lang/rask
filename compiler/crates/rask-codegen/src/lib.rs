@@ -14,6 +14,14 @@ pub use module::CodeGenerator;
 use std::error::Error;
 use std::fmt;
 
+/// Extern function signature for codegen declaration.
+/// Decoupled from AST — callers convert from their own representation.
+pub struct ExternFuncSig {
+    pub name: String,
+    pub param_types: Vec<String>,
+    pub ret_ty: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub enum CodegenError {
     UnsupportedFeature(String),

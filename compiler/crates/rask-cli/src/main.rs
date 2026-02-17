@@ -189,7 +189,10 @@ fn main() {
                 process::exit(1);
             }
             let native = cmd_args.contains(&"--native");
-            let file_arg = find_positional_arg(&cmd_args, 2, &[]);
+            let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
+            let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs };
+            let file_arg = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -200,7 +203,7 @@ fn main() {
             if native {
                 // Native binary doesn't need the source path as argv[0]
                 let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
-                commands::run::cmd_run_native(file, native_args, format);
+                commands::run::cmd_run_native(file, native_args, format, &link_opts);
             } else {
                 let mut program_args: Vec<String> = vec![file.to_string()];
                 program_args.extend(prog_args.iter().map(|s| s.to_string()));
@@ -218,7 +221,10 @@ fn main() {
                 process::exit(1);
             }
             let output_path = extract_flag_value(&cmd_args, "-o");
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-o"]);
+            let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
+            let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs };
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -226,7 +232,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false);
+            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts);
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

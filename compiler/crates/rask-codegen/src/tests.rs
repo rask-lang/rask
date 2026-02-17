@@ -39,7 +39,7 @@ mod tests {
     fn call(dst: Option<u32>, name: &str, args: Vec<MirOperand>) -> MirStmt {
         MirStmt::Call {
             dst: dst.map(LocalId),
-            func: FunctionRef { name: name.to_string() },
+            func: FunctionRef { name: name.to_string(), is_extern: false },
             args,
         }
     }
@@ -76,6 +76,8 @@ mod tests {
                 block(0, vec![], ret(Some(i32_const(42)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -96,6 +98,8 @@ mod tests {
                 block(0, vec![], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -129,6 +133,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -167,6 +173,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -182,6 +190,8 @@ mod tests {
                 ], ret(Some(local_op(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -202,6 +212,8 @@ mod tests {
             locals: vec![],
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -215,6 +227,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -262,6 +276,8 @@ mod tests {
                 ], ret(Some(local_op(3)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -327,6 +343,8 @@ mod tests {
                 block(3, vec![], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -367,6 +385,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let run_fn = MirFunction {
@@ -406,6 +426,8 @@ mod tests {
                 block(3, vec![], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -431,6 +453,8 @@ mod tests {
                 block(0, vec![], ret(Some(i32_const(42)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -471,6 +495,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -497,6 +523,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -523,6 +551,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -546,6 +576,8 @@ mod tests {
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -584,6 +616,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -620,6 +654,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -655,6 +691,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -704,6 +742,8 @@ mod tests {
                 block(2, vec![], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -739,6 +779,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -769,6 +811,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -801,6 +845,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -829,6 +875,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -857,6 +905,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -885,6 +935,8 @@ mod tests {
                 ], ret(Some(local_op(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -921,6 +973,8 @@ mod tests {
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_point_struct();
@@ -956,6 +1010,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mono = mono_with_result_enum();
@@ -1000,6 +1056,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1042,6 +1100,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1081,6 +1141,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1107,6 +1169,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1134,6 +1198,8 @@ mod tests {
                 }),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1163,6 +1229,8 @@ mod tests {
                 ], ret(None)), // terminator ignored for cleanup blocks
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1194,6 +1262,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1221,6 +1291,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1238,6 +1310,8 @@ mod tests {
             locals: vec![local(0, "x", MirType::I32, true)],
             blocks: vec![block(0, vec![], ret(None))],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -1251,6 +1325,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = gen_with_stdlib();
@@ -1315,6 +1391,8 @@ mod tests {
                 block(0, vec![], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1341,6 +1419,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1386,6 +1466,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1420,6 +1502,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1468,6 +1552,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let make_fn = MirFunction {
@@ -1492,6 +1578,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1513,6 +1601,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1552,6 +1642,8 @@ mod tests {
                 block(0, vec![], ret(Some(MirOperand::Constant(MirConst::Int(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1579,6 +1671,8 @@ mod tests {
                 ], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut gen = CodeGenerator::new().unwrap();
@@ -1628,6 +1722,8 @@ mod tests {
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let outer_fn = MirFunction {
@@ -1659,6 +1755,8 @@ mod tests {
                 ], ret(Some(local_op(3)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1689,6 +1787,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
@@ -1731,6 +1831,8 @@ mod tests {
                 block(0, vec![], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1779,6 +1881,8 @@ mod tests {
                 block(3, vec![], ret(Some(local_op(0)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let all_fns = [closure_fn.clone(), main_fn.clone()];
@@ -1824,6 +1928,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let sub_fn = MirFunction {
@@ -1848,6 +1954,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let main_fn = MirFunction {
@@ -1890,6 +1998,8 @@ mod tests {
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];

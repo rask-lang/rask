@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+rask-ast = { path = "../rask-ast" }
 rask-mir = { path = "../rask-mir" }
 rask-mono = { path = "../rask-mono" }
 

@@ -35,11 +35,17 @@ pub struct FunctionBuilder<'a> {
     enum_layouts: &'a [EnumLayout],
     /// String literal data (content → GlobalValue for the data address)
     string_globals: &'a HashMap<String, GlobalValue>,
+    /// Comptime global data (const name → GlobalValue for the data address)
+    comptime_globals: &'a HashMap<String, GlobalValue>,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
     /// Map MIR locals to Cranelift variables
     var_map: HashMap<LocalId, Variable>,
+
+    /// Current source location tracked from SourceLocation statements
+    current_line: u32,
+    current_col: u32,
 }
 
 impl<'a> FunctionBuilder<'a> {
@@ -50,6 +56,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &'a [StructLayout],
         enum_layouts: &'a [EnumLayout],
         string_globals: &'a HashMap<String, GlobalValue>,
+        comptime_globals: &'a HashMap<String, GlobalValue>,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
@@ -59,8 +66,11 @@ impl<'a> FunctionBuilder<'a> {
             struct_layouts,
             enum_layouts,
             string_globals,
+            comptime_globals,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
+            current_line: 0,
+            current_col: 0,
         })
     }
 
@@ -75,6 +85,8 @@ impl<'a> FunctionBuilder<'a> {
                     MirType::Struct(id) => self.struct_layouts.get(id.0 as usize).map(|sl| sl.size),
                     MirType::Enum(id) => self.enum_layouts.get(id.0 as usize).map(|el| el.size),
                     MirType::Array { elem, len } => Some(elem.size() * len),
+                    MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+                    | MirType::Result { .. } | MirType::Union(_) => Some(l.ty.size()),
                     _ => None,
                 };
                 size.filter(|&s| s > 0).map(|s| (l.id, s))
@@ -156,10 +168,18 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
+                // Track source location for runtime error messages
+                if let MirStmt::SourceLocation { line, col } = stmt {
+                    self.current_line = *line;
+                    self.current_col = *col;
+                    continue;
+                }
                 Self::lower_stmt(
                     &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
                     self.func_refs, self.struct_layouts, self.enum_layouts,
-                    self.string_globals,
+                    self.string_globals, self.comptime_globals,
+                    self.mir_fn.source_file.as_deref(),
+                    self.current_line, self.current_col,
                 )?;
             }
 
@@ -169,7 +189,7 @@ impl<'a> FunctionBuilder<'a> {
                 &self.block_map, &self.mir_fn.ret_ty,
                 &self.mir_fn.blocks, &self.mir_fn.locals,
                 self.func_refs, self.struct_layouts, self.enum_layouts,
-                self.string_globals,
+                self.string_globals, self.comptime_globals,
             )?;
         }
 
@@ -194,6 +214,10 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &[StructLayout],
         enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
+        comptime_globals: &HashMap<String, GlobalValue>,
+        source_file: Option<&str>,
+        current_line: u32,
+        current_col: u32,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
@@ -219,7 +243,8 @@ impl<'a> FunctionBuilder<'a> {
             MirStmt::Store { addr, offset, value } => {
                 let addr_val = builder.use_var(*var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
-                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                // Store as I64 to match pointer dereference load width
+                let val = Self::lower_operand_typed(builder, value, var_map, Some(types::I64), string_globals, func_refs)?;
 
                 let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
@@ -279,28 +304,138 @@ impl<'a> FunctionBuilder<'a> {
                             builder.def_var(*var, zero);
                         }
                     }
-                } else if func.name == "assert" {
-                    // assert(cond) — branch on condition, trap if false
-                    if let Some(arg) = args.first() {
-                        let cond = Self::lower_operand(builder, arg, var_map, string_globals, func_refs)?;
-                        let ok_block = builder.create_block();
-                        let fail_block = builder.create_block();
-                        builder.ins().brif(cond, ok_block, &[], fail_block, &[]);
-
-                        builder.seal_block(fail_block);
-                        builder.switch_to_block(fail_block);
+                } else if func.name == "assert_fail" {
+                    // MIR already handled branching; this is the fail path.
+                    // Use location-aware variant when source info is available.
+                    if let Some(file_str) = source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            func_refs.get("assert_fail_at"),
+                            string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
+                        } else {
+                            let assert_fn = func_refs.get("assert_fail")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
+                            builder.ins().call(*assert_fn, &[]);
+                        }
+                    } else {
                         let assert_fn = func_refs.get("assert_fail")
                             .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                         builder.ins().call(*assert_fn, &[]);
-                        builder.ins().trap(TrapCode::user(1).unwrap());
-
-                        builder.seal_block(ok_block);
-                        builder.switch_to_block(ok_block);
                     }
+                } else if func.name == "panic_unwrap" {
+                    // MIR already handled branching; this is the panic path.
+                    if let Some(file_str) = source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            func_refs.get("panic_unwrap_at"),
+                            string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
+                        } else {
+                            let unwrap_fn = func_refs.get("panic_unwrap")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
+                            builder.ins().call(*unwrap_fn, &[]);
+                        }
+                    } else {
+                        let unwrap_fn = func_refs.get("panic_unwrap")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
+                        builder.ins().call(*unwrap_fn, &[]);
+                    }
+                } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
+                    // Pointer arithmetic: ptr.add(n) → ptr + n*8, ptr.sub(n) → ptr - n*8
+                    // Hardcoded elem_size=8 (all values are i64 for now)
+                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
+                    let n_val = Self::lower_operand_typed(builder, &args[1], var_map, Some(types::I64), string_globals, func_refs)?;
+                    let elem_size = builder.ins().iconst(types::I64, 8);
+                    let byte_offset = builder.ins().imul(n_val, elem_size);
+                    let result = if func.name == "Ptr_sub" {
+                        builder.ins().isub(ptr_val, byte_offset)
+                    } else {
+                        builder.ins().iadd(ptr_val, byte_offset)
+                    };
                     if let Some(dst_id) = dst {
                         if let Some(var) = var_map.get(dst_id) {
-                            let zero = builder.ins().iconst(types::I64, 0);
-                            builder.def_var(*var, zero);
+                            builder.def_var(*var, result);
+                        }
+                    }
+                } else if func.name == "Ptr_is_null" {
+                    // ptr.is_null() → ptr == 0 (returns I8 boolean)
+                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
+                    let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
+                    if let Some(dst_id) = dst {
+                        if let Some(var) = var_map.get(dst_id) {
+                            builder.def_var(*var, result);
+                        }
+                    }
+                } else if func.name == "Ptr_cast" {
+                    // ptr.cast<U>() → identity (pointer is always i64)
+                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
+                    if let Some(dst_id) = dst {
+                        if let Some(var) = var_map.get(dst_id) {
+                            builder.def_var(*var, ptr_val);
+                        }
+                    }
+                } else if func.is_extern {
+                    // Extern "C" call — use declared signature directly, no stdlib adaptation
+                    let func_ref = func_refs.get(&func.name)
+                        .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
+
+                    // Read declared signature to get expected param types
+                    let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
+                    let sig = &builder.func.dfg.signatures[ext_func.signature];
+                    let param_types: Vec<Type> = sig.params.iter().map(|p| p.value_type).collect();
+
+                    let mut arg_vals = Vec::with_capacity(args.len());
+                    for (i, a) in args.iter().enumerate() {
+                        let expected = param_types.get(i).copied();
+                        let val = Self::lower_operand_typed(builder, a, var_map, expected, string_globals, func_refs)?;
+                        let actual = builder.func.dfg.value_type(val);
+                        if let Some(exp) = expected {
+                            if actual != exp {
+                                arg_vals.push(Self::convert_value(builder, val, actual, exp));
+                            } else {
+                                arg_vals.push(val);
+                            }
+                        } else {
+                            arg_vals.push(val);
+                        }
+                    }
+
+                    let call_inst = builder.ins().call(*func_ref, &arg_vals);
+
+                    if let Some(dst_id) = dst {
+                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
+                        if !is_void {
+                            let var = var_map.get(dst_id)
+                                .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                    "Call destination variable not found".to_string()
+                                ))?;
+                            let results = builder.inst_results(call_inst);
+                            let val = if !results.is_empty() {
+                                let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                                let result = results[0];
+                                if let Some(local) = dst_local {
+                                    let dst_ty = mir_to_cranelift_type(&local.ty)?;
+                                    let val_ty = builder.func.dfg.value_type(result);
+                                    if val_ty != dst_ty {
+                                        Self::convert_value(builder, result, val_ty, dst_ty)
+                                    } else {
+                                        result
+                                    }
+                                } else {
+                                    result
+                                }
+                            } else {
+                                builder.ins().iconst(types::I64, 0)
+                            };
+                            builder.def_var(*var, val);
                         }
                     }
                 } else {
@@ -341,6 +476,11 @@ impl<'a> FunctionBuilder<'a> {
                     let call_inst = builder.ins().call(*func_ref, &arg_vals);
 
                     if let Some(dst_id) = dst {
+                        // Skip void-typed destinations — nothing to store
+                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
+
+                        if !is_void {
                         let var = var_map.get(dst_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "Call destination variable not found".to_string()
@@ -385,12 +525,14 @@ impl<'a> FunctionBuilder<'a> {
                             val
                         };
                         builder.def_var(*var, final_val);
+                        } // !is_void
                     }
                 }
             }
 
-            // Debug info — no codegen needed
-            MirStmt::SourceLocation { .. } => {}
+            MirStmt::SourceLocation { .. } => {
+                // Source location tracking handled elsewhere
+            }
 
             // ── Resource tracking ──────────────────────────────────────
             // Calls C runtime functions for runtime must-consume checks.
@@ -439,9 +581,6 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Pool checked access ────────────────────────────────────
             MirStmt::PoolCheckedAccess { dst, pool, handle } => {
-                // rask_pool_checked_access(pool, handle) → element_ptr
-                let func_ref = func_refs.get("Pool_checked_access")
-                    .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
                 let pool_val = builder.use_var(*var_map.get(pool)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Pool variable not found".to_string()
@@ -450,7 +589,27 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Handle variable not found".to_string()
                     ))?);
-                let call_inst = builder.ins().call(*func_ref, &[pool_val, handle_val]);
+
+                // Use location-aware function when source info is available
+                let call_inst = if let Some(file_str) = source_file {
+                    if let (Some(func_ref), Some(gv)) = (
+                        func_refs.get("pool_get_checked"),
+                        string_globals.get(file_str),
+                    ) {
+                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                        builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
+                    } else {
+                        let func_ref = func_refs.get("Pool_checked_access")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                        builder.ins().call(*func_ref, &[pool_val, handle_val])
+                    }
+                } else {
+                    let func_ref = func_refs.get("Pool_checked_access")
+                        .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                    builder.ins().call(*func_ref, &[pool_val, handle_val])
+                };
 
                 let results = builder.inst_results(call_inst);
                 if !results.is_empty() {
@@ -577,6 +736,19 @@ impl<'a> FunctionBuilder<'a> {
                 let free_ref = func_refs.get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 crate::closures::free_closure(builder, closure_val, *free_ref);
+            }
+
+            MirStmt::GlobalRef { dst, name } => {
+                let gv = comptime_globals.get(name.as_str())
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        format!("GlobalRef: comptime global '{}' not found", name)
+                    ))?;
+                let addr = builder.ins().global_value(types::I64, *gv);
+                let var = var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "GlobalRef destination not found".to_string()
+                    ))?;
+                builder.def_var(*var, addr);
             }
         }
         Ok(())
@@ -727,7 +899,8 @@ impl<'a> FunctionBuilder<'a> {
                         BinOp::Le => builder.ins().fcmp(FloatCC::LessThanOrEqual, lhs_val, rhs_val),
                         BinOp::Gt => builder.ins().fcmp(FloatCC::GreaterThan, lhs_val, rhs_val),
                         BinOp::Ge => builder.ins().fcmp(FloatCC::GreaterThanOrEqual, lhs_val, rhs_val),
-                        BinOp::And | BinOp::Or => return Err(CodegenError::UnsupportedFeature(format!("Logical op {:?} should be lowered to branches in MIR", op))),
+                        BinOp::And => builder.ins().band(lhs_val, rhs_val),
+                        BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
                         _ => return Err(CodegenError::UnsupportedFeature(format!("Bitwise op {:?} not valid on floats", op))),
                     }
                 } else {
@@ -755,7 +928,8 @@ impl<'a> FunctionBuilder<'a> {
                         BinOp::Gt => builder.ins().icmp(IntCC::SignedGreaterThan, lhs_val, rhs_val),
                         BinOp::Ge if is_unsigned => builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, lhs_val, rhs_val),
                         BinOp::Ge => builder.ins().icmp(IntCC::SignedGreaterThanOrEqual, lhs_val, rhs_val),
-                        BinOp::And | BinOp::Or => return Err(CodegenError::UnsupportedFeature(format!("Logical op {:?} should be lowered to branches in MIR", op))),
+                        BinOp::And => builder.ins().band(lhs_val, rhs_val),
+                        BinOp::Or => builder.ins().bor(lhs_val, rhs_val),
                     }
                 };
                 Ok(result)
@@ -821,11 +995,25 @@ impl<'a> FunctionBuilder<'a> {
                             0
                         }
                     }
-                    // No layout available (Option/Result/Tuple lowered to MirType::Ptr).
-                    // Currently only field_index 0 reaches here (enum payload extraction).
-                    // Higher indices would need full layout info to account for alignment
-                    // padding between heterogeneous fields.
-                    _ => 0
+                    // Tuple: compute offset from element types
+                    Some(MirType::Tuple(fields)) => {
+                        let mut off = 0u32;
+                        for (i, f) in fields.iter().enumerate() {
+                            let align = f.align();
+                            off = (off + align - 1) & !(align - 1);
+                            if i == *field_index as usize {
+                                break;
+                            }
+                            off += f.size();
+                        }
+                        off as i32
+                    }
+                    // Option/Result: field 0 = tag, field 1 = payload
+                    Some(MirType::Option(_) | MirType::Result { .. }) => {
+                        (*field_index * 8) as i32
+                    }
+                    // Fallback for Ptr and other types without layout info.
+                    _ => (*field_index * 8) as i32
                 };
 
                 let flags = MemFlags::new();
@@ -842,7 +1030,7 @@ impl<'a> FunctionBuilder<'a> {
                         if let Some(layout) = enum_layouts.get(id.0 as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
-                            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty);
+                            let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
                             let ty = match tag_size {
                                 2 => types::I16,
                                 _ => types::I8,
@@ -870,7 +1058,9 @@ impl<'a> FunctionBuilder<'a> {
                 let local_ty = locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
                 let is_aggregate = matches!(
                     local_ty,
-                    Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. })
+                    Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
+                         | MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
+                         | MirType::Result { .. } | MirType::Union(_))
                 );
 
                 if is_aggregate {
@@ -925,6 +1115,7 @@ impl<'a> FunctionBuilder<'a> {
         struct_layouts: &[StructLayout],
         enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
+        comptime_globals: &HashMap<String, GlobalValue>,
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
@@ -1006,7 +1197,8 @@ impl<'a> FunctionBuilder<'a> {
                             Self::lower_stmt(
                                 builder, stmt, var_map, locals,
                                 func_refs, struct_layouts, enum_layouts,
-                                string_globals,
+                                string_globals, comptime_globals,
+                                None, 0, 0,
                             )?;
                         }
                     }
@@ -1145,6 +1337,25 @@ impl<'a> FunctionBuilder<'a> {
 
             // Pool get: result is void*, deref to get value
             "Pool_get" | "Pool_checked_access" => CallAdapt::DerefResult,
+
+            // Channel_unbuffered: MIR has no args, C expects capacity=0
+            "Channel_unbuffered" => {
+                let zero = builder.ins().iconst(types::I64, 0);
+                args.push(zero);
+                CallAdapt::None
+            }
+
+            // Atomic CAS: add out_ok pointer param
+            _ if func_name.contains("_compare_exchange") => {
+                // args: [ptr, expected, desired, success_ord, fail_ord]
+                // → [ptr, expected, desired, success_ord, fail_ord, &out_ok]
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.push(addr);
+                CallAdapt::PopOutParam(ss)
+            }
 
             _ => CallAdapt::None,
         }

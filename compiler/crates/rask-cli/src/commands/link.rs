@@ -21,10 +21,27 @@ const RUNTIME_SOURCES: &[&str] = &[
     "io_uring_engine.c",
     "io_epoll_engine.c",
     "random.c",
+    "time.c",
+    "atomic.c",
+    "simd.c",
 ];
+
+/// Extra link-time inputs (libraries, object files).
+#[derive(Default)]
+pub struct LinkOptions {
+    /// System libraries to link (-l flags, e.g. "m" for libm)
+    pub libs: Vec<String>,
+    /// Additional object files or C source files to link
+    pub objects: Vec<String>,
+}
 
 /// Find the runtime C files, compile them, and link with the object file.
 pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
+    link_executable_with(obj_path, bin_path, &LinkOptions::default())
+}
+
+/// Link with extra libraries and object files.
+pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) -> Result<(), String> {
     let runtime_dir = find_runtime_dir()?;
 
     for src in RUNTIME_SOURCES {
@@ -42,7 +59,13 @@ pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
         cmd.arg(runtime_dir.join(src));
     }
     cmd.arg(obj_path);
+    for obj in &opts.objects {
+        cmd.arg(obj);
+    }
     cmd.args(["-o", bin_path, "-no-pie", "-lpthread"]);
+    for lib in &opts.libs {
+        cmd.arg(format!("-l{}", lib));
+    }
 
     let status = cmd
         .status()

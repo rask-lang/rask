@@ -6,7 +6,7 @@
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
-use rask_ast::stmt::{Stmt, StmtKind};
+use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -15,7 +15,7 @@ use thiserror::Error;
 // ============================================================================
 
 /// A value that exists at compile time.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum ComptimeValue {
     Unit,
     Bool(bool),
@@ -42,6 +42,46 @@ pub enum ComptimeValue {
         variant: String,
         data: Option<Box<ComptimeValue>>,
     },
+    Closure {
+        params: Vec<String>,
+        body: Box<Expr>,
+        /// Captured environment at time of closure creation.
+        captures: Vec<HashMap<String, ComptimeValue>>,
+    },
+}
+
+impl PartialEq for ComptimeValue {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (ComptimeValue::Unit, ComptimeValue::Unit) => true,
+            (ComptimeValue::Bool(a), ComptimeValue::Bool(b)) => a == b,
+            (ComptimeValue::I8(a), ComptimeValue::I8(b)) => a == b,
+            (ComptimeValue::I16(a), ComptimeValue::I16(b)) => a == b,
+            (ComptimeValue::I32(a), ComptimeValue::I32(b)) => a == b,
+            (ComptimeValue::I64(a), ComptimeValue::I64(b)) => a == b,
+            (ComptimeValue::U8(a), ComptimeValue::U8(b)) => a == b,
+            (ComptimeValue::U16(a), ComptimeValue::U16(b)) => a == b,
+            (ComptimeValue::U32(a), ComptimeValue::U32(b)) => a == b,
+            (ComptimeValue::U64(a), ComptimeValue::U64(b)) => a == b,
+            (ComptimeValue::F32(a), ComptimeValue::F32(b)) => a == b,
+            (ComptimeValue::F64(a), ComptimeValue::F64(b)) => a == b,
+            (ComptimeValue::Char(a), ComptimeValue::Char(b)) => a == b,
+            (ComptimeValue::String(a), ComptimeValue::String(b)) => a == b,
+            (ComptimeValue::Array(a), ComptimeValue::Array(b)) => a == b,
+            (ComptimeValue::Tuple(a), ComptimeValue::Tuple(b)) => a == b,
+            (
+                ComptimeValue::Struct { name: n1, fields: f1 },
+                ComptimeValue::Struct { name: n2, fields: f2 },
+            ) => n1 == n2 && f1 == f2,
+            (
+                ComptimeValue::Enum { name: n1, variant: v1, data: d1 },
+                ComptimeValue::Enum { name: n2, variant: v2, data: d2 },
+            ) => n1 == n2 && v1 == v2 && d1 == d2,
+            // Closures are never equal (identity semantics)
+            (ComptimeValue::Closure { .. }, ComptimeValue::Closure { .. }) => false,
+            _ => false,
+        }
+    }
 }
 
 impl ComptimeValue {
@@ -66,6 +106,23 @@ impl ComptimeValue {
             ComptimeValue::Tuple(_) => "Tuple",
             ComptimeValue::Struct { .. } => "Struct",
             ComptimeValue::Enum { .. } => "Enum",
+            ComptimeValue::Closure { .. } => "Closure",
+        }
+    }
+
+    /// Type prefix for method dispatch when embedded as a comptime global.
+    pub fn type_prefix(&self) -> &'static str {
+        match self {
+            ComptimeValue::Array(_) => "Vec",
+            _ => self.type_name(),
+        }
+    }
+
+    /// Element count for Array/Vec values.
+    pub fn elem_count(&self) -> usize {
+        match self {
+            ComptimeValue::Array(elems) => elems.len(),
+            _ => 0,
         }
     }
 
@@ -99,6 +156,40 @@ impl ComptimeValue {
             ComptimeValue::F64(v) => Some(*v),
             _ => None,
         }
+    }
+
+    /// Serialize to a flat byte array for embedding in Cranelift data sections.
+    /// Only supports primitive arrays — the main use case for comptime globals.
+    pub fn serialize(&self) -> Option<Vec<u8>> {
+        match self {
+            ComptimeValue::Array(elems) => {
+                let mut bytes = Vec::new();
+                for elem in elems {
+                    bytes.extend(elem.serialize_element()?);
+                }
+                Some(bytes)
+            }
+            _ => self.serialize_element().map(|b| b.to_vec()),
+        }
+    }
+
+    /// Serialize a single element to its native byte representation.
+    fn serialize_element(&self) -> Option<Vec<u8>> {
+        Some(match self {
+            ComptimeValue::Bool(b) => vec![*b as u8],
+            ComptimeValue::I8(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::I16(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::I32(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::I64(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::U8(v) => vec![*v],
+            ComptimeValue::U16(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::U32(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::U64(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::F32(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::F64(v) => v.to_le_bytes().to_vec(),
+            ComptimeValue::Char(c) => (*c as u32).to_le_bytes().to_vec(),
+            _ => return None,
+        })
     }
 }
 
@@ -166,12 +257,20 @@ pub enum ComptimeError {
     #[error("return outside of function")]
     ReturnOutsideFunction,
 
+    #[error("non-exhaustive match at comptime; no arm matched the scrutinee value")]
+    NonExhaustiveMatch,
+
     #[error("not supported at comptime: {0}")]
     NotSupported(String),
 }
 
 /// Result type for comptime operations.
 pub type ComptimeResult<T> = Result<T, ComptimeError>;
+
+/// Check if a name is a known type for static method dispatch at comptime.
+fn is_comptime_type(name: &str) -> bool {
+    matches!(name, "Vec" | "Map" | "string")
+}
 
 // ============================================================================
 // Comptime Environment
@@ -473,8 +572,7 @@ impl ComptimeInterpreter {
                         return result;
                     }
                 }
-                // No match - this should be a compile error but for now return unit
-                ComptimeValue::Unit
+                return Err(ComptimeError::NonExhaustiveMatch);
             }
 
             // Array literal
@@ -529,9 +627,15 @@ impl ComptimeInterpreter {
                 return self.eval_block(body);
             }
 
-            // Closure - store as value (not supported for execution yet)
-            ExprKind::Closure { .. } => {
-                return Err(ComptimeError::NotSupported("closures at comptime".to_string()));
+            // Closure — capture current environment and store for later call
+            ExprKind::Closure { params, body, .. } => {
+                let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                let captures = self.env.scopes.clone();
+                ComptimeValue::Closure {
+                    params: param_names,
+                    body: body.clone(),
+                    captures,
+                }
             }
 
             // Spawn - not allowed
@@ -544,12 +648,75 @@ impl ComptimeInterpreter {
                 return Err(ComptimeError::UnsafeNotAllowed);
             }
 
+            // If-let pattern match: if expr is Pattern { then } else { else }
+            ExprKind::IfLet { expr, pattern, then_branch, else_branch } => {
+                let value = self.eval_expr(expr)?;
+                if self.pattern_matches(pattern, &value)? {
+                    self.env.push_scope();
+                    self.bind_pattern(pattern, &value)?;
+                    let result = self.eval_expr_cf(then_branch);
+                    self.env.pop_scope();
+                    return result;
+                } else if let Some(else_br) = else_branch {
+                    return self.eval_expr_cf(else_br);
+                } else {
+                    ComptimeValue::Unit
+                }
+            }
+
+            // Type cast: expr as Type
+            ExprKind::Cast { expr, ty } => {
+                let val = self.eval_expr(expr)?;
+                match (&val, ty.as_str()) {
+                    // int → int
+                    (ComptimeValue::I64(n), "i8") => ComptimeValue::I8(*n as i8),
+                    (ComptimeValue::I64(n), "i16") => ComptimeValue::I16(*n as i16),
+                    (ComptimeValue::I64(n), "i32") => ComptimeValue::I32(*n as i32),
+                    (ComptimeValue::I64(n), "i64") => ComptimeValue::I64(*n),
+                    (ComptimeValue::I64(n), "u8") => ComptimeValue::U8(*n as u8),
+                    (ComptimeValue::I64(n), "u16") => ComptimeValue::U16(*n as u16),
+                    (ComptimeValue::I64(n), "u32") => ComptimeValue::U32(*n as u32),
+                    (ComptimeValue::I64(n), "u64") => ComptimeValue::U64(*n as u64),
+                    (ComptimeValue::I64(n), "f64") => ComptimeValue::F64(*n as f64),
+                    (ComptimeValue::I64(n), "f32") => ComptimeValue::F32(*n as f32),
+                    // char → int
+                    (ComptimeValue::Char(c), "i64" | "usize") => ComptimeValue::I64(*c as i64),
+                    (ComptimeValue::Char(c), "u32") => ComptimeValue::U32(*c as u32),
+                    (ComptimeValue::Char(c), "u8") => ComptimeValue::U8(*c as u8),
+                    // int → char
+                    (ComptimeValue::I64(n), "char") => {
+                        char::from_u32(*n as u32)
+                            .map(ComptimeValue::Char)
+                            .unwrap_or(ComptimeValue::Char('\0'))
+                    }
+                    (ComptimeValue::U32(n), "char") => {
+                        char::from_u32(*n)
+                            .map(ComptimeValue::Char)
+                            .unwrap_or(ComptimeValue::Char('\0'))
+                    }
+                    // float → int
+                    (ComptimeValue::F64(f), "i64") => ComptimeValue::I64(*f as i64),
+                    (ComptimeValue::F64(f), "i32") => ComptimeValue::I32(*f as i32),
+                    (ComptimeValue::F64(f), "i16") => ComptimeValue::I16(*f as i16),
+                    // int → int (small widths)
+                    (ComptimeValue::I32(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::I16(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::I8(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::U8(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::U16(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::U32(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::U64(n), "i64") => ComptimeValue::I64(*n as i64),
+                    (ComptimeValue::U8(n), "u32") => ComptimeValue::U32(*n as u32),
+                    (ComptimeValue::I32(n), "i16") => ComptimeValue::I16(*n as i16),
+                    // Identity / pass-through
+                    _ => val,
+                }
+            }
+
             // Other expressions not yet supported
             _ => {
                 let kind_name = match &expr.kind {
-                    ExprKind::MethodCall { method, .. } => format!("method call `.{method}()`"),
                     ExprKind::BlockCall { name, .. } => format!("`{name} {{ }}`"),
-                    ExprKind::IfLet { .. } => "`if` pattern match".to_string(),
                     _ => format!("{:?}", std::mem::discriminant(&expr.kind)),
                 };
                 return Err(ComptimeError::NotSupported(kind_name));
@@ -711,7 +878,17 @@ impl ComptimeInterpreter {
                     self.env.count_branch()?;
 
                     self.env.push_scope();
-                    self.env.define(binding.clone(), item);
+                    match binding {
+                        ForBinding::Single(name) => self.env.define(name.clone(), item),
+                        ForBinding::Tuple(names) => {
+                            if let ComptimeValue::Array(fields) = item {
+                                for (i, name) in names.iter().enumerate() {
+                                    let val = fields.get(i).cloned().unwrap_or(ComptimeValue::Unit);
+                                    self.env.define(name.clone(), val);
+                                }
+                            }
+                        }
+                    }
 
                     match self.eval_block(body)? {
                         ControlFlow::Normal(_) | ControlFlow::Continue => {}
@@ -837,24 +1014,44 @@ impl ComptimeInterpreter {
     }
 
     fn eval_call(&mut self, func: &Expr, args: &[&Expr]) -> ComptimeResult<ComptimeValue> {
-        // Get function name
-        let func_name = if let ExprKind::Ident(name) = &func.kind {
-            name.clone()
-        } else {
-            return Err(ComptimeError::NotSupported("indirect function calls".to_string()));
-        };
-
-        // Evaluate arguments
+        // Evaluate arguments first
         let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
         let arg_values = arg_values?;
 
-        // Look up function
-        if let Some(func_decl) = self.env.get_function(&func_name).cloned() {
-            self.env.count_branch()?;
-            self.call_function(&func_decl, arg_values)
-        } else {
+        // If the callee is an identifier, check named functions/builtins first,
+        // then fall back to variable lookup (could be a closure).
+        if let ExprKind::Ident(name) = &func.kind {
+            if let Some(func_decl) = self.env.get_function(name).cloned() {
+                self.env.count_branch()?;
+                return self.call_function(&func_decl, arg_values);
+            }
+
+            // Check if it's a closure stored in a variable
+            if let Some(val) = self.env.get(name).cloned() {
+                if let ComptimeValue::Closure { params, body, captures } = val {
+                    self.env.count_branch()?;
+                    return self.call_closure(&params, &body, &captures, arg_values);
+                }
+            }
+
             // Check for builtin functions
-            self.call_builtin(&func_name, arg_values)
+            return self.call_builtin(name, arg_values);
+        }
+
+        // Static method call: Type.method(args) — e.g. Vec.new()
+        if let ExprKind::Field { object, field } = &func.kind {
+            if let ExprKind::Ident(type_name) = &object.kind {
+                return self.call_static_method(type_name, field, arg_values);
+            }
+        }
+
+        // Non-ident callee — evaluate it; if it produces a closure, call it
+        let callee = self.eval_expr(func)?;
+        if let ComptimeValue::Closure { params, body, captures } = callee {
+            self.env.count_branch()?;
+            self.call_closure(&params, &body, &captures, arg_values)
+        } else {
+            Err(ComptimeError::NotSupported("indirect function calls".to_string()))
         }
     }
 
@@ -864,11 +1061,29 @@ impl ComptimeInterpreter {
         method: &str,
         args: &[&Expr],
     ) -> ComptimeResult<ComptimeValue> {
+        // Static method call on a type: Vec.new(), Map.new()
+        if let ExprKind::Ident(name) = &object.kind {
+            if !self.env.get(name).is_some() && is_comptime_type(name) {
+                let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
+                let arg_values = arg_values?;
+                return self.call_static_method(name, method, arg_values);
+            }
+        }
+
+        // Mutating Vec methods: push, pop — need to update the variable in-place
+        if matches!(method, "push" | "pop" | "insert" | "remove" | "clear") {
+            if let ExprKind::Ident(var_name) = &object.kind {
+                let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
+                let arg_values = arg_values?;
+                return self.call_mutating_vec_method(var_name, method, &arg_values);
+            }
+        }
+
         let obj = self.eval_expr(object)?;
         let arg_values: ComptimeResult<Vec<_>> = args.iter().map(|a| self.eval_expr(a)).collect();
         let arg_values = arg_values?;
 
-        // Handle primitive methods (from desugared operators)
+        // Handle primitive methods (from desugared operators) + Vec read methods
         self.call_primitive_method(&obj, method, &arg_values)
     }
 
@@ -896,6 +1111,37 @@ impl ComptimeInterpreter {
         self.env.pop_scope();
 
         Ok(result.value())
+    }
+
+    fn call_closure(
+        &mut self,
+        params: &[String],
+        body: &Expr,
+        captures: &[HashMap<String, ComptimeValue>],
+        args: Vec<ComptimeValue>,
+    ) -> ComptimeResult<ComptimeValue> {
+        if params.len() != args.len() {
+            return Err(ComptimeError::TypeMismatch {
+                expected: format!("{} arguments", params.len()),
+                found: format!("{} arguments", args.len()),
+            });
+        }
+
+        // Swap in the captured environment, preserving current env
+        let saved_scopes = std::mem::replace(&mut self.env.scopes, captures.to_vec());
+
+        // New scope for parameters
+        self.env.push_scope();
+        for (name, value) in params.iter().zip(args) {
+            self.env.define(name.clone(), value);
+        }
+
+        let result = self.eval_expr_cf(body);
+
+        // Restore original environment
+        self.env.scopes = saved_scopes;
+
+        Ok(result?.value())
     }
 
     fn call_builtin(&mut self, name: &str, args: Vec<ComptimeValue>) -> ComptimeResult<ComptimeValue> {
@@ -935,12 +1181,149 @@ impl ComptimeInterpreter {
         }
     }
 
+    /// Handle static method calls on types: Vec.new(), Map.new(), etc.
+    fn call_static_method(
+        &mut self,
+        type_name: &str,
+        method: &str,
+        args: Vec<ComptimeValue>,
+    ) -> ComptimeResult<ComptimeValue> {
+        match (type_name, method) {
+            ("Vec", "new") => Ok(ComptimeValue::Array(Vec::new())),
+            ("Vec", "from") if args.len() == 1 => {
+                // Vec.from(array) — clone the array
+                match &args[0] {
+                    ComptimeValue::Array(arr) => Ok(ComptimeValue::Array(arr.clone())),
+                    _ => Err(ComptimeError::TypeMismatch {
+                        expected: "Array".to_string(),
+                        found: args[0].type_name().to_string(),
+                    }),
+                }
+            }
+            _ => Err(ComptimeError::NotSupported(
+                format!("static method {}.{}", type_name, method),
+            )),
+        }
+    }
+
+    /// Handle mutating Vec methods that update the variable in the environment.
+    fn call_mutating_vec_method(
+        &mut self,
+        var_name: &str,
+        method: &str,
+        args: &[ComptimeValue],
+    ) -> ComptimeResult<ComptimeValue> {
+        let val = self.env.get(var_name)
+            .ok_or_else(|| ComptimeError::UndefinedVariable(var_name.to_string()))?
+            .clone();
+
+        let mut arr = match val {
+            ComptimeValue::Array(arr) => arr,
+            _ => return Err(ComptimeError::TypeMismatch {
+                expected: "Vec/Array".to_string(),
+                found: val.type_name().to_string(),
+            }),
+        };
+
+        let result = match method {
+            "push" => {
+                if args.len() != 1 {
+                    return Err(ComptimeError::TypeMismatch {
+                        expected: "1 argument".to_string(),
+                        found: format!("{} arguments", args.len()),
+                    });
+                }
+                arr.push(args[0].clone());
+                ComptimeValue::Unit
+            }
+            "pop" => {
+                arr.pop()
+                    .map(|v| v)
+                    .unwrap_or(ComptimeValue::Unit)
+            }
+            "insert" => {
+                if args.len() != 2 {
+                    return Err(ComptimeError::TypeMismatch {
+                        expected: "2 arguments".to_string(),
+                        found: format!("{} arguments", args.len()),
+                    });
+                }
+                let idx = args[0].as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer index".to_string(),
+                    found: args[0].type_name().to_string(),
+                })? as usize;
+                if idx > arr.len() {
+                    return Err(ComptimeError::IndexOutOfBounds { index: idx, len: arr.len() });
+                }
+                arr.insert(idx, args[1].clone());
+                ComptimeValue::Unit
+            }
+            "remove" => {
+                if args.len() != 1 {
+                    return Err(ComptimeError::TypeMismatch {
+                        expected: "1 argument".to_string(),
+                        found: format!("{} arguments", args.len()),
+                    });
+                }
+                let idx = args[0].as_i64().ok_or_else(|| ComptimeError::TypeMismatch {
+                    expected: "integer index".to_string(),
+                    found: args[0].type_name().to_string(),
+                })? as usize;
+                if idx >= arr.len() {
+                    return Err(ComptimeError::IndexOutOfBounds { index: idx, len: arr.len() });
+                }
+                arr.remove(idx);
+                ComptimeValue::Unit
+            }
+            "clear" => {
+                arr.clear();
+                ComptimeValue::Unit
+            }
+            _ => return Err(ComptimeError::NotSupported(
+                format!("mutating method .{}", method),
+            )),
+        };
+
+        // Write back the modified array
+        if !self.env.assign(var_name, ComptimeValue::Array(arr)) {
+            return Err(ComptimeError::UndefinedVariable(var_name.to_string()));
+        }
+        Ok(result)
+    }
+
     fn call_primitive_method(
         &self,
         obj: &ComptimeValue,
         method: &str,
         args: &[ComptimeValue],
     ) -> ComptimeResult<ComptimeValue> {
+        // Vec/Array read methods
+        if let ComptimeValue::Array(arr) = obj {
+            match method {
+                "get" => {
+                    let idx = args.first()
+                        .and_then(|a| a.as_i64())
+                        .ok_or_else(|| ComptimeError::TypeMismatch {
+                            expected: "integer index".to_string(),
+                            found: args.first().map(|a| a.type_name()).unwrap_or("nothing").to_string(),
+                        })? as usize;
+                    return arr.get(idx).cloned().ok_or(ComptimeError::IndexOutOfBounds {
+                        index: idx,
+                        len: arr.len(),
+                    });
+                }
+                "is_empty" => return Ok(ComptimeValue::Bool(arr.is_empty())),
+                "contains" => {
+                    let needle = args.first().ok_or_else(|| ComptimeError::TypeMismatch {
+                        expected: "1 argument".to_string(),
+                        found: "0 arguments".to_string(),
+                    })?;
+                    return Ok(ComptimeValue::Bool(arr.contains(needle)));
+                }
+                _ => {} // fall through to numeric/string methods
+            }
+        }
+
         // Handle numeric operations
         match method {
             "add" => self.numeric_binop(obj, args, |a, b| a + b, |a, b| a + b),
@@ -1102,14 +1485,13 @@ impl ComptimeInterpreter {
         }
     }
 
-    fn pattern_matches(&self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
+    fn pattern_matches(&mut self, pattern: &Pattern, value: &ComptimeValue) -> ComptimeResult<bool> {
         match pattern {
             Pattern::Wildcard => Ok(true),
             Pattern::Ident(_) => Ok(true), // Binds anything
-            Pattern::Literal(_lit) => {
-                // Compare literal value - need to evaluate it
-                // For now, just return true (simplified)
-                Ok(true)
+            Pattern::Literal(lit) => {
+                let lit_val = self.eval_expr(lit)?;
+                Ok(lit_val == *value)
             }
             Pattern::Constructor { name, fields } => {
                 if let ComptimeValue::Enum { variant, data, .. } = value {

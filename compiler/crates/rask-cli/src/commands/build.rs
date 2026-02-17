@@ -239,18 +239,25 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
                                 match rask_mono::monomorphize(&typed, &all_decls) {
                                     Ok(mono) => {
-                                        let all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+                                        let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+                                        all_mono_decls.extend(all_decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
+                                        let comptime_globals = std::collections::HashMap::new();
+                                        let extern_funcs = super::codegen::collect_extern_func_names(&all_decls);
                                         let mir_ctx = rask_mir::lower::MirContext {
                                             struct_layouts: &mono.struct_layouts,
                                             enum_layouts: &mono.enum_layouts,
                                             node_types: &typed.node_types,
+                                            comptime_globals: &comptime_globals,
+                                            extern_funcs: &extern_funcs,
+                                            line_map: None,
+                                            source_file: None,
                                         };
 
                                         let mut mir_functions = Vec::new();
                                         let mut mir_errors = 0;
 
                                         for mono_fn in &mono.functions {
-                                            match rask_mir::lower::MirLowerer::lower_function(&mono_fn.body, &all_mono_decls, &mir_ctx) {
+                                            match rask_mir::lower::MirLowerer::lower_function_named(&mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)) {
                                                 Ok(mir_fns) => mir_functions.extend(mir_fns),
                                                 Err(e) => {
                                                     eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
