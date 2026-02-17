@@ -9,20 +9,41 @@ use crate::{
     FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
-    expr::{Expr, ExprKind},
-    stmt::{Stmt, StmtKind},
+    expr::{Expr, ExprKind, UnaryOp},
+    stmt::{ForBinding, Stmt, StmtKind},
 };
 
 impl<'a> MirLowerer<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
+        self.emit_source_location(&stmt.span);
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
                 Ok(())
             }
 
-            StmtKind::Let { name, ty, init, .. }
-            | StmtKind::Const { name, ty, init, .. } => {
+            StmtKind::Let { name, ty, init, .. } => {
+                self.lower_binding(name, ty.as_deref(), init)
+            }
+
+            StmtKind::Const { name, ty, init, .. } => {
+                // If this const was evaluated at compile time, emit a global reference
+                if let Some(meta) = self.ctx.comptime_globals.get(name) {
+                    let mir_ty = if let Some(ty_str) = ty.as_deref() {
+                        self.ctx.resolve_type_str(ty_str)
+                    } else {
+                        MirType::Ptr
+                    };
+                    let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
+                    self.locals.insert(name.to_string(), (local_id, mir_ty));
+                    self.builder.push_stmt(MirStmt::GlobalRef {
+                        dst: local_id,
+                        name: name.clone(),
+                    });
+                    // Track type prefix for method dispatch
+                    self.local_type_prefix.insert(name.to_string(), meta.type_prefix.clone());
+                    return Ok(());
+                }
                 self.lower_binding(name, ty.as_deref(), init)
             }
 
@@ -98,10 +119,30 @@ impl<'a> MirLowerer<'a> {
                             // Vec/Map: dispatch through runtime
                             self.builder.push_stmt(MirStmt::Call {
                                 dst: None,
-                                func: FunctionRef { name: "Vec_set".to_string() },
+                                func: FunctionRef::internal("Vec_set".to_string()),
                                 args: vec![obj_op, idx_op, val_op],
                             });
                         }
+                    }
+                    // Deref assignment: *ptr = value → Store through pointer
+                    ExprKind::Unary { op: UnaryOp::Deref, operand } => {
+                        let (addr_op, _) = self.lower_expr(operand)?;
+                        let addr_local = match addr_op {
+                            MirOperand::Local(id) => id,
+                            _ => {
+                                let tmp = self.builder.alloc_temp(MirType::Ptr);
+                                self.builder.push_stmt(MirStmt::Assign {
+                                    dst: tmp,
+                                    rvalue: MirRValue::Use(addr_op),
+                                });
+                                tmp
+                            }
+                        };
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: addr_local,
+                            offset: 0,
+                            value: val_op,
+                        });
                     }
                     _ => {
                         return Err(LoweringError::InvalidConstruct(
@@ -239,7 +280,7 @@ impl<'a> MirLowerer<'a> {
         let (init_op, inferred_ty) = self.lower_expr(init)?;
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
-        self.locals.insert(name.to_string(), (local_id, var_ty));
+        self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
         self.builder.push_stmt(MirStmt::Assign {
             dst: local_id,
             rvalue: MirRValue::Use(init_op),
@@ -263,10 +304,13 @@ impl<'a> MirLowerer<'a> {
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
                 if super::is_type_constructor_name(obj_name) {
-                    // Type.method() → prefix is the type name (Rng, Vec, etc.)
+                    // Type.method() → prefix is the type name.
+                    // Covers stdlib (Vec, Map, string) and user types (Person, Document).
                     if super::MirContext::stdlib_type_prefix(
                         &rask_types::Type::UnresolvedNamed(obj_name.clone())
-                    ).is_some() {
+                    ).is_some()
+                        || obj_name.chars().next().map_or(false, |c| c.is_uppercase())
+                    {
                         self.local_type_prefix.insert(name.to_string(), obj_name.clone());
                     } else {
                         // Module function (fs.open) → check return type prefix
@@ -299,6 +343,13 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
+        if !self.local_type_prefix.contains_key(name) {
+            if let Some(prefix) = self.mir_type_name(&var_ty) {
+                self.local_type_prefix.insert(name.to_string(), prefix);
+            }
+        }
+
         // Track closure bindings and alias the func_sig so callers can
         // look up the return type by variable name.
         if is_closure {
@@ -315,9 +366,19 @@ impl<'a> MirLowerer<'a> {
     /// Lower tuple destructuring: evaluate init, extract each element by field index.
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
         let (init_op, _) = self.lower_expr(init)?;
+
+        // Extract tuple element types from type checker for type prefix tracking.
+        // e.g. Channel<T>.buffered() → (Sender<T>, Receiver<T>)
+        let tuple_elems: Option<Vec<rask_types::Type>> =
+            self.ctx.lookup_raw_type(init.id).and_then(|ty| {
+                if let rask_types::Type::Tuple(elems) = ty {
+                    Some(elems.clone())
+                } else {
+                    None
+                }
+            });
+
         for (i, name) in names.iter().enumerate() {
-            // Infer element type - would need full tuple type parsing
-            // For now, try to look up from type checker, otherwise default to I32
             let elem_ty = self.lookup_expr_type(init)
                 .or_else(|| Some(MirType::I32))
                 .unwrap_or(MirType::I32);
@@ -330,6 +391,35 @@ impl<'a> MirLowerer<'a> {
                     field_index: i as u32,
                 },
             });
+
+            // Track type prefix so method calls get qualified names.
+            // First try type-checker info (works when types are fully resolved).
+            let mut found_prefix = false;
+            if let Some(ref elems) = tuple_elems {
+                if let Some(elem_type) = elems.get(i) {
+                    if let Some(prefix) = super::MirContext::type_prefix(elem_type) {
+                        self.local_type_prefix.insert(name.clone(), prefix);
+                        found_prefix = true;
+                    }
+                }
+            }
+            // Fallback: detect Channel<T>.buffered/unbuffered pattern directly.
+            // Returns (Sender<T>, Receiver<T>) — set prefixes by position.
+            if !found_prefix {
+                if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+                    if let ExprKind::Ident(type_name) = &object.kind {
+                        let base = type_name.split('<').next().unwrap_or(type_name);
+                        if base == "Channel" && (method == "buffered" || method == "unbuffered") {
+                            let prefix = match i {
+                                0 => "Sender",
+                                1 => "Receiver",
+                                _ => continue,
+                            };
+                            self.local_type_prefix.insert(name.clone(), prefix.to_string());
+                        }
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -380,24 +470,77 @@ impl<'a> MirLowerer<'a> {
     fn lower_for(
         &mut self,
         label: Option<&str>,
-        binding: &str,
+        binding: &ForBinding,
         iter_expr: &Expr,
         body: &[Stmt],
     ) -> Result<(), LoweringError> {
+        // Extract single name for range/iter-chain delegation (tuple not supported there)
+        let single_name = match binding {
+            ForBinding::Single(name) => name.as_str(),
+            ForBinding::Tuple(names) => names.first().map_or("_", |n| n.as_str()),
+        };
+
         // Range expressions desugar to a simple counter loop
         if let ExprKind::Range { start, end, inclusive } = &iter_expr.kind {
-            return self.lower_for_range(label, binding, start.as_deref(), end.as_deref(), *inclusive, body);
+            return self.lower_for_range(label, single_name, start.as_deref(), end.as_deref(), *inclusive, body);
         }
 
         // Iterator chain: for x in vec.iter().filter(...).map(...) { ... }
         // Fuse into index loop with inlined adapter closures.
         if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-            return self.lower_for_iter_chain(label, binding, &chain, body);
+            return self.lower_for_iter_chain(label, single_name, &chain, body);
         }
+
+        // pool.entries(): for (h, val) in pool.entries() { ... }
+        // Desugars to: handles = Pool_handles(pool); for i in 0..len { h = handles[i]; val = Pool_get(pool, h); body }
+        if let ForBinding::Tuple(names) = binding {
+            if let ExprKind::MethodCall { object, method, .. } = &iter_expr.kind {
+                if method == "entries" {
+                    let obj_is_pool = self.ctx.lookup_raw_type(object.id).map_or(false, |ty| {
+                        matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Pool")
+                            || matches!(ty, rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool")
+                    });
+                    if obj_is_pool {
+                        return self.lower_for_pool_entries(label, names, object, body);
+                    }
+                }
+            }
+        }
+
+        // Pool iteration: `for h in pool` desugars to snapshot handle iteration.
+        // Calls Pool_handles(pool) → Vec<Handle>, then iterates the Vec.
+        let is_pool = self.ctx.lookup_raw_type(iter_expr.id).map_or(false, |ty| {
+            matches!(
+                ty,
+                rask_types::Type::UnresolvedNamed(n) if n == "Pool"
+            ) || matches!(
+                ty,
+                rask_types::Type::UnresolvedGeneric { name, .. } if name == "Pool"
+            )
+        });
 
         // Index-based iteration: for item in collection { ... }
         // Desugars to: _i = 0; _len = collection.len(); while _i < _len { item = collection[_i]; ...; _i += 1 }
         let (iter_op, iter_ty) = self.lower_expr(iter_expr)?;
+
+        // For pools: convert pool → Vec<Handle> via Pool_handles snapshot
+        let (iter_op, iter_ty) = if is_pool {
+            let pool_tmp = self.builder.alloc_temp(iter_ty.clone());
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: pool_tmp,
+                rvalue: MirRValue::Use(iter_op),
+            });
+            let handles_vec = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(handles_vec),
+                func: FunctionRef::internal("Pool_handles".to_string()),
+                args: vec![MirOperand::Local(pool_tmp)],
+            });
+            (MirOperand::Local(handles_vec), MirType::I64)
+        } else {
+            (iter_op, iter_ty)
+        };
+
         let is_array = matches!(&iter_ty, MirType::Array { .. });
         let (array_len, array_elem_size) = match &iter_ty {
             MirType::Array { elem, len } => (Some(*len), Some(elem.size())),
@@ -421,7 +564,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.push_stmt(MirStmt::Call {
                 dst: Some(len_local),
-                func: FunctionRef { name: "Vec_len".to_string() },
+                func: FunctionRef::internal("Vec_len".to_string()),
                 args: vec![MirOperand::Local(collection)],
             });
         }
@@ -461,8 +604,8 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(body_block);
         let elem_ty = self.extract_iterator_elem_type(iter_expr)
             .unwrap_or(MirType::I64);
-        let binding_local = self.builder.alloc_local(binding.to_string(), elem_ty.clone());
-        self.locals.insert(binding.to_string(), (binding_local, elem_ty));
+        let binding_local = self.builder.alloc_local(single_name.to_string(), elem_ty.clone());
+        self.locals.insert(single_name.to_string(), (binding_local, elem_ty));
         if is_array {
             // Fixed-size array: direct memory load
             self.builder.push_stmt(MirStmt::Assign {
@@ -476,8 +619,130 @@ impl<'a> MirLowerer<'a> {
         } else {
             self.builder.push_stmt(MirStmt::Call {
                 dst: Some(binding_local),
-                func: FunctionRef { name: "Vec_get".to_string() },
+                func: FunctionRef::internal("Vec_get".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
+            });
+        }
+
+        self.loop_stack.push(LoopContext {
+            label: label.map(|s| s.to_string()),
+            continue_block: inc_block,
+            exit_block,
+            result_local: None,
+        });
+
+        for stmt in body {
+            self.lower_stmt(stmt)?;
+        }
+        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+
+        // inc: _i = _i + 1
+        self.builder.switch_to_block(inc_block);
+        let incremented = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: incremented,
+            rvalue: MirRValue::BinaryOp {
+                op: BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        });
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Local(incremented)),
+        });
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
+
+        self.loop_stack.pop();
+        self.builder.switch_to_block(exit_block);
+        Ok(())
+    }
+
+    /// Pool entries iteration: `for (h, val) in pool.entries()`
+    /// Desugars to snapshot handle iteration with Pool_get for each handle.
+    fn lower_for_pool_entries(
+        &mut self,
+        label: Option<&str>,
+        names: &[String],
+        pool_expr: &Expr,
+        body: &[Stmt],
+    ) -> Result<(), LoweringError> {
+        let (pool_op, _) = self.lower_expr(pool_expr)?;
+        let pool_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: pool_local,
+            rvalue: MirRValue::Use(pool_op),
+        });
+
+        // handles_vec = Pool_handles(pool)
+        let handles_vec = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(handles_vec),
+            func: FunctionRef::internal("Pool_handles".to_string()),
+            args: vec![MirOperand::Local(pool_local)],
+        });
+
+        // _len = Vec_len(handles_vec)
+        let len_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(len_local),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![MirOperand::Local(handles_vec)],
+        });
+
+        // _i = 0
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        });
+
+        let check_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let inc_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
+
+        // check: _i < _len
+        self.builder.switch_to_block(check_block);
+        let cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: cond,
+            rvalue: MirRValue::BinaryOp {
+                op: BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len_local),
+            },
+        });
+        self.builder.terminate(MirTerminator::Branch {
+            cond: MirOperand::Local(cond),
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // body: h = handles_vec[_i]; val = Pool_get(pool, h)
+        self.builder.switch_to_block(body_block);
+
+        // Bind handle (first name)
+        let handle_name = names.first().map_or("_h", |n| n.as_str());
+        let handle_local = self.builder.alloc_local(handle_name.to_string(), MirType::I64);
+        self.locals.insert(handle_name.to_string(), (handle_local, MirType::I64));
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(handle_local),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(handles_vec), MirOperand::Local(idx)],
+        });
+
+        // Bind value (second name) via Pool_get
+        if names.len() > 1 {
+            let val_name = &names[1];
+            let val_local = self.builder.alloc_local(val_name.clone(), MirType::I64);
+            self.locals.insert(val_name.clone(), (val_local, MirType::I64));
+            self.builder.push_stmt(MirStmt::Call {
+                dst: Some(val_local),
+                func: FunctionRef::internal("Pool_get".to_string()),
+                args: vec![MirOperand::Local(pool_local), MirOperand::Local(handle_local)],
             });
         }
 

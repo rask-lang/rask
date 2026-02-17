@@ -21,4 +21,5 @@ pub use closures::optimize_all_closures;
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use operand::{BinOp, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
 pub use stmt::{ClosureCapture, MirStmt, MirTerminator};
+pub use lower::ComptimeGlobalMeta;
 pub use types::{MirType, StructLayoutId, EnumLayoutId};

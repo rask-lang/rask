@@ -29,6 +29,25 @@ impl fmt::Display for MirType {
             MirType::Array { elem, len } => write!(f, "[{}; {}]", elem, len),
             MirType::FuncPtr(id) => write!(f, "fn#{}", id.0),
             MirType::Handle => write!(f, "handle"),
+            MirType::Tuple(fields) => {
+                write!(f, "(")?;
+                for (i, field) in fields.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", field)?;
+                }
+                write!(f, ")")
+            }
+            MirType::Slice(elem) => write!(f, "[{}]", elem),
+            MirType::Option(inner) => write!(f, "{}?", inner),
+            MirType::Result { ok, err } => write!(f, "{} or {}", ok, err),
+            MirType::Union(variants) => {
+                for (i, v) in variants.iter().enumerate() {
+                    if i > 0 { write!(f, " | ")?; }
+                    write!(f, "{}", v)?;
+                }
+                Ok(())
+            }
+            MirType::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
         }
     }
 }
@@ -185,6 +204,9 @@ impl fmt::Display for MirStmt {
             }
             MirStmt::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
+            }
+            MirStmt::GlobalRef { dst, name } => {
+                write!(f, "_{} = global_ref(\"{}\")", dst.0, name)
             }
         }
     }

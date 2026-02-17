@@ -385,6 +385,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut fns = vec![func];
@@ -413,6 +415,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(0))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -439,12 +443,14 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: None,
-                        func: FunctionRef { name: "spawn".to_string() },
+                        func: FunctionRef::internal("spawn".to_string()),
                         args: vec![MirOperand::Local(LocalId(0))],
                     },
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -472,6 +478,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -489,12 +497,14 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: Some(LocalId(1)),
-                        func: FunctionRef { name: "apply".to_string() },
+                        func: FunctionRef::internal("apply".to_string()),
                         args: vec![MirOperand::Local(LocalId(0))],
                     },
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut fns = vec![apply_fn, caller_fn];
@@ -523,6 +533,8 @@ mod tests {
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let caller_fn = MirFunction {
@@ -540,12 +552,14 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: None,
-                        func: FunctionRef { name: "store_it".to_string() },
+                        func: FunctionRef::internal("store_it".to_string()),
                         args: vec![MirOperand::Local(LocalId(0))],
                     },
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut fns = vec![store_fn, caller_fn];
@@ -575,7 +589,7 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: None,
-                        func: FunctionRef { name: "run".to_string() },
+                        func: FunctionRef::internal("run".to_string()),
                         args: vec![MirOperand::Local(LocalId(0))],
                     },
                     MirStmt::ClosureCall {
@@ -586,6 +600,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -639,6 +655,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -662,6 +680,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(1))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -715,6 +735,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(1))))),  // return inner
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let f_fn = MirFunction {
@@ -747,6 +769,8 @@ mod tests {
                 ], ret(Some(MirOperand::Local(LocalId(2))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         };
 
         let mut fns = vec![outer_closure, f_fn];
@@ -817,6 +841,8 @@ mod tests {
                 block(3, vec![], ret(Some(MirOperand::Local(LocalId(0))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -863,13 +889,15 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: None,
-                        func: FunctionRef { name: "register".to_string() },
+                        func: FunctionRef::internal("register".to_string()),
                         args: vec![MirOperand::Local(LocalId(1))],
                     },
                 ], MirTerminator::Goto { target: BlockId(1) }),
                 block(3, vec![], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -947,6 +975,8 @@ mod tests {
                 block(3, vec![], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -998,6 +1028,8 @@ mod tests {
                     ret(Some(MirOperand::Constant(MirConst::Int(0))))),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);
@@ -1051,7 +1083,7 @@ mod tests {
                     },
                     MirStmt::Call {
                         dst: None,
-                        func: FunctionRef { name: "run".to_string() },
+                        func: FunctionRef::internal("run".to_string()),
                         args: vec![MirOperand::Local(LocalId(1))],
                     },
                     MirStmt::ClosureCall {
@@ -1063,6 +1095,8 @@ mod tests {
                 block(3, vec![], ret(None)),
             ],
             entry_block: BlockId(0),
+            is_extern_c: false,
+            source_file: None,
         }];
 
         optimize_all_closures(&mut fns);

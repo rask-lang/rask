@@ -90,4 +90,18 @@ pub enum UnaryOp {
 #[derive(Debug, Clone)]
 pub struct FunctionRef {
     pub name: String,
+    /// True for extern "C" functions — bypasses stdlib dispatch adaptation.
+    pub is_extern: bool,
+}
+
+impl FunctionRef {
+    /// Internal Rask or stdlib call.
+    pub fn internal(name: String) -> Self {
+        Self { name, is_extern: false }
+    }
+
+    /// Extern "C" call.
+    pub fn extern_c(name: String) -> Self {
+        Self { name, is_extern: true }
+    }
 }
