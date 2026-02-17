@@ -247,6 +247,35 @@ impl Interpreter {
                         }
                         Ok(Value::Unit)
                     }
+                    Value::Iterator(iter) => {
+                        loop {
+                            match self.iter_next(&iter)
+                                .map_err(|e| RuntimeDiagnostic::new(e, stmt.span))? {
+                                Some(item) => {
+                                    self.env.push_scope();
+                                    self.env.define(binding.clone(), item);
+                                    match self.exec_stmts(body) {
+                                        Ok(_) => {}
+                                        Err(diag) if matches!(diag.error, RuntimeError::Break) => {
+                                            self.env.pop_scope();
+                                            break;
+                                        }
+                                        Err(diag) if matches!(diag.error, RuntimeError::Continue) => {
+                                            self.env.pop_scope();
+                                            continue;
+                                        }
+                                        Err(e) => {
+                                            self.env.pop_scope();
+                                            return Err(e);
+                                        }
+                                    }
+                                    self.env.pop_scope();
+                                }
+                                None => break,
+                            }
+                        }
+                        Ok(Value::Unit)
+                    }
                     _ => Err(RuntimeDiagnostic::new(
                         RuntimeError::TypeError(format!(
                             "cannot iterate over {}",

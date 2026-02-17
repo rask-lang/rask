@@ -30,7 +30,7 @@ pub fn run_test(test: SpecTest) -> TestResult {
     }
 }
 
-/// Test that code compiles successfully (lex + parse).
+/// Test that code compiles successfully (lex + parse + resolve + typecheck).
 fn run_compile_test(test: SpecTest) -> TestResult {
     // Lex
     let lex_result = rask_lexer::Lexer::new(&test.code).tokenize();
@@ -43,7 +43,7 @@ fn run_compile_test(test: SpecTest) -> TestResult {
     }
 
     // Parse
-    let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
     if !parse_result.is_ok() {
         return TestResult {
             test,
@@ -52,7 +52,29 @@ fn run_compile_test(test: SpecTest) -> TestResult {
         };
     }
 
-    // TODO: Type check when available
+    // Desugar
+    rask_desugar::desugar(&mut parse_result.decls);
+
+    // Resolve
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(errors) => {
+            return TestResult {
+                test,
+                passed: false,
+                message: format!("resolve failed: {:?}", errors),
+            };
+        }
+    };
+
+    // Type check
+    if let Err(errors) = rask_types::typecheck(resolved, &parse_result.decls) {
+        return TestResult {
+            test,
+            passed: false,
+            message: format!("type check failed: {:?}", errors),
+        };
+    }
 
     TestResult {
         test,
@@ -74,7 +96,7 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
     }
 
     // Parse
-    let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+    let mut parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
     if !parse_result.is_ok() {
         return TestResult {
             test,
@@ -83,15 +105,35 @@ fn run_compile_fail_test(test: SpecTest) -> TestResult {
         };
     }
 
-    // TODO: Type check when available - that's where most compile-fail tests
-    // will actually fail
+    // Desugar
+    rask_desugar::desugar(&mut parse_result.decls);
 
-    // For now, if it parses, we can't verify compile-fail
-    // Mark as passed with a note that we need type checking
+    // Resolve
+    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        Ok(r) => r,
+        Err(_) => {
+            return TestResult {
+                test,
+                passed: true,
+                message: "failed at resolve (expected)".to_string(),
+            };
+        }
+    };
+
+    // Type check
+    if rask_types::typecheck(resolved, &parse_result.decls).is_err() {
+        return TestResult {
+            test,
+            passed: true,
+            message: "failed at typecheck (expected)".to_string(),
+        };
+    }
+
+    // All stages passed — expected failure didn't happen
     TestResult {
         test,
-        passed: true,
-        message: "parsed (type checking not yet implemented)".to_string(),
+        passed: false,
+        message: "expected compile failure, but compiled successfully".to_string(),
     }
 }
 

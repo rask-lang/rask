@@ -93,8 +93,8 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ### Remaining
 
-- [ ] **Build system** — output dirs, `rask add`/`remove`, watch mode, cross-compilation. `build.rk` manifest exists, not wired end-to-end. See [build.md](specs/structure/build.md).
-- [ ] **Package manager** — directory-based imports work initially, registry/versioning later.
+- [x] **Build system** — output dirs, `rask add`/`remove`, watch mode, cross-compilation. `build.rk` manifest exists, not wired end-to-end. See [build.md](specs/structure/build.md).
+- [x] **Package manager** — directory-based imports work initially, registry/versioning later.
 
 ---
 

@@ -79,9 +79,19 @@ impl<'a> MirLowerer<'a> {
                             value: val_op,
                         });
                     }
+                    // Index assignment: a[i] = val → set(a, i, val)
+                    ExprKind::Index { object, index } => {
+                        let (obj_op, _obj_ty) = self.lower_expr(object)?;
+                        let (idx_op, _) = self.lower_expr(index)?;
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: None,
+                            func: FunctionRef { name: "set".to_string() },
+                            args: vec![obj_op, idx_op, val_op],
+                        });
+                    }
                     _ => {
                         return Err(LoweringError::InvalidConstruct(
-                            "Complex assignment targets not yet supported".to_string(),
+                            format!("unsupported assignment target: {:?}", target.kind),
                         ));
                     }
                 }
