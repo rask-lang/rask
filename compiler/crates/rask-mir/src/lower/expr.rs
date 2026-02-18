@@ -1761,7 +1761,7 @@ impl<'a> MirLowerer<'a> {
 
             // Check each tuple element against its pattern
             let body_block = self.builder.create_block();
-            let mut current_pass = body_block;
+            let _current_pass = body_block;
 
             // Build checks in reverse so we can chain: check0 → check1 → ... → body
             let mut checks: Vec<(usize, Pattern)> = Vec::new();

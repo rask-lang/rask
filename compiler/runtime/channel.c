@@ -56,11 +56,8 @@ struct RaskRecver {
 };
 
 static RaskChannel *channel_alloc(int64_t elem_size, int64_t capacity) {
-    RaskChannel *ch = (RaskChannel *)calloc(1, sizeof(RaskChannel));
-    if (!ch) {
-        fprintf(stderr, "rask: channel alloc failed\n");
-        abort();
-    }
+    RaskChannel *ch = (RaskChannel *)rask_alloc(sizeof(RaskChannel));
+    memset(ch, 0, sizeof(RaskChannel));
 
     pthread_mutex_init(&ch->mutex, NULL);
     pthread_cond_init(&ch->not_full, NULL);
@@ -74,11 +71,9 @@ static RaskChannel *channel_alloc(int64_t elem_size, int64_t capacity) {
     ch->handoff_taken = 0;
 
     if (capacity > 0) {
-        ch->buffer = calloc((size_t)capacity, (size_t)elem_size);
-        if (!ch->buffer) {
-            fprintf(stderr, "rask: channel buffer alloc failed\n");
-            abort();
-        }
+        int64_t buf_size = capacity * elem_size;
+        ch->buffer = rask_alloc(buf_size);
+        memset(ch->buffer, 0, (size_t)buf_size);
     }
 
     atomic_init(&ch->sender_count, 1);
@@ -92,8 +87,8 @@ static void channel_destroy(RaskChannel *ch) {
     pthread_mutex_destroy(&ch->mutex);
     pthread_cond_destroy(&ch->not_full);
     pthread_cond_destroy(&ch->not_empty);
-    free(ch->buffer);
-    free(ch);
+    rask_free(ch->buffer);
+    rask_free(ch);
 }
 
 // Try to destroy if both sides are gone
@@ -329,12 +324,8 @@ void rask_channel_new(int64_t elem_size, int64_t capacity,
 
     RaskChannel *ch = channel_alloc(elem_size, capacity);
 
-    RaskSender *tx = (RaskSender *)malloc(sizeof(RaskSender));
-    RaskRecver *rx = (RaskRecver *)malloc(sizeof(RaskRecver));
-    if (!tx || !rx) {
-        fprintf(stderr, "rask: channel sender/receiver alloc failed\n");
-        abort();
-    }
+    RaskSender *tx = (RaskSender *)rask_alloc(sizeof(RaskSender));
+    RaskRecver *rx = (RaskRecver *)rask_alloc(sizeof(RaskRecver));
     tx->chan = ch;
     rx->chan = ch;
 
@@ -376,18 +367,14 @@ int64_t rask_channel_try_recv(RaskRecver *rx, void *data_out) {
 
 RaskSender *rask_sender_clone(RaskSender *tx) {
     atomic_fetch_add_explicit(&tx->chan->sender_count, 1, memory_order_relaxed);
-    RaskSender *clone = (RaskSender *)malloc(sizeof(RaskSender));
-    if (!clone) {
-        fprintf(stderr, "rask: sender clone alloc failed\n");
-        abort();
-    }
+    RaskSender *clone = (RaskSender *)rask_alloc(sizeof(RaskSender));
     clone->chan = tx->chan;
     return clone;
 }
 
 void rask_sender_drop(RaskSender *tx) {
     RaskChannel *ch = tx->chan;
-    free(tx);
+    rask_free(tx);
 
     if (atomic_fetch_sub_explicit(&ch->sender_count, 1, memory_order_acq_rel) == 1) {
         // Last sender dropped — wake any blocked receivers
@@ -401,7 +388,7 @@ void rask_sender_drop(RaskSender *tx) {
 
 void rask_recver_drop(RaskRecver *rx) {
     RaskChannel *ch = rx->chan;
-    free(rx);
+    rask_free(rx);
 
     if (atomic_fetch_sub_explicit(&ch->recver_count, 1, memory_order_acq_rel) == 1) {
         // Last receiver dropped — wake any blocked senders

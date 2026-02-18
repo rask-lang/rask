@@ -46,6 +46,49 @@ impl TypeChecker {
                 ret,
                 span,
             } => self.resolve_method(ty, method, args, ret, span),
+            TypeConstraint::ReturnValue {
+                ret_ty,
+                expected,
+                span,
+            } => self.resolve_return_value(ret_ty, expected, span),
+        }
+    }
+
+    /// Resolve a return value constraint with deferred auto-Ok wrapping.
+    /// If the return expression's type is still unresolved, defer until later.
+    fn resolve_return_value(
+        &mut self,
+        ret_ty: Type,
+        expected: Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        let resolved_expected = self.ctx.apply(&expected);
+
+        if let Type::Result { ok: _, err } = &resolved_expected {
+            let resolved_ret = self.ctx.apply(&ret_ty);
+            match &resolved_ret {
+                // Already a Result — unify directly
+                Type::Result { .. } => self.unify(&expected, &ret_ty, span),
+                // Still unresolved — defer
+                Type::Var(_) => {
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty,
+                        expected,
+                        span,
+                    });
+                    Ok(false)
+                }
+                // Concrete non-Result — auto-wrap in Ok
+                _ => {
+                    let wrapped = Type::Result {
+                        ok: Box::new(ret_ty),
+                        err: err.clone(),
+                    };
+                    self.unify(&expected, &wrapped, span)
+                }
+            }
+        } else {
+            self.unify(&expected, &ret_ty, span)
         }
     }
 

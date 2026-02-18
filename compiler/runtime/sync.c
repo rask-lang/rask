@@ -29,19 +29,11 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
         rask_panic("Mutex data size must be positive");
     }
 
-    RaskMutex *m = (RaskMutex *)malloc(sizeof(RaskMutex));
-    if (!m) {
-        fprintf(stderr, "rask: mutex alloc failed\n");
-        abort();
-    }
+    RaskMutex *m = (RaskMutex *)rask_alloc(sizeof(RaskMutex));
 
     pthread_mutex_init(&m->lock, NULL);
     m->data_size = data_size;
-    m->data = malloc((size_t)data_size);
-    if (!m->data) {
-        fprintf(stderr, "rask: mutex data alloc failed\n");
-        abort();
-    }
+    m->data = rask_alloc(data_size);
 
     memcpy(m->data, initial_data, (size_t)data_size);
     return m;
@@ -50,8 +42,8 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
 void rask_mutex_free(RaskMutex *m) {
     if (!m) return;
     pthread_mutex_destroy(&m->lock);
-    free(m->data);
-    free(m);
+    rask_free(m->data);
+    rask_free(m);
 }
 
 void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx) {
@@ -83,19 +75,11 @@ RaskShared *rask_shared_new(const void *initial_data, int64_t data_size) {
         rask_panic("Shared data size must be positive");
     }
 
-    RaskShared *s = (RaskShared *)malloc(sizeof(RaskShared));
-    if (!s) {
-        fprintf(stderr, "rask: shared alloc failed\n");
-        abort();
-    }
+    RaskShared *s = (RaskShared *)rask_alloc(sizeof(RaskShared));
 
     pthread_rwlock_init(&s->lock, NULL);
     s->data_size = data_size;
-    s->data = malloc((size_t)data_size);
-    if (!s->data) {
-        fprintf(stderr, "rask: shared data alloc failed\n");
-        abort();
-    }
+    s->data = rask_alloc(data_size);
 
     atomic_store(&s->refcount, 1);
     memcpy(s->data, initial_data, (size_t)data_size);
@@ -106,8 +90,8 @@ void rask_shared_free(RaskShared *s) {
     if (!s) return;
     if (atomic_fetch_sub(&s->refcount, 1) > 1) return;
     pthread_rwlock_destroy(&s->lock);
-    free(s->data);
-    free(s);
+    rask_free(s->data);
+    rask_free(s);
 }
 
 void rask_shared_read(RaskShared *s, RaskAccessFn f, void *ctx) {

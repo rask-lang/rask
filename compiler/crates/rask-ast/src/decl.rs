@@ -97,6 +97,8 @@ pub struct FnDecl {
     pub attrs: Vec<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
+    /// Span covering `func` keyword through closing `}`
+    pub span: Span,
 }
 
 /// A `using` context clause on a function signature.

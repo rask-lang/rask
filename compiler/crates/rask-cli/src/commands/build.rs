@@ -519,113 +519,28 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
                                 match rask_mono::monomorphize(&typed, &all_decls) {
                                     Ok(mono) => {
-                                        let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
-                                            let mut decl = f.body.clone();
-                                            if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
-                                                fn_decl.name = f.name.clone();
-                                            }
-                                            decl
-                                        }).collect();
-                                        all_mono_decls.extend(all_decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
                                         let comptime_globals = std::collections::HashMap::new();
-                                        let extern_funcs = super::codegen::collect_extern_func_names(&all_decls);
-                                        let mir_ctx = rask_mir::lower::MirContext {
-                                            struct_layouts: &mono.struct_layouts,
-                                            enum_layouts: &mono.enum_layouts,
-                                            node_types: &typed.node_types,
-                                            comptime_globals: &comptime_globals,
-                                            extern_funcs: &extern_funcs,
-                                            line_map: None,
-                                            source_file: None,
-                                        };
+                                        let target = opts.target.as_deref();
 
-                                        let mut mir_functions = Vec::new();
-                                        let mut mir_errors = 0;
-
-                                        for mono_fn in &mono.functions {
-                                            match rask_mir::lower::MirLowerer::lower_function_named(&mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)) {
-                                                Ok(mir_fns) => mir_functions.extend(mir_fns),
-                                                Err(e) => {
-                                                    eprintln!("MIR lowering error in '{}': {:?}", mono_fn.name, e);
-                                                    mir_errors += 1;
+                                        match super::compile::compile_to_object(
+                                            &mono, &typed, &all_decls, &comptime_globals,
+                                            None, None, target, &obj_str,
+                                        ) {
+                                            Ok(()) => {
+                                                // Cache the compiled object (XC1)
+                                                if !opts.no_cache {
+                                                    let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
                                                 }
-                                            }
-                                        }
-
-                                        total_errors += mir_errors;
-
-                                        // Closure optimization: escape analysis + cross-function ownership + drops
-                                        rask_mir::optimize_all_closures(&mut mir_functions);
-
-                                        if mir_errors == 0 && !mir_functions.is_empty() {
-                                            let codegen_result = match opts.target {
-                                                Some(ref t) => rask_codegen::CodeGenerator::new_with_target(t),
-                                                None => rask_codegen::CodeGenerator::new(),
-                                            };
-                                            match codegen_result {
-                                                Ok(mut codegen) => {
-                                                    if let Err(e) = codegen.declare_runtime_functions() {
-                                                        eprintln!("codegen error: {}", e);
-                                                        total_errors += 1;
-                                                    }
-
-                                                    if total_errors == 0 {
-                                                        if let Err(e) = codegen.declare_stdlib_functions() {
-                                                            eprintln!("codegen error: {}", e);
-                                                            total_errors += 1;
-                                                        }
-                                                    }
-
-                                                    if total_errors == 0 {
-                                                        if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
-                                                            eprintln!("codegen error: {}", e);
-                                                            total_errors += 1;
-                                                        }
-                                                    }
-
-                                                    if total_errors == 0 {
-                                                        if let Err(e) = codegen.register_strings(&mir_functions) {
-                                                            eprintln!("codegen error: {}", e);
-                                                            total_errors += 1;
-                                                        }
-                                                    }
-
-                                                    if total_errors == 0 {
-                                                        for mir_fn in &mir_functions {
-                                                            if let Err(e) = codegen.gen_function(mir_fn) {
-                                                                eprintln!("codegen error in '{}': {}", mir_fn.name, e);
-                                                                total_errors += 1;
-                                                            }
-                                                        }
-                                                    }
-
-                                                    // Emit to build/<profile>/ (OD2)
-                                                    if total_errors == 0 {
-                                                        match codegen.emit_object(&obj_str) {
-                                                            Ok(_) => {
-                                                                // Cache the compiled object (XC1)
-                                                                if !opts.no_cache {
-                                                                    let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
-                                                                }
-                                                                match super::link::link_executable_with(&obj_str, &bin_str, &link_opts) {
-                                                                    Ok(_) => {}
-                                                                    Err(e) => {
-                                                                        eprintln!("link error: {}", e);
-                                                                        total_errors += 1;
-                                                                    }
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                eprintln!("failed to emit object file: {}", e);
-                                                                total_errors += 1;
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("failed to initialize codegen: {}", e);
+                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts) {
+                                                    eprintln!("link error: {}", e);
                                                     total_errors += 1;
                                                 }
+                                            }
+                                            Err(errors) => {
+                                                for e in &errors {
+                                                    eprintln!("error: {}", e);
+                                                }
+                                                total_errors += errors.len();
                                             }
                                         }
                                     }

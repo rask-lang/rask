@@ -303,7 +303,6 @@ impl Interpreter {
                 result
             }
 
-            _ => Ok(Value::Unit),
         }
     }
 

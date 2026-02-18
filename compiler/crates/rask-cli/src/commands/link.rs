@@ -37,11 +37,6 @@ pub struct LinkOptions {
     pub search_paths: Vec<String>,
 }
 
-/// Find the runtime C files, compile them, and link with the object file.
-pub fn link_executable(obj_path: &str, bin_path: &str) -> Result<(), String> {
-    link_executable_with(obj_path, bin_path, &LinkOptions::default())
-}
-
 /// Link with extra libraries and object files.
 pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) -> Result<(), String> {
     let runtime_dir = find_runtime_dir()?;

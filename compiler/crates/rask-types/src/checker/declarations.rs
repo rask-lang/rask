@@ -163,25 +163,25 @@ impl TypeChecker {
 
     pub(super) fn check_decl(&mut self, decl: &Decl) {
         match &decl.kind {
-            DeclKind::Fn(f) => self.check_fn(f, decl.span),
+            DeclKind::Fn(f) => self.check_fn(f),
             DeclKind::Struct(s) => {
                 self.current_self_type = self.types.get_type_id(&s.name).map(Type::Named);
                 for method in &s.methods {
-                    self.check_fn(method, decl.span);
+                    self.check_fn(method);
                 }
                 self.current_self_type = None;
             }
             DeclKind::Enum(e) => {
                 self.current_self_type = self.types.get_type_id(&e.name).map(Type::Named);
                 for method in &e.methods {
-                    self.check_fn(method, decl.span);
+                    self.check_fn(method);
                 }
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
                 for method in &i.methods {
-                    self.check_fn(method, decl.span);
+                    self.check_fn(method);
                 }
                 self.current_self_type = None;
             }

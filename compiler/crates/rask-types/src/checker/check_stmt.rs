@@ -102,7 +102,13 @@ impl TypeChecker {
             StmtKind::Return(value) => {
                 let ret_ty = if let Some(expr) = value {
                     if let Some(expected) = &self.current_return_type.clone() {
-                        self.infer_expr_expecting(expr, expected)
+                        // If expecting Result<T, E>, propagate T as the expected type
+                        // so literals like `return 42` infer the correct inner type
+                        let effective = match &self.ctx.apply(expected) {
+                            Type::Result { ok, .. } => (**ok).clone(),
+                            _ => expected.clone(),
+                        };
+                        self.infer_expr_expecting(expr, &effective)
                     } else {
                         self.infer_expr(expr)
                     }
@@ -110,14 +116,14 @@ impl TypeChecker {
                     Type::Unit
                 };
                 if let Some(expected) = &self.current_return_type {
-                    // Auto-wrap in Ok() if returning T where function expects T or E
-                    let wrapped_ty = self.wrap_in_ok_if_needed(ret_ty, expected);
-
-                    self.ctx.add_constraint(TypeConstraint::Equal(
-                        expected.clone(),
-                        wrapped_ty,
-                        stmt.span,
-                    ));
+                    // Defer auto-Ok wrapping — the solver resolves this after
+                    // method/field constraints are solved, so we know if the
+                    // return expression is already a Result or needs wrapping
+                    self.ctx.add_constraint(TypeConstraint::ReturnValue {
+                        ret_ty,
+                        expected: expected.clone(),
+                        span: stmt.span,
+                    });
                 }
                 self.clear_expression_borrows();
             }

@@ -192,6 +192,7 @@ impl TypeSubstitutor {
             abi: fn_decl.abi.clone(),
             attrs: fn_decl.attrs.clone(),
             doc: fn_decl.doc.clone(),
+            span: fn_decl.span,
         }
     }
 

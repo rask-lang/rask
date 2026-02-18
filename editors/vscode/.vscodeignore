@@ -1,8 +1,9 @@
 .vscode/**
 .vscode-test/**
 .devcontainer/**
+.claude/**
 src/**
-node_modules/**
+node_modules/.vscode-test/**
 tsconfig.json
 package-lock.json
 *.map

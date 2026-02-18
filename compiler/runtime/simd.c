@@ -4,6 +4,8 @@
 // Each SIMD vector is a heap-allocated array of elements, passed as i64 (pointer).
 // Float operations use double for ABI compatibility (Cranelift passes F64).
 
+#include "rask_runtime.h"
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,14 +17,14 @@
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_f32x4_splat(double val) {
-    float *v = malloc(4 * sizeof(float));
+    float *v = rask_alloc(4 * sizeof(float));
     float fv = (float)val;
     for (int i = 0; i < 4; i++) v[i] = fv;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_f32x4_load(int64_t src) {
-    float *v = malloc(4 * sizeof(float));
+    float *v = rask_alloc(4 * sizeof(float));
     memcpy(v, (void *)(uintptr_t)src, 4 * sizeof(float));
     return (int64_t)(uintptr_t)v;
 }
@@ -33,35 +35,35 @@ void rask_simd_f32x4_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_f32x4_add(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(4 * sizeof(float));
+    float *r = rask_alloc(4 * sizeof(float));
     for (int i = 0; i < 4; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x4_sub(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(4 * sizeof(float));
+    float *r = rask_alloc(4 * sizeof(float));
     for (int i = 0; i < 4; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x4_mul(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(4 * sizeof(float));
+    float *r = rask_alloc(4 * sizeof(float));
     for (int i = 0; i < 4; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x4_div(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(4 * sizeof(float));
+    float *r = rask_alloc(4 * sizeof(float));
     for (int i = 0; i < 4; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x4_scale(int64_t a, double scalar) {
     float *va = (float *)(uintptr_t)a;
-    float *r = malloc(4 * sizeof(float));
+    float *r = rask_alloc(4 * sizeof(float));
     float s = (float)scalar;
     for (int i = 0; i < 4; i++) r[i] = va[i] * s;
     return (int64_t)(uintptr_t)r;
@@ -110,14 +112,14 @@ void rask_simd_f32x4_set(int64_t vec, int64_t index, double val) {
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_f32x8_splat(double val) {
-    float *v = malloc(8 * sizeof(float));
+    float *v = rask_alloc(8 * sizeof(float));
     float fv = (float)val;
     for (int i = 0; i < 8; i++) v[i] = fv;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_f32x8_load(int64_t src) {
-    float *v = malloc(8 * sizeof(float));
+    float *v = rask_alloc(8 * sizeof(float));
     memcpy(v, (void *)(uintptr_t)src, 8 * sizeof(float));
     return (int64_t)(uintptr_t)v;
 }
@@ -128,35 +130,35 @@ void rask_simd_f32x8_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_f32x8_add(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(8 * sizeof(float));
+    float *r = rask_alloc(8 * sizeof(float));
     for (int i = 0; i < 8; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x8_sub(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(8 * sizeof(float));
+    float *r = rask_alloc(8 * sizeof(float));
     for (int i = 0; i < 8; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x8_mul(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(8 * sizeof(float));
+    float *r = rask_alloc(8 * sizeof(float));
     for (int i = 0; i < 8; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x8_div(int64_t a, int64_t b) {
     float *va = (float *)(uintptr_t)a, *vb = (float *)(uintptr_t)b;
-    float *r = malloc(8 * sizeof(float));
+    float *r = rask_alloc(8 * sizeof(float));
     for (int i = 0; i < 8; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f32x8_scale(int64_t a, double scalar) {
     float *va = (float *)(uintptr_t)a;
-    float *r = malloc(8 * sizeof(float));
+    float *r = rask_alloc(8 * sizeof(float));
     float s = (float)scalar;
     for (int i = 0; i < 8; i++) r[i] = va[i] * s;
     return (int64_t)(uintptr_t)r;
@@ -205,13 +207,13 @@ void rask_simd_f32x8_set(int64_t vec, int64_t index, double val) {
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_f64x2_splat(double val) {
-    double *v = malloc(2 * sizeof(double));
+    double *v = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) v[i] = val;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_f64x2_load(int64_t src) {
-    double *v = malloc(2 * sizeof(double));
+    double *v = rask_alloc(2 * sizeof(double));
     memcpy(v, (void *)(uintptr_t)src, 2 * sizeof(double));
     return (int64_t)(uintptr_t)v;
 }
@@ -222,35 +224,35 @@ void rask_simd_f64x2_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_f64x2_add(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(2 * sizeof(double));
+    double *r = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x2_sub(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(2 * sizeof(double));
+    double *r = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x2_mul(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(2 * sizeof(double));
+    double *r = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x2_div(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(2 * sizeof(double));
+    double *r = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x2_scale(int64_t a, double scalar) {
     double *va = (double *)(uintptr_t)a;
-    double *r = malloc(2 * sizeof(double));
+    double *r = rask_alloc(2 * sizeof(double));
     for (int i = 0; i < 2; i++) r[i] = va[i] * scalar;
     return (int64_t)(uintptr_t)r;
 }
@@ -298,13 +300,13 @@ void rask_simd_f64x2_set(int64_t vec, int64_t index, double val) {
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_f64x4_splat(double val) {
-    double *v = malloc(4 * sizeof(double));
+    double *v = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) v[i] = val;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_f64x4_load(int64_t src) {
-    double *v = malloc(4 * sizeof(double));
+    double *v = rask_alloc(4 * sizeof(double));
     memcpy(v, (void *)(uintptr_t)src, 4 * sizeof(double));
     return (int64_t)(uintptr_t)v;
 }
@@ -315,35 +317,35 @@ void rask_simd_f64x4_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_f64x4_add(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(4 * sizeof(double));
+    double *r = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x4_sub(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(4 * sizeof(double));
+    double *r = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x4_mul(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(4 * sizeof(double));
+    double *r = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x4_div(int64_t a, int64_t b) {
     double *va = (double *)(uintptr_t)a, *vb = (double *)(uintptr_t)b;
-    double *r = malloc(4 * sizeof(double));
+    double *r = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_f64x4_scale(int64_t a, double scalar) {
     double *va = (double *)(uintptr_t)a;
-    double *r = malloc(4 * sizeof(double));
+    double *r = rask_alloc(4 * sizeof(double));
     for (int i = 0; i < 4; i++) r[i] = va[i] * scalar;
     return (int64_t)(uintptr_t)r;
 }
@@ -391,14 +393,14 @@ void rask_simd_f64x4_set(int64_t vec, int64_t index, double val) {
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_i32x4_splat(int64_t val) {
-    int32_t *v = malloc(4 * sizeof(int32_t));
+    int32_t *v = rask_alloc(4 * sizeof(int32_t));
     int32_t iv = (int32_t)val;
     for (int i = 0; i < 4; i++) v[i] = iv;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_i32x4_load(int64_t src) {
-    int32_t *v = malloc(4 * sizeof(int32_t));
+    int32_t *v = rask_alloc(4 * sizeof(int32_t));
     memcpy(v, (void *)(uintptr_t)src, 4 * sizeof(int32_t));
     return (int64_t)(uintptr_t)v;
 }
@@ -409,35 +411,35 @@ void rask_simd_i32x4_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_i32x4_add(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(4 * sizeof(int32_t));
+    int32_t *r = rask_alloc(4 * sizeof(int32_t));
     for (int i = 0; i < 4; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x4_sub(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(4 * sizeof(int32_t));
+    int32_t *r = rask_alloc(4 * sizeof(int32_t));
     for (int i = 0; i < 4; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x4_mul(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(4 * sizeof(int32_t));
+    int32_t *r = rask_alloc(4 * sizeof(int32_t));
     for (int i = 0; i < 4; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x4_div(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(4 * sizeof(int32_t));
+    int32_t *r = rask_alloc(4 * sizeof(int32_t));
     for (int i = 0; i < 4; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x4_scale(int64_t a, int64_t scalar) {
     int32_t *va = (int32_t *)(uintptr_t)a;
-    int32_t *r = malloc(4 * sizeof(int32_t));
+    int32_t *r = rask_alloc(4 * sizeof(int32_t));
     int32_t s = (int32_t)scalar;
     for (int i = 0; i < 4; i++) r[i] = va[i] * s;
     return (int64_t)(uintptr_t)r;
@@ -486,14 +488,14 @@ void rask_simd_i32x4_set(int64_t vec, int64_t index, int64_t val) {
 // ═══════════════════════════════════════════════════════════
 
 int64_t rask_simd_i32x8_splat(int64_t val) {
-    int32_t *v = malloc(8 * sizeof(int32_t));
+    int32_t *v = rask_alloc(8 * sizeof(int32_t));
     int32_t iv = (int32_t)val;
     for (int i = 0; i < 8; i++) v[i] = iv;
     return (int64_t)(uintptr_t)v;
 }
 
 int64_t rask_simd_i32x8_load(int64_t src) {
-    int32_t *v = malloc(8 * sizeof(int32_t));
+    int32_t *v = rask_alloc(8 * sizeof(int32_t));
     memcpy(v, (void *)(uintptr_t)src, 8 * sizeof(int32_t));
     return (int64_t)(uintptr_t)v;
 }
@@ -504,35 +506,35 @@ void rask_simd_i32x8_store(int64_t vec, int64_t dst) {
 
 int64_t rask_simd_i32x8_add(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(8 * sizeof(int32_t));
+    int32_t *r = rask_alloc(8 * sizeof(int32_t));
     for (int i = 0; i < 8; i++) r[i] = va[i] + vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x8_sub(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(8 * sizeof(int32_t));
+    int32_t *r = rask_alloc(8 * sizeof(int32_t));
     for (int i = 0; i < 8; i++) r[i] = va[i] - vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x8_mul(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(8 * sizeof(int32_t));
+    int32_t *r = rask_alloc(8 * sizeof(int32_t));
     for (int i = 0; i < 8; i++) r[i] = va[i] * vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x8_div(int64_t a, int64_t b) {
     int32_t *va = (int32_t *)(uintptr_t)a, *vb = (int32_t *)(uintptr_t)b;
-    int32_t *r = malloc(8 * sizeof(int32_t));
+    int32_t *r = rask_alloc(8 * sizeof(int32_t));
     for (int i = 0; i < 8; i++) r[i] = va[i] / vb[i];
     return (int64_t)(uintptr_t)r;
 }
 
 int64_t rask_simd_i32x8_scale(int64_t a, int64_t scalar) {
     int32_t *va = (int32_t *)(uintptr_t)a;
-    int32_t *r = malloc(8 * sizeof(int32_t));
+    int32_t *r = rask_alloc(8 * sizeof(int32_t));
     int32_t s = (int32_t)scalar;
     for (int i = 0; i < 8; i++) r[i] = va[i] * s;
     return (int64_t)(uintptr_t)r;

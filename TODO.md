@@ -1,16 +1,16 @@
 # Rask — Status & Roadmap
 
-## Current State (2026-02-17)
+## Current State (2026-02-18)
 
 **Language design:** Complete. 70+ spec files, all core semantics stable.
 
-**Frontend (Phases 1-4):** Lexer, parser, resolver, type checker all work. 4/5 validation programs pass `rask check`. Sensor processor blocked by ownership checker false positives on copy types. Multiple trait bounds, literal type inference, struct field generic unification all fixed.
+**Frontend (Phases 1-4):** Lexer, parser, resolver, type checker all work. 5/5 validation programs pass `rask check`. Multiple trait bounds, literal type inference, struct field generic unification all fixed.
 
 **Interpreter:** 15+ stdlib modules. Nested index assignment refactored. spawn() checks for `using Multitasking` context (but still uses OS threads internally).
 
 **Monomorphization + MIR:** Struct/enum layouts, generic instantiation (including structs/enums), reachability analysis, AST→MIR lowering. Real MIR types for Tuple, Option, Result, Union, Slice. 104 tests.
 
-**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool, Rng, File → C runtime). Closures. Integer widening. For-range loops. Compound type field access. 42 codegen tests.
+**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool, Rng, File → C runtime). Closures. Integer widening. For-range loops. Compound type field access. Binaries output to `build/debug/`. 42 codegen tests.
 
 **Tooling:** LSP, formatter, linter, test runner, describe, explain — all done.
 
@@ -22,7 +22,7 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ### Validation programs
 
-4/5 pass `rask check`. None compile natively yet.
+5/5 pass `rask check`. None compile natively yet.
 
 | Program | `rask check` | Native | Remaining blockers |
 |---------|-------------|--------|--------------------|
@@ -30,11 +30,18 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 | Text editor | Pass | No | Needs stdlib module calls in codegen |
 | Game loop | Pass | No | Needs stdlib module calls in codegen |
 | HTTP server | Pass | No | Needs concurrency runtime |
-| Sensor processor | 6 ownership errors | No | Ownership checker false positives on copy types (u128, u64, Instant) |
+| Sensor processor | Pass | No | Needs SIMD/atomics codegen |
 
 ---
 
-## Recently Completed (2026-02-17)
+## Recently Completed (2026-02-18)
+
+### Cleanup (2026-02-18)
+- **Codegen bug fixes** — Pool_insert, Vec_insert missing pointer adaptation; Pool_index missing DerefResult. All three would crash compiled programs.
+- **Zero compiler warnings** — Cleaned up 21 warnings across 5 crates (dead code from runtime migration, unused imports/variables).
+- **Build output** — Binaries now go to `build/debug/`, intermediate `.o` files cleaned up.
+
+### Previous (2026-02-17)
 
 ### Type checker fixes (was: 60 errors across 5 programs → 6 remaining)
 - **Literal type inference** — Integer/float literals no longer default to i32/f64 immediately. Fresh type variables with deferred defaults let context (struct fields, function params) drive the type. `apply_literal_defaults()` runs post-solve.
@@ -79,9 +86,8 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 
 ## Compiler Bugs
 
-### Blocking — sensor processor (only remaining `rask check` failure)
-
-- [x] **Ownership checker false positives on copy types** — `let x = n` where `n: u128` triggers "cannot change while being read". `let next = start_time` where `start_time: Instant` triggers "use of moved value". The ownership checker treats all types as move-only — no copy semantics for primitives or small value types. 6 false positives in sensor_processor.rk.
+### Resolved
+- [x] **Ownership checker false positives on copy types** — Fixed: copy semantics for primitives and small value types.
 
 ### Type checker — correctness (not blocking validation programs)
 

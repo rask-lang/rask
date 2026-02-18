@@ -177,15 +177,28 @@ impl ToDiagnostic for rask_types::TypeError {
                 expected,
                 found,
                 span,
-            } => Diagnostic::error("mismatched types")
-                .with_code("E0308")
-                .with_primary(
-                    *span,
-                    format!("expected `{}`, found `{}`", expected, found),
-                )
-                .with_help(format!("change this to type `{}`", expected))
-                .with_fix(format!("change this to type `{}`", expected))
-                .with_why("Rask is statically typed — every expression must match its expected type"),
+            } => {
+                let diag = Diagnostic::error("mismatched types")
+                    .with_code("E0308")
+                    .with_primary(
+                        *span,
+                        format!("expected `{}`, found `{}`", expected, found),
+                    )
+                    .with_why("Rask is statically typed — every expression must match its expected type");
+
+                // Suggest `try` when found is Result<T, E> and expected is T
+                if let rask_types::Type::Result { ok, .. } = found {
+                    if **ok == *expected {
+                        return diag
+                            .with_fix("wrap with `try` to propagate the error")
+                            .with_help(format!("this expression returns `{}` — use `try` to unwrap the ok value or propagate the error", found));
+                    }
+                }
+
+                diag
+                    .with_fix(format!("change this to type `{}`", expected))
+                    .with_help(format!("change this to type `{}`", expected))
+            }
 
             Undefined(name) => Diagnostic::error(format!("undefined type: `{}`", name))
                 .with_code("E0309")

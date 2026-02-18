@@ -2,7 +2,7 @@
   "name": "rask",
   "displayName": "Rask",
   "description": "Language support for Rask",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "publisher": "rask-lang",
   "license": "MIT OR Apache-2.0",
   "icon": "icon.png",

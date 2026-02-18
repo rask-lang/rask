@@ -1,6 +1,6 @@
 <!-- id: struct.build -->
 <!-- status: decided -->
-<!-- summary: build.rk is manifest and build script; CLI, output dirs, cross-compilation, watch mode -->
+<!-- summary: build.rk manifest + build script; dependency permissions, features, CLI, cross-compilation -->
 <!-- depends: structure/modules.md, structure/packages.md -->
 
 # Build System
@@ -67,8 +67,47 @@ dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
 | `git` | string | Git repository URL |
 | `branch` | string | Git branch (requires `git`) |
 | `with` | list | Enable features of the dependency |
+| `allow` | list | Permitted capabilities (PM3) |
 | `scope` | string | Scope override inside a `feature` block |
 | `feature` | string | Additional feature gate |
+
+## Dependency Permissions
+
+I chose compile-time capability inference over author annotations — the compiler scans imports, so capabilities track actual behavior rather than trust. A JSON parser that quietly imports `io.net` can't hide it.
+
+| Rule | Description |
+|------|-------------|
+| **PM1: Inferred** | Capabilities are inferred from stdlib imports and `unsafe` blocks, not declared by package authors |
+| **PM2: Root unrestricted** | Root package has no capability restrictions — only dependencies are gated |
+| **PM3: Consumer consent** | `allow: ["net", "read"]` on dep declarations — explicit opt-in |
+| **PM4: Build enforcement** | `rask build` errors if a dep uses capabilities not covered by `allow` |
+| **PM5: Lock file tracking** | `rask.lock` records inferred capabilities per package (struct.packages/LK5) |
+| **PM6: Update detection** | `rask update` warns if a dependency's capabilities changed |
+| **PM7: Transitive** | A dep's capabilities include its transitive deps' capabilities |
+| **PM8: Build script sandboxing** | Build scripts run in the interpreter — fs/exec/net are interceptable |
+
+| Import prefix | Capability |
+|---------------|------------|
+| `io.net`, `http` | `net` |
+| `io.fs` | `read`, `write` |
+| `os.exec`, `os.process` | `exec` |
+| `unsafe` blocks, `extern` declarations | `ffi` |
+
+```rask
+dep "http-client" "^2.0" {
+    allow: ["net"]
+}
+dep "parser" "^1.0"          // no capabilities needed — silent
+dep "native-lib" "^3.0" {
+    allow: ["ffi", "read"]   // uses extern + file reading
+}
+```
+
+```
+ERROR [struct.build/PM4]: capability violation
+   dependency 'sketchy-lib' uses network access (io.net, http) but is not allowed
+   add `allow: ["net"]` to the dep declaration in build.rk
+```
 
 ## Features
 
@@ -97,7 +136,7 @@ feature "verbose"  // code-only flag
 | **FG1: Mutual exclusion** | `feature "name" exclusive { ... }` — exactly one option selected |
 | **FG2: Required default** | Exclusive features must declare `default: "option_name"` |
 | **FG3: Named blocks** | Each string-named block has its own dependency set |
-| **FG4: Additive + exclusive** | Additive features use set-union; exclusive groups require all selectors to agree |
+| **FG4: Selector agreement** | If multiple deps select different options, resolution fails with a conflict error showing both sources |
 | **FG5: Consumer selection** | Consumers select via dep sub-block: `dep "lib" { runtime: "tokio" }` |
 | **FG6: Root wins** | Root package's selection overrides transitive selections |
 
@@ -123,42 +162,14 @@ dep "my-server" "^2.0" {
 }
 ```
 
-## Dependency Permissions
-
-I chose compile-time capability inference over author annotations — the compiler scans imports, so capabilities track actual behavior rather than trust.
-
-| Rule | Description |
-|------|-------------|
-| **PM1: Inferred** | Capabilities are inferred from stdlib imports, not declared by package authors |
-| **PM2: Root unrestricted** | Root package has no capability restrictions — only dependencies are gated |
-| **PM3: Consumer consent** | `allow: ["net", "read"]` on dep declarations — explicit opt-in |
-| **PM4: Build enforcement** | `rask build` errors if a dep uses capabilities not covered by `allow` |
-| **PM5: Lock file tracking** | `rask.lock` records inferred capabilities per package |
-| **PM6: Update detection** | `rask update` warns if a new version changes capability requirements |
-| **PM7: Transitive** | A dep's capabilities include its own transitive deps' capabilities |
-| **PM8: Build script sandboxing** | Build scripts run in the interpreter — fs/exec/net are interceptable |
-
-| Import prefix | Capability |
-|---------------|------------|
-| `io.net`, `http` | `net` |
-| `io.fs` | `read`, `write` |
-| `os.exec`, `os.process` | `exec` |
-| `unsafe`, `extern` | `ffi` |
-
-```rask
-dep "http-client" "^2.0" {
-    allow: ["net"]
-}
-dep "parser" "^1.0"          // no capabilities needed — silent
-dep "native-lib" "^3.0" {
-    allow: ["ffi", "read"]   // uses extern + file reading
-}
 ```
+ERROR [struct.build/FG4]: exclusive feature conflict
+  "runtime" for my-db:
+    dep-a selects "tokio"     (via dep "my-db" { runtime: "tokio" })
+    dep-b selects "async-std" (via dep "my-db" { runtime: "async-std" })
 
-```
-ERROR [struct.build/PM4]: capability violation
-   dependency 'sketchy-lib' uses network access (io.net, http) but is not allowed
-   add `allow: ["net"]` to the dep declaration in build.rk
+FIX: Override in root build.rk:
+  dep "my-db" "^1.0" { runtime: "tokio" }
 ```
 
 ## Profiles
@@ -187,7 +198,7 @@ profile "embedded" {
 | `strip` | bool | Strip debug symbols |
 | `panic` | string | `"unwind"`, `"abort"` |
 
-## Build Logic
+## Build Scripts
 
 | Rule | Description |
 |------|-------------|
@@ -203,7 +214,7 @@ func build(ctx: BuildContext) -> () or Error {
 }
 ```
 
-### BuildContext API
+### BuildContext
 
 <!-- test: parse -->
 ```rask
@@ -213,44 +224,106 @@ struct BuildContext {
     public package_dir: Path
     public profile: ProfileInfo
     public target: Target
+    public host: Target
     public features: Set<string>
     public gen_dir: Path
     public out_dir: Path
 }
 ```
 
-### Code Generation
+### Methods
 
 | Method | Description |
 |--------|-------------|
-| `write_source(name, code)` | Write `.rk` file to `.rk-gen/` (auto-included) |
-| `write_file(name, data)` | Write arbitrary file to out_dir |
-| `declare_dependency(path)` | Mark file as input (triggers rebuild on change) |
-
-### Native Compilation
-
-| Method | Description |
-|--------|-------------|
+| `write_source(name, code)` | Write `.rk` file to `.rk-gen/` (auto-included in compilation) |
+| `write_file(name, data)` | Write arbitrary file to `out_dir` |
+| `declare_dependency(path)` | Mark file as build input (triggers rebuild on change) |
 | `compile_c(opts)` | Compile C sources to object files |
 | `compile_rust(opts)` | Compile Rust crate via cargo (C ABI, cbindgen) |
-| `link_library(name)` | Link with system library (-l) |
-| `link_search_path(path)` | Add library search path (-L) |
+| `link_library(name)` | Link with system library (`-l`) |
+| `link_search_path(path)` | Add library search path (`-L`) |
 | `pkg_config(name)` | Use pkg-config for flags |
+| `step(name, inputs, body)` | Declare an incremental build step (ST1-ST6) |
+| `exec(program, args)` | Run external command, error on non-zero exit |
+| `exec_output(program, args)` | Run command, capture stdout as string |
+| `tool_version(program, flag)` | Record tool version for cache invalidation (TV1) |
+| `env(name) -> string?` | Read environment variable |
+| `warning(msg)` | Emit build warning |
+| `is_cross_compiling() -> bool` | `target != host` |
+| `find_program(name) -> Path?` | Search PATH for executable |
 
-## Build Lifecycle
+### Incremental Steps
+
+| Rule | Description |
+|------|-------------|
+| **ST1: Input hashing** | Step inputs are content-hashed. Step skipped if all hashes match previous run |
+| **ST2: Glob inputs** | Input paths can use globs: `"src/proto/*.proto"` |
+| **ST3: Isolation** | Steps run sequentially in declaration order |
+| **ST4: Failure stops** | If a step fails, subsequent steps don't run |
+| **ST5: Cache location** | Step hashes stored in `build/.build-cache/steps/` |
+| **ST6: Backwards compatible** | `declare_dependency()` still works — single implicit step covering the whole `build()` function |
+
+```rask
+func build(ctx: BuildContext) -> () or Error {
+    try ctx.step("codegen", inputs: ["schema.json"], || {
+        const schema = try fs.read_file("schema.json")
+        try ctx.write_source("types.rk", generate_types(schema))
+    })
+
+    try ctx.step("protobuf", inputs: ["api.proto"], || {
+        try ctx.exec("protoc", ["--rask_out=.rk-gen/", "api.proto"])
+    })
+}
+```
+
+| Rule | Description |
+|------|-------------|
+| **TV1: Tool fingerprint** | When `tool` is specified, step also hashes the tool binary's version/path |
+| **TV2: Version command** | `ctx.tool_version("protoc", "--version")` — records version string in cache |
+
+## Build Pipeline
 
 | Rule | Description |
 |------|-------------|
 | **LC1: Order** | Parse package → resolve deps → compile build deps → run `func build()` → compile main package → link |
 | **LC2: Caching** | Build script only re-runs when `build.rk` or declared dependencies change |
+| **PP1: Package parallelism** | Independent packages compile in parallel (up to CPU count) |
+| **PP2: Pipeline parallelism** | Package B's parsing can start while package A is still in codegen |
+| **PP3: Jobs flag** | `--jobs N` or `-j N` controls parallelism. Default: CPU count |
 
-| Trigger | Runs? |
-|---------|-------|
+```
+rask build
+  ├─ 1. Find build.rk (or use defaults)
+  ├─ 2. Parse package block (PK3)
+  ├─ 3. Resolve dependencies (maximal compatible)
+  ├─ 4. Check rask.lock + verify capabilities (PM4)
+  ├─ 5. Download missing deps
+  ├─ 6. Run build steps (if build() exists)
+  ├─ 7. Compile packages (dependency order, parallel)
+  │     ├─ Parse → Resolve → Type-check → Ownership-check
+  │     ├─ Monomorphize → MIR → Cranelift/LLVM
+  │     └─ Emit object file
+  ├─ 8. Link → build/<profile>/<name>
+  └─ 9. Report result
+```
+
+| Trigger | Runs build script? |
+|---------|------|
 | First build | Yes |
 | No changes | No (cached) |
 | `build.rk` modified | Yes |
 | Declared dependency modified | Yes |
 | `rask build --force` | Yes |
+
+### Compilation Cache
+
+| Rule | Description |
+|------|-------------|
+| **XC1: Local cache** | `~/.rask/cache/compiled/` stores compiled artifacts by cache key |
+| **XC2: Hit = skip** | If cache key matches, skip compilation and use cached artifact |
+| **XC3: Signature-based invalidation** | Dependency change only invalidates if its public API signature changes |
+| **XC4: Cache size limit** | Default 2 GB. Configurable via `RASK_CACHE_SIZE`. LRU eviction |
+| **XC5: No cache flag** | `--no-cache` forces full recompilation |
 
 ## Conditional Compilation
 
@@ -269,35 +342,7 @@ func get_backend() -> Backend {
 }
 ```
 
-## Error Messages
-
-```
-ERROR [struct.build/D3]: duplicate dependency
-   |
-5  |  dep "http" "^2.0"
-   |  ^^^^^^^^^^ "http" already declared at line 3
-```
-
-```
-ERROR [struct.build/BL3]: circular dependency
-   |
-8  |  import myapp
-   |  ^^^^^^^^^^^^ build script cannot import the package being built
-```
-
-## Edge Cases
-
-| Case | Rule | Handling |
-|------|------|----------|
-| No `build.rk` | PK4 | Name from directory, version 0.0.0, no deps |
-| Empty package block | PK1 | Valid — declares identity only |
-| `package` in regular `.rk` file | PK1 | Compile error |
-| Build script imports main package | BL3 | Compile error |
-| Generated file conflicts with source | BL1 | Compile error: duplicate file |
-| Dep with both `path` and `git` | D2 | Compile error: conflicting sources |
-| Circular `enables` | F6 | Compile error |
-
-## Build CLI
+## CLI
 
 All commands live under the `rask` binary. No separate tools.
 
@@ -337,10 +382,11 @@ All commands live under the `rask` binary. No separate tools.
 | **AD2: Preserves formatting** | Inserts dep line without reformatting existing content |
 | **AD3: Dedup check** | Error if dep already exists (suggest `rask update <pkg>`) |
 | **AD4: Lock update** | Runs resolution and updates `rask.lock` after adding |
+| **AD5: Capability prompt** | Prompts if dep requires capabilities — auto-generates `allow:` |
 
 ```
 $ rask add http
-  Added dep "http" "^2.1.0" (latest: 2.1.0)
+  Added dep "http" "^2.1.0" { allow: ["net"] }
 
 $ rask add openssl --feature ssl
   Added dep "openssl" "^3.1.0" to feature "ssl"
@@ -388,8 +434,7 @@ myproject/
 
 ## Cross-Compilation
 
-Cross-compilation for pure Rask code works without installing external toolchains.
-C interop cross-compilation requires a cross-linker (the compiler tells you what you need).
+Cross-compilation for pure Rask code works without installing external toolchains. C interop cross-compilation requires a cross-linker (the compiler tells you what you need).
 
 ### Target Triples
 
@@ -434,102 +479,11 @@ Format: `<arch>-<os>` or `<arch>-<os>-<env>`
 | **WA7: Process management** | `rask watch run` kills the previous process before starting new one |
 | **WA8: Signal forwarding** | Ctrl+C stops watch mode, sends SIGTERM to child process |
 
-## Incremental Build Steps
+## Publishing & Distribution
 
-| Rule | Description |
-|------|-------------|
-| **ST1: Input hashing** | Step inputs are content-hashed. Step skipped if all hashes match previous run |
-| **ST2: Glob inputs** | Input paths can use globs: `"src/proto/*.proto"` |
-| **ST3: Isolation** | Steps run sequentially in declaration order |
-| **ST4: Failure stops** | If a step fails, subsequent steps don't run |
-| **ST5: Cache location** | Step hashes stored in `build/.build-cache/steps/` |
-| **ST6: Backwards compatible** | `declare_dependency()` still works — single implicit step covering the whole `build()` function |
+These are deferred — rules defined for future implementation.
 
-```rask
-func build(ctx: BuildContext) -> () or Error {
-    try ctx.step("codegen", inputs: ["schema.json"], || {
-        const schema = try fs.read_file("schema.json")
-        try ctx.write_source("types.rk", generate_types(schema))
-    })
-
-    try ctx.step("protobuf", inputs: ["api.proto"], || {
-        try ctx.exec("protoc", ["--rask_out=.rk-gen/", "api.proto"])
-    })
-}
-```
-
-### Tool version tracking
-
-| Rule | Description |
-|------|-------------|
-| **TV1: Tool fingerprint** | When `tool` is specified, step also hashes the tool binary's version/path |
-| **TV2: Version command** | `ctx.tool_version("protoc", "--version")` — records version string in cache |
-
-## Expanded BuildContext
-
-<!-- test: parse -->
-```rask
-struct BuildContext {
-    public package_name: string
-    public package_version: string
-    public package_dir: Path
-    public profile: ProfileInfo
-    public target: Target
-    public host: Target
-    public features: Set<string>
-    public gen_dir: Path
-    public out_dir: Path
-}
-```
-
-### Additional Methods
-
-| Method | Description |
-|--------|-------------|
-| `step(name, inputs, body)` | Declare an incremental build step (ST1-ST6) |
-| `exec(program, args) -> ExecResult or Error` | Run external command (errors on non-zero exit) |
-| `exec_output(program, args) -> string or Error` | Run command, capture stdout |
-| `tool_version(program, version_flag) -> string` | Record tool version for cache invalidation |
-| `env(name) -> string?` | Read environment variable |
-| `warning(msg)` | Emit build warning (shown to user) |
-| `is_cross_compiling() -> bool` | `target != host` |
-| `find_program(name) -> Path?` | Search PATH for executable |
-
-## Compilation Pipeline
-
-| Rule | Description |
-|------|-------------|
-| **PP1: Package parallelism** | Independent packages compile in parallel (up to CPU count) |
-| **PP2: Pipeline parallelism** | Package B's parsing can start while package A is still in codegen |
-| **PP3: Jobs flag** | `--jobs N` or `-j N` controls parallelism. Default: CPU count |
-
-```
-rask build
-  ├─ 1. Find build.rk (or use defaults)
-  ├─ 2. Parse package block (PK3)
-  ├─ 3. Resolve dependencies (maximal compatible)
-  ├─ 4. Check rask.lock (error if out of sync)
-  ├─ 5. Download missing deps
-  ├─ 6. Run build steps (if build() exists)
-  ├─ 7. Compile packages (dependency order, parallel)
-  │     ├─ Parse → Resolve → Type-check → Ownership-check
-  │     ├─ Monomorphize → MIR → Cranelift/LLVM
-  │     └─ Emit object file
-  ├─ 8. Link → build/<profile>/<name>
-  └─ 9. Report result
-```
-
-## Compilation Cache
-
-| Rule | Description |
-|------|-------------|
-| **XC1: Local cache** | `~/.rask/cache/compiled/` stores compiled artifacts by cache key |
-| **XC2: Hit = skip** | If cache key matches, skip compilation and use cached artifact |
-| **XC3: Signature-based invalidation** | Dependency change only invalidates if its public API signature changes |
-| **XC4: Cache size limit** | Default 2 GB. Configurable via `RASK_CACHE_SIZE`. LRU eviction |
-| **XC5: No cache flag** | `--no-cache` forces full recompilation |
-
-## Publishing
+### Publishing
 
 | Rule | Description |
 |------|-------------|
@@ -541,7 +495,7 @@ rask build
 | **PB6: Reproducible tarball** | Deterministic file ordering, no timestamps in archive |
 | **PB7: Size limit** | 10 MB max package size. Error with breakdown if exceeded |
 
-## Vendoring
+### Vendoring
 
 | Rule | Description |
 |------|-------------|
@@ -551,7 +505,7 @@ rask build
 | **VD4: Priority** | Vendor dir takes priority over registry. Lock file still required |
 | **VD5: Offline** | With vendored deps, `rask build` works without network access |
 
-## Dependency Auditing
+### Dependency Auditing
 
 | Rule | Description |
 |------|-------------|
@@ -560,6 +514,35 @@ rask build
 | **AU3: Exit code** | Returns non-zero if vulnerabilities found (for CI gates) |
 | **AU4: Ignore list** | `rask audit --ignore CVE-2024-1234` for acknowledged risks |
 | **AU5: Offline mode** | `rask audit --db ./advisory-db.json` for air-gapped environments |
+
+## Error Messages
+
+```
+ERROR [struct.build/D3]: duplicate dependency
+   |
+5  |  dep "http" "^2.0"
+   |  ^^^^^^^^^^ "http" already declared at line 3
+```
+
+```
+ERROR [struct.build/BL3]: circular dependency
+   |
+8  |  import myapp
+   |  ^^^^^^^^^^^^ build script cannot import the package being built
+```
+
+## Edge Cases
+
+| Case | Rule | Handling |
+|------|------|----------|
+| No `build.rk` | PK4 | Name from directory, version 0.0.0, no deps |
+| Empty package block | PK1 | Valid — declares identity only |
+| `package` in regular `.rk` file | PK1 | Compile error |
+| Build script imports main package | BL3 | Compile error |
+| Generated file conflicts with source | BL1 | Compile error: duplicate file |
+| Dep with both `path` and `git` | D2 | Compile error: conflicting sources |
+| Circular `enables` | F6 | Compile error |
+| Dep needs capabilities but no `allow` | PM4 | Build error with fix suggestion |
 
 ---
 
@@ -570,6 +553,10 @@ rask build
 **PK2 (declarative package block):** I chose Rask-native syntax over TOML because it eliminates a second language, enables type-checked metadata, and keeps everything in one file. The `package` block is purely declarative — no code execution. This lets the parser extract dependency information independently of build logic.
 
 **BL2 (full language):** Build scripts need I/O, external tool execution, and sometimes concurrency. Restricting them to a subset creates artificial limitations. Full language access makes complex build scenarios (protoc, cbindgen, code generation) straightforward.
+
+**PM1 (import-inferred permissions):** I could have gone with author-declared capabilities (like npm's `engines` field) or process-level permissions (like Deno's `--allow-net`). Author declarations are trust-based — a malicious package just lies. Process-level permissions work but check at runtime, not compile time. Import-inferred capabilities are verifiable (the compiler traces the import graph), catch issues before any code runs, and don't add annotation burden to package authors. The tradeoff: `unsafe`/FFI is the escape hatch — a package with `allow: ["ffi"]` can do anything through C calls. But `ffi` is a loud, visible capability, and if a JSON parser needs it, that's a red flag.
+
+**FG1-FG6 (exclusive features):** Cargo features are additive-only — you can't express "pick exactly one backend." This causes real bugs: sqlx with both tokio and async-std enabled, openssl with conflicting vendoring options. Exclusive groups solve this with one keyword modifier. Additive features keep set-union resolution. Exclusive groups require all selectors to agree, with clear conflict errors showing both sources. Root override is the escape hatch.
 
 ### Comptime vs Build Scripts
 
@@ -616,15 +603,14 @@ package "my-api" "1.0.0" {
     description: "REST API server"
     license: "MIT"
 
-    dep "http" "^2.0"
+    dep "http" "^2.0" { allow: ["net"] }
     dep "json" "^1.5"
     dep "epoll" "^1.0" { target: "linux" }
 
     scope "dev" { dep "mock-server" "^2.0" }
-    scope "build" { dep "protobuf-gen" "^2.0" }
 
     feature "ssl" {
-        dep "openssl" "^3.0" { target: "linux" }
+        dep "openssl" "^3.0" { target: "linux", allow: ["ffi"] }
         dep "security-framework" "^2.0" { target: "macos" }
     }
     feature "full" { enables: ["ssl", "logging"] }
@@ -633,14 +619,9 @@ package "my-api" "1.0.0" {
 }
 
 func build(ctx: BuildContext) -> () or Error {
-    try ctx.declare_dependency("api.proto")
-    const result = try ctx.run(Command {
-        program: "protoc",
-        args: ["--rask_out=.rk-gen/", "api.proto"],
+    try ctx.step("protobuf", inputs: ["api.proto"], || {
+        try ctx.exec("protoc", ["--rask_out=.rk-gen/", "api.proto"])
     })
-    if result.status != 0 {
-        return Err(Error.new("protoc failed: {}", result.stderr))
-    }
 }
 ```
 
@@ -648,5 +629,4 @@ func build(ctx: BuildContext) -> () or Error {
 
 - `struct.modules` — module system, imports, visibility
 - `struct.packages` — versioning, dependency resolution, lock files
-- `struct.c-interop` — C interop, `import c`, `extern "C"`
 - `ctrl.comptime` — compile-time execution

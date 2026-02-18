@@ -1593,6 +1593,7 @@ mod tests {
                 abi: None,
                 attrs: vec![],
                 doc: None,
+                span: Span::new(0, 10),
             }),
             span: Span::new(0, 10),
         }
@@ -1704,6 +1705,7 @@ mod tests {
                 abi: None,
                 attrs: vec![],
                 doc: None,
+                span: Span::new(0, 10),
             }),
             span: Span::new(0, 10),
         }

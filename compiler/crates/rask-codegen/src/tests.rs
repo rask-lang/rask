@@ -1070,45 +1070,6 @@ mod tests {
     // Resource tracking
     // ═══════════════════════════════════════════════════════════
 
-    #[test]
-    fn codegen_resource_register_consume() {
-        // func f() {
-        //   _0 = ResourceRegister("File", scope_depth=1)
-        //   ResourceConsume(_0)
-        //   ResourceScopeCheck(1)
-        // }
-        let mir = MirFunction {
-            name: "f".to_string(),
-            params: vec![],
-            ret_ty: MirType::Void,
-            locals: vec![
-                temp(0, MirType::I64), // resource id
-            ],
-            blocks: vec![
-                block(0, vec![
-                    MirStmt::ResourceRegister {
-                        dst: LocalId(0),
-                        type_name: "File".to_string(),
-                        scope_depth: 1,
-                    },
-                    MirStmt::ResourceConsume {
-                        resource_id: LocalId(0),
-                    },
-                    MirStmt::ResourceScopeCheck {
-                        scope_depth: 1,
-                    },
-                ], ret(None)),
-            ],
-            entry_block: BlockId(0),
-            is_extern_c: false,
-            source_file: None,
-        };
-
-        let mut gen = gen_with_stdlib();
-        gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
-        gen.gen_function(&mir).unwrap();
-    }
-
     // ═══════════════════════════════════════════════════════════
     // Pool checked access
     // ═══════════════════════════════════════════════════════════

@@ -3,7 +3,6 @@
 //!
 //! Layer: PURE — no OS access, can be compiled from Rask.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use crate::interp::{Interpreter, RuntimeError};
@@ -665,7 +664,7 @@ impl Interpreter {
                 let mut pool = p.lock().unwrap();
                 let mut items = Vec::new();
                 // Iterate through all slots and collect active items
-                for (gen, slot) in &mut pool.slots {
+                for (_gen, slot) in &mut pool.slots {
                     if let Some(value) = slot.take() {
                         items.push(value);
                     }
@@ -676,7 +675,7 @@ impl Interpreter {
                 Ok(Value::Vec(Arc::new(Mutex::new(items))))
             }
             "read" => {
-                if let Some(Value::Handle { pool_id, index, generation }) = args.get(0) {
+                if let Some(Value::Handle { pool_id: _, index, generation }) = args.get(0) {
                     let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
                         expected: 2,
                         got: args.len(),
@@ -701,7 +700,7 @@ impl Interpreter {
                 })
             }
             "modify" => {
-                if let Some(Value::Handle { pool_id, index, generation }) = args.get(0) {
+                if let Some(Value::Handle { pool_id: _, index, generation }) = args.get(0) {
                     let closure = args.get(1).ok_or(RuntimeError::ArityMismatch {
                         expected: 2,
                         got: args.len(),
@@ -1136,7 +1135,7 @@ impl Interpreter {
                     expected: 1,
                     got: 0,
                 })?;
-                use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize};
+                use std::sync::atomic::{AtomicBool, AtomicUsize};
                 match value {
                     Value::Bool(b) => Ok(Value::AtomicBool(Arc::new(AtomicBool::new(b)))),
                     Value::Int(n) => Ok(Value::AtomicUsize(Arc::new(AtomicUsize::new(n as usize)))),

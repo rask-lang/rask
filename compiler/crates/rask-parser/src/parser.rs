@@ -480,6 +480,7 @@ impl Parser {
                         abi: None,
                         attrs: vec!["entry".to_string()],
                         doc: None,
+                        span,
                     }),
                     span,
                 });
@@ -603,6 +604,7 @@ impl Parser {
     // =========================================================================
 
     fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
         // Allow keywords as function names (e.g., `or` for Option.or)
         let mut name = self.expect_ident_or_keyword()?;
@@ -657,7 +659,9 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs, doc }))
+        let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
+        let fn_span = Span::new(fn_start, fn_end);
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
     }
 
     fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
@@ -1253,6 +1257,7 @@ impl Parser {
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
+        let fn_start = self.current().span.start;
         let mut name = self.expect_ident()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
@@ -1289,6 +1294,7 @@ impl Parser {
             Vec::new()
         };
 
+        let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         Ok(FnDecl {
             name,
             type_params,
@@ -1302,6 +1308,7 @@ impl Parser {
             abi: None,
             attrs: vec![],
             doc: None,
+            span: Span::new(fn_start, fn_end),
         })
     }
 
@@ -1525,6 +1532,7 @@ impl Parser {
 
     /// Parse a single extern function — signature-only (import) or with body (export).
     fn parse_extern_func(&mut self, abi: &str) -> Result<DeclKind, ParseError> {
+        let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
         let params = self.parse_params()?;
@@ -1553,6 +1561,7 @@ impl Parser {
                 abi: Some(abi.to_string()),
                 attrs: vec![],
                 doc: None,
+                span: Span::new(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
             }));
         }
 
