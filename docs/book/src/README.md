@@ -12,7 +12,7 @@ Rask is a systems programming language that sits between Rust and Go:
 - Rust's safety guarantees without lifetime annotations
 - Go's simplicity without garbage collection
 
-**Status:** Design phase with working interpreter (no compiler yet)
+**Status:** Early development with working compiler (Cranelift backend)
 
 ## Quick Look
 

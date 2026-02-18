@@ -18,11 +18,11 @@ Full details: [CORE_DESIGN.md](https://github.com/rask-lang/rask/blob/main/CORE_
 
 Rask is validated against test programs that must work naturally:
 
-1. HTTP JSON API server
+1. HTTP JSON API server ✓ (passes type-checking)
 2. grep clone ✓ (implemented)
 3. Text editor with undo ✓ (implemented)
 4. Game loop with entities ✓ (implemented)
-5. Embedded sensor processor
+5. Embedded sensor processor ✓ (passes type-checking)
 
 **Litmus test:** If Rask is longer/noisier than Go for core loops, fix the design.
 
@@ -44,7 +44,7 @@ Language features are documented as formal specifications in [specs/](https://gi
 Major changes follow an RFC process:
 1. Open an issue for discussion
 2. Draft a specification
-3. Implement in interpreter
+3. Implement in compiler
 4. Validate against litmus tests
 5. Update metrics
 6. Merge if it improves the design

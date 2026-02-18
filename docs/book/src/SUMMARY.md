@@ -8,6 +8,10 @@
   - [Installation](getting-started/installation.md)
   - [Your First Program](getting-started/first-program.md)
 
+# Tutorials
+
+- [Learn Rask](https://github.com/rask-lang/rask/tree/main/tutorials/learn-rask)
+
 # User Guide
 
 - [Language Guide](guide/README.md)

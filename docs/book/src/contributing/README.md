@@ -4,7 +4,7 @@ Rask is in active design and development. Contributions welcome!
 
 ## How to Help
 
-- **Try the interpreter** - Run examples, report bugs
+- **Try it out** - Run examples, report bugs
 - **Review specs** - Provide feedback on language design
 - **Implement features** - Check [TODO.md](https://github.com/rask-lang/rask/blob/main/TODO.md) for open tasks
 - **Documentation** - Improve this book
@@ -30,7 +30,7 @@ Include:
 - Code that demonstrates the bug
 - Expected behavior
 - Actual behavior
-- Interpreter output
+- Compiler output
 
 ### Feature Suggestions
 

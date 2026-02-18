@@ -11,7 +11,7 @@ func main() {
 Run it:
 
 ```bash
-rask hello.rk
+rask run hello.rk
 ```
 
 Output:
@@ -31,7 +31,7 @@ Let's try variables:
 ```rask
 func main() {
     const name = "Rask"
-    const year = 2025
+    const year = 2026
     println(format("Hello from {} in {}!", name, year))
 }
 ```
