@@ -32,7 +32,7 @@ Demonstrates that error propagation with `?` requires compatible error types. Yo
 
 ```bash
 # Verify all files fail to compile with expected errors
-rask test-errors examples/compile_errors/
+rask test-errors tests/compile_errors/
 ```
 
 Each file includes a `// ERROR:` comment indicating the expected error message pattern.
