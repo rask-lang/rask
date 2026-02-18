@@ -4,13 +4,13 @@
 
 **Language design:** Complete. 70+ spec files, all core semantics stable.
 
-**Frontend (Phases 1-4):** Lexer, parser, resolver, type checker all work. 5/5 validation programs pass `rask check`. Multiple trait bounds, literal type inference, struct field generic unification all fixed.
+**Frontend (Phases 1-4):** Lexer, parser, resolver, type checker all work. 5/5 validation programs pass `rask check`. Vec.from, Map.from, Thread.spawn, ThreadPool.spawn all type-check. Closure return types scoped correctly.
 
-**Interpreter:** 15+ stdlib modules. Nested index assignment refactored. spawn() checks for `using Multitasking` context (but still uses OS threads internally).
+**Interpreter:** 15+ stdlib modules. 27/29 non-interactive examples pass. Vec.set, spawn() with `using Multitasking`.
 
-**Monomorphization + MIR:** Struct/enum layouts, generic instantiation (including structs/enums), reachability analysis, AST→MIR lowering. Real MIR types for Tuple, Option, Result, Union, Slice. 104 tests.
+**Monomorphization + MIR:** Struct/enum layouts with generic field parsing (Vec\<T\>, Map\<K,V\>, Option\<T\>, Handle\<T\>, T or E). Type prefix propagation for string methods, collection element types, index expressions. 104 tests.
 
-**Cranelift backend:** Functional for core programs. All MIR statements/terminators implemented. Stdlib dispatch (Vec, String, Map, Pool, Rng, File → C runtime). Closures. Integer widening. For-range loops. Compound type field access. Binaries output to `build/debug/`. 42 codegen tests.
+**Cranelift backend:** Aggregate types in Result/Option (resolve_type_alloc_size, aggregate Store copy, aggregate Field extraction). Stdlib dispatch (Vec, String, Map, Pool, Rng, File, Channel, Shared, Thread, Atomics, SIMD, Time, JSON, Net → C runtime). Closures with escape analysis. Binaries output to `build/debug/`.
 
 **Tooling:** LSP, formatter, linter, test runner, describe, explain — all done.
 
@@ -18,19 +18,22 @@
 
 ### What compiles natively today
 
-Hello world, string ops, structs with field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow, Rng (seeded + module-level), File I/O (open/read_all/lines/write), nested JSON encoding, array literals/indexing/iteration/repeat, iterator chains (`.iter().filter().map().collect()` and 6 other terminals).
+Hello world, string ops, structs with field access, for/while loops, closures (mixed-type captures), Vec/Map/Pool operations, enum construction, multi-function programs, arithmetic, control flow, Rng (seeded + module-level), File I/O (open/read_all/lines/write), nested JSON encoding, array literals/indexing/iteration/repeat, iterator chains, struct-in-Result (aggregate copy), grep clone with all flags, game loop with Pool+Handle, file copy utility, text editor (interactive).
 
-### Validation programs
+### Example programs
 
-5/5 pass `rask check`. None compile natively yet.
+27/29 non-interactive examples pass `rask run`. 19 tutorial examples + 8 validation programs.
 
-| Program | `rask check` | Native | Remaining blockers |
-|---------|-------------|--------|--------------------|
-| grep clone | Pass | No | Needs stdlib module calls in codegen |
-| Text editor | Pass | No | Needs stdlib module calls in codegen |
-| Game loop | Pass | No | Needs stdlib module calls in codegen |
-| HTTP server | Pass | No | Needs concurrency runtime |
-| Sensor processor | Pass | No | Needs SIMD/atomics codegen |
+| Program | `rask check` | `rask run` | Notes |
+|---------|-------------|------------|-------|
+| grep clone | Pass | Pass | All flags: -n, -i, -c, -v |
+| Text editor | Pass | Pass | Interactive (stdin) |
+| Game loop | Pass | Pass | Pool + Handle + time |
+| File copy | Pass | Pass | CLI args, error handling |
+| CLI calculator | Pass | Pass | Interactive (stdin) |
+| HTTP server | Pass | Skipped | Needs concurrency runtime wiring |
+| Sensor processor | Pass | Hangs | Thread coordination too complex for interpreter |
+| 19_unsafe | Fail | — | Unsafe blocks not implemented |
 
 ---
 
@@ -42,6 +45,10 @@ Hello world, string ops, structs with field access, for/while loops, closures (m
 - **Build output** — Binaries now go to `build/debug/`, intermediate `.o` files cleaned up.
 
 ### Previous (2026-02-17)
+
+### Concurrency runtime (Phase A)
+- **C runtime files** — `thread.c`, `channel.c`, `sync.c`, `atomic.c` implement `conc.strategy/A1-A6`. OS threads via pthreads, ring-buffer channels with mutex/condvar, `Mutex<T>`/`Shared<T>`/`Atomic<T>` wrappers. `green.c` added as Phase B stub.
+- **`rask-rt` crate removed** — Concurrency runtime is C now (commit 91dda58). `runtime-strategy.md` Phase A updated accordingly.
 
 ### Type checker fixes (was: 60 errors across 5 programs → 6 remaining)
 - **Literal type inference** — Integer/float literals no longer default to i32/f64 immediately. Fresh type variables with deferred defaults let context (struct fields, function params) drive the type. `apply_literal_defaults()` runs post-solve.

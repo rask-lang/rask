@@ -16,18 +16,18 @@ OS threads first. Full M:N scheduler later. Same programmer-facing semantics eit
 | **RS3: Performance boundary** | Phase A handles ~10k concurrent tasks. Phase B targets 100k+ (per `conc.runtime/P3`) |
 | **RS4: No feature gating** | Phase A implements everything in `conc.async` — no deferred features. Only implementation strategy differs |
 
-**Why not jump straight to M:N?** The Cranelift backend doesn't have control flow working yet. Building a closure-to-state-machine compiler transform, work-stealing scheduler, and reactor simultaneously with a half-working backend is a recipe for debugging three things at once. OS threads let us validate the full concurrency API with a backend that's a thin wrapper around Rust's stdlib.
+**Why not jump straight to M:N?** Building a closure-to-state-machine compiler transform, work-stealing scheduler, and reactor simultaneously is a recipe for debugging three things at once. OS threads let us validate the full concurrency API with a thin C runtime.
 
 ## Phase A: OS Threads (1:1)
 
 | Rule | Description |
 |------|-------------|
-| **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via Rust's `std::thread::spawn` |
+| **A1: Thread per spawn** | `spawn(|| {})` creates an OS thread via `pthread_create` (`thread.c`) |
 | **A2: Blocking I/O** | All I/O blocks the calling thread. No reactor, no parking |
-| **A3: Real channels** | Channels use `std::sync::mpsc` or crossbeam. Blocking send/recv |
-| **A4: Affine handles** | `TaskHandle` wraps `JoinHandle`. Runtime panic on drop (same as interpreter) |
+| **A3: Real channels** | Channels use a ring buffer + mutex/condvar (`channel.c`). Blocking send/recv |
+| **A4: Affine handles** | `TaskHandle` wraps a refcounted `TaskState*`. Runtime panic on drop (same as interpreter) |
 | **A5: Context parameter threaded** | `using Multitasking` still desugars to hidden `__ctx` parameter — but context is a marker, not a scheduler handle |
-| **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool (already correct in interpreter) |
+| **A6: ThreadPool real** | `ThreadPool` uses a real bounded thread pool |
 
 ### What `using Multitasking` does in Phase A
 
@@ -38,37 +38,27 @@ using Multitasking {
 }
 ```
 
-Desugars to:
+Compiles to (pseudocode):
 
-```rust
-// Compiler output (pseudocode)
-let __ctx = RuntimeContext::ThreadBacked;
-
-let handle = std::thread::spawn(move || {
-    work()
-});
-
-let result = handle.join().map_err(|e| JoinError::Panicked(format!("{:?}", e)))?;
+```c
+// Compiler output
+RaskTaskHandle h = rask_spawn(work_fn, arg_ptr);  // thread.c: pthread_create
+int64_t result = rask_join(h);                     // thread.c: pthread_join
 ```
 
-No scheduler. No reactor. Thread blocks on `join()`. Same semantics, simpler implementation.
+The `using Multitasking` block is a scope marker — the compiler uses it to permit `spawn()` calls and to insert `rask_block_wait()` on block exit for any non-detached handles. No scheduler handle is threaded as a hidden parameter at runtime; the context clause affects compilation only.
 
-### Phase A runtime library (`rask-rt`)
+### Phase A runtime files
 
-| Component | Implementation | Lines (est.) |
-|-----------|---------------|-------------|
-| `rask_spawn` | `std::thread::spawn` wrapper | ~30 |
-| `rask_join` | `JoinHandle::join` + error mapping | ~20 |
-| `rask_detach` | Drop handle, track via `Arc` for block exit | ~20 |
-| `rask_cancel` | `AtomicBool` flag + join | ~30 |
-| `rask_channel_*` | Wrap `crossbeam::bounded` / `crossbeam::unbounded` | ~80 |
-| `rask_select` | `crossbeam::select!` macro wrapper | ~60 |
-| `rask_sleep` | `std::thread::sleep` | ~5 |
-| `rask_timeout` | Thread + channel race (per `conc.runtime/TM5`) | ~40 |
-| `rask_mutex` | `std::sync::Mutex` wrapper | ~30 |
-| `rask_shared` | `std::sync::RwLock` wrapper | ~30 |
-| Context plumbing | Marker type, threaded as hidden param | ~20 |
-| **Total** | | **~365** |
+All C files live in `compiler/runtime/`.
+
+| File | Provides | Notes |
+|------|----------|-------|
+| `thread.c` | `rask_spawn`, `rask_join`, `rask_detach`, `rask_cancel`, `rask_sleep` | pthreads, refcounted `TaskState` |
+| `channel.c` | `rask_channel_*` | Ring buffer + mutex/condvar; capacity=0 for unbuffered rendezvous |
+| `sync.c` | `rask_mutex_*`, `rask_shared_*` | `Mutex<T>` and `Shared<T>` wrappers |
+| `atomic.c` | `rask_atomic_*` | `Atomic<T>` load/store/CAS |
+| `green.c` | (stub) | Phase B target — work-stealing scheduler, not active |
 
 ### What this validates
 
@@ -82,11 +72,11 @@ No scheduler. No reactor. Thread blocks on `join()`. Same semantics, simpler imp
 
 ### What this defers
 
-- Green tasks / stackless state machines (runtime.md/T1-T3)
-- Work-stealing scheduler (runtime.md/S1-S4)
-- Reactor / epoll / kqueue (runtime.md/R1-R3)
+- Green tasks / stackless state machines (runtime.md/T1-T3) — `green.c` is a stub
+- Work-stealing scheduler (runtime.md/S1-S4) — `green.c` has the skeleton
+- Reactor / epoll / io_uring (runtime.md/R1-R3) — `io_epoll_engine.c` and `io_uring_engine.c` exist but aren't wired
 - Transparent I/O pausing (tasks block their OS thread instead)
-- Timer wheel (uses `std::thread::sleep`)
+- Timer wheel (uses `clock_nanosleep` for now)
 - 100k+ concurrent task scalability
 
 ## Phase B: M:N Green Tasks
@@ -95,20 +85,20 @@ No scheduler. No reactor. Thread blocks on `join()`. Same semantics, simpler imp
 |------|-------------|
 | **B1: Full runtime.md** | Implements everything in `conc.runtime` — scheduler, reactor, state machines |
 | **B2: State machine transform** | Compiler pass converts closures to stackless state machines at pause points |
-| **B3: Swap rask-rt internals** | `rask_spawn` switches from `std::thread::spawn` to scheduler queue push. API unchanged |
+| **B3: Swap runtime internals** | `rask_spawn` switches from `pthread_create` to scheduler queue push. API unchanged |
 | **B4: Trigger** | Upgrade when: (a) Cranelift backend handles full control flow, and (b) real programs hit the ~10k thread ceiling |
 
 ### Migration path
 
-No source changes. The `rask-rt` library swaps internals:
+No source changes. The C runtime files swap internals:
 
-| Function | Phase A | Phase B |
-|----------|---------|---------|
-| `rask_spawn` | `std::thread::spawn` | Allocate `Task`, push to worker queue |
-| `rask_join` | `JoinHandle::join` | Park task or block thread (J1) |
+| Function | Phase A (current) | Phase B |
+|----------|-------------------|---------|
+| `rask_spawn` | `pthread_create` (`thread.c`) | Allocate `Task`, push to worker queue |
+| `rask_join` | `pthread_join` + `TaskState` (`thread.c`) | Park task or block thread (J1) |
 | I/O calls | Blocking syscall | Non-blocking + reactor registration |
-| `rask_channel_send` | `crossbeam::send` | Lock ring buffer + waker (runtime.md/CH2) |
-| `rask_sleep` | `std::thread::sleep` | Timer wheel registration (runtime.md/TM3) |
+| `rask_channel_send` | Ring buffer + mutex (`channel.c`) | Lock-free ring buffer + waker (runtime.md/CH2) |
+| `rask_sleep` | `clock_nanosleep` (`thread.c`) | Timer wheel registration (runtime.md/TM3) |
 
 ### New compiler requirements for Phase B
 
