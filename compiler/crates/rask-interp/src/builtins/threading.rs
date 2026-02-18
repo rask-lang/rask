@@ -178,7 +178,7 @@ impl Interpreter {
                 self.consume_handle(handle);
                 // Cooperative cancellation (CN1): set flag and join.
                 // Phase A: no cancel token in interpreter yet — just join and
-                // return Cancelled. Full cancel support lives in rask-rt.
+                // return Cancelled. Full cancel support lives in the C runtime.
                 let jh = handle.handle.lock().unwrap().take();
                 match jh {
                     Some(jh) => {

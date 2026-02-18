@@ -441,7 +441,7 @@ impl HiddenParamPass {
                 } else if name == "ThreadPool" {
                     // ThreadPool blocks keep their structure for now — the
                     // interpreter handles them directly and the compiled path
-                    // will use rask-rt's thread pool API.
+                    // will use the C runtime's thread pool API.
                     self.rewrite_stmts(
                         match &mut expr.kind {
                             ExprKind::UsingBlock { body, .. } => body,

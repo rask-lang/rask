@@ -13,7 +13,7 @@
 
 /// Where a stdlib type or module lives in the compilation pipeline.
 ///
-/// - `Runtime`: needs OS access — stays in Rust as part of `rask-rt`
+/// - `Runtime`: needs OS access — implemented in the C runtime
 /// - `Pure`: no OS access — can be rewritten in Rask once codegen works
 /// - `Hybrid`: mix of both (e.g., Duration is pure, Instant needs OS)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
