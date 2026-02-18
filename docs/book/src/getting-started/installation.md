@@ -1,11 +1,12 @@
 # Installation
 
-> **Note:** Rask is in early development. Currently only the interpreter is available.
+> **Note:** Rask is in early development (pre-0.1). Expect breaking changes.
 
 ## Prerequisites
 
 - Rust toolchain (for building from source)
 - Git
+- A C compiler (cc) — the runtime is compiled from C
 
 ## Building from Source
 
@@ -19,11 +20,20 @@ The `rask` binary will be in `compiler/target/release/rask`.
 
 ## Verify Installation
 
-Run a test to verify the interpreter works:
-
 ```bash
 ./target/release/rask --version
 ```
+
+## CLI Commands
+
+| Command | What it does |
+|---------|-------------|
+| `rask run <file>` | Compile and execute a `.rk` program |
+| `rask check <file>` | Type-check without running |
+| `rask fmt <file>` | Format source code |
+| `rask lint <file>` | Check style and idioms |
+
+Compiled binaries are written to `build/debug/`.
 
 ## Running Examples
 

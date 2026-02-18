@@ -2,7 +2,7 @@
 
 Welcome to Rask! This section will help you get started with the language.
 
-> **Note:** Rask is in early development. Currently only the interpreter is available (no compiler yet).
+> **Note:** Rask is in early development (pre-0.1). Expect breaking changes.
 
 ## What You'll Learn
 
@@ -11,12 +11,12 @@ Welcome to Rask! This section will help you get started with the language.
 
 ## Status
 
-Rask is in the design phase with a working interpreter. Three of the five litmus test programs run:
+Rask has a working compiler (Cranelift backend). All five litmus test programs pass type-checking:
 - Grep clone ✓
 - Game loop ✓
 - Text editor ✓
-- HTTP server (blocked on network I/O)
-- Embedded sensor (blocked on SIMD)
+- HTTP server ✓
+- Embedded sensor ✓
 
 ## Next Steps
 

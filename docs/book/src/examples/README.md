@@ -2,7 +2,7 @@
 
 Real Rask programs that demonstrate practical patterns.
 
-All example code is in the repository's `examples/` folder and runs on the current interpreter.
+All example code is in the repository's `examples/` folder.
 
 ## Available Examples
 
@@ -16,7 +16,7 @@ All example code is in the repository's `examples/` folder and runs on the curre
 git clone https://github.com/rask-lang/rask.git
 cd rask/compiler
 cargo build --release
-./target/release/rask ../examples/grep_clone.rk --help
+./target/release/rask run ../examples/grep_clone.rk --help
 ```
 
 [View all examples on GitHub →](https://github.com/rask-lang/rask/tree/main/examples)
