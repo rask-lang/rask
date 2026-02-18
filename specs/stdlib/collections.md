@@ -86,6 +86,15 @@ const users = Map.from([
 | `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
 | `vec.read(i, \|v\| R)` | `Option<R>` | None | No |
 | `vec.modify(i, \|v\| R)` | `Option<R>` | None | No |
+| `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
+| `vec.remove(i)` | `T` | None | Yes (OOB) |
+
+### Positional Insert/Remove
+
+| Rule | Description |
+|------|-------------|
+| **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()`. Returns `Result` on alloc failure |
+| **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
 
 <!-- test: skip -->
 ```rask
@@ -294,6 +303,8 @@ FIX: Process existing items first, or use an unbounded collection:
 | `vec.get(usize.MAX)` | V3 | Returns `None` |
 | `Vec.fixed(0).push(x)` | C2 | Returns `Err(PushError.Full(x))` |
 | OOM on unbounded `push()` | C2 | Returns `Err(PushError.Alloc(x))` |
+| `vec.insert(n, x)` where `n > len()` | V4 | Panic (bounds check) |
+| `vec.remove(n)` where `n >= len()` | V5 | Panic (bounds check) |
 | `modify_many([i, i], _)` | D1 | Panic (duplicate index) |
 | ZST in `Vec<()>` | — | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | C4 | Compile error |

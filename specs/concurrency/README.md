@@ -104,7 +104,7 @@ try h.join()
 | Wait for all | `join_all(spawn(|| {}), spawn(|| {}))` |
 | Dynamic spawning | `TaskGroup` |
 | CPU parallelism | `ThreadPool.spawn(|| {})` |
-| Raw OS thread | `spawn raw { }` |
+| Raw OS thread | `Thread.spawn(|| {})` |
 | Unused handle | **Compile error** |
 
 ## Resource Combinations
