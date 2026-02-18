@@ -123,6 +123,7 @@ impl Interpreter {
             methods: base_decl.methods.clone(),
             is_pub: base_decl.is_pub,
             attrs: base_decl.attrs.clone(),
+            doc: None,
         };
 
         // Cache it

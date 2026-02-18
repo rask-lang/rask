@@ -201,6 +201,12 @@ void rask_sleep_ns(int64_t ns) {
     nanosleep(&ts, NULL);
 }
 
+// Sleep for the given number of milliseconds.
+int64_t rask_time_sleep_ms(int64_t ms) {
+    rask_sleep_ns(ms * 1000000LL);
+    return 0;
+}
+
 // ─── Codegen wrappers ──────────────────────────────────────
 // Closure-aware spawn for the MIR codegen layer.
 // Closure layout: [func_ptr(8) | captures...]

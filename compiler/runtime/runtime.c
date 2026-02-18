@@ -432,6 +432,40 @@ int64_t rask_net_tcp_listen(const RaskString *addr) {
     return (int64_t)fd;
 }
 
+int64_t rask_net_tcp_accept(int64_t listen_fd) {
+    int client = accept((int)listen_fd, NULL, NULL);
+    return (int64_t)client;
+}
+
+// Stub: read an HTTP request from a connection fd.
+// Returns pointer to an HttpRequest struct (stubbed as {method, path, body} strings).
+int64_t rask_net_read_http_request(int64_t conn_fd) {
+    // Stub: allocate a pseudo-struct with 3 string fields
+    int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 3);
+    req[0] = (int64_t)(uintptr_t)rask_string_from_bytes("GET", 3);
+    req[1] = (int64_t)(uintptr_t)rask_string_from_bytes("/", 1);
+    req[2] = (int64_t)(uintptr_t)rask_string_from_bytes("", 0);
+    return (int64_t)(uintptr_t)req;
+}
+
+// Stub: write an HTTP response to a connection fd.
+int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
+    (void)conn_fd;
+    (void)response_ptr;
+    return 0;
+}
+
+// Stub: create a Map from a static array of key-value pairs.
+int64_t rask_map_from(int64_t pairs_ptr) {
+    (void)pairs_ptr;
+    return (int64_t)(uintptr_t)rask_map_new(8, 8);
+}
+
+// Stub: generic json.encode — returns JSON string representation.
+RaskString *rask_json_encode(int64_t value_ptr) {
+    return rask_string_from_bytes("{}", 2);
+}
+
 // ─── JSON module ──────────────────────────────────────────────────
 
 // Growable JSON buffer

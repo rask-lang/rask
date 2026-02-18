@@ -90,6 +90,77 @@ feature "full" { enables: ["ssl", "logging"] }
 feature "verbose"  // code-only flag
 ```
 
+### Exclusive Feature Groups
+
+| Rule | Description |
+|------|-------------|
+| **FG1: Mutual exclusion** | `feature "name" exclusive { ... }` — exactly one option selected |
+| **FG2: Required default** | Exclusive features must declare `default: "option_name"` |
+| **FG3: Named blocks** | Each string-named block has its own dependency set |
+| **FG4: Additive + exclusive** | Additive features use set-union; exclusive groups require all selectors to agree |
+| **FG5: Consumer selection** | Consumers select via dep sub-block: `dep "lib" { runtime: "tokio" }` |
+| **FG6: Root wins** | Root package's selection overrides transitive selections |
+
+<!-- test: skip -->
+```rask
+feature "runtime" exclusive {
+    "tokio" {
+        dep "tokio" "^1.0"
+    }
+    "async-std" {
+        dep "async-std" "^1.12"
+    }
+    default: "tokio"
+}
+```
+
+Consumer selects which option:
+
+<!-- test: skip -->
+```rask
+dep "my-server" "^2.0" {
+    runtime: "tokio"
+}
+```
+
+## Dependency Permissions
+
+I chose compile-time capability inference over author annotations — the compiler scans imports, so capabilities track actual behavior rather than trust.
+
+| Rule | Description |
+|------|-------------|
+| **PM1: Inferred** | Capabilities are inferred from stdlib imports, not declared by package authors |
+| **PM2: Root unrestricted** | Root package has no capability restrictions — only dependencies are gated |
+| **PM3: Consumer consent** | `allow: ["net", "read"]` on dep declarations — explicit opt-in |
+| **PM4: Build enforcement** | `rask build` errors if a dep uses capabilities not covered by `allow` |
+| **PM5: Lock file tracking** | `rask.lock` records inferred capabilities per package |
+| **PM6: Update detection** | `rask update` warns if a new version changes capability requirements |
+| **PM7: Transitive** | A dep's capabilities include its own transitive deps' capabilities |
+| **PM8: Build script sandboxing** | Build scripts run in the interpreter — fs/exec/net are interceptable |
+
+| Import prefix | Capability |
+|---------------|------------|
+| `io.net`, `http` | `net` |
+| `io.fs` | `read`, `write` |
+| `os.exec`, `os.process` | `exec` |
+| `unsafe`, `extern` | `ffi` |
+
+```rask
+dep "http-client" "^2.0" {
+    allow: ["net"]
+}
+dep "parser" "^1.0"          // no capabilities needed — silent
+dep "native-lib" "^3.0" {
+    allow: ["ffi", "read"]   // uses extern + file reading
+}
+```
+
+```
+ERROR [struct.build/PM4]: capability violation
+   dependency 'sketchy-lib' uses network access (io.net, http) but is not allowed
+   add `allow: ["net"]` to the dep declaration in build.rk
+```
+
 ## Profiles
 
 | Rule | Description |

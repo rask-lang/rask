@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// A value that may or may not be present.
+public enum Option<T> {
+    Some(T)
+    None
+}
+
+extend Option<T> {
+    /// True if the option contains a value.
+    public func is_some(self) -> bool { }
+
+    /// True if the option is empty.
+    public func is_none(self) -> bool { }
+
+    /// Extract the value, panicking if empty.
+    public func unwrap(self) -> T { }
+
+    /// Extract the value, or return the default.
+    public func unwrap_or(self, default: T) -> T { }
+
+    /// Extract the value, or compute a default.
+    public func unwrap_or_else(self, f: func() -> T) -> T { }
+
+    /// Transform the contained value.
+    public func map(self, f: func(T) -> U) -> Option<U> { }
+
+    /// Transform the contained value, flattening nested Options.
+    public func and_then(self, f: func(T) -> Option<U>) -> Option<U> { }
+
+    /// Return this option if it contains a value, otherwise return other.
+    public func or(self, other: Option<T>) -> Option<T> { }
+
+    /// Return this option if it contains a value, otherwise compute an alternative.
+    public func or_else(self, f: func() -> Option<T>) -> Option<T> { }
+
+    /// Convert to a Result, using the given error if empty.
+    public func ok_or(self, err: E) -> T or E { }
+}

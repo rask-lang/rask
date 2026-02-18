@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -24,6 +24,8 @@ pub struct Parser {
     next_node_id: u32,
     /// Pending declarations from expanded grouped imports
     pending_decls: Vec<Decl>,
+    /// Buffer for doc comments collected during skip_newlines
+    doc_buffer: Vec<String>,
 }
 
 impl Parser {
@@ -34,7 +36,7 @@ impl Parser {
     /// Create a parser with a custom starting NodeId.
     /// Used by multi-file parsing to ensure unique NodeIds across files.
     pub fn new_with_start_id(tokens: Vec<Token>, start_id: u32) -> Self {
-        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new() }
+        Self { tokens, pos: 0, pending_gt: false, allow_brace_expr: true, errors: Vec::new(), next_node_id: start_id, pending_decls: Vec::new(), doc_buffer: Vec::new() }
     }
 
     /// Return the next available NodeId (for chaining across files).
@@ -139,8 +141,25 @@ impl Parser {
     }
 
     fn skip_newlines(&mut self) {
-        while self.check(&TokenKind::Newline) {
-            self.advance();
+        loop {
+            if self.check(&TokenKind::Newline) {
+                self.advance();
+            } else if let TokenKind::DocComment(text) = self.current_kind().clone() {
+                self.doc_buffer.push(text);
+                self.advance();
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn take_doc(&mut self) -> Option<String> {
+        if self.doc_buffer.is_empty() {
+            None
+        } else {
+            let doc = self.doc_buffer.join("\n");
+            self.doc_buffer.clear();
+            Some(doc)
         }
     }
 
@@ -460,6 +479,7 @@ impl Parser {
                         is_unsafe: false,
                         abi: None,
                         attrs: vec!["entry".to_string()],
+                        doc: None,
                     }),
                     span,
                 });
@@ -489,6 +509,8 @@ impl Parser {
         let is_comptime = self.match_token(&TokenKind::Comptime);
         let is_unsafe = if !is_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
 
+        let doc = self.take_doc();
+
         // Detect common Rust keywords
         if let TokenKind::Ident(s) = self.current_kind() {
             if s == "pub" {
@@ -507,11 +529,11 @@ impl Parser {
         }
 
         let kind = match self.current_kind() {
-            TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs)?,
-            TokenKind::Struct => self.parse_struct_decl(is_pub, attrs)?,
-            TokenKind::Enum => self.parse_enum_decl(is_pub)?,
-            TokenKind::Trait => self.parse_trait_decl(is_pub)?,
-            TokenKind::Extend => self.parse_impl_decl()?,
+            TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs, doc)?,
+            TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
+            TokenKind::Enum => self.parse_enum_decl(is_pub, doc)?,
+            TokenKind::Trait => self.parse_trait_decl(is_pub, doc)?,
+            TokenKind::Extend => self.parse_impl_decl(doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub)?,
@@ -580,9 +602,10 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
-    fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
+    fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Func)?;
-        let mut name = self.expect_ident()?;
+        // Allow keywords as function names (e.g., `or` for Option.or)
+        let mut name = self.expect_ident_or_keyword()?;
 
         let type_params = if self.match_token(&TokenKind::Lt) {
             let (params, suffix) = self.parse_type_params()?;
@@ -634,7 +657,7 @@ impl Parser {
             ));
         };
 
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs, doc }))
     }
 
     fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
@@ -1027,7 +1050,7 @@ impl Parser {
         Ok((type_params, name_suffix))
     }
 
-    fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>) -> Result<DeclKind, ParseError> {
+    fn parse_struct_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Struct)?;
         let mut name = self.expect_ident()?;
 
@@ -1056,10 +1079,11 @@ impl Parser {
                 continue;
             }
 
+            let method_doc = self.take_doc();
             let field_pub = self.match_token(&TokenKind::Public);
 
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![])? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![], method_doc)? {
                     methods.push(fn_decl);
                 }
             } else {
@@ -1082,10 +1106,11 @@ impl Parser {
             methods,
             is_pub,
             attrs,
+            doc,
         }))
     }
 
-    fn parse_enum_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
+    fn parse_enum_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
         let mut name = self.expect_ident()?;
 
@@ -1105,12 +1130,14 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let item_doc = self.take_doc();
             if self.check(&TokenKind::Func) || (self.check(&TokenKind::Public) && matches!(self.peek(1), TokenKind::Func)) {
                 let m_pub = self.match_token(&TokenKind::Public);
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, vec![])? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, vec![], item_doc)? {
                     methods.push(fn_decl);
                 }
             } else {
+                let _variant_doc = item_doc;
                 let variant_name = self.expect_ident()?;
                 let mut fields = Vec::new();
 
@@ -1175,10 +1202,11 @@ impl Parser {
             variants,
             methods,
             is_pub,
+            doc,
         }))
     }
 
-    fn parse_trait_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
+    fn parse_trait_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
@@ -1207,19 +1235,21 @@ impl Parser {
 
         let mut methods = Vec::new();
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, vec![])? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, vec![], method_doc)? {
                     methods.push(fn_decl);
                 }
             } else if let TokenKind::Ident(_) = self.current_kind() {
-                let fn_decl = self.parse_trait_method_shorthand()?;
+                let mut fn_decl = self.parse_trait_method_shorthand()?;
+                fn_decl.doc = method_doc;
                 methods.push(fn_decl);
             }
             self.skip_newlines();
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub }))
+        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, doc }))
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
@@ -1271,10 +1301,11 @@ impl Parser {
             is_unsafe: false,
             abi: None,
             attrs: vec![],
+            doc: None,
         })
     }
 
-    fn parse_impl_decl(&mut self) -> Result<DeclKind, ParseError> {
+    fn parse_impl_decl(&mut self, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
 
@@ -1295,15 +1326,18 @@ impl Parser {
                 method_attrs.push(self.parse_attribute()?);
                 self.skip_newlines();
             }
+            let method_doc = self.take_doc();
             let m_pub = self.match_token(&TokenKind::Public);
-            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, method_attrs)? {
+            let m_comptime = self.match_token(&TokenKind::Comptime);
+            let m_unsafe = if !m_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
+            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_comptime, m_unsafe, method_attrs, method_doc)? {
                 methods.push(fn_decl);
             }
             self.skip_newlines();
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_name, target_ty, methods }))
+        Ok(DeclKind::Impl(ImplDecl { trait_name, target_ty, methods, doc }))
     }
 
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {
@@ -1518,6 +1552,7 @@ impl Parser {
                 is_unsafe: false,
                 abi: Some(abi.to_string()),
                 attrs: vec![],
+                doc: None,
             }));
         }
 
@@ -1539,6 +1574,7 @@ impl Parser {
         let version = self.expect_string()?;
 
         let mut deps = Vec::new();
+        let mut features = Vec::new();
         let mut metadata = Vec::new();
         let mut profiles = Vec::new();
 
@@ -1552,7 +1588,7 @@ impl Parser {
                         deps.push(self.parse_dep_item()?);
                     }
                     TokenKind::Scope => {
-                        // scope "dev" { dep ... } — parse deps within, skip scope metadata
+                        // scope "dev" { dep ... }
                         self.advance();
                         let _scope_name = self.expect_string()?;
                         self.skip_newlines();
@@ -1569,23 +1605,7 @@ impl Parser {
                         self.expect(&TokenKind::RBrace)?;
                     }
                     TokenKind::Feature => {
-                        // feature "ssl" { dep ... }
-                        self.advance();
-                        let _feature_name = self.expect_string()?;
-                        self.skip_newlines();
-                        if self.match_token(&TokenKind::LBrace) {
-                            self.skip_newlines();
-                            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                                if matches!(self.current_kind(), TokenKind::Dep) {
-                                    deps.push(self.parse_dep_item()?);
-                                } else {
-                                    self.advance();
-                                }
-                                self.skip_newlines();
-                            }
-                            self.expect(&TokenKind::RBrace)?;
-                        }
-                        // code-only feature (no block) is fine
+                        features.push(self.parse_feature_decl()?);
                     }
                     TokenKind::Profile => {
                         // profile "embedded" { key: "value", ... }
@@ -1626,7 +1646,68 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(DeclKind::Package(PackageDecl { name, version, deps, metadata, profiles }))
+        Ok(DeclKind::Package(PackageDecl { name, version, deps, features, metadata, profiles }))
+    }
+
+    /// Parse a feature declaration inside a package block.
+    ///
+    /// Additive: `feature "ssl" { dep "openssl" "^3.0" }`
+    /// Exclusive: `feature "runtime" exclusive { "tokio" { dep "tokio" "^1.0" } default: "tokio" }`
+    fn parse_feature_decl(&mut self) -> Result<FeatureDecl, ParseError> {
+        self.expect(&TokenKind::Feature)?;
+        let name = self.expect_string()?;
+
+        let exclusive = self.match_token(&TokenKind::Exclusive);
+
+        let mut feature_deps = Vec::new();
+        let mut options = Vec::new();
+        let mut default = None;
+
+        self.skip_newlines();
+        if self.match_token(&TokenKind::LBrace) {
+            self.skip_newlines();
+            while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                if exclusive && matches!(self.current_kind(), TokenKind::String(_)) {
+                    // String-named option block: "tokio" { dep ... }
+                    let opt_name = self.expect_string()?;
+                    let mut opt_deps = Vec::new();
+                    self.skip_newlines();
+                    if self.match_token(&TokenKind::LBrace) {
+                        self.skip_newlines();
+                        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                            if matches!(self.current_kind(), TokenKind::Dep) {
+                                opt_deps.push(self.parse_dep_item()?);
+                            } else {
+                                self.advance();
+                            }
+                            self.skip_newlines();
+                        }
+                        self.expect(&TokenKind::RBrace)?;
+                    }
+                    options.push(FeatureOption { name: opt_name, deps: opt_deps });
+                } else if matches!(self.current_kind(), TokenKind::Dep) {
+                    feature_deps.push(self.parse_dep_item()?);
+                } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
+                    // default: "tokio"
+                    let key = self.expect_ident()?;
+                    if key == "default" {
+                        self.expect(&TokenKind::Colon)?;
+                        default = Some(self.expect_string()?);
+                    } else {
+                        // skip unknown key
+                        if self.match_token(&TokenKind::Colon) {
+                            self.advance();
+                        }
+                    }
+                } else {
+                    self.advance();
+                }
+                self.skip_newlines();
+            }
+            self.expect(&TokenKind::RBrace)?;
+        }
+
+        Ok(FeatureDecl { name, exclusive, deps: feature_deps, options, default })
     }
 
     /// Parse a single dep item inside a package block.
@@ -1653,6 +1734,8 @@ impl Parser {
         let mut branch = None;
         let mut with_features = Vec::new();
         let mut target = None;
+        let mut allow = Vec::new();
+        let mut exclusive_selections = Vec::new();
 
         // Optional sub-block { key: value, ... }
         self.skip_newlines();
@@ -1678,11 +1761,26 @@ impl Parser {
                         }
                         self.expect(&TokenKind::RBracket)?;
                     }
-                    _ => {
-                        // Skip unknown key's value (may be a block)
-                        if self.check(&TokenKind::LBrace) {
+                    "allow" => {
+                        // allow: ["net", "read"]
+                        self.expect(&TokenKind::LBracket)?;
+                        while !self.check(&TokenKind::RBracket) && !self.at_end() {
+                            allow.push(self.expect_string()?);
+                            if !self.match_token(&TokenKind::Comma) {
+                                break;
+                            }
+                        }
+                        self.expect(&TokenKind::RBracket)?;
+                    }
+                    other => {
+                        // Could be an exclusive feature selection: runtime: "tokio"
+                        if matches!(self.current_kind(), TokenKind::String(_)) {
+                            let selection = self.expect_string()?;
+                            exclusive_selections.push((other.to_string(), selection));
+                        } else if self.check(&TokenKind::LBrace) {
+                            // Skip unknown block value
                             let mut depth = 1;
-                            self.advance(); // consume {
+                            self.advance();
                             while depth > 0 && !self.at_end() {
                                 match self.current_kind() {
                                     TokenKind::LBrace => depth += 1,
@@ -1707,7 +1805,10 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(DepDecl { name, version, path, git, branch, with_features, target })
+        Ok(DepDecl {
+            name, version, path, git, branch, with_features, target,
+            allow, exclusive_selections,
+        })
     }
 
     // =========================================================================

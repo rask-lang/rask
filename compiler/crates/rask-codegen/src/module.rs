@@ -6,7 +6,7 @@ use cranelift::prelude::*;
 use cranelift_codegen::ir::GlobalValue;
 use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
@@ -26,6 +26,8 @@ pub struct CodeGenerator {
     string_data: HashMap<String, cranelift_module::DataId>,
     /// Comptime global data (const name → DataId in the object module)
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
+    /// MIR names of stdlib functions that can panic at runtime
+    panicking_fns: HashSet<String>,
 }
 
 impl CodeGenerator {
@@ -51,6 +53,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
             comptime_data: HashMap::new(),
+            panicking_fns: crate::dispatch::panicking_functions(),
         })
     }
 
@@ -88,6 +91,7 @@ impl CodeGenerator {
             enum_layouts: Vec::new(),
             string_data: HashMap::new(),
             comptime_data: HashMap::new(),
+            panicking_fns: crate::dispatch::panicking_functions(),
         })
     }
 
@@ -238,6 +242,19 @@ impl CodeGenerator {
                 .declare_function("rask_pool_get_checked", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("pool_get_checked".to_string(), id);
+        }
+
+        // set_panic_location(file: ptr, line: i32, col: i32) -> void
+        // Codegen calls this before any runtime function that can panic.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            let id = self.module
+                .declare_function("rask_set_panic_location", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("set_panic_location".to_string(), id);
         }
 
         // ─── I/O functions ──────────────────────────────────────
@@ -595,6 +612,7 @@ impl CodeGenerator {
             &self.enum_layouts,
             &string_globals,
             &comptime_globals,
+            &self.panicking_fns,
         )?;
         builder.build()?;
 

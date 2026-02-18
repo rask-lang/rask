@@ -1592,6 +1592,7 @@ mod tests {
                 is_unsafe: false,
                 abi: None,
                 attrs: vec![],
+                doc: None,
             }),
             span: Span::new(0, 10),
         }
@@ -1616,6 +1617,7 @@ mod tests {
                 methods: vec![],
                 is_pub: false,
                 attrs: vec![],
+                doc: None,
             }),
             span: Span::new(0, 10),
         }];
@@ -1634,6 +1636,7 @@ mod tests {
                 variants: vec![],
                 methods: vec![],
                 is_pub: false,
+                doc: None,
             }),
             span: Span::new(0, 10),
         }];
@@ -1700,6 +1703,7 @@ mod tests {
                 is_unsafe: false,
                 abi: None,
                 attrs: vec![],
+                doc: None,
             }),
             span: Span::new(0, 10),
         }
@@ -1719,6 +1723,7 @@ mod tests {
                 methods: vec![],
                 is_pub: true,
                 attrs: vec![],
+                doc: None,
             }),
             span: Span::new(0, 10),
         }

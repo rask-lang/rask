@@ -162,6 +162,11 @@ int64_t rask_pool_alloc_packed(RaskPool *p) {
     return handle_pack(h);
 }
 
+int64_t rask_pool_insert_packed(RaskPool *p, const void *elem) {
+    RaskHandle h = rask_pool_insert(p, elem);
+    return handle_pack(h);
+}
+
 void *rask_pool_get_packed(const RaskPool *p, int64_t packed) {
     return rask_pool_get(p, handle_unpack(p, packed));
 }

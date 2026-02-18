@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+extend string {
+    /// Create a new empty string.
+    public func new() -> string { }
+
+    /// Create a string with pre-allocated capacity.
+    public func with_capacity(n: usize) -> string { }
+
+    /// Length in bytes.
+    public func len(self) -> usize { }
+
+    /// True if the string is empty.
+    public func is_empty(self) -> bool { }
+
+    /// True if the string contains the substring.
+    public func contains(self, s: string) -> bool { }
+
+    /// True if the string starts with the given prefix.
+    public func starts_with(self, s: string) -> bool { }
+
+    /// True if the string ends with the given suffix.
+    public func ends_with(self, s: string) -> bool { }
+
+    /// Find the first occurrence of a substring. Returns byte offset.
+    public func find(self, s: string) -> Option<usize> { }
+
+    /// Find the last occurrence of a substring. Returns byte offset.
+    public func rfind(self, s: string) -> Option<usize> { }
+
+    /// Convert to uppercase.
+    public func to_uppercase(self) -> string { }
+
+    /// Convert to lowercase.
+    public func to_lowercase(self) -> string { }
+
+    /// Remove leading and trailing whitespace.
+    public func trim(self) -> string { }
+
+    /// Remove leading whitespace.
+    public func trim_start(self) -> string { }
+
+    /// Remove trailing whitespace.
+    public func trim_end(self) -> string { }
+
+    /// Append a character.
+    public func push(mutate self, c: char) { }
+
+    /// Append a string.
+    public func push_str(mutate self, s: string) { }
+
+    /// Remove all content.
+    public func clear(mutate self) { }
+
+    /// Split by separator.
+    public func split(self, sep: string) -> Iterator<string> { }
+
+    /// Split into lines.
+    public func lines(self) -> Iterator<string> { }
+
+    /// Iterate over characters.
+    public func chars(self) -> Iterator<char> { }
+
+    /// Iterate over bytes.
+    public func bytes(self) -> Iterator<u8> { }
+
+    /// Replace all occurrences of `from` with `to`.
+    public func replace(self, from: string, to: string) -> string { }
+
+    /// Replace the first n occurrences of `from` with `to`.
+    public func replacen(self, from: string, to: string, n: usize) -> string { }
+
+    /// Parse into a typed value.
+    public func parse(self) -> T or ParseError { }
+
+    /// Iterate over characters (same as chars).
+    public func iter(self) -> Iterator<char> { }
+}

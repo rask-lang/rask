@@ -37,6 +37,8 @@ pub struct Backend {
     pub documents: RwLock<HashMap<Url, String>>,
     /// Cached compilation results
     pub compiled: RwLock<HashMap<Url, CompilationResult>>,
+    /// Workspace root URI (set during initialization)
+    pub root_uri: RwLock<Option<Url>>,
 }
 
 impl Backend {
@@ -45,6 +47,7 @@ impl Backend {
             client,
             documents: RwLock::new(HashMap::new()),
             compiled: RwLock::new(HashMap::new()),
+            root_uri: RwLock::new(None),
         }
     }
 

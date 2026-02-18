@@ -77,6 +77,8 @@ pub struct Interpreter {
     output_buffer: Option<Arc<Mutex<String>>>,
     /// Command-line arguments passed to the program.
     pub(crate) cli_args: Vec<String>,
+    /// Build script state (set when running via `run_build`).
+    pub(crate) build_state: Option<crate::build_context::BuildState>,
 }
 
 impl Interpreter {
@@ -91,6 +93,7 @@ impl Interpreter {
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: vec![],
+            build_state: None,
         }
     }
 
@@ -105,6 +108,7 @@ impl Interpreter {
             resource_tracker: ResourceTracker::new(),
             output_buffer: None,
             cli_args: args,
+            build_state: None,
         }
     }
 
@@ -121,6 +125,7 @@ impl Interpreter {
             resource_tracker: ResourceTracker::new(),
             output_buffer: Some(buffer.clone()),
             cli_args: vec![],
+            build_state: None,
         };
         (interp, buffer)
     }
@@ -422,6 +427,41 @@ impl Interpreter {
         } else {
             Err(RuntimeDiagnostic::new(RuntimeError::NoEntryPoint, Span::new(0, 0)))
         }
+    }
+
+    /// Run a build script: register declarations, find `func build(ctx)`,
+    /// call it with the BuildContext value. Sets `build_state` so method
+    /// dispatch can accumulate link flags and other state.
+    pub fn run_build(
+        &mut self,
+        decls: &[Decl],
+        state: crate::build_context::BuildState,
+    ) -> Result<Value, RuntimeDiagnostic> {
+        let ctx_value = state.to_value();
+        self.build_state = Some(state);
+
+        let registered = self.register_declarations(decls)
+            .map_err(|e| RuntimeDiagnostic::new(e, Span::new(0, 0)))?;
+
+        // Find func build — it's the entry point for build scripts
+        let build_fn = registered.entry_fn
+            .or_else(|| self.functions.get("build").cloned())
+            .ok_or_else(|| RuntimeDiagnostic::new(
+                RuntimeError::Generic("build.rk has no func build()".into()),
+                Span::new(0, 0),
+            ))?;
+
+        // If func build takes a parameter, pass ctx; otherwise call with no args
+        if build_fn.params.is_empty() {
+            self.call_function(&build_fn, vec![])
+        } else {
+            self.call_function(&build_fn, vec![ctx_value])
+        }
+    }
+
+    /// Take the build state after a build script finishes.
+    pub fn take_build_state(&mut self) -> Option<crate::build_context::BuildState> {
+        self.build_state.take()
     }
 
     /// Run all tests in the program (test blocks + @test functions).

@@ -77,9 +77,34 @@ static void print_backtrace(void) {
 #endif
 }
 
+// ─── Thread-local source location for runtime panics ──────
+// Codegen calls rask_set_panic_location() before any runtime function
+// that can panic. rask_panic() checks these and includes file:line:col.
+
+static __thread const char *panic_loc_file;
+static __thread int32_t     panic_loc_line;
+static __thread int32_t     panic_loc_col;
+
+void rask_set_panic_location(const char *file, int32_t line, int32_t col) {
+    panic_loc_file = file;
+    panic_loc_line = line;
+    panic_loc_col  = col;
+}
+
 // ─── Panic entry points ────────────────────────────────────
 
 _Noreturn void rask_panic(const char *msg) {
+    // If codegen set a source location, use rask_panic_at instead
+    if (panic_loc_file && panic_loc_line > 0) {
+        const char *f = panic_loc_file;
+        int32_t l = panic_loc_line;
+        int32_t c = panic_loc_col;
+        panic_loc_file = NULL;
+        panic_loc_line = 0;
+        panic_loc_col  = 0;
+        rask_panic_at(f, l, c, msg);
+    }
+
     if (panic_ctx.active) {
         // Spawned task — store message and longjmp back to task entry
         panic_ctx.message = msg ? strdup(msg) : strdup("(unknown panic)");

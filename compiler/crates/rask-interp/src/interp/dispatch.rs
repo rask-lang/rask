@@ -143,6 +143,16 @@ impl Interpreter {
             Value::Struct { name, fields, .. } if name == "Args" => {
                 self.call_args_method(fields, method, args)
             }
+            Value::Struct { name, .. } if name == "BuildContext" => {
+                if method == "step" {
+                    return self.call_build_step(args);
+                }
+                let state = self.build_state.as_mut().ok_or_else(|| {
+                    RuntimeError::Generic("BuildContext used outside build script".into())
+                })?;
+                crate::build_context::call_method(state, method, args)
+                    .map_err(RuntimeError::Generic)
+            }
             Value::Enum { name, variant, fields } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
@@ -292,6 +302,106 @@ impl Interpreter {
             Value::Unit => false,
             Value::Int(0) => false,
             _ => true,
+        }
+    }
+
+    /// Handle ctx.step(name, inputs, body) — incremental build step.
+    /// Hashes input files, skips if unchanged since last run.
+    fn call_build_step(&mut self, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        use crate::build_context;
+
+        if args.len() != 3 {
+            return Err(RuntimeError::Generic(format!(
+                "step expects 3 args (name, inputs, body), got {}", args.len()
+            )));
+        }
+
+        let name = match &args[0] {
+            Value::String(s) => s.lock().unwrap().clone(),
+            _ => return Err(RuntimeError::TypeError("step: name must be string".into())),
+        };
+
+        let inputs: Vec<String> = match &args[1] {
+            Value::Vec(v) => {
+                let items = v.lock().unwrap();
+                items.iter().map(|item| match item {
+                    Value::String(s) => Ok(s.lock().unwrap().clone()),
+                    _ => Err(RuntimeError::TypeError("step: inputs must be Vec<string>".into())),
+                }).collect::<Result<Vec<_>, _>>()?
+            }
+            _ => return Err(RuntimeError::TypeError("step: inputs must be Vec<string>".into())),
+        };
+
+        let closure = args[2].clone();
+
+        let state = self.build_state.as_ref().ok_or_else(|| {
+            RuntimeError::Generic("step() used outside build script".into())
+        })?;
+
+        // Check if step cache exists and inputs haven't changed
+        if let Some(ref cache_dir) = state.step_cache_dir {
+            let current_hash = build_context::hash_inputs(
+                &state.package_dir,
+                &inputs,
+                &state.tool_versions,
+            ).map_err(RuntimeError::Generic)?;
+
+            if let Some(cached_hash) = build_context::load_step_hash(cache_dir, &name) {
+                if cached_hash == current_hash {
+                    // Inputs unchanged — skip this step
+                    return Ok(Value::Unit);
+                }
+            }
+
+            // Run the closure body
+            let result = match closure {
+                Value::Closure { params, body, captured_env } => {
+                    if !params.is_empty() {
+                        return Err(RuntimeError::TypeError(
+                            "step body closure must take no parameters".into(),
+                        ));
+                    }
+                    self.env.push_scope();
+                    for (k, v) in &captured_env {
+                        self.env.define(k.clone(), v.clone());
+                    }
+                    let result = self.eval_expr(&body);
+                    self.env.pop_scope();
+                    result
+                }
+                _ => return Err(RuntimeError::TypeError("step: body must be a closure".into())),
+            };
+
+            // Save hash on success
+            match &result {
+                Ok(_) => {
+                    if let Some(ref cache_dir) = self.build_state.as_ref().and_then(|s| s.step_cache_dir.as_ref()) {
+                        let _ = build_context::save_step_hash(cache_dir, &name, current_hash);
+                    }
+                }
+                Err(_) => {} // Don't cache failed steps
+            }
+
+            result.map_err(|d| d.error)
+        } else {
+            // No cache dir configured — always run
+            match closure {
+                Value::Closure { params, body, captured_env } => {
+                    if !params.is_empty() {
+                        return Err(RuntimeError::TypeError(
+                            "step body closure must take no parameters".into(),
+                        ));
+                    }
+                    self.env.push_scope();
+                    for (k, v) in &captured_env {
+                        self.env.define(k.clone(), v.clone());
+                    }
+                    let result = self.eval_expr(&body);
+                    self.env.pop_scope();
+                    result.map_err(|d| d.error)
+                }
+                _ => Err(RuntimeError::TypeError("step: body must be a closure".into())),
+            }
         }
     }
 }

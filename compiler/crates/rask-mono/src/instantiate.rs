@@ -152,6 +152,7 @@ impl TypeSubstitutor {
             methods: s.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
             is_pub: s.is_pub,
             attrs: s.attrs.clone(),
+            doc: s.doc.clone(),
         }
     }
 
@@ -170,6 +171,7 @@ impl TypeSubstitutor {
             }).collect(),
             methods: e.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
             is_pub: e.is_pub,
+            doc: e.doc.clone(),
         }
     }
 
@@ -189,6 +191,7 @@ impl TypeSubstitutor {
             is_unsafe: fn_decl.is_unsafe,
             abi: fn_decl.abi.clone(),
             attrs: fn_decl.attrs.clone(),
+            doc: fn_decl.doc.clone(),
         }
     }
 

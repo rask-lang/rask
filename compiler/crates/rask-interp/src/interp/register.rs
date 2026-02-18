@@ -221,6 +221,7 @@ impl Interpreter {
                 ],
                 methods: vec![],
                 is_pub: true,
+                doc: None,
             },
         );
         self.enums.insert(
@@ -250,6 +251,7 @@ impl Interpreter {
                 ],
                 methods: vec![],
                 is_pub: true,
+                doc: None,
             },
         );
         self.enums.insert(
@@ -293,6 +295,7 @@ impl Interpreter {
                 ],
                 methods: vec![],
                 is_pub: true,
+                doc: None,
             },
         );
 

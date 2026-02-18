@@ -182,6 +182,7 @@ mod tests {
                 is_unsafe: false,
                 abi: None,
                 attrs: vec![],
+                doc: None,
             }),
             span: sp(),
         }
@@ -226,6 +227,7 @@ mod tests {
                 is_unsafe: false,
                 abi: None,
                 attrs: vec![],
+                doc: None,
             }),
             span: sp(),
         }
@@ -383,6 +385,7 @@ mod tests {
                     methods: vec![],
                     is_pub: false,
                     attrs: vec![],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -408,6 +411,7 @@ mod tests {
                     ],
                     methods: vec![],
                     is_pub: false,
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -589,6 +593,7 @@ mod tests {
             is_unsafe: false,
             abi: None,
             attrs: vec![],
+            doc: None,
         }
     }
 
@@ -619,6 +624,7 @@ mod tests {
                     ],
                     is_pub: false,
                     attrs: vec![],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -655,6 +661,7 @@ mod tests {
                     methods: vec![
                         make_method("distance", vec![("self", "Point")], Some("f64"), vec![return_stmt(None)]),
                     ],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -692,6 +699,7 @@ mod tests {
                     methods: vec![
                         make_method("increment", vec![("self", "Counter")], None, vec![return_stmt(None)]),
                     ],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -722,6 +730,7 @@ mod tests {
                     ],
                     is_pub: false,
                     attrs: vec![],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -763,6 +772,7 @@ mod tests {
                     ],
                     is_pub: false,
                     attrs: vec![],
+                    doc: None,
                 }),
                 span: sp(),
             },
@@ -808,6 +818,7 @@ mod tests {
                         make_method("default", vec![], Some("Color"), vec![return_stmt(None)]),
                     ],
                     is_pub: false,
+                    doc: None,
                 }),
                 span: sp(),
             },

@@ -85,17 +85,25 @@ int64_t rask_vec_push(RaskVec *v, const void *elem) {
 }
 
 void *rask_vec_get(const RaskVec *v, int64_t index) {
-    if (!v || index < 0 || index >= v->len) return NULL;
+    if (!v || index < 0 || index >= v->len) {
+        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
     return v->data + index * v->elem_size;
 }
 
 void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
-    if (!v || index < 0 || index >= v->len) return;
+    if (!v || index < 0 || index >= v->len) {
+        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
     memcpy(v->data + index * v->elem_size, elem, (size_t)v->elem_size);
 }
 
 int64_t rask_vec_pop(RaskVec *v, void *out) {
-    if (!v || v->len == 0) return -1;
+    if (!v || v->len == 0) {
+        rask_panic("pop from empty Vec");
+    }
     v->len--;
     if (out) {
         memcpy(out, v->data + v->len * v->elem_size, (size_t)v->elem_size);
@@ -104,7 +112,10 @@ int64_t rask_vec_pop(RaskVec *v, void *out) {
 }
 
 int64_t rask_vec_remove(RaskVec *v, int64_t index) {
-    if (!v || index < 0 || index >= v->len) return -1;
+    if (!v || index < 0 || index >= v->len) {
+        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
     // Shift elements left
     int64_t remaining = v->len - index - 1;
     if (remaining > 0) {
@@ -130,7 +141,10 @@ int64_t rask_vec_is_empty(const RaskVec *v) {
 }
 
 int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
-    if (!v || index < 0 || index > v->len) return -1;
+    if (!v || index < 0 || index > v->len) {
+        rask_panic_fmt("insert index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
     if (vec_grow(v, v->len + 1) != 0) return -1;
     // Shift elements right to make room
     int64_t to_move = v->len - index;
@@ -145,7 +159,10 @@ int64_t rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem) {
 }
 
 int64_t rask_vec_remove_at(RaskVec *v, int64_t index, void *out) {
-    if (!v || index < 0 || index >= v->len) return -1;
+    if (!v || index < 0 || index >= v->len) {
+        rask_panic_fmt("index out of bounds: index %lld, len %lld",
+                       (long long)index, (long long)(v ? v->len : 0));
+    }
     if (out) {
         memcpy(out, v->data + index * v->elem_size, (size_t)v->elem_size);
     }
@@ -168,6 +185,87 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
         memcpy(dst->data, src->data, (size_t)(src->len * src->elem_size));
     }
     dst->len = src->len;
+    return dst;
+}
+
+// join(vec_of_strings, separator) — concatenate strings with separator.
+RaskString *rask_vec_join(const RaskVec *src, const RaskString *sep) {
+    RaskString *result = rask_string_new();
+    if (!src || src->len == 0) return result;
+    for (int64_t i = 0; i < src->len; i++) {
+        if (i > 0 && sep) {
+            rask_string_append(result, sep);
+        }
+        RaskString *elem = *(RaskString **)(src->data + i * src->elem_size);
+        if (elem) rask_string_append(result, elem);
+    }
+    return result;
+}
+
+// slice(vec, start, end) — returns a new Vec with elements [start..end).
+RaskVec *rask_vec_slice(const RaskVec *src, int64_t start, int64_t end) {
+    if (!src) return rask_vec_new(8);
+    if (start < 0) start = 0;
+    if (end > src->len) end = src->len;
+    int64_t new_len = end - start;
+    if (new_len <= 0) return rask_vec_new(src->elem_size);
+    RaskVec *dst = rask_vec_with_capacity(src->elem_size, new_len);
+    memcpy(dst->data, src->data + start * src->elem_size,
+           (size_t)(new_len * src->elem_size));
+    dst->len = new_len;
+    return dst;
+}
+
+// chunks(vec, chunk_size) — returns a Vec of Vec* pointers, each a sub-range view.
+// Each chunk is a freshly allocated Vec with copied elements.
+RaskVec *rask_vec_chunks(const RaskVec *src, int64_t chunk_size) {
+    RaskVec *result = rask_vec_new(8); // Vec of pointers (8 bytes each)
+    if (!src || chunk_size <= 0) return result;
+    for (int64_t i = 0; i < src->len; i += chunk_size) {
+        int64_t remaining = src->len - i;
+        int64_t this_chunk = remaining < chunk_size ? remaining : chunk_size;
+        RaskVec *chunk = rask_vec_with_capacity(src->elem_size, this_chunk);
+        memcpy(chunk->data, src->data + i * src->elem_size,
+               (size_t)(this_chunk * src->elem_size));
+        chunk->len = this_chunk;
+        int64_t chunk_ptr = (int64_t)(uintptr_t)chunk;
+        rask_vec_push(result, &chunk_ptr);
+    }
+    return result;
+}
+
+// map(vec, fn_ptr) — apply fn to each element, returning new Vec.
+// Stub: calls fn(elem) for each element, stores result.
+RaskVec *rask_vec_map(const RaskVec *src, int64_t fn_ptr) {
+    typedef int64_t (*MapFn)(int64_t);
+    MapFn func = (MapFn)(uintptr_t)fn_ptr;
+    if (!src) return rask_vec_new(8);
+    RaskVec *dst = rask_vec_with_capacity(8, src->len);
+    for (int64_t i = 0; i < src->len; i++) {
+        int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
+        int64_t result = func(elem);
+        rask_vec_push(dst, &result);
+    }
+    return dst;
+}
+
+// collect — identity (Vec is already materialized).
+RaskVec *rask_vec_collect(const RaskVec *src) {
+    return rask_vec_clone(src);
+}
+
+// filter(vec, fn_ptr) — keep elements where fn returns non-zero.
+RaskVec *rask_vec_filter(const RaskVec *src, int64_t fn_ptr) {
+    typedef int64_t (*FilterFn)(int64_t);
+    FilterFn func = (FilterFn)(uintptr_t)fn_ptr;
+    if (!src) return rask_vec_new(8);
+    RaskVec *dst = rask_vec_new(src->elem_size);
+    for (int64_t i = 0; i < src->len; i++) {
+        int64_t elem = *(int64_t *)(src->data + i * src->elem_size);
+        if (func(elem)) {
+            rask_vec_push(dst, &elem);
+        }
+    }
     return dst;
 }
 

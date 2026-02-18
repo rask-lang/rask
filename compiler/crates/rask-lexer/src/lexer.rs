@@ -117,6 +117,8 @@ enum RawToken {
     Scope,
     #[token("feature")]
     Feature,
+    #[token("exclusive")]
+    Exclusive,
     #[token("profile")]
     Profile,
 
@@ -233,6 +235,10 @@ enum RawToken {
     #[token("\n")]
     #[token("\r\n")]
     Newline,
+
+    // === Doc comments (preserved in AST) ===
+    #[regex(r"///[^\n]*")]
+    DocComment,
 
     // === Comments (skip them) ===
     #[regex(r"//[^\n]*", logos::skip)]
@@ -485,6 +491,7 @@ impl<'a> Lexer<'a> {
             RawToken::Dep => TokenKind::Dep,
             RawToken::Scope => TokenKind::Scope,
             RawToken::Feature => TokenKind::Feature,
+            RawToken::Exclusive => TokenKind::Exclusive,
             RawToken::Profile => TokenKind::Profile,
 
             // Operators
@@ -642,6 +649,15 @@ impl<'a> Lexer<'a> {
                 TokenKind::String(inner.to_string())
             }
             RawToken::Ident => TokenKind::Ident(slice.to_string()),
+
+            RawToken::DocComment => {
+                let text = if slice.starts_with("/// ") {
+                    slice[4..].to_string()
+                } else {
+                    slice[3..].to_string()
+                };
+                TokenKind::DocComment(text)
+            }
 
             // These are skipped by logos, but we list them for completeness
             RawToken::LineComment | RawToken::BlockComment => {

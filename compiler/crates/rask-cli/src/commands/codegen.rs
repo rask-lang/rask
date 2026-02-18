@@ -230,8 +230,16 @@ pub fn cmd_mir(path: &str, format: Format) {
         );
     }
 
-    // Collect all monomorphized function bodies + extern decls for signature table
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+    // Collect all monomorphized function bodies + extern decls for signature table.
+    // Patch FnDecl names to use the qualified monomorphized name (e.g. "GameState_new"
+    // instead of bare "new") so func_sigs maps them correctly.
+    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
+        let mut decl = f.body.clone();
+        if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
+            fn_decl.name = f.name.clone();
+        }
+        decl
+    }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let comptime_globals = evaluate_comptime_globals(&decls);
     let extern_funcs = collect_extern_func_names(&decls);
@@ -288,8 +296,15 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     // Evaluate comptime const declarations
     let comptime_globals = evaluate_comptime_globals(&decls);
 
-    // MIR lowering — include extern decls so their return types are known
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| f.body.clone()).collect();
+    // MIR lowering — include extern decls so their return types are known.
+    // Patch FnDecl names to qualified monomorphized names for func_sigs.
+    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
+        let mut decl = f.body.clone();
+        if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
+            fn_decl.name = f.name.clone();
+        }
+        decl
+    }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let extern_funcs = collect_extern_func_names(&decls);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);

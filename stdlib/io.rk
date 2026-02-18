@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Input/output module functions.
+struct io { }
+
+extend io {
+    /// Read a line of text from standard input.
+    public func read_line() -> string or IoError { }
+}
+
+/// A file handle for reading and writing.
+public struct File { }
+
+extend File {
+    /// Read the entire file contents as bytes.
+    public func read_all(self) -> string or IoError { }
+
+    /// Read the entire file contents as text.
+    public func read_text(self) -> string or IoError { }
+
+    /// Write a string to the file.
+    public func write(mutate self, data: string) -> () or IoError { }
+
+    /// Write a string followed by a newline.
+    public func write_line(mutate self, data: string) -> () or IoError { }
+
+    /// Read all lines into a vector.
+    public func lines(self) -> Vec<string> or IoError { }
+
+    /// Close the file handle.
+    public func close(mutate self) { }
+}

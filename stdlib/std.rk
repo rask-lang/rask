@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Standard library core functions.
+struct std { }
+
+extend std {
+    /// Exit the process with the given status code.
+    public func exit(code: i64) -> Never { }
+}

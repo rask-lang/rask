@@ -95,6 +95,8 @@ pub struct FnDecl {
     pub abi: Option<String>,
     /// Attributes like `@entry`, `@inline`, etc.
     pub attrs: Vec<String>,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// A `using` context clause on a function signature.
@@ -137,6 +139,8 @@ pub struct StructDecl {
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
     pub attrs: Vec<String>,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// A struct field.
@@ -156,6 +160,8 @@ pub struct EnumDecl {
     pub variants: Vec<Variant>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// An enum variant.
@@ -173,6 +179,8 @@ pub struct TraitDecl {
     pub super_traits: Vec<String>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// An impl block.
@@ -181,6 +189,8 @@ pub struct ImplDecl {
     pub trait_name: Option<String>,
     pub target_ty: String,
     pub methods: Vec<FnDecl>,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// An import declaration.
@@ -242,8 +252,32 @@ pub struct PackageDecl {
     pub name: String,
     pub version: String,
     pub deps: Vec<DepDecl>,
+    pub features: Vec<FeatureDecl>,
     pub metadata: Vec<(String, String)>,
     pub profiles: Vec<ProfileDecl>,
+}
+
+/// A feature declaration inside a package block.
+///
+/// Additive: `feature "ssl" { dep "openssl" "^3.0" }`
+/// Exclusive: `feature "runtime" exclusive { option "tokio" { dep "tokio" "^1.0" } }`
+#[derive(Debug, Clone)]
+pub struct FeatureDecl {
+    pub name: String,
+    pub exclusive: bool,
+    /// Deps gated by this feature (additive features only).
+    pub deps: Vec<DepDecl>,
+    /// Options (exclusive features only).
+    pub options: Vec<FeatureOption>,
+    /// Default option name (exclusive features only, required).
+    pub default: Option<String>,
+}
+
+/// An option inside an exclusive feature group.
+#[derive(Debug, Clone)]
+pub struct FeatureOption {
+    pub name: String,
+    pub deps: Vec<DepDecl>,
 }
 
 /// A build profile declaration inside a package block.
@@ -277,4 +311,8 @@ pub struct DepDecl {
     pub with_features: Vec<String>,
     /// Target platform filter.
     pub target: Option<String>,
+    /// Consented capabilities (PM3).
+    pub allow: Vec<String>,
+    /// Exclusive feature selections (FG5).
+    pub exclusive_selections: Vec<(String, String)>,
 }

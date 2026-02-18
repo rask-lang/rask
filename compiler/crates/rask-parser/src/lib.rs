@@ -197,4 +197,117 @@ mod tests {
         assert_eq!(result.errors[0].message, "unexpected 'mut' keyword");
         assert_eq!(result.errors[0].hint.as_deref(), Some("'let' is already mutable in Rask. Use 'const' for immutable bindings"));
     }
+
+    #[test]
+    fn doc_comments_on_structs() {
+        let result = parse("/// A point.\npublic struct Point {\n    x: f64\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Struct(ref s) = result.decls[0].kind {
+            assert_eq!(s.doc.as_deref(), Some("A point."));
+        } else {
+            panic!("Expected struct");
+        }
+    }
+
+    #[test]
+    fn doc_comments_on_functions() {
+        let result = parse("/// Add two numbers.\npublic func add(a: i32, b: i32) -> i32 { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.doc.as_deref(), Some("Add two numbers."));
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn doc_comments_multiline() {
+        let result = parse("/// First line.\n/// Second line.\nfunc foo() { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.doc.as_deref(), Some("First line.\nSecond line."));
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn doc_comments_on_methods_in_extend() {
+        let result = parse("extend Foo {\n    /// Do something.\n    public func bar(self) { }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Impl(ref i) = result.decls[0].kind {
+            assert_eq!(i.methods[0].doc.as_deref(), Some("Do something."));
+        } else {
+            panic!("Expected impl");
+        }
+    }
+
+    #[test]
+    fn parse_all_stdlib_stubs() {
+        let stdlib_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap()
+            .parent().unwrap()
+            .parent().unwrap()
+            .join("stdlib");
+        if !stdlib_dir.exists() { return; }
+        for entry in std::fs::read_dir(&stdlib_dir).expect("stdlib directory not found") {
+            let path = entry.unwrap().path();
+            if path.extension().map(|e| e == "rk").unwrap_or(false) {
+                let src = std::fs::read_to_string(&path)
+                    .expect(&format!("Failed to read {}", path.display()));
+                let lex_result = rask_lexer::Lexer::new(&src).tokenize();
+                assert!(lex_result.is_ok(), "Lex errors in {}: {:?}", path.display(), lex_result.errors);
+                let parse_result = Parser::new(lex_result.tokens).parse();
+                assert!(parse_result.is_ok(), "Parse errors in {}: {:?}", path.display(), parse_result.errors);
+            }
+        }
+    }
+
+    #[test]
+    fn no_doc_means_none() {
+        let result = parse("func plain() { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert!(f.doc.is_none());
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn parse_option_enum_stub() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent().unwrap().parent().unwrap().parent().unwrap()
+                .join("stdlib/option.rk")
+        ).unwrap();
+        let result = parse(&src);
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_result_type_in_func() {
+        // () or E return type
+        let result = parse("extend Foo {\n    public func push(mutate self, v: T) -> () or PushError<T> { }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_func_type_param() {
+        // func(T) -> R as a parameter type
+        let result = parse("extend Foo {\n    public func read(self, f: func(T) -> R) -> Option<R> { }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_unsafe_method_in_extend() {
+        let result = parse("extend Foo {\n    public unsafe func as_ptr(self) -> i64 { }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn parse_comptime_method_in_extend() {
+        let result = parse("extend Foo {\n    public comptime func freeze(self) -> i64 { }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
 }

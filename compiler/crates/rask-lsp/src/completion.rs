@@ -15,16 +15,23 @@ impl Backend {
         offset: usize,
         cached: &CompilationResult,
     ) -> Option<CompletionResponse> {
-        let receiver_type = self.find_receiver_type(source, offset, cached)?;
         let mut items = Vec::new();
-        let formatter = TypeFormatter::new(&cached.typed.types);
-        collect_completions_for_type(
-            &receiver_type,
-            &formatter,
-            &cached.typed.types,
-            &mut items,
-        );
-        Some(CompletionResponse::Array(items))
+
+        if let Some(receiver_type) = self.find_receiver_type(source, offset, cached) {
+            let formatter = TypeFormatter::new(&cached.typed.types);
+            collect_completions_for_type(
+                &receiver_type,
+                &formatter,
+                &cached.typed.types,
+                &mut items,
+            );
+        } else {
+            // Fallback: receiver might be a builtin module (fs, net, etc.)
+            let receiver_name = extract_receiver_ident(source, offset)?;
+            add_all_stub_methods(&receiver_name, &mut items);
+        }
+
+        if items.is_empty() { None } else { Some(CompletionResponse::Array(items)) }
     }
 
     /// Find the type of the expression before the dot at `offset`.
@@ -278,23 +285,24 @@ fn method_to_completion(sig: &MethodSig, formatter: &TypeFormatter) -> Completio
     }
 }
 
-/// Add stdlib methods for well-known builtin types.
+/// Add stdlib methods for well-known builtin types (instance methods only).
 fn add_stdlib_methods(type_name: &str, items: &mut Vec<CompletionItem>) {
-    let methods: &[rask_stdlib::MethodDef] = match type_name {
-        "Vec" => rask_stdlib::types::vec_methods(),
-        "Map" => rask_stdlib::types::map_methods(),
-        "string" | "String" => rask_stdlib::types::string_methods(),
-        "Pool" => rask_stdlib::types::pool_methods(),
-        "Option" => rask_stdlib::types::option_methods(),
-        "Result" => rask_stdlib::types::result_methods(),
-        _ => return,
-    };
+    add_stub_methods_filtered(type_name, items, true);
+}
+
+/// Add all stub methods for a type/module (no self filter — for modules).
+fn add_all_stub_methods(type_name: &str, items: &mut Vec<CompletionItem>) {
+    add_stub_methods_filtered(type_name, items, false);
+}
+
+/// Add stub methods, optionally filtering to self-methods only.
+fn add_stub_methods_filtered(type_name: &str, items: &mut Vec<CompletionItem>, self_only: bool) {
+    let methods = rask_stdlib::methods_for(type_name);
 
     for method in methods {
-        if !method.takes_self {
+        if self_only && !method.takes_self {
             continue;
         }
-        // Skip if already added from TypeDef
         if items.iter().any(|i| i.label == method.name) {
             continue;
         }
@@ -305,10 +313,18 @@ fn add_stdlib_methods(type_name: &str, items: &mut Vec<CompletionItem>) {
             .collect::<Vec<_>>()
             .join(", ");
         let detail = format!("({}) -> {}", params_str, method.ret_ty);
+        let kind = if self_only {
+            CompletionItemKind::METHOD
+        } else {
+            CompletionItemKind::FUNCTION
+        };
         items.push(CompletionItem {
-            label: method.name.to_string(),
-            kind: Some(CompletionItemKind::METHOD),
+            label: method.name.clone(),
+            kind: Some(kind),
             detail: Some(detail),
+            documentation: method.doc.as_ref().map(|d| {
+                Documentation::String(d.clone())
+            }),
             insert_text: Some(if method.params.is_empty() {
                 format!("{}()", method.name)
             } else {
@@ -318,4 +334,21 @@ fn add_stdlib_methods(type_name: &str, items: &mut Vec<CompletionItem>) {
             ..Default::default()
         });
     }
+}
+
+/// Extract the identifier before the dot at `offset`.
+fn extract_receiver_ident(source: &str, offset: usize) -> Option<String> {
+    let before_dot = if offset > 0 && source.as_bytes().get(offset - 1) == Some(&b'.') {
+        offset - 1
+    } else {
+        offset
+    };
+    let text_before = &source[..before_dot];
+    let ident_end = text_before.len();
+    let ident_start = text_before
+        .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    let ident = &text_before[ident_start..ident_end];
+    if ident.is_empty() { None } else { Some(ident.to_string()) }
 }
