@@ -296,6 +296,13 @@ impl<'a> MirLowerer<'a> {
                     _ => {}
                 }
             }
+            // String methods that always return Vec<string>
+            match method.as_str() {
+                "lines" | "split" | "split_whitespace" => {
+                    self.collection_elem_types.insert(name.to_string(), MirType::String);
+                }
+                _ => {}
+            }
         }
 
         // Track stdlib type prefix for variables assigned from type constructors,
@@ -339,6 +346,16 @@ impl<'a> MirLowerer<'a> {
             if let ExprKind::Ident(func_name) = &func.kind {
                 if let Some(prefix) = super::func_return_type_prefix(func_name) {
                     self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                }
+            }
+        }
+        // Index expression: args[1] → if args has known element type, propagate it
+        if let ExprKind::Index { object, .. } = &init.kind {
+            if let ExprKind::Ident(coll_name) = &object.kind {
+                if let Some(elem_ty) = self.collection_elem_types.get(coll_name).cloned() {
+                    if let Some(prefix) = self.mir_type_name(&elem_ty) {
+                        self.local_type_prefix.insert(name.to_string(), prefix);
+                    }
                 }
             }
         }

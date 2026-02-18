@@ -202,7 +202,7 @@ func interrupt_handler(
 
     // Run for limited iterations (simulates timed interrupt)
     while sequence < sample_rate_hz * 2 {
-        const now_ns = time.Instant.now().duration_since(start_time.clone()).as_nanos() as i64
+        const now_ns = time.Instant.now().duration_since(start_time).as_nanos() as i64
 
         for sensor_id in 0..3 {
             const reading = SensorReading {
@@ -350,7 +350,7 @@ func main() -> () or Error {
 
     let cycle: i64 = 0
 
-    while (time.Instant.now().duration_since(start_time.clone()).as_secs() as i64) < DURATION_SECS {
+    while (time.Instant.now().duration_since(start_time).as_secs() as i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()
 
         // Drain available samples from buffer
@@ -373,7 +373,7 @@ func main() -> () or Error {
         cycle += 1
 
         // Sleep until next cycle
-        time.sleep(process_period_ns / 1000000)
+        time.sleep(time.Duration.from_millis(process_period_ns / 1000000))
     }
 
     // Wait for interrupt handler

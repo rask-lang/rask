@@ -489,16 +489,18 @@ impl<'a> MirLowerer<'a> {
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
-                // Skip native binop for types that need C runtime calls (SIMD vectors)
-                // or special method dispatch (raw pointers: ptr.add != arithmetic add).
-                let skip_binop = if let ExprKind::Ident(var_name) = &object.kind {
-                    self.local_type_prefix.get(var_name)
-                        .map(|p| matches!(p.as_str(), "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
-                        .unwrap_or(false)
-                    || matches!(obj_ty, MirType::Ptr)
-                } else {
-                    matches!(obj_ty, MirType::Ptr)
-                };
+                // Skip native binop for types that need C runtime calls (strings,
+                // SIMD vectors) or special method dispatch (raw pointers:
+                // ptr.add != arithmetic add).
+                let skip_binop = matches!(obj_ty, MirType::String)
+                    || if let ExprKind::Ident(var_name) = &object.kind {
+                        self.local_type_prefix.get(var_name)
+                            .map(|p| matches!(p.as_str(), "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
+                            .unwrap_or(false)
+                        || matches!(obj_ty, MirType::Ptr)
+                    } else {
+                        matches!(obj_ty, MirType::Ptr)
+                    };
 
                 // Detect binary operator methods (desugared from a + b → a.add(b))
                 // Skip for SIMD types and raw pointers — they use method dispatch.
@@ -536,8 +538,8 @@ impl<'a> MirLowerer<'a> {
                 }
                 } // end if !skip_binop
 
-                // concat(): string concatenation from interpolation desugaring
-                if method == "concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
+                // concat()/add(): string concatenation from interpolation or + operator
+                if (method == "concat" || method == "add") && args.len() == 1 && matches!(obj_ty, MirType::String) {
                     let (arg_op, _) = self.lower_expr(&args[0].expr)?;
                     let result_local = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::Call {
@@ -650,6 +652,12 @@ impl<'a> MirLowerer<'a> {
                     // and closure params lose type info when intermediates become MirType::Ptr.
                     // Only methods that are unique to a single type belong here.
                     .or_else(|| match method.as_str() {
+                        // String (unique to string — Vec/Map don't have these)
+                        "contains" | "starts_with" | "ends_with" | "trim"
+                        | "to_lowercase" | "to_uppercase" | "replace"
+                        | "substr" | "substring" | "repeat" | "reverse"
+                        | "lines" | "split" | "split_whitespace"
+                        | "char_at" | "index_of" => Some("string".to_string()),
                         // Vec / iterator (no other Rask type has these)
                         "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
@@ -1442,26 +1450,33 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(then_block);
         let (then_val, then_ty) = self.lower_expr(then_branch)?;
         let result_local = self.builder.alloc_temp(then_ty.clone());
-        self.builder.push_stmt(MirStmt::Assign {
-            dst: result_local,
-            rvalue: MirRValue::Use(then_val),
-        });
-        self.builder.terminate(MirTerminator::Goto {
-            target: merge_block,
-        });
+        // Only add merge-goto if the branch didn't already terminate (e.g. return)
+        if self.builder.current_block_unterminated() {
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: result_local,
+                rvalue: MirRValue::Use(then_val),
+            });
+            self.builder.terminate(MirTerminator::Goto {
+                target: merge_block,
+            });
+        }
 
         // Else branch
         self.builder.switch_to_block(else_block);
         if let Some(else_expr) = else_branch {
             let (else_val, _) = self.lower_expr(else_expr)?;
-            self.builder.push_stmt(MirStmt::Assign {
-                dst: result_local,
-                rvalue: MirRValue::Use(else_val),
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(else_val),
+                });
+            }
+        }
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::Goto {
+                target: merge_block,
             });
         }
-        self.builder.terminate(MirTerminator::Goto {
-            target: merge_block,
-        });
 
         self.builder.switch_to_block(merge_block);
 
@@ -1487,6 +1502,14 @@ impl<'a> MirLowerer<'a> {
 
         let is_niche = self.is_niche_option_expr(scrutinee);
         let (scrutinee_op, scrutinee_ty) = self.lower_expr(scrutinee)?;
+
+        // String match: emit chain of string_eq comparisons instead of switch
+        let is_string_match = matches!(scrutinee_ty, MirType::String)
+            || self.ctx.lookup_raw_type(scrutinee.id)
+                .map_or(false, |ty| matches!(ty, rask_types::Type::String));
+        if is_string_match {
+            return self.lower_string_match(scrutinee_op, arms);
+        }
 
         let is_enum = matches!(scrutinee_ty, MirType::Enum(_));
 
@@ -1703,6 +1726,116 @@ impl<'a> MirLowerer<'a> {
                 self.builder.terminate(MirTerminator::Goto {
                     target: merge_block,
                 });
+            }
+        }
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(result_local), result_ty))
+    }
+
+    /// Lower match on strings: emit a chain of string_eq comparisons.
+    /// `match s { "a" => ..., "b" | "c" => ..., _ => ... }` becomes
+    /// if-else chain: `if string_eq(s, "a") goto arm0 else if ...`
+    fn lower_string_match(
+        &mut self,
+        scrutinee_op: MirOperand,
+        arms: &[rask_ast::expr::MatchArm],
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_ast::expr::Pattern;
+
+        let merge_block = self.builder.create_block();
+        let arm_blocks: Vec<BlockId> = arms.iter().map(|_| self.builder.create_block()).collect();
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        let mut result_ty = MirType::Void;
+
+        // Find default arm index
+        let default_idx = arms.iter().position(|a| {
+            matches!(&a.pattern, Pattern::Wildcard)
+                || matches!(&a.pattern, Pattern::Ident(n) if !n.starts_with('"'))
+        });
+
+        // Collect string patterns for each arm: Vec<(arm_index, string_literals)>
+        let mut string_arms: Vec<(usize, Vec<String>)> = Vec::new();
+        for (i, arm) in arms.iter().enumerate() {
+            match &arm.pattern {
+                Pattern::Literal(lit) => {
+                    if let ExprKind::String(s) = &lit.kind {
+                        string_arms.push((i, vec![s.clone()]));
+                    }
+                }
+                Pattern::Or(pats) => {
+                    let strs: Vec<String> = pats.iter().filter_map(|p| {
+                        if let Pattern::Literal(lit) = p {
+                            if let ExprKind::String(s) = &lit.kind {
+                                return Some(s.clone());
+                            }
+                        }
+                        None
+                    }).collect();
+                    if !strs.is_empty() {
+                        string_arms.push((i, strs));
+                    }
+                }
+                Pattern::Wildcard | Pattern::Ident(_) => {
+                    // handled as default
+                }
+                _ => {}
+            }
+        }
+
+        let default_block = default_idx.map(|i| arm_blocks[i]).unwrap_or(merge_block);
+
+        // Emit if-else chain
+        for (arm_idx, literals) in &string_arms {
+            for (j, lit) in literals.iter().enumerate() {
+                let eq_result = self.builder.alloc_temp(MirType::Bool);
+                self.builder.push_stmt(MirStmt::Call {
+                    dst: Some(eq_result),
+                    func: FunctionRef::internal("string_eq".to_string()),
+                    args: vec![
+                        scrutinee_op.clone(),
+                        MirOperand::Constant(MirConst::String(lit.clone())),
+                    ],
+                });
+                let next_test = self.builder.create_block();
+                // For Or patterns with multiple literals, on match go to the arm block
+                self.builder.terminate(MirTerminator::Branch {
+                    cond: MirOperand::Local(eq_result),
+                    then_block: arm_blocks[*arm_idx],
+                    else_block: next_test,
+                });
+                self.builder.switch_to_block(next_test);
+                // If last literal and last string arm, fall through to default
+                let _ = j; // used for iteration
+            }
+        }
+        // After all tests, go to default
+        self.builder.terminate(MirTerminator::Goto { target: default_block });
+
+        // Lower each arm body
+        for (i, arm) in arms.iter().enumerate() {
+            self.builder.switch_to_block(arm_blocks[i]);
+
+            // Bind identifier patterns (wildcard variable) to scrutinee
+            if let Pattern::Ident(name) = &arm.pattern {
+                let bind_local = self.builder.alloc_local(name.clone(), MirType::String);
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: bind_local,
+                    rvalue: MirRValue::Use(scrutinee_op.clone()),
+                });
+                self.locals.insert(name.clone(), (bind_local, MirType::String));
+            }
+
+            let (body_val, arm_ty) = self.lower_expr(&arm.body)?;
+            if i == 0 || result_ty == MirType::Void {
+                result_ty = arm_ty;
+            }
+            if self.builder.current_block_unterminated() {
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: result_local,
+                    rvalue: MirRValue::Use(body_val),
+                });
+                self.builder.terminate(MirTerminator::Goto { target: merge_block });
             }
         }
 

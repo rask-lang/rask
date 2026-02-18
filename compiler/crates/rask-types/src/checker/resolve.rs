@@ -343,6 +343,28 @@ impl TypeChecker {
             Type::UnresolvedNamed(name) if Self::is_atomic_type(name) => {
                 self.resolve_atomic_method(name, &method, &args, &ret, span)
             }
+            // Thread.spawn(closure) → ThreadHandle<T>
+            Type::UnresolvedNamed(name) if name == "Thread" || name == "ThreadPool" => {
+                if method == "spawn" && args.len() == 1 {
+                    // Extract closure return type for ThreadHandle<T>
+                    let inner = if let Type::Fn { ret: fn_ret, .. } = &args[0] {
+                        *fn_ret.clone()
+                    } else {
+                        self.ctx.fresh_var()
+                    };
+                    let handle_ty = Type::UnresolvedGeneric {
+                        name: "ThreadHandle".to_string(),
+                        args: vec![GenericArg::Type(Box::new(inner))],
+                    };
+                    self.unify(&ret, &handle_ty, span)
+                } else {
+                    Err(TypeError::NoSuchMethod {
+                        ty,
+                        method,
+                        span,
+                    })
+                }
+            }
             // SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)
             Type::UnresolvedNamed(name) if Self::is_simd_type(name) => {
                 self.resolve_simd_method(name, &method, &args, &ret, span)
@@ -1052,6 +1074,11 @@ impl TypeChecker {
                 };
                 self.unify(ret, &vec_ty, span)
             }
+            // Vec.from(array) — construct Vec from array literal
+            "from" if args.len() == 1 => {
+                // The argument is already a Vec<T> (array literals desugar to Vec)
+                self.unify(ret, &args[0], span)
+            }
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed("Vec".to_string()),
                 method: method.to_string(),
@@ -1167,6 +1194,19 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         match method {
             "new" if args.is_empty() => {
+                let fresh_k = self.ctx.fresh_var();
+                let fresh_v = self.ctx.fresh_var();
+                let map_ty = Type::UnresolvedGeneric {
+                    name: "Map".to_string(),
+                    args: vec![
+                        GenericArg::Type(Box::new(fresh_k)),
+                        GenericArg::Type(Box::new(fresh_v)),
+                    ],
+                };
+                self.unify(ret, &map_ty, span)
+            }
+            // Map.from(vec_of_pairs) — construct Map from iterable
+            "from" if args.len() == 1 => {
                 let fresh_k = self.ctx.fresh_var();
                 let fresh_v = self.ctx.fresh_var();
                 let map_ty = Type::UnresolvedGeneric {

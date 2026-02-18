@@ -128,10 +128,10 @@ func manual_close() {
 
 func demonstrate_file_resources() -> () or string {
     // File handles are also linear resources
-    const file = try fs.open("test.txt", "w+")
+    const file = try fs.create("test.txt")
     ensure {
         file.close()
-        fs.delete("test.txt")  // Clean up the file after use
+        fs.remove("test.txt")  // Clean up the file after use
     }
     // Use the file
     const content = try file.read_text()

@@ -496,18 +496,30 @@ impl TypeChecker {
                 // ESAD Phase 2: Check for aliasing violations in closure body
                 self.check_closure_aliasing(params, body);
 
+                // Save enclosing return type — `return` inside a closure
+                // returns from the closure, not the enclosing function
+                let outer_return_type = self.current_return_type.take();
+                let closure_return_type = self.ctx.fresh_var();
+                self.current_return_type = Some(closure_return_type.clone());
+
                 let inferred_ret = self.infer_expr(body);
+
+                self.current_return_type = outer_return_type;
+
+                // Unify the closure body type with the return type from
+                // return statements (if any)
+                let _ = self.unify(&inferred_ret, &closure_return_type, expr.span);
 
                 // Check declared return type if present
                 let ret_ty = if let Some(declared) = declared_ret {
                     let expected_ret = parse_type_string(declared, &self.types)
                         .unwrap_or(Type::Error);
-                    if let Err(err) = self.unify(&inferred_ret, &expected_ret, expr.span) {
+                    if let Err(err) = self.unify(&closure_return_type, &expected_ret, expr.span) {
                         self.errors.push(err);
                     }
                     expected_ret
                 } else {
-                    inferred_ret
+                    closure_return_type
                 };
 
                 Type::Fn {
@@ -976,7 +988,7 @@ impl TypeChecker {
         // emit UnresolvedNamed directly instead of calling infer_expr
         // (which would return Type::Error for unregistered type names).
         if let ExprKind::Ident(name) = &object.kind {
-            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng") {
+            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool") {
                 let obj_ty = Type::UnresolvedNamed(name.clone());
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret_ty = self.ctx.fresh_var();

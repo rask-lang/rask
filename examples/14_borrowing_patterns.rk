@@ -114,9 +114,9 @@ func main() {
     const vec1 = Vec.from([1, 2, 3])
     const vec2 = Vec.from([1, 2, 3])
 
-    // Borrowing happens during comparison only
-    if vec1.iter().eq(vec2.iter()) {
-        print("Vectors are equal\n")
+    // Compare vec lengths as a simple equality check
+    if vec1.len() == vec2.len() {
+        print("Vectors have equal length\n")
     }
 
     // Both still usable

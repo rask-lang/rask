@@ -63,6 +63,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // Vec.from(vec) → clone the vec (identity when source is a fresh array literal)
+        StdlibEntry {
+            mir_name: "Vec_from",
+            c_name: "rask_vec_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         // rask_vec_push(v: RaskVec*, elem: const void*) → i64
         StdlibEntry {
             mir_name: "Vec_push",
@@ -434,6 +442,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "Map_new",
             c_name: "rask_map_new",
             params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // Map.from(source) → clone a map
+        StdlibEntry {
+            mir_name: "Map_from",
+            c_name: "rask_map_clone",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
