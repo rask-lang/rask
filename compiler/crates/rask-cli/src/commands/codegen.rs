@@ -3,7 +3,7 @@
 
 use colored::Colorize;
 use rask_mono::MonoProgram;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use crate::{output, Format};
@@ -397,14 +397,15 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
                 .and_then(|s| s.to_str())
                 .unwrap_or("a.out");
 
-            // If in a project context (build.rk found), output to build/debug/
-            if let Some(project_root) = super::pipeline::find_project_root_from(path) {
-                let out_dir = project_root.join("build").join("debug");
-                let _ = std::fs::create_dir_all(&out_dir);
-                out_dir.join(stem).to_string_lossy().to_string()
+            // Output to build/debug/ — either project root or source file directory
+            let base_dir = if let Some(project_root) = super::pipeline::find_project_root_from(path) {
+                project_root
             } else {
-                stem.to_string()
-            }
+                p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
+            };
+            let out_dir = base_dir.join("build").join("debug");
+            let _ = std::fs::create_dir_all(&out_dir);
+            out_dir.join(stem).to_string_lossy().to_string()
         }
     };
     let obj_path = format!("{}.o", bin_path);
@@ -418,6 +419,9 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         eprintln!("{}: link: {}", output::error_label(), e);
         process::exit(1);
     }
+
+    // Clean up intermediate object file
+    let _ = std::fs::remove_file(&obj_path);
 
     if format == Format::Human && !quiet {
         eprintln!("{}", output::banner_ok(&format!("Compiled → {}", bin_path)));
