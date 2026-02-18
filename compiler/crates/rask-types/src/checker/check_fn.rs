@@ -228,6 +228,13 @@ impl TypeChecker {
                     self.expr_always_returns(then_branch) && self.expr_always_returns(else_br)
                 })
             }
+            ExprKind::Call { func, .. } => {
+                if let ExprKind::Ident(name) = &func.kind {
+                    name == "panic"
+                } else {
+                    false
+                }
+            }
             _ => false,
         }
     }
