@@ -28,6 +28,8 @@ pub struct CodeGenerator {
     pub comptime_data: HashMap<String, cranelift_module::DataId>,
     /// MIR names of stdlib functions that can panic at runtime
     panicking_fns: HashSet<String>,
+    /// Names of functions compiled as Rask code (not C stdlib)
+    internal_fns: HashSet<String>,
 }
 
 impl CodeGenerator {
@@ -54,6 +56,7 @@ impl CodeGenerator {
             string_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
+            internal_fns: HashSet::new(),
         })
     }
 
@@ -92,6 +95,7 @@ impl CodeGenerator {
             string_data: HashMap::new(),
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
+            internal_fns: HashSet::new(),
         })
     }
 
@@ -409,6 +413,7 @@ impl CodeGenerator {
 
             // Store under the MIR name so internal calls resolve correctly
             self.func_ids.insert(mir_fn.name.clone(), func_id);
+            self.internal_fns.insert(mir_fn.name.clone());
         }
         Ok(())
     }
@@ -439,6 +444,8 @@ impl CodeGenerator {
                 for stmt in &block.statements {
                     self.collect_string_constants(stmt, &mut counter)?;
                 }
+                // Also scan terminators for string constants (e.g. return "hello")
+                self.collect_terminator_strings(&block.terminator, &mut counter)?;
             }
         }
         Ok(())
@@ -458,6 +465,19 @@ impl CodeGenerator {
                 for arg in args {
                     self.register_operand_string(arg, counter)?;
                 }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn collect_terminator_strings(&mut self, term: &rask_mir::MirTerminator, counter: &mut usize) -> CodegenResult<()> {
+        match term {
+            rask_mir::MirTerminator::Return { value: Some(op) } => {
+                self.register_operand_string(op, counter)?;
+            }
+            rask_mir::MirTerminator::Switch { value, .. } => {
+                self.register_operand_string(value, counter)?;
             }
             _ => {}
         }
@@ -613,6 +633,7 @@ impl CodeGenerator {
             &string_globals,
             &comptime_globals,
             &self.panicking_fns,
+            &self.internal_fns,
         )?;
         builder.build()?;
 

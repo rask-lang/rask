@@ -184,18 +184,54 @@ fn align_up(val: u32, align: u32) -> u32 {
 
 /// Parse a field type string (from AST) to a Type for layout computation.
 fn parse_field_type(s: &str) -> Type {
-    match s.trim() {
+    let s = s.trim();
+
+    // Result type: "T or E"
+    if let Some(idx) = s.find(" or ") {
+        let ok = parse_field_type(&s[..idx]);
+        let err = parse_field_type(&s[idx + 4..]);
+        return Type::Result {
+            ok: Box::new(ok),
+            err: Box::new(err),
+        };
+    }
+
+    // Generic types: Name<Args>
+    if let Some(angle) = s.find('<') {
+        if s.ends_with('>') {
+            let name = &s[..angle];
+            let inner = &s[angle + 1..s.len() - 1];
+
+            // Option<T> → Type::Option
+            if name == "Option" {
+                return Type::Option(Box::new(parse_field_type(inner)));
+            }
+
+            // Split comma-separated type args (respecting nested angle brackets)
+            let args: Vec<rask_types::GenericArg> = split_type_args(inner)
+                .into_iter()
+                .map(|a| rask_types::GenericArg::Type(Box::new(parse_field_type(a))))
+                .collect();
+
+            return Type::UnresolvedGeneric {
+                name: name.to_string(),
+                args,
+            };
+        }
+    }
+
+    match s {
         "()" => Type::Unit,
         "bool" => Type::Bool,
         "i8" => Type::I8,
         "i16" => Type::I16,
         "i32" => Type::I32,
-        "i64" => Type::I64,
+        "i64" | "isize" => Type::I64,
         "i128" => Type::I128,
         "u8" => Type::U8,
         "u16" => Type::U16,
         "u32" => Type::U32,
-        "u64" => Type::U64,
+        "u64" | "usize" => Type::U64,
         "u128" => Type::U128,
         "f32" => Type::F32,
         "f64" => Type::F64,
@@ -203,6 +239,29 @@ fn parse_field_type(s: &str) -> Type {
         "string" => Type::String,
         name => Type::UnresolvedNamed(name.to_string()),
     }
+}
+
+/// Split comma-separated type arguments, respecting nested angle brackets.
+fn split_type_args(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth = 0;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => depth -= 1,
+            ',' if depth == 0 => {
+                result.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        result.push(last);
+    }
+    result
 }
 
 /// Build a substitution map from type param names to concrete types.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Vec and Map collections
 
-func main() -> () or Error {
+func main() {
     // Vec - ordered collection
     const numbers = Vec.from([1, 2, 3, 4, 5])
 
@@ -15,9 +15,9 @@ func main() -> () or Error {
 
     // Map - key-value pairs
     const scores = Map.new()
-    try scores.insert("Alice", 95)
-    try scores.insert("Bob", 87)
-    try scores.insert("Charlie", 92)
+    scores.insert("Alice", 95)
+    scores.insert("Bob", 87)
+    scores.insert("Charlie", 92)
 
     const alice_score = scores.get("Alice")
     if alice_score is Some(score) {

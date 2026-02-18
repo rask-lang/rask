@@ -1196,7 +1196,8 @@ fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
     match func_name {
         "fs_open" | "fs_create" => Some("File"),
         "File_lines" | "File_read_all" | "fs_read_lines" | "cli_args"
-        | "string_split" | "Map_keys" | "Map_values" => Some("Vec"),
+        | "string_lines" | "string_split" | "string_split_whitespace"
+        | "Map_keys" | "Map_values" => Some("Vec"),
         "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
         _ if func_name.starts_with("AtomicBool_") => Some("AtomicBool"),
         _ if func_name.starts_with("f32x4_") && !is_scalar_return(func_name) => Some("f32x4"),

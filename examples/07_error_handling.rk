@@ -49,8 +49,8 @@ func divide(a: i32, b: i32) -> i32 or string {
 
 func safe_calc() -> i32 {
     const x = divide(20, 4)
-    if x is Ok {
-        return x * 2
+    if x is Ok(val) {
+        return val * 2
     }
     return 0
 }

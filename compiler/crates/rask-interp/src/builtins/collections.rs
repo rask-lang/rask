@@ -148,6 +148,16 @@ impl Interpreter {
                 let cloned = v.lock().unwrap().clone();
                 Ok(Value::Vec(Arc::new(Mutex::new(cloned))))
             }
+            "set" => {
+                let idx = self.expect_int(&args, 0)? as usize;
+                let val = args.into_iter().nth(1).unwrap_or(Value::Unit);
+                let mut vec = v.lock().unwrap();
+                if idx >= vec.len() {
+                    return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
+                }
+                vec[idx] = val;
+                Ok(Value::Unit)
+            }
             "insert" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 let item = args.into_iter().nth(1).unwrap_or(Value::Unit);
