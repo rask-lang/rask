@@ -174,10 +174,26 @@ impl TypeTable {
                 ok: Box::new(self.resolve_type_names(ok)),
                 err: Box::new(self.resolve_type_names(err)),
             },
-            Type::Generic { base, args } => Type::UnresolvedGeneric {
-                name: self.type_name(*base),
-                args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
-            },
+            Type::Generic { base, args } => {
+                // Canonicalize Result<T, E> and Option<T> to their first-class variants
+                if Some(*base) == self.result_type_id && args.len() == 2 {
+                    if let (GenericArg::Type(ok), GenericArg::Type(err)) = (&args[0], &args[1]) {
+                        return Type::Result {
+                            ok: Box::new(self.resolve_type_names(ok)),
+                            err: Box::new(self.resolve_type_names(err)),
+                        };
+                    }
+                }
+                if Some(*base) == self.option_type_id && args.len() == 1 {
+                    if let GenericArg::Type(inner) = &args[0] {
+                        return Type::Option(Box::new(self.resolve_type_names(inner)));
+                    }
+                }
+                Type::UnresolvedGeneric {
+                    name: self.type_name(*base),
+                    args: args.iter().map(|a| self.resolve_generic_arg(a)).collect(),
+                }
+            }
             Type::Fn { params, ret } => Type::Fn {
                 params: params.iter().map(|p| self.resolve_type_names(p)).collect(),
                 ret: Box::new(self.resolve_type_names(ret)),

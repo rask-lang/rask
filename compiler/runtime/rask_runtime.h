@@ -267,6 +267,9 @@ _Noreturn void rask_panic_at(const char *file, int32_t line, int32_t col,
                              const char *msg);
 _Noreturn void rask_panic_fmt(const char *fmt, ...);
 
+// Thread-local panic location — codegen sets before panicking calls
+void rask_set_panic_location(const char *file, int32_t line, int32_t col);
+
 // Location-aware panic wrappers for codegen
 void rask_panic_unwrap(void);
 void rask_panic_unwrap_at(const char *file, int32_t line, int32_t col);

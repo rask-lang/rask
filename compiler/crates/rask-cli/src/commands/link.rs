@@ -26,13 +26,15 @@ const RUNTIME_SOURCES: &[&str] = &[
     "simd.c",
 ];
 
-/// Extra link-time inputs (libraries, object files).
+/// Extra link-time inputs (libraries, object files, search paths).
 #[derive(Default)]
 pub struct LinkOptions {
     /// System libraries to link (-l flags, e.g. "m" for libm)
     pub libs: Vec<String>,
     /// Additional object files or C source files to link
     pub objects: Vec<String>,
+    /// Library search paths (-L flags)
+    pub search_paths: Vec<String>,
 }
 
 /// Find the runtime C files, compile them, and link with the object file.
@@ -62,7 +64,10 @@ pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) 
     for obj in &opts.objects {
         cmd.arg(obj);
     }
-    cmd.args(["-o", bin_path, "-no-pie", "-lpthread"]);
+    cmd.args(["-o", bin_path, "-no-pie", "-lpthread", "-lm"]);
+    for path in &opts.search_paths {
+        cmd.arg(format!("-L{}", path));
+    }
     for lib in &opts.libs {
         cmd.arg(format!("-l{}", lib));
     }

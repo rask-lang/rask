@@ -37,6 +37,8 @@ pub struct FunctionBuilder<'a> {
     string_globals: &'a HashMap<String, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
+    /// MIR names of stdlib functions that can panic at runtime
+    panicking_fns: &'a HashSet<String>,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -57,6 +59,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         string_globals: &'a HashMap<String, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
+        panicking_fns: &'a HashSet<String>,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
@@ -67,6 +70,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts,
             string_globals,
             comptime_globals,
+            panicking_fns,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
             current_line: 0,
@@ -180,6 +184,7 @@ impl<'a> FunctionBuilder<'a> {
                     self.string_globals, self.comptime_globals,
                     self.mir_fn.source_file.as_deref(),
                     self.current_line, self.current_col,
+                    self.panicking_fns,
                 )?;
             }
 
@@ -190,6 +195,7 @@ impl<'a> FunctionBuilder<'a> {
                 &self.mir_fn.blocks, &self.mir_fn.locals,
                 self.func_refs, self.struct_layouts, self.enum_layouts,
                 self.string_globals, self.comptime_globals,
+                self.panicking_fns,
             )?;
         }
 
@@ -218,6 +224,7 @@ impl<'a> FunctionBuilder<'a> {
         source_file: Option<&str>,
         current_line: u32,
         current_col: u32,
+        panicking_fns: &HashSet<String>,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
@@ -243,8 +250,10 @@ impl<'a> FunctionBuilder<'a> {
             MirStmt::Store { addr, offset, value } => {
                 let addr_val = builder.use_var(*var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
-                // Store as I64 to match pointer dereference load width
-                let val = Self::lower_operand_typed(builder, value, var_map, Some(types::I64), string_globals, func_refs)?;
+                // Lower operand without forcing a type — let the value carry its natural type.
+                // Float constants stay float, int constants stay int. The store instruction
+                // handles any width.
+                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
 
                 let flags = MemFlags::new();
                 builder.ins().store(flags, val, addr_val, *offset as i32);
@@ -469,6 +478,21 @@ impl<'a> FunctionBuilder<'a> {
                             let actual = builder.func.dfg.value_type(*val);
                             if actual != expected {
                                 *val = Self::convert_value(builder, *val, actual, expected);
+                            }
+                        }
+                    }
+
+                    // Store source location before calling panicking functions
+                    if panicking_fns.contains(&func.name) {
+                        if let Some(file_str) = source_file {
+                            if let (Some(set_loc_fn), Some(gv)) = (
+                                func_refs.get("set_panic_location"),
+                                string_globals.get(file_str),
+                            ) {
+                                let file_ptr = builder.ins().global_value(types::I64, *gv);
+                                let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                                let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                                builder.ins().call(*set_loc_fn, &[file_ptr, line_val, col_val]);
                             }
                         }
                     }
@@ -855,27 +879,36 @@ impl<'a> FunctionBuilder<'a> {
                 let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals, func_refs)?;
                 let rhs_ty = builder.func.dfg.value_type(rhs_val);
 
-                let is_float = lhs_ty.is_float();
+                let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
                 // Check if the left operand has an unsigned MIR type
                 let is_unsigned = Self::operand_mir_type(left, locals)
                     .map(|t| t.is_unsigned())
                     .unwrap_or(false);
 
-                // Widen narrower operand if integer types differ
-                let (lhs_val, rhs_val) = if lhs_ty != rhs_ty && lhs_ty.is_int() && rhs_ty.is_int() {
+                // Reconcile operand types
+                let (lhs_val, rhs_val) = if lhs_ty == rhs_ty {
+                    (lhs_val, rhs_val)
+                } else if lhs_ty.is_int() && rhs_ty.is_int() {
+                    // Widen narrower integer
                     if lhs_ty.bits() < rhs_ty.bits() {
                         (Self::convert_value(builder, lhs_val, lhs_ty, rhs_ty), rhs_val)
                     } else {
                         (lhs_val, Self::convert_value(builder, rhs_val, rhs_ty, lhs_ty))
                     }
-                } else if lhs_ty != rhs_ty && is_float {
+                } else if lhs_ty.is_float() && rhs_ty.is_float() {
                     // Promote narrower float
                     if lhs_ty.bits() < rhs_ty.bits() {
                         (builder.ins().fpromote(rhs_ty, lhs_val), rhs_val)
                     } else {
                         (lhs_val, builder.ins().fpromote(lhs_ty, rhs_val))
                     }
+                } else if lhs_ty.is_int() && rhs_ty.is_float() {
+                    // Convert int to float to match rhs
+                    (builder.ins().fcvt_from_sint(rhs_ty, lhs_val), rhs_val)
+                } else if lhs_ty.is_float() && rhs_ty.is_int() {
+                    // Convert int to float to match lhs
+                    (lhs_val, builder.ins().fcvt_from_sint(lhs_ty, rhs_val))
                 } else {
                     (lhs_val, rhs_val)
                 };
@@ -1116,6 +1149,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
         comptime_globals: &HashMap<String, GlobalValue>,
+        panicking_fns: &HashSet<String>,
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
@@ -1199,6 +1233,7 @@ impl<'a> FunctionBuilder<'a> {
                                 func_refs, struct_layouts, enum_layouts,
                                 string_globals, comptime_globals,
                                 None, 0, 0,
+                                panicking_fns,
                             )?;
                         }
                     }
@@ -1294,6 +1329,17 @@ impl<'a> FunctionBuilder<'a> {
             // Vec pop: add out-param, load result from it
             "Vec_pop" => {
                 // args: [vec] → [vec, &out]
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 8, 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.push(addr);
+                CallAdapt::PopOutParam(ss)
+            }
+
+            // Vec remove_at: add out-param for the removed element
+            "Vec_remove" => {
+                // args: [vec, index] → [vec, index, &out]
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,
                 ));
@@ -1401,7 +1447,11 @@ impl<'a> FunctionBuilder<'a> {
                         Ok(builder.ins().iconst(ty, *n))
                     }
                     MirConst::Float(f) => {
-                        let ty = expected_ty.unwrap_or(types::F64);
+                        // Only use expected_ty if it's a float type; ignore int expected types
+                        let ty = match expected_ty {
+                            Some(t) if t.is_float() => t,
+                            _ => types::F64,
+                        };
                         if ty == types::F32 {
                             Ok(builder.ins().f32const(*f as f32))
                         } else {

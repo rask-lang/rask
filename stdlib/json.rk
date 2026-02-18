@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// JSON encoding and decoding.
+struct json { }
+
+extend json {
+    /// Encode a value as a JSON string.
+    public func encode(value: T) -> string { }
+
+    /// Decode a JSON string into a typed value.
+    public func decode(str: string) -> T or Error { }
+}

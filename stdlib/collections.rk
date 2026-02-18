@@ -1,0 +1,179 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// A dynamic, growable array.
+public struct Vec<T> { }
+
+extend Vec<T> {
+    /// Create a new empty vector.
+    public func new() -> Vec<T> { }
+
+    /// Create a vector with pre-allocated capacity.
+    public func with_capacity(n: usize) -> Vec<T> { }
+
+    /// Create a bounded vector that cannot grow beyond n elements.
+    public func fixed(n: usize) -> Vec<T> { }
+
+    /// Number of elements.
+    public func len(self) -> usize { }
+
+    /// True if the vector contains no elements.
+    public func is_empty(self) -> bool { }
+
+    /// Maximum capacity, if bounded.
+    public func capacity(self) -> Option<usize> { }
+
+    /// True if this vector has a fixed capacity.
+    public func is_bounded(self) -> bool { }
+
+    /// Remaining capacity before the vector is full.
+    public func remaining(self) -> Option<usize> { }
+
+    /// Total bytes allocated.
+    public func allocated(self) -> usize { }
+
+    /// Push a value onto the end. Fails if bounded and full.
+    public func push(mutate self, value: T) -> () or PushError<T> { }
+
+    /// Push a value, panicking if bounded and full.
+    public func push_or_panic(mutate self, value: T) { }
+
+    /// Remove and return the last element.
+    public func pop(mutate self) -> Option<T> { }
+
+    /// Remove all elements.
+    public func clear(mutate self) { }
+
+    /// Insert a value at the given index, shifting later elements right.
+    public func insert(mutate self, index: usize, value: T) { }
+
+    /// Remove and return the element at the given index.
+    public func remove(mutate self, index: usize) -> T { }
+
+    /// Reserve space for at least `additional` more elements.
+    public func reserve(mutate self, additional: usize) -> () or AllocError { }
+
+    /// Get element at index (borrows).
+    public func get(self, index: usize) -> Option<T> { }
+
+    /// Get a clone of element at index.
+    public func get_clone(self, index: usize) -> Option<T> { }
+
+    /// Get the first element.
+    public func first(self) -> Option<T> { }
+
+    /// Get the last element.
+    public func last(self) -> Option<T> { }
+
+    /// Read element at index through a closure.
+    public func read(self, index: usize, f: func(T) -> R) -> Option<R> { }
+
+    /// Modify element at index through a closure.
+    public func modify(mutate self, index: usize, f: func(T) -> R) -> Option<R> { }
+
+    /// Swap elements at two indices.
+    public func swap(mutate self, i: usize, j: usize) { }
+
+    /// Iterate over elements by reference.
+    public func iter(self) -> Iterator<T> { }
+
+    /// Drain all elements into an iterator, leaving the vec empty.
+    public func take_all(mutate self) -> Iterator<T> { }
+
+    /// Skip the first n elements.
+    public func skip(self, n: usize) -> Vec<T> { }
+
+    /// Take the first n elements.
+    public func take(self, n: usize) -> Vec<T> { }
+
+    /// Keep only elements where f returns true.
+    public func retain(mutate self, f: func(T) -> bool) { }
+
+    /// Remove elements where f returns true, return count removed.
+    public func remove_where(mutate self, f: func(T) -> bool) -> usize { }
+
+    /// Remove and return elements where f returns true.
+    public func drain_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
+
+    /// Shrink allocation to fit current length.
+    public func shrink_to_fit(mutate self) { }
+
+    /// Shrink allocation to at least min_capacity.
+    public func shrink_to(mutate self, min_capacity: usize) { }
+
+    /// Construct an element in place via closure.
+    public func push_with(mutate self, f: func(T)) -> usize or AllocError { }
+
+    /// Raw pointer to the underlying buffer (unsafe).
+    public unsafe func as_ptr(self) -> *T { }
+
+    /// Mutable raw pointer to the underlying buffer (unsafe).
+    public unsafe func as_mut_ptr(mutate self) -> *T { }
+
+    /// Freeze into a compile-time array.
+    public comptime func freeze(self) -> Vec<T> { }
+}
+
+/// A hash map from keys to values.
+public struct Map<K, V> { }
+
+extend Map<K, V> {
+    /// Create a new empty map.
+    public func new() -> Map<K, V> { }
+
+    /// Create a map with pre-allocated capacity.
+    public func with_capacity(n: usize) -> Map<K, V> { }
+
+    /// Number of entries.
+    public func len(self) -> usize { }
+
+    /// True if the map contains no entries.
+    public func is_empty(self) -> bool { }
+
+    /// Maximum capacity, if bounded.
+    public func capacity(self) -> Option<usize> { }
+
+    /// True if this map has a fixed capacity.
+    public func is_bounded(self) -> bool { }
+
+    /// Insert a key-value pair. Returns the old value if the key existed.
+    public func insert(mutate self, key: K, value: V) -> Option<V> or InsertError<V> { }
+
+    /// Remove a key and return its value.
+    public func remove(mutate self, key: K) -> Option<V> { }
+
+    /// Remove all entries.
+    public func clear(mutate self) { }
+
+    /// Get value for key (borrows).
+    public func get(self, key: K) -> Option<V> { }
+
+    /// Get a clone of value for key.
+    public func get_clone(self, key: K) -> Option<V> { }
+
+    /// True if the map contains this key.
+    public func contains_key(self, key: K) -> bool { }
+
+    /// Read value for key through a closure.
+    public func read(self, key: K, f: func(V) -> R) -> Option<R> { }
+
+    /// Modify value for key through a closure.
+    public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> { }
+
+    /// Insert default if key absent, return nothing.
+    public func ensure(mutate self, key: K, f: func() -> V) -> () or InsertError { }
+
+    /// Insert default if key absent, then modify the value.
+    public func ensure_modify(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R or InsertError { }
+
+    /// Iterate over (key, value) pairs.
+    public func iter(self) -> Iterator<(K, V)> { }
+
+    /// Iterate over keys.
+    public func keys(self) -> Iterator<K> { }
+
+    /// Iterate over values.
+    public func values(self) -> Iterator<V> { }
+
+    /// Freeze into a compile-time map.
+    public comptime func freeze(self) -> Map<K, V> { }
+}

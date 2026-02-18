@@ -501,7 +501,7 @@ impl TypeChecker {
                     span,
                 });
             }
-            return match method_def.ret_ty {
+            return match method_def.ret_ty.as_str() {
                 "usize" => self.unify(ret, &Type::U64, span),
                 "bool" => self.unify(ret, &Type::Bool, span),
                 "()" => self.unify(ret, &Type::Unit, span),
@@ -544,7 +544,7 @@ impl TypeChecker {
                     span,
                 });
             }
-            return match method_def.ret_ty {
+            return match method_def.ret_ty.as_str() {
                 "usize" => self.unify(ret, &Type::U64, span),
                 "bool" => self.unify(ret, &Type::Bool, span),
                 "()" => self.unify(ret, &Type::Unit, span),

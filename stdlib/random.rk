@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Random number generator.
+public struct Rng { }
+
+extend Rng {
+    /// Create a new RNG with a random seed.
+    public func new() -> Rng { }
+
+    /// Create an RNG with a specific seed (deterministic).
+    public func from_seed(seed: i64) -> Rng { }
+
+    /// Generate a random unsigned 64-bit integer.
+    public func u64(mutate self) -> i64 { }
+
+    /// Generate a random signed 64-bit integer.
+    public func i64(mutate self) -> i64 { }
+
+    /// Generate a random f64 in [0, 1).
+    public func f64(mutate self) -> f64 { }
+
+    /// Generate a random f32 in [0, 1).
+    public func f32(mutate self) -> f64 { }
+
+    /// Generate a random boolean.
+    public func bool(mutate self) -> bool { }
+
+    /// Generate a random integer in [low, high).
+    public func range(mutate self, low: i64, high: i64) -> i64 { }
+
+    /// Shuffle a vector in place.
+    public func shuffle(mutate self, vec: Vec<T>) { }
+
+    /// Pick a random element from a vector.
+    public func choice(mutate self, vec: Vec<T>) -> Option<T> { }
+}

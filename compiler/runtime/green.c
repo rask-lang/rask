@@ -751,6 +751,16 @@ void *rask_green_closure_spawn(void *closure_ptr) {
     return rask_green_spawn(closure_poll_fn, ps, sizeof(ClosurePollState));
 }
 
+// ─── ThreadPool (synchronous stub) ──────────────────────────
+// Calls the closure synchronously and returns a completed task handle.
+void *rask_threadpool_spawn(void *closure_ptr) {
+    void (*func)(void *) = *(void (**)(void *))(closure_ptr);
+    void *env = (char *)closure_ptr + 8;
+    func(env);
+    // Return a dummy "completed" task handle (join on it is a no-op)
+    return rask_green_closure_spawn(closure_ptr);
+}
+
 // ─── I/O wrappers ───────────────────────────────────────────
 //
 // Blocking syscall wrappers. Async I/O inside green tasks requires the

@@ -566,7 +566,9 @@ fn generate_poll_fn(
         }
     }
 
-    builder.finish()
+    let mut poll_fn = builder.finish();
+    poll_fn.source_file = orig.source_file.clone();
+    poll_fn
 }
 
 // ── Statement remapping ─────────────────────────────────────────────

@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Command-line interface utilities.
+struct cli { }
+
+extend cli {
+    /// Get command-line arguments as a list of strings.
+    public func args() -> Vec<string> { }
+}

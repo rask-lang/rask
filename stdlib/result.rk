@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// A value that is either a success or an error.
+public enum Result<T, E> {
+    Ok(T)
+    Err(E)
+}
+
+extend Result<T, E> {
+    /// True if the result is Ok.
+    public func is_ok(self) -> bool { }
+
+    /// True if the result is Err.
+    public func is_err(self) -> bool { }
+
+    /// Extract the success value, panicking on error.
+    public func unwrap(self) -> T { }
+
+    /// Extract the error value, panicking on success.
+    public func unwrap_err(self) -> E { }
+
+    /// Extract the success value, or return the default.
+    public func unwrap_or(self, default: T) -> T { }
+
+    /// Extract the success value, or compute a default from the error.
+    public func unwrap_or_else(self, f: func(E) -> T) -> T { }
+
+    /// Transform the success value.
+    public func map(self, f: func(T) -> U) -> U or E { }
+
+    /// Transform the error value.
+    public func map_err(self, f: func(E) -> F) -> T or F { }
+
+    /// Transform the success value, flattening nested Results.
+    public func and_then(self, f: func(T) -> U or E) -> U or E { }
+
+    /// Handle the error, potentially recovering.
+    public func or_else(self, f: func(E) -> T or F) -> T or F { }
+
+    /// Convert to Option<T>, discarding the error.
+    public func ok(self) -> Option<T> { }
+
+    /// Convert to Option<E>, discarding the success value.
+    public func err(self) -> Option<E> { }
+}

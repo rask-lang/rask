@@ -344,9 +344,14 @@ impl<'a> MirLowerer<'a> {
         }
 
         // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
+        // or from the type annotation string (catches Ptr types like Vec<T>, Map<K,V>)
         if !self.local_type_prefix.contains_key(name) {
             if let Some(prefix) = self.mir_type_name(&var_ty) {
                 self.local_type_prefix.insert(name.to_string(), prefix);
+            } else if let Some(ty_str) = ty {
+                if let Some(prefix) = super::type_prefix_from_str(ty_str) {
+                    self.local_type_prefix.insert(name.to_string(), prefix);
+                }
             }
         }
 
@@ -605,6 +610,23 @@ impl<'a> MirLowerer<'a> {
         let elem_ty = self.extract_iterator_elem_type(iter_expr)
             .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(single_name.to_string(), elem_ty.clone());
+        if let Some(prefix) = self.mir_type_name(&elem_ty) {
+            self.local_type_prefix.insert(single_name.to_string(), prefix);
+        } else {
+            // MirType is Ptr — try to derive element prefix from iterable context.
+            // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
+            if let ExprKind::MethodCall { method, .. } = &iter_expr.kind {
+                match method.as_str() {
+                    "chunks" => {
+                        self.local_type_prefix.insert(single_name.to_string(), "Vec".to_string());
+                    }
+                    "handles" | "cursor" => {
+                        self.local_type_prefix.insert(single_name.to_string(), "Handle".to_string());
+                    }
+                    _ => {}
+                }
+            }
+        }
         self.locals.insert(single_name.to_string(), (binding_local, elem_ty));
         if is_array {
             // Fixed-size array: direct memory load
@@ -984,6 +1006,9 @@ impl<'a> MirLowerer<'a> {
 
         // Bind final value to the loop variable
         let binding_local = self.builder.alloc_local(binding.to_string(), final_ty.clone());
+        if let Some(prefix) = self.mir_type_name(&final_ty) {
+            self.local_type_prefix.insert(binding.to_string(), prefix);
+        }
         self.locals.insert(binding.to_string(), (binding_local, final_ty));
         self.builder.push_stmt(MirStmt::Assign {
             dst: binding_local,

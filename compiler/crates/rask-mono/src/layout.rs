@@ -405,6 +405,7 @@ mod tests {
                 methods: vec![],
                 is_pub: false,
                 attrs: vec![],
+                doc: None,
             }),
             span: dummy_span(),
         }
@@ -434,6 +435,7 @@ mod tests {
                     .collect(),
                 methods: vec![],
                 is_pub: false,
+                doc: None,
             }),
             span: dummy_span(),
         }

@@ -191,7 +191,7 @@ fn main() {
             let native = cmd_args.contains(&"--native");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
             let file_arg = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj"]);
             let file = match file_arg {
                 Some(f) => f,
@@ -223,7 +223,7 @@ fn main() {
             let output_path = extract_flag_value(&cmd_args, "-o");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
-            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs };
+            let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
             let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj"]);
             let file = match file_arg {
                 Some(f) => f,
@@ -323,8 +323,13 @@ fn main() {
                 "debug".to_string()
             };
             let target = extract_flag_value(&cmd_args, "--target");
-            let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target"]).unwrap_or(".");
-            let opts = commands::build::BuildOptions { profile, verbose, target };
+            let no_cache = cmd_args.contains(&"--no-cache");
+            let force = cmd_args.contains(&"--force");
+            let jobs = extract_flag_value(&cmd_args, "--jobs")
+                .or_else(|| extract_flag_value(&cmd_args, "-j"))
+                .and_then(|s| s.parse::<usize>().ok());
+            let path = find_positional_arg(&cmd_args, 2, &["--profile", "--target", "--jobs", "-j"]).unwrap_or(".");
+            let opts = commands::build::BuildOptions { profile, verbose, target, no_cache, force, jobs };
             commands::build::cmd_build(path, opts);
         }
         "clean" => {
@@ -335,6 +340,16 @@ fn main() {
             let all = cmd_args.contains(&"--all");
             let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
             commands::build::cmd_clean(path, all);
+        }
+        "update" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                println!("Regenerate rask.lock from current dependency state.\n");
+                println!("Usage: rask update [path]\n");
+                println!("Re-discovers packages and writes a fresh lock file.");
+                return;
+            }
+            let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
+            commands::build::cmd_update(path);
         }
         "add" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

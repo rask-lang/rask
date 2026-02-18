@@ -89,6 +89,7 @@ pub enum TokenKind {
     Dep,
     Scope,
     Feature,
+    Exclusive,
     Profile,
 
     // Operators
@@ -148,6 +149,9 @@ pub enum TokenKind {
     // Special
     Newline,
     Eof,
+
+    /// Doc comment (`/// ...`)
+    DocComment(String),
 }
 
 impl TokenKind {
@@ -216,6 +220,7 @@ impl TokenKind {
             TokenKind::Dep => "'dep'",
             TokenKind::Scope => "'scope'",
             TokenKind::Feature => "'feature'",
+            TokenKind::Exclusive => "'exclusive'",
             TokenKind::Profile => "'profile'",
 
             // Operators
@@ -275,6 +280,7 @@ impl TokenKind {
             // Special
             TokenKind::Newline => "end of line",
             TokenKind::Eof => "end of file",
+            TokenKind::DocComment(_) => "doc comment",
         }
     }
 }

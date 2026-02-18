@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Print a value followed by a newline to stdout.
+public func println(msg: string) { }
+
+/// Print a value to stdout without a trailing newline.
+public func print(msg: string) { }
+
+/// Abort execution with an error message.
+public func panic(msg: string) { }
+
+/// Format values into a string.
+public func format(fmt: string) -> string { }
+
+/// Spawn a concurrent task.
+public func spawn(f: func()) { }

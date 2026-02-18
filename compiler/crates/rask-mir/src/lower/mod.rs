@@ -434,6 +434,17 @@ impl<'a> MirLowerer<'a> {
                         .unwrap_or(MirType::Void);
                     func_sigs.insert(ext.name.clone(), FuncSig { ret_ty: sig_ret });
                 }
+                DeclKind::Impl(impl_decl) => {
+                    for m in &impl_decl.methods {
+                        let qualified = format!("{}_{}", impl_decl.target_ty, m.name);
+                        let sig_ret = m
+                            .ret_ty
+                            .as_deref()
+                            .map(|s| ctx.resolve_type_str(s))
+                            .unwrap_or(MirType::Void);
+                        func_sigs.insert(qualified, FuncSig { ret_ty: sig_ret });
+                    }
+                }
                 _ => {}
             }
         }
@@ -501,11 +512,33 @@ impl<'a> MirLowerer<'a> {
             local_type_prefix: HashMap::new(),
         };
 
+        // Resolve Self type from function name: "Document_delete_line" → "Document"
+        let self_type_name: Option<String> = fn_decl.params.iter()
+            .any(|p| p.ty == "Self")
+            .then(|| {
+                // Extract the type name prefix from the qualified function name
+                lowerer.parent_name.split('_').next().map(|s| s.to_string())
+            })
+            .flatten();
+
         // Add parameters
         for param in &fn_decl.params {
-            let param_ty = ctx.resolve_type_str(&param.ty);
+            let param_ty_str = if param.ty == "Self" {
+                self_type_name.as_deref().unwrap_or(&param.ty)
+            } else {
+                &param.ty
+            };
+            let param_ty = ctx.resolve_type_str(param_ty_str);
             let local_id = lowerer.builder.add_param(param.name.clone(), param_ty.clone());
-            lowerer.locals.insert(param.name.clone(), (local_id, param_ty));
+            lowerer.locals.insert(param.name.clone(), (local_id, param_ty.clone()));
+            // Set type prefix for parameters so method calls qualify correctly.
+            // mir_type_name handles Struct/Enum/String/primitives; type_prefix_from_str
+            // catches Ptr types like Vec<T>, Map<K,V> from the annotation string.
+            if let Some(prefix) = lowerer.mir_type_name(&param_ty) {
+                lowerer.local_type_prefix.insert(param.name.clone(), prefix);
+            } else if let Some(prefix) = type_prefix_from_str(param_ty_str) {
+                lowerer.local_type_prefix.insert(param.name.clone(), prefix);
+            }
         }
 
         // Lower function body
@@ -576,6 +609,11 @@ impl<'a> MirLowerer<'a> {
         // After mono, node IDs are fresh — use AST structure heuristics.
         // Functions known to return Vec<string>:
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
+            // String methods that return Vec<string>
+            match method.as_str() {
+                "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                _ => {}
+            }
             if let ExprKind::Ident(name) = &object.kind {
                 match (name.as_str(), method.as_str()) {
                     ("cli", "args") | ("fs", "read_lines") => return Some(MirType::String),
@@ -599,8 +637,15 @@ impl<'a> MirLowerer<'a> {
     fn extract_payload_type(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             match ty {
-                Type::Option(inner) => Some(self.ctx.type_to_mir(inner)),
-                Type::Result { ok, .. } => Some(self.ctx.type_to_mir(ok)),
+                Type::Option(inner) => {
+                    let mir = self.ctx.type_to_mir(inner);
+                    // Ptr means unresolved — let callers fall through to other strategies
+                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                }
+                Type::Result { ok, .. } => {
+                    let mir = self.ctx.type_to_mir(ok);
+                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                }
                 _ => None,
             }
         } else {
@@ -612,7 +657,10 @@ impl<'a> MirLowerer<'a> {
     fn extract_err_type(&self, expr: &Expr) -> Option<MirType> {
         if let Some(ty) = self.ctx.lookup_raw_type(expr.id) {
             match ty {
-                Type::Result { err, .. } => Some(self.ctx.type_to_mir(err)),
+                Type::Result { err, .. } => {
+                    let mir = self.ctx.type_to_mir(err);
+                    if matches!(mir, MirType::Ptr) { None } else { Some(mir) }
+                }
                 _ => None,
             }
         } else {
@@ -1241,6 +1289,33 @@ fn mir_type_method_prefix(ty: &MirType) -> Option<&'static str> {
         // Ptr is too generic — user-defined types become Ptr in MIR,
         // so local_type_prefix or type-checker lookup should provide the name.
         MirType::Ptr => None,
+        _ => None,
+    }
+}
+
+/// Extract type prefix from a type annotation string.
+///
+/// Handles generic types like "Vec<i64>" → "Vec", "Map<K,V>" → "Map",
+/// plain named types like "ThreadHandle" → "ThreadHandle",
+/// and module-qualified types like "time.Instant" → "Instant".
+/// Returns None for primitives (i64, f64, bool, string, etc.).
+pub fn type_prefix_from_str(s: &str) -> Option<String> {
+    let s = s.trim();
+    // Strip module prefix (time.Instant → Instant)
+    let base = s.rsplit('.').next().unwrap_or(s);
+    // Strip generic args (Vec<i64> → Vec)
+    let name = base.split('<').next().unwrap_or(base).trim();
+    // Reject primitives and empty
+    if name.is_empty() { return None; }
+    match name {
+        "i8" | "i16" | "i32" | "i64" | "i128"
+        | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "f32" | "f64" | "bool" | "char" | "string"
+        | "usize" | "isize" | "()" => None,
+        _ if name.chars().next().map_or(false, |c| c.is_uppercase()) => {
+            Some(name.to_string())
+        }
+        // Module-level functions like "time" — not a type prefix
         _ => None,
     }
 }

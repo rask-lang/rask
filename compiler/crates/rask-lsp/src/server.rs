@@ -9,13 +9,17 @@ use tower_lsp::LanguageServer;
 
 use rask_diagnostics::LabelStyle;
 
-use crate::backend::Backend;
+use crate::backend::{Backend, CompilationResult};
 use crate::convert::{byte_offset_to_position, position_to_offset, ranges_overlap, to_lsp_diagnostic};
 use crate::type_format::TypeFormatter;
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Capture workspace root for resolving stdlib stub file paths
+        if let Some(root_uri) = params.root_uri {
+            *self.root_uri.write().unwrap() = Some(root_uri);
+        }
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -116,34 +120,37 @@ impl LanguageServer for Backend {
         let offset = position_to_offset(&cached.source, position);
 
         // Find identifier at cursor
-        let Some((node_id, _name)) = cached.position_index.ident_at_position(offset) else {
+        let Some((node_id, name)) = cached.position_index.ident_at_position(offset) else {
             return Ok(None);
         };
 
         // Look up symbol for this node
-        let Some(&symbol_id) = cached.typed.resolutions.get(&node_id) else {
-            return Ok(None);
-        };
+        let symbol = cached.typed.resolutions.get(&node_id)
+            .and_then(|&sid| cached.typed.symbols.get(sid));
 
-        // Get symbol definition location
-        let Some(symbol) = cached.typed.symbols.get(symbol_id) else {
-            return Ok(None);
-        };
+        if let Some(symbol) = symbol {
+            // For built-in symbols, navigate to the stub file
+            if symbol.span.start == 0 && symbol.span.end == 0 {
+                return Ok(self.resolve_builtin_location(&symbol.name, None));
+            }
 
-        // Skip built-in symbols (span = 0..0)
-        if symbol.span.start == 0 && symbol.span.end == 0 {
-            return Ok(None);
+            let def_range = Range::new(
+                byte_offset_to_position(&cached.source, symbol.span.start),
+                byte_offset_to_position(&cached.source, symbol.span.end),
+            );
+
+            return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                uri: uri.clone(),
+                range: def_range,
+            })));
         }
 
-        let def_range = Range::new(
-            byte_offset_to_position(&cached.source, symbol.span.start),
-            byte_offset_to_position(&cached.source, symbol.span.end),
-        );
+        // No symbol resolution — try method-level go-to-def for builtins
+        if let Some(response) = self.try_method_goto_definition(&cached.source, offset, &name, cached) {
+            return Ok(Some(response));
+        }
 
-        Ok(Some(GotoDefinitionResponse::Scalar(Location {
-            uri: uri.clone(),
-            range: def_range,
-        })))
+        Ok(None)
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -202,6 +209,31 @@ impl LanguageServer for Backend {
                             rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
                         };
                         contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
+
+                        // Add doc comment from stubs for builtins
+                        match &symbol.kind {
+                            rask_resolve::SymbolKind::BuiltinType { .. }
+                            | rask_resolve::SymbolKind::BuiltinFunction { .. }
+                            | rask_resolve::SymbolKind::BuiltinModule { .. } => {
+                                let reg = rask_stdlib::StubRegistry::load();
+                                let doc = if let Some(ts) = reg.get_type(&name) {
+                                    ts.doc.as_deref()
+                                } else {
+                                    reg.functions().iter()
+                                        .find(|f| f.name == name)
+                                        .and_then(|f| f.doc.as_deref())
+                                };
+                                if let Some(doc) = doc {
+                                    contents.push_str(&format!("\n\n---\n\n{}", doc));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                } else {
+                    // No symbol — try method hover for builtin types
+                    if let Some(doc) = self.try_method_hover(&cached.source, offset, &name, cached) {
+                        contents.push_str(&format!("\n\n---\n\n{}", doc));
                     }
                 }
             }
@@ -341,5 +373,155 @@ impl LanguageServer for Backend {
         } else {
             Ok(self.identifier_completion(&source, offset, cached))
         }
+    }
+}
+
+impl Backend {
+    /// Resolve a builtin type, function, or method to its stub file location.
+    fn resolve_builtin_location(
+        &self,
+        name: &str,
+        method: Option<&str>,
+    ) -> Option<GotoDefinitionResponse> {
+        let reg = rask_stdlib::StubRegistry::load();
+
+        let (source_file, span) = if let Some(method_name) = method {
+            let normalized = match name {
+                "String" => "string",
+                _ => name,
+            };
+            let m = reg.lookup_method(normalized, method_name)?;
+            (&m.source_file, m.span)
+        } else if let Some(ts) = reg.get_type(name) {
+            (&ts.source_file, ts.span)
+        } else {
+            let f = reg.functions().iter().find(|f| f.name == name)?;
+            (&f.source_file, f.span)
+        };
+
+        let (start_line, start_col) = reg.offset_to_lsp_position(source_file, span.start)?;
+        let (end_line, end_col) = reg.offset_to_lsp_position(source_file, span.end)?;
+
+        let root = self.root_uri.read().unwrap();
+        let root_uri = root.as_ref()?;
+
+        let stub_path = format!("{}/{}", root_uri.as_str().trim_end_matches('/'), source_file);
+        let stub_uri = Url::parse(&stub_path).ok()?;
+
+        Some(GotoDefinitionResponse::Scalar(Location {
+            uri: stub_uri,
+            range: Range::new(
+                Position::new(start_line, start_col),
+                Position::new(end_line, end_col),
+            ),
+        }))
+    }
+
+    /// Try to resolve a method call to its definition in a stub file.
+    fn try_method_goto_definition(
+        &self,
+        source: &str,
+        offset: usize,
+        method_name: &str,
+        cached: &CompilationResult,
+    ) -> Option<GotoDefinitionResponse> {
+        // Find the span of this ident to check for a preceding dot
+        let (ident_span, _, _) = cached.position_index.idents.iter()
+            .find(|(span, _, name)| span.start <= offset && offset <= span.end && name == method_name)?;
+
+        if ident_span.start == 0 {
+            return None;
+        }
+        if *source.as_bytes().get(ident_span.start - 1)? != b'.' {
+            return None;
+        }
+
+        let type_name = self.resolve_receiver_type_name(source, ident_span.start - 1, cached)?;
+        self.resolve_builtin_location(&type_name, Some(method_name))
+    }
+
+    /// Try to get doc comment for a method call on a builtin type.
+    fn try_method_hover(
+        &self,
+        source: &str,
+        offset: usize,
+        method_name: &str,
+        cached: &CompilationResult,
+    ) -> Option<String> {
+        let (ident_span, _, _) = cached.position_index.idents.iter()
+            .find(|(span, _, name)| span.start <= offset && offset <= span.end && name == method_name)?;
+
+        if ident_span.start == 0 {
+            return None;
+        }
+        if *source.as_bytes().get(ident_span.start - 1)? != b'.' {
+            return None;
+        }
+
+        let type_name = self.resolve_receiver_type_name(source, ident_span.start - 1, cached)?;
+        let reg = rask_stdlib::StubRegistry::load();
+        let normalized = match type_name.as_str() {
+            "String" => "string",
+            _ => &type_name,
+        };
+        let method = reg.lookup_method(normalized, method_name)?;
+        method.doc.clone()
+    }
+
+    /// Given a dot position in source, determine the receiver's type name for stub lookup.
+    fn resolve_receiver_type_name(
+        &self,
+        source: &str,
+        dot_pos: usize,
+        cached: &CompilationResult,
+    ) -> Option<String> {
+        let text_before = &source[..dot_pos];
+        let receiver_end = text_before.len();
+        let receiver_start = text_before
+            .rfind(|c: char| !c.is_alphanumeric() && c != '_')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let receiver_name = &text_before[receiver_start..receiver_end];
+
+        if receiver_name.is_empty() {
+            return None;
+        }
+
+        // Check if it's a known stub type/module directly
+        let reg = rask_stdlib::StubRegistry::load();
+        if reg.get_type(receiver_name).is_some() {
+            return Some(receiver_name.to_string());
+        }
+
+        // Look up the receiver's type from the typed program
+        for (_span, node_id, name) in &cached.position_index.idents {
+            if name == receiver_name {
+                if let Some(ty) = cached.typed.node_types.get(node_id) {
+                    return type_to_stub_name(ty, cached);
+                }
+            }
+        }
+
+        None
+    }
+}
+
+/// Map a type checker Type to the stub registry type name.
+fn type_to_stub_name(
+    ty: &rask_types::Type,
+    cached: &CompilationResult,
+) -> Option<String> {
+    match ty {
+        rask_types::Type::String => Some("string".to_string()),
+        rask_types::Type::Named(id) => {
+            Some(cached.typed.types.type_name(*id))
+        }
+        rask_types::Type::Generic { base, .. } => {
+            Some(cached.typed.types.type_name(*base))
+        }
+        rask_types::Type::Option(_) => Some("Option".to_string()),
+        rask_types::Type::Result { .. } => Some("Result".to_string()),
+        rask_types::Type::Array { .. } | rask_types::Type::Slice(_) => Some("Vec".to_string()),
+        _ => None,
     }
 }

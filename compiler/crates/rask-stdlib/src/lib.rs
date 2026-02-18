@@ -7,9 +7,11 @@
 mod builtins;
 pub mod types;
 pub mod registry;
+pub mod stubs;
 
 pub use builtins::{Builtin, BuiltinKind};
-pub use types::{MethodDef, has_method, lookup_method};
+pub use types::{MethodStub, has_method, lookup_method, methods_for};
+pub use stubs::StubRegistry;
 pub use registry::{
     type_method_names, module_method_names, has_type_method, has_module_method,
     StdlibLayer, type_layer, module_layer,

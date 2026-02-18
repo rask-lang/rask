@@ -9,7 +9,9 @@ mod resource;
 mod interp;
 mod builtins;
 mod stdlib;
+pub mod build_context;
 
+pub use build_context::BuildState;
 pub use interp::{BenchmarkResult, Interpreter, RuntimeDiagnostic, RuntimeError, TestResult};
 
 #[cfg(test)]

@@ -169,12 +169,14 @@ pub fn print_build_help() {
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("build"),
-        output::arg("[directory] [--release] [--profile <name>] [--target <triple>] [-v]"));
+        output::arg("[directory] [options]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}          Build with release profile", output::arg("--release"));
     println!("  {} {}  Build with custom profile", output::arg("--profile"), output::arg("<name>"));
     println!("  {} {} Cross-compile for target", output::arg("--target"), output::arg("<triple>"));
+    println!("  {}           Bypass all caching (build script + compilation)", output::arg("--force"));
+    println!("  {} {}    Max parallel jobs (default: CPU count)", output::arg("--jobs"), output::arg("<N>"));
     println!("  {} {}       Verbose output", output::arg("-v"), output::arg("--verbose"));
     println!();
     println!("If no directory is specified, builds the current directory.");

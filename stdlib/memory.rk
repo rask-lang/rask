@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Arena allocator for graph structures. Elements are accessed via handles.
+public struct Pool<T> { }
+
+/// Typed reference into a Pool. Handles are values — they can outlive the scope
+/// where they were created, but accessing the element requires `using Pool<T>`.
+public struct Handle<T> { }
+
+extend Pool<T> {
+    /// Create a new empty pool.
+    public func new() -> Pool<T> { }
+
+    /// Create a pool with pre-allocated capacity.
+    public func with_capacity(n: usize) -> Pool<T> { }
+
+    /// Number of live elements.
+    public func len(self) -> usize { }
+
+    /// True if the pool contains no elements.
+    public func is_empty(self) -> bool { }
+
+    /// Insert an element, returning a handle to it.
+    public func insert(mutate self, value: T) -> Handle<T> or AllocError { }
+
+    /// Get element by handle (borrows).
+    public func get(self, handle: Handle<T>) -> Option<T> { }
+
+    /// Get a clone of element by handle.
+    public func get_clone(self, handle: Handle<T>) -> Option<T> { }
+
+    /// Read element through a closure.
+    public func read(self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+
+    /// Modify element through a closure.
+    public func modify(mutate self, handle: Handle<T>, f: func(T) -> R) -> Option<R> { }
+
+    /// True if the handle points to a live element.
+    public func contains(self, handle: Handle<T>) -> bool { }
+
+    /// Remove element by handle, returning it.
+    public func remove(mutate self, handle: Handle<T>) -> Option<T> { }
+
+    /// Remove all elements.
+    public func clear(mutate self) { }
+
+    /// Iterate over (handle, element) pairs.
+    public func iter(self) -> Iterator<(Handle<T>, T)> { }
+
+    /// Iterate over handles only.
+    public func handles(self) -> Iterator<Handle<T>> { }
+
+    /// Iterate over elements only.
+    public func values(self) -> Iterator<T> { }
+}
