@@ -12,6 +12,9 @@ research/
 docs/build/
 docs/book/book/
 
+# Compiled Rask binaries
+build/
+
 # C runtime build artifacts
 compiler/runtime/*.o
 compiler/runtime/*.a
