@@ -1581,6 +1581,7 @@ mod tests {
                 is_unsafe: false,
                 abi: None,
                 attrs: vec![],
+                doc: None,
             }),
             span: sp(),
         }

@@ -650,11 +650,16 @@ impl<'a> MirLowerer<'a> {
                     // and closure params lose type info when intermediates become MirType::Ptr.
                     // Only methods that are unique to a single type belong here.
                     .or_else(|| match method.as_str() {
-                        // Vec-only
-                        "to_vec" | "chunks" | "skip" => Some("Vec".to_string()),
+                        // Vec / iterator (no other Rask type has these)
+                        "to_vec" | "chunks" | "skip"
+                        | "map" | "filter" | "collect"
+                        | "enumerate" | "any" | "all" | "find" | "fold"
+                        | "for_each" | "flat_map" | "take" | "zip" => Some("Vec".to_string()),
                         "join" if all_args.len() == 2 => Some("Vec".to_string()),
-                        // Map-only
-                        "values" | "keys" | "contains_key" => Some("Map".to_string()),
+                        // Map (Vec uses index syntax for element access, so .get()/.insert()/.remove()
+                        // as method calls are effectively Map-only in practice)
+                        "values" | "keys" | "contains_key"
+                        | "get" | "insert" | "remove" => Some("Map".to_string()),
                         // Time
                         "elapsed" | "duration_since" => Some("Instant".to_string()),
                         "as_secs_f64" | "as_secs" | "as_millis" | "as_nanos" => Some("Duration".to_string()),
