@@ -1309,6 +1309,7 @@ impl Interpreter {
                     kind: EvalSelectKind,
                     arm_idx: usize,
                 }
+                #[allow(dead_code)]
                 enum EvalSelectKind {
                     Recv {
                         rx: Arc<Mutex<mpsc::Receiver<Value>>>,

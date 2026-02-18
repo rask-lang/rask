@@ -50,11 +50,7 @@ struct RaskTaskHandle {
 static __thread atomic_int *current_cancel_flag;
 
 static RaskTaskState *state_new(void) {
-    RaskTaskState *s = (RaskTaskState *)malloc(sizeof(RaskTaskState));
-    if (!s) {
-        fprintf(stderr, "rask: task state alloc failed\n");
-        abort();
-    }
+    RaskTaskState *s = (RaskTaskState *)rask_alloc(sizeof(RaskTaskState));
     atomic_init(&s->refcount, 2);  // handle + thread
     atomic_init(&s->status, RASK_TASK_RUNNING);
     atomic_init(&s->cancel_flag, 0);
@@ -64,8 +60,8 @@ static RaskTaskState *state_new(void) {
 
 static void state_release(RaskTaskState *s) {
     if (atomic_fetch_sub_explicit(&s->refcount, 1, memory_order_acq_rel) == 1) {
-        if (s->panic_msg) free(s->panic_msg);
-        free(s);
+        if (s->panic_msg) rask_free(s->panic_msg);
+        rask_free(s);
     }
 }
 
@@ -82,7 +78,7 @@ static void *task_thread_entry(void *arg) {
     RaskTaskState *state = entry->state;
     RaskTaskFn func = entry->func;
     void *env = entry->env;
-    free(entry);
+    rask_free(entry);
 
     // Set up cancel flag for this thread
     current_cancel_flag = &state->cancel_flag;
@@ -113,28 +109,20 @@ static void *task_thread_entry(void *arg) {
 RaskTaskHandle *rask_task_spawn(RaskTaskFn func, void *env) {
     RaskTaskState *state = state_new();
 
-    TaskEntry *entry = (TaskEntry *)malloc(sizeof(TaskEntry));
-    if (!entry) {
-        fprintf(stderr, "rask: task entry alloc failed\n");
-        abort();
-    }
+    TaskEntry *entry = (TaskEntry *)rask_alloc(sizeof(TaskEntry));
     entry->func  = func;
     entry->env   = env;
     entry->state = state;
 
     int err = pthread_create(&state->thread, NULL, task_thread_entry, entry);
     if (err != 0) {
-        free(entry);
+        rask_free(entry);
         state_release(state);
         state_release(state); // drop both refs
         rask_panic_fmt("spawn failed: pthread_create returned %d", err);
     }
 
-    RaskTaskHandle *h = (RaskTaskHandle *)malloc(sizeof(RaskTaskHandle));
-    if (!h) {
-        fprintf(stderr, "rask: task handle alloc failed\n");
-        abort();
-    }
+    RaskTaskHandle *h = (RaskTaskHandle *)rask_alloc(sizeof(RaskTaskHandle));
     h->state = state;
     return h;
 }
@@ -161,7 +149,7 @@ int64_t rask_task_join(RaskTaskHandle *h, char **msg_out) {
     }
 
     state_release(state);
-    free(h);
+    rask_free(h);
     return result;
 }
 
@@ -173,7 +161,7 @@ void rask_task_detach(RaskTaskHandle *h) {
     RaskTaskState *state = h->state;
     pthread_detach(state->thread);
     state_release(state);
-    free(h);
+    rask_free(h);
 }
 
 int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out) {
@@ -223,7 +211,7 @@ static void closure_spawn_entry(void *arg) {
     RaskTaskFn func = ctx->func;
     void *env = ctx->env;
     void *alloc_base = ctx->alloc_base;
-    free(ctx);
+    rask_free(ctx);
 
     func(env);
     rask_free(alloc_base);
@@ -233,11 +221,7 @@ RaskTaskHandle *rask_closure_spawn(void *closure_ptr) {
     void (*func)(void *) = *(void (**)(void *))(closure_ptr);
     void *env = (char *)closure_ptr + 8;
 
-    RaskSpawnCtx *ctx = (RaskSpawnCtx *)malloc(sizeof(RaskSpawnCtx));
-    if (!ctx) {
-        fprintf(stderr, "rask: spawn context alloc failed\n");
-        abort();
-    }
+    RaskSpawnCtx *ctx = (RaskSpawnCtx *)rask_alloc(sizeof(RaskSpawnCtx));
     ctx->func = func;
     ctx->env = env;
     ctx->alloc_base = closure_ptr;

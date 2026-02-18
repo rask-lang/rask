@@ -27,6 +27,13 @@ pub enum TypeConstraint {
         ret: Type,
         span: Span,
     },
+    /// Return value must match function return type, with auto-Ok wrapping.
+    /// Defers wrapping decision until the return type is resolved.
+    ReturnValue {
+        ret_ty: Type,
+        expected: Type,
+        span: Span,
+    },
 }
 
 /// Kind of unsuffixed literal (for deferred defaulting).

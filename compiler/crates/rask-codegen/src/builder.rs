@@ -1381,8 +1381,28 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefResult
             }
 
-            // Pool get: result is void*, deref to get value
-            "Pool_get" | "Pool_checked_access" => CallAdapt::DerefResult,
+            // Pool insert: wrap value arg as pointer
+            "Pool_insert" => {
+                // args: [pool, value] → [pool, &value]
+                if args.len() >= 2 {
+                    let val = args[1];
+                    args[1] = Self::value_to_ptr(builder, val);
+                }
+                CallAdapt::None
+            }
+
+            // Vec insert: wrap value arg as pointer
+            "Vec_insert" => {
+                // args: [vec, index, value] → [vec, index, &value]
+                if args.len() >= 3 {
+                    let val = args[2];
+                    args[2] = Self::value_to_ptr(builder, val);
+                }
+                CallAdapt::None
+            }
+
+            // Pool get/index: result is void*, deref to get value
+            "Pool_get" | "Pool_index" | "Pool_checked_access" => CallAdapt::DerefResult,
 
             // Channel_unbuffered: MIR has no args, C expects capacity=0
             "Channel_unbuffered" => {

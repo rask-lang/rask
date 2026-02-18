@@ -107,7 +107,7 @@ extend Lexer {
             _ => return Err(CalcError.UnexpectedChar(c)),
         }
 
-        return Ok(token)
+        return token
     }
 
     func read_number(self) -> Token or CalcError {
@@ -128,7 +128,7 @@ extend Lexer {
         }
 
         const value: f64 = num_str.parse().unwrap()
-        return Ok(Token.Number(value))
+        return Token.Number(value)
     }
 }
 
@@ -142,7 +142,7 @@ extend Parser {
     func new(input: string) -> Parser or CalcError {
         const lexer = Lexer.new(input)
         const current = try lexer.next_token()
-        return Ok(Parser { lexer: lexer, current: current })
+        return Parser { lexer: lexer, current: current }
     }
 
     func advance(self) -> () or CalcError {
@@ -189,7 +189,7 @@ extend Parser {
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
-        return Ok(left)
+        return left
     }
 
     // term = power (('*' | '/' | '%') power)*
@@ -208,7 +208,7 @@ extend Parser {
             left = Expr.Binary(left: own left, op: op, right: own right)
         }
 
-        return Ok(left)
+        return left
     }
 
     // power = unary ('^' power)?  (right associative)
@@ -218,9 +218,9 @@ extend Parser {
         if self.current is Caret {
             try self.advance()
             const exp = try self.parse_power()  // Right associative
-            return Ok(Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp))
+            return Expr.Binary(left: own base, op: BinaryOp.Pow, right: own exp)
         } else {
-            return Ok(base)
+            return base
         }
     }
 
@@ -229,7 +229,7 @@ extend Parser {
         if self.current is Minus {
             try self.advance()
             const expr = try self.parse_unary()
-            return Ok(Expr.Unary(op: UnaryOp.Neg, expr: own expr))
+            return Expr.Unary(op: UnaryOp.Neg, expr: own expr)
         } else {
             return self.parse_primary()
         }
@@ -240,7 +240,7 @@ extend Parser {
         match self.current {
             Number(n) => {
                 try self.advance()
-                return Ok(Expr.Number(n))
+                return Expr.Number(n)
             }
             LParen => {
                 try self.advance()
@@ -248,7 +248,7 @@ extend Parser {
                 match self.current {
                     RParen => {
                         try self.advance()
-                        return Ok(expr)
+                        return expr
                     }
                     _ => return Err(CalcError.UnexpectedToken("expected ')'".to_string())),
                 }
@@ -262,29 +262,29 @@ extend Parser {
 // Evaluator
 func evaluate(expr: Expr) -> f64 or CalcError {
     match expr {
-        Number(n) => return Ok(n),
+        Number(n) => return n,
         Unary(op, inner) => {
             const val = try evaluate(inner)
             match op {
-                Neg => return Ok(-val),
+                Neg => return -val,
             }
         }
         Binary(left, op, right) => {
             const l = try evaluate(left)
             const r = try evaluate(right)
             match op {
-                Add => return Ok(l + r),
-                Sub => return Ok(l - r),
-                Mul => return Ok(l * r),
+                Add => return l + r,
+                Sub => return l - r,
+                Mul => return l * r,
                 Div => {
                     if r == 0.0: return Err(CalcError.DivisionByZero)
-                    return Ok(l / r)
+                    return l / r
                 }
                 Mod => {
                     if r == 0.0: return Err(CalcError.DivisionByZero)
-                    return Ok(l % r)
+                    return l % r
                 }
-                Pow => return Ok(l.powf(r)),
+                Pow => return l.powf(r),
             }
         }
     }

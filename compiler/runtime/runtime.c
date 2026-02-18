@@ -106,56 +106,6 @@ int64_t rask_io_write(int64_t fd, const void *buf, int64_t len) {
     return (int64_t)write((int)fd, buf, (size_t)len);
 }
 
-// ─── Resource tracking ───────────────────────────────────────────
-// Runtime enforcement for must-consume (linear) types.
-// Simple fixed-size tracker — production would use a growable array.
-
-#define RASK_MAX_RESOURCES 1024
-
-struct rask_resource_entry {
-    int64_t id;
-    int64_t scope_depth;
-    int     active;
-};
-
-static struct rask_resource_entry rask_resources[RASK_MAX_RESOURCES];
-static int64_t rask_next_resource_id = 1;
-
-int64_t rask_resource_register(int64_t scope_depth) {
-    int64_t id = rask_next_resource_id++;
-    for (int i = 0; i < RASK_MAX_RESOURCES; i++) {
-        if (!rask_resources[i].active) {
-            rask_resources[i].id = id;
-            rask_resources[i].scope_depth = scope_depth;
-            rask_resources[i].active = 1;
-            return id;
-        }
-    }
-    fprintf(stderr, "panic: resource tracker overflow\n");
-    abort();
-}
-
-void rask_resource_consume(int64_t resource_id) {
-    for (int i = 0; i < RASK_MAX_RESOURCES; i++) {
-        if (rask_resources[i].active && rask_resources[i].id == resource_id) {
-            rask_resources[i].active = 0;
-            return;
-        }
-    }
-    fprintf(stderr, "panic: consuming unknown resource %lld\n", (long long)resource_id);
-    abort();
-}
-
-void rask_resource_scope_check(int64_t scope_depth) {
-    for (int i = 0; i < RASK_MAX_RESOURCES; i++) {
-        if (rask_resources[i].active && rask_resources[i].scope_depth == scope_depth) {
-            fprintf(stderr, "panic: unconsumed resource at scope depth %lld\n",
-                    (long long)scope_depth);
-            abort();
-        }
-    }
-}
-
 // ─── Clone (shallow copy for i64-sized values) ───────────────────
 // Strings and collection handles are pointer-sized; clone is identity.
 int64_t rask_clone(int64_t value) { return value; }
@@ -219,13 +169,12 @@ RaskString *rask_fs_read_file(const RaskString *path) {
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *buf = (char *)malloc((size_t)size + 1);
-    if (!buf) { fclose(f); return rask_string_new(); }
+    char *buf = (char *)rask_alloc((int64_t)size + 1);
     fread(buf, 1, (size_t)size, f);
     buf[size] = '\0';
     fclose(f);
     RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
-    free(buf);
+    rask_free(buf);
     return s;
 }
 
@@ -346,12 +295,11 @@ RaskString *rask_file_read_all(int64_t file) {
     long end = ftell(f);
     fseek(f, start, SEEK_SET);
     long size = end - start;
-    char *buf = (char *)malloc((size_t)size + 1);
-    if (!buf) return rask_string_new();
+    char *buf = (char *)rask_alloc((int64_t)size + 1);
     fread(buf, 1, (size_t)size, f);
     buf[size] = '\0';
     RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
-    free(buf);
+    rask_free(buf);
     return s;
 }
 
@@ -480,7 +428,7 @@ static void json_buf_grow(struct RaskJsonBuf *b, int64_t needed) {
     if (b->len + needed <= b->cap) return;
     int64_t new_cap = b->cap * 2;
     if (new_cap < b->len + needed) new_cap = b->len + needed;
-    b->data = (char *)realloc(b->data, (size_t)new_cap);
+    b->data = (char *)rask_realloc(b->data, b->cap, new_cap);
     b->cap = new_cap;
 }
 
@@ -511,9 +459,9 @@ static void json_buf_append_escaped(struct RaskJsonBuf *b, const char *s, int64_
 }
 
 RaskJsonBuf *rask_json_buf_new(void) {
-    RaskJsonBuf *b = (RaskJsonBuf *)malloc(sizeof(RaskJsonBuf));
+    RaskJsonBuf *b = (RaskJsonBuf *)rask_alloc(sizeof(RaskJsonBuf));
     b->cap = 256;
-    b->data = (char *)malloc((size_t)b->cap);
+    b->data = (char *)rask_alloc(b->cap);
     b->len = 0;
     b->field_count = 0;
     json_buf_append_cstr(b, "{");
@@ -572,15 +520,15 @@ void rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *
 RaskString *rask_json_buf_finish(RaskJsonBuf *buf) {
     json_buf_append_cstr(buf, "}");
     RaskString *s = rask_string_from_bytes(buf->data, buf->len);
-    free(buf->data);
-    free(buf);
+    rask_free(buf->data);
+    rask_free(buf);
     return s;
 }
 
 RaskString *rask_json_encode_string(const RaskString *s) {
     struct RaskJsonBuf b;
     b.cap = 256;
-    b.data = (char *)malloc((size_t)b.cap);
+    b.data = (char *)rask_alloc(b.cap);
     b.len = 0;
     b.field_count = 0;
     if (s) {
@@ -589,7 +537,7 @@ RaskString *rask_json_encode_string(const RaskString *s) {
         json_buf_append_cstr(&b, "null");
     }
     RaskString *result = rask_string_from_bytes(b.data, b.len);
-    free(b.data);
+    rask_free(b.data);
     return result;
 }
 
@@ -648,7 +596,8 @@ static RaskString *json_parse_string(const char **p) {
 }
 
 RaskJsonObj *rask_json_parse(const RaskString *s) {
-    RaskJsonObj *obj = (RaskJsonObj *)calloc(1, sizeof(RaskJsonObj));
+    RaskJsonObj *obj = (RaskJsonObj *)rask_alloc(sizeof(RaskJsonObj));
+    memset(obj, 0, sizeof(RaskJsonObj));
     if (!s) return obj;
 
     const char *p = rask_string_ptr(s);

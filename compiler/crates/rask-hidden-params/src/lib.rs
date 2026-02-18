@@ -28,8 +28,10 @@ struct ContextReq {
     /// Original clause type string: `Pool<Player>`, `Multitasking`
     clause_type: String,
     /// Is this a runtime context (optional `?` param) vs pool (required)?
+    #[allow(dead_code)]
     is_runtime: bool,
     /// Named alias from `using players: Pool<Player>`
+    #[allow(dead_code)]
     alias: Option<String>,
 }
 

@@ -1470,7 +1470,7 @@ impl TypeChecker {
     ) -> Result<bool, TypeError> {
         let (elem_ty, lanes) = Self::simd_elem_type(type_name);
         let self_ty = Type::UnresolvedNamed(type_name.to_string());
-        let vec_ty = Type::SimdVector {
+        let _vec_ty = Type::SimdVector {
             elem: Box::new(elem_ty.clone()),
             lanes,
         };

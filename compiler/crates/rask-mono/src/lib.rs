@@ -183,6 +183,7 @@ mod tests {
                 abi: None,
                 attrs: vec![],
                 doc: None,
+                span: sp(),
             }),
             span: sp(),
         }
@@ -228,6 +229,7 @@ mod tests {
                 abi: None,
                 attrs: vec![],
                 doc: None,
+                span: sp(),
             }),
             span: sp(),
         }
@@ -594,6 +596,7 @@ mod tests {
             abi: None,
             attrs: vec![],
             doc: None,
+            span: sp(),
         }
     }
 

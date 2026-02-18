@@ -61,7 +61,7 @@ impl Interpreter {
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
         match &result {
-            Err(diag) if matches!(&diag.error, RuntimeError::Return(v)) => {
+            Err(diag) if matches!(&diag.error, RuntimeError::Return(_)) => {
                 if let RuntimeError::Return(v) = &diag.error {
                     self.transfer_resource_to_scope(v, caller_depth);
                 }
@@ -69,7 +69,7 @@ impl Interpreter {
             Ok(v) => {
                 self.transfer_resource_to_scope(v, caller_depth);
             }
-            Err(diag) if matches!(&diag.error, RuntimeError::TryError(v)) => {
+            Err(diag) if matches!(&diag.error, RuntimeError::TryError(_)) => {
                 if let RuntimeError::TryError(v) = &diag.error {
                     self.transfer_resource_to_scope(v, caller_depth);
                 }

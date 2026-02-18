@@ -40,6 +40,7 @@ pub(crate) struct PersistentBorrow {
     pub(crate) source_var: String,
     /// Variable holding the view (e.g., "key").
     pub(crate) view_var: String,
+    #[allow(dead_code)]
     pub(crate) mode: BorrowMode,
     pub(crate) borrow_span: Span,
     /// Scope depth (local_types.len()) when created — cleared on scope exit.

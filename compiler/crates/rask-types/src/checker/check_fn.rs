@@ -14,7 +14,7 @@ use super::TypeChecker;
 use crate::types::Type;
 
 impl TypeChecker {
-    pub(super) fn check_fn(&mut self, f: &FnDecl, fn_span: Span) {
+    pub(super) fn check_fn(&mut self, f: &FnDecl) {
         let ret_ty = f
             .ret_ty
             .as_ref()
@@ -71,7 +71,7 @@ impl TypeChecker {
                 } else {
                     // Function is T or E where T != () - require explicit return
                     if !self.has_explicit_return(&f.body) {
-                        let end_span = Span::new(fn_span.end - 1, fn_span.end);
+                        let end_span = Span::new(f.span.end.saturating_sub(1), f.span.end);
                         self.errors.push(TypeError::MissingReturn {
                             function_name: f.name.clone(),
                             expected_type: ret_ty.clone(),
@@ -83,7 +83,7 @@ impl TypeChecker {
             _ => {
                 // Non-Result, non-Unit - require explicit return
                 if !self.has_explicit_return(&f.body) {
-                    let end_span = Span::new(fn_span.end - 1, fn_span.end);
+                    let end_span = Span::new(f.span.end.saturating_sub(1), f.span.end);
                     self.errors.push(TypeError::MissingReturn {
                         function_name: f.name.clone(),
                         expected_type: ret_ty.clone(),
@@ -232,28 +232,4 @@ impl TypeChecker {
         }
     }
 
-    /// Auto-wrap return value in Ok() if function returns Result.
-    /// Implements auto-Ok wrapping from spec: when function returns T or E,
-    /// returning just T auto-wraps to Ok(T).
-    pub(super) fn wrap_in_ok_if_needed(&self, ret_ty: Type, expected: &Type) -> Type {
-        let resolved_expected = self.ctx.apply(expected);
-
-        // Check if expected type is Result
-        if let Type::Result { ok: _, err } = &resolved_expected {
-            let resolved_ret = self.ctx.apply(&ret_ty);
-
-            // Don't wrap if already Result (handles explicit Ok/Err returns)
-            match &resolved_ret {
-                Type::Result { .. } => ret_ty,
-                // Wrap everything else, including type variables
-                _ => Type::Result {
-                    ok: Box::new(ret_ty),
-                    err: err.clone(),
-                },
-            }
-        } else {
-            // Not a Result return type - no wrapping
-            ret_ty
-        }
-    }
 }

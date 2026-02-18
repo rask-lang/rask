@@ -4,6 +4,8 @@
 // All integer atomic types share one implementation since codegen represents
 // all values as i64. AtomicBool is separate (0/1 semantics).
 
+#include "rask_runtime.h"
+
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -34,7 +36,7 @@ typedef struct { _Atomic(int64_t) value; } RaskAtomicInt;
 // ── Construction ────────────────────────────────────────────
 
 int64_t rask_atomic_int_new(int64_t val) {
-    RaskAtomicInt *a = malloc(sizeof(RaskAtomicInt));
+    RaskAtomicInt *a = rask_alloc(sizeof(RaskAtomicInt));
     atomic_init(&a->value, val);
     return (int64_t)(uintptr_t)a;
 }
@@ -159,7 +161,7 @@ int64_t rask_atomic_int_fetch_min(int64_t ptr, int64_t val, int64_t ordering) {
 int64_t rask_atomic_int_into_inner(int64_t ptr) {
     RaskAtomicInt *a = (RaskAtomicInt *)(uintptr_t)ptr;
     int64_t val = atomic_load_explicit(&a->value, memory_order_relaxed);
-    free(a);
+    rask_free(a);
     return val;
 }
 
@@ -174,7 +176,7 @@ typedef struct { _Atomic(int) value; } RaskAtomicBool;
 // ── Construction ────────────────────────────────────────────
 
 int64_t rask_atomic_bool_new(int64_t val) {
-    RaskAtomicBool *a = malloc(sizeof(RaskAtomicBool));
+    RaskAtomicBool *a = rask_alloc(sizeof(RaskAtomicBool));
     atomic_init(&a->value, val ? 1 : 0);
     return (int64_t)(uintptr_t)a;
 }
@@ -260,7 +262,7 @@ int64_t rask_atomic_bool_fetch_nand(int64_t ptr, int64_t val, int64_t ordering) 
 int64_t rask_atomic_bool_into_inner(int64_t ptr) {
     RaskAtomicBool *a = (RaskAtomicBool *)(uintptr_t)ptr;
     int val = atomic_load_explicit(&a->value, memory_order_relaxed);
-    free(a);
+    rask_free(a);
     return val ? 1 : 0;
 }
 

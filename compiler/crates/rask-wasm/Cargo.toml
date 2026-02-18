@@ -23,10 +23,3 @@ rask-parser = { path = "../rask-parser" }
 rask-desugar = { path = "../rask-desugar" }
 rask-diagnostics = { path = "../rask-diagnostics" }
 rask-ast = { path = "../rask-ast" }
-
-[profile.release]
-opt-level = "z"        # Optimize for size
-lto = true             # Link-time optimization
-codegen-units = 1      # Better optimization
-panic = "abort"        # Smaller binary
-strip = true           # Remove debug symbols

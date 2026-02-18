@@ -588,28 +588,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
 
-        // ── Resource tracking (runtime safety) ─────────────────
-        StdlibEntry {
-            mir_name: "rask_resource_register",
-            c_name: "rask_resource_register",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "rask_resource_consume",
-            c_name: "rask_resource_consume",
-            params: &[types::I64],
-            ret_ty: None,
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "rask_resource_scope_check",
-            c_name: "rask_resource_scope_check",
-            params: &[types::I64],
-            ret_ty: None,
-            can_panic: false,
-        },
 
         // ── Pool checked access (runtime safety) ──────────────
         StdlibEntry {

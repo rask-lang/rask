@@ -292,103 +292,9 @@ pub fn cmd_mir(path: &str, format: Format) {
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
 pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions) {
     let (mono, typed, decls, source) = run_pipeline(path, format);
-
-    // Evaluate comptime const declarations
     let comptime_globals = evaluate_comptime_globals(&decls);
 
-    // MIR lowering — include extern decls so their return types are known.
-    // Patch FnDecl names to qualified monomorphized names for func_sigs.
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
-        let mut decl = f.body.clone();
-        if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
-            fn_decl.name = f.name.clone();
-        }
-        decl
-    }).collect();
-    all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
-    let extern_funcs = collect_extern_func_names(&decls);
-    let line_map = source.as_deref().map(rask_ast::LineMap::new);
-    let mir_ctx = rask_mir::lower::MirContext {
-        struct_layouts: &mono.struct_layouts,
-        enum_layouts: &mono.enum_layouts,
-        node_types: &typed.node_types,
-        comptime_globals: &comptime_globals,
-        extern_funcs: &extern_funcs,
-        line_map: line_map.as_ref(),
-        source_file: Some(path),
-    };
-
-    let mut mir_functions = Vec::new();
-    for mono_fn in &mono.functions {
-        match rask_mir::lower::MirLowerer::lower_function_named(&mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)) {
-            Ok(mir_fns) => mir_functions.extend(mir_fns),
-            Err(e) => {
-                eprintln!("{}: MIR lowering '{}': {:?}", output::error_label(), mono_fn.name, e);
-                process::exit(1);
-            }
-        }
-    }
-
-    if mir_functions.is_empty() {
-        eprintln!("{}: no functions to compile", output::error_label());
-        process::exit(1);
-    }
-
-    // Closure optimization: escape analysis + cross-function ownership transfer + drop insertion
-    rask_mir::optimize_all_closures(&mut mir_functions);
-
-    // Cranelift codegen
-    let mut codegen = match rask_codegen::CodeGenerator::new() {
-        Ok(cg) => cg,
-        Err(e) => {
-            eprintln!("{}: codegen init: {}", output::error_label(), e);
-            process::exit(1);
-        }
-    };
-
-    if let Err(e) = codegen.declare_runtime_functions() {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    if let Err(e) = codegen.declare_stdlib_functions() {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    let extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
-        if let rask_ast::decl::DeclKind::Extern(e) = &d.kind {
-            Some(rask_codegen::ExternFuncSig {
-                name: e.name.clone(),
-                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
-                ret_ty: e.ret_ty.clone(),
-            })
-        } else {
-            None
-        }
-    }).collect();
-    if let Err(e) = codegen.declare_extern_functions(&extern_sigs) {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    if let Err(e) = codegen.declare_functions(&mono, &mir_functions) {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    if let Err(e) = codegen.register_strings(&mir_functions) {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    if let Err(e) = codegen.register_comptime_globals(&comptime_globals) {
-        eprintln!("{}: {}", output::error_label(), e);
-        process::exit(1);
-    }
-    for mir_fn in &mir_functions {
-        if let Err(e) = codegen.gen_function(mir_fn) {
-            eprintln!("{}: codegen '{}': {}", output::error_label(), mir_fn.name, e);
-            process::exit(1);
-        }
-    }
-
-    // Emit object and link
+    // Determine output paths
     let bin_path = match output_path {
         Some(p) => p.to_string(),
         None => {
@@ -396,8 +302,6 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
             let stem = p.file_stem()
                 .and_then(|s| s.to_str())
                 .unwrap_or("a.out");
-
-            // Output to build/debug/ — either project root or source file directory
             let base_dir = if let Some(project_root) = super::pipeline::find_project_root_from(path) {
                 project_root
             } else {
@@ -410,8 +314,13 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
     let obj_path = format!("{}.o", bin_path);
 
-    if let Err(e) = codegen.emit_object(&obj_path) {
-        eprintln!("{}: emit object: {}", output::error_label(), e);
+    if let Err(errors) = super::compile::compile_to_object(
+        &mono, &typed, &decls, &comptime_globals,
+        Some(path), source.as_deref(), None, &obj_path,
+    ) {
+        for e in &errors {
+            eprintln!("{}: {}", output::error_label(), e);
+        }
         process::exit(1);
     }
 
@@ -420,7 +329,6 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         process::exit(1);
     }
 
-    // Clean up intermediate object file
     let _ = std::fs::remove_file(&obj_path);
 
     if format == Format::Human && !quiet {
