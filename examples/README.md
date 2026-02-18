@@ -79,17 +79,7 @@ These represent Rask's 5 validation use cases from the design spec.
 
 ## Compile Error Examples
 
-Located in `compile_errors/` - these demonstrate what the type system **prevents**:
-
-| File | Shows |
-|------|-------|
-| `borrow_stored.rk` | Cannot store borrowed references |
-| `comptime_loop.rk` | Loop variable in comptime |
-| `context_*.rk` | Context clause errors |
-| `error_mismatch.rk` | Error type mismatches |
-| `resource_leak.rk` | Linear resource not consumed |
-
-These are **intentionally broken** to teach safety boundaries.
+Moved to `tests/compile_errors/` — these demonstrate what the type system **prevents**.
 
 ---
 
@@ -142,7 +132,7 @@ These are **intentionally broken** to teach safety boundaries.
 - ✅ **Runnable** - Fully implemented, runs with current interpreter
 - 📝 **Spec Example** - Shows intended syntax, not yet implemented
 - 🚧 **Partial** - Some features work, some don't
-- ❌ **Broken** - Intentionally demonstrates errors (compile_errors/)
+- ❌ **Broken** - Intentionally demonstrates errors (see `tests/compile_errors/`)
 
 ---
 

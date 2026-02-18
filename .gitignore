@@ -15,8 +15,8 @@ docs/book/book/
 # Compiled Rask binaries
 build/
 
-# C runtime build artifacts
-compiler/runtime/*.o
+# Compiler build artifacts
+*.o
 compiler/runtime/*.a
 
 # Playground builds
