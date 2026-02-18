@@ -1,8 +1,0 @@
-[package]
-name = "rask-rt"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-
-[dependencies]
-libc = "0.2"
