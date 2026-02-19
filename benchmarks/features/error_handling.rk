@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+func checked_div(a: i64, b: i64) -> i64 or string {
+    if b == 0 {
+        return Err("division by zero")
+    }
+    return Ok(a / b)
+}
+
+func sum_divs(n: i64) -> i64 or string {
+    let sum = 0
+    let i = 1
+    while i <= n {
+        sum = sum + try checked_div(1000, i)
+        i = i + 1
+    }
+    return Ok(sum)
+}
+
+benchmark "result propagation 10k" {
+    let i = 0
+    while i < 100 {
+        sum_divs(100)
+        i = i + 1
+    }
+}

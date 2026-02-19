@@ -31,6 +31,11 @@ pub fn print_usage() {
     println!("  {}          Show version", output::command("version"));
 
     println!();
+    println!("{}", output::section_header("Project:"));
+    println!("  {} {}     Create a new Rask project", output::command("init"), output::arg("[name]"));
+    println!("  {} {}     Resolve and validate dependencies", output::command("fetch"), output::arg("[dir]"));
+    println!("  {} {}    Regenerate rask.lock", output::command("update"), output::arg("[dir]"));
+    println!();
     println!("{}", output::section_header("Dependencies:"));
     println!("  {} {}       Add a dependency to build.rk", output::command("add"), output::arg("<pkg>"));
     println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
@@ -312,28 +317,44 @@ pub fn print_test_help() {
 pub fn print_benchmark_help() {
     println!("{}", output::section_header("Benchmark"));
     println!();
-    println!("Run benchmark functions (functions with @benchmark attribute) in a file.");
+    println!("Run benchmarks from a file or directory. Compiles natively by default.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("benchmark"),
-        output::arg("<file.rk> [-f <pattern>]"));
+        output::arg("<file.rk | dir/> [-f <pattern>]"));
+    println!();
+    println!("When given a directory, discovers all .rk files and runs their benchmarks.");
+    println!("If a matching .c file exists, compiles it as a C baseline and shows ratios.");
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
     println!("  {} {} Filter benchmarks by name pattern", output::arg("-f"), output::arg("<pattern>"));
+    println!("  {} {}  Save results as a baseline", output::arg("--save"), output::arg("<file>"));
+    println!("  {} {} Compare against a saved baseline", output::arg("--compare"), output::arg("<file>"));
+    println!("  {}  Compile C baselines with -O0 (fair Cranelift comparison)", output::arg("--baseline-O0"));
     println!();
     println!("{}", output::section_header("Examples:"));
-    println!("  {} {} {}   Run all benchmarks",
+    println!("  {} {} {}        Run one benchmark file",
         output::command("rask"),
         output::command("benchmark"),
         output::arg("bench.rk"));
-    println!("  {} {} {} {} {}  Run benchmarks matching pattern",
+    println!("  {} {} {}  Run suite with C comparison",
         output::command("rask"),
         output::command("benchmark"),
-        output::arg("bench.rk"),
-        output::arg("-f"),
-        output::arg("sort"));
+        output::arg("benchmarks/micro/"));
+    println!("  {} {} {} {} {}         Save baseline",
+        output::command("rask"),
+        output::command("benchmark"),
+        output::arg("benchmarks/micro/"),
+        output::arg("--save"),
+        output::arg("base.json"));
+    println!("  {} {} {} {} {}      Detect regressions",
+        output::command("rask"),
+        output::command("benchmark"),
+        output::arg("benchmarks/micro/"),
+        output::arg("--compare"),
+        output::arg("base.json"));
 }
 
 pub fn print_test_specs_help() {
@@ -575,4 +596,52 @@ pub fn print_mir_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output MIR as structured JSON", output::arg("--json"));
+}
+
+pub fn print_init_help() {
+    println!("{}", output::section_header("Init"));
+    println!();
+    println!("Create a new Rask project with build.rk, main.rk, and .gitignore.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("init"),
+        output::arg("[name]"));
+    println!();
+    println!("If a name is given, creates a new directory.");
+    println!("If no name, initializes in the current directory.");
+    println!();
+    println!("{}", output::section_header("Examples:"));
+    println!("  {} {} {}    Create new project in my-app/",
+        output::command("rask"),
+        output::command("init"),
+        output::arg("my-app"));
+    println!("  {} {}              Initialize current directory",
+        output::command("rask"),
+        output::command("init"));
+}
+
+pub fn print_fetch_help() {
+    println!("{}", output::section_header("Fetch"));
+    println!();
+    println!("Resolve and validate all dependencies declared in build.rk.");
+    println!("Checks version constraints, validates path deps exist,");
+    println!("infers capabilities, and updates rask.lock.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("fetch"),
+        output::arg("[directory] [--verbose]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
+    println!();
+    println!("{}", output::section_header("Examples:"));
+    println!("  {} {}          Fetch in current directory",
+        output::command("rask"),
+        output::command("fetch"));
+    println!("  {} {} {}  Verbose output",
+        output::command("rask"),
+        output::command("fetch"),
+        output::arg("-v"));
 }

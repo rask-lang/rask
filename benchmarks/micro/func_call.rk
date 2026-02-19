@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+func add(a: i64, b: i64) -> i64 {
+    return a + b
+}
+
+benchmark "func call 10M" {
+    let sum = 0
+    let i = 0
+    while i < 10000000 {
+        sum = add(sum, i)
+        i = i + 1
+    }
+}

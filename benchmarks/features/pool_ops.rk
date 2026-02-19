@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+benchmark "pool insert+get 10k" {
+    let p = Pool.new()
+    let last = 0
+    let i = 0
+    while i < 10000 {
+        last = p.insert(i)
+        i = i + 1
+    }
+}
+
+benchmark "pool insert+remove 10k" {
+    let p = Pool.new()
+    let i = 0
+    while i < 10000 {
+        let h = p.insert(i)
+        p.remove(h)
+        i = i + 1
+    }
+}

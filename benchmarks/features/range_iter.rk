@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+benchmark "for-in range 10M" {
+    let sum = 0
+    for i in 0..10000000 {
+        sum = sum + i
+    }
+}

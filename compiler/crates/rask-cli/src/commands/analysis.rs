@@ -36,6 +36,13 @@ pub fn cmd_typecheck(path: &str, format: Format) {
                 rask_types::TypeDef::Trait { name, .. } => {
                     println!("  trait {}", name);
                 }
+                rask_types::TypeDef::Union { name, fields, .. } => {
+                    println!("  union {} {{", name);
+                    for (field_name, field_ty) in fields {
+                        println!("    {}: {:?}", field_name, field_ty);
+                    }
+                    println!("  }}");
+                }
             }
         }
 
