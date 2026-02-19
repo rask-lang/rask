@@ -1,0 +1,29 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+enum Shape {
+    Circle(i64),
+    Rect(i64, i64),
+    Point,
+}
+
+func area(s: Shape) -> i64 {
+    return match s {
+        Circle(r) => r * r * 3,
+        Rect(w, h) => w * h,
+        Point => 0,
+    }
+}
+
+benchmark "match enum 10M" {
+    let sum = 0
+    let i = 0
+    while i < 10000000 {
+        let s = match i % 3 {
+            0 => Shape.Circle(i),
+            1 => Shape.Rect(i, i + 1),
+            _ => Shape.Point,
+        }
+        sum = sum + area(s)
+        i = i + 1
+    }
+}

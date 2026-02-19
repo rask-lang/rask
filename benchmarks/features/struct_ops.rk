@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+struct Point {
+    x: i64,
+    y: i64,
+}
+
+func distance_sq(a: Point, b: Point) -> i64 {
+    let dx = a.x - b.x
+    let dy = a.y - b.y
+    return dx * dx + dy * dy
+}
+
+benchmark "struct create+access 10k" {
+    let sum = 0
+    let i = 0
+    while i < 10000 {
+        let p = Point { x: i, y: i * 2 }
+        sum = sum + p.x + p.y
+        i = i + 1
+    }
+}
+
+benchmark "struct fn pass 10k" {
+    let sum = 0
+    let i = 0
+    while i < 10000 {
+        let a = Point { x: i, y: i }
+        let b = Point { x: i + 1, y: i + 1 }
+        sum = sum + distance_sq(a, b)
+        i = i + 1
+    }
+}

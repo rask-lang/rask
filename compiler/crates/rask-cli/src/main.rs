@@ -188,7 +188,8 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
                 process::exit(1);
             }
-            let native = cmd_args.contains(&"--native");
+            let release = cmd_args.contains(&"--release");
+            let native = cmd_args.contains(&"--native") || release; // CL2: --release implies native
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
@@ -201,7 +202,6 @@ fn main() {
                 }
             };
             if native {
-                // Native binary doesn't need the source path as argv[0]
                 let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
                 commands::run::cmd_run_native(file, native_args, format, &link_opts);
             } else {
@@ -261,20 +261,32 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {} {}", "Usage".yellow(), output::command("rask"), output::command("benchmark"), output::arg("<file.rk>"), output::arg("[-f pattern]"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {} {}", "Usage".yellow(), output::command("rask"), output::command("benchmark"), output::arg("<file.rk | dir/>"), output::arg("[-f pattern]"));
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-f"]);
-            let file = match file_arg {
+            let save_path = extract_flag_value(&cmd_args, "--save");
+            let compare_path = extract_flag_value(&cmd_args, "--compare");
+            let baseline_o0 = cmd_args.contains(&"--baseline-O0");
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-f", "--save", "--compare"]);
+            let path = match file_arg {
                 Some(f) => f,
                 None => {
-                    eprintln!("{}: missing file argument", output::error_label());
+                    eprintln!("{}: missing file or directory argument", output::error_label());
                     process::exit(1);
                 }
             };
-            commands::run::cmd_benchmark(file, filter, format);
+            if std::path::Path::new(path).is_dir() {
+                let opts = commands::run::BenchSuiteOpts {
+                    save_path,
+                    compare_path,
+                    baseline_o0,
+                };
+                commands::run::cmd_benchmark_dir(path, filter, format, opts);
+            } else {
+                commands::run::cmd_benchmark(path, filter, format);
+            }
         }
         "test-specs" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -386,6 +398,23 @@ fn main() {
                 return;
             }
             commands::build::cmd_targets();
+        }
+        "init" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_init_help();
+                return;
+            }
+            let name = find_positional_arg(&cmd_args, 2, &[]);
+            commands::init::cmd_init(name);
+        }
+        "fetch" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_fetch_help();
+                return;
+            }
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
+            commands::fetch::cmd_fetch(path, verbose);
         }
         "watch" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

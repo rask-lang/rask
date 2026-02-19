@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Benchmark: tight integer arithmetic loop — measures codegen quality.
+
+benchmark "loop arith 10M" {
+    let sum = 0
+    let i = 0
+    while i < 10000000 {
+        sum = sum + i * 3 - i / 2
+        i = i + 1
+    }
+}

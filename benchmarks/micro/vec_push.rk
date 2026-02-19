@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Benchmark: Vec.push — measures runtime data structure overhead.
+
+benchmark "vec push 10k" {
+    let v = Vec.new()
+    let i = 0
+    while i < 10000 {
+        v.push(i)
+        i = i + 1
+    }
+}
