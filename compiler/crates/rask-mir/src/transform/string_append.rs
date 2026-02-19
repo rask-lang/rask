@@ -169,10 +169,17 @@ fn rvalue_references(rv: &MirRValue, local: LocalId) -> bool {
     }
 }
 
-/// Rewrite a `concat` call to `string_append`, dropping the return value.
+/// Rewrite a `concat` call to in-place append, dropping the return value.
+/// Uses `string_append_cstr` when the second arg is a string constant
+/// (avoids allocating a temporary RaskString for the literal).
 fn rewrite_to_append(stmt: &mut MirStmt, _target: LocalId) {
-    if let MirStmt::Call { dst, func, .. } = stmt {
-        func.name = "string_append".to_string();
+    if let MirStmt::Call { dst, func, args } = stmt {
+        let use_cstr = matches!(args.get(1), Some(MirOperand::Constant(crate::MirConst::String(_))));
+        func.name = if use_cstr {
+            "string_append_cstr".to_string()
+        } else {
+            "string_append".to_string()
+        };
         *dst = None; // append mutates in place, return value unused
     }
 }
@@ -247,8 +254,8 @@ mod tests {
     }
 
     #[test]
-    fn self_concat_with_string_literal() {
-        // _t = concat(s, "x") → s = Use(_t)
+    fn self_concat_with_string_literal_uses_cstr() {
+        // _t = concat(s, "x") → s = Use(_t)  ⟹  string_append_cstr(s, "x")
         let mut f = make_fn(vec![
             concat_call(1, 0, MirOperand::Constant(crate::MirConst::String("x".into()))),
             assign_use(0, 1),
@@ -257,7 +264,7 @@ mod tests {
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 1);
         match &stmts[0] {
-            MirStmt::Call { func, .. } => assert_eq!(func.name, "string_append"),
+            MirStmt::Call { func, .. } => assert_eq!(func.name, "string_append_cstr"),
             other => panic!("expected Call, got {:?}", other),
         }
     }
@@ -319,7 +326,7 @@ mod tests {
 
     #[test]
     fn multiple_self_concats_in_sequence() {
-        // Two self-concats in a row (loop unrolling scenario)
+        // Two self-concats: local arg → string_append, literal arg → string_append_cstr
         let mut f = make_fn(vec![
             concat_call(1, 0, MirOperand::Local(local(2))),
             assign_use(0, 1),
@@ -329,11 +336,13 @@ mod tests {
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 2);
-        for stmt in stmts {
-            match stmt {
-                MirStmt::Call { func, .. } => assert_eq!(func.name, "string_append"),
-                other => panic!("expected Call, got {:?}", other),
-            }
+        match &stmts[0] {
+            MirStmt::Call { func, .. } => assert_eq!(func.name, "string_append"),
+            other => panic!("expected string_append, got {:?}", other),
+        }
+        match &stmts[1] {
+            MirStmt::Call { func, .. } => assert_eq!(func.name, "string_append_cstr"),
+            other => panic!("expected string_append_cstr, got {:?}", other),
         }
     }
 

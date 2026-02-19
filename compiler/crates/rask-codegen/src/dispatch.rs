@@ -295,6 +295,24 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // rask_string_append(s: RaskString*, other: const RaskString*) → i64
+        // Inserted by the self-concat → append optimization pass.
+        StdlibEntry {
+            mir_name: "string_append",
+            c_name: "rask_string_append",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // rask_string_append_cstr(s: RaskString*, cstr: const char*) → i64
+        // Variant for string constant args — avoids RaskString allocation.
+        StdlibEntry {
+            mir_name: "string_append_cstr",
+            c_name: "rask_string_append_cstr",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
 
         // ── String methods ────────────────────────────────────
         StdlibEntry {

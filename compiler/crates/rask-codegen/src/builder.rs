@@ -550,8 +550,13 @@ impl<'a> FunctionBuilder<'a> {
 
                     // Lower MIR args to Cranelift values
                     let mut arg_vals = Vec::with_capacity(args.len());
-                    for a in args.iter() {
-                        let val = Self::lower_operand_typed(builder, a, var_map, Some(types::I64), string_globals, func_refs)?;
+                    for (arg_idx, a) in args.iter().enumerate() {
+                        // string_append_cstr: second arg is raw char*, skip RaskString wrapping
+                        let val = if func.name == "string_append_cstr" && arg_idx == 1 {
+                            Self::lower_string_const_as_cstr(builder, a, string_globals)?
+                        } else {
+                            Self::lower_operand_typed(builder, a, var_map, Some(types::I64), string_globals, func_refs)?
+                        };
                         let actual = builder.func.dfg.value_type(val);
                         let converted = if actual != types::I64 && actual.is_int() {
                             Self::convert_value(builder, val, actual, types::I64)
@@ -1669,6 +1674,22 @@ impl<'a> FunctionBuilder<'a> {
         func_refs: &HashMap<String, FuncRef>,
     ) -> CodegenResult<Value> {
         Self::lower_operand_typed(builder, op, var_map, None, string_globals, func_refs)
+    }
+
+    /// Lower a string constant as a raw `const char*` pointer (no RaskString wrapping).
+    /// Used by `string_append_cstr` to avoid allocating a temporary RaskString.
+    fn lower_string_const_as_cstr(
+        builder: &mut ClifFunctionBuilder,
+        op: &MirOperand,
+        string_globals: &HashMap<String, GlobalValue>,
+    ) -> CodegenResult<Value> {
+        if let MirOperand::Constant(MirConst::String(s)) = op {
+            if let Some(gv) = string_globals.get(s.as_str()) {
+                return Ok(builder.ins().global_value(types::I64, *gv));
+            }
+        }
+        // Shouldn't reach here — transform only emits cstr variant for constants
+        Ok(builder.ins().iconst(types::I64, 0))
     }
 
     fn lower_operand_typed(

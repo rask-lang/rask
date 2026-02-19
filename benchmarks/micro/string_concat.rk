@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+benchmark "string concat 1k" {
+    let s = ""
+    let i = 0
+    while i < 1000 {
+        s = s.concat("x")
+        i = i + 1
+    }
+}
