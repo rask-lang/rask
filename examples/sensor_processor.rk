@@ -6,73 +6,6 @@ import thread.Thread
 import time
 
 // ============================================================================
-// SPSC Ring Buffer (concrete, Vec-backed)
-// ============================================================================
-
-struct SensorRingBuffer {
-    data: Vec<SensorReading>
-    capacity: i64
-    write_idx: i64
-    read_idx: i64
-}
-
-extend SensorRingBuffer {
-    func new(capacity: i64) -> SensorRingBuffer {
-        const data = Vec.new()
-        for i in 0..capacity {
-            data.push(SensorReading {
-                sensor_id: 0,
-                value: 0.0,
-                timestamp_ns: 0,
-            })
-        }
-        return SensorRingBuffer {
-            data: data,
-            capacity: capacity,
-            write_idx: 0,
-            read_idx: 0,
-        }
-    }
-
-    func try_push(self, value: SensorReading) -> bool {
-        const next_write = (self.write_idx + 1) % self.capacity
-        if next_write == self.read_idx {
-            return false
-        }
-        self.data.set(self.write_idx, value)
-        self.write_idx = next_write
-        return true
-    }
-
-    func has_data(self) -> bool {
-        return self.read_idx != self.write_idx
-    }
-
-    func pop(self) -> SensorReading {
-        const idx = self.read_idx
-        self.read_idx = (self.read_idx + 1) % self.capacity
-        return self.data.get(idx).unwrap()
-    }
-
-    func len(self) -> i64 {
-        if self.write_idx >= self.read_idx {
-            return self.write_idx - self.read_idx
-        }
-        return self.capacity - self.read_idx + self.write_idx
-    }
-}
-
-// ============================================================================
-// Sensor Reading
-// ============================================================================
-
-struct SensorReading {
-    sensor_id: i64
-    value: f64
-    timestamp_ns: i64
-}
-
-// ============================================================================
 // Lookup Tables (runtime-initialized)
 // ============================================================================
 
@@ -130,22 +63,6 @@ struct TimingStats {
 }
 
 extend TimingStats {
-    func new() -> TimingStats {
-        const samples = Vec.new()
-        for i in 0..256 {
-            samples.push(0)
-        }
-        return TimingStats {
-            samples: samples,
-            sample_idx: 0,
-            sample_count: 0,
-            min_ns: 9999999999,
-            max_ns: 0,
-            sum_ns: 0,
-            deadline_misses: 0,
-        }
-    }
-
     func record(self, cycle_ns: i64, deadline_ns: i64) {
         self.samples.set(self.sample_idx, cycle_ns)
         self.sample_idx = (self.sample_idx + 1) % 256
@@ -192,37 +109,34 @@ func isqrt(n: i64) -> i64 {
 // Interrupt Handler Simulation (runs on separate thread)
 // ============================================================================
 
+// Pushes sensor readings into a shared Vec. The Vec handle is heap-allocated,
+// so the main thread sees appended data via its own copy of the handle.
 func interrupt_handler(
-    buffer: SensorRingBuffer,
+    readings: Vec<i64>,
     start_time: time.Instant,
     sample_rate_hz: i64
 ) {
     const period_ns = 1000000000 / sample_rate_hz
     let sequence: i64 = 0
 
-    // Run for limited iterations (simulates timed interrupt)
     while sequence < sample_rate_hz * 2 {
         const now_ns = time.Instant.now().duration_since(start_time).as_nanos() as i64
 
         for sensor_id in 0..3 {
-            const reading = SensorReading {
-                sensor_id: sensor_id,
-                value: read_hardware_sensor(sensor_id, sequence),
-                timestamp_ns: now_ns,
-            }
-
-            if !buffer.try_push(own reading) {
-                // Buffer overflow
-            }
+            const value = read_hardware_sensor(sensor_id, sequence)
+            // Encode reading as 3 consecutive i64s: sensor_id, value bits, timestamp
+            readings.push(sensor_id)
+            readings.push(value as i64)
+            readings.push(now_ns)
         }
 
         sequence += 1
-        time.sleep(period_ns / 1000000)
+        time.sleep(time.Duration.from_millis(period_ns / 1000000))
     }
 }
 
 // ============================================================================
-// Main Processing Loop
+// Processing State
 // ============================================================================
 
 struct ProcessorState {
@@ -231,46 +145,22 @@ struct ProcessorState {
     humidity_history: Vec<f64>
     history_idx: i64
     history_count: i64
-
     temp_avg: f64
     pressure_avg: f64
     humidity_avg: f64
-
     samples_processed: i64
 }
 
 extend ProcessorState {
-    func new() -> ProcessorState {
-        const temp = Vec.new()
-        const pres = Vec.new()
-        const hum = Vec.new()
-        for i in 0..64 {
-            temp.push(0.0)
-            pres.push(0.0)
-            hum.push(0.0)
-        }
-        return ProcessorState {
-            temp_history: temp,
-            pressure_history: pres,
-            humidity_history: hum,
-            history_idx: 0,
-            history_count: 0,
-            temp_avg: 0.0,
-            pressure_avg: 0.0,
-            humidity_avg: 0.0,
-            samples_processed: 0,
-        }
-    }
-
-    func process_reading(self, reading: SensorReading) {
-        match reading.sensor_id {
-            0 => self.temp_history.set(self.history_idx, reading.value),
-            1 => self.pressure_history.set(self.history_idx, reading.value),
-            2 => self.humidity_history.set(self.history_idx, reading.value),
+    func process_reading(self, sensor_id: i64, value: f64) {
+        match sensor_id {
+            0 => self.temp_history.set(self.history_idx, value),
+            1 => self.pressure_history.set(self.history_idx, value),
+            2 => self.humidity_history.set(self.history_idx, value),
             _ => {}
         }
 
-        if reading.sensor_id == 2 {
+        if sensor_id == 2 {
             self.history_idx = (self.history_idx + 1) % 64
             if self.history_count < 64 {
                 self.history_count += 1
@@ -301,20 +191,11 @@ extend ProcessorState {
     }
 }
 
-// Scalar array sum (replaces SIMD version)
-func array_sum(data: Vec<f64>, count: i64) -> f64 {
-    let sum = 0.0
-    for i in 0..count {
-        sum += data.get(i).unwrap()
-    }
-    return sum
-}
-
 // ============================================================================
 // Main Entry Point
 // ============================================================================
 
-func main() -> () or Error {
+func main() {
     println("=== Real-Time Sensor Processor ===")
     println("")
 
@@ -331,10 +212,43 @@ func main() -> () or Error {
     // Build lookup tables
     const crc_table = build_crc8_table()
 
-    // Pre-allocate everything
-    let buffer = SensorRingBuffer.new(256)
-    let state = ProcessorState.new()
-    let timing = TimingStats.new()
+    // Shared buffer: interrupt handler appends, main thread reads.
+    // Vec handles are heap-allocated — both threads see the same data.
+    const readings = Vec.new()
+
+    const temp_hist = Vec.new()
+    const pres_hist = Vec.new()
+    const hum_hist = Vec.new()
+    for i in 0..64 {
+        temp_hist.push(0.0)
+        pres_hist.push(0.0)
+        hum_hist.push(0.0)
+    }
+    let state = ProcessorState {
+        temp_history: temp_hist,
+        pressure_history: pres_hist,
+        humidity_history: hum_hist,
+        history_idx: 0,
+        history_count: 0,
+        temp_avg: 0.0,
+        pressure_avg: 0.0,
+        humidity_avg: 0.0,
+        samples_processed: 0,
+    }
+
+    const timing_samples = Vec.new()
+    for i in 0..256 {
+        timing_samples.push(0)
+    }
+    let timing = TimingStats {
+        samples: timing_samples,
+        sample_idx: 0,
+        sample_count: 0,
+        min_ns: 9999999999,
+        max_ns: 0,
+        sum_ns: 0,
+        deadline_misses: 0,
+    }
 
     const start_time = time.Instant.now()
     const process_period_ns = 1000000000 / PROCESS_RATE_HZ
@@ -342,23 +256,25 @@ func main() -> () or Error {
 
     // Start interrupt handler on separate thread
     let isr_handle = Thread.spawn(|| {
-        interrupt_handler(buffer, start_time, SAMPLE_RATE_HZ)
+        interrupt_handler(readings, start_time, SAMPLE_RATE_HZ)
     })
 
     println("Started. Processing for {DURATION_SECS} seconds...")
     println("")
 
     let cycle: i64 = 0
+    let read_idx: i64 = 0
 
     while (time.Instant.now().duration_since(start_time).as_secs() as i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()
 
-        // Drain available samples from buffer
-        let drained = 0
-        while buffer.has_data() {
-            const reading = buffer.pop()
-            state.process_reading(reading)
-            drained += 1
+        // Drain available samples — each reading is 3 consecutive i64s
+        while read_idx + 2 < readings.len() {
+            const sensor_id = readings.get(read_idx).unwrap()
+            const value_bits = readings.get(read_idx + 1).unwrap()
+            const value = value_bits as f64
+            read_idx += 3
+            state.process_reading(sensor_id, value)
         }
 
         // Compute derived values periodically
@@ -377,7 +293,7 @@ func main() -> () or Error {
     }
 
     // Wait for interrupt handler
-    try isr_handle.join()
+    isr_handle.join()
 
     // Print results
     println("=== Results ===")
@@ -385,10 +301,13 @@ func main() -> () or Error {
     println("Samples processed: {state.samples_processed}")
     println("Processing cycles: {cycle}")
     println("")
+    const min_us = timing.min_ns / 1000
+    const max_us = timing.max_ns / 1000
+    const mean_us = timing.mean_ns() / 1000
     println("Timing Statistics:")
-    println("  Min cycle:  {timing.min_ns / 1000} µs")
-    println("  Max cycle:  {timing.max_ns / 1000} µs")
-    println("  Mean cycle: {timing.mean_ns() / 1000} µs")
+    println("  Min cycle:  {min_us} µs")
+    println("  Max cycle:  {max_us} µs")
+    println("  Mean cycle: {mean_us} µs")
     println("  Deadline misses: {timing.deadline_misses}")
     println("")
     println("Final Averages (64-sample window):")
@@ -400,6 +319,4 @@ func main() -> () or Error {
         println("")
         println("WARNING: {timing.deadline_misses} deadline misses detected!")
     }
-
-    Ok(())
 }

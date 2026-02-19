@@ -262,6 +262,13 @@ impl Interpreter {
                     .map_err(|e| RuntimeError::TypeError(e))?;
                 Ok(Value::Duration(n * 1_000_000))
             }
+            ("Duration", "from_nanos") => {
+                let n = args.first()
+                    .ok_or_else(|| RuntimeError::ArityMismatch { expected: 1, got: 0 })?
+                    .as_u64()
+                    .map_err(|e| RuntimeError::TypeError(e))?;
+                Ok(Value::Duration(n))
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "type {} has no method '{}'",
                 type_name, method
