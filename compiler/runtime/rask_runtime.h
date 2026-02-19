@@ -37,6 +37,19 @@ void *rask_alloc(int64_t size);
 void *rask_realloc(void *ptr, int64_t old_size, int64_t new_size);
 void  rask_free(void *ptr);
 
+// Overflow-checked arithmetic for allocation sizes.
+_Noreturn void rask_panic(const char *msg);
+
+static inline int64_t rask_safe_mul(int64_t a, int64_t b) {
+    if (a > 0 && b > 0 && a > INT64_MAX / b) rask_panic("allocation size overflow");
+    return a * b;
+}
+
+static inline int64_t rask_safe_add(int64_t a, int64_t b) {
+    if (a > 0 && b > 0 && a > INT64_MAX - b) rask_panic("allocation size overflow");
+    return a + b;
+}
+
 // ─── Vec ────────────────────────────────────────────────────
 // Growable array storing elements as raw bytes.
 
@@ -148,6 +161,8 @@ RaskHandle  rask_pool_alloc(RaskPool *p);
 
 // Packed i64 handle interface for codegen (index:32 | gen:32, pool_id from pool ptr)
 int64_t     rask_pool_alloc_packed(RaskPool *p);
+int64_t     rask_pool_insert_packed(RaskPool *p, const void *elem);
+int64_t     rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size);
 void       *rask_pool_get_packed(const RaskPool *p, int64_t packed);
 void       *rask_pool_get_checked(const RaskPool *p, int64_t packed,
                                   const char *file, int32_t line, int32_t col);

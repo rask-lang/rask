@@ -18,6 +18,7 @@ static void string_grow(RaskString *s, int64_t needed) {
     if (needed <= s->cap) return;
     int64_t new_cap = s->cap ? s->cap : 8;
     while (new_cap < needed) {
+        if (new_cap > INT64_MAX / 2) rask_panic("string capacity overflow");
         new_cap *= 2;
     }
     // +1 for null terminator
@@ -58,8 +59,8 @@ RaskString *rask_string_from_bytes(const char *data, int64_t len) {
 
 void rask_string_free(RaskString *s) {
     if (!s) return;
-    rask_free(s->data);
-    rask_free(s);
+    if (s->data) rask_realloc(s->data, s->cap + 1, 0);
+    rask_realloc(s, (int64_t)sizeof(RaskString), 0);
 }
 
 int64_t rask_string_len(const RaskString *s) {
@@ -163,9 +164,9 @@ RaskString *rask_string_concat(const RaskString *a, const RaskString *b) {
     const char *bd = b ? b->data : "";
     int64_t blen = b ? b->len : 0;
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
-    r->len = alen + blen;
+    r->len = rask_safe_add(alen, blen);
     r->cap = r->len;
-    r->data = (char *)rask_alloc(r->len + 1);
+    r->data = (char *)rask_alloc(rask_safe_add(r->len, 1));
     if (alen) memcpy(r->data, ad, (size_t)alen);
     if (blen) memcpy(r->data + alen, bd, (size_t)blen);
     r->data[r->len] = '\0';
@@ -306,11 +307,11 @@ RaskString *rask_string_replace(const RaskString *s, const RaskString *from, con
         }
     }
 
-    int64_t new_len = s->len + count * (to_len - from->len);
+    int64_t new_len = rask_safe_add(s->len, rask_safe_mul(count, to_len - from->len));
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
     r->len = new_len;
     r->cap = new_len;
-    r->data = (char *)rask_alloc(new_len + 1);
+    r->data = (char *)rask_alloc(rask_safe_add(new_len, 1));
 
     char *dst = r->data;
     p = s->data;

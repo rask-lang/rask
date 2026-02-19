@@ -28,7 +28,7 @@ RaskVec *rask_vec_with_capacity(int64_t elem_size, int64_t cap) {
     v->len = 0;
     v->elem_size = elem_size;
     if (cap > 0) {
-        v->data = (char *)rask_alloc(elem_size * cap);
+        v->data = (char *)rask_alloc(rask_safe_mul(elem_size, cap));
         v->cap = cap;
     } else {
         v->data = NULL;
@@ -43,7 +43,7 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count) {
     v->len = count;
     v->cap = count;
     v->elem_size = elem_size;
-    int64_t total = elem_size * count;
+    int64_t total = rask_safe_mul(elem_size, count);
     v->data = (char *)rask_alloc(total);
     memcpy(v->data, data, total);
     return v;
@@ -51,8 +51,8 @@ RaskVec *rask_vec_from_static(const char *data, int64_t count) {
 
 void rask_vec_free(RaskVec *v) {
     if (!v) return;
-    rask_free(v->data);
-    rask_free(v);
+    if (v->data) rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size), 0);
+    rask_realloc(v, (int64_t)sizeof(RaskVec), 0);
 }
 
 int64_t rask_vec_len(const RaskVec *v) {
@@ -67,10 +67,11 @@ static int vec_grow(RaskVec *v, int64_t needed) {
     if (needed <= v->cap) return 0;
     int64_t new_cap = v->cap ? v->cap : 4;
     while (new_cap < needed) {
+        if (new_cap > INT64_MAX / 2) rask_panic("Vec capacity overflow");
         new_cap *= 2;
     }
-    char *new_data = (char *)rask_realloc(v->data, v->cap * v->elem_size,
-                                          new_cap * v->elem_size);
+    char *new_data = (char *)rask_realloc(v->data, rask_safe_mul(v->cap, v->elem_size),
+                                          rask_safe_mul(new_cap, v->elem_size));
     v->data = new_data;
     v->cap = new_cap;
     return 0;
