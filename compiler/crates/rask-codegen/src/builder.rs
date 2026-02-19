@@ -753,11 +753,19 @@ impl<'a> FunctionBuilder<'a> {
 
                 let results = builder.inst_results(call_inst);
                 if !results.is_empty() {
+                    let ptr = results[0]; // copy before mutable borrow
                     let var = var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Pool access destination not found".to_string()
                         ))?;
-                    builder.def_var(*var, results[0]);
+                    // Runtime returns void* to slot data — deref to get element value
+                    // (matches Pool_index DerefResult semantics)
+                    let load_ty = locals.iter()
+                        .find(|l| l.id == *dst)
+                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                        .unwrap_or(types::I64);
+                    let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
+                    builder.def_var(*var, val);
                 }
             }
 

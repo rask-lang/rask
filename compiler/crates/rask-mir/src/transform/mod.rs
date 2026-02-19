@@ -2,4 +2,6 @@
 
 //! MIR transform passes.
 
+pub mod gen_coalesce;
 pub mod state_machine;
+pub mod string_append;

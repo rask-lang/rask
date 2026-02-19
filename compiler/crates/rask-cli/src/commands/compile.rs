@@ -74,6 +74,12 @@ pub fn compile_to_object(
     // Closure optimization
     rask_mir::optimize_all_closures(&mut mir_functions);
 
+    // Self-concat → in-place append (eliminates O(n²) string building)
+    rask_mir::optimize_string_concat(&mut mir_functions);
+
+    // Generation check coalescing — eliminate redundant pool access checks
+    rask_mir::coalesce_generation_checks(&mut mir_functions);
+
     // Cranelift codegen
     let mut codegen = match target {
         Some(t) => rask_codegen::CodeGenerator::new_with_target(t),
@@ -286,6 +292,8 @@ pub fn compile_benchmarks_to_object(
     }
 
     rask_mir::optimize_all_closures(&mut mir_functions);
+    rask_mir::optimize_string_concat(&mut mir_functions);
+    rask_mir::coalesce_generation_checks(&mut mir_functions);
 
     // Cranelift codegen
     let mut codegen = rask_codegen::CodeGenerator::new()
