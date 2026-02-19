@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Stresses generation check coalescing: multiple reads of the
+// same handle within a basic block. With coalescing, only 1
+// generation check per handle per iteration instead of N.
+
+benchmark "pool[h] x5 reads (coalesce target)" {
+    let p = Pool.new()
+    let h = p.insert(42)
+    let sum = 0
+    let i = 0
+    while i < 100000 {
+        sum = sum + p[h]
+        sum = sum + p[h]
+        sum = sum + p[h]
+        sum = sum + p[h]
+        sum = sum + p[h]
+        i = i + 1
+    }
+}
+
+benchmark "pool[h] x1 read baseline" {
+    let p = Pool.new()
+    let h = p.insert(42)
+    let sum = 0
+    let i = 0
+    while i < 100000 {
+        sum = sum + p[h]
+        i = i + 1
+    }
+}
+
+benchmark "pool 3 handles x3 reads (coalesce target)" {
+    let p = Pool.new()
+    let h1 = p.insert(10)
+    let h2 = p.insert(20)
+    let h3 = p.insert(30)
+    let sum = 0
+    let i = 0
+    while i < 100000 {
+        sum = sum + p[h1]
+        sum = sum + p[h1]
+        sum = sum + p[h1]
+        sum = sum + p[h2]
+        sum = sum + p[h2]
+        sum = sum + p[h2]
+        sum = sum + p[h3]
+        sum = sum + p[h3]
+        sum = sum + p[h3]
+        i = i + 1
+    }
+}

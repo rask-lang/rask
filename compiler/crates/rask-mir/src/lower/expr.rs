@@ -720,6 +720,26 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         None
                     }
+                    // Field access on struct: resolve field type from struct layout
+                    .or_else(|| {
+                        if let ExprKind::Field { object: inner_obj, field: field_name } = &object.kind {
+                            if let ExprKind::Ident(var_name) = &inner_obj.kind {
+                                if let Some((local_id, _)) = self.locals.get(var_name) {
+                                    let local_ty = self.builder.local_type(*local_id);
+                                    if let Some(MirType::Struct(StructLayoutId(id))) = local_ty {
+                                        if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
+                                            if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
+                                                return super::MirContext::type_prefix(&fl.ty);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            None
+                        } else {
+                            None
+                        }
+                    })
                     .or_else(|| {
                         self.ctx.lookup_raw_type(object.id)
                             .and_then(|ty| super::MirContext::type_prefix(ty))
@@ -939,7 +959,7 @@ impl<'a> MirLowerer<'a> {
                         })
                     })
                     .unwrap_or(MirType::I64);
-                let index_name = if let ExprKind::Ident(var_name) = &object.kind {
+                let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
                         self.local_type_prefix.get(var_name).cloned()
                     } else {
                         None
@@ -947,7 +967,42 @@ impl<'a> MirLowerer<'a> {
                     .or_else(|| {
                         self.ctx.lookup_raw_type(object.id)
                             .and_then(|ty| super::MirContext::type_prefix(ty))
-                    })
+                    });
+
+                // Pool index: emit PoolCheckedAccess for generation checking
+                if type_prefix.as_deref() == Some("Pool") {
+                    let pool_local = match obj_op {
+                        MirOperand::Local(id) => id,
+                        _ => {
+                            let tmp = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Use(obj_op),
+                            });
+                            tmp
+                        }
+                    };
+                    let handle_local = match idx_op {
+                        MirOperand::Local(id) => id,
+                        _ => {
+                            let tmp = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::Assign {
+                                dst: tmp,
+                                rvalue: MirRValue::Use(idx_op),
+                            });
+                            tmp
+                        }
+                    };
+                    let result_local = self.builder.alloc_temp(result_ty.clone());
+                    self.builder.push_stmt(MirStmt::PoolCheckedAccess {
+                        dst: result_local,
+                        pool: pool_local,
+                        handle: handle_local,
+                    });
+                    return Ok((MirOperand::Local(result_local), result_ty));
+                }
+
+                let index_name = type_prefix
                     .map(|prefix| format!("{}_index", prefix))
                     .unwrap_or_else(|| "index".to_string());
                 let result_local = self.builder.alloc_temp(result_ty.clone());
@@ -1091,28 +1146,34 @@ impl<'a> MirLowerer<'a> {
                 self.bind_pattern_payload_niche(pattern, val, payload_ty, is_niche);
                 let (then_val, then_ty) = self.lower_expr(then_branch)?;
                 let result_local = self.builder.alloc_temp(then_ty.clone());
-                self.builder.push_stmt(MirStmt::Assign {
-                    dst: result_local,
-                    rvalue: MirRValue::Use(then_val),
-                });
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
+                if self.builder.current_block_unterminated() {
+                    self.builder.push_stmt(MirStmt::Assign {
+                        dst: result_local,
+                        rvalue: MirRValue::Use(then_val),
+                    });
+                    self.builder.terminate(MirTerminator::Goto { target: merge_block });
+                }
 
                 // Else block: evaluate else branch or default to zero-value
                 self.builder.switch_to_block(else_block);
                 if let Some(else_expr) = else_branch {
                     let (else_val, _) = self.lower_expr(else_expr)?;
-                    self.builder.push_stmt(MirStmt::Assign {
-                        dst: result_local,
-                        rvalue: MirRValue::Use(else_val),
-                    });
-                } else {
+                    if self.builder.current_block_unterminated() {
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::Use(else_val),
+                        });
+                    }
+                } else if self.builder.current_block_unterminated() {
                     // No else branch — initialize to default zero value
                     self.builder.push_stmt(MirStmt::Assign {
                         dst: result_local,
                         rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
                     });
                 }
-                self.builder.terminate(MirTerminator::Goto { target: merge_block });
+                if self.builder.current_block_unterminated() {
+                    self.builder.terminate(MirTerminator::Goto { target: merge_block });
+                }
 
                 self.builder.switch_to_block(merge_block);
                 Ok((MirOperand::Local(result_local), then_ty))
@@ -1671,10 +1732,22 @@ impl<'a> MirLowerer<'a> {
         };
         let has_tag = is_enum || is_result_or_option || patterns_imply_enum || is_niche;
 
-        // Extract payload types for Result/Option
+        // Extract payload types for Result/Option.
+        // Primary source: type checker's node_types (raw AST types).
+        // Fallback: the already-lowered MIR scrutinee type, which preserves
+        // struct/enum layout IDs even when the type checker entry is missing.
         let ok_payload_ty = self.extract_payload_type(scrutinee)
+            .or_else(|| match &scrutinee_ty {
+                MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
+                MirType::Option(inner) => Some(inner.as_ref().clone()),
+                _ => None,
+            })
             .unwrap_or(MirType::I64);
         let err_payload_ty = self.extract_err_type(scrutinee)
+            .or_else(|| match &scrutinee_ty {
+                MirType::Result { err, .. } => Some(err.as_ref().clone()),
+                _ => None,
+            })
             .unwrap_or(MirType::I64);
 
         // Determine the switch value
