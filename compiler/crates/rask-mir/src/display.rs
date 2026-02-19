@@ -125,7 +125,7 @@ impl fmt::Display for MirRValue {
             MirRValue::Cast { value, target_ty } => {
                 write!(f, "{} as {}", value, target_ty)
             }
-            MirRValue::Field { base, field_index } => {
+            MirRValue::Field { base, field_index, .. } => {
                 write!(f, "{}.{}", base, field_index)
             }
             MirRValue::EnumTag { value } => {

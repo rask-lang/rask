@@ -80,7 +80,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -102,7 +102,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -137,7 +137,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -194,7 +194,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[add_fn.clone(), main_fn.clone()]).unwrap();
         gen.gen_function(&add_fn).unwrap();
@@ -231,7 +231,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[noop_fn.clone(), main_fn.clone()]).unwrap();
         gen.gen_function(&noop_fn).unwrap();
@@ -280,7 +280,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -347,7 +347,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -430,7 +430,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[add_fn.clone(), run_fn.clone()]).unwrap();
         gen.gen_function(&add_fn).unwrap();
@@ -457,7 +457,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -499,7 +499,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -527,7 +527,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -555,7 +555,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         let result = gen.gen_function(&mir);
@@ -580,7 +580,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -621,7 +621,7 @@ mod tests {
         };
 
         let mono = mono_with_point_struct();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -659,7 +659,7 @@ mod tests {
         };
 
         let mono = mono_with_point_struct();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -696,7 +696,7 @@ mod tests {
         };
 
         let mono = mono_with_result_enum();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -747,7 +747,7 @@ mod tests {
         };
 
         let mono = mono_with_result_enum();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -784,7 +784,7 @@ mod tests {
         };
 
         let mono = mono_with_point_struct();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -815,7 +815,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -849,7 +849,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -879,7 +879,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
@@ -910,7 +910,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
@@ -941,7 +941,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
@@ -981,7 +981,7 @@ mod tests {
         };
 
         let mono = mono_with_point_struct();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1018,7 +1018,7 @@ mod tests {
         };
 
         let mono = mono_with_result_enum();
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&mono, &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1063,7 +1063,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1137,7 +1137,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1166,7 +1166,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1197,7 +1197,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -1387,7 +1387,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
         gen.gen_function(&closure_fn).unwrap();
@@ -1470,7 +1470,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
         gen.gen_function(&closure_fn).unwrap();
@@ -1569,7 +1569,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(
             &dummy_mono(),
@@ -1639,7 +1639,7 @@ mod tests {
             source_file: None,
         };
 
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[closure_fn.clone(), main_fn.clone()]).unwrap();
         gen.gen_function(&closure_fn).unwrap();
@@ -1756,7 +1756,7 @@ mod tests {
         };
 
         let all_fns = [inner_fn.clone(), outer_fn.clone(), main_fn.clone()];
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
         gen.gen_function(&inner_fn).unwrap();
@@ -1850,7 +1850,7 @@ mod tests {
         };
 
         let all_fns = [closure_fn.clone(), main_fn.clone()];
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
         gen.gen_function(&closure_fn).unwrap();
@@ -1967,7 +1967,7 @@ mod tests {
         };
 
         let all_fns = [add_fn.clone(), sub_fn.clone(), main_fn.clone()];
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &all_fns).unwrap();
         gen.gen_function(&add_fn).unwrap();
@@ -1979,7 +1979,7 @@ mod tests {
 
     /// CodeGenerator with runtime + stdlib declared (for tests needing stdlib).
     fn gen_with_stdlib() -> CodeGenerator {
-        let mut gen = CodeGenerator::new().unwrap();
+        let mut gen = CodeGenerator::new(crate::BuildMode::Debug).unwrap();
         gen.declare_runtime_functions().unwrap();
         gen.declare_stdlib_functions().unwrap();
         gen

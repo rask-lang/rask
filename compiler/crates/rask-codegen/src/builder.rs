@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
 use crate::types::mir_to_cranelift_type;
-use crate::{CodegenError, CodegenResult};
+use crate::{BuildMode, CodegenError, CodegenResult};
 
 /// Result of adapting a stdlib call for the typed runtime API.
 enum CallAdapt {
@@ -21,9 +21,6 @@ enum CallAdapt {
     DerefResult,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
-    /// Wrap raw return value as Ok(value) in a Result stack slot.
-    /// Used for C functions that return a raw value where Rask expects a Result.
-    WrapOkResult(StackSlot),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -44,6 +41,8 @@ pub struct FunctionBuilder<'a> {
     panicking_fns: &'a HashSet<String>,
     /// Names of functions compiled as Rask code (vs C stdlib)
     internal_fns: &'a HashSet<String>,
+    /// Debug vs Release — controls whether pool access is inlined
+    build_mode: BuildMode,
 
     /// Map MIR block IDs to Cranelift blocks
     block_map: HashMap<BlockId, Block>,
@@ -71,6 +70,7 @@ impl<'a> FunctionBuilder<'a> {
         comptime_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
         internal_fns: &'a HashSet<String>,
+        build_mode: BuildMode,
     ) -> CodegenResult<Self> {
         Ok(FunctionBuilder {
             func,
@@ -83,6 +83,7 @@ impl<'a> FunctionBuilder<'a> {
             comptime_globals,
             panicking_fns,
             internal_fns,
+            build_mode,
             block_map: HashMap::new(),
             var_map: HashMap::new(),
             stack_slot_map: HashMap::new(),
@@ -211,6 +212,7 @@ impl<'a> FunctionBuilder<'a> {
                     self.panicking_fns,
                     &self.stack_slot_map,
                     self.internal_fns,
+                    self.build_mode,
                 )?;
             }
 
@@ -253,6 +255,7 @@ impl<'a> FunctionBuilder<'a> {
                             self.panicking_fns,
                             &self.stack_slot_map,
                             self.internal_fns,
+                            self.build_mode,
                         )?;
                     }
                 }
@@ -297,6 +300,7 @@ impl<'a> FunctionBuilder<'a> {
         panicking_fns: &HashSet<String>,
         stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
         internal_fns: &HashSet<String>,
+        build_mode: BuildMode,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
@@ -647,22 +651,6 @@ impl<'a> FunctionBuilder<'a> {
                                 // Value was written to stack slot by callee
                                 builder.ins().stack_load(types::I64, ss, 0)
                             }
-                            CallAdapt::WrapOkResult(ss) => {
-                                // Wrap raw return value as Ok(value) in Result stack slot
-                                let results = builder.inst_results(call_inst);
-                                let raw_val = if !results.is_empty() {
-                                    results[0]
-                                } else {
-                                    builder.ins().iconst(types::I64, 0)
-                                };
-                                // tag=0 (Ok) at offset 0
-                                let tag = builder.ins().iconst(types::I64, 0);
-                                builder.ins().stack_store(tag, ss, 0);
-                                // payload at offset 8
-                                builder.ins().stack_store(raw_val, ss, 8);
-                                // Return pointer to the stack slot
-                                builder.ins().stack_addr(types::I64, ss, 0)
-                            }
                             _ => {
                                 let results = builder.inst_results(call_inst);
                                 if !results.is_empty() {
@@ -765,49 +753,153 @@ impl<'a> FunctionBuilder<'a> {
                         "Handle variable not found".to_string()
                     ))?);
 
-                // Use location-aware function when source info is available
-                let call_inst = if let Some(file_str) = source_file {
-                    if let (Some(func_ref), Some(gv)) = (
-                        func_refs.get("pool_get_checked"),
-                        string_globals.get(file_str),
+                // Determine result type before emitting IR
+                let is_struct = locals.iter()
+                    .find(|l| l.id == *dst)
+                    .map(|l| matches!(&l.ty, MirType::Struct(_)))
+                    .unwrap_or(false);
+                let load_ty = locals.iter()
+                    .find(|l| l.id == *dst)
+                    .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                    .unwrap_or(types::I64);
+
+                if build_mode == BuildMode::Release {
+                    // ── Inline pool access (release mode) ──────────────
+                    // Emits bounds check + generation check + data load directly
+                    // as Cranelift IR, avoiding the C function call overhead.
+                    //
+                    // Pool layout (verified by _Static_assert in pool.c):
+                    //   offset 24: cap (i64)
+                    //   offset 40: slots (ptr)
+                    // Slot layout (stride=16 for elem_size=8):
+                    //   offset 0: generation (u32)
+                    //   offset 8: data (elem_size bytes)
+                    const POOL_CAP_OFFSET: i32 = 24;
+                    const POOL_SLOTS_OFFSET: i32 = 40;
+                    const SLOT_GEN_OFFSET: i32 = 0;
+                    const SLOT_DATA_OFFSET: i32 = 8;
+                    const SLOT_STRIDE_SHIFT: i64 = 4; // log2(16)
+
+                    // 1. Extract index and generation from packed i64 handle
+                    //    handle = index:32 | generation:32
+                    let index = builder.ins().band_imm(handle_val, 0xFFFF_FFFF_i64);
+                    let gen_i64 = builder.ins().ushr_imm(handle_val, 32);
+                    let gen = builder.ins().ireduce(types::I32, gen_i64);
+
+                    // 2. Bounds check: index < cap
+                    let cap = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_CAP_OFFSET);
+                    let oob = builder.ins().icmp(IntCC::UnsignedGreaterThanOrEqual, index, cap);
+
+                    let panic_block = builder.create_block();
+                    let bounds_ok = builder.create_block();
+                    builder.ins().brif(oob, panic_block, &[], bounds_ok, &[]);
+
+                    // panic_block: call rask_panic_at (single predecessor, seal immediately)
+                    builder.switch_to_block(panic_block);
+                    builder.seal_block(panic_block);
+                    builder.set_cold_block(panic_block);
+                    if let (Some(panic_ref), Some(msg_gv)) = (
+                        func_refs.get("panic_at"),
+                        string_globals.get("pool access with invalid handle"),
                     ) {
-                        let file_ptr = builder.ins().global_value(types::I64, *gv);
+                        let file_gv = source_file.and_then(|f| string_globals.get(f));
+                        let file_ptr = if let Some(gv) = file_gv {
+                            builder.ins().global_value(types::I64, *gv)
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
                         let line_val = builder.ins().iconst(types::I32, current_line as i64);
                         let col_val = builder.ins().iconst(types::I32, current_col as i64);
-                        builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
-                    } else {
-                        let func_ref = func_refs.get("Pool_checked_access")
-                            .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                        builder.ins().call(*func_ref, &[pool_val, handle_val])
+                        let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
+                        builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
                     }
-                } else {
-                    let func_ref = func_refs.get("Pool_checked_access")
-                        .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
-                    builder.ins().call(*func_ref, &[pool_val, handle_val])
-                };
+                    builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
 
-                let results = builder.inst_results(call_inst);
-                if !results.is_empty() {
-                    let ptr = results[0]; // copy before mutable borrow
+                    // bounds_ok: load slots pointer, compute slot address
+                    builder.switch_to_block(bounds_ok);
+                    builder.seal_block(bounds_ok);
+                    let slots = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_SLOTS_OFFSET);
+                    let slot_offset = builder.ins().ishl_imm(index, SLOT_STRIDE_SHIFT);
+                    let slot_addr = builder.ins().iadd(slots, slot_offset);
+
+                    // 3. Generation check
+                    let slot_gen = builder.ins().load(types::I32, MemFlags::new(), slot_addr, SLOT_GEN_OFFSET);
+                    let gen_mismatch = builder.ins().icmp(IntCC::NotEqual, gen, slot_gen);
+
+                    let gen_panic_block = builder.create_block();
+                    let ok_block = builder.create_block();
+                    builder.ins().brif(gen_mismatch, gen_panic_block, &[], ok_block, &[]);
+
+                    // gen_panic_block: same panic (single predecessor, seal immediately)
+                    builder.switch_to_block(gen_panic_block);
+                    builder.seal_block(gen_panic_block);
+                    builder.set_cold_block(gen_panic_block);
+                    if let (Some(panic_ref), Some(msg_gv)) = (
+                        func_refs.get("panic_at"),
+                        string_globals.get("pool access with invalid handle"),
+                    ) {
+                        let file_gv = source_file.and_then(|f| string_globals.get(f));
+                        let file_ptr = if let Some(gv) = file_gv {
+                            builder.ins().global_value(types::I64, *gv)
+                        } else {
+                            builder.ins().iconst(types::I64, 0)
+                        };
+                        let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                        let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
+                        builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
+                    }
+                    builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
+
+                    // ok_block: load data (single predecessor, seal immediately)
+                    builder.switch_to_block(ok_block);
+                    builder.seal_block(ok_block);
                     let var = var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Pool access destination not found".to_string()
                         ))?;
-                    // Pool stores actual element data inline. pool_get returns
-                    // void* pointing directly into the pool's data array.
-                    // For struct elements, use this pointer directly (it IS the
-                    // struct address). For scalar elements, load the value.
-                    let dst_ty = locals.iter().find(|l| l.id == *dst).map(|l| &l.ty);
-                    let is_struct = matches!(dst_ty, Some(MirType::Struct(_)));
                     if is_struct {
-                        // Struct: pointer to pool data IS the struct address
-                        builder.def_var(*var, ptr);
+                        let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
+                        builder.def_var(*var, data_ptr);
                     } else {
-                        let load_ty = dst_ty
-                            .and_then(|t| mir_to_cranelift_type(t).ok())
-                            .unwrap_or(types::I64);
-                        let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
+                        let val = builder.ins().load(load_ty, MemFlags::new(), slot_addr, SLOT_DATA_OFFSET);
                         builder.def_var(*var, val);
+                    }
+                } else {
+                    // ── Debug mode: call C function ──────────────────────
+                    let call_inst = if let Some(file_str) = source_file {
+                        if let (Some(func_ref), Some(gv)) = (
+                            func_refs.get("pool_get_checked"),
+                            string_globals.get(file_str),
+                        ) {
+                            let file_ptr = builder.ins().global_value(types::I64, *gv);
+                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
+                        } else {
+                            let func_ref = func_refs.get("Pool_checked_access")
+                                .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                            builder.ins().call(*func_ref, &[pool_val, handle_val])
+                        }
+                    } else {
+                        let func_ref = func_refs.get("Pool_checked_access")
+                            .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
+                        builder.ins().call(*func_ref, &[pool_val, handle_val])
+                    };
+
+                    let results = builder.inst_results(call_inst);
+                    if !results.is_empty() {
+                        let ptr = results[0];
+                        let var = var_map.get(dst)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "Pool access destination not found".to_string()
+                            ))?;
+                        if is_struct {
+                            builder.def_var(*var, ptr);
+                        } else {
+                            let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
+                            builder.def_var(*var, val);
+                        }
                     }
                 }
             }
@@ -1010,6 +1102,17 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// If the operand is a constant integer that's a power of 2, return the exponent.
+    fn const_power_of_two(operand: &MirOperand) -> Option<u32> {
+        if let MirOperand::Constant(MirConst::Int(n)) = operand {
+            let n = *n;
+            if n > 0 && (n & (n - 1)) == 0 {
+                return Some(n.trailing_zeros());
+            }
+        }
+        None
+    }
+
     /// Look up the MirType of an operand from the locals table.
     fn operand_mir_type(operand: &MirOperand, locals: &[rask_mir::MirLocal]) -> Option<MirType> {
         match operand {
@@ -1108,9 +1211,34 @@ impl<'a> FunctionBuilder<'a> {
                         BinOp::Add => builder.ins().iadd(lhs_val, rhs_val),
                         BinOp::Sub => builder.ins().isub(lhs_val, rhs_val),
                         BinOp::Mul => builder.ins().imul(lhs_val, rhs_val),
-                        BinOp::Div if is_unsigned => builder.ins().udiv(lhs_val, rhs_val),
-                        BinOp::Div => builder.ins().sdiv(lhs_val, rhs_val),
-                        BinOp::Mod if is_unsigned => builder.ins().urem(lhs_val, rhs_val),
+                        BinOp::Div if is_unsigned => {
+                            if let Some(k) = Self::const_power_of_two(right) {
+                                builder.ins().ushr_imm(lhs_val, k as i64)
+                            } else {
+                                builder.ins().udiv(lhs_val, rhs_val)
+                            }
+                        }
+                        BinOp::Div => {
+                            if let Some(k) = Self::const_power_of_two(right) {
+                                // Signed div by 2^k: (value + ((value >> 63) >>> (64-k))) >> k
+                                let bits = builder.func.dfg.value_type(lhs_val).bits() as i64;
+                                let sign = builder.ins().sshr_imm(lhs_val, bits - 1);
+                                let correction = builder.ins().ushr_imm(sign, bits - k as i64);
+                                let adjusted = builder.ins().iadd(lhs_val, correction);
+                                builder.ins().sshr_imm(adjusted, k as i64)
+                            } else {
+                                builder.ins().sdiv(lhs_val, rhs_val)
+                            }
+                        }
+                        BinOp::Mod if is_unsigned => {
+                            if let Some(k) = Self::const_power_of_two(right) {
+                                let ty = builder.func.dfg.value_type(lhs_val);
+                                let mask = builder.ins().iconst(ty, (1i64 << k) - 1);
+                                builder.ins().band(lhs_val, mask)
+                            } else {
+                                builder.ins().urem(lhs_val, rhs_val)
+                            }
+                        }
                         BinOp::Mod => builder.ins().srem(lhs_val, rhs_val),
                         BinOp::BitAnd => builder.ins().band(lhs_val, rhs_val),
                         BinOp::BitOr => builder.ins().bor(lhs_val, rhs_val),
@@ -1673,36 +1801,39 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefResult
             }
 
-            // Pool insert: pass element pointer + size, wrap return as Ok Result
+            // Pool insert: wrap value as pointer, wrap return as Ok Result
             "Pool_insert" => {
-                // Determine element size from MIR type
-                let elem_size = if mir_args.len() >= 2 {
-                    let elem_ty = Self::operand_mir_type(&mir_args[1], locals);
-                    elem_ty.and_then(|t| Self::resolve_type_alloc_size(
-                        &t, struct_layouts, &[], // no enum_layouts needed
-                    )).unwrap_or(8) as i64
-                } else {
-                    8i64
-                };
+                // Determine actual element size from MIR arg type.
+                // Structs store inline data (size > 8); scalars store as i64 (size = 8).
+                let mut elem_size: i64 = 8;
+                let mut is_struct_elem = false;
+                if let Some(MirOperand::Local(arg_id)) = mir_args.get(1) {
+                    if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                        if let MirType::Struct(layout_id) = &local.ty {
+                            if let Some(layout) = struct_layouts.get(layout_id.0 as usize) {
+                                elem_size = layout.size as i64;
+                                is_struct_elem = true;
+                            }
+                        }
+                    }
+                }
 
-                // args: [pool, value] → [pool, &value, elem_size]
                 if args.len() >= 2 {
-                    if elem_size <= 8 {
-                        // Scalar: wrap in pointer
+                    if !is_struct_elem {
+                        // Scalar: put value on stack and pass pointer to it
                         let val = args[1];
                         args[1] = Self::value_to_ptr(builder, val);
                     }
-                    // For structs (elem_size > 8), args[1] is already a pointer
-                    // to the stack-allocated struct data — pass directly
+                    // Struct: args[1] is already a pointer to the struct data on stack
                 }
                 let size_val = builder.ins().iconst(types::I64, elem_size);
                 args.push(size_val);
 
-                // Pool.insert returns raw handle i64, but Rask expects Handle or Error
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 16, 0, // tag(8) + payload(8)
-                ));
-                CallAdapt::WrapOkResult(ss)
+                // Pool.insert returns raw handle i64. The destination local
+                // has MirType::Result and a pre-allocated stack slot, so
+                // the post-call handler (wrap_ok_into_slot) wraps the raw
+                // return value as Ok(handle) into that slot.
+                CallAdapt::None
             }
 
             // Vec insert: wrap value arg as pointer

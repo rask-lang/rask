@@ -439,6 +439,8 @@ impl<'a> MirLowerer<'a> {
                 rvalue: MirRValue::Field {
                     base: init_op.clone(),
                     field_index: i as u32,
+                    byte_offset: None,
+                    field_size: None,
                 },
             });
 

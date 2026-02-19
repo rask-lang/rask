@@ -203,7 +203,7 @@ fn main() {
             };
             if native {
                 let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
-                commands::run::cmd_run_native(file, native_args, format, &link_opts);
+                commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
             } else {
                 let mut program_args: Vec<String> = vec![file.to_string()];
                 program_args.extend(prog_args.iter().map(|s| s.to_string()));
@@ -220,6 +220,7 @@ fn main() {
                 eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("compile"), output::arg("<file.rk>"));
                 process::exit(1);
             }
+            let release = cmd_args.contains(&"--release");
             let output_path = extract_flag_value(&cmd_args, "-o");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
@@ -232,7 +233,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts);
+            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release);
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

@@ -104,7 +104,7 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
 }
 
 /// Compile a .rk file to a temp executable and run it.
-pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, link_opts: &super::link::LinkOptions) {
+pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, link_opts: &super::link::LinkOptions, release: bool) {
     let tmp_dir = std::env::temp_dir();
     let bin_name = std::path::Path::new(path)
         .file_stem()
@@ -114,7 +114,7 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     let bin_str = bin_path.to_string_lossy().to_string();
 
     // Compile quietly — suppress the "Compiled →" banner (errors still show)
-    super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts);
+    super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts, release);
 
     let status = process::Command::new(&bin_str)
         .args(&program_args)
@@ -585,7 +585,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
     }
 
     let link_opts = super::link::LinkOptions::default();
-    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts) {
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, true) {
         if format == Format::Human {
             eprintln!("    {}: link: {}", output::error_label(), e);
         }

@@ -22,6 +22,7 @@ pub fn compile_to_object(
     source_text: Option<&str>,
     target: Option<&str>,
     obj_path: &str,
+    build_mode: rask_codegen::BuildMode,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -41,10 +42,23 @@ pub fn compile_to_object(
 
     let extern_funcs = super::codegen::collect_extern_func_names(decls);
     let line_map = source_text.map(rask_ast::LineMap::new);
+    let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let name = match def {
+                rask_types::TypeDef::Struct { name, .. } => name.clone(),
+                rask_types::TypeDef::Enum { name, .. } => name.clone(),
+                rask_types::TypeDef::Trait { name, .. } => name.clone(),
+                rask_types::TypeDef::Union { name, .. } => name.clone(),
+            };
+            (rask_types::TypeId(i as u32), name)
+        })
+        .collect();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &typed.node_types,
+        type_names: &type_names,
         comptime_globals,
         extern_funcs: &extern_funcs,
         line_map: line_map.as_ref(),
@@ -82,8 +96,8 @@ pub fn compile_to_object(
 
     // Cranelift codegen
     let mut codegen = match target {
-        Some(t) => rask_codegen::CodeGenerator::new_with_target(t),
-        None => rask_codegen::CodeGenerator::new(),
+        Some(t) => rask_codegen::CodeGenerator::new_with_target(t, build_mode),
+        None => rask_codegen::CodeGenerator::new(build_mode),
     }.map_err(|e| vec![format!("codegen init: {}", e)])?;
 
     codegen.declare_runtime_functions()
@@ -258,10 +272,23 @@ pub fn compile_benchmarks_to_object(
 
     let extern_funcs = super::codegen::collect_extern_func_names(decls);
     let line_map = source_text.map(rask_ast::LineMap::new);
+    let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let name = match def {
+                rask_types::TypeDef::Struct { name, .. } => name.clone(),
+                rask_types::TypeDef::Enum { name, .. } => name.clone(),
+                rask_types::TypeDef::Trait { name, .. } => name.clone(),
+                rask_types::TypeDef::Union { name, .. } => name.clone(),
+            };
+            (rask_types::TypeId(i as u32), name)
+        })
+        .collect();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &typed.node_types,
+        type_names: &type_names,
         comptime_globals,
         extern_funcs: &extern_funcs,
         line_map: line_map.as_ref(),
@@ -295,8 +322,18 @@ pub fn compile_benchmarks_to_object(
     rask_mir::optimize_string_concat(&mut mir_functions);
     rask_mir::coalesce_generation_checks(&mut mir_functions);
 
-    // Cranelift codegen
-    let mut codegen = rask_codegen::CodeGenerator::new()
+    // Insert cleanup calls for benchmark functions to prevent memory leaks.
+    // Scans for Vec_new/Map_new/Pool_new/string_new calls and inserts
+    // matching free calls before return terminators.
+    let bench_names: Vec<String> = benchmarks.iter().map(|(_, fn_name)| fn_name.clone()).collect();
+    for mir_fn in &mut mir_functions {
+        if bench_names.contains(&mir_fn.name) {
+            insert_bench_cleanup(mir_fn);
+        }
+    }
+
+    // Cranelift codegen — benchmarks always use release mode
+    let mut codegen = rask_codegen::CodeGenerator::new(rask_codegen::BuildMode::Release)
         .map_err(|e| vec![format!("codegen init: {}", e)])?;
 
     codegen.declare_runtime_functions()
@@ -343,4 +380,57 @@ pub fn compile_benchmarks_to_object(
         .map_err(|e| vec![format!("emit object: {}", e)])?;
 
     Ok(())
+}
+
+/// Insert free calls at the end of benchmark functions for collection locals.
+///
+/// Scans for Call statements that create collections (Vec_new, Map_new, etc.)
+/// and inserts corresponding free calls before return terminators.
+fn insert_bench_cleanup(mir_fn: &mut rask_mir::MirFunction) {
+    use rask_mir::{MirStmt, MirTerminator, MirOperand, FunctionRef};
+
+    // Map: constructor name → free function name
+    let ctor_to_free: &[(&str, &str)] = &[
+        ("Vec_new", "Vec_free"),
+        ("Vec_with_capacity", "Vec_free"),
+        ("Vec_from", "Vec_free"),
+        ("Map_new", "Map_free"),
+        ("Map_from", "Map_free"),
+        ("Pool_new", "Pool_free"),
+        ("Pool_with_capacity", "Pool_free"),
+        ("string_new", "string_free"),
+        ("string_from", "string_free"),
+    ];
+
+    // Find locals that hold collection values (assigned from a constructor call)
+    let mut to_free: Vec<(rask_mir::LocalId, String)> = Vec::new();
+    for block in &mir_fn.blocks {
+        for stmt in &block.statements {
+            if let MirStmt::Call { dst: Some(dst_id), func, .. } = stmt {
+                for (ctor, free_fn) in ctor_to_free {
+                    if func.name == *ctor {
+                        to_free.push((*dst_id, free_fn.to_string()));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if to_free.is_empty() {
+        return;
+    }
+
+    // Insert free calls before every Return terminator
+    for block in &mut mir_fn.blocks {
+        if matches!(block.terminator, MirTerminator::Return { .. }) {
+            for (local_id, free_fn) in to_free.iter().rev() {
+                block.statements.push(MirStmt::Call {
+                    dst: None,
+                    func: FunctionRef { name: free_fn.clone(), is_extern: false },
+                    args: vec![MirOperand::Local(*local_id)],
+                });
+            }
+        }
+    }
 }

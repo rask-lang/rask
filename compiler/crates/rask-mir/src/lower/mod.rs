@@ -90,6 +90,8 @@ pub struct MirContext<'a> {
     pub enum_layouts: &'a [EnumLayout],
     /// Type information for each expression node from type checking
     pub node_types: &'a HashMap<NodeId, Type>,
+    /// TypeId → name mapping from the type checker, for resolving Named types.
+    pub type_names: &'a HashMap<rask_types::TypeId, String>,
     /// Comptime-evaluated global constants (name → metadata).
     /// MIR lowering emits GlobalRef for these instead of lowering the init expr.
     pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
@@ -112,10 +114,13 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_TYPE_NAMES: std::sync::LazyLock<HashMap<rask_types::TypeId, String>> =
+            std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
             enum_layouts: &[],
             node_types: map,
+            type_names: &EMPTY_TYPE_NAMES,
             comptime_globals: &EMPTY_COMPTIME,
             extern_funcs: &EMPTY_EXTERNS,
             line_map: None,
@@ -183,6 +188,24 @@ impl<'a> MirContext<'a> {
                 if let Some(inner) = name.strip_prefix("Option<").and_then(|s| s.strip_suffix('>')) {
                     return MirType::Option(Box::new(self.resolve_type_str(inner)));
                 }
+                // Generic collection types: Vec<T>, Map<K,V>, etc. are heap pointers
+                if name.starts_with("Vec<") || name == "Vec" {
+                    return MirType::Ptr; // Vec handle (opaque pointer)
+                }
+                if name.starts_with("Map<") || name == "Map" {
+                    return MirType::Ptr; // Map handle (opaque pointer)
+                }
+                if name.starts_with("Pool<") || name == "Pool" {
+                    return MirType::Ptr;
+                }
+                if name.starts_with("Handle<") {
+                    return MirType::Handle;
+                }
+                if name.starts_with("Channel<") || name.starts_with("Sender<")
+                    || name.starts_with("Receiver<") || name.starts_with("Shared<")
+                {
+                    return MirType::Ptr;
+                }
                 if let Some((idx, _)) = self.find_struct(name) {
                     MirType::Struct(StructLayoutId(idx))
                 } else if let Some((idx, _)) = self.find_enum(name) {
@@ -216,8 +239,22 @@ impl<'a> MirContext<'a> {
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
             Type::UnresolvedGeneric { name, .. } if name == "Handle" => MirType::Handle,
-            // Resolved named types — need monomorphization name, fall back to Ptr
-            Type::Named(_) | Type::Generic { .. } | Type::UnresolvedGeneric { .. } => {
+            // Resolved named types — look up via type_names, then struct/enum layouts
+            Type::Named(id) => {
+                if let Some(name) = self.type_names.get(id) {
+                    self.resolve_type_str(name)
+                } else {
+                    MirType::Ptr
+                }
+            }
+            Type::Generic { base, .. } => {
+                if let Some(name) = self.type_names.get(base) {
+                    self.resolve_type_str(name)
+                } else {
+                    MirType::Ptr
+                }
+            }
+            Type::UnresolvedGeneric { .. } => {
                 let type_str = format!("{}", ty);
                 self.resolve_type_str(&type_str)
             }
@@ -348,6 +385,27 @@ impl<'a> MirContext<'a> {
                 Some(name.clone())
             }
             _ => None,
+        }
+    }
+
+    /// Extract type prefix from a field type string (e.g. "Vec<string>" → "Vec").
+    /// Used when resolving method calls on struct fields.
+    pub fn type_prefix_str(s: &str) -> Option<String> {
+        let s = s.trim();
+        match s {
+            "string" => Some("string".to_string()),
+            "bool" | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+            | "f32" | "f64" | "char" => None,
+            _ => {
+                // "Vec<...>" → "Vec", "Map<...>" → "Map", etc.
+                if let Some(pos) = s.find('<') {
+                    Some(s[..pos].to_string())
+                } else if s.chars().next().map_or(false, |c| c.is_uppercase()) {
+                    Some(s.to_string())
+                } else {
+                    None
+                }
+            }
         }
     }
 }
@@ -756,7 +814,7 @@ impl<'a> MirLowerer<'a> {
         let rvalue = if is_niche {
             MirRValue::Use(value)
         } else {
-            MirRValue::Field { base: value, field_index: 0 }
+            MirRValue::Field { base: value, field_index: 0, byte_offset: None, field_size: None }
         };
         self.builder.push_stmt(MirStmt::Assign { dst: result, rvalue });
         result
@@ -790,7 +848,7 @@ impl<'a> MirLowerer<'a> {
                     if let Pattern::Ident(name) = field_pat {
                         let field_ty = payload_ty.clone();
                         let local = self.builder.alloc_local(name.clone(), field_ty.clone());
-                        self.locals.insert(name.clone(), (local, field_ty));
+                        self.locals.insert(name.clone(), (local, field_ty.clone()));
                         let rvalue = if is_niche {
                             // Niche: the value IS the payload
                             MirRValue::Use(value.clone())
@@ -798,12 +856,19 @@ impl<'a> MirLowerer<'a> {
                             MirRValue::Field {
                                 base: value.clone(),
                                 field_index: i as u32,
+                                byte_offset: None,
+                                field_size: None,
                             }
                         };
                         self.builder.push_stmt(MirStmt::Assign {
                             dst: local,
                             rvalue,
                         });
+                        // Set type prefix so method calls on this binding
+                        // get correct qualification (e.g., data.lines() → string_lines)
+                        if let Some(prefix) = self.mir_type_name(&field_ty) {
+                            self.local_type_prefix.insert(name.clone(), prefix);
+                        }
                     }
                     // Wildcard, Literal in field position — skip binding
                 }
@@ -1234,6 +1299,14 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         "fs_read_file" | "fs_read_lines" => return MirType::Result {
             ok: Box::new(MirType::String),
             err: Box::new(MirType::String),
+        },
+        // Pool.insert returns Handle or Error — codegen wraps raw i64
+        // handle into a Result stack slot (tag at offset 0, payload at 8).
+        // Without this, field extraction uses offset 0 (the tag) instead
+        // of 8, returning wrong handle values for non-first inserts.
+        "Pool_insert" => return MirType::Result {
+            ok: Box::new(MirType::I64),
+            err: Box::new(MirType::I64),
         },
         _ => {}
     }
@@ -2217,10 +2290,12 @@ mod tests {
         let node_types = HashMap::new();
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
+        let type_names = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -2262,10 +2337,12 @@ mod tests {
         let node_types = HashMap::new();
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
+        let type_names = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -2313,10 +2390,12 @@ mod tests {
         let node_types = HashMap::new();
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
+        let type_names = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
             node_types: &node_types,
+            type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
