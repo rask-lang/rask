@@ -92,6 +92,7 @@ impl TypeTable {
             TypeDef::Struct { name, .. } => name.clone(),
             TypeDef::Enum { name, .. } => name.clone(),
             TypeDef::Trait { name, .. } => name.clone(),
+            TypeDef::Union { name, .. } => name.clone(),
         };
         self.types.push(def);
         // Also register the base name (without <...>) for generic type lookup
@@ -162,6 +163,7 @@ impl TypeTable {
             Some(TypeDef::Struct { name, .. }) => name.clone(),
             Some(TypeDef::Enum { name, .. }) => name.clone(),
             Some(TypeDef::Trait { name, .. }) => name.clone(),
+            Some(TypeDef::Union { name, .. }) => name.clone(),
             None => format!("<type#{}>", id.0),
         }
     }

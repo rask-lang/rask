@@ -258,6 +258,16 @@ fn add_typedef_completions(
                 items.push(method_to_completion(method, formatter));
             }
         }
+        TypeDef::Union { fields, .. } => {
+            for (name, field_ty) in fields {
+                items.push(CompletionItem {
+                    label: name.clone(),
+                    kind: Some(CompletionItemKind::FIELD),
+                    detail: Some(formatter.format(field_ty)),
+                    ..Default::default()
+                });
+            }
+        }
     }
 }
 

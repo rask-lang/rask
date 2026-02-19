@@ -66,6 +66,8 @@ pub struct TypeChecker {
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
     /// Whether we're inside an `unsafe {}` block (for validating pointer ops and extern calls).
     pub(super) in_unsafe: bool,
+    /// Whether we're inferring an assignment target (union field writes are safe per UN3).
+    pub(super) in_assign_target: bool,
 }
 
 impl TypeChecker {
@@ -86,6 +88,7 @@ impl TypeChecker {
             pending_call_type_args: Vec::new(),
             fn_type_params: HashMap::new(),
             in_unsafe: false,
+            in_assign_target: false,
         }
     }
 

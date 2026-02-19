@@ -22,6 +22,12 @@ impl TypeChecker {
             .unwrap_or(Type::Unit);
         self.current_return_type = Some(ret_ty);
 
+        // UF1: unsafe func body is implicitly unsafe
+        let was_unsafe = self.in_unsafe;
+        if f.is_unsafe {
+            self.in_unsafe = true;
+        }
+
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
@@ -95,6 +101,7 @@ impl TypeChecker {
 
         self.pop_scope();
         self.current_return_type = None;
+        self.in_unsafe = was_unsafe;
 
         // @no_alloc enforcement: scan body for heap allocations
         if f.attrs.iter().any(|a| a == "no_alloc") {

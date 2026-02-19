@@ -287,6 +287,7 @@ impl<'a> Printer<'a> {
             DeclKind::Benchmark(b) => self.format_benchmark_decl(b),
             DeclKind::Extern(e) => self.format_extern_decl(e),
             DeclKind::Package(_) => {} // Package blocks formatted by build.rk tooling
+            DeclKind::Union(_) => todo!(),
         }
     }
 

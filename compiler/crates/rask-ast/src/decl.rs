@@ -36,6 +36,8 @@ pub enum DeclKind {
     Test(TestDecl),
     /// Benchmark block
     Benchmark(BenchmarkDecl),
+    /// Union declaration
+    Union(UnionDecl),
     /// External function declaration
     Extern(ExternDecl),
     /// Package block declaration (build.rk only)
@@ -173,6 +175,16 @@ pub struct Variant {
     pub fields: Vec<Field>,
 }
 
+/// A union declaration.
+#[derive(Debug, Clone)]
+pub struct UnionDecl {
+    pub name: String,
+    pub fields: Vec<Field>,
+    pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
+}
+
 /// A trait declaration.
 #[derive(Debug, Clone)]
 pub struct TraitDecl {
@@ -181,6 +193,8 @@ pub struct TraitDecl {
     pub super_traits: Vec<String>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
+    /// Whether this is an `unsafe trait`.
+    pub is_unsafe: bool,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }
@@ -191,6 +205,8 @@ pub struct ImplDecl {
     pub trait_name: Option<String>,
     pub target_ty: String,
     pub methods: Vec<FnDecl>,
+    /// Whether this is an `unsafe extend`.
+    pub is_unsafe: bool,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }

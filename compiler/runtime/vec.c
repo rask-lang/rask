@@ -269,6 +269,11 @@ RaskVec *rask_vec_filter(const RaskVec *src, int64_t fn_ptr) {
     return dst;
 }
 
+// as_ptr(vec) — raw pointer to underlying buffer (unsafe).
+int64_t rask_vec_as_ptr(const RaskVec *v) {
+    return v ? (int64_t)(uintptr_t)v->data : 0;
+}
+
 // skip(vec, n) — returns a new Vec with the first n elements removed.
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
     if (!src) return rask_vec_new(8);

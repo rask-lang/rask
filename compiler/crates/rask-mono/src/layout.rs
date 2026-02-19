@@ -343,6 +343,46 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     }
 }
 
+/// Compute union layout — all fields at offset 0, size = max field size (spec rules UN1-UN3).
+/// Returns a StructLayout since unions reuse the same representation.
+pub fn compute_union_layout(union_def: &Decl, cache: &LayoutCache) -> StructLayout {
+    use rask_ast::decl::DeclKind;
+
+    let union_decl = match &union_def.kind {
+        DeclKind::Union(u) => u,
+        _ => panic!("Expected union declaration"),
+    };
+
+    let mut field_layouts = Vec::new();
+    let mut max_size = 0u32;
+    let mut max_align = 1u32;
+
+    for field in &union_decl.fields {
+        let field_ty = parse_field_type(&field.ty);
+        let (field_size, field_align) = type_size_align(&field_ty, cache);
+        max_size = max_size.max(field_size);
+        max_align = max_align.max(field_align);
+
+        // All union fields at offset 0
+        field_layouts.push(FieldLayout {
+            name: field.name.clone(),
+            ty: field_ty,
+            offset: 0,
+            size: field_size,
+            align: field_align,
+        });
+    }
+
+    let total_size = align_up(max_size, max_align);
+
+    StructLayout {
+        name: union_decl.name.clone(),
+        size: total_size,
+        align: max_align,
+        fields: field_layouts,
+    }
+}
+
 /// Compute enum layout with tag and variant payloads (spec rules E1-E6)
 pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> EnumLayout {
     use rask_ast::decl::DeclKind;

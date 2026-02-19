@@ -103,7 +103,7 @@ impl<'a> TraitChecker<'a> {
         // First pass: collect direct methods
         let mut super_map: Vec<(String, Vec<String>)> = Vec::new();
         for def in self.types.iter() {
-            if let TypeDef::Trait { name, super_traits, methods } = def {
+            if let TypeDef::Trait { name, super_traits, methods, .. } = def {
                 self.trait_methods.insert(name.clone(), methods.clone());
                 if !super_traits.is_empty() {
                     super_map.push((name.clone(), super_traits.clone()));
@@ -313,6 +313,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Struct { methods, .. } => methods.clone(),
                         TypeDef::Enum { methods, .. } => methods.clone(),
                         TypeDef::Trait { methods, .. } => methods.clone(),
+                        TypeDef::Union { .. } => Vec::new(),
                     }
                 } else {
                     Vec::new()
@@ -411,6 +412,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Struct { name, .. } => name.clone(),
                         TypeDef::Enum { name, .. } => name.clone(),
                         TypeDef::Trait { name, .. } => name.clone(),
+                        TypeDef::Union { name, .. } => name.clone(),
                     }
                 } else {
                     format!("Type({})", id.0)

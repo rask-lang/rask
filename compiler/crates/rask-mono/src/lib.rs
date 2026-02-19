@@ -13,7 +13,7 @@ mod reachability;
 
 pub use instantiate::instantiate_function;
 pub use layout::{
-    compute_enum_layout, compute_struct_layout, type_size_align, EnumLayout, FieldLayout,
+    compute_enum_layout, compute_struct_layout, compute_union_layout, type_size_align, EnumLayout, FieldLayout,
     LayoutCache, StructLayout, VariantLayout,
 };
 pub use reachability::Monomorphizer;
@@ -73,6 +73,11 @@ pub fn monomorphize(
                 let layout = compute_enum_layout(decl, &[], &layout_cache);
                 layout_cache.insert(e.name.clone(), (layout.size, layout.align));
                 enum_layouts.push(layout);
+            }
+            DeclKind::Union(u) => {
+                let layout = compute_union_layout(decl, &layout_cache);
+                layout_cache.insert(u.name.clone(), (layout.size, layout.align));
+                struct_layouts.push(layout);
             }
             _ => {}
         }

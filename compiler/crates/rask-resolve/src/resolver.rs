@@ -2,7 +2,7 @@
 //! The name resolver implementation.
 
 use std::collections::{HashMap, HashSet};
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::{NodeId, Span};
@@ -59,6 +59,7 @@ impl Resolver {
             ("panic", BuiltinFunctionKind::Panic, Some("!")),
             ("format", BuiltinFunctionKind::Format, None),
             ("spawn", BuiltinFunctionKind::Spawn, None),
+            ("transmute", BuiltinFunctionKind::Transmute, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
@@ -303,6 +304,7 @@ impl Resolver {
                             params: vec![],
                             ret_ty: f.ret_ty.clone(),
                             context_clauses: f.context_clauses.clone(),
+                            is_unsafe: f.is_unsafe,
                         },
                         None,
                         Span::new(0, 0),
@@ -431,6 +433,9 @@ impl Resolver {
                 }
                 DeclKind::Test(_) | DeclKind::Benchmark(_) => {}
                 DeclKind::Package(_) => {}
+                DeclKind::Union(union_decl) => {
+                    self.declare_union(union_decl, decl.span);
+                }
                 DeclKind::Extern(extern_decl) => {
                     let param_types: Vec<String> = extern_decl.params.iter()
                         .map(|p| p.ty.clone())
@@ -467,7 +472,7 @@ impl Resolver {
 
         let sym_id = self.symbols.insert(
             base.clone(),
-            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), context_clauses: fn_decl.context_clauses.clone() },
+            SymbolKind::Function { params: vec![], ret_ty: fn_decl.ret_ty.clone(), context_clauses: fn_decl.context_clauses.clone(), is_unsafe: fn_decl.is_unsafe },
             None,
             span,
             is_pub,
@@ -502,6 +507,35 @@ impl Resolver {
 
         let mut field_syms = Vec::new();
         for field in &struct_decl.fields {
+            let field_sym = self.symbols.insert(
+                field.name.clone(),
+                SymbolKind::Field { parent: sym_id },
+                Some(field.ty.clone()),
+                span,
+                field.is_pub,
+            );
+            field_syms.push((field.name.clone(), field_sym));
+        }
+
+        if let Some(sym) = self.symbols.get_mut(sym_id) {
+            sym.kind = SymbolKind::Struct { fields: field_syms };
+        }
+    }
+
+    fn declare_union(&mut self, union_decl: &UnionDecl, span: Span) {
+        let sym_id = self.symbols.insert(
+            union_decl.name.clone(),
+            SymbolKind::Struct { fields: vec![] },
+            None,
+            span,
+            union_decl.is_pub,
+        );
+        if let Err(e) = self.scopes.define(union_decl.name.clone(), sym_id, span) {
+            self.errors.push(e);
+        }
+
+        let mut field_syms = Vec::new();
+        for field in &union_decl.fields {
             let field_sym = self.symbols.insert(
                 field.name.clone(),
                 SymbolKind::Field { parent: sym_id },
@@ -816,6 +850,7 @@ impl Resolver {
                 DeclKind::Export(_) => {}
                 DeclKind::Extern(_) => {}
                 DeclKind::Package(_) => {}
+                DeclKind::Union(_) => {}
             }
         }
     }

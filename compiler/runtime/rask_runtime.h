@@ -339,7 +339,7 @@ int64_t rask_task_cancel(RaskTaskHandle *h, char **msg_out);
 int8_t rask_task_cancelled(void);
 
 // Sleep the current thread for the given number of nanoseconds.
-void rask_sleep_ns(int64_t ns);
+int64_t rask_sleep_ns(int64_t ns);
 
 // Codegen wrapper: spawn a task from a closure pointer [func_ptr | captures...].
 // Extracts func/env, runs the task, and frees the closure allocation on completion.

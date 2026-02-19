@@ -95,6 +95,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // rask_vec_as_ptr(v: const RaskVec*) → void*
+        StdlibEntry {
+            mir_name: "Vec_as_ptr",
+            c_name: "rask_vec_as_ptr",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         // rask_vec_get(v: const RaskVec*, index: i64) → void*
         StdlibEntry {
             mir_name: "Vec_get",
@@ -1177,10 +1185,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: true,
         },
-        // time.sleep(millis) — sleep in milliseconds
+        // time.sleep(duration) — Duration is nanoseconds internally
         StdlibEntry {
             mir_name: "time_sleep",
-            c_name: "rask_time_sleep_ms",
+            c_name: "rask_sleep_ns",
             params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
@@ -1519,6 +1527,71 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             c_name: "rask_shared_drop_i64",
             params: &[types::I64],
             ret_ty: None,
+            can_panic: false,
+        },
+
+        // ── Raw pointer operations ────────────────────────────
+        StdlibEntry {
+            mir_name: "RawPtr_add",
+            c_name: "rask_ptr_add",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_sub",
+            c_name: "rask_ptr_sub",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_offset",
+            c_name: "rask_ptr_offset",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_read",
+            c_name: "rask_ptr_read",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_write",
+            c_name: "rask_ptr_write",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_is_null",
+            c_name: "rask_ptr_is_null",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_is_aligned",
+            c_name: "rask_ptr_is_aligned",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_is_aligned_to",
+            c_name: "rask_ptr_is_aligned_to",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "RawPtr_align_offset",
+            c_name: "rask_ptr_align_offset",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
             can_panic: false,
         },
     ];

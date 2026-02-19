@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pass 1: declaration collection and checking.
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl};
+use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl};
 use rask_resolve::SymbolKind;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode};
+use super::errors::TypeError;
 use super::inference::TypeConstraint;
 use super::parse_type::parse_type_string;
 use super::TypeChecker;
@@ -21,6 +22,7 @@ impl TypeChecker {
                 DeclKind::Struct(s) => self.register_struct(s),
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
+                DeclKind::Union(u) => self.register_union(u),
                 DeclKind::Fn(f) if !f.type_params.is_empty() => {
                     // Find this function's SymbolId by matching name + Function kind
                     let type_param_names: Vec<String> = f.type_params.iter()
@@ -114,6 +116,23 @@ impl TypeChecker {
             name: t.name.clone(),
             super_traits: t.super_traits.clone(),
             methods,
+            is_unsafe: t.is_unsafe,
+        });
+    }
+
+    pub(super) fn register_union(&mut self, u: &UnionDecl) {
+        let fields: Vec<_> = u
+            .fields
+            .iter()
+            .map(|f| {
+                let ty = parse_type_string(&f.ty, &self.types).unwrap_or(Type::Error);
+                (f.name.clone(), ty)
+            })
+            .collect();
+
+        self.types.register_type(TypeDef::Union {
+            name: u.name.clone(),
+            fields,
         });
     }
 
@@ -179,6 +198,19 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Impl(i) => {
+                // UT1: implementing an unsafe trait requires `unsafe extend`
+                if let Some(trait_name) = &i.trait_name {
+                    if let Some(type_id) = self.types.get_type_id(trait_name) {
+                        if let Some(TypeDef::Trait { is_unsafe: true, .. }) = self.types.get(type_id) {
+                            if !i.is_unsafe {
+                                self.errors.push(TypeError::UnsafeRequired {
+                                    operation: format!("implementing unsafe trait `{}`", trait_name),
+                                    span: decl.span,
+                                });
+                            }
+                        }
+                    }
+                }
                 self.current_self_type = self.resolve_impl_self_type(&i.target_ty);
                 for method in &i.methods {
                     self.check_fn(method);
@@ -222,6 +254,7 @@ impl TypeChecker {
                     }
                 }
             }
+            DeclKind::Union(_) => {} // No methods to check
             _ => {}
         }
     }
