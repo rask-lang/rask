@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// Handle overhead benchmarks — isolate the cost of pool[h] access
+// vs what a raw pointer dereference would cost.
+//
+// Compares: Rask pool[h] → C with same pool.c → C raw array (unsafe)
+
+benchmark "handle sequential read 1k" {
+    let p = Pool.new()
+    let handles = Vec.new()
+    let i = 0
+    while i < 1000 {
+        let result = p.insert(i)
+        if result is Ok(h) {
+            handles.push(h)
+        }
+        i = i + 1
+    }
+
+    let sum = 0
+    i = 0
+    while i < 1000 {
+        sum = sum + p[handles[i]]
+        i = i + 1
+    }
+}
+
+benchmark "handle random read 1k" {
+    let p = Pool.new()
+    let handles = Vec.new()
+    let i = 0
+    while i < 1000 {
+        let result = p.insert(i)
+        if result is Ok(h) {
+            handles.push(h)
+        }
+        i = i + 1
+    }
+
+    // Read in a pseudo-random order (stride 7, wraps around)
+    let sum = 0
+    let idx = 0
+    i = 0
+    while i < 1000 {
+        sum = sum + p[handles[idx]]
+        idx = (idx + 7) % 1000
+        i = i + 1
+    }
+}
+
+benchmark "handle churn remove 1k" {
+    let p = Pool.new()
+    let handles = Vec.new()
+    let i = 0
+    while i < 1000 {
+        let result = p.insert(i)
+        if result is Ok(h) {
+            handles.push(h)
+        }
+        i = i + 1
+    }
+
+    // Remove every 5th element, re-insert to fill gaps
+    i = 0
+    while i < 1000 {
+        if i % 5 == 0 {
+            let h = handles[i]
+            p.remove(h)
+        }
+        i = i + 1
+    }
+    i = 0
+    while i < 200 {
+        p.insert(i * 10)
+        i = i + 1
+    }
+}
+
+benchmark "handle churn read 800" {
+    let p = Pool.new()
+    let handles = Vec.new()
+    let i = 0
+    while i < 1000 {
+        let result = p.insert(i)
+        if result is Ok(h) {
+            handles.push(h)
+        }
+        i = i + 1
+    }
+
+    // Read 800 surviving handles (skip every 5th)
+    let sum = 0
+    i = 0
+    while i < 1000 {
+        if i % 5 != 0 {
+            sum = sum + p[handles[i]]
+        }
+        i = i + 1
+    }
+}
