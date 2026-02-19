@@ -24,6 +24,8 @@ const RUNTIME_SOURCES: &[&str] = &[
     "time.c",
     "atomic.c",
     "simd.c",
+    "bench.c",
+    "ptr.c",
 ];
 
 /// Extra link-time inputs (libraries, object files, search paths).
@@ -85,7 +87,7 @@ pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) 
 /// Searches:
 /// 1. RASK_RUNTIME_DIR environment variable
 /// 2. Relative to the rask binary (walking up to find compiler/runtime/)
-fn find_runtime_dir() -> Result<std::path::PathBuf, String> {
+pub fn find_runtime_dir() -> Result<std::path::PathBuf, String> {
     if let Ok(dir) = std::env::var("RASK_RUNTIME_DIR") {
         let p = Path::new(&dir);
         if p.join("runtime.c").exists() {

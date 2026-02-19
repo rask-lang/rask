@@ -121,6 +121,7 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(&bench_decl.body);
             }
             DeclKind::Package(_) => {}
+            DeclKind::Union(_) => {}
         }
     }
 
@@ -699,6 +700,10 @@ impl<'a> OwnershipChecker<'a> {
                                 && self.type_size(ty) <= 16
                         }
                         rask_types::TypeDef::Trait { .. } => false,
+                        rask_types::TypeDef::Union { fields, .. } => {
+                            fields.iter().all(|(_, t)| self.is_copy(t))
+                                && self.type_size(ty) <= 16
+                        }
                     }
                 } else {
                     false

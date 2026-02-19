@@ -189,6 +189,13 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
+                // transmute(val) — identity at MIR level (all values are i64)
+                if func_name == "transmute" {
+                    let val = arg_operands.into_iter().next()
+                        .unwrap_or(MirOperand::Constant(MirConst::Int(0)));
+                    return Ok((val, MirType::I64));
+                }
+
                 // Built-in variant constructors: Ok(v), Err(v), Some(v)
                 match func_name.as_str() {
                     "Some" if self.is_niche_option_expr(expr) => {
@@ -199,8 +206,17 @@ impl<'a> MirLowerer<'a> {
                     }
                     "Ok" | "Some" | "Err" => {
                         let tag = self.variant_tag(&func_name);
-                        // Derive the result MirType from type checker info if available
-                        let result_ty = self.lookup_expr_type(expr).unwrap_or(MirType::Ptr);
+                        // Derive the result MirType from type checker info if available.
+                        // Fallback to Result/Option so codegen allocates a stack slot.
+                        let fallback_ty = if func_name == "Some" {
+                            MirType::Option(Box::new(MirType::I64))
+                        } else {
+                            MirType::Result {
+                                ok: Box::new(MirType::I64),
+                                err: Box::new(MirType::I64),
+                            }
+                        };
+                        let result_ty = self.lookup_expr_type(expr).unwrap_or(fallback_ty);
                         let result_local = self.builder.alloc_temp(result_ty.clone());
                         self.builder.push_stmt(MirStmt::Store {
                             addr: result_local,
@@ -489,6 +505,44 @@ impl<'a> MirLowerer<'a> {
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
+                // Raw pointer methods: dispatch directly to RawPtr_* C functions
+                if matches!(obj_ty, MirType::Ptr) {
+                    let ptr_method = match method.as_str() {
+                        "read" | "write" | "add" | "sub" | "offset"
+                        | "is_null" | "is_aligned" | "is_aligned_to" | "align_offset" => {
+                            Some(format!("RawPtr_{}", method))
+                        }
+                        "cast" => None, // cast is type-only, no runtime call
+                        _ => None,
+                    };
+                    if method == "cast" {
+                        // Cast is a no-op at runtime — pointer value unchanged
+                        return Ok((obj_op, MirType::Ptr));
+                    }
+                    if let Some(func_name) = ptr_method {
+                        let mut all_args = vec![obj_op];
+                        for arg in args {
+                            let (op, _) = self.lower_expr(&arg.expr)?;
+                            all_args.push(op);
+                        }
+                        let ret_ty = match method.as_str() {
+                            "read" => MirType::I64,
+                            "write" => MirType::Void,
+                            "add" | "sub" | "offset" => MirType::Ptr,
+                            "is_null" | "is_aligned" | "is_aligned_to" => MirType::Bool,
+                            "align_offset" => MirType::I64,
+                            _ => MirType::I64,
+                        };
+                        let result_local = self.builder.alloc_temp(ret_ty.clone());
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: Some(result_local),
+                            func: FunctionRef::internal(func_name),
+                            args: all_args,
+                        });
+                        return Ok((MirOperand::Local(result_local), ret_ty));
+                    }
+                }
+
                 // Skip native binop for types that need C runtime calls (strings,
                 // SIMD vectors) or special method dispatch (raw pointers:
                 // ptr.add != arithmetic add).
@@ -578,9 +632,16 @@ impl<'a> MirLowerer<'a> {
                     if matches!(&args[0].expr.kind, ExprKind::Closure { params, .. } if params.len() == 1) {
                         return self.lower_map_err(obj_op, &args[0].expr);
                     }
-                    // Variant constructor: result.map_err(MyError)
+                    // Variant constructor: result.map_err(MyError) or
+                    // result.map_err(ConfigError.Io)
                     if let ExprKind::Ident(name) = &args[0].expr.kind {
                         return self.lower_map_err_constructor(obj_op, name);
+                    }
+                    // Qualified variant: EnumName.Variant
+                    if let ExprKind::Field { object, field } = &args[0].expr.kind {
+                        if matches!(&object.kind, ExprKind::Ident(_)) {
+                            return self.lower_map_err_constructor(obj_op, field);
+                        }
                     }
                 }
 
@@ -2564,6 +2625,7 @@ impl<'a> MirLowerer<'a> {
         let err_block = self.builder.create_block();
         let merge_block = self.builder.create_block();
 
+        // Result and inner enum types need stack slots for in-place construction
         let out = self.builder.alloc_temp(MirType::Ptr);
 
         // tag=0 → Ok, tag=1 → Err

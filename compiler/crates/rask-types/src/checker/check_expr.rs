@@ -95,8 +95,25 @@ impl TypeChecker {
                 self.check_binary(*op, left, right, expr.span)
             }
 
-            ExprKind::Unary { op: _, operand } => {
-                self.infer_expr(operand)
+            ExprKind::Unary { op, operand } => {
+                let operand_ty = self.infer_expr(operand);
+                match op {
+                    rask_ast::expr::UnaryOp::Deref => {
+                        if !self.in_unsafe {
+                            self.errors.push(TypeError::UnsafeRequired {
+                                operation: "pointer dereference".to_string(),
+                                span: expr.span,
+                            });
+                        }
+                        // *ptr where ptr: *T should yield T
+                        let resolved = self.ctx.apply(&operand_ty);
+                        match resolved {
+                            Type::RawPtr(inner) => *inner,
+                            _ => operand_ty,
+                        }
+                    }
+                    _ => operand_ty,
+                }
             }
 
             ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
@@ -776,6 +793,27 @@ impl TypeChecker {
 
     pub(super) fn check_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
+            // transmute(val) — reinterpret bits, requires unsafe
+            if name == "transmute" {
+                if !self.in_unsafe {
+                    self.errors.push(TypeError::UnsafeRequired {
+                        operation: "transmute".to_string(),
+                        span,
+                    });
+                }
+                if args.len() != 1 {
+                    self.errors.push(TypeError::ArityMismatch {
+                        expected: 1,
+                        found: args.len(),
+                        span,
+                    });
+                }
+                for arg in args {
+                    self.infer_expr(&arg.expr);
+                }
+                return self.ctx.fresh_var();
+            }
+
             if self.is_builtin_function(name) {
                 for arg in args {
                     self.infer_expr(&arg.expr);
@@ -788,13 +826,22 @@ impl TypeChecker {
             }
         }
 
-        // Extern function calls require unsafe context
+        // Extern and unsafe function calls require unsafe context
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
-                    if matches!(sym.kind, SymbolKind::ExternFunction { .. }) && !self.in_unsafe {
+                    let requires_unsafe = match &sym.kind {
+                        SymbolKind::ExternFunction { .. } => true,
+                        SymbolKind::Function { is_unsafe: true, .. } => true,
+                        _ => false,
+                    };
+                    if requires_unsafe && !self.in_unsafe {
+                        let operation = match &sym.kind {
+                            SymbolKind::ExternFunction { .. } => "extern function call",
+                            _ => "unsafe function call",
+                        };
                         self.errors.push(TypeError::UnsafeRequired {
-                            operation: "extern function call".to_string(),
+                            operation: operation.to_string(),
                             span,
                         });
                     }
@@ -1026,6 +1073,14 @@ impl TypeChecker {
         let obj_ty = self.resolve_named(&obj_ty_raw);
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
 
+        // Raw pointer methods — resolve directly instead of through HasMethod constraints
+        let resolved_obj = self.ctx.apply(&obj_ty);
+        if let Type::RawPtr(ref inner) = resolved_obj {
+            if let Some(ret) = self.check_raw_ptr_method(inner, method, &arg_types, span) {
+                return ret;
+            }
+        }
+
         let ret_ty = self.ctx.fresh_var();
 
         self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -1037,6 +1092,36 @@ impl TypeChecker {
         });
 
         ret_ty
+    }
+
+    /// Resolve methods on raw pointer types (*T).
+    /// Returns Some(return_type) if the method is recognized, None otherwise.
+    fn check_raw_ptr_method(
+        &mut self,
+        inner: &Type,
+        method: &str,
+        _args: &[Type],
+        span: Span,
+    ) -> Option<Type> {
+        let requires_unsafe = method != "is_null";
+        if requires_unsafe && !self.in_unsafe {
+            self.errors.push(TypeError::UnsafeRequired {
+                operation: format!("pointer method .{}()", method),
+                span,
+            });
+        }
+
+        match method {
+            "read" => Some(inner.clone()),
+            "write" => Some(Type::Unit),
+            "add" | "sub" | "offset" => Some(Type::RawPtr(Box::new(inner.clone()))),
+            "is_null" => Some(Type::Bool),
+            "cast" => Some(Type::RawPtr(Box::new(self.ctx.fresh_var()))),
+            "is_aligned" => Some(Type::Bool),
+            "is_aligned_to" => Some(Type::Bool),
+            "align_offset" => Some(Type::I64),
+            _ => None,
+        }
     }
 
     pub(super) fn check_module_method(
@@ -1108,6 +1193,21 @@ impl TypeChecker {
 
         let obj_ty_raw = self.infer_expr(object);
         let obj_ty = self.resolve_named(&obj_ty_raw);
+
+        // UN2: union field reads require unsafe (UN3: writes are safe)
+        if !self.in_assign_target {
+            if let Type::Named(type_id) = &obj_ty {
+                if let Some(TypeDef::Union { .. }) = self.types.get(*type_id) {
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: "union field access".to_string(),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+
         let field_ty = self.ctx.fresh_var();
 
         self.ctx.add_constraint(TypeConstraint::HasField {

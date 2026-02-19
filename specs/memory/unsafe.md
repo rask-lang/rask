@@ -35,7 +35,6 @@ const value = unsafe { *ptr }
 | Calling C functions | C cannot provide Rask's safety guarantees |
 | Calling unsafe Rask functions | Function declares it requires caller verification |
 | Implementing unsafe traits | Trait contract cannot be verified by compiler |
-| Accessing mutable statics | Data races possible without synchronization |
 | Transmute | Reinterprets bytes as different type |
 | Inline assembly | Arbitrary machine code |
 | Union field access | Reading wrong variant is undefined |
@@ -255,25 +254,6 @@ asm {
 | `pure` | No side effects beyond outputs; eliminable if unused |
 | `nomem` | Does not access memory |
 | `nostack` | Does not use stack |
-
-## Mutable Statics
-
-| Rule | Description |
-|------|-------------|
-| **MS1: Unsafe access** | All reads/writes to `static mut` require unsafe |
-| **MS2: No sync** | No synchronization provided; use atomics or mutex |
-| **MS3: Prefer alternatives** | Use thread-local, atomic, or synchronized types instead |
-
-<!-- test: skip -->
-```rask
-static mut COUNTER: u32 = 0
-
-func increment() {
-    unsafe {
-        COUNTER += 1
-    }
-}
-```
 
 ## Unions
 

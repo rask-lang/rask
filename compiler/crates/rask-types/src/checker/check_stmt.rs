@@ -92,7 +92,9 @@ impl TypeChecker {
                         });
                     }
                 }
+                self.in_assign_target = true;
                 let target_ty = self.infer_expr(target);
+                self.in_assign_target = false;
                 let value_ty = self.infer_expr_expecting(value, &target_ty);
                 self.ctx.add_constraint(TypeConstraint::Equal(
                     target_ty, value_ty, stmt.span,

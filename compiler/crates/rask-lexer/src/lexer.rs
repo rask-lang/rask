@@ -121,6 +121,8 @@ enum RawToken {
     Exclusive,
     #[token("profile")]
     Profile,
+    #[token("union")]
+    Union,
 
     // === Operators (order matters - longer first) ===
     // Three-character operators
@@ -493,6 +495,7 @@ impl<'a> Lexer<'a> {
             RawToken::Feature => TokenKind::Feature,
             RawToken::Exclusive => TokenKind::Exclusive,
             RawToken::Profile => TokenKind::Profile,
+            RawToken::Union => TokenKind::Union,
 
             // Operators
             RawToken::Plus => TokenKind::Plus,

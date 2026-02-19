@@ -35,7 +35,7 @@ impl TypeChecker {
             Type::Named(type_id) => {
                 let result = self.types.get(*type_id).and_then(|def| {
                     match def {
-                        TypeDef::Struct { fields, .. } => {
+                        TypeDef::Struct { fields, .. } | TypeDef::Union { fields, .. } => {
                             fields.iter().find(|(n, _)| n == &field).map(|(_, t)| t.clone())
                         }
                         TypeDef::Enum { variants, .. } => {

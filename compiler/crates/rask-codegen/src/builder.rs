@@ -103,8 +103,9 @@ impl<'a> FunctionBuilder<'a> {
             .collect();
 
         // Collect cleanup-only blocks (appear in CleanupReturn chains).
-        // These are inlined at the CleanupReturn site, not lowered as
-        // standalone Cranelift blocks.
+        // A single shared Cranelift block is created per unique cleanup
+        // chain — all CleanupReturn sites with the same chain jump to
+        // the shared block instead of inlining the cleanup statements.
         let cleanup_only: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
                 if let MirTerminator::CleanupReturn { cleanup_chain, .. } = &b.terminator {
@@ -116,15 +117,29 @@ impl<'a> FunctionBuilder<'a> {
             .flatten()
             .collect();
 
+        // Deduplicate cleanup chains: map each unique chain to a shared block.
+        let mut cleanup_chain_blocks: HashMap<Vec<BlockId>, cranelift_codegen::ir::Block> =
+            HashMap::new();
+
         let mut builder = ClifFunctionBuilder::new(self.func, &mut self.builder_ctx);
 
-        // Create blocks (skip cleanup-only blocks — their code is inlined)
+        // Create blocks (skip cleanup-only blocks — handled via shared cleanup blocks)
         for mir_block in &self.mir_fn.blocks {
             if cleanup_only.contains(&mir_block.id) {
                 continue;
             }
             let block = builder.create_block();
             self.block_map.insert(mir_block.id, block);
+        }
+
+        // Create shared cleanup blocks for each unique chain.
+        for mir_block in &self.mir_fn.blocks {
+            if let MirTerminator::CleanupReturn { cleanup_chain, .. } = &mir_block.terminator {
+                if !cleanup_chain.is_empty() && !cleanup_chain_blocks.contains_key(cleanup_chain) {
+                    let shared_block = builder.create_block();
+                    cleanup_chain_blocks.insert(cleanup_chain.clone(), shared_block);
+                }
+            }
         }
 
         // Declare all variables (locals)
@@ -206,7 +221,46 @@ impl<'a> FunctionBuilder<'a> {
                 self.panicking_fns,
                 &self.stack_slot_map,
                 self.internal_fns,
+                &cleanup_chain_blocks,
             )?;
+        }
+
+        // Emit shared cleanup blocks. Each unique cleanup chain gets one
+        // Cranelift block that runs the cleanup statements and returns.
+        for (chain, &shared_block) in &cleanup_chain_blocks {
+            builder.switch_to_block(shared_block);
+
+            // Add return value as block parameter if function returns a value
+            let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void) {
+                let ret_cl_ty = mir_to_cranelift_type(&self.mir_fn.ret_ty)?;
+                Some(builder.append_block_param(shared_block, ret_cl_ty))
+            } else {
+                None
+            };
+
+            // Emit cleanup statements from each block in the chain
+            for block_id in chain {
+                if let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) {
+                    for stmt in &mir_block.statements {
+                        Self::lower_stmt(
+                            &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
+                            self.func_refs, self.struct_layouts, self.enum_layouts,
+                            self.string_globals, self.comptime_globals,
+                            None, 0, 0,
+                            self.panicking_fns,
+                            &self.stack_slot_map,
+                            self.internal_fns,
+                        )?;
+                    }
+                }
+            }
+
+            // Return
+            if let Some(val) = ret_param {
+                builder.ins().return_(&[val]);
+            } else {
+                builder.ins().return_(&[]);
+            }
         }
 
         // Now seal all blocks (all predecessors are known)
@@ -214,6 +268,9 @@ impl<'a> FunctionBuilder<'a> {
             if let Some(&cl_block) = self.block_map.get(&mir_block.id) {
                 builder.seal_block(cl_block);
             }
+        }
+        for &shared_block in cleanup_chain_blocks.values() {
+            builder.seal_block(shared_block);
         }
 
         builder.finalize();
@@ -553,11 +610,16 @@ impl<'a> FunctionBuilder<'a> {
                         // Post-call result handling
                         let val = match adapt {
                             CallAdapt::DerefResult => {
-                                // Result is void* — load the i64 value from it
+                                // Result is void* — load the value from it.
+                                // Use the destination type so f64 elements load as f64,
+                                // not as i64 bit patterns that need conversion.
+                                let load_ty = dst_local
+                                    .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
+                                    .unwrap_or(types::I64);
                                 let results = builder.inst_results(call_inst);
                                 if !results.is_empty() {
                                     let ptr = results[0];
-                                    builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
+                                    builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
                                 } else {
                                     builder.ins().iconst(types::I64, 0)
                                 }
@@ -1221,6 +1283,7 @@ impl<'a> FunctionBuilder<'a> {
         panicking_fns: &HashSet<String>,
         stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
         internal_fns: &HashSet<String>,
+        cleanup_chain_blocks: &HashMap<Vec<BlockId>, cranelift_codegen::ir::Block>,
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
@@ -1293,26 +1356,30 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirTerminator::CleanupReturn { value, cleanup_chain } => {
-                // Run cleanup block statements inline, then return.
-                // Cleanup blocks are not lowered as standalone Cranelift blocks
-                // — their statements are inlined here to avoid CFG complexity.
-                for block_id in cleanup_chain {
-                    if let Some(mir_block) = mir_blocks.iter().find(|b| b.id == *block_id) {
-                        for stmt in &mir_block.statements {
-                            Self::lower_stmt(
-                                builder, stmt, var_map, locals,
-                                func_refs, struct_layouts, enum_layouts,
-                                string_globals, comptime_globals,
-                                None, 0, 0,
-                                panicking_fns,
-                                stack_slot_map,
-                                internal_fns,
-                            )?;
+                if !cleanup_chain.is_empty() {
+                    if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
+                        // Jump to shared cleanup block, passing return value.
+                        if let Some(val_op) = value {
+                            let expected_ty = mir_to_cranelift_type(ret_ty)?;
+                            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals, func_refs)?;
+                            let actual_ty = builder.func.dfg.value_type(val);
+                            let final_val = if actual_ty != expected_ty {
+                                Self::convert_value(builder, val, actual_ty, expected_ty)
+                            } else {
+                                val
+                            };
+                            builder.ins().jump(shared_block, &[final_val]);
+                        } else {
+                            builder.ins().jump(shared_block, &[]);
                         }
+                    } else {
+                        // Fallback: inline (shouldn't happen with the setup above)
+                        Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
                     }
+                } else {
+                    // Empty cleanup chain — just return directly
+                    Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
                 }
-
-                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
             }
         }
         Ok(())
@@ -1622,7 +1689,7 @@ impl<'a> FunctionBuilder<'a> {
             MirOperand::Constant(const_val) => {
                 match const_val {
                     MirConst::Int(n) => {
-                        let ty = expected_ty.unwrap_or(types::I32);
+                        let ty = expected_ty.unwrap_or(types::I64);
                         Ok(builder.ins().iconst(ty, *n))
                     }
                     MirConst::Float(f) => {

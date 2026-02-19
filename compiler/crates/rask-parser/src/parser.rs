@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -533,8 +533,9 @@ impl Parser {
             TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs, doc)?,
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, doc)?,
-            TokenKind::Trait => self.parse_trait_decl(is_pub, doc)?,
-            TokenKind::Extend => self.parse_impl_decl(doc)?,
+            TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
+            TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, doc)?,
+            TokenKind::Extend => self.parse_impl_decl(is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub)?,
@@ -563,7 +564,7 @@ impl Parser {
             }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, trait, extend, import, export, const, test, benchmark, extern, package)",
+                    "declaration (func, struct, enum, union, trait, extend, import, export, const, test, benchmark, extern, package)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -1114,6 +1115,47 @@ impl Parser {
         }))
     }
 
+    fn parse_union_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Union)?;
+        let name = self.expect_ident()?;
+
+        self.skip_newlines();
+        self.expect(&TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut fields = Vec::new();
+
+        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            let _field_doc = self.take_doc();
+            let field_pub = self.match_token(&TokenKind::Public);
+
+            if self.check(&TokenKind::Func) {
+                return Err(ParseError {
+                    span: self.current().span,
+                    message: "unions cannot have methods".to_string(),
+                    hint: Some("define methods separately with extend".to_string()),
+                });
+            }
+
+            let name_span = self.current().span;
+            let field_name = self.expect_ident_or_keyword()?;
+            self.expect(&TokenKind::Colon)?;
+            let ty = self.parse_type_name()?;
+            fields.push(Field { name: field_name, name_span, ty, is_pub: field_pub });
+
+            self.match_token(&TokenKind::Comma);
+            self.skip_newlines();
+        }
+
+        self.expect(&TokenKind::RBrace)?;
+        Ok(DeclKind::Union(UnionDecl {
+            name,
+            fields,
+            is_pub,
+            doc,
+        }))
+    }
+
     fn parse_enum_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
         let mut name = self.expect_ident()?;
@@ -1210,7 +1252,7 @@ impl Parser {
         }))
     }
 
-    fn parse_trait_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_trait_decl(&mut self, is_pub: bool, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Trait)?;
         let name = self.expect_ident()?;
 
@@ -1253,7 +1295,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, doc }))
+        Ok(DeclKind::Trait(TraitDecl { name, super_traits, methods, is_pub, is_unsafe, doc }))
     }
 
     fn parse_trait_method_shorthand(&mut self) -> Result<FnDecl, ParseError> {
@@ -1312,7 +1354,7 @@ impl Parser {
         })
     }
 
-    fn parse_impl_decl(&mut self, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_impl_decl(&mut self, is_unsafe: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Extend)?;
         let target_ty = self.parse_type_name()?;
 
@@ -1344,7 +1386,7 @@ impl Parser {
         }
 
         self.expect(&TokenKind::RBrace)?;
-        Ok(DeclKind::Impl(ImplDecl { trait_name, target_ty, methods, doc }))
+        Ok(DeclKind::Impl(ImplDecl { trait_name, target_ty, methods, is_unsafe, doc }))
     }
 
     fn parse_import_decl(&mut self) -> Result<DeclKind, ParseError> {

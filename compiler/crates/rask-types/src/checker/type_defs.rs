@@ -30,6 +30,11 @@ pub enum TypeDef {
         name: String,
         super_traits: Vec<String>,
         methods: Vec<MethodSig>,
+        is_unsafe: bool,
+    },
+    Union {
+        name: String,
+        fields: Vec<(String, Type)>,
     },
 }
 

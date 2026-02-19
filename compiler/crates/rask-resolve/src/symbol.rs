@@ -32,6 +32,8 @@ pub enum SymbolKind {
         ret_ty: Option<String>,
         /// `using` context clauses.
         context_clauses: Vec<ContextClause>,
+        /// Whether this is an `unsafe func`.
+        is_unsafe: bool,
     },
     /// An extern function (C FFI).
     ExternFunction {
@@ -137,6 +139,8 @@ pub enum BuiltinFunctionKind {
     Format,
     /// spawn - spawn a concurrent task
     Spawn,
+    /// transmute - reinterpret bits as different type (unsafe)
+    Transmute,
 }
 
 /// Built-in module kinds (stdlib modules).
