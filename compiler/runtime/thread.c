@@ -181,12 +181,13 @@ int8_t rask_task_cancelled(void) {
     return atomic_load_explicit(current_cancel_flag, memory_order_acquire) ? 1 : 0;
 }
 
-void rask_sleep_ns(int64_t ns) {
-    if (ns <= 0) return;
+int64_t rask_sleep_ns(int64_t ns) {
+    if (ns <= 0) return 0;
     struct timespec ts;
     ts.tv_sec  = ns / 1000000000LL;
     ts.tv_nsec = ns % 1000000000LL;
     nanosleep(&ts, NULL);
+    return 0;
 }
 
 // Sleep for the given number of milliseconds.

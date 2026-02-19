@@ -99,6 +99,10 @@ pub struct MirContext<'a> {
     pub line_map: Option<&'a LineMap>,
     /// Source file path for runtime error messages (None in tests)
     pub source_file: Option<&'a str>,
+    /// Cross-function Vec element types inferred from push/set calls.
+    /// Key: tracking path (e.g. "v", "self.history"), Value: element MirType.
+    /// Shared across function lowerings via RefCell.
+    pub shared_elem_types: std::cell::RefCell<HashMap<String, MirType>>,
 }
 
 impl<'a> MirContext<'a> {
@@ -116,6 +120,7 @@ impl<'a> MirContext<'a> {
             extern_funcs: &EMPTY_EXTERNS,
             line_map: None,
             source_file: None,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
         }
     }
 
@@ -2218,6 +2223,7 @@ mod tests {
             node_types: &node_types,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
         };
@@ -2262,6 +2268,7 @@ mod tests {
             node_types: &node_types,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
         };
@@ -2312,6 +2319,7 @@ mod tests {
             node_types: &node_types,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
         };
@@ -2387,7 +2395,7 @@ mod tests {
     }
 
     #[test]
-    fn lower_using_non_multitasking_no_init() {
+    fn lower_using_threadpool_emits_init_shutdown() {
         let using_block = Expr {
             id: NodeId(701),
             kind: ExprKind::UsingBlock {
@@ -2405,8 +2413,32 @@ mod tests {
             return_stmt(None),
         ]);
         let f = lower(&decl, &[decl.clone(), work]);
-        assert!(!find_call(&f, "rask_runtime_init"), "ThreadPool should not emit init");
-        assert!(!find_call(&f, "rask_runtime_shutdown"), "ThreadPool should not emit shutdown");
+        assert!(find_call(&f, "rask_runtime_init"), "ThreadPool should emit init");
+        assert!(find_call(&f, "rask_runtime_shutdown"), "ThreadPool should emit shutdown");
+        assert!(find_call(&f, "work"));
+    }
+
+    #[test]
+    fn lower_using_unknown_no_init() {
+        let using_block = Expr {
+            id: NodeId(702),
+            kind: ExprKind::UsingBlock {
+                name: "SomeOtherContext".to_string(),
+                args: vec![],
+                body: vec![
+                    expr_stmt(call_expr("work", vec![])),
+                ],
+            },
+            span: sp(),
+        };
+        let work = make_fn("work", vec![], None, vec![return_stmt(None)]);
+        let decl = make_fn("main", vec![], None, vec![
+            expr_stmt(using_block),
+            return_stmt(None),
+        ]);
+        let f = lower(&decl, &[decl.clone(), work]);
+        assert!(!find_call(&f, "rask_runtime_init"), "Unknown context should not emit init");
+        assert!(!find_call(&f, "rask_runtime_shutdown"), "Unknown context should not emit shutdown");
         assert!(find_call(&f, "work"));
     }
 }

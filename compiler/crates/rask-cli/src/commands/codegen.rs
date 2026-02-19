@@ -32,7 +32,7 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
 }
 
 /// Evaluate comptime const declarations and return serialized data.
-fn evaluate_comptime_globals(decls: &[rask_ast::decl::Decl]) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
+pub fn evaluate_comptime_globals(decls: &[rask_ast::decl::Decl]) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
     use rask_ast::decl::DeclKind;
     use rask_ast::stmt::StmtKind;
 
@@ -252,6 +252,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         extern_funcs: &extern_funcs,
         line_map: line_map.as_ref(),
         source_file: Some(path),
+        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
     };
 
     let mut mir_errors = 0;

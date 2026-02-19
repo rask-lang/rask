@@ -36,6 +36,22 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Derive a tracking key for Vec element type inference.
+    /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
+    fn vec_tracking_key(object: &Expr) -> Option<String> {
+        match &object.kind {
+            ExprKind::Ident(name) => Some(name.clone()),
+            ExprKind::Field { object: inner, field } => {
+                if let ExprKind::Ident(name) = &inner.kind {
+                    Some(format!("{}.{}", name, field))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         match &expr.kind {
             // Literals
@@ -216,7 +232,9 @@ impl<'a> MirLowerer<'a> {
                                 err: Box::new(MirType::I64),
                             }
                         };
-                        let result_ty = self.lookup_expr_type(expr).unwrap_or(fallback_ty);
+                        let result_ty = self.lookup_expr_type(expr)
+                            .filter(|t| !matches!(t, MirType::Ptr))
+                            .unwrap_or(fallback_ty);
                         let result_local = self.builder.alloc_temp(result_ty.clone());
                         self.builder.push_stmt(MirStmt::Store {
                             addr: result_local,
@@ -685,9 +703,11 @@ impl<'a> MirLowerer<'a> {
 
                 // Regular method call
                 let mut all_args = vec![obj_op];
+                let mut arg_types = Vec::new();
                 for arg in args {
-                    let (op, _) = self.lower_expr(&arg.expr)?;
+                    let (op, ty) = self.lower_expr(&arg.expr)?;
                     all_args.push(op);
+                    arg_types.push(ty);
                 }
 
                 // Qualify method name with receiver type to avoid dispatch
@@ -754,12 +774,37 @@ impl<'a> MirLowerer<'a> {
                     qualified_name
                 };
 
-                let ret_ty = self
+                // Track Vec element types from push/set so get returns the right type.
+                // Handles both `v.push(x)` and `self.field.push(x)`.
+                // Writes to both per-function and shared cross-function maps.
+                if matches!(qualified_name.as_str(), "Vec_push" | "Vec_set") {
+                    if let Some(arg_ty) = arg_types.first() {
+                        if !matches!(arg_ty, MirType::I64) {
+                            if let Some(key) = Self::vec_tracking_key(object) {
+                                self.collection_elem_types.insert(key.clone(), arg_ty.clone());
+                                self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
+                            }
+                        }
+                    }
+                }
+
+                // Use tracked element type for Vec_get return instead of default I64.
+                // Checks per-function map first, then shared cross-function map.
+                let ret_ty = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
+                    Self::vec_tracking_key(object)
+                        .and_then(|key| {
+                            self.collection_elem_types.get(&key).cloned()
+                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                        })
+                } else {
+                    None
+                }.unwrap_or_else(|| self
                     .func_sigs
                     .get(&method)
                     .or_else(|| self.func_sigs.get(&qualified_name))
                     .map(|s| s.ret_ty.clone())
-                    .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name));
+                    .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
+
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
@@ -883,9 +928,16 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 // Vec/Map/etc: dispatch through runtime
-                // Try to determine the element type from the type checker
+                // Try to determine the element type from the type checker,
+                // then from tracked push/set calls, then default to I64
                 let result_ty = self.ctx.lookup_node_type(expr.id)
                     .filter(|t| !matches!(t, MirType::Ptr))
+                    .or_else(|| {
+                        Self::vec_tracking_key(object).and_then(|key| {
+                            self.collection_elem_types.get(&key).cloned()
+                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                        })
+                    })
                     .unwrap_or(MirType::I64);
                 let index_name = if let ExprKind::Ident(var_name) = &object.kind {
                         self.local_type_prefix.get(var_name).cloned()
@@ -982,6 +1034,19 @@ impl<'a> MirLowerer<'a> {
                         offset,
                         value: val_op,
                     });
+
+                    // Propagate Vec element types from source var to struct field.
+                    // If v has known elem type F64 and we're constructing State { data: v },
+                    // record "self.data" so methods can look it up.
+                    if let ExprKind::Ident(src_var) = &field.value.kind {
+                        if let Some(elem_ty) = self.collection_elem_types.get(src_var).cloned()
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(src_var).cloned())
+                        {
+                            let field_key = format!("self.{}", field.name);
+                            self.collection_elem_types.insert(field_key.clone(), elem_ty.clone());
+                            self.ctx.shared_elem_types.borrow_mut().insert(field_key, elem_ty);
+                        }
+                    }
                 }
                 Ok((MirOperand::Local(result_local), result_ty))
             }
@@ -1305,17 +1370,24 @@ impl<'a> MirLowerer<'a> {
                 Ok((MirOperand::Local(result_local), target_ty))
             }
 
-            // Using block — emit runtime init/shutdown for Multitasking
-            ExprKind::UsingBlock { name, body, .. } => {
-                if name == "Multitasking" || name == "multitasking" {
-                    // rask_runtime_init(0) — 0 = auto-detect worker count
+            // Using block — emit runtime init/shutdown for Multitasking/ThreadPool
+            ExprKind::UsingBlock { name, args, body } => {
+                if name == "Multitasking" || name == "multitasking"
+                    || name == "ThreadPool" || name == "threadpool"
+                {
+                    // Extract worker count from args, default to 0 (auto-detect)
+                    let worker_count = if let Some(arg) = args.first() {
+                        let (op, _ty) = self.lower_expr(&arg.expr)?;
+                        op
+                    } else {
+                        MirOperand::Constant(crate::operand::MirConst::Int(0))
+                    };
                     self.builder.push_stmt(MirStmt::Call {
                         dst: None,
                         func: FunctionRef::internal("rask_runtime_init".to_string()),
-                        args: vec![MirOperand::Constant(crate::operand::MirConst::Int(0))],
+                        args: vec![worker_count],
                     });
                     let result = self.lower_block(body);
-                    // rask_runtime_shutdown()
                     self.builder.push_stmt(MirStmt::Call {
                         dst: None,
                         func: FunctionRef::internal("rask_runtime_shutdown".to_string()),

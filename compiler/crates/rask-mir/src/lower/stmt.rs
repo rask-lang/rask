@@ -382,6 +382,34 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Propagate Vec element types from "self.field" to "<name>.field"
+        // so struct field access like `state.data.get(i)` finds the right type.
+        if let ExprKind::StructLit { fields, .. } = &init.kind {
+            let shared = self.ctx.shared_elem_types.borrow();
+            let mut to_add = Vec::new();
+            for field in fields {
+                let self_key = format!("self.{}", field.name);
+                if let Some(elem_ty) = shared.get(&self_key) {
+                    let var_key = format!("{}.{}", name, field.name);
+                    to_add.push((var_key, elem_ty.clone()));
+                }
+                // Also check if the source variable directly has an element type
+                if let ExprKind::Ident(src_var) = &field.value.kind {
+                    if let Some(elem_ty) = self.collection_elem_types.get(src_var)
+                        .or_else(|| shared.get(src_var))
+                    {
+                        let var_key = format!("{}.{}", name, field.name);
+                        to_add.push((var_key, elem_ty.clone()));
+                    }
+                }
+            }
+            drop(shared);
+            for (key, ty) in to_add {
+                self.collection_elem_types.insert(key.clone(), ty.clone());
+                self.ctx.shared_elem_types.borrow_mut().insert(key, ty);
+            }
+        }
+
         Ok(())
     }
 

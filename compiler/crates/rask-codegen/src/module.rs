@@ -336,6 +336,17 @@ impl CodeGenerator {
             self.func_ids.insert("rask_free".to_string(), id);
         }
 
+        // rask_bench_run(fn_ptr: i64, name_ptr: i64) -> void
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // function pointer
+            sig.params.push(AbiParam::new(types::I64)); // name (const char*)
+            let id = self.module
+                .declare_function("rask_bench_run", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_bench_run".to_string(), id);
+        }
+
         Ok(())
     }
 
@@ -637,9 +648,90 @@ impl CodeGenerator {
         )?;
         builder.build()?;
 
+        // Temporary: dump CLIF IR for debugging
+        if std::env::var("RASK_DUMP_CLIF").is_ok() {
+            eprintln!("=== CLIF IR for {} ===\n{}", mir_fn.name, self.ctx.func.display());
+        }
+
         // Define the function in the module
         self.module
             .define_function(*func_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+
+        Ok(())
+    }
+
+    /// Generate a benchmark runner entry point (`main`) that calls `rask_bench_run`
+    /// for each benchmark function.
+    ///
+    /// `benchmarks` is a list of (display_name, function_name) pairs.
+    /// Each function_name must already be declared via `declare_functions`.
+    pub fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()> {
+        use cranelift::prelude::*;
+
+        // Register benchmark name strings as data
+        for (name, _) in benchmarks {
+            self.register_string(name)?;
+        }
+
+        // Declare rask_main (the entry point)
+        let sig = self.module.make_signature(); // void -> void
+        let main_id = self.module
+            .declare_function("rask_main", Linkage::Export, &sig)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.ctx.clear();
+        self.ctx.func.signature = sig.clone();
+
+        // Import all functions into this function's namespace
+        let mut func_refs = HashMap::new();
+        for (name, fid) in &self.func_ids {
+            let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            func_refs.insert(name.clone(), func_ref);
+        }
+
+        // Import string data globals
+        let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (content, data_id) in &self.string_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            string_globals.insert(content.clone(), gv);
+        }
+
+        // Build the runner function body
+        let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
+        let mut fn_builder = cranelift::prelude::FunctionBuilder::new(
+            &mut self.ctx.func, &mut fn_builder_ctx,
+        );
+
+        let entry_block = fn_builder.create_block();
+        fn_builder.switch_to_block(entry_block);
+        fn_builder.seal_block(entry_block);
+
+        let bench_run_ref = func_refs.get("rask_bench_run")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_bench_run".to_string()))?;
+
+        for (name, fn_name) in benchmarks {
+            // Get function address
+            let bench_fn_ref = func_refs.get(fn_name)
+                .ok_or_else(|| CodegenError::FunctionNotFound(fn_name.clone()))?;
+            let fn_addr = fn_builder.ins().func_addr(types::I64, *bench_fn_ref);
+
+            // Get name string pointer (raw char*)
+            let name_gv = string_globals.get(name)
+                .ok_or_else(|| CodegenError::FunctionNotFound(
+                    format!("string global for benchmark name '{}'", name)
+                ))?;
+            let name_ptr = fn_builder.ins().global_value(types::I64, *name_gv);
+
+            // Call rask_bench_run(fn_addr, name_ptr)
+            fn_builder.ins().call(*bench_run_ref, &[fn_addr, name_ptr]);
+        }
+
+        fn_builder.ins().return_(&[]);
+        fn_builder.finalize();
+
+        self.module
+            .define_function(main_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
         Ok(())
