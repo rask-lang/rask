@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Dependency fetching — struct.packages/LK2.
+//! Dependency fetching — struct.packages/LK2, RG1-RG4.
 //!
 //! `rask fetch` resolves dependencies, validates version constraints,
-//! and updates the lock file. For path dependencies, this validates
-//! the dependency graph. Registry download will be added later.
+//! and updates the lock file. For path dependencies, validates the
+//! dependency graph. For registry dependencies, downloads and caches
+//! packages from the remote registry.
 
 use colored::Colorize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -39,12 +41,11 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         }
     };
 
-    let root_pkg = registry.get(root_id);
-    let manifest = root_pkg.and_then(|p| p.manifest.as_ref());
+    let manifest = registry.get(root_id).and_then(|p| p.manifest.clone());
 
     // Validate version constraints on declared deps
     let mut constraint_errors = 0;
-    if let Some(manifest) = manifest {
+    if let Some(ref manifest) = manifest {
         for dep in &manifest.deps {
             if let Some(ref version) = dep.version {
                 if let Err(e) = rask_resolve::semver::Constraint::parse(version) {
@@ -142,6 +143,185 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         process::exit(1);
     }
 
+    // =========================================================================
+    // Resolve registry dependencies (RG1)
+    // =========================================================================
+
+    // Collect registry deps: have a version constraint but no path or git.
+    // Extract (name, version) pairs to avoid borrowing manifest.
+    let registry_deps: Vec<(String, String)> = manifest.as_ref()
+        .map(|m| {
+            m.deps.iter()
+                .filter(|d| d.version.is_some() && d.path.is_none() && d.git.is_none())
+                .map(|d| (d.name.clone(), d.version.clone().unwrap()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut registry_fetched = 0;
+
+    if !registry_deps.is_empty() {
+        // Load existing lock file for pinned versions
+        let lock_path = root.join("rask.lock");
+        let existing_lock = if lock_path.exists() {
+            rask_resolve::LockFile::load(&lock_path).ok()
+        } else {
+            None
+        };
+
+        let reg_config = rask_resolve::registry::RegistryConfig::from_env();
+        let cache = rask_resolve::cache::PackageCache::new();
+
+        if verbose {
+            println!("  {} {}", "Registry".dimmed(), reg_config.url);
+        }
+
+        let mut fetch_errors = 0;
+        let mut resolved_packages: Vec<(String, String)> = Vec::new();
+        let mut visited: HashSet<String> = HashSet::new();
+
+        // Build work queue starting from direct registry deps
+        let mut queue: Vec<(String, String)> = registry_deps.clone();
+
+        while let Some((dep_name, constraint_str)) = queue.pop() {
+            if visited.contains(&dep_name) {
+                continue;
+            }
+            visited.insert(dep_name.clone());
+
+            // Check lock file for a pinned version
+            let pinned_version = existing_lock.as_ref().and_then(|lock| {
+                lock.packages.iter()
+                    .find(|p| p.name == dep_name && p.source.starts_with("registry+"))
+                    .map(|p| p.version.clone())
+            });
+
+            let constraint = match rask_resolve::semver::Constraint::parse(&constraint_str) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("{}: dep \"{}\": {}", output::error_label(), dep_name, e);
+                    fetch_errors += 1;
+                    continue;
+                }
+            };
+
+            // Fetch package index from registry
+            let index = match reg_config.fetch_index(&dep_name) {
+                Ok(idx) => idx,
+                Err(e) => {
+                    eprintln!("{}: dep \"{}\": {}", output::error_label(), dep_name, e);
+                    fetch_errors += 1;
+                    continue;
+                }
+            };
+
+            // Resolve version: prefer pinned, otherwise pick newest compatible
+            let resolved_version = if let Some(ref pinned) = pinned_version {
+                // Verify pinned version still satisfies the constraint
+                match rask_resolve::semver::Version::parse(pinned) {
+                    Ok(v) if constraint.matches(&v) => v,
+                    _ => {
+                        // Pinned version no longer satisfies — re-resolve
+                        match resolve_from_index(&index, &[constraint], &dep_name) {
+                            Ok(v) => v,
+                            Err(e) => {
+                                eprintln!("{}: dep \"{}\": {}", output::error_label(), dep_name, e);
+                                fetch_errors += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            } else {
+                match resolve_from_index(&index, &[constraint], &dep_name) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("{}: dep \"{}\": {}", output::error_label(), dep_name, e);
+                        fetch_errors += 1;
+                        continue;
+                    }
+                }
+            };
+
+            let version_str = resolved_version.to_string();
+            let meta = match index.versions.get(&version_str) {
+                Some(m) => m,
+                None => {
+                    eprintln!("{}: dep \"{}\": version {} not in index",
+                        output::error_label(), dep_name, version_str);
+                    fetch_errors += 1;
+                    continue;
+                }
+            };
+
+            // Check cache, download if needed
+            let cached_path = match cache.get(&dep_name, &version_str, &meta.checksum) {
+                Some(path) => {
+                    if verbose {
+                        println!("  {} \"{}\" {} (cached)", "Dep".dimmed(), dep_name, version_str);
+                    }
+                    path
+                }
+                None => {
+                    if verbose {
+                        println!("  {} \"{}\" {} ...", "Fetching".cyan(), dep_name, version_str);
+                    }
+
+                    // Download to temp file
+                    let tmp_dir = std::env::temp_dir();
+                    let tmp_archive = tmp_dir.join(format!("{}-{}.tar.gz", dep_name, version_str));
+
+                    if let Err(e) = reg_config.download_archive(&dep_name, &version_str, &tmp_archive) {
+                        eprintln!("{}: dep \"{}\": download failed: {}",
+                            output::error_label(), dep_name, e);
+                        fetch_errors += 1;
+                        continue;
+                    }
+
+                    // Extract and verify checksum
+                    match cache.store(&dep_name, &version_str, &tmp_archive, &meta.checksum) {
+                        Ok(path) => {
+                            // Clean up temp file
+                            let _ = std::fs::remove_file(&tmp_archive);
+                            registry_fetched += 1;
+                            path
+                        }
+                        Err(e) => {
+                            let _ = std::fs::remove_file(&tmp_archive);
+                            eprintln!("{}: dep \"{}\": {}", output::error_label(), dep_name, e);
+                            fetch_errors += 1;
+                            continue;
+                        }
+                    }
+                }
+            };
+
+            // Register in package registry
+            if let Err(e) = registry.register_cached(
+                &dep_name, &version_str, &cached_path, &reg_config.url
+            ) {
+                eprintln!("{}: dep \"{}\": failed to register: {}",
+                    output::error_label(), dep_name, e);
+                fetch_errors += 1;
+                continue;
+            }
+
+            resolved_packages.push((dep_name.clone(), version_str));
+
+            // Queue transitive registry deps from index metadata
+            for transitive in &meta.deps {
+                if !visited.contains(&transitive.name) {
+                    queue.push((transitive.name.clone(), transitive.version.clone()));
+                }
+            }
+        }
+
+        if fetch_errors > 0 {
+            eprintln!("\n{}", output::banner_fail("Fetch", fetch_errors));
+            process::exit(1);
+        }
+    }
+
     // Count packages
     let external_count = registry.packages().iter()
         .filter(|p| p.id != root_id && p.is_external)
@@ -177,7 +357,7 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
     }
 
     // Check capabilities against allow lists
-    if let Some(manifest) = manifest {
+    if let Some(ref manifest) = manifest {
         let allows: std::collections::HashMap<String, Vec<String>> = manifest.deps.iter()
             .map(|d| (d.name.clone(), d.allow.clone()))
             .collect();
@@ -228,11 +408,18 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         true
     };
 
+    let fetched_msg = if registry_fetched > 0 {
+        format!("{} downloaded, ", registry_fetched)
+    } else {
+        String::new()
+    };
+
     println!(
-        "  {} {} package{} ({})",
+        "  {} {} package{} ({}{})",
         "Fetched".green().bold(),
         external_count,
         if external_count == 1 { "" } else { "s" },
+        fetched_msg,
         if changed { "lock file updated" } else { "up to date" },
     );
 
@@ -243,4 +430,22 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
             if cap_warnings == 1 { "" } else { "s" },
         );
     }
+}
+
+/// Resolve the newest non-yanked version from a registry index that satisfies constraints.
+fn resolve_from_index(
+    index: &rask_resolve::registry::PackageIndex,
+    constraints: &[rask_resolve::semver::Constraint],
+    pkg_name: &str,
+) -> Result<rask_resolve::semver::Version, String> {
+    let available: Vec<rask_resolve::semver::Version> = index.versions.iter()
+        .filter(|(_, meta)| !meta.yanked)
+        .filter_map(|(v, _)| rask_resolve::semver::Version::parse(v).ok())
+        .collect();
+
+    if available.is_empty() {
+        return Err(format!("no versions available for '{}'", pkg_name));
+    }
+
+    rask_resolve::semver::resolve_version(constraints, &available)
 }

@@ -13,6 +13,8 @@ pub mod lockfile;
 pub mod capabilities;
 pub mod semver;
 pub mod features;
+pub mod registry;
+pub mod cache;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};
@@ -37,6 +39,11 @@ pub struct ResolvedProgram {
 /// Resolve all names in a list of declarations (single-file mode).
 pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)
+}
+
+/// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
+pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_stdlib(decls)
 }
 
 /// Resolve all names in a package with access to other packages (multi-file mode).

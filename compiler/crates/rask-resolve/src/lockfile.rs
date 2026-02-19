@@ -47,10 +47,14 @@ impl LockFile {
                 .map(|m| m.version.clone())
                 .unwrap_or_else(|| "0.0.0".into());
 
-            // Relative path for cross-machine reproducibility (LK3)
-            let rel_path = diff_paths(&pkg.root_dir, root_dir)
-                .unwrap_or_else(|| pkg.root_dir.clone());
-            let source = format!("path+{}", rel_path.display());
+            // Registry packages use registry+URL, path deps use relative paths (LK3)
+            let source = if let Some(ref url) = pkg.registry_source {
+                format!("registry+{}", url)
+            } else {
+                let rel_path = diff_paths(&pkg.root_dir, root_dir)
+                    .unwrap_or_else(|| pkg.root_dir.clone());
+                format!("path+{}", rel_path.display())
+            };
             let checksum = compute_checksum(&pkg.root_dir);
 
             packages.push(LockedPackage {
@@ -207,7 +211,7 @@ impl LockFile {
 
 /// Compute SHA-256 checksum of all .rk source files in a directory (recursive).
 /// Uses paths relative to the package root for cross-machine reproducibility.
-fn compute_checksum(dir: &Path) -> String {
+pub fn compute_checksum(dir: &Path) -> String {
     let mut hasher = Sha256::new();
 
     // Collect and sort source files for determinism

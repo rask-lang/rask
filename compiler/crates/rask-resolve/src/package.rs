@@ -36,6 +36,9 @@ pub struct Package {
     pub build_decls: Vec<Decl>,
     /// Whether this is an external dependency (vs local sub-package).
     pub is_external: bool,
+    /// Registry source URL (set for packages fetched from a remote registry).
+    /// e.g., "https://packages.rask-lang.dev"
+    pub registry_source: Option<String>,
 }
 
 /// A source file within a package.
@@ -339,6 +342,7 @@ impl PackageRegistry {
             manifest,
             build_decls,
             is_external: false,
+            registry_source: None,
         };
 
         let id = self.register_package(package, pkg_path.clone());
@@ -410,6 +414,7 @@ impl PackageRegistry {
             manifest,
             build_decls,
             is_external: true,
+            registry_source: None,
         };
 
         let id = self.register_package(package, pkg_path);
@@ -454,6 +459,66 @@ impl PackageRegistry {
         self.packages.is_empty()
     }
 
+    /// Register a package from the local cache (downloaded from a registry).
+    ///
+    /// Parses .rk files from `cache_dir`, creates a Package with
+    /// `is_external: true` and the given `registry_url` as source.
+    pub fn register_cached(
+        &mut self,
+        name: &str,
+        version: &str,
+        cache_dir: &Path,
+        registry_url: &str,
+    ) -> Result<PackageId, PackageError> {
+        // Already registered?
+        if let Some(&id) = self.name_to_id.get(name) {
+            return Ok(id);
+        }
+
+        // Parse build.rk if present
+        let build_rk_path = cache_dir.join("build.rk");
+        let (manifest, build_decls) = if build_rk_path.is_file() {
+            parse_build_rk(&build_rk_path)?
+        } else {
+            (None, Vec::new())
+        };
+
+        let pkg_name = manifest.as_ref()
+            .map(|m| m.name.clone())
+            .unwrap_or_else(|| name.to_string());
+
+        let (files, _subdirs) = collect_rk_files(cache_dir)?;
+        let source_files = parse_rk_files(files)?;
+        let pkg_path = vec![pkg_name.clone()];
+
+        // Build a manifest with the correct version if build.rk doesn't have one
+        let manifest = manifest.or_else(|| {
+            Some(rask_ast::decl::PackageDecl {
+                name: pkg_name.clone(),
+                version: version.to_string(),
+                deps: Vec::new(),
+                features: Vec::new(),
+                metadata: Vec::new(),
+                profiles: Vec::new(),
+            })
+        });
+
+        let package = Package {
+            id: PackageId(0),
+            name: pkg_name,
+            path: pkg_path.clone(),
+            root_dir: cache_dir.to_path_buf(),
+            files: source_files,
+            imports: Vec::new(),
+            manifest,
+            build_decls,
+            is_external: true,
+            registry_source: Some(registry_url.to_string()),
+        };
+
+        Ok(self.register_package(package, pkg_path))
+    }
+
     /// Add a package manually (for testing).
     #[cfg(test)]
     pub fn add_package(&mut self, name: String, path: Vec<String>, root_dir: std::path::PathBuf) -> PackageId {
@@ -467,6 +532,7 @@ impl PackageRegistry {
             manifest: None,
             build_decls: Vec::new(),
             is_external: false,
+            registry_source: None,
         };
         self.register_package(package, path)
     }
@@ -489,6 +555,7 @@ impl PackageRegistry {
             manifest: None,
             build_decls: Vec::new(),
             is_external: false,
+            registry_source: None,
         };
         self.register_package(package, path)
     }

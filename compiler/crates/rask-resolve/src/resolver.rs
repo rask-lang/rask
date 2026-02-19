@@ -28,6 +28,8 @@ pub struct Resolver {
     type_param_map: HashMap<String, Vec<TypeParam>>,
     /// Public symbols exported by each external package.
     package_exports: HashMap<PackageId, HashMap<String, SymbolId>>,
+    /// When true, declarations can shadow builtin names without E0209.
+    stdlib_mode: bool,
 }
 
 impl Resolver {
@@ -44,6 +46,7 @@ impl Resolver {
             lazy_imports: HashMap::new(),
             type_param_map: HashMap::new(),
             package_exports: HashMap::new(),
+            stdlib_mode: false,
         };
 
         resolver.register_builtins();
@@ -237,8 +240,9 @@ impl Resolver {
         false
     }
 
-    pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    fn resolve_inner(decls: &[Decl], stdlib_mode: bool) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
+        resolver.stdlib_mode = stdlib_mode;
 
         resolver.collect_declarations(decls);
         resolver.resolve_bodies(decls);
@@ -251,6 +255,15 @@ impl Resolver {
         } else {
             Err(resolver.errors)
         }
+    }
+
+    pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_inner(decls, false)
+    }
+
+    /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
+    pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_inner(decls, true)
     }
 
     pub fn resolve_package(
@@ -466,7 +479,7 @@ impl Resolver {
 
     fn declare_function(&mut self, fn_decl: &FnDecl, span: Span, is_pub: bool) -> SymbolId {
         let base = Self::base_name(&fn_decl.name).to_string();
-        if self.is_builtin_name(&base) {
+        if !self.stdlib_mode && self.is_builtin_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
@@ -485,7 +498,7 @@ impl Resolver {
 
     fn declare_struct(&mut self, struct_decl: &StructDecl, span: Span) {
         let base = Self::base_name(&struct_decl.name).to_string();
-        if self.is_builtin_name(&base) {
+        if !self.stdlib_mode && self.is_builtin_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
@@ -553,7 +566,7 @@ impl Resolver {
 
     fn declare_enum(&mut self, enum_decl: &EnumDecl, span: Span) {
         let base = Self::base_name(&enum_decl.name).to_string();
-        if self.is_builtin_name(&base) {
+        if !self.stdlib_mode && self.is_builtin_name(&base) {
             self.errors.push(ResolveError::shadows_builtin(base.clone(), span));
         }
 
@@ -594,7 +607,7 @@ impl Resolver {
     }
 
     fn declare_trait(&mut self, trait_decl: &TraitDecl, span: Span) {
-        if self.is_builtin_name(&trait_decl.name) {
+        if !self.stdlib_mode && self.is_builtin_name(&trait_decl.name) {
             self.errors.push(ResolveError::shadows_builtin(trait_decl.name.clone(), span));
         }
 
@@ -1930,5 +1943,51 @@ mod tests {
         ];
         let result = Resolver::resolve(&decls);
         assert!(result.is_ok(), "Single-file resolve should still work");
+    }
+
+    #[test]
+    fn test_resolve_stdlib_allows_builtin_function() {
+        let decls = vec![make_fn_decl("println")];
+        let result = Resolver::resolve_stdlib(&decls);
+        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin functions");
+    }
+
+    #[test]
+    fn test_resolve_stdlib_allows_builtin_type() {
+        use rask_ast::decl::StructDecl;
+        let decls = vec![Decl {
+            id: NodeId(0),
+            kind: DeclKind::Struct(StructDecl {
+                name: "Vec".to_string(),
+                type_params: vec![],
+                fields: vec![],
+                methods: vec![],
+                is_pub: false,
+                attrs: vec![],
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        }];
+        let result = Resolver::resolve_stdlib(&decls);
+        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin types");
+    }
+
+    #[test]
+    fn test_resolve_stdlib_allows_builtin_enum() {
+        use rask_ast::decl::EnumDecl;
+        let decls = vec![Decl {
+            id: NodeId(0),
+            kind: DeclKind::Enum(EnumDecl {
+                name: "Option".to_string(),
+                type_params: vec![],
+                variants: vec![],
+                methods: vec![],
+                is_pub: false,
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        }];
+        let result = Resolver::resolve_stdlib(&decls);
+        assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin enums");
     }
 }
