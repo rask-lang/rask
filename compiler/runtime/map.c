@@ -51,8 +51,8 @@ static void map_alloc_tables(RaskMap *m, int64_t cap) {
     m->cap = cap;
     m->states = (uint8_t *)rask_alloc(cap);
     memset(m->states, MAP_EMPTY, (size_t)cap);
-    m->keys = (char *)rask_alloc(cap * m->key_size);
-    m->vals = (char *)rask_alloc(cap * m->val_size);
+    m->keys = (char *)rask_alloc(rask_safe_mul(cap, m->key_size));
+    m->vals = (char *)rask_alloc(rask_safe_mul(cap, m->val_size));
 }
 
 static int64_t map_find_slot(const RaskMap *m, const void *key) {
@@ -97,9 +97,9 @@ static void map_rehash(RaskMap *m) {
         }
     }
 
-    rask_free(old_states);
-    rask_free(old_keys);
-    rask_free(old_vals);
+    rask_realloc(old_states, old_cap, 0);
+    rask_realloc(old_keys, rask_safe_mul(old_cap, m->key_size), 0);
+    rask_realloc(old_vals, rask_safe_mul(old_cap, m->val_size), 0);
 }
 
 // ─── Public API ─────────────────────────────────────────────
@@ -123,10 +123,10 @@ RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
 
 void rask_map_free(RaskMap *m) {
     if (!m) return;
-    rask_free(m->states);
-    rask_free(m->keys);
-    rask_free(m->vals);
-    rask_free(m);
+    if (m->states) rask_realloc(m->states, m->cap, 0);
+    if (m->keys) rask_realloc(m->keys, rask_safe_mul(m->cap, m->key_size), 0);
+    if (m->vals) rask_realloc(m->vals, rask_safe_mul(m->cap, m->val_size), 0);
+    rask_realloc(m, (int64_t)sizeof(RaskMap), 0);
 }
 
 int64_t rask_map_len(const RaskMap *m) {

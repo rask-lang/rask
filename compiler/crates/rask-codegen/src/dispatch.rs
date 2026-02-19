@@ -613,11 +613,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_pool_insert(p: RaskPool*, elem: void*) → packed handle
+        // rask_pool_insert_packed_sized(p: RaskPool*, elem: void*, elem_size: i64) → packed handle
         StdlibEntry {
             mir_name: "Pool_insert",
-            c_name: "rask_pool_insert_packed",
-            params: &[types::I64, types::I64],
+            c_name: "rask_pool_insert_packed_sized",
+            params: &[types::I64, types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
@@ -986,13 +986,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        StdlibEntry {
-            mir_name: "Map_from",
-            c_name: "rask_map_from",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
+        // Map_from for clone lives at line ~475 (rask_map_clone).
+        // rask_map_from (construct from pairs) is a stub — not wired up yet.
+        // When needed, give it a distinct MIR name like "Map_from_pairs".
         StdlibEntry {
             mir_name: "json_encode",
             c_name: "rask_json_encode",

@@ -612,7 +612,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1 }),
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -650,7 +650,7 @@ mod tests {
                 block(0, vec![
                     MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(10) },
                     MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(20) },
-                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1 }),
+                    assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -736,7 +736,7 @@ mod tests {
                 ], branch(local_op(3), 1, 2)),
                 // bb1: Ok case
                 block(1, vec![
-                    assign(2, MirRValue::Field { base: local_op(0), field_index: 0 }),
+                    assign(2, MirRValue::Field { base: local_op(0), field_index: 0, byte_offset: None, field_size: None }),
                 ], ret(Some(local_op(2)))),
                 // bb2: Err case
                 block(2, vec![], ret(Some(i32_const(0)))),
@@ -881,6 +881,7 @@ mod tests {
 
         let mut gen = CodeGenerator::new().unwrap();
         gen.declare_runtime_functions().unwrap();
+        gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.register_strings(&[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -911,6 +912,7 @@ mod tests {
 
         let mut gen = CodeGenerator::new().unwrap();
         gen.declare_runtime_functions().unwrap();
+        gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.register_strings(&[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();
@@ -941,6 +943,7 @@ mod tests {
 
         let mut gen = CodeGenerator::new().unwrap();
         gen.declare_runtime_functions().unwrap();
+        gen.declare_stdlib_functions().unwrap();
         gen.declare_functions(&dummy_mono(), &[mir.clone()]).unwrap();
         gen.register_strings(&[mir.clone()]).unwrap();
         gen.gen_function(&mir).unwrap();

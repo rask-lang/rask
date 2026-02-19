@@ -29,11 +29,11 @@ static uint32_t g_next_pool_id = 1;
 
 static void pool_grow(RaskPool *p, int64_t new_cap) {
     p->slots = (PoolSlot *)rask_realloc(p->slots,
-        (int64_t)(p->cap * sizeof(PoolSlot)),
-        (int64_t)(new_cap * sizeof(PoolSlot)));
+        rask_safe_mul(p->cap, (int64_t)sizeof(PoolSlot)),
+        rask_safe_mul(new_cap, (int64_t)sizeof(PoolSlot)));
     p->data = (char *)rask_realloc(p->data,
-        p->cap * p->elem_size,
-        new_cap * p->elem_size);
+        rask_safe_mul(p->cap, p->elem_size),
+        rask_safe_mul(new_cap, p->elem_size));
 
     // Initialize new slots as free, chained together
     for (int64_t i = p->cap; i < new_cap; i++) {
@@ -68,9 +68,9 @@ RaskPool *rask_pool_with_capacity(int64_t elem_size, int64_t cap) {
 
 void rask_pool_free(RaskPool *p) {
     if (!p) return;
-    rask_free(p->slots);
-    rask_free(p->data);
-    rask_free(p);
+    if (p->slots) rask_realloc(p->slots, rask_safe_mul(p->cap, (int64_t)sizeof(PoolSlot)), 0);
+    if (p->data) rask_realloc(p->data, rask_safe_mul(p->cap, p->elem_size), 0);
+    rask_realloc(p, (int64_t)sizeof(RaskPool), 0);
 }
 
 int64_t rask_pool_len(const RaskPool *p) {
@@ -165,6 +165,14 @@ int64_t rask_pool_alloc_packed(RaskPool *p) {
 int64_t rask_pool_insert_packed(RaskPool *p, const void *elem) {
     RaskHandle h = rask_pool_insert(p, elem);
     return handle_pack(h);
+}
+
+int64_t rask_pool_insert_packed_sized(RaskPool *p, const void *elem, int64_t elem_size) {
+    // Update elem_size on first insert (pool was created with elem_size=8 placeholder)
+    if (p->len == 0 && p->cap == 0 && elem_size > p->elem_size) {
+        p->elem_size = elem_size;
+    }
+    return rask_pool_insert_packed(p, elem);
 }
 
 void *rask_pool_get_packed(const RaskPool *p, int64_t packed) {

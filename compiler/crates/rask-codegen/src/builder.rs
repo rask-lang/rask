@@ -21,6 +21,9 @@ enum CallAdapt {
     DerefResult,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
+    /// Wrap raw return value as Ok(value) in a Result stack slot.
+    /// Used for C functions that return a raw value where Rask expects a Result.
+    WrapOkResult(StackSlot),
 }
 
 pub struct FunctionBuilder<'a> {
@@ -331,13 +334,24 @@ impl<'a> FunctionBuilder<'a> {
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                         let src_addr = builder.use_var(*src_var);
                         let mut byte_offset = 0i32;
-                        while byte_offset + 8 <= *src_size as i32 {
+                        let size = *src_size as i32;
+                        while byte_offset + 8 <= size {
                             let word = builder.ins().load(types::I64, MemFlags::new(), src_addr, byte_offset);
                             builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
                             byte_offset += 8;
                         }
-                        if byte_offset + 4 <= *src_size as i32 {
+                        if size - byte_offset >= 4 {
                             let word = builder.ins().load(types::I32, MemFlags::new(), src_addr, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 4;
+                        }
+                        if size - byte_offset >= 2 {
+                            let word = builder.ins().load(types::I16, MemFlags::new(), src_addr, byte_offset);
+                            builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
+                            byte_offset += 2;
+                        }
+                        if size - byte_offset >= 1 {
+                            let word = builder.ins().load(types::I8, MemFlags::new(), src_addr, byte_offset);
                             builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
                         }
                         true
@@ -567,7 +581,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
 
                     // Adapt args for typed runtime API
-                    let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals);
+                    let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, locals, struct_layouts);
 
                     // Re-read signature after adaptation (arg count may have changed)
                     let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
@@ -632,6 +646,22 @@ impl<'a> FunctionBuilder<'a> {
                             CallAdapt::PopOutParam(ss) => {
                                 // Value was written to stack slot by callee
                                 builder.ins().stack_load(types::I64, ss, 0)
+                            }
+                            CallAdapt::WrapOkResult(ss) => {
+                                // Wrap raw return value as Ok(value) in Result stack slot
+                                let results = builder.inst_results(call_inst);
+                                let raw_val = if !results.is_empty() {
+                                    results[0]
+                                } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                // tag=0 (Ok) at offset 0
+                                let tag = builder.ins().iconst(types::I64, 0);
+                                builder.ins().stack_store(tag, ss, 0);
+                                // payload at offset 8
+                                builder.ins().stack_store(raw_val, ss, 8);
+                                // Return pointer to the stack slot
+                                builder.ins().stack_addr(types::I64, ss, 0)
                             }
                             _ => {
                                 let results = builder.inst_results(call_inst);
@@ -763,14 +793,22 @@ impl<'a> FunctionBuilder<'a> {
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Pool access destination not found".to_string()
                         ))?;
-                    // Runtime returns void* to slot data — deref to get element value
-                    // (matches Pool_index DerefResult semantics)
-                    let load_ty = locals.iter()
-                        .find(|l| l.id == *dst)
-                        .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
-                        .unwrap_or(types::I64);
-                    let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
-                    builder.def_var(*var, val);
+                    // Pool stores actual element data inline. pool_get returns
+                    // void* pointing directly into the pool's data array.
+                    // For struct elements, use this pointer directly (it IS the
+                    // struct address). For scalar elements, load the value.
+                    let dst_ty = locals.iter().find(|l| l.id == *dst).map(|l| &l.ty);
+                    let is_struct = matches!(dst_ty, Some(MirType::Struct(_)));
+                    if is_struct {
+                        // Struct: pointer to pool data IS the struct address
+                        builder.def_var(*var, ptr);
+                    } else {
+                        let load_ty = dst_ty
+                            .and_then(|t| mir_to_cranelift_type(t).ok())
+                            .unwrap_or(types::I64);
+                        let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
+                        builder.def_var(*var, val);
+                    }
                 }
             }
 
@@ -1125,7 +1163,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Struct/enum field access: load from base pointer + field offset
-            MirRValue::Field { base, field_index } => {
+            MirRValue::Field { base, field_index, byte_offset, field_size } => {
                 let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
                 let base_ty = Self::operand_mir_type(base, locals);
                 let load_ty = expected_ty.unwrap_or(types::I64);
@@ -1133,10 +1171,16 @@ impl<'a> FunctionBuilder<'a> {
                 let offset = match &base_ty {
                     Some(MirType::Struct(id)) => {
                         if let Some(layout) = struct_layouts.get(id.0 as usize) {
-                            layout.fields
-                                .get(*field_index as usize)
-                                .map(|f| f.offset as i32)
-                                .unwrap_or(0)
+                            if let Some(field) = layout.fields.get(*field_index as usize) {
+                                // Aggregate field (embedded struct): return pointer, don't load
+                                if field.size > 8 {
+                                    let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
+                                    return Ok(addr);
+                                }
+                                field.offset as i32
+                            } else {
+                                0
+                            }
                         } else {
                             0
                         }
@@ -1188,9 +1232,15 @@ impl<'a> FunctionBuilder<'a> {
                         }
                         (8 + *field_index * 8) as i32
                     }
-                    // Fallback for Ptr and other types without layout info.
-                    _ => (*field_index * 8) as i32
+                    // Fallback: use pre-computed byte offset from MIR when available
+                    _ => byte_offset.map(|o| o as i32).unwrap_or((*field_index * 8) as i32)
                 };
+
+                // Aggregate field (embedded struct, size > 8): return pointer, don't load
+                if field_size.map_or(false, |s| s > 8) {
+                    let addr = builder.ins().iadd_imm(base_val, offset as i64);
+                    return Ok(addr);
+                }
 
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, base_val, offset))
@@ -1526,6 +1576,9 @@ impl<'a> FunctionBuilder<'a> {
         builder: &mut ClifFunctionBuilder,
         func_name: &str,
         args: &mut Vec<Value>,
+        mir_args: &[MirOperand],
+        locals: &[rask_mir::MirLocal],
+        struct_layouts: &[StructLayout],
     ) -> CallAdapt {
         match func_name {
             // Constructors: inject elem_size / key_size+val_size
@@ -1620,14 +1673,36 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::DerefResult
             }
 
-            // Pool insert: wrap value arg as pointer
+            // Pool insert: pass element pointer + size, wrap return as Ok Result
             "Pool_insert" => {
-                // args: [pool, value] → [pool, &value]
+                // Determine element size from MIR type
+                let elem_size = if mir_args.len() >= 2 {
+                    let elem_ty = Self::operand_mir_type(&mir_args[1], locals);
+                    elem_ty.and_then(|t| Self::resolve_type_alloc_size(
+                        &t, struct_layouts, &[], // no enum_layouts needed
+                    )).unwrap_or(8) as i64
+                } else {
+                    8i64
+                };
+
+                // args: [pool, value] → [pool, &value, elem_size]
                 if args.len() >= 2 {
-                    let val = args[1];
-                    args[1] = Self::value_to_ptr(builder, val);
+                    if elem_size <= 8 {
+                        // Scalar: wrap in pointer
+                        let val = args[1];
+                        args[1] = Self::value_to_ptr(builder, val);
+                    }
+                    // For structs (elem_size > 8), args[1] is already a pointer
+                    // to the stack-allocated struct data — pass directly
                 }
-                CallAdapt::None
+                let size_val = builder.ins().iconst(types::I64, elem_size);
+                args.push(size_val);
+
+                // Pool.insert returns raw handle i64, but Rask expects Handle or Error
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 16, 0, // tag(8) + payload(8)
+                ));
+                CallAdapt::WrapOkResult(ss)
             }
 
             // Vec insert: wrap value arg as pointer
@@ -1749,7 +1824,7 @@ impl<'a> FunctionBuilder<'a> {
                                 let results = builder.inst_results(call);
                                 Ok(results[0])
                             } else {
-                                Ok(raw_ptr)
+                                return Err(CodegenError::FunctionNotFound("string_from".to_string()))
                             }
                         } else {
                             Ok(builder.ins().iconst(types::I64, 0))

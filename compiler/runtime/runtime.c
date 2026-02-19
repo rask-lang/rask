@@ -425,9 +425,12 @@ struct RaskJsonBuf {
 };
 
 static void json_buf_grow(struct RaskJsonBuf *b, int64_t needed) {
-    if (b->len + needed <= b->cap) return;
-    int64_t new_cap = b->cap * 2;
-    if (new_cap < b->len + needed) new_cap = b->len + needed;
+    int64_t required = rask_safe_add(b->len, needed);
+    if (required <= b->cap) return;
+    int64_t new_cap = b->cap;
+    if (new_cap > INT64_MAX / 2) rask_panic("JSON buffer overflow");
+    new_cap *= 2;
+    if (new_cap < required) new_cap = required;
     b->data = (char *)rask_realloc(b->data, b->cap, new_cap);
     b->cap = new_cap;
 }
