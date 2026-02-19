@@ -106,8 +106,14 @@ impl Backend {
         // Desugar operators
         rask_desugar::desugar(&mut parse_result.decls);
 
-        // Run name resolution
-        let resolved = match rask_resolve::resolve(&parse_result.decls) {
+        // Run name resolution (stdlib stubs skip builtin shadowing checks)
+        let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
+        let resolve_result = if is_stdlib {
+            rask_resolve::resolve_stdlib(&parse_result.decls)
+        } else {
+            rask_resolve::resolve(&parse_result.decls)
+        };
+        let resolved = match resolve_result {
             Ok(r) => r,
             Err(errors) => {
                 for error in &errors {
@@ -116,6 +122,11 @@ impl Backend {
                 return rask_diagnostics;
             }
         };
+
+        // Stdlib stubs are signatures, not real code — skip semantic analysis
+        if is_stdlib {
+            return rask_diagnostics;
+        }
 
         // Run type checking
         let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
