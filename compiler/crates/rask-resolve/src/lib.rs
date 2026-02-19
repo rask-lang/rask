@@ -11,6 +11,8 @@ mod resolver;
 pub mod package;
 pub mod lockfile;
 pub mod capabilities;
+pub mod semver;
+pub mod features;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};

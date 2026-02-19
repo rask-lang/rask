@@ -14,3 +14,5 @@ pub mod deps;
 pub mod watch;
 pub mod pipeline;
 pub mod cache;
+pub mod init;
+pub mod fetch;

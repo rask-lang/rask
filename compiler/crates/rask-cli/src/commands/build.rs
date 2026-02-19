@@ -101,6 +101,84 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         }
     };
 
+    // === Validate manifest: version constraints + features (VR1-VR3, F1-F6, FG1-FG6) ===
+    let manifest = registry.get(root_id).and_then(|p| p.manifest.clone());
+    if let Some(ref manifest) = manifest {
+        let mut validation_errors = 0;
+
+        // Validate semver constraints on declared deps
+        for dep in &manifest.deps {
+            if let Some(ref version) = dep.version {
+                if let Err(e) = rask_resolve::semver::Constraint::parse(version) {
+                    eprintln!("{}: dep \"{}\": invalid version constraint \"{}\": {}",
+                        output::error_label(), dep.name, version, e);
+                    validation_errors += 1;
+                }
+            }
+            // Validate path deps exist (D1)
+            if let Some(ref dep_path) = dep.path {
+                let resolved = root.join(dep_path);
+                if !resolved.exists() {
+                    eprintln!("{}: dep \"{}\": path not found: {}",
+                        output::error_label(), dep.name, resolved.display());
+                    validation_errors += 1;
+                }
+            }
+            // Cannot have both path and git (D2)
+            if dep.git.is_some() && dep.path.is_some() {
+                eprintln!("{}: dep \"{}\": cannot have both 'path' and 'git'",
+                    output::error_label(), dep.name);
+                validation_errors += 1;
+            }
+        }
+
+        // Check for duplicate deps (D3)
+        let mut seen_deps = std::collections::HashSet::new();
+        for dep in &manifest.deps {
+            if !seen_deps.insert(&dep.name) {
+                eprintln!("{}: duplicate dep \"{}\"", output::error_label(), dep.name);
+                validation_errors += 1;
+            }
+        }
+
+        // Resolve features (F1-F6, FG1-FG6)
+        let dep_selections: Vec<(String, String, String)> = manifest.deps.iter()
+            .flat_map(|dep| {
+                dep.exclusive_selections.iter().map(move |(feat, opt)| {
+                    (feat.clone(), opt.clone(), dep.name.clone())
+                })
+            })
+            .collect();
+
+        let features = rask_resolve::features::resolve_features(
+            &manifest.features,
+            &[],     // no --features from CLI yet
+            false,   // no --no-default-features yet
+            &dep_selections,
+        );
+
+        for err in &features.errors {
+            eprintln!("{}: {}", output::error_label(), err);
+            validation_errors += 1;
+        }
+
+        if opts.verbose && !features.enabled.is_empty() {
+            let mut names: Vec<_> = features.enabled.iter().collect();
+            names.sort();
+            println!("  {} [{}]", "Features:".dimmed(), names.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+        }
+        if opts.verbose && !features.exclusive_selections.is_empty() {
+            for (feat, sel) in &features.exclusive_selections {
+                println!("  {} {} = \"{}\"", "Feature:".dimmed(), feat, sel);
+            }
+        }
+
+        if validation_errors > 0 {
+            eprintln!("\n{}", output::banner_fail("Validation", validation_errors));
+            process::exit(1);
+        }
+    }
+
     // Lock file + capability checks (LK1-LK4, PM1-PM8)
     let lock_path = root.join("rask.lock");
     let has_external_deps = registry.packages().iter().any(|p| p.id != root_id && p.is_external);

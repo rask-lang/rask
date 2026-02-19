@@ -625,6 +625,33 @@ func build(ctx: BuildContext) -> () or Error {
 }
 ```
 
+### Implementation Status
+
+| Feature | Status |
+|---------|--------|
+| `rask build` end-to-end pipeline | Implemented |
+| Output directories (OD1-OD5) | Implemented |
+| Build scripts via interpreter (BL1-BL3) | Implemented |
+| Build script caching (LC1-LC2) | Implemented |
+| Compilation caching (XC1-XC5) | Implemented |
+| Parallel dependency checking (PP1-PP3) | Implemented |
+| Capability inference (PM1-PM8) | Implemented |
+| Lock file system (LK1-LK7) | Implemented |
+| Feature resolution (F1-F6, FG1-FG6) | Implemented |
+| `rask add`/`remove` (AD1-AD4, RM1-RM2) | Implemented |
+| `rask init` project scaffolding | Implemented |
+| `rask fetch` dependency validation | Implemented |
+| `rask update` lock regeneration | Implemented |
+| `rask clean` (OD6) | Implemented |
+| `rask targets` (XT9) | Implemented |
+| `rask watch` (WA1-WA8) | Implemented |
+| CLI flags: --release, --target, --verbose (CL1-CL4) | Implemented |
+| Remote registry (RG1-RG4) | Not started |
+| Vendoring (VD1-VD5) | Not started |
+| Workspaces (WS1-WS3) | Not started |
+| Conditional compilation (CC1-CC2) | Not started |
+| Cross-compilation toolchain (XT1-XT8) | Not started |
+
 ### See Also
 
 - `struct.modules` — module system, imports, visibility
