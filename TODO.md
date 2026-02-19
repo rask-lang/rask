@@ -6,11 +6,11 @@
 - [x] **Sensor processor native compilation** — Runs natively with threads, timing, shared Vec. Float averages limited by untyped Vec codegen.
 - [x] CleanupReturn deduplication — shared Cranelift blocks per unique cleanup chain
 - [x] Non-closure `map_err` variant constructors — handles both bare (`MyError`) and qualified (`ConfigError.Io`) names
-- [ ] **Unsafe block codegen** — `unsafe {}` parses and lowers (body only). No enforcement that raw pointer ops require unsafe context. No raw pointer creation/arithmetic primitives.
-- [ ] **HTTP server native compilation** — Needs concurrency codegen wiring (Shared, Channel, Sender types). HTTP runtime will be stdlib Rask later.
-- [ ] **Result return from internal functions** — Calling a Rask function returning `T or E` twice in the same scope corrupts the first result. `copy_aggregate` copies data but variable still aliases callee stack frame. Also, simple `return Ok(42)` from `-> T or E` functions crashes native.
-- [ ] **String interpolation with inline arithmetic** — `"{x / 1000}"` prints "true"/"false" instead of the integer result. Workaround: assign to local first.
-- [ ] **Struct constructor + threads** — Structs returned from `.new()` methods get corrupted when threads are present. Workaround: inline struct construction.
+- [x] **Unsafe block codegen** — Unsafe context enforced by type checker. Raw pointer primitives (read, write, add, sub, offset, etc.) fully implemented with dispatch and C runtime.
+- [x] **Result return from internal functions** — `copy_aggregate` properly copies into caller stack slots. `return Ok(42)` from `-> T or E` works.
+- [x] **Struct constructor + threads** — Aggregate handling (`copy_aggregate` + `stack_slot_map`) prevents callee stack pointer dangling.
+- [ ] **HTTP server native compilation** — Concurrency codegen done (Shared, Channel, Sender). Still needs HTTP parsing/serialization in C runtime.
+- [x] **String interpolation with inline arithmetic** — Fixed: binary op MIR lowering now uses `binop_result_type()` instead of hardcoding `MirType::Bool`.
 
 ## Build System & Packages
 
