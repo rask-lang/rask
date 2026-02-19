@@ -45,6 +45,10 @@ pub enum MirRValue {
     Field {
         base: MirOperand,
         field_index: u32,
+        /// Pre-computed byte offset and size from struct layout (when available).
+        /// Codegen uses byte_offset directly; size > 8 means aggregate (return address).
+        byte_offset: Option<u32>,
+        field_size: Option<u32>,
     },
     EnumTag {
         value: MirOperand,

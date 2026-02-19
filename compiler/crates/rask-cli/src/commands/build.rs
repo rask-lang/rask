@@ -194,6 +194,19 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                         eprintln!("{}: {}", output::error_label(), e);
                         process::exit(1);
                     }
+
+                    // Check that registry deps are cached (RG1)
+                    let cache = rask_resolve::cache::PackageCache::new();
+                    for pkg in &lockfile.packages {
+                        if pkg.source.starts_with("registry+") {
+                            let cached = cache.get(&pkg.name, &pkg.version, &pkg.checksum);
+                            if cached.is_none() {
+                                eprintln!("{}: registry package '{}' {} not cached — run `rask fetch`",
+                                    output::error_label(), pkg.name, pkg.version);
+                                process::exit(1);
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     eprintln!("{}: {}", output::error_label(), e);
@@ -552,7 +565,8 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                         eprintln!("warning: cache copy failed: {}", e);
                         // Fall through to normal compilation
                     } else {
-                        match super::link::link_executable_with(&obj_str, &bin_str, &link_opts) {
+                        let release = opts.profile == "release";
+                        match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release) {
                             Ok(_) => {
                                 // Success — skip to report
                                 let elapsed = start.elapsed();
@@ -600,16 +614,22 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                         let comptime_globals = std::collections::HashMap::new();
                                         let target = opts.target.as_deref();
 
+                                        let build_mode = if opts.profile == "release" {
+                                            rask_codegen::BuildMode::Release
+                                        } else {
+                                            rask_codegen::BuildMode::Debug
+                                        };
                                         match super::compile::compile_to_object(
                                             &mono, &typed, &all_decls, &comptime_globals,
-                                            None, None, target, &obj_str,
+                                            None, None, target, &obj_str, build_mode,
                                         ) {
                                             Ok(()) => {
                                                 // Cache the compiled object (XC1)
                                                 if !opts.no_cache {
                                                     let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
                                                 }
-                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts) {
+                                                let release = opts.profile == "release";
+                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release) {
                                                     eprintln!("link error: {}", e);
                                                     total_errors += 1;
                                                 }

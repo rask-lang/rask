@@ -40,7 +40,7 @@ pub struct LinkOptions {
 }
 
 /// Link with extra libraries and object files.
-pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) -> Result<(), String> {
+pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions, release: bool) -> Result<(), String> {
     let runtime_dir = find_runtime_dir()?;
 
     for src in RUNTIME_SOURCES {
@@ -54,6 +54,11 @@ pub fn link_executable_with(obj_path: &str, bin_path: &str, opts: &LinkOptions) 
     }
 
     let mut cmd = process::Command::new("cc");
+    if release {
+        cmd.arg("-O2");
+    } else {
+        cmd.arg("-DRASK_DEBUG");
+    }
     for src in RUNTIME_SOURCES {
         cmd.arg(runtime_dir.join(src));
     }

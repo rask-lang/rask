@@ -170,10 +170,10 @@ RaskString *rask_fs_read_file(const RaskString *path) {
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
     char *buf = (char *)rask_alloc((int64_t)size + 1);
-    fread(buf, 1, (size_t)size, f);
-    buf[size] = '\0';
+    size_t n = fread(buf, 1, (size_t)size, f);
+    buf[n] = '\0';
     fclose(f);
-    RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
+    RaskString *s = rask_string_from_bytes(buf, (int64_t)n);
     rask_free(buf);
     return s;
 }
@@ -296,9 +296,9 @@ RaskString *rask_file_read_all(int64_t file) {
     fseek(f, start, SEEK_SET);
     long size = end - start;
     char *buf = (char *)rask_alloc((int64_t)size + 1);
-    fread(buf, 1, (size_t)size, f);
-    buf[size] = '\0';
-    RaskString *s = rask_string_from_bytes(buf, (int64_t)size);
+    size_t n = fread(buf, 1, (size_t)size, f);
+    buf[n] = '\0';
+    RaskString *s = rask_string_from_bytes(buf, (int64_t)n);
     rask_free(buf);
     return s;
 }

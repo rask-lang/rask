@@ -71,6 +71,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // rask_vec_free(v: RaskVec*) → void
+        StdlibEntry {
+            mir_name: "Vec_free",
+            c_name: "rask_vec_free",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
         // rask_vec_push(v: RaskVec*, elem: const void*) → i64
         StdlibEntry {
             mir_name: "Vec_push",
@@ -247,6 +255,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── String operations ──────────────────────────────────
+        // rask_string_free(s: RaskString*) → void
+        StdlibEntry {
+            mir_name: "string_free",
+            c_name: "rask_string_free",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
         // rask_string_new() → RaskString*
         StdlibEntry {
             mir_name: "string_new",
@@ -463,6 +479,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── Map operations ─────────────────────────────────────
+        // rask_map_free(m: RaskMap*) → void
+        StdlibEntry {
+            mir_name: "Map_free",
+            c_name: "rask_map_free",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
         // rask_map_new(key_size: i64, val_size: i64) → RaskMap*
         StdlibEntry {
             mir_name: "Map_new",
@@ -549,6 +573,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Pool operations ────────────────────────────────────
         // Packed i64 handle interface (index:32 | gen:32)
+        // rask_pool_free(p: RaskPool*) → void
+        StdlibEntry {
+            mir_name: "Pool_free",
+            c_name: "rask_pool_free",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
         // rask_pool_new(elem_size: i64) → RaskPool*
         StdlibEntry {
             mir_name: "Pool_new",

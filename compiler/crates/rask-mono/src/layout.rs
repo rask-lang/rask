@@ -54,14 +54,17 @@ pub struct VariantLayout {
 /// `cache` maps type names to already-computed (size, align) for user-defined types.
 pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
     match ty {
+        // All scalar types use 8-byte size/align because the codegen stores
+        // every value as i64. Using true type sizes (bool=1, i32=4) causes
+        // overlapping stores in struct fields.
         Type::Unit => (0, 1),
-        Type::Bool | Type::I8 | Type::U8 => (1, 1),
-        Type::I16 | Type::U16 => (2, 2),
-        Type::I32 | Type::U32 | Type::F32 => (4, 4),
+        Type::Bool | Type::I8 | Type::U8 => (8, 8),
+        Type::I16 | Type::U16 => (8, 8),
+        Type::I32 | Type::U32 | Type::F32 => (8, 8),
         Type::I64 | Type::U64 | Type::F64 => (8, 8),
         Type::I128 | Type::U128 => (16, 16),
-        Type::Char => (4, 4), // Unicode scalar value
-        Type::String => (16, 8), // Fat pointer: ptr + len
+        Type::Char => (8, 8),
+        Type::String => (8, 8), // Opaque pointer (runtime uses RaskString*)
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         Type::Option(inner) => {
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.
@@ -107,7 +110,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         // Generic builtins with known sizes
         Type::UnresolvedGeneric { name, .. } if name == "Handle" => (8, 8),
         Type::UnresolvedGeneric { name, .. } if name == "Pool" => (8, 8),
-        Type::UnresolvedGeneric { name, .. } if name == "Vec" => (24, 8), // ptr + len + cap
+        Type::UnresolvedGeneric { name, .. } if name == "Vec" => (8, 8), // Opaque pointer (runtime uses RaskVec*)
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
         Type::UnresolvedGeneric { name, .. } if name == "Rng" => (8, 8),  // Pointer to rng state
         Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
@@ -567,24 +570,25 @@ mod tests {
 
     #[test]
     fn primitive_sizes() {
-        assert_eq!(tsa(&Type::Bool), (1, 1));
-        assert_eq!(tsa(&Type::I8), (1, 1));
-        assert_eq!(tsa(&Type::U8), (1, 1));
-        assert_eq!(tsa(&Type::I16), (2, 2));
-        assert_eq!(tsa(&Type::U16), (2, 2));
-        assert_eq!(tsa(&Type::I32), (4, 4));
-        assert_eq!(tsa(&Type::U32), (4, 4));
-        assert_eq!(tsa(&Type::F32), (4, 4));
+        // All scalars are 8 bytes — codegen stores everything as i64
+        assert_eq!(tsa(&Type::Bool), (8, 8));
+        assert_eq!(tsa(&Type::I8), (8, 8));
+        assert_eq!(tsa(&Type::U8), (8, 8));
+        assert_eq!(tsa(&Type::I16), (8, 8));
+        assert_eq!(tsa(&Type::U16), (8, 8));
+        assert_eq!(tsa(&Type::I32), (8, 8));
+        assert_eq!(tsa(&Type::U32), (8, 8));
+        assert_eq!(tsa(&Type::F32), (8, 8));
         assert_eq!(tsa(&Type::I64), (8, 8));
         assert_eq!(tsa(&Type::U64), (8, 8));
         assert_eq!(tsa(&Type::F64), (8, 8));
-        assert_eq!(tsa(&Type::Char), (4, 4));
+        assert_eq!(tsa(&Type::Char), (8, 8));
     }
 
     #[test]
-    fn string_is_fat_pointer() {
+    fn string_is_opaque_pointer() {
         let (size, align) = tsa(&Type::String);
-        assert_eq!(size, 16);
+        assert_eq!(size, 8);
         assert_eq!(align, 8);
     }
 
@@ -600,18 +604,18 @@ mod tests {
 
     #[test]
     fn option_i32_layout() {
-        // u8 tag (1) + padding to align 4 + i32 payload (4) = 8
+        // tag (8 bytes) + i32 payload (8 bytes, codegen uses i64) = 16
         let (size, align) = tsa(&Type::Option(Box::new(Type::I32)));
-        assert_eq!(align, 4);
-        assert_eq!(size, 8); // 1 tag + 3 padding + 4 payload
+        assert_eq!(align, 8);
+        assert_eq!(size, 16);
     }
 
     #[test]
     fn option_i8_layout() {
-        // u8 tag (1) + i8 payload (1) = 2
+        // tag (8) + i8 payload (8, codegen uses i64) = 16
         let (size, align) = tsa(&Type::Option(Box::new(Type::I8)));
-        assert_eq!(align, 1);
-        assert_eq!(size, 2);
+        assert_eq!(align, 8);
+        assert_eq!(size, 16);
     }
 
     #[test]
@@ -655,8 +659,8 @@ mod tests {
             ok: Box::new(Type::I32),
             err: Box::new(Type::I32),
         });
-        assert_eq!(align, 4);
-        assert_eq!(size, 8); // 1 tag + 3 padding + 4 payload
+        assert_eq!(align, 8);
+        assert_eq!(size, 16); // 8 tag + 8 payload (all scalars stored as i64)
     }
 
     #[test]
@@ -669,20 +673,21 @@ mod tests {
 
     #[test]
     fn tuple_i8_i8() {
+        // All scalars stored as i64: two 8-byte fields
         let (size, align) = tsa(&Type::Tuple(vec![Type::I8, Type::I8]));
-        assert_eq!(align, 1);
-        assert_eq!(size, 2);
+        assert_eq!(align, 8);
+        assert_eq!(size, 16);
     }
 
     #[test]
     fn array_layout() {
-        // [i32; 5] → 4 * 5 = 20, align 4
+        // [i32; 5] → 8 * 5 = 40, align 8 (all scalars stored as i64)
         let (size, align) = tsa(&Type::Array {
             elem: Box::new(Type::I32),
             len: 5,
         });
-        assert_eq!(size, 20);
-        assert_eq!(align, 4);
+        assert_eq!(size, 40);
+        assert_eq!(align, 8);
     }
 
     #[test]
@@ -706,19 +711,17 @@ mod tests {
 
     #[test]
     fn struct_field_uses_cache() {
-        // Struct Inner { x: i32, y: i32 } → size 8, align 4
+        // Struct Inner { x: i32, y: i32 } → size 16, align 8 (i32 stored as i64)
         // Struct Outer { inner: Inner, z: i32 }
-        // Without cache: Inner defaults to (8,8) → wrong
-        // With cache: Inner resolved to (8,4)
         let mut cache = LayoutCache::new();
-        cache.insert("Inner".to_string(), (8, 4));
+        cache.insert("Inner".to_string(), (16, 8));
         let decl = make_struct("Outer", vec![("inner", "Inner"), ("z", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &cache);
-        assert_eq!(layout.fields[0].size, 8); // Inner
-        assert_eq!(layout.fields[0].align, 4);
-        assert_eq!(layout.fields[1].offset, 8); // z at offset 8
-        assert_eq!(layout.size, 12); // 8 + 4 = 12
-        assert_eq!(layout.align, 4);
+        assert_eq!(layout.fields[0].size, 16); // Inner
+        assert_eq!(layout.fields[0].align, 8);
+        assert_eq!(layout.fields[1].offset, 16); // z at offset 16
+        assert_eq!(layout.size, 24); // 16 + 8 = 24
+        assert_eq!(layout.align, 8);
     }
 
     // ── compute_struct_layout ───────────────────────────────────
@@ -738,22 +741,22 @@ mod tests {
         let decl = make_struct("Point", vec![("x", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &empty_cache());
         assert_eq!(layout.name, "Point");
-        assert_eq!(layout.size, 4);
-        assert_eq!(layout.align, 4);
+        assert_eq!(layout.size, 8);
+        assert_eq!(layout.align, 8);
         assert_eq!(layout.fields.len(), 1);
         assert_eq!(layout.fields[0].name, "x");
         assert_eq!(layout.fields[0].offset, 0);
-        assert_eq!(layout.fields[0].size, 4);
+        assert_eq!(layout.fields[0].size, 8);
     }
 
     #[test]
     fn two_field_struct() {
         let decl = make_struct("Point", vec![("x", "i32"), ("y", "i32")]);
         let layout = compute_struct_layout(&decl, &[], &empty_cache());
-        assert_eq!(layout.size, 8);
-        assert_eq!(layout.align, 4);
+        assert_eq!(layout.size, 16);
+        assert_eq!(layout.align, 8);
         assert_eq!(layout.fields[0].offset, 0);
-        assert_eq!(layout.fields[1].offset, 4);
+        assert_eq!(layout.fields[1].offset, 8);
     }
 
     // ── compute_enum_layout ─────────────────────────────────────
@@ -772,8 +775,8 @@ mod tests {
         assert_eq!(layout.variants[0].tag, 0);
         assert_eq!(layout.variants[1].tag, 1);
         assert_eq!(layout.variants[2].tag, 2);
-        // No payload → size is just tag (1 byte, aligned)
-        assert_eq!(layout.size, 1);
+        // No payload → size is just tag (U8 stored as i64 = 8 bytes)
+        assert_eq!(layout.size, 8);
     }
 
     #[test]
@@ -787,17 +790,17 @@ mod tests {
         assert_eq!(layout.tag_offset, 0);
         assert!(matches!(layout.tag_ty, Type::U8)); // <=256 variants
 
-        // Circle payload: 1 field × 4 bytes = 4
-        assert_eq!(layout.variants[0].payload_size, 4);
-        // Rect payload: 2 fields × 4 bytes = 8
-        assert_eq!(layout.variants[1].payload_size, 8);
+        // Circle payload: 1 field × 8 bytes = 8 (i32 stored as i64)
+        assert_eq!(layout.variants[0].payload_size, 8);
+        // Rect payload: 2 fields × 8 bytes = 16
+        assert_eq!(layout.variants[1].payload_size, 16);
 
         // All variants share the same payload_offset
         assert_eq!(layout.variants[0].payload_offset, layout.variants[1].payload_offset);
 
-        // Total: tag (1) + padding (3) + max_payload (8) = 12
-        assert_eq!(layout.size, 12);
-        assert_eq!(layout.align, 4);
+        // Total: tag (8) + max_payload (16) = 24
+        assert_eq!(layout.size, 24);
+        assert_eq!(layout.align, 8);
     }
 
     #[test]
@@ -814,11 +817,11 @@ mod tests {
         let layout = compute_enum_layout(&decl, &[], &empty_cache());
 
         assert_eq!(layout.variants[0].payload_size, 0);
-        assert_eq!(layout.variants[1].payload_size, 4);
-        assert_eq!(layout.variants[2].payload_size, 8);
+        assert_eq!(layout.variants[1].payload_size, 8);
+        assert_eq!(layout.variants[2].payload_size, 16);
 
-        // Size = tag (1) + padding (3) + max_payload (8) = 12
-        assert_eq!(layout.size, 12);
+        // Size = tag (8) + max_payload (16) = 24
+        assert_eq!(layout.size, 24);
     }
 
 }

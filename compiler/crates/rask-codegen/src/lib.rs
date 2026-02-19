@@ -14,6 +14,15 @@ pub use module::CodeGenerator;
 use std::error::Error;
 use std::fmt;
 
+/// Controls safety checks and optimization level.
+/// Debug: all runtime checks (null, pool_id, occupied, bounds, generation).
+/// Release: only bounds + generation checks, inlined in codegen.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BuildMode {
+    Debug,
+    Release,
+}
+
 /// Extern function signature for codegen declaration.
 /// Decoupled from AST — callers convert from their own representation.
 pub struct ExternFuncSig {

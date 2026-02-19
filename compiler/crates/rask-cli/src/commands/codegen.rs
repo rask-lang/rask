@@ -244,10 +244,23 @@ pub fn cmd_mir(path: &str, format: Format) {
     let comptime_globals = evaluate_comptime_globals(&decls);
     let extern_funcs = collect_extern_func_names(&decls);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
+    let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let name = match def {
+                rask_types::TypeDef::Struct { name, .. } => name.clone(),
+                rask_types::TypeDef::Enum { name, .. } => name.clone(),
+                rask_types::TypeDef::Trait { name, .. } => name.clone(),
+                rask_types::TypeDef::Union { name, .. } => name.clone(),
+            };
+            (rask_types::TypeId(i as u32), name)
+        })
+        .collect();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
         node_types: &typed.node_types,
+        type_names: &type_names,
         comptime_globals: &comptime_globals,
         extern_funcs: &extern_funcs,
         line_map: line_map.as_ref(),
@@ -291,9 +304,10 @@ pub fn cmd_mir(path: &str, format: Format) {
 /// Compile a single .rk file to a native executable.
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
-pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions) {
+pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool) {
     let (mono, typed, decls, source) = run_pipeline(path, format);
     let comptime_globals = evaluate_comptime_globals(&decls);
+    let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
 
     // Determine output paths
     let bin_path = match output_path {
@@ -308,7 +322,8 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
             } else {
                 p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
             };
-            let out_dir = base_dir.join("build").join("debug");
+            let subdir = if release { "release" } else { "debug" };
+            let out_dir = base_dir.join("build").join(subdir);
             let _ = std::fs::create_dir_all(&out_dir);
             out_dir.join(stem).to_string_lossy().to_string()
         }
@@ -317,7 +332,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
 
     if let Err(errors) = super::compile::compile_to_object(
         &mono, &typed, &decls, &comptime_globals,
-        Some(path), source.as_deref(), None, &obj_path,
+        Some(path), source.as_deref(), None, &obj_path, build_mode,
     ) {
         for e in &errors {
             eprintln!("{}: {}", output::error_label(), e);
@@ -325,7 +340,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         process::exit(1);
     }
 
-    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_path, link_opts) {
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_path, link_opts, release) {
         eprintln!("{}: link: {}", output::error_label(), e);
         process::exit(1);
     }

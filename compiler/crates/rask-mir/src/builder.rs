@@ -90,6 +90,13 @@ impl BlockBuilder {
         id
     }
 
+    /// Look up the MIR type of a local by its ID.
+    pub fn local_type(&self, id: LocalId) -> Option<MirType> {
+        self.function.locals.iter()
+            .find(|l| l.id == id)
+            .map(|l| l.ty.clone())
+    }
+
     pub fn push_stmt(&mut self, stmt: MirStmt) {
         let block = &mut self.function.blocks[self.current_block.0 as usize];
         block.statements.push(stmt);

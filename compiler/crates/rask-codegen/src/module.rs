@@ -12,7 +12,7 @@ use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, type_string_to_mir};
-use crate::{CodegenError, CodegenResult};
+use crate::{BuildMode, CodegenError, CodegenResult};
 
 pub struct CodeGenerator {
     module: ObjectModule,
@@ -30,13 +30,17 @@ pub struct CodeGenerator {
     panicking_fns: HashSet<String>,
     /// Names of functions compiled as Rask code (not C stdlib)
     internal_fns: HashSet<String>,
+    /// Debug or Release — controls inlining of pool checks
+    build_mode: BuildMode,
 }
 
 impl CodeGenerator {
-    pub fn new() -> CodegenResult<Self> {
+    pub fn new(build_mode: BuildMode) -> CodegenResult<Self> {
         let isa_builder = cranelift_native::builder()
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
-        let isa = isa_builder.finish(settings::Flags::new(settings::builder()))
+        let mut flag_builder = settings::builder();
+        let _ = flag_builder.set("opt_level", "speed");
+        let isa = isa_builder.finish(settings::Flags::new(flag_builder))
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 
         let builder = ObjectBuilder::new(
@@ -57,16 +61,18 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            build_mode,
         })
     }
 
     /// Create a code generator targeting a specific platform (XT2).
-    pub fn new_with_target(triple: &str) -> CodegenResult<Self> {
+    pub fn new_with_target(triple: &str, build_mode: BuildMode) -> CodegenResult<Self> {
         use std::str::FromStr;
         let target = target_lexicon::Triple::from_str(triple)
             .map_err(|e| CodegenError::CraneliftError(format!("invalid target '{}': {}", triple, e)))?;
 
         let mut flag_builder = settings::builder();
+        let _ = flag_builder.set("opt_level", "speed");
         // Set is_pic for position-independent code on relevant targets
         if matches!(target.operating_system, target_lexicon::OperatingSystem::Linux) {
             let _ = flag_builder.set("is_pic", "true");
@@ -96,6 +102,7 @@ impl CodeGenerator {
             comptime_data: HashMap::new(),
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
+            build_mode,
         })
     }
 
@@ -246,6 +253,20 @@ impl CodeGenerator {
                 .declare_function("rask_pool_get_checked", Linkage::Import, &sig)
                 .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
             self.func_ids.insert("pool_get_checked".to_string(), id);
+        }
+
+        // rask_panic_at(file: ptr, line: i32, col: i32, msg: ptr) -> noreturn
+        // Used by inline pool access (release mode) for bounds/generation failures.
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // file ptr
+            sig.params.push(AbiParam::new(types::I32)); // line
+            sig.params.push(AbiParam::new(types::I32)); // col
+            sig.params.push(AbiParam::new(types::I64)); // msg ptr
+            let id = self.module
+                .declare_function("rask_panic_at", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("panic_at".to_string(), id);
         }
 
         // set_panic_location(file: ptr, line: i32, col: i32) -> void
@@ -450,6 +471,18 @@ impl CodeGenerator {
             )?;
         }
 
+        // Pre-register panic message for inline pool access (release mode)
+        if self.build_mode == BuildMode::Release {
+            let has_pool_access = mir_functions.iter().any(|f| {
+                f.blocks.iter().any(|b| {
+                    b.statements.iter().any(|s| matches!(s, rask_mir::MirStmt::PoolCheckedAccess { .. }))
+                })
+            });
+            if has_pool_access {
+                self.register_string("pool access with invalid handle")?;
+            }
+        }
+
         for mir_fn in mir_functions {
             for block in &mir_fn.blocks {
                 for stmt in &block.statements {
@@ -614,9 +647,11 @@ impl CodeGenerator {
 
         // Pre-import all declared functions into this function's namespace.
         // This must happen before FunctionBuilder borrows ctx.func.
+        // Runtime functions are statically linked — mark colocated for direct calls.
         let mut func_refs = HashMap::new();
         for (name, fid) in &self.func_ids {
             let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            self.ctx.func.stencil.dfg.ext_funcs[func_ref].colocated = true;
             func_refs.insert(name.clone(), func_ref);
         }
 
@@ -645,6 +680,7 @@ impl CodeGenerator {
             &comptime_globals,
             &self.panicking_fns,
             &self.internal_fns,
+            self.build_mode,
         )?;
         builder.build()?;
 
@@ -687,6 +723,7 @@ impl CodeGenerator {
         let mut func_refs = HashMap::new();
         for (name, fid) in &self.func_ids {
             let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            self.ctx.func.stencil.dfg.ext_funcs[func_ref].colocated = true;
             func_refs.insert(name.clone(), func_ref);
         }
 
