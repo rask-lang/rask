@@ -185,6 +185,23 @@ public func old_function() { ... }
 4. Mirror registries
 5. Patch dependency overrides
 
+### Implementation Status
+
+| Feature | Status |
+|---------|--------|
+| Semver parsing (VR1-VR3) | Implemented |
+| Constraint matching (^, ~, =, >=, *) | Implemented |
+| Maximum version selection (MV1) | Implemented |
+| Lock file generation (LK1-LK3, LK5-LK7) | Implemented |
+| Lock file verification (LK3-LK4) | Implemented |
+| Capability tracking in lock file (LK5) | Implemented |
+| `rask fetch` validation | Implemented |
+| `rask update` lock regeneration | Implemented |
+| Build-time constraint validation | Implemented |
+| Remote registry (RG1-RG4) | Not started |
+| Dependency cache (CA1-CA3) | Not started |
+| Workspaces (WS1-WS3) | Not started |
+
 ### See Also
 
 - `struct.build` — package block, build scripts

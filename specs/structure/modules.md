@@ -237,9 +237,12 @@ struct Node {
 | Package discovery | Implemented |
 | Built-in type tracking | Implemented |
 | Built-in shadowing detection | Implemented |
-| Cross-package symbol lookup | Planned |
-| Visibility checking | Planned |
-| Circular dependency detection | Planned |
+| Cross-package symbol lookup | Implemented |
+| Visibility checking (public/package) | Implemented |
+| Circular dependency detection | Implemented |
+| Semver constraint parsing | Implemented |
+| Feature resolution (additive + exclusive) | Implemented |
+| Lock file with capability tracking | Implemented |
 
 ### See Also
 
