@@ -142,7 +142,7 @@ I took a different approach: instead of tracking reference lifetimes, make refer
 
 C and C++ give you full control but no safety. Use-after-free, double-free, and dangling pointers are all possible. I wanted safety without the annotation burden, which rules out manual management.
 
-The goal was to find a sweet spot: safer than C, more ergonomic than Rust, more predictable than GC languages. YOu can have unsafe and assembly if you want, just like in rust (although not as good compile time safety).
+The goal was to find a sweet spot: safer than C, more ergonomic than Rust, more predictable than GC languages. You can have unsafe and assembly if you want, just like in Rust (although not as good compile time safety).
 
 For rejected features from other languages (async/await, algebraic effects, lifetimes, supervision, scope functions), see [rejected-features.md](rejected-features.md).
 
@@ -154,33 +154,33 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Bindings and syntax.** `const x = 0` for immutable, `let x = 0` for mutable. Newlines terminate statements. Functions use `func`, methods live in `extend` blocks. See [SYNTAX.md](SYNTAX.md).
 
-**Ownership.** Every value has exactly one owner. Assignment transfers ownership (move) for non-copy types. After a move, the source binding is invalid. To keep access while passing, explicitly `.clone()`. See [ownership.md](memory/ownership.md).
+**Ownership.** Every value has exactly one owner. Assignment transfers ownership (move) for non-copy types. After a move, the source binding is invalid. To keep access while passing, explicitly `.clone()`. `discard` explicitly drops a value and invalidates its binding. See [ownership.md](memory/ownership.md).
 
 **Value semantics.** Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move. The threshold is fixed (not configurable) for semantic stability across platforms. `@unique` prevents copying; `@resource` requires exactly-once consumption. See [value-semantics.md](memory/value-semantics.md).
 
-**Borrowing.** References are block-scoped for plain values (valid until end of enclosing block) and expression-scoped for collection access (released at semicolon). Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
+**Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block) and statement-scoped for heap-buffered sources (Vec, Pool, Map, string — released at semicolon). Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
 
 **Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Projections like `mutate p: Player.{health}` enable disjoint field borrows. See [parameters.md](memory/parameters.md).
 
-**Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
+**Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. `with pool[h] as entity { ... }` for multi-statement element access (sugar for closure-based `modify`). See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 
 **Context clauses.** Functions using handles declare pool requirements with `using Pool<T>` clauses. The compiler threads pools as hidden parameters — no runtime registry. Private functions can omit these (inferred from body). See [context-clauses.md](memory/context-clauses.md).
 
-**Error handling.** Errors are values: `T or E` result type, `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
+**Error handling.** Errors are values: `T or E` result type, `try` for propagation, `T?` for optionals with `??` fallback and `x!` force-unwrap. Error types compose with `A | B` union syntax. Functions returning `T or E` auto-wrap bare returns as `Ok(T)`. No exceptions, no hidden control flow. See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
 
 **Resource cleanup.** `ensure` guarantees cleanup runs when a block exits (normal, early return, `try`). LIFO order, explicit consumption cancels it (transaction pattern). Linear resources must be consumed exactly once — compiler enforces this. See [ensure.md](control/ensure.md), [resource-types.md](memory/resource-types.md).
 
 **Pattern matching.** `match` for multiple branches, `if x is Pattern` for single checks. Compiler infers binding modes (borrow vs take) from usage. See [enums.md](types/enums.md), [control-flow.md](control/control-flow.md).
 
-**Closures.** Storable closures capture by value (copy or move). Expression-scoped closures access outer scope directly but cannot escape. IDE shows capture list as ghost annotation. See [closures.md](memory/closures.md).
+**Closures.** Three kinds, inferred from context. Stored closures capture by value (copy or move) and can go anywhere. Inline closures access the outer scope directly without capturing — must be consumed in the expression (iterator chains). Scoped closures capture block-scoped borrows and can't escape the block where the borrowed data lives. IDE shows capture list as ghost annotation. See [closures.md](memory/closures.md).
 
-**Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. See [traits.md](types/traits.md), [generics.md](types/generics.md).
+**Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. Structural matching and generic constraints are in [generics.md](types/generics.md); `any Trait` runtime dispatch is in [traits.md](types/traits.md).
 
-**Concurrency.** `spawn(|| {})` for green tasks (requires `using Multitasking`), `ThreadPool.spawn(|| {})` for CPU-bound work (requires `using ThreadPool`). No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. See [concurrency/](concurrency/).
+**Concurrency.** `spawn(|| {})` for green tasks (requires `using Multitasking`), `ThreadPool.spawn(|| {})` for CPU-bound work (requires `using ThreadPool`), `Thread.spawn(|| {})` for raw OS threads. No async/await, no function coloring — I/O pauses the task automatically. Task handles must be joined or detached (compile error if forgotten). Channels transfer ownership: no copies, no locks. Cooperative cancellation via cancel flag checked by I/O operations. See [concurrency/](concurrency/).
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
-**Strings.** One owned type: `string` (UTF-8, move semantics). Block-scoped slicing for zero-copy views. `string_view` or `StringPool` for stored references. See [strings.md](stdlib/strings.md).
+**Strings.** One owned type: `string` (UTF-8, move semantics). Slicing is statement-scoped — strings own heap buffers, same as Vec. `string_view` for lightweight stored indices, `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
 
 **Modules.** Package = directory. Two visibility levels: default (package-internal) and `public`. Imports are qualified by default; `using` for selective unqualified access. See [modules.md](structure/modules.md), [packages.md](structure/packages.md).
 
@@ -194,7 +194,7 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 ### Clone Ergonomics
 
-**Decision:** No storable references. References are block-scoped only.
+**Decision:** No storable references. References are block-scoped (struct fields, arrays) or statement-scoped (anything with a heap buffer).
 
 **Cost:** Code that passes strings/data through multiple layers needs explicit `.clone()` calls. In string-heavy code (CLI parsing, HTTP routing), expect ~5% of lines to have a clone. Computation-heavy code (game loops, data processing) typically has 0% clones.
 
@@ -284,7 +284,7 @@ I'm upfront about what Rask doesn't do well:
 
 1. **Explicit cloning:** Large values require explicit cloning to share access
 2. **Key-based indirection:** Graphs and self-referential structures use handles, not pointers
-3. **No shared mutable state:** Cross-task data sharing requires channels or explicit synchronization primitives
+3. **No shared mutable references:** Cross-task data sharing uses channels (ownership transfer), `Shared<T>` / `Mutex<T>` (closure-based access), or explicit synchronization
 4. **Unsafe for low-level code:** OS/kernel work requires unsafe blocks with raw pointers
 
 These aren't accidents—they're deliberate tradeoffs to achieve safety without annotations.

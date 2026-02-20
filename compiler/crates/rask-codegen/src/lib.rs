@@ -8,6 +8,7 @@ pub mod closures;
 pub mod dispatch;
 mod module;
 mod tests;
+pub mod vtable;
 
 pub use module::CodeGenerator;
 

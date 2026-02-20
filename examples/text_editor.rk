@@ -166,7 +166,7 @@ extend Document {
         }
 
         self.modified = false
-        Ok(())
+        return Ok(())
     }
 
     // Display the document

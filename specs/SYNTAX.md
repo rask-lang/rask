@@ -342,10 +342,10 @@ extend Option<T> {
         }
     }
 
-    func unwrap(take self) -> T {
+    func force(take self) -> T {
         return match self {
             Some(v) => v,
-            None => panic("unwrap on None"),
+            None => panic("force on None"),
         }
     }
 }
@@ -939,8 +939,8 @@ names = [u.name for u in active_users]
 
 **Rask:**
 ```rask
-const active_users = users.into_iter().filter(|u| u.active).collect()
-const names = active_users.into_iter().map(|u| u.name).collect()
+const active_users = users.filter(|u| u.active).collect()
+const names = active_users.map(|u| u.name).collect()
 ```
 
 ---

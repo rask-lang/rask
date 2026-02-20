@@ -728,6 +728,9 @@ impl<'a> OwnershipChecker<'a> {
             // Unresolved types: conservative
             Type::UnresolvedNamed(_) | Type::UnresolvedGeneric { .. } => false,
 
+            // Trait objects: never Copy (TR11 — owns heap data)
+            Type::TraitObject { .. } => false,
+
             // Error: don't report more errors
             Type::Error => true,
         }
@@ -764,8 +767,8 @@ impl<'a> OwnershipChecker<'a> {
                     8
                 }
             }
-            // Pointers/references/slices: fat pointer
-            Type::String | Type::Slice(_) | Type::Fn { .. } => 16,
+            // Pointers/references/slices/trait objects: fat pointer
+            Type::String | Type::Slice(_) | Type::Fn { .. } | Type::TraitObject { .. } => 16,
             _ => 8,
         }
     }

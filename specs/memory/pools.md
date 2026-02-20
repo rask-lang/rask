@@ -181,7 +181,7 @@ for entity in pool.drain() {
 | `weak.valid()` | `bool` | True if underlying data still exists |
 | `weak.upgrade()` | `Option<Handle<T>>` | Convert to strong handle if valid |
 
-Automatically invalidated when the element is removed, the pool is cleared, or the pool is dropped.
+Automatically invalidated when the element is removed, the pool is cleared, or the pool goes out of scope.
 
 | Scenario | Use |
 |----------|-----|
@@ -328,13 +328,13 @@ Resource types (`mem.resources`) have special rules in pools.
 
 | Collection | Resource allowed? | Reason |
 |------------|-------------------|--------|
-| `Vec<Resource>` | No | Vec drop can't propagate errors |
+| `Vec<Resource>` | No | Vec cleanup can't propagate errors |
 | `Pool<Resource>` | Yes | Explicit removal required anyway |
 
-When `Pool<Resource>` is dropped non-empty: runtime panic (`mem.resources/R5`).
+When `Pool<Resource>` goes out of scope non-empty: runtime panic (`mem.resources/R5`).
 
 ```rask
-// Required: consume all before pool drops
+// Required: consume all before pool goes out of scope
 for file in files.take_all() {
     try file.close()
 }
@@ -592,7 +592,7 @@ func physics_tick(mut entities: Pool<Entity>, dt: f32) {
     });
 
     // Phase 2: Serial write (apply forces)
-    for (h, force) in forces.into_iter().flatten() {
+    for (h, force) in forces.flatten() {
         entities[h].velocity += force * dt
         entities[h].position += entities[h].velocity * dt
     }

@@ -48,7 +48,7 @@ enum PushError<T> {
 }
 
 try vec.push(x)             // Propagate error
-vec.push(x).unwrap()        // Panic on error
+vec.push(x)!                // Panic on error
 vec.push_or_panic(x)        // Explicit panic variant
 ```
 
@@ -209,7 +209,7 @@ struct SliceDescriptor<T> {
 | `handle.slice(range)` | `SliceDescriptor<T>` | Create descriptor |
 | `desc.len()` | `usize` | Length of range |
 | `desc.is_empty()` | `bool` | Range is empty |
-| `desc.iter()` | Iterator | Iterate (requires ambient pool) |
+| `for x in desc` | Iterator | Iterate (requires ambient pool) |
 
 ## Capacity Introspection
 

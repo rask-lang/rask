@@ -102,22 +102,65 @@ impl StubRegistry {
         })
     }
 
-    /// Return parsed declarations from stdlib .rk files that have non-empty
-    /// function bodies. These are real implementations (not stubs) that should
-    /// be compiled alongside user code.
+    /// Return function declarations and their extern dependencies from stdlib
+    /// .rk files. Excludes struct/enum definitions to avoid polluting the
+    /// resolver/typechecker. Struct defs are injected later via
+    /// `compilable_struct_defs()`.
     pub fn compilable_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
 
-        for (filename, source) in STUB_SOURCES {
+        for (_filename, source) in STUB_SOURCES {
             let lex_result = rask_lexer::Lexer::new(source).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
             let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
-            for decl in parse_result.decls {
-                if has_compilable_body(&decl) {
-                    let _ = filename; // will be useful for diagnostics later
-                    decls.push(decl);
+            let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
+                DeclKind::Fn(f) => !f.body.is_empty(),
+                DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
+                _ => false,
+            });
+            if has_fn_body {
+                // Include functions with bodies + extern blocks (needed for
+                // resolving C symbol references). Skip struct/enum definitions.
+                for decl in parse_result.decls {
+                    let dominated = match &decl.kind {
+                        DeclKind::Fn(f) => !f.body.is_empty(),
+                        DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
+                        DeclKind::Extern(_) => true,
+                        _ => false,
+                    };
+                    if dominated {
+                        decls.push(decl);
+                    }
+                }
+            }
+        }
+
+        decls
+    }
+
+    /// Return struct/enum definitions from stdlib files that have compilable
+    /// function bodies. Injected into the monomorphizer for layout computation.
+    pub fn compilable_struct_defs() -> Vec<Decl> {
+        let mut decls = Vec::new();
+
+        for (_filename, source) in STUB_SOURCES {
+            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+            if !lex_result.is_ok() {
+                continue;
+            }
+            let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+            let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
+                DeclKind::Fn(f) => !f.body.is_empty(),
+                DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
+                _ => false,
+            });
+            if has_fn_body {
+                for decl in parse_result.decls {
+                    if matches!(&decl.kind, DeclKind::Struct(_) | DeclKind::Enum(_)) {
+                        decls.push(decl);
+                    }
                 }
             }
         }
@@ -295,17 +338,6 @@ fn find_func_name_span(source: &str, name: &str, within: Span) -> Span {
 /// - Struct/enum declarations (type definitions needed by compilable functions)
 /// - Impl/extend blocks where at least one method has a non-empty body
 /// - Extern declarations (needed for C interop in stdlib)
-fn has_compilable_body(decl: &Decl) -> bool {
-    match &decl.kind {
-        DeclKind::Fn(f) => !f.body.is_empty(),
-        DeclKind::Extern(_) => true,
-        DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
-        // Struct/enum defs are included if they appear in a file with compilable functions.
-        // The caller filters per-file, but for now include struct defs conservatively.
-        // They're harmless — duplicates are handled by the resolver.
-        _ => false,
-    }
-}
 
 /// Strip type parameters from a name: "Vec<T>" → "Vec", "Map<K, V>" → "Map"
 fn strip_type_params(name: &str) -> String {

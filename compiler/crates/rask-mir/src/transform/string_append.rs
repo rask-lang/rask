@@ -123,6 +123,11 @@ fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
         MirStmt::ArrayStore { base, index, value, .. } => {
             *base == local || operand_is(index, local) || operand_is(value, local)
         }
+        MirStmt::TraitBox { value, .. } => operand_is(value, local),
+        MirStmt::TraitCall { trait_object, args, .. } => {
+            *trait_object == local || args.iter().any(|a| operand_is(a, local))
+        }
+        MirStmt::TraitDrop { trait_object } => *trait_object == local,
         MirStmt::ResourceRegister { .. }
         | MirStmt::GlobalRef { .. }
         | MirStmt::SourceLocation { .. }

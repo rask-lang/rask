@@ -90,11 +90,11 @@ Use sparingly. Prefer `??` or pattern matching.
 |--------|----------|
 | `map(f)` | Transform if present |
 | `filter(pred)` | Keep if predicate true |
-| `ok_or(err)` | Convert to Result |
-| `unwrap()` | Extract or panic |
-| `unwrap_or(default)` | Extract or default |
+| `to_result(err)` | Convert to Result |
 | `is_some()` | Has value? |
 | `is_none()` | Is absent? |
+
+Force extraction uses operators, not methods: `x!` (panic if none), `x ?? default` (fallback).
 
 ## Pattern Matching
 
@@ -155,7 +155,7 @@ x == y          // compare inner values or both none
 |------|-------------|
 | **OPT12: try propagates None** | `try x` on `Option` propagates `None` to caller |
 | **OPT13: Return type required** | `try x` on `Option` only valid in function returning `Option<U>` |
-| **OPT14: Explicit conversion** | Mixing `Option` and `Result` requires `.ok_or(err)` or `.ok()` |
+| **OPT14: Explicit conversion** | Mixing `Option` and `Result` requires `.to_result(err)` or `.to_option()` |
 
 | Syntax | Option | Result |
 |--------|--------|--------|
@@ -247,7 +247,7 @@ FIX: Convert to Result, or change the return type:
 | Conditional logic (new name) | `if x is Some(v) { ... }` |
 | Early exit if absent | `const v = x is Some else { return }` |
 | Transform the value | `x.map(f)` |
-| Convert to Result | `x.ok_or(err)` |
+| Convert to Result | `x.to_result(err)` |
 | You're sure it's present | `x!` (use sparingly) |
 | Full pattern match | `match x { Some(v) => ..., None => ... }` |
 

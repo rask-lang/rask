@@ -4,7 +4,7 @@ Quick reference for technical terms used across specs. Each term is explained wh
 
 | Term | Plain meaning | Spec |
 |------|---------------|------|
-| **Block-scoped** (view/borrow) | A temporary reference valid until the end of the enclosing `{ }` block. Used for fixed-size data like strings and struct fields. | `mem.borrowing` |
+| **Block-scoped** (view/borrow) | A temporary reference valid until the end of the enclosing `{ }` block. Used for fixed-layout data (struct fields, arrays). Strings are NOT block-scoped — they own heap buffers and use statement-scoped access. | `mem.borrowing` |
 | **Borrow** / **View** | A temporary reference to data you don't own. The compiler tracks it so it can't outlive the data or conflict with mutations. | `mem.borrowing` |
 | **Capture** (closures) | When a closure uses a variable from outside its body, that variable is *captured* — copied or moved into the closure so it's available when the closure runs later. | `mem.closures` |
 | **Desugaring** | Expanding syntactic shortcuts into their full form before the compiler processes them. Example: `a + b` becomes `a.add(b)`. | `comp.semantic-hash` |

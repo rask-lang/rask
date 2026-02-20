@@ -73,18 +73,19 @@ Specified but not implemented:
 
 - [x] **Vendoring** — `rask vendor` for offline builds (VD1-VD5)
 - [x] **Workspaces** — multi-package repos with shared lock file (WS1-WS3)
-- [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2)
+- [x] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2)
 - [x] **`rask publish`** — push packages to registry (PB1-PB7)
 - [x] **Dependency auditing** — `rask audit` for CVE checking (AU1-AU5)
 
 ### Phase 4: Runtime & codegen maturity
 
 - [ ] **Runtime trait dispatch** — `any Trait` for heterogeneous collections
-- [ ] **State machine codegen** — stackless transforms for green tasks (optimization, not blocking)
-- [ ] **Cross-compilation** — `--target` flag wired to Cranelift + cross-linker detection (XT1-XT8)
+- [ ] **Cross-compilation** — `--target` flag wired to Cranelift + cross-linker detection (XT1-XT6)
 
 ### Post-v1.0
 
+- **State machine codegen** — stackless transforms for green tasks (optimization, not blocking)
+- **Cross-compilation extras** — platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
 - LLVM backend
 - Incremental compilation (semantic hashing)
 - Macros / `format!`

@@ -194,7 +194,7 @@ NOTE: use connect_with_options instead
 |-|-------------------|------------|
 | **Tool** | `rask check` | `rask lint` |
 | **What it checks** | Correctness hints | Convention enforcement |
-| **ID format** | `unused_result` / `W0301` | `naming/is` / `idiom/unwrap-production` |
+| **ID format** | `unused_result` / `W0301` | `naming/is` / `idiom/force-unwrap-production` |
 | **Suppression** | `@allow(unused_result)` | `@allow(naming/is)` |
 | **When it runs** | Every build | Pre-commit, CI |
 

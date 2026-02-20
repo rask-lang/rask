@@ -60,7 +60,7 @@ pub fn print_usage() {
     println!();
     println!("{}", output::section_header("Debugging and Exploration:"));
     println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
-    println!("  {} {}  Describe a module's public API", output::command("describe"), output::arg("<file>"));
+    println!("  {} {}       Show a module's public API", output::command("api"), output::arg("<file>"));
 
     println!();
     println!("{}", output::section_header("Compilation Phases:"));
@@ -403,14 +403,14 @@ pub fn print_fmt_help() {
         output::arg("--check"));
 }
 
-pub fn print_describe_help() {
-    println!("{}", output::section_header("Describe"));
+pub fn print_api_help() {
+    println!("{}", output::section_header("API"));
     println!();
     println!("Show a module's public API including structs, functions, and enums.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
-        output::command("describe"),
+        output::command("api"),
         output::arg("<file.rk> [--all]"));
     println!();
     println!("{}", output::section_header("Options:"));
@@ -420,11 +420,11 @@ pub fn print_describe_help() {
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}        Show public API",
         output::command("rask"),
-        output::command("describe"),
+        output::command("api"),
         output::arg("module.rk"));
     println!("  {} {} {} {}  Show all items",
         output::command("rask"),
-        output::command("describe"),
+        output::command("api"),
         output::arg("module.rk"),
         output::arg("--all"));
 }

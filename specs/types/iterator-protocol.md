@@ -5,7 +5,7 @@
 
 # Iterator Protocol and Adapters
 
-Core `Iterator<Item>` trait with lazy adapters. `for-in` desugars to `.into_iter()` / `.iter()` / `.take_all()` method calls.
+Core `Iterator<Item>` trait with lazy adapters. `for-in` desugars to `.iterate()` / `.take_all()` method calls.
 
 ## Iterator Trait
 
@@ -74,10 +74,10 @@ for i in vec.indices().filter(|i| vec[i].active).take(10) {
 | Rule | Description |
 |------|-------------|
 | **D1: Range** | `for x in range` — built-in range loop, no method call |
-| **D2: Collection value** | `for x in collection` — calls `collection.into_iter()` yielding borrowed elements |
+| **D2: Collection value** | `for x in collection` — calls `collection.iterate()` yielding borrowed elements |
 | **D3: Consuming** | `for x in collection.take_all()` — takes ownership of elements |
 | **D4: Index mode** | `for i in 0..vec.len()` or `for h in pool.handles()` — explicit index/handle iteration |
-| **D5: Method resolution** | Check Range type first, then explicit method call, then `.into_iter()` |
+| **D5: Method resolution** | Check Range type first, then explicit method call, then `.iterate()` |
 
 <!-- test: skip -->
 ```rask
@@ -87,7 +87,7 @@ for item in vec {
 }
 // Desugars to:
 {
-    const _iter = vec.into_iter()  // VecRefIterator (yields borrowed T)
+    const _iter = vec.iterate()  // VecRefIterator (yields borrowed T)
     loop {
         const item = match _iter.next() {
             Some(val) => val,
@@ -106,7 +106,7 @@ for i in 0..vec.len() {
 }
 // Desugars to:
 {
-    const _iter = (0..vec.len()).into_iter()  // RangeIterator
+    const _iter = (0..vec.len()).iterate()  // RangeIterator
     loop {
         const i = match _iter.next() {
             Some(val) => val,
@@ -121,10 +121,10 @@ for i in 0..vec.len() {
 
 | Rule | Description |
 |------|-------------|
-| **L1: Break drops iterator** | `break` exits loop; iterator dropped normally |
+| **L1: Break cleans up iterator** | `break` exits loop; iterator cleaned up normally |
 | **L2: Continue calls next** | `continue` skips to next iteration |
 | **L3: Independent iterators** | Nested loops get independent iterators |
-| **L4: Consume drop** | For consume iterators, break triggers LIFO drop of remaining items |
+| **L4: Consume cleanup** | For consume iterators, break triggers LIFO cleanup of remaining items |
 
 ## Custom Iterators
 
@@ -132,7 +132,7 @@ for i in 0..vec.len() {
 |------|-------------|
 | **CU1: Implement trait** | Collections provide methods returning types implementing `Iterator<Item>` |
 | **CU2: No stored references** | Iterator structs must store Copy data (indices, handles), not references |
-| **CU3: into_iter contract** | `.into_iter()` for Vec/Pool/Map returns value iterator (borrowed elements) — does NOT consume |
+| **CU3: iterate contract** | `.iterate()` for Vec/Pool/Map returns value iterator (borrowed elements) — does NOT consume |
 
 <!-- test: skip -->
 ```rask
@@ -163,12 +163,12 @@ extend GridIterator with Iterator<(usize, usize)> {
 ERROR [type.iterators/D2]: cannot iterate over type
    |
 3  |  for x in my_value
-   |           ^^^^^^^^ `MyType` has no `into_iter()` method
+   |           ^^^^^^^^ `MyType` has no `iterate()` method
 
 WHY: for-in requires the expression to be a Range, or to have
-     an into_iter() method returning Iterator<Item>.
+     an iterate() method returning Iterator<Item>.
 
-FIX: Implement into_iter() on MyType, or use a range.
+FIX: Implement iterate() on MyType, or use a range.
 ```
 
 ```
@@ -188,9 +188,9 @@ FIX: Store Copy-able indices or handles instead.
 | Case | Rule | Behavior |
 |------|------|----------|
 | Empty collection | I1 | `.next()` returns `None` immediately |
-| Break in consume iterator | L4 | Remaining items dropped in LIFO order |
+| Break in consume iterator | L4 | Remaining items cleaned up in LIFO order |
 | Nested loops same collection | L3 | Independent iterators, cheap for index-based |
-| `.into_iter()` returns non-Iterator | D5 | Compile error |
+| `.iterate()` returns non-Iterator | D5 | Compile error |
 | Closure escapes expression scope | AD3 | Compile error |
 
 ---
@@ -201,7 +201,7 @@ FIX: Store Copy-able indices or handles instead.
 
 **I4 (no stored references):** Rask's "no storable references" rule applies to iterators. Storing a reference to the collection would create lifetime complexity. Index-based iteration avoids this entirely.
 
-**CU3 (into_iter doesn't consume):** Vec's `.into_iter()` returns a value iterator (borrowed elements), not an owning iterator. The collection remains accessible in the loop body. Use `.take_all()` for ownership transfer.
+**CU3 (iterate doesn't consume):** Vec's `.iterate()` returns a value iterator (borrowed elements), not an owning iterator. The collection remains accessible in the loop body. Use `.take_all()` for ownership transfer.
 
 ### Patterns & Guidance
 
@@ -246,4 +246,4 @@ for h in pool.handles() {
 
 - `type.traits` — Trait definitions
 - `std.collections` — Vec, Pool, Map APIs
-- `mem.borrowing` — Expression-scoped vs block-scoped views
+- `mem.borrowing` — Statement-scoped vs block-scoped views

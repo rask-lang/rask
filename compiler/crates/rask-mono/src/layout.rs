@@ -172,6 +172,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
             (total, total.min(32)) // natural SIMD alignment, cap at 32
         }
         Type::Never => (0, 1),
+        Type::TraitObject { .. } => (16, 8), // Fat pointer: data_ptr + vtable_ptr
         Type::RawPtr(_) => (8, 8), // Pointer-sized
         Type::Error => {
             eprintln!("warning: Error type in layout computation, defaulting to (8, 8)");

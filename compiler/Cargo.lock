@@ -1318,6 +1318,7 @@ name = "rask-interp"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-comptime",
  "rask-lexer",
  "rask-parser",
  "rask-stdlib",
@@ -1369,6 +1370,7 @@ name = "rask-mir"
 version = "0.1.0"
 dependencies = [
  "rask-ast",
+ "rask-comptime",
  "rask-mono",
  "rask-types",
 ]

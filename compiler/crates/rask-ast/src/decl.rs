@@ -51,6 +51,8 @@ pub struct ConstDecl {
     pub ty: Option<String>,
     pub init: crate::expr::Expr,
     pub is_pub: bool,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// A test block declaration.
@@ -79,6 +81,8 @@ pub struct ExternDecl {
     pub params: Vec<Param>,
     /// Return type (None means void)
     pub ret_ty: Option<String>,
+    /// Doc comment (`/// ...`)
+    pub doc: Option<String>,
 }
 
 /// A function declaration.

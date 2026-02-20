@@ -16,6 +16,18 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
     // Hidden parameter pass — desugar `using` clauses into explicit params
     rask_hidden_params::desugar_hidden_params(&mut result.decls);
 
+    // Inject compiled stdlib functions + struct defs AFTER typechecking.
+    // Type signatures come from BuiltinModule stubs during resolve/typecheck.
+    // Function bodies and struct layouts are only needed at mono/codegen time.
+    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
+    if !stdlib_fn_decls.is_empty() {
+        result.decls.extend(stdlib_fn_decls);
+    }
+    if !stdlib_struct_defs.is_empty() {
+        result.decls.extend(stdlib_struct_defs);
+    }
+
     let decls = result.decls.clone();
     let source = result.source.clone();
 
@@ -32,11 +44,17 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
 }
 
 /// Evaluate comptime const declarations and return serialized data.
-pub fn evaluate_comptime_globals(decls: &[rask_ast::decl::Decl]) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
+pub fn evaluate_comptime_globals(
+    decls: &[rask_ast::decl::Decl],
+    cfg: Option<&rask_comptime::CfgConfig>,
+) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
     use rask_ast::decl::DeclKind;
     use rask_ast::stmt::StmtKind;
 
     let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
+    if let Some(c) = cfg {
+        comptime_interp.inject_cfg(c);
+    }
     comptime_interp.register_functions(decls);
 
     let mut globals = std::collections::HashMap::new();
@@ -241,7 +259,8 @@ pub fn cmd_mir(path: &str, format: Format) {
         decl
     }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
-    let comptime_globals = evaluate_comptime_globals(&decls);
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg));
     let extern_funcs = collect_extern_func_names(&decls);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
@@ -256,6 +275,18 @@ pub fn cmd_mir(path: &str, format: Format) {
             (rask_types::TypeId(i as u32), name)
         })
         .collect();
+    let trait_methods: std::collections::HashMap<String, Vec<String>> = typed.types.iter()
+        .filter_map(|def| {
+            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
+                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
+    mir_interp.inject_cfg(&cfg);
+    mir_interp.register_functions(&decls);
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -263,9 +294,11 @@ pub fn cmd_mir(path: &str, format: Format) {
         type_names: &type_names,
         comptime_globals: &comptime_globals,
         extern_funcs: &extern_funcs,
+        trait_methods,
         line_map: line_map.as_ref(),
         source_file: Some(path),
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
     };
 
     let mut mir_errors = 0;
@@ -304,9 +337,18 @@ pub fn cmd_mir(path: &str, format: Format) {
 /// Compile a single .rk file to a native executable.
 /// Full pipeline: lex → parse → desugar → resolve → typecheck → ownership →
 /// hidden-params → mono → MIR → Cranelift codegen → link with runtime.c.
-pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool) {
+pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet: bool, link_opts: &super::link::LinkOptions, release: bool, target: Option<&str>) {
+    if let Some(t) = target {
+        if let Err(e) = super::link::validate_target(t) {
+            eprintln!("{}: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    }
+
     let (mono, typed, decls, source) = run_pipeline(path, format);
-    let comptime_globals = evaluate_comptime_globals(&decls);
+    let profile = if release { "release" } else { "debug" };
+    let cfg = rask_comptime::CfgConfig::from_target_or_host(target, profile, vec![]);
+    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg));
     let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
 
     // Determine output paths
@@ -322,8 +364,12 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
             } else {
                 p.parent().map(|d| d.to_path_buf()).unwrap_or_else(|| PathBuf::from("."))
             };
+            let mut out_dir = base_dir.join("build");
+            if let Some(t) = target {
+                out_dir = out_dir.join(t);
+            }
             let subdir = if release { "release" } else { "debug" };
-            let out_dir = base_dir.join("build").join(subdir);
+            out_dir = out_dir.join(subdir);
             let _ = std::fs::create_dir_all(&out_dir);
             out_dir.join(stem).to_string_lossy().to_string()
         }
@@ -332,7 +378,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
 
     if let Err(errors) = super::compile::compile_to_object(
         &mono, &typed, &decls, &comptime_globals,
-        Some(path), source.as_deref(), None, &obj_path, build_mode,
+        Some(path), source.as_deref(), target, &obj_path, build_mode, Some(&cfg),
     ) {
         for e in &errors {
             eprintln!("{}: {}", output::error_label(), e);
@@ -340,7 +386,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         process::exit(1);
     }
 
-    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_path, link_opts, release) {
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_path, link_opts, release, target) {
         eprintln!("{}: link: {}", output::error_label(), e);
         process::exit(1);
     }

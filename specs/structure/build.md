@@ -649,7 +649,7 @@ func build(ctx: BuildContext) -> () or Error {
 | Remote registry (RG1-RG4) | Not started |
 | Vendoring (VD1-VD5) | Not started |
 | Workspaces (WS1-WS3) | Not started |
-| Conditional compilation (CC1-CC2) | Not started |
+| Conditional compilation (CC1-CC2) | Implemented |
 | Cross-compilation toolchain (XT1-XT8) | Not started |
 
 ### See Also

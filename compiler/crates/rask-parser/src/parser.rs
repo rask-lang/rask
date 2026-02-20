@@ -404,13 +404,31 @@ impl Parser {
 
             match self.parse_decl() {
                 Ok(decl) => decls.push(decl),
-                Err(_decl_err) => {
+                Err(decl_err) => {
                     // Reset to saved position and try parsing as a statement
                     self.pos = saved_pos;
                     self.errors.truncate(saved_errors);
 
+                    // Declaration-only keywords can never start a statement.
+                    // Use the original decl error (more specific) and synchronize.
+                    if matches!(self.current_kind(),
+                        TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
+                        TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
+                        TokenKind::Import | TokenKind::Export | TokenKind::Extern |
+                        TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
+                        TokenKind::Public
+                    ) {
+                        if !self.record_error(decl_err) { break; }
+                        self.synchronize();
+                        // These keywords are in the synchronize recovery set,
+                        // so synchronize stops AT them without advancing.
+                        // Force progress to prevent infinite loops.
+                        if self.pos == saved_pos && !self.at_end() {
+                            self.advance();
+                            self.synchronize();
+                        }
                     // Reject mutable bindings at top level
-                    if matches!(self.current_kind(), TokenKind::Let) {
+                    } else if matches!(self.current_kind(), TokenKind::Let) {
                         let err = ParseError {
                             span: self.current().span,
                             message: "mutable 'let' bindings are not allowed at the top level".to_string(),
@@ -538,11 +556,11 @@ impl Parser {
             TokenKind::Extend => self.parse_impl_decl(is_unsafe, doc)?,
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
-            TokenKind::Const => self.parse_const_decl(is_pub)?,
+            TokenKind::Const => self.parse_const_decl(is_pub, doc)?,
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => {
-                let mut kinds = self.parse_extern_decls()?;
+                let mut kinds = self.parse_extern_decls(doc)?;
                 let first = kinds.remove(0);
                 let end = self.tokens.get(self.pos.saturating_sub(1)).map(|t| t.span.end).unwrap_or(start);
                 let pending: Vec<Decl> = kinds.into_iter().map(|kind| {
@@ -1514,7 +1532,7 @@ impl Parser {
     }
 
     /// Parse a top-level const declaration.
-    fn parse_const_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
+    fn parse_const_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Const)?;
         let name = self.expect_ident()?;
         let ty = if self.match_token(&TokenKind::Colon) {
@@ -1525,7 +1543,7 @@ impl Parser {
         self.expect(&TokenKind::Eq)?;
         let init = self.parse_expr()?;
         self.expect_terminator()?;
-        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub }))
+        Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, doc }))
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`
@@ -1548,7 +1566,7 @@ impl Parser {
 
     /// Parse `extern "C" func name(...)` or `extern "C" { func ...; func ... }`.
     /// Returns one or more extern declarations.
-    fn parse_extern_decls(&mut self) -> Result<Vec<DeclKind>, ParseError> {
+    fn parse_extern_decls(&mut self, doc: Option<String>) -> Result<Vec<DeclKind>, ParseError> {
         self.expect(&TokenKind::Extern)?;
         let abi = self.expect_string()?;
 
@@ -1559,8 +1577,9 @@ impl Parser {
             self.skip_newlines();
             let mut decls = Vec::new();
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
+                let func_doc = self.take_doc();
                 self.expect(&TokenKind::Func)?;
-                decls.push(self.parse_extern_func(&abi)?);
+                decls.push(self.parse_extern_func(&abi, func_doc)?);
                 self.skip_newlines();
             }
             self.expect(&TokenKind::RBrace)?;
@@ -1569,11 +1588,11 @@ impl Parser {
 
         // Single form: extern "C" func name(...)
         self.expect(&TokenKind::Func)?;
-        Ok(vec![self.parse_extern_func(&abi)?])
+        Ok(vec![self.parse_extern_func(&abi, doc)?])
     }
 
     /// Parse a single extern function — signature-only (import) or with body (export).
-    fn parse_extern_func(&mut self, abi: &str) -> Result<DeclKind, ParseError> {
+    fn parse_extern_func(&mut self, abi: &str, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         let name = self.expect_ident()?;
         self.expect(&TokenKind::LParen)?;
@@ -1602,12 +1621,12 @@ impl Parser {
                 is_unsafe: false,
                 abi: Some(abi.to_string()),
                 attrs: vec![],
-                doc: None,
+                doc,
                 span: Span::new(fn_start, self.tokens[self.pos.saturating_sub(1)].span.end),
             }));
         }
 
-        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty }))
+        Ok(DeclKind::Extern(ExternDecl { abi: abi.to_string(), name, params, ret_ty, doc }))
     }
 
     /// Parse a package block (struct.build/PK1-PK5).

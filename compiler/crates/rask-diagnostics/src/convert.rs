@@ -428,6 +428,31 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_code("E0330")
                     .with_primary(*span, "unsafe operation outside unsafe block")
             }
+
+            ImplicitTraitCoercion { trait_name, value_desc, span } => {
+                Diagnostic::error(format!("implicit trait coercion to `any {}`", trait_name))
+                    .with_code("E0331")
+                    .with_primary(*span, format!("pass `{} as any {}` — implicit coercion not allowed at call sites", value_desc, trait_name))
+                    .with_help(format!("add `as any {}` to make the coercion explicit", trait_name))
+                    .with_fix(format!("add `as any {}`", trait_name))
+                    .with_why("trait object coercion must be explicit at call sites to make boxing visible (TR8)")
+            }
+
+            TraitObjectSelfReturn { trait_name, method, span } => {
+                Diagnostic::error(format!("method `{}` returns Self — cannot be called through `any {}`", method, trait_name))
+                    .with_code("E0332")
+                    .with_primary(*span, "Self-returning method")
+                    .with_help("Self-returning methods are incompatible with trait objects because the concrete type is erased (TR2)")
+            }
+
+            TraitNotSatisfied { ty, trait_name, span } => {
+                Diagnostic::error(format!("`{}` does not implement `{}`", ty, trait_name))
+                    .with_code("E0333")
+                    .with_primary(*span, format!("`{}` missing required methods", ty))
+                    .with_help(format!("add the required methods via `extend {} {{ ... }}`", ty))
+                    .with_fix(format!("implement `{}` for `{}`", trait_name, ty))
+                    .with_why("casting to a trait object requires the concrete type to implement all trait methods")
+            }
         }
     }
 }

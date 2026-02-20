@@ -20,7 +20,7 @@ Enforce the naming table from [canonical-patterns.md](../canonical-patterns.md#r
 | **N5: is** | `is_*` returns `bool` | error | extend blocks, standalone funcs |
 | **N6: with** | `with_*` returns `Self` | warning | extend blocks |
 | **N7: try** | `try_*` returns `T or E` | error | extend blocks, standalone funcs |
-| **N8: or_suffix** | `*_or(default)` returns unwrapped `T` (not `T?` or `T or E`) | warning | extend blocks |
+| **N8: or_suffix** | `*_or(default)` returns `T` (not `T?` or `T or E`) | warning | extend blocks |
 
 <!-- test: skip -->
 ```rask
@@ -48,7 +48,7 @@ Common mistakes the canonical patterns address.
 
 | Rule | Check | Severity |
 |------|-------|----------|
-| **I1: unwrap-production** | `unwrap()` call outside `test` blocks | warning |
+| **I1: force-unwrap-production** | `x!` force unwrap outside `test` blocks | warning |
 | **I2: missing-ensure** | `@resource` type created without matching `ensure` in same scope | warning |
 
 ## Style
@@ -159,14 +159,14 @@ FIX: change `self` to `take self`, or rename to `to_string`
 
 ### Patterns & Guidance
 
-**Lint vs warnings:** Lint rules (`naming/is`, `idiom/unwrap-production`) enforce conventions. Compiler warnings (`unused_result`, `unreachable_code`) flag likely bugs. Both use `@allow` for suppression but different ID namespaces.
+**Lint vs warnings:** Lint rules (`naming/is`, `idiom/force-unwrap-production`) enforce conventions. Compiler warnings (`unused_result`, `unreachable_code`) flag likely bugs. Both use `@allow` for suppression but different ID namespaces.
 
 **CI usage:**
 ```
 rask lint src/                        # all rules
 rask lint src/ --rule naming/*        # naming only
 rask lint src/ --rule naming/is       # single rule
-rask lint src/ --exclude idiom/unwrap-production
+rask lint src/ --exclude idiom/force-unwrap-production
 ```
 
 ### Future

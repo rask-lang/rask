@@ -64,6 +64,7 @@ pub fn extract(decls: &[Decl], file: &str, opts: &DescribeOpts) -> ModuleDescrip
                 }
                 constants.push(ConstantDesc {
                     name: c.name.clone(),
+                    doc: c.doc.clone(),
                     type_str: c.ty.clone(),
                     public: c.is_pub,
                 });
@@ -141,6 +142,7 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
 
     StructDesc {
         name: s.name.clone(),
+        doc: s.doc.clone(),
         public: s.is_pub,
         type_params,
         attrs,
@@ -187,6 +189,7 @@ fn extract_enum(e: &EnumDecl, opts: &DescribeOpts) -> EnumDesc {
 
     EnumDesc {
         name: e.name.clone(),
+        doc: e.doc.clone(),
         public: e.is_pub,
         type_params,
         variants,
@@ -199,6 +202,7 @@ fn extract_trait(t: &TraitDecl) -> TraitDesc {
 
     TraitDesc {
         name: t.name.clone(),
+        doc: t.doc.clone(),
         public: t.is_pub,
         methods,
     }
@@ -249,6 +253,7 @@ fn extract_function(f: &FnDecl) -> FunctionDesc {
 
     FunctionDesc {
         name: f.name.clone(),
+        doc: f.doc.clone(),
         public: f.is_pub,
         params,
         returns,
@@ -284,6 +289,7 @@ fn extract_extern(e: &ExternDecl) -> ExternDesc {
     ExternDesc {
         abi: e.abi.clone(),
         name: e.name.clone(),
+        doc: e.doc.clone(),
         params,
         returns: parse_return_type(e.ret_ty.as_deref()),
     }

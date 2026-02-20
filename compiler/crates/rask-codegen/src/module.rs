@@ -32,6 +32,8 @@ pub struct CodeGenerator {
     internal_fns: HashSet<String>,
     /// Debug or Release — controls inlining of pool checks
     build_mode: BuildMode,
+    /// VTable data sections for trait objects (vtable_name → DataId)
+    vtable_data: HashMap<String, cranelift_module::DataId>,
 }
 
 impl CodeGenerator {
@@ -62,6 +64,7 @@ impl CodeGenerator {
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             build_mode,
+            vtable_data: HashMap::new(),
         })
     }
 
@@ -103,6 +106,7 @@ impl CodeGenerator {
             panicking_fns: crate::dispatch::panicking_functions(),
             internal_fns: HashSet::new(),
             build_mode,
+            vtable_data: HashMap::new(),
         })
     }
 
@@ -621,6 +625,53 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Register vtable data sections for trait objects.
+    ///
+    /// Each vtable is a static data section: [size, align, drop_fn, method_0, method_1, ...]
+    /// Function pointers are emitted as relocations resolved by the linker.
+    pub fn register_vtables(
+        &mut self,
+        vtables: &[crate::vtable::VTableInfo],
+    ) -> CodegenResult<()> {
+        for vt in vtables {
+            let data_id = self.module
+                .declare_data(&vt.data_name, Linkage::Local, false, false)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+            let total_size = vt.byte_size() as usize;
+            let mut bytes = vec![0u8; total_size];
+
+            // Write size at offset 0
+            bytes[0..8].copy_from_slice(&(vt.concrete_size as i64).to_le_bytes());
+            // Write align at offset 8
+            bytes[8..16].copy_from_slice(&(vt.concrete_align as i64).to_le_bytes());
+            // Drop fn at offset 16 stays null (0) — trivial drop for now
+
+            let mut desc = DataDescription::new();
+            desc.define(bytes.into_boxed_slice());
+
+            // Write function pointer relocations for each method
+            for method in &vt.methods {
+                if let Some(&func_id) = self.func_ids.get(&method.func_name) {
+                    let func_ref = self.module.declare_func_in_data(func_id, &mut desc);
+                    desc.write_function_addr(method.vtable_offset, func_ref);
+                } else {
+                    return Err(CodegenError::FunctionNotFound(format!(
+                        "vtable method {}.{} (expected {})",
+                        vt.concrete_type, method.name, method.func_name
+                    )));
+                }
+            }
+
+            self.module
+                .define_data(data_id, &desc)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+            self.vtable_data.insert(vt.data_name.clone(), data_id);
+        }
+        Ok(())
+    }
+
     /// Generate code for a single MIR function.
     pub fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()> {
         // Pre-register source file string for runtime panic locations
@@ -669,6 +720,13 @@ impl CodeGenerator {
             comptime_globals.insert(name.clone(), gv);
         }
 
+        // Pre-import vtable data globals into this function
+        let mut vtable_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (name, data_id) in &self.vtable_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            vtable_globals.insert(name.clone(), gv);
+        }
+
         // Build the function
         let mut builder = FunctionBuilder::new(
             &mut self.ctx.func,
@@ -678,6 +736,7 @@ impl CodeGenerator {
             &self.enum_layouts,
             &string_globals,
             &comptime_globals,
+            &vtable_globals,
             &self.panicking_fns,
             &self.internal_fns,
             self.build_mode,

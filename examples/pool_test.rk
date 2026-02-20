@@ -93,5 +93,5 @@ func main() -> () or string {
     }
 
     println("Pool test passed!")
-    Ok(())
+    return Ok(())
 }

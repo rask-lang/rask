@@ -265,17 +265,17 @@ __ctx_runtime.__shutdown()
 ```rask
 // Before:
 func process_all(handles: Vec<Handle<Player>>) using Pool<Player> {
-    handles.iter().for_each(|h| {
+    for h in handles {
         h.score += 10
-    })
+    }
 }
 
 // After:
 func process_all(handles: Vec<Handle<Player>>, __ctx_pool_Player: &Pool<Player>) {
-    handles.iter().for_each(|h| {
+    for h in handles {
         // __ctx_pool_Player captured by reference (expression-scoped)
         __ctx_pool_Player[h].score += 10
-    })
+    }
 }
 ```
 

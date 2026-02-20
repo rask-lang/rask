@@ -181,7 +181,7 @@ extend Color with Display {
 <!-- test: skip -->
 ```rask
 const b = string_builder.with_capacity(1024)
-for item in items.iter() {
+for item in items {
     b.append(format("{}: {}\n", item.name, item.value))
 }
 const report = b.build()

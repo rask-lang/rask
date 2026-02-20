@@ -39,7 +39,7 @@ func handle_connection(conn: TcpConnection) -> () or Error {
 
 | Rule | Description |
 |------|-------------|
-| **H1: Must consume** | `TaskHandle<T>` must be joined or detached — compile error if dropped |
+| **H1: Must consume** | `TaskHandle<T>` must be joined or detached — compile error if unused |
 | **H2: Join** | `h.join()` waits for result, returns `T or JoinError`, consumes handle |
 | **H3: Detach** | `h.detach()` opts out of tracking (fire-and-forget), consumes handle |
 | **H4: Cancel** | `h.cancel()` requests cooperative cancellation, waits for exit, returns `T or JoinError` |
@@ -194,9 +194,9 @@ try h.cancel()
 
 | Rule | Description |
 |------|-------------|
-| **CH1: Non-linear** | `Sender<T>` and `Receiver<T>` can be dropped without explicit close |
+| **CH1: Non-linear** | `Sender<T>` and `Receiver<T>` can go out of scope without explicit close |
 | **CH2: Buffered/unbuffered** | `Channel<T>.unbuffered()` (sync) or `Channel<T>.buffered(n)` (async buffer) |
-| **CH3: Close on drop** | Dropping sender/receiver implicitly closes; errors silently ignored |
+| **CH3: Close on scope exit** | Sender/receiver going out of scope implicitly closes; errors silently ignored |
 | **CH4: Explicit close** | `tx.close()` / `rx.close()` return `Result` for error handling |
 
 <!-- test: skip -->
@@ -229,14 +229,14 @@ try join_all(producer, consumer)
 | `tx.try_send(val)` | `() or TrySendError` | Non-blocking send |
 | `rx.try_recv()` | `T or TryRecvError` | Non-blocking receive |
 
-### Buffered Items on Drop
+### Buffered Items on Close
 
 | Scenario | Behavior |
 |----------|----------|
-| Sender dropped, buffer has items | Items remain — receivers can drain |
-| All senders dropped | Channel closed for writing, readable until empty |
-| Receiver dropped, buffer has items | Items dropped (lost) |
-| All receivers dropped | Senders get `Err(Closed)` on next send |
+| Sender closed, buffer has items | Items remain — receivers can drain |
+| All senders closed | Channel closed for writing, readable until empty |
+| Receiver closed, buffer has items | Items discarded (lost) |
+| All receivers closed | Senders get `Err(Closed)` on next send |
 
 ## Error Messages
 
@@ -262,7 +262,7 @@ FIX: using Multitasking { spawn(|| { fetch(url) }).detach() }
 |------|------|----------|
 | Spawn outside `using Multitasking` | S1 | Compile error |
 | `.join()` on cancelled task | H2, CN1 | Returns `Err(Cancelled)` |
-| Channel send after all receivers dropped | CH3 | Returns `Err(Closed)` |
+| Channel send after all receivers closed | CH3 | Returns `Err(Closed)` |
 | Nested `using Multitasking` blocks | C1 | Compile error — one scheduler per program |
 | Detached task outlives `using` block | C4 | Detached tasks run to completion independently |
 

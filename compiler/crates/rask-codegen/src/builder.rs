@@ -37,6 +37,8 @@ pub struct FunctionBuilder<'a> {
     string_globals: &'a HashMap<String, GlobalValue>,
     /// Comptime global data (const name → GlobalValue for the data address)
     comptime_globals: &'a HashMap<String, GlobalValue>,
+    /// VTable data globals (vtable name → GlobalValue for the vtable address)
+    vtable_globals: &'a HashMap<String, GlobalValue>,
     /// MIR names of stdlib functions that can panic at runtime
     panicking_fns: &'a HashSet<String>,
     /// Names of functions compiled as Rask code (vs C stdlib)
@@ -68,6 +70,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &'a [EnumLayout],
         string_globals: &'a HashMap<String, GlobalValue>,
         comptime_globals: &'a HashMap<String, GlobalValue>,
+        vtable_globals: &'a HashMap<String, GlobalValue>,
         panicking_fns: &'a HashSet<String>,
         internal_fns: &'a HashSet<String>,
         build_mode: BuildMode,
@@ -81,6 +84,7 @@ impl<'a> FunctionBuilder<'a> {
             enum_layouts,
             string_globals,
             comptime_globals,
+            vtable_globals,
             panicking_fns,
             internal_fns,
             build_mode,
@@ -206,7 +210,7 @@ impl<'a> FunctionBuilder<'a> {
                 Self::lower_stmt(
                     &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
                     self.func_refs, self.struct_layouts, self.enum_layouts,
-                    self.string_globals, self.comptime_globals,
+                    self.string_globals, self.comptime_globals, self.vtable_globals,
                     self.mir_fn.source_file.as_deref(),
                     self.current_line, self.current_col,
                     self.panicking_fns,
@@ -250,7 +254,7 @@ impl<'a> FunctionBuilder<'a> {
                         Self::lower_stmt(
                             &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
                             self.func_refs, self.struct_layouts, self.enum_layouts,
-                            self.string_globals, self.comptime_globals,
+                            self.string_globals, self.comptime_globals, self.vtable_globals,
                             None, 0, 0,
                             self.panicking_fns,
                             &self.stack_slot_map,
@@ -294,6 +298,7 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
         comptime_globals: &HashMap<String, GlobalValue>,
+        vtable_globals: &HashMap<String, GlobalValue>,
         source_file: Option<&str>,
         current_line: u32,
         current_col: u32,
@@ -680,6 +685,9 @@ impl<'a> FunctionBuilder<'a> {
                                 // Internal function returns a pointer to its stack-allocated aggregate.
                                 // Copy the data into our own stack slot before it goes stale.
                                 Self::copy_aggregate(builder, final_val, *ss, *size);
+                            } else if Self::is_negative_err_fn(&func.name) {
+                                // C function uses negative return = error convention.
+                                Self::wrap_result_into_slot(builder, final_val, *ss);
                             } else {
                                 // C stdlib function returns a plain value (not a pointer to an aggregate).
                                 // Wrap it as Ok(value) in the destination Result slot.
@@ -1032,6 +1040,151 @@ impl<'a> FunctionBuilder<'a> {
                         "GlobalRef destination not found".to_string()
                     ))?;
                 builder.def_var(*var, addr);
+            }
+
+            // ── Trait object support ──────────────────────────────────
+
+            MirStmt::TraitBox { dst, value, vtable_name, concrete_size, .. } => {
+                let alloc_ref = func_refs.get("rask_alloc")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
+
+                // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
+                let alloc_size = std::cmp::max(*concrete_size, 8) as i64;
+                let size_val = builder.ins().iconst(types::I64, alloc_size);
+                let call_inst = builder.ins().call(*alloc_ref, &[size_val]);
+                let data_ptr = builder.inst_results(call_inst)[0];
+
+                // Copy concrete value to heap
+                if let MirOperand::Local(src_id) = value {
+                    if let Some((ss, sz)) = stack_slot_map.get(src_id) {
+                        // Aggregate: memcpy from stack slot
+                        let src_ptr = builder.ins().stack_addr(types::I64, *ss, 0);
+                        let mut off = 0i32;
+                        while (off as u32) + 8 <= *sz {
+                            let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
+                            builder.ins().store(MemFlags::new(), word, data_ptr, off);
+                            off += 8;
+                        }
+                        if (off as u32) < *sz {
+                            let word = builder.ins().load(types::I64, MemFlags::new(), src_ptr, off);
+                            builder.ins().store(MemFlags::new(), word, data_ptr, off);
+                        }
+                    } else {
+                        // Scalar: load from variable, store to heap
+                        let src_val = builder.use_var(*var_map.get(src_id)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature(
+                                "TraitBox: source variable not found".to_string()
+                            ))?);
+                        builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+                    }
+                } else {
+                    // Constant: lower and store
+                    let src_val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                    builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
+                }
+
+                // Get vtable address
+                let gv = vtable_globals.get(vtable_name.as_str())
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        format!("TraitBox: vtable '{}' not found", vtable_name)
+                    ))?;
+                let vtable_ptr = builder.ins().global_value(types::I64, *gv);
+
+                // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
+                let (ss, _) = stack_slot_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitBox destination stack slot not found".to_string()
+                    ))?;
+                let dst_addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                builder.ins().store(MemFlags::new(), data_ptr, dst_addr, 0);
+                builder.ins().store(MemFlags::new(), vtable_ptr, dst_addr, 8);
+
+                // Set the variable to point to the stack slot
+                let var = var_map.get(dst)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitBox destination variable not found".to_string()
+                    ))?;
+                builder.def_var(*var, dst_addr);
+            }
+
+            MirStmt::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
+                // Load fat pointer components from trait object stack slot
+                let obj_val = builder.use_var(*var_map.get(trait_object)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitCall: trait object variable not found".to_string()
+                    ))?);
+                let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, 0);
+                let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, 8);
+
+                // Load function pointer from vtable
+                let func_ptr = builder.ins().load(
+                    types::I64, MemFlags::new(), vtable_ptr, *vtable_offset as i32,
+                );
+
+                // Build signature: (data_ptr, args...) -> ret
+                let mut sig = Signature::new(isa::CallConv::SystemV);
+                sig.params.push(AbiParam::new(types::I64)); // data_ptr (self)
+                for _ in args.iter() {
+                    sig.params.push(AbiParam::new(types::I64));
+                }
+                sig.returns.push(AbiParam::new(types::I64));
+
+                // Build argument values
+                let mut call_args = Vec::with_capacity(1 + args.len());
+                call_args.push(data_ptr);
+                for arg in args.iter() {
+                    let val = Self::lower_operand(builder, arg, var_map, string_globals, func_refs)?;
+                    call_args.push(val);
+                }
+
+                let sig_ref = builder.import_signature(sig);
+                let call_inst = builder.ins().call_indirect(sig_ref, func_ptr, &call_args);
+
+                if let Some(dst_id) = dst {
+                    let result = builder.inst_results(call_inst)[0];
+                    let var = var_map.get(dst_id)
+                        .ok_or_else(|| CodegenError::UnsupportedFeature(
+                            format!("TraitCall destination for '{}' not found", method_name)
+                        ))?;
+                    builder.def_var(*var, result);
+                }
+            }
+
+            MirStmt::TraitDrop { trait_object } => {
+                let obj_val = builder.use_var(*var_map.get(trait_object)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "TraitDrop: trait object variable not found".to_string()
+                    ))?);
+
+                // Load data_ptr and vtable_ptr
+                let data_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, 0);
+                let vtable_ptr = builder.ins().load(types::I64, MemFlags::new(), obj_val, 8);
+
+                // Load drop_fn from vtable offset 16
+                let drop_fn = builder.ins().load(types::I64, MemFlags::new(), vtable_ptr, 16);
+
+                // If drop_fn != null, call it
+                let null = builder.ins().iconst(types::I64, 0);
+                let is_null = builder.ins().icmp(IntCC::Equal, drop_fn, null);
+
+                let drop_block = builder.create_block();
+                let free_block = builder.create_block();
+
+                builder.ins().brif(is_null, free_block, &[], drop_block, &[]);
+
+                // Drop block: call drop_fn(data_ptr), then fall through to free
+                builder.switch_to_block(drop_block);
+                let mut drop_sig = Signature::new(isa::CallConv::SystemV);
+                drop_sig.params.push(AbiParam::new(types::I64));
+                let sig_ref = builder.import_signature(drop_sig);
+                builder.ins().call_indirect(sig_ref, drop_fn, &[data_ptr]);
+                builder.ins().jump(free_block, &[]);
+
+                // Free block: rask_free(data_ptr)
+                builder.switch_to_block(free_block);
+                let free_ref = func_refs.get("rask_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
+                builder.ins().call(*free_ref, &[data_ptr]);
             }
         }
         Ok(())
@@ -1457,23 +1610,22 @@ impl<'a> FunctionBuilder<'a> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn lower_terminator(
         builder: &mut ClifFunctionBuilder,
         term: &MirTerminator,
         var_map: &HashMap<LocalId, Variable>,
         block_map: &HashMap<BlockId, Block>,
         ret_ty: &MirType,
-        mir_blocks: &[rask_mir::MirBlock],
-        locals: &[rask_mir::MirLocal],
+        _mir_blocks: &[rask_mir::MirBlock],
+        _locals: &[rask_mir::MirLocal],
         func_refs: &HashMap<String, FuncRef>,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
+        _struct_layouts: &[StructLayout],
+        _enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
-        comptime_globals: &HashMap<String, GlobalValue>,
-        panicking_fns: &HashSet<String>,
-        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
-        internal_fns: &HashSet<String>,
+        _comptime_globals: &HashMap<String, GlobalValue>,
+        _panicking_fns: &HashSet<String>,
+        _stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
+        _internal_fns: &HashSet<String>,
         cleanup_chain_blocks: &HashMap<Vec<BlockId>, cranelift_codegen::ir::Block>,
     ) -> CodegenResult<()> {
         match term {
@@ -1638,7 +1790,7 @@ impl<'a> FunctionBuilder<'a> {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 Some((offset + max_align - 1) & !(max_align - 1))
             }
-            MirType::Slice(_) => Some(ty.size()),
+            MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
             MirType::Union(variants) => {
                 let max = variants.iter()
                     .map(|v| Self::resolve_type_alloc_size(v, struct_layouts, enum_layouts)
@@ -1683,6 +1835,27 @@ impl<'a> FunctionBuilder<'a> {
     /// Stores tag=0 (Ok) at offset 0, payload at offset 8.
     fn wrap_ok_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
         let tag = builder.ins().iconst(types::I64, 0);
+        builder.ins().stack_store(tag, dst_slot, 0);
+        builder.ins().stack_store(value, dst_slot, 8);
+    }
+
+    /// C functions that use "negative return = error" convention.
+    /// For these, return value < 0 maps to Err(value), >= 0 maps to Ok(value).
+    /// Note: fs_open/fs_create return NULL (0) for errors, not -1 — handled separately.
+    fn is_negative_err_fn(name: &str) -> bool {
+        matches!(name,
+            "net_tcp_listen" | "TcpListener_accept" |
+            "TcpConnection_read_http_request" | "TcpConnection_write_http_response" |
+            "Sender_send" | "Sender_try_send"
+        )
+    }
+
+    /// Wrap a C return value into a Result stack slot, checking for errors.
+    /// If value < 0: tag=1 (Err), payload=value. Otherwise: tag=0 (Ok), payload=value.
+    fn wrap_result_into_slot(builder: &mut ClifFunctionBuilder, value: Value, dst_slot: StackSlot) {
+        let zero = builder.ins().iconst(types::I64, 0);
+        let is_err = builder.ins().icmp(IntCC::SignedLessThan, value, zero);
+        let tag = builder.ins().uextend(types::I64, is_err);
         builder.ins().stack_store(tag, dst_slot, 0);
         builder.ins().stack_store(value, dst_slot, 8);
     }

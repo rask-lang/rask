@@ -13,6 +13,8 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     let result = super::pipeline::run_frontend(path, format);
 
     let mut interp = rask_interp::Interpreter::with_args(program_args);
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    interp.inject_cfg(&cfg);
     if !result.package_names.is_empty() {
         interp.register_packages(&result.package_names);
     }
@@ -114,7 +116,7 @@ pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, lin
     let bin_str = bin_path.to_string_lossy().to_string();
 
     // Compile quietly — suppress the "Compiled →" banner (errors still show)
-    super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts, release);
+    super::codegen::cmd_compile(path, Some(&bin_str), format, true, link_opts, release, None);
 
     let status = process::Command::new(&bin_str)
         .args(&program_args)
@@ -555,6 +557,16 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         return Vec::new();
     }
 
+    // Inject compiled stdlib functions + struct defs for mono/codegen
+    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
+    if !stdlib_fn_decls.is_empty() {
+        result.decls.extend(stdlib_fn_decls);
+    }
+    if !stdlib_struct_defs.is_empty() {
+        result.decls.extend(stdlib_struct_defs);
+    }
+
     let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
         Ok(m) => m,
         Err(e) => {
@@ -564,7 +576,8 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
             return Vec::new();
         }
     };
-    let comptime_globals = super::codegen::evaluate_comptime_globals(&result.decls);
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let comptime_globals = super::codegen::evaluate_comptime_globals(&result.decls, Some(&cfg));
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));
@@ -573,7 +586,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
 
     if let Err(errors) = super::compile::compile_benchmarks_to_object(
         &mono, &result.typed, &result.decls, &comptime_globals,
-        &benchmarks, Some(path), result.source.as_deref(), &obj_path,
+        &benchmarks, Some(path), result.source.as_deref(), &obj_path, Some(&cfg),
     ) {
         if format == Format::Human {
             for e in &errors {
@@ -585,7 +598,7 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
     }
 
     let link_opts = super::link::LinkOptions::default();
-    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, true) {
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, true, None) {
         if format == Format::Human {
             eprintln!("    {}: link: {}", output::error_label(), e);
         }

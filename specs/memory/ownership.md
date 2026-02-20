@@ -59,14 +59,14 @@ received.process()              // OK: we own it now
 | Rule | Description |
 |------|-------------|
 | **D1: Invalidates binding** | Using the binding after `discard` is a compile error |
-| **D2: Non-Copy only** | `discard` on Copy types is a warning (they're trivially dropped) |
+| **D2: Non-Copy only** | `discard` on Copy types is a warning (they're trivially cleaned up) |
 | **D3: Not for resources** | `@resource` types must be consumed properly — `discard` on them is a compile error. Use the type's consuming method (`.close()`, `.release()`, etc.) |
 
 <!-- test: skip -->
 ```rask
 const data = load_data()
 process(data.clone())
-discard data   // Explicit: data dropped here, not at end of scope
+discard data   // Explicit: data freed here, not at end of scope
 ```
 
 | Scenario | Example |

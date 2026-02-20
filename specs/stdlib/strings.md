@@ -1,18 +1,18 @@
 <!-- id: std.strings -->
 <!-- status: decided -->
-<!-- summary: Owned string, expression-scoped slicing, string_view, StringPool, string_builder, C interop -->
+<!-- summary: Owned string, statement-scoped slicing, string_view, StringPool, string_builder, C interop -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
 
 # String Handling
 
-Single owned `string` type with UTF-8 validation, expression-scoped slicing for zero-copy reads, `string_view` for lightweight stored indices, and `StringPool` for validated handle-based access.
+Single owned `string` type with UTF-8 validation, statement-scoped slicing for inline zero-copy access, `string_view` for lightweight stored indices, and `StringPool` for validated handle-based access.
 
 ## Type Categories
 
 | Rule | Description |
 |------|-------------|
 | **S1: Owned string** | `string` is the default. UTF-8 validated, move on assignment |
-| **S2: Expression slicing** | `s[i..j]` creates a temporary view valid only within the expression |
+| **S2: Statement-scoped slicing** | `s[i..j]` creates a temporary view valid only within the statement |
 | **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
@@ -35,9 +35,11 @@ Single owned `string` type with UTF-8 validation, expression-scoped slicing for 
 | **O3: Borrow inferred** | `func foo(s: string)` borrows for call duration (compiler infers mode) |
 | **O4: Explicit take** | `func foo(take s: string)` transfers ownership |
 
-## Expression-Scoped Slicing
+## Statement-Scoped Slicing
 
-`s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned.
+`s[i..j]` creates a temporary view valid only within the statement (S2). Released at the semicolon. Cannot be assigned, stored, or returned.
+
+Strings have internal heap buffers that can reallocate — same as Vec. This makes them growable sources under `mem.borrowing/B1`, regardless of whether the binding is `const` or `let`.
 
 | Context | Example | Valid? |
 |---------|---------|--------|
@@ -47,6 +49,8 @@ Single owned `string` type with UTF-8 validation, expression-scoped slicing for 
 | Variable assignment | `const x = s[0..5]` | Compile error |
 | Struct field | `Foo { field: s[0..5] }` | Compile error |
 | Return value | `return s[0..5]` | Compile error |
+
+> **Rejected alternative: block-scoped slicing for `const` strings.** A `const` string's buffer can't reallocate, so block-scoped views would be memory-safe. I rejected this because (1) it introduces a hidden view type distinct from owned `string` — functions receiving the view need borrow-of-borrow tracking, (2) it violates the "no storable references" principle that makes Rask's ownership model simple, and (3) the ergonomic win is small — `.to_string()` or `string_view` indices cover the stored-slice use case without borrow tracking. Strings are buffers. Buffers go in the growable bucket. One rule.
 
 ## The `string_view` Type
 
@@ -115,7 +119,7 @@ Iterators borrow for expression scope only. Cannot be stored.
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
 | `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
-| `slice.to_owned()` | `string` | Convert expression slice to owned (allocates) |
+| `slice.to_string()` | `string` | Convert expression slice to owned (allocates) |
 
 ## String Builder
 
@@ -232,17 +236,21 @@ unsafe {
 ## Error Messages
 
 ```
-ERROR [std.strings/S2]: cannot store expression-scoped slice
+ERROR [std.strings/S2]: cannot store statement-scoped slice
    |
 3  |  const x = s[0..5]
-   |            ^^^^^^^ expression-scoped slice cannot be assigned
+   |            ^^^^^^^ statement-scoped slice cannot be assigned
 
-WHY: Slices are temporary views valid only within the expression.
+WHY: String slices are temporary views into a heap buffer.
+     They are released at the semicolon (mem.borrowing/B1).
 
-FIX: Copy to owned string, or use string_view for stored indices:
+FIX 1: Copy to owned string:
 
-  const x = s[0..5].to_owned()   // allocate copy
-  const v = string_view(0, 5)    // store indices
+  const x = s[0..5].to_string()  // allocate copy
+
+FIX 2: Store indices instead:
+
+  const v = string_view(0, 5)    // store indices, resolve later
 ```
 
 ```
@@ -296,7 +304,7 @@ FIX: Accept string and let the compiler infer borrow mode:
 
 **S1 (single owned type):** One string type covers the common case. `string_view` and `StringPool` handle the uncommon stored-reference case without polluting the default API.
 
-**S2 (expression-scoped slicing):** The cost is more `.to_owned()` calls. I think that's better than lifetime annotations on string slices leaking into function signatures.
+**S2 (statement-scoped slicing):** Strings own heap buffers — they're growable sources, same as Vec. Slices are temporary views released at the semicolon. The cost is more `.to_string()` calls when you need a stored value, or `string_view` indices when you need lightweight stored references. I think that's better than introducing a hidden view type with borrow tracking — which is what block-scoped string slices would require. Consistency over cleverness: buffers get statement-scoped access, period.
 
 **S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
 
@@ -311,7 +319,7 @@ FIX: Accept string and let the compiler infer borrow mode:
 const s1 = "hello"
 const s2 = s1  // MOVE: s1 invalid
 
-process(s2[0..3])  // passes "hel" as expression-scoped borrow
+process(s2[0..3])  // passes "hel" as temporary slice
 
 const view = string_view(0, 3)
 process(s2[view])  // user ensures s2 is still valid
@@ -386,7 +394,7 @@ These will converge to spec behavior in the compiled version.
 
 ### See Also
 
-- `mem.borrowing` — Expression-scoped vs block-scoped view rules
+- `mem.borrowing` — Statement-scoped (B1) for strings, block-scoped (B2) for struct fields/arrays
 - `mem.pools` — Pool/Handle pattern used by StringPool
 - `std.iteration` — General iteration design
 - `std.path` — Path type wraps string

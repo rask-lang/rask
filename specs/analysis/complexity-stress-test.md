@@ -117,9 +117,9 @@ func update_entities(mutate world: GameWorld) -> () or Error {
     }
 
     for h in doomed {
-        const entity = world.entities.remove(h).unwrap()
+        const entity = world.entities.remove(h)!
         const body_handle = entity.body
-        const body = world.bodies.remove(body_handle).unwrap()
+        const body = world.bodies.remove(body_handle)!
         body.close(world.physics)
     }
 
@@ -198,13 +198,13 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
 <!-- test: skip -->
 ```rask
 // Today: 4-step dance
-const entity = world.entities.remove(h).unwrap()
-const body = world.bodies.remove(entity.body).unwrap()
+const entity = world.entities.remove(h)!
+const body = world.bodies.remove(entity.body)!
 body.close(world.physics)
 
 // Proposed: callback collocates cleanup
 world.entities.remove_with(h, |entity| {
-    const body = world.bodies.remove(entity.body).unwrap()
+    const body = world.bodies.remove(entity.body)!
     body.close(world.physics)
 })
 ```

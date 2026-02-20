@@ -12,7 +12,7 @@ cranelift = "0.114"
 cranelift-module = "0.114"
 cranelift-object = "0.114"
 cranelift-native = "0.114"
-cranelift-codegen = "0.114"
+cranelift-codegen = { version = "0.114", features = ["all-native-arch"] }
 cranelift-frontend = "0.114"
 
 target-lexicon = "0.12"

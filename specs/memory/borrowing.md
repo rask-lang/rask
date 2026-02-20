@@ -1,17 +1,19 @@
 <!-- id: mem.borrowing -->
 <!-- status: decided -->
-<!-- summary: Block-scoped views for fixed-size sources, statement-scoped for growable -->
+<!-- summary: Block-scoped views for fixed-layout sources (struct fields, arrays), statement-scoped for heap-buffered (Vec, Pool, Map, string) -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
 
 # Borrowing
 
-Views last as long as the source is stable. Collections (Vec, Pool, Map) release views at the end of the statement. Fixed sources (strings, struct fields) keep views until the block ends.
+Views last as long as the source is stable. Sources with heap buffers (collections, strings) release views at the end of the statement. Sources with fixed layout (struct fields, arrays) keep views until the block ends.
 
 | Rule | Source | View duration | Why |
 |------|--------|---------------|-----|
-| **B1: Growable = statement-scoped** | Vec, Pool, Map | Released at semicolon | Growing/shrinking could invalidate the view |
-| **B2: Fixed = block-scoped** | string, struct fields, arrays | Valid until block ends | Source can't change, so view stays valid |
+| **B1: Growable = statement-scoped** | Vec, Pool, Map, string | Released at semicolon | Heap buffer could reallocate, invalidating the view |
+| **B2: Fixed = block-scoped** | Struct fields, arrays | Valid until block ends | Fixed layout, no reallocation possible |
+
+The dividing line is **"has a heap buffer"** vs **"doesn't."** Strings own heap-allocated UTF-8 buffers — they go in B1 regardless of `const`/`let`. Struct fields and arrays have fixed in-place layout — they go in B2.
 
 ## Parameter and Receiver Borrows
 
@@ -39,7 +41,7 @@ func process(items: Vec<Item>) {
 
 ## Block-Scoped Views
 
-Views into fixed sources persist until the block ends.
+Views into fixed sources (struct fields, arrays) persist until the block ends.
 
 | Rule | Description |
 |------|-------------|
@@ -51,44 +53,51 @@ Views into fixed sources persist until the block ends.
 
 <!-- test: skip -->
 ```rask
-const line = read_line()
-const key = line[0..eq]        // Borrow, valid until block ends
-const value = line[eq+1..]     // Another borrow
-validate(key)                // OK: key still valid
-process(key, value)          // OK: both valid
+const point = get_point()
+const x = point.x               // View, valid until block ends
+const y = point.y               // Another view
+validate(x)                    // OK: x still valid
+process(x, y)                  // OK: both valid
 ```
 
 **Duration extension (S4):**
 <!-- test: skip -->
 ```rask
-const slice = get_string()[0..n]  // OK: temporary extended
+const x = get_point().x         // OK: temporary extended
 
 // Equivalent to:
-const _temp = get_string()
-const slice = _temp[0..n]
-// _temp lives as long as slice
+const _temp = get_point()
+const x = _temp.x
+// _temp lives as long as x
 ```
 
 Every temporary in the chain that the borrow transitively depends on is extended. Temporaries in inner blocks are NOT extended to outer blocks.
 
 <!-- test: compile-fail -->
 ```rask
-const slice = {
-    const s = get_string()
-    s[0..n]  // ERROR: s dies at block end
+const x = {
+    const p = get_point()
+    p.x  // ERROR: p dies at block end
 }
-// slice would outlive s
+// x would outlive p
 ```
 
-**Mutation blocked (S5):**
+**Strings are statement-scoped (B1), not block-scoped:**
 <!-- test: compile-fail -->
 ```rask
-const s = string.new()
-const slice = s[0..3]      // Read borrow active
-s.push('!')              // ERROR: cannot mutate while borrowed
-process(slice)
-// Block ends, borrow released
-s.push('!')              // OK: no active borrow
+const s = "hello world"
+const slice = s[0..5]    // ERROR: string slices are statement-scoped
+```
+
+Strings own heap buffers — same category as Vec. Use `.to_string()` or `string_view` indices:
+<!-- test: skip -->
+```rask
+const s = "hello world"
+const owned = s[0..5].to_string()  // copy to owned string
+process(owned)                     // OK: independent value
+
+const view = string_view(0, 5)     // or store indices
+process(s[view])                   // resolve inline
 ```
 
 ## Statement-Scoped Views
@@ -269,30 +278,24 @@ FIX: Copy the value out, or use a closure:
   })
 ```
 
-**Mutation during block-scoped view [S5]:**
+**Storing view from string [B1]:**
 ```
-ERROR [mem.borrowing/S5]: cannot mutate source while viewed
+ERROR [mem.borrowing/B1]: cannot store view from growable source
    |
-3  |  let slice = line[0..5]
-   |              ^^^^^^^^^ view created here
-4  |  line.push('!')
-   |  ^^^^^^^^^^^^^ cannot mutate - would invalidate view
-5  |  process(slice)
-   |          ^^^^^ view still active
+3  |  const slice = line[0..5]
+   |                ^^^^^^^^^^ string has heap buffer - view released at semicolon
 
-WHY: Mutating a string might reallocate, invalidating the view.
+WHY: Strings own heap buffers that can reallocate. Views into
+     heap buffers are statement-scoped (B1).
 
-FIX: Finish using the view first, or copy:
+FIX 1: Copy to owned string:
 
-  // Finish using view first
-  const slice = line[0..5]
-  process(slice)
-  line.push('!')  // OK - view ended
-
-  // Or work with a copy
   const copy = line[0..5].to_string()
-  line.push('!')  // OK - copy is independent
-  process(copy)
+
+FIX 2: Store indices:
+
+  const view = string_view(0, 5)
+  process(line[view])
 ```
 
 **Mutation during closure [W2]:**
@@ -331,7 +334,7 @@ FIX: Collect handles first, then mutate:
 
 | Aspect | Fixed Sources | Growable Sources |
 |--------|---------------|------------------|
-| Types | string, struct fields, arrays | Pool, Vec, Map |
+| Types | Struct fields, arrays | Pool, Vec, Map, string |
 | View duration | Until block ends (block-scoped) | Until semicolon (statement-scoped) |
 | **Parameter borrows** | Block-scoped (call duration) | Block-scoped (call duration) |
 | **Indexing into param** | Block-scoped (fixed source) | Statement-scoped (growable source) |
@@ -341,14 +344,14 @@ FIX: Collect handles first, then mutate:
 
 ## Examples
 
-### String Parsing (Block-Scoped)
+### String Parsing (Statement-Scoped)
 <!-- test: parse -->
 ```rask
 func parse_header(line: string) -> Option<(string, string)> {
     const colon = try line.find(':')
-    const key = line[0..colon].trim()      // Block-scoped view (S1)
-    const value = line[colon+1..].trim()   // Another block-scoped view
-    Some((key.to_string(), value.to_string()))
+    const key = line[0..colon].trim().to_string()      // Copy out (B1)
+    const value = line[colon+1..].trim().to_string()   // Copy out (B1)
+    Some((key, value))
 }
 ```
 
@@ -379,7 +382,7 @@ func update_combat(pool: Pool<Entity>) {
 
 **Why collections use statement-scoped views:** Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Block-scoped views would dangle. Statement-scoped views kill this bug class.
 
-**Why strings use block-scoped views:** Strings don't change structure once created. Can't insert/remove chars without making a new string. Source can't change, so views stay valid. This enables multi-statement string parsing without copying.
+**Why strings are statement-scoped, not block-scoped:** Strings own heap buffers — structurally the same as Vec. Block-scoped string views would require a hidden view type distinct from `string` and borrow-of-borrow tracking when views are passed to functions. This contradicts the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
 
 ### Patterns & Guidance
 
@@ -433,11 +436,11 @@ if health <= 0 {             // view already released
 
 <!-- test: skip -->
 ```rask
-// Block-scoped view (string)
-const key = line[0..eq]        // [view: until line 8]
-const value = line[eq+1..]     // [view: until line 8]
-validate(key)                // [uses view from line 3]
-process(key, value)          // [uses views from lines 3-4]
+// Block-scoped view (struct field)
+const pos = entity.position    // [view: until line 8]
+const vel = entity.velocity    // [view: until line 8]
+normalize(pos)               // [uses view from line 3]
+apply(pos, vel)              // [uses views from lines 3-4]
 }                            // line 8: views released
 ```
 
