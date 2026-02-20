@@ -130,6 +130,24 @@ impl Interpreter {
         (interp, buffer)
     }
 
+    /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
+    pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
+        let mut fields = HashMap::new();
+        fields.insert("os".to_string(), Value::String(Arc::new(Mutex::new(cfg.os.clone()))));
+        fields.insert("arch".to_string(), Value::String(Arc::new(Mutex::new(cfg.arch.clone()))));
+        fields.insert("env".to_string(), Value::String(Arc::new(Mutex::new(cfg.env.clone()))));
+        fields.insert("profile".to_string(), Value::String(Arc::new(Mutex::new(cfg.profile.clone()))));
+        fields.insert("debug".to_string(), Value::Bool(cfg.profile == "debug"));
+        fields.insert("features".to_string(), Value::Vec(Arc::new(Mutex::new(
+            cfg.features.iter().map(|f| Value::String(Arc::new(Mutex::new(f.clone())))).collect(),
+        ))));
+        self.env.define("cfg".to_string(), Value::Struct {
+            name: "Cfg".to_string(),
+            fields,
+            resource_id: None,
+        });
+    }
+
     /// Clones function/enum/method tables and captured environment for spawned thread.
     pub(crate) fn spawn_child(&self, captured_vars: HashMap<String, Value>) -> Self {
         let mut child = Interpreter::new();

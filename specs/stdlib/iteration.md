@@ -59,7 +59,7 @@ vec[i] = value            // Mutate in place
 |------|-------------|
 | **T1: Consumes collection** | `.take_all()` takes ownership (`take self`). Collection left empty |
 | **T2: Buffer transfer** | Collection's internal buffer transferred to iterator |
-| **T3: Early exit drops** | On `break`/`return`/`try`, remaining items dropped in LIFO order |
+| **T3: Early exit cleanup** | On `break`/`return`/`try`, remaining items cleaned up in LIFO order |
 
 | Collection | Method | Yields |
 |------------|--------|--------|
@@ -71,7 +71,7 @@ vec[i] = value            // Mutate in place
 ```rask
 for file in files.take_all() {
     if file.is_locked() {
-        break  // Remaining files DROPPED (LIFO order)
+        break  // Remaining files cleaned up (LIFO order)
     }
     try file.close()
 }
@@ -244,7 +244,7 @@ const to_remove = Vec.new()
 for (i, item) in vec.enumerate() {
     if item.expired { to_remove.push(i) }
 }
-for i in to_remove.iter().rev() { vec.swap_remove(i) }
+for i in to_remove.rev() { vec.swap_remove(i) }
 
 // 3. Filter via take_all
 const vec = vec.take_all().filter(|item| !item.expired).collect()

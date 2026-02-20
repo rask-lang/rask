@@ -42,7 +42,7 @@ pub fn cmd_fmt(path: &str, check_only: bool) {
     }
 }
 
-pub fn cmd_describe(path: &str, format: Format, show_all: bool) {
+pub fn cmd_api(path: &str, format: Format, show_all: bool) {
     let source = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => {

@@ -169,9 +169,9 @@ func kill(h: Handle<Player>) using players: Pool<Player> {
 ```rask
 // CC9: expression-scoped inherits context
 func process_all(handles: Vec<Handle<Player>>) using Pool<Player> {
-    handles.iter().for_each(|h| {
+    for h in handles {
         h.score += 10    // Pool<Player> context inherited
-    })
+    }
 }
 
 // CC10: storable closure cannot capture context

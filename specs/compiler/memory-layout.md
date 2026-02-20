@@ -228,7 +228,7 @@ struct VTable {
 |------|-------------|
 | **V1: Type info first** | Size and alignment at fixed offsets (0, 8) |
 | **V2: Drop function** | Drop function at offset 16 (null if type has trivial drop) |
-| **V3: Method order** | Methods stored in trait declaration order |
+| **V3: Method order** | Compatible methods stored in trait declaration order; incompatible methods (`Self` return, generic) have no slot |
 | **V4: Per-type vtable** | One vtable per (trait, concrete type) pair |
 | **V5: Static lifetime** | Vtables stored in read-only data section |
 
@@ -261,6 +261,30 @@ vtable = widget.vtable
 fn_ptr = vtable[24]  // offset of draw method
 fn_ptr(widget.data, canvas)
 ```
+
+### Heap Layout and Collection Thinning
+
+Owned `any Trait` values heap-allocate with the vtable pointer as a header:
+
+```
+Heap block:  [vtable_ptr | concrete_data...]
+              ^            ^
+              base         base + 8
+
+Fat pointer:  data = base + 8,  vtable = static vtable address
+```
+
+Collections can exploit this layout: store just the base address (8 bytes) instead of the full fat pointer (16 bytes). Reading an element inflates it back:
+
+```
+Thin (collection):  base_ptr                      →  8 bytes per element
+Fat (local/param):  (data = base+8, vtable = *base)  → 16 bytes
+
+Fat → thin:  base = data_ptr - 8
+Thin → fat:  data = base + 8, vtable = *(base)
+```
+
+Borrowed fat pointers (where `data_ptr` points to stack data for a function call) don't have the vtable header. Rask's ownership rules prevent storing borrowed values in collections, so the invariant holds.
 
 ## Arrays
 

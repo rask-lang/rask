@@ -81,6 +81,14 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         process::exit(1);
     }
 
+    // Validate target triple (XT1-XT3)
+    if let Some(ref t) = opts.target {
+        if let Err(e) = super::link::validate_target(t) {
+            eprintln!("{}: {}", output::error_label(), e);
+            process::exit(1);
+        }
+    }
+
     // Create output directory (OD1, OD2, OD3)
     let out_dir = output_dir(&root, &opts.profile, opts.target.as_deref());
     if let Err(e) = fs::create_dir_all(&out_dir) {
@@ -105,6 +113,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
     // === Validate manifest: version constraints + features (VR1-VR3, F1-F6, FG1-FG6) ===
     let manifest = registry.get(root_id).and_then(|p| p.manifest.clone());
+    let mut resolved_feature_names: Vec<String> = Vec::new();
     if let Some(ref manifest) = manifest {
         let mut validation_errors = 0;
 
@@ -163,6 +172,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             eprintln!("{}: {}", output::error_label(), err);
             validation_errors += 1;
         }
+        resolved_feature_names = features.enabled.iter().cloned().collect();
 
         if opts.verbose && !features.enabled.is_empty() {
             let mut names: Vec<_> = features.enabled.iter().collect();
@@ -574,7 +584,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                         // Fall through to normal compilation
                     } else {
                         let release = opts.profile == "release";
-                        match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release) {
+                        match super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
                             Ok(_) => {
                                 // Success — skip to report
                                 let elapsed = start.elapsed();
@@ -623,9 +633,22 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                             } else {
                                 rask_hidden_params::desugar_hidden_params(&mut all_decls);
 
+                                // Inject compiled stdlib functions + struct defs for mono/codegen
+                                let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+                                let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
+                                if !stdlib_fn_decls.is_empty() {
+                                    all_decls.extend(stdlib_fn_decls);
+                                }
+                                if !stdlib_struct_defs.is_empty() {
+                                    all_decls.extend(stdlib_struct_defs);
+                                }
+
                                 match rask_mono::monomorphize(&typed, &all_decls) {
                                     Ok(mono) => {
-                                        let comptime_globals = std::collections::HashMap::new();
+                                        let cfg = rask_comptime::CfgConfig::from_target_or_host(
+                                            opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
+                                        );
+                                        let comptime_globals = super::codegen::evaluate_comptime_globals(&all_decls, Some(&cfg));
                                         let target = opts.target.as_deref();
 
                                         let build_mode = if opts.profile == "release" {
@@ -635,7 +658,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                         };
                                         match super::compile::compile_to_object(
                                             &mono, &typed, &all_decls, &comptime_globals,
-                                            None, None, target, &obj_str, build_mode,
+                                            None, None, target, &obj_str, build_mode, Some(&cfg),
                                         ) {
                                             Ok(()) => {
                                                 // Cache the compiled object (XC1)
@@ -643,7 +666,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                                     let _ = super::cache::store(&cache_dir, &cache_key, &obj_path);
                                                 }
                                                 let release = opts.profile == "release";
-                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release) {
+                                                if let Err(e) = super::link::link_executable_with(&obj_str, &bin_str, &link_opts, release, opts.target.as_deref()) {
                                                     eprintln!("link error: {}", e);
                                                     total_errors += 1;
                                                 }

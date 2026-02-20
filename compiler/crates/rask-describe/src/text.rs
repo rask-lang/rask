@@ -26,6 +26,7 @@ pub fn format_text(desc: &ModuleDescription) -> String {
 
     for f in &desc.functions {
         out.push('\n');
+        format_doc(&mut out, &f.doc, "  ");
         out.push_str("  ");
         format_function(&mut out, f);
         out.push('\n');
@@ -33,6 +34,7 @@ pub fn format_text(desc: &ModuleDescription) -> String {
 
     for c in &desc.constants {
         out.push('\n');
+        format_doc(&mut out, &c.doc, "  ");
         if c.public {
             out.push_str("  public ");
         } else {
@@ -47,6 +49,7 @@ pub fn format_text(desc: &ModuleDescription) -> String {
 
     for e in &desc.externs {
         out.push('\n');
+        format_doc(&mut out, &e.doc, "  ");
         out.push_str(&format!("  extern \"{}\" func {}(", e.abi, e.name));
         format_params(&mut out, &e.params);
         out.push(')');
@@ -57,7 +60,19 @@ pub fn format_text(desc: &ModuleDescription) -> String {
     out
 }
 
+fn format_doc(out: &mut String, doc: &Option<String>, indent: &str) {
+    if let Some(d) = doc {
+        for line in d.lines() {
+            out.push_str(indent);
+            out.push_str("/// ");
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+}
+
 fn format_struct(out: &mut String, s: &StructDesc) {
+    format_doc(out, &s.doc, "  ");
     if s.public {
         out.push_str("  public struct ");
     } else {
@@ -80,6 +95,7 @@ fn format_struct(out: &mut String, s: &StructDesc) {
     }
 
     for m in &s.methods {
+        format_doc(out, &m.doc, "    ");
         out.push_str("    ");
         format_function(out, m);
         out.push('\n');
@@ -87,6 +103,7 @@ fn format_struct(out: &mut String, s: &StructDesc) {
 }
 
 fn format_enum(out: &mut String, e: &EnumDesc) {
+    format_doc(out, &e.doc, "  ");
     if e.public {
         out.push_str("  public enum ");
     } else {
@@ -123,6 +140,7 @@ fn format_enum(out: &mut String, e: &EnumDesc) {
     }
 
     for m in &e.methods {
+        format_doc(out, &m.doc, "    ");
         out.push_str("    ");
         format_function(out, m);
         out.push('\n');
@@ -130,6 +148,7 @@ fn format_enum(out: &mut String, e: &EnumDesc) {
 }
 
 fn format_trait(out: &mut String, t: &TraitDesc) {
+    format_doc(out, &t.doc, "  ");
     if t.public {
         out.push_str("  public trait ");
     } else {
@@ -139,6 +158,7 @@ fn format_trait(out: &mut String, t: &TraitDesc) {
     out.push('\n');
 
     for m in &t.methods {
+        format_doc(out, &m.doc, "    ");
         out.push_str("    ");
         format_function(out, m);
         out.push('\n');

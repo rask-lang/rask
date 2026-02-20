@@ -266,10 +266,70 @@ impl<'a> MirLowerer<'a> {
 
             // Comptime (compile-time evaluated)
             StmtKind::Comptime(stmts) => {
+                // Try to evaluate comptime if at compile time (CC1)
+                if let Some(ref interp_cell) = self.ctx.comptime_interp {
+                    if let Some(taken) = self.try_eval_comptime_if(stmts, interp_cell)? {
+                        for s in taken {
+                            self.lower_stmt(s)?;
+                        }
+                        return Ok(());
+                    }
+                }
                 for s in stmts {
                     self.lower_stmt(s)?;
                 }
                 Ok(())
+            }
+        }
+    }
+
+    /// Try to evaluate a `comptime if` block at compile time.
+    ///
+    /// Returns `Some(stmts)` with the taken branch's statements if the condition
+    /// evaluates successfully, or `None` if the block isn't a comptime if pattern.
+    fn try_eval_comptime_if<'b>(
+        &self,
+        stmts: &'b [Stmt],
+        interp_cell: &std::cell::RefCell<rask_comptime::ComptimeInterpreter>,
+    ) -> Result<Option<&'b [Stmt]>, LoweringError> {
+        // Pattern: comptime { if cond { then } else { else } }
+        if stmts.len() != 1 {
+            return Ok(None);
+        }
+        let inner = match &stmts[0].kind {
+            StmtKind::Expr(e) => e,
+            _ => return Ok(None),
+        };
+        let (cond, then_branch, else_branch) = match &inner.kind {
+            ExprKind::If { cond, then_branch, else_branch } => (cond, then_branch, else_branch),
+            _ => return Ok(None),
+        };
+
+        let mut interp = interp_cell.borrow_mut();
+        match interp.eval_expr(cond) {
+            Ok(val) => {
+                let taken = val.as_bool().unwrap_or(false);
+                if taken {
+                    // Lower the then branch — it's a Block(stmts) expression
+                    if let ExprKind::Block(block_stmts) = &then_branch.kind {
+                        Ok(Some(block_stmts))
+                    } else {
+                        Ok(None)
+                    }
+                } else if let Some(else_br) = else_branch {
+                    if let ExprKind::Block(block_stmts) = &else_br.kind {
+                        Ok(Some(block_stmts))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    // No else branch, condition is false — emit nothing
+                    Ok(Some(&[]))
+                }
+            }
+            Err(_) => {
+                // Condition not evaluable — fall through to normal lowering
+                Ok(None)
             }
         }
     }

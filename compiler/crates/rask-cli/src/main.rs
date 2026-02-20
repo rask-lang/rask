@@ -222,10 +222,11 @@ fn main() {
             }
             let release = cmd_args.contains(&"--release");
             let output_path = extract_flag_value(&cmd_args, "-o");
+            let target = extract_flag_value(&cmd_args, "--target");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
-            let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj"]);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["-o", "--link-lib", "--link-obj", "--target"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
@@ -233,7 +234,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release);
+            commands::codegen::cmd_compile(file, output_path.as_deref(), format, false, &link_opts, release, target.as_deref());
         }
         "test" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -489,14 +490,14 @@ fn main() {
             };
             commands::tools::cmd_fmt(file, check_only);
         }
-        "describe" => {
+        "api" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
-                help::print_describe_help();
+                help::print_api_help();
                 return;
             }
             if cmd_args.len() < 3 {
                 eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("describe"), output::arg("<file.rk>"));
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("api"), output::arg("<file.rk>"));
                 process::exit(1);
             }
             let show_all = cmd_args.iter().any(|a| *a == "--all");
@@ -508,7 +509,7 @@ fn main() {
                     process::exit(1);
                 }
             };
-            commands::tools::cmd_describe(file, format, show_all);
+            commands::tools::cmd_api(file, format, show_all);
         }
         "lint" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

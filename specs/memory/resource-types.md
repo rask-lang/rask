@@ -33,7 +33,7 @@ struct Connection {
 | **R2: Consume once** | Cannot consume same resource value twice |
 | **R3: Read allowed** | Can borrow for reading without consuming |
 | **R4: `ensure` satisfies** | Registering with `ensure` counts as consumption commitment |
-| **R5: Pool drop enforcement** | `Pool<Resource>` panics at runtime if dropped while non-empty |
+| **R5: Pool cleanup enforcement** | `Pool<Resource>` panics at runtime if non-empty when it goes out of scope |
 
 A resource is consumed by calling a method with `take self`, passing to a `take` parameter, or explicit consumption (e.g., `file.close()`).
 
@@ -228,11 +228,11 @@ const connections: Pool<Connection> = Pool.new()
 const h = try connections.insert(try Connection.open(addr))
 
 // Later: explicit consumption required
-const conn = connections.remove(h).unwrap()
+const conn = connections.remove(h)!
 try conn.close()
 ```
 
-**Pool<Resource> drop (R5):** If non-empty at drop, runtime panic. All elements must be consumed first.
+**Pool<Resource> cleanup (R5):** If non-empty at scope exit, runtime panic. All elements must be consumed first.
 
 <!-- test: skip -->
 ```rask
@@ -260,7 +260,7 @@ ERROR [mem.resources/R1]: resource not consumed before scope exit
 8  |  }
    |  ^ scope ends without consuming file
 
-WHY: @resource types must be explicitly consumed. They cannot be silently dropped.
+WHY: @resource types must be explicitly consumed. They cannot be silently discarded.
 
 FIX: Consume with a method or register with ensure:
 
@@ -278,10 +278,10 @@ ERROR [mem.resources/R2]: resource already consumed
    |      ^^^^ cannot consume again
 ```
 
-**Pool<Resource> drop panic [R5]:**
+**Pool<Resource> cleanup panic [R5]:**
 ```
-panic: Pool<File> dropped with 3 unconsumed resource elements.
-Resources must be explicitly consumed (use take_all() before drop).
+panic: Pool<File> has 3 unconsumed resource elements at scope exit.
+Resources must be explicitly consumed (use take_all() before scope ends).
 ```
 
 ## Edge Cases
@@ -353,7 +353,7 @@ func handle_connections(pool: Pool<Connection>) -> () or Error {
         try pool.modify(h, |conn| {
             if conn.should_close() {
                 // Remove and consume
-                const removed = pool.remove(h).unwrap()
+                const removed = pool.remove(h)!
                 try removed.close()
             }
             Ok(())
@@ -362,7 +362,7 @@ func handle_connections(pool: Pool<Connection>) -> () or Error {
 
     // Clean up remaining
     for h in pool.handles().collect<Vec<_>>() {
-        const conn = pool.remove(h).unwrap()
+        const conn = pool.remove(h)!
         try conn.close()
     }
 
@@ -443,7 +443,7 @@ func process_files(paths: Vec<string>) -> () or Error {
     }
 
     // Process all files...
-    for file in files.iter() {
+    for file in files {
         try process(file)
     }
 

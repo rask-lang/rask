@@ -48,6 +48,7 @@ impl fmt::Display for MirType {
                 Ok(())
             }
             MirType::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
+            MirType::TraitObject { trait_name } => write!(f, "any {}", trait_name),
         }
     }
 }
@@ -207,6 +208,22 @@ impl fmt::Display for MirStmt {
             }
             MirStmt::GlobalRef { dst, name } => {
                 write!(f, "_{} = global_ref(\"{}\")", dst.0, name)
+            }
+            MirStmt::TraitBox { dst, value, concrete_type, trait_name, .. } => {
+                write!(f, "_{} = trait_box({}, {} as any {})", dst.0, value, concrete_type, trait_name)
+            }
+            MirStmt::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
+                if let Some(d) = dst {
+                    write!(f, "_{} = ", d.0)?;
+                }
+                write!(f, "trait_call(_{}.{}@{}", trait_object.0, method_name, vtable_offset)?;
+                for arg in args {
+                    write!(f, ", {}", arg)?;
+                }
+                write!(f, ")")
+            }
+            MirStmt::TraitDrop { trait_object } => {
+                write!(f, "trait_drop(_{})", trait_object.0)
             }
         }
     }

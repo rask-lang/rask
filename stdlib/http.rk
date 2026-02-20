@@ -1,9 +1,38 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// HTTP/1.1 request parsing and response serialization.
-// Compiled as part of stdlib — functions here get native-compiled alongside user code.
+// HTTP types and stdlib implementations.
+// Struct definitions provide layouts for the monomorphizer.
+// Functions with bodies compile to native code, shadowing dispatch table entries.
 
-/// Placeholder: test that stdlib compilation infrastructure works.
-func stdlib_http_test(x: i64) -> i64 {
-    return x + 42
+struct HttpRequest {
+    public method: string
+    public path: string
+    public body: string
+    public headers: Map<string, string>
+}
+
+struct HttpResponse {
+    public status: i32
+    public headers: Map<string, string>
+    public body: string
+}
+
+// C runtime HTTP helpers
+extern "C" {
+    func rask_http_parse_request(fd: i64) -> i64
+    func rask_http_write_response(fd: i64, resp: i64) -> i64
+}
+
+// Parse HTTP/1.1 request from a TCP connection.
+// Shadows the dispatch entry for TcpConnection_read_http_request.
+func TcpConnection_read_http_request(conn_fd: i64) -> i64 or Error {
+    const result = unsafe { rask_http_parse_request(conn_fd) }
+    return Ok(result)
+}
+
+// Write HTTP/1.1 response to a TCP connection.
+// Shadows the dispatch entry for TcpConnection_write_http_response.
+func TcpConnection_write_http_response(conn_fd: i64, resp_ptr: i64) -> i64 or Error {
+    const result = unsafe { rask_http_write_response(conn_fd, resp_ptr) }
+    return Ok(result)
 }

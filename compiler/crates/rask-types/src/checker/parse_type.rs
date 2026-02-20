@@ -148,6 +148,11 @@ pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> 
         }
     }
 
+    // Trait object: "any TraitName"
+    if let Some(trait_name) = s.strip_prefix("any ") {
+        return Ok(Type::TraitObject { trait_name: trait_name.to_string() });
+    }
+
     if let Some(ty) = types.lookup(s) {
         return Ok(ty);
     }

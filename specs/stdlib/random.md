@@ -96,7 +96,7 @@ test "shuffle is deterministic with seed" {
 <!-- test: parse -->
 ```rask
 func weighted_choice(weights: Vec<f64>) -> i64 {
-    let r = random.f64() * weights.iter().sum()
+    let r = random.f64() * weights.sum()
     for i in 0..weights.len() {
         r -= weights[i]
         if r <= 0.0 { return i }

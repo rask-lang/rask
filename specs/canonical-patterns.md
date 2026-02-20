@@ -118,7 +118,7 @@ const vec = list.into_vec()
 | `to_*` | Non-consuming conversion | new type (may allocate) | `to_string()`, `to_lowercase()` |
 | `is_*` | Boolean predicate | `bool` | `is_empty()`, `is_valid()` |
 | `with_*` | Builder-style setter | `Self` | `with_capacity(n)` |
-| `*_or(default)` | Unwrap with fallback | `T` | `unwrap_or(0)`, `env_or(k, d)` |
+| `*_or(default)` | Value with fallback | `T` | `on_err(0)`, `env_or(k, d)` |
 | `try_*` | Fallible version | `T or E` | `try_parse()`, `try_connect()` |
 
 ### Domain-Specific Patterns
@@ -162,7 +162,7 @@ func get_user(id: i64) -> User or NotFound {
 ```
 
 **Anti-patterns:**
-- `unwrap()` in production code — crashes on error. Use `try` or `match`.
+- `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is Err(e)` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
 
@@ -221,7 +221,7 @@ match opt {
 ```
 
 **Anti-patterns:**
-- `unwrap()` without checking — crashes on None.
+- `x!` without checking — crashes on None.
 - Nested `if opt is Some` when `match` is clearer.
 
 See [types/optionals.md](types/optionals.md).

@@ -123,7 +123,7 @@
       "patterns": [
         {
           "name": "entity.name.function.method.rk",
-          "match": "(?<=\\.)\\s*(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try|func|let|const|struct|enum|trait|extend|import|type|test|public|take|own|mutate|unsafe|comptime|native|export|using|lazy|with|using|ensure|catch|select|step|or|as|where|none|null|benchmark|asm)(?=\\s*\\()"
+          "match": "(?<=\\.)\\s*(if|else|match|for|in|while|loop|break|continue|return|deliver|is|check|assert|try|func|let|const|struct|enum|trait|extend|import|type|test|public|take|own|mutate|unsafe|comptime|native|export|extern|using|lazy|with|using|ensure|catch|select|step|or|as|where|none|null|benchmark|asm)(?=\\s*\\()"
         },
         {
           "name": "entity.name.function.method.rk",

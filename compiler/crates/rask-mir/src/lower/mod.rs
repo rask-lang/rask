@@ -105,6 +105,12 @@ pub struct MirContext<'a> {
     /// Key: tracking path (e.g. "v", "self.history"), Value: element MirType.
     /// Shared across function lowerings via RefCell.
     pub shared_elem_types: std::cell::RefCell<HashMap<String, MirType>>,
+    /// Comptime interpreter for evaluating `comptime if` during lowering.
+    /// None in tests or when cfg is unavailable.
+    pub comptime_interp: Option<std::cell::RefCell<rask_comptime::ComptimeInterpreter>>,
+    /// Trait method lists for trait object dispatch.
+    /// Key: trait name, Value: method names in declaration order.
+    pub trait_methods: HashMap<String, Vec<String>>,
 }
 
 impl<'a> MirContext<'a> {
@@ -126,6 +132,8 @@ impl<'a> MirContext<'a> {
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
+            comptime_interp: None,
+            trait_methods: HashMap::new(),
         }
     }
 
@@ -163,6 +171,10 @@ impl<'a> MirContext<'a> {
             "string" => MirType::String,
             "()" | "" => MirType::Void,
             name => {
+                // "any TraitName" → TraitObject
+                if let Some(trait_name) = name.strip_prefix("any ") {
+                    return MirType::TraitObject { trait_name: trait_name.to_string() };
+                }
                 // "T or E" → Result<T, E>
                 if let Some(or_pos) = name.find(" or ") {
                     let ok_str = name[..or_pos].trim();
@@ -235,6 +247,7 @@ impl<'a> MirContext<'a> {
             Type::Char => MirType::Char,
             Type::String => MirType::String,
             Type::Never => MirType::Void,
+            Type::TraitObject { trait_name } => MirType::TraitObject { trait_name: trait_name.clone() },
             // Named types — look up in struct/enum layouts by name
             Type::UnresolvedNamed(name) => self.resolve_type_str(name),
             // Handle<T> → packed i64 handle
@@ -517,8 +530,14 @@ impl<'a> MirLowerer<'a> {
             ("cli_args", MirType::I64),
             ("io_read_line", MirType::I64),
             ("std_exit", MirType::Void),
-            ("fs_open", MirType::I64),
-            ("fs_create", MirType::I64),
+            ("fs_open", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("fs_create", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
             ("fs_write_file", MirType::Void),
             ("fs_exists", MirType::Bool),
             ("fs_canonicalize", MirType::I64),
@@ -533,7 +552,40 @@ impl<'a> MirLowerer<'a> {
             ("io_read_string", MirType::I64),
             ("io_write_string", MirType::I64),
             ("io_close_fd", MirType::Void),
-            ("net_tcp_listen", MirType::I64),
+            ("net_tcp_listen", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("TcpListener_accept", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("TcpConnection_read_http_request", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("TcpConnection_write_http_response", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            // Channel send/recv return status codes; typed as Result
+            // so `try` correctly wraps them via wrap_ok_into_slot.
+            ("Sender_send", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("Sender_try_send", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("Receiver_recv", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
+            ("Receiver_try_recv", MirType::Result {
+                ok: Box::new(MirType::I64),
+                err: Box::new(MirType::I64),
+            }),
             // Rng type methods
             ("Rng_new", MirType::I64),
             ("Rng_from_seed", MirType::I64),
@@ -2304,6 +2356,7 @@ mod tests {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
+            comptime_interp: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2351,6 +2404,7 @@ mod tests {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
+            comptime_interp: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2404,6 +2458,7 @@ mod tests {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
+            comptime_interp: None,
         };
 
         let decl = make_fn("f", vec![], None, vec![

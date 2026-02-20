@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <string.h>
+#include <signal.h>
 
 // Forward declaration — user's main function, exported from the Rask module as rask_main
 extern void rask_main(void);
@@ -437,21 +438,176 @@ void rask_io_close_fd(int64_t fd) {
     close((int)fd);
 }
 
-// Stub: read an HTTP request from a connection fd.
-// (kept for backward compat — will be replaced by Rask stdlib function)
-int64_t rask_net_read_http_request(int64_t conn_fd) {
-    int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 3);
-    req[0] = (int64_t)(uintptr_t)rask_string_from_bytes("GET", 3);
-    req[1] = (int64_t)(uintptr_t)rask_string_from_bytes("/", 1);
-    req[2] = (int64_t)(uintptr_t)rask_string_from_bytes("", 0);
+// ─── HTTP helpers (called from Rask stdlib via extern "C") ──────
+
+// Parse HTTP/1.1 request from socket fd. Returns pointer to
+// [method, path, body, headers] struct (4 x i64).
+int64_t rask_http_parse_request(int64_t conn_fd) {
+    RaskString *raw = rask_io_read_string(conn_fd, 65536);
+    if (!raw || rask_string_len(raw) == 0) {
+        // Empty request — return minimal struct
+        int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 4);
+        req[0] = (int64_t)(uintptr_t)rask_string_from_bytes("GET", 3);
+        req[1] = (int64_t)(uintptr_t)rask_string_from_bytes("/", 1);
+        req[2] = (int64_t)(uintptr_t)rask_string_from_bytes("", 0);
+        req[3] = (int64_t)(uintptr_t)rask_map_new(8, 8);
+        return (int64_t)(uintptr_t)req;
+    }
+
+    const char *data = rask_string_ptr(raw);
+    int64_t len = rask_string_len(raw);
+
+    // Find end of headers (\r\n\r\n)
+    int64_t header_end = -1;
+    for (int64_t i = 0; i + 3 < len; i++) {
+        if (data[i] == '\r' && data[i+1] == '\n' &&
+            data[i+2] == '\r' && data[i+3] == '\n') {
+            header_end = i;
+            break;
+        }
+    }
+    if (header_end < 0) header_end = len;
+
+    // Extract body (after \r\n\r\n)
+    RaskString *body;
+    if (header_end + 4 < len) {
+        body = rask_string_from_bytes(data + header_end + 4, len - header_end - 4);
+    } else {
+        body = rask_string_from_bytes("", 0);
+    }
+
+    // Parse request line: "METHOD PATH HTTP/1.1\r\n"
+    int64_t first_space = -1, second_space = -1;
+    for (int64_t i = 0; i < header_end; i++) {
+        if (data[i] == ' ') {
+            if (first_space < 0) first_space = i;
+            else if (second_space < 0) { second_space = i; break; }
+        }
+        if (data[i] == '\r') break;
+    }
+
+    RaskString *method, *path;
+    if (first_space > 0 && second_space > first_space) {
+        method = rask_string_from_bytes(data, first_space);
+        path = rask_string_from_bytes(data + first_space + 1,
+                                       second_space - first_space - 1);
+    } else {
+        method = rask_string_from_bytes("GET", 3);
+        path = rask_string_from_bytes("/", 1);
+    }
+
+    // Parse headers
+    RaskMap *headers = rask_map_new(8, 8);
+    int64_t line_start = -1;
+    // Find start of second line (after first \r\n)
+    for (int64_t i = 0; i < header_end; i++) {
+        if (data[i] == '\r' && i + 1 < header_end && data[i+1] == '\n') {
+            line_start = i + 2;
+            break;
+        }
+    }
+    if (line_start > 0) {
+        int64_t pos = line_start;
+        while (pos < header_end) {
+            // Find end of this header line
+            int64_t line_end = header_end;
+            for (int64_t i = pos; i < header_end; i++) {
+                if (data[i] == '\r') { line_end = i; break; }
+            }
+            // Find ": " separator
+            int64_t colon = -1;
+            for (int64_t i = pos; i + 1 < line_end; i++) {
+                if (data[i] == ':' && data[i+1] == ' ') { colon = i; break; }
+            }
+            if (colon > pos) {
+                RaskString *key = rask_string_from_bytes(data + pos, colon - pos);
+                RaskString *val = rask_string_from_bytes(data + colon + 2,
+                                                          line_end - colon - 2);
+                int64_t key_ptr = (int64_t)(uintptr_t)key;
+                int64_t val_ptr = (int64_t)(uintptr_t)val;
+                rask_map_insert(headers, &key_ptr, &val_ptr);
+            }
+            // Skip \r\n to next line
+            pos = line_end + 2;
+        }
+    }
+
+    // Build HttpRequest struct: [method, path, body, headers]
+    int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 4);
+    req[0] = (int64_t)(uintptr_t)method;
+    req[1] = (int64_t)(uintptr_t)path;
+    req[2] = (int64_t)(uintptr_t)body;
+    req[3] = (int64_t)(uintptr_t)headers;
     return (int64_t)(uintptr_t)req;
 }
 
-// Stub: write an HTTP response to a connection fd.
-int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
-    (void)conn_fd;
-    (void)response_ptr;
+// Format and write HTTP response to socket fd.
+// resp_ptr points to [status(i64), headers(Map*), body(String*)].
+int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
+    int64_t *resp = (int64_t *)(uintptr_t)response_ptr;
+    int64_t status = resp[0];
+    RaskMap *headers = (RaskMap *)(uintptr_t)resp[1];
+    RaskString *body = (RaskString *)(uintptr_t)resp[2];
+
+    const char *reason = "OK";
+    switch ((int)status) {
+        case 200: reason = "OK"; break;
+        case 201: reason = "Created"; break;
+        case 204: reason = "No Content"; break;
+        case 400: reason = "Bad Request"; break;
+        case 404: reason = "Not Found"; break;
+        case 500: reason = "Internal Server Error"; break;
+    }
+
+    int64_t body_len = body ? rask_string_len(body) : 0;
+
+    // Build response into a growable string
+    RaskString *out = rask_string_new();
+    char line_buf[256];
+    int n = snprintf(line_buf, sizeof(line_buf),
+                     "HTTP/1.1 %d %s\r\n", (int)status, reason);
+    rask_string_append_cstr(out, line_buf);
+
+    // Write user headers from Map
+    if (headers && rask_map_len(headers) > 0) {
+        RaskVec *keys = rask_map_keys(headers);
+        for (int64_t i = 0; i < rask_vec_len(keys); i++) {
+            int64_t *key_slot = (int64_t *)rask_vec_get(keys, i);
+            if (!key_slot) continue;
+            RaskString *key = (RaskString *)(uintptr_t)*key_slot;
+            int64_t *val_slot = (int64_t *)rask_map_get(headers, key_slot);
+            if (!val_slot) continue;
+            RaskString *val = (RaskString *)(uintptr_t)*val_slot;
+            rask_string_append_cstr(out, rask_string_ptr(key));
+            rask_string_append_cstr(out, ": ");
+            rask_string_append_cstr(out, rask_string_ptr(val));
+            rask_string_append_cstr(out, "\r\n");
+        }
+        rask_vec_free(keys);
+    }
+
+    // Content-Length header
+    n = snprintf(line_buf, sizeof(line_buf),
+                 "Content-Length: %lld\r\n\r\n", (long long)body_len);
+    rask_string_append_cstr(out, line_buf);
+
+    // Write header + body
+    rask_io_write_string(conn_fd, (int64_t)(uintptr_t)out);
+    if (body_len > 0) {
+        rask_io_write_string(conn_fd, (int64_t)(uintptr_t)body);
+    }
+
+    rask_string_free(out);
     return 0;
+}
+
+// Legacy stubs — kept for backward compat, but shadowed by Rask stdlib functions
+int64_t rask_net_read_http_request(int64_t conn_fd) {
+    return rask_http_parse_request(conn_fd);
+}
+
+int64_t rask_net_write_http_response(int64_t conn_fd, int64_t response_ptr) {
+    return rask_http_write_response(conn_fd, response_ptr);
 }
 
 // Stub: create a Map from a static array of key-value pairs.
@@ -736,6 +892,7 @@ int64_t rask_json_decode(const RaskString *s) {
 // ─── Entry point ──────────────────────────────────────────────────
 
 int main(int argc, char **argv) {
+    signal(SIGPIPE, SIG_IGN);
     rask_args_init(argc, argv);
     rask_main();
     return 0;

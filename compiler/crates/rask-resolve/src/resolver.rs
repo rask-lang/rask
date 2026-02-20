@@ -153,6 +153,7 @@ impl Resolver {
             ("net", BuiltinModuleKind::Net),
             ("core", BuiltinModuleKind::Core),
             ("async", BuiltinModuleKind::Async),
+            ("cfg", BuiltinModuleKind::Cfg),
         ];
 
         for (name, module) in builtin_modules {

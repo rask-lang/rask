@@ -11,6 +11,88 @@ use std::collections::HashMap;
 use thiserror::Error;
 
 // ============================================================================
+// Build Configuration (CT11-CT16)
+// ============================================================================
+
+/// Build configuration for conditional compilation.
+///
+/// Provides `cfg.os`, `cfg.arch`, `cfg.env`, `cfg.profile`, `cfg.debug`,
+/// and `cfg.features` for use in `comptime if` blocks.
+#[derive(Debug, Clone)]
+pub struct CfgConfig {
+    pub os: String,
+    pub arch: String,
+    pub env: String,
+    pub profile: String,
+    pub features: Vec<String>,
+}
+
+impl CfgConfig {
+    /// Detect from the current host platform.
+    pub fn from_host(profile: &str, features: Vec<String>) -> Self {
+        Self {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            env: detect_env(),
+            profile: profile.to_string(),
+            features,
+        }
+    }
+
+    /// Parse from a target triple (e.g. "x86_64-linux-musl").
+    pub fn from_target(target: &str, profile: &str, features: Vec<String>) -> Self {
+        let parts: Vec<&str> = target.splitn(3, '-').collect();
+        Self {
+            arch: parts.first().unwrap_or(&"unknown").to_string(),
+            os: parts.get(1).unwrap_or(&"unknown").to_string(),
+            env: parts.get(2).unwrap_or(&"gnu").to_string(),
+            profile: profile.to_string(),
+            features,
+        }
+    }
+
+    /// Dispatch based on whether a target triple is provided.
+    pub fn from_target_or_host(target: Option<&str>, profile: &str, features: Vec<String>) -> Self {
+        match target {
+            Some(t) => Self::from_target(t, profile, features),
+            None => Self::from_host(profile, features),
+        }
+    }
+
+    /// Convert to a `ComptimeValue::Struct` for injection into the comptime environment.
+    pub fn to_comptime_value(&self) -> ComptimeValue {
+        let mut fields = HashMap::new();
+        fields.insert("os".to_string(), ComptimeValue::String(self.os.clone()));
+        fields.insert("arch".to_string(), ComptimeValue::String(self.arch.clone()));
+        fields.insert("env".to_string(), ComptimeValue::String(self.env.clone()));
+        fields.insert("profile".to_string(), ComptimeValue::String(self.profile.clone()));
+        fields.insert("debug".to_string(), ComptimeValue::Bool(self.profile == "debug"));
+        fields.insert(
+            "features".to_string(),
+            ComptimeValue::Array(
+                self.features.iter().map(|f| ComptimeValue::String(f.clone())).collect(),
+            ),
+        );
+        ComptimeValue::Struct {
+            name: "Cfg".to_string(),
+            fields,
+        }
+    }
+}
+
+fn detect_env() -> String {
+    if cfg!(target_env = "musl") {
+        "musl".to_string()
+    } else if cfg!(target_env = "msvc") {
+        "msvc".to_string()
+    } else if cfg!(target_os = "linux") {
+        "gnu".to_string()
+    } else {
+        "unknown".to_string()
+    }
+}
+
+// ============================================================================
 // Comptime Values
 // ============================================================================
 
@@ -408,6 +490,11 @@ impl ComptimeInterpreter {
         }
     }
 
+    /// Inject the `cfg` build configuration into the comptime environment.
+    pub fn inject_cfg(&mut self, cfg: &CfgConfig) {
+        self.env.define("cfg".to_string(), cfg.to_comptime_value());
+    }
+
     /// Register comptime functions from declarations.
     pub fn register_functions(&mut self, decls: &[Decl]) {
         for decl in decls {
@@ -726,7 +813,16 @@ impl ComptimeInterpreter {
         Ok(ControlFlow::Normal(value))
     }
 
-    fn eval_block(&mut self, stmts: &[Stmt]) -> ComptimeResult<ControlFlow> {
+    /// Evaluate a block of statements and return the final value.
+    pub fn eval_block_to_value(&mut self, stmts: &[Stmt]) -> ComptimeResult<ComptimeValue> {
+        match self.eval_block(stmts)? {
+            ControlFlow::Normal(v) | ControlFlow::Return(v) => Ok(v),
+            ControlFlow::Break(_) => Err(ComptimeError::BreakOutsideLoop),
+            ControlFlow::Continue => Err(ComptimeError::ContinueOutsideLoop),
+        }
+    }
+
+    pub(crate) fn eval_block(&mut self, stmts: &[Stmt]) -> ComptimeResult<ControlFlow> {
         let mut last_value = ComptimeValue::Unit;
 
         for stmt in stmts {

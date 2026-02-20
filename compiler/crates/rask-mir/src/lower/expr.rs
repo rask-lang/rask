@@ -234,7 +234,11 @@ impl<'a> MirLowerer<'a> {
                             }
                         };
                         let result_ty = self.lookup_expr_type(expr)
-                            .filter(|t| !matches!(t, MirType::Ptr))
+                            .filter(|t| match t {
+                                MirType::Result { .. } => true,
+                                MirType::Option(_) => true,
+                                _ => false,
+                            })
                             .unwrap_or(fallback_ty);
                         let result_local = self.builder.alloc_temp(result_ty.clone());
                         self.builder.push_stmt(MirStmt::Store {
@@ -492,6 +496,16 @@ impl<'a> MirLowerer<'a> {
                             return Ok((MirOperand::Local(result_local), MirType::I64));
                         }
 
+                        // Map.from([("k", "v"), ...]) → Map.new() + Map.insert() per pair
+                        {
+                            let base = name.split('<').next().unwrap_or(name);
+                            if base == "Map" && method == "from" && args.len() == 1 {
+                                if let ExprKind::Array(elems) = &args[0].expr.kind {
+                                    return self.lower_map_from_pairs(elems);
+                                }
+                            }
+                        }
+
                         // Static method on a type: Vec.new(), string.new()
                         let is_known_type = self.ctx.find_struct(name).is_some()
                             || self.ctx.find_enum(name).is_some()
@@ -524,8 +538,20 @@ impl<'a> MirLowerer<'a> {
 
                 let (obj_op, obj_ty) = self.lower_expr(object)?;
 
-                // Raw pointer methods: dispatch directly to RawPtr_* C functions
-                if matches!(obj_ty, MirType::Ptr) {
+                // Raw pointer methods: dispatch directly to RawPtr_* C functions.
+                // Skip for smart pointer types (Shared, Channel, etc.) that also use MirType::Ptr.
+                let is_smart_ptr = self.ctx.lookup_raw_type(object.id)
+                    .and_then(|ty| super::MirContext::stdlib_type_prefix(ty))
+                    .map(|prefix| matches!(prefix, "Shared" | "Channel" | "Sender" | "Receiver"))
+                    .unwrap_or(false)
+                    || if let ExprKind::Ident(var_name) = &object.kind {
+                        self.local_type_prefix.get(var_name)
+                            .map(|p| matches!(p.as_str(), "Shared" | "Channel" | "Sender" | "Receiver"))
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    };
+                if matches!(obj_ty, MirType::Ptr) && !is_smart_ptr {
                     let ptr_method = match method.as_str() {
                         "read" | "write" | "add" | "sub" | "offset"
                         | "is_null" | "is_aligned" | "is_aligned_to" | "align_offset" => {
@@ -688,6 +714,38 @@ impl<'a> MirLowerer<'a> {
                             MirOperand::Constant(MirConst::Int(*len as i64)),
                             MirType::I64,
                         ));
+                    }
+                }
+
+                // Trait object dispatch: method call on `any Trait`
+                if let MirType::TraitObject { ref trait_name } = obj_ty {
+                    if let Some(methods) = self.ctx.trait_methods.get(trait_name) {
+                        if let Some(idx) = methods.iter().position(|m| m == method) {
+                            let vtable_offset = 24 + (idx as u32) * 8;
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            // Resolve return type from type checker or fall back to i64
+                            let ret_ty = self.ctx.lookup_raw_type(expr.id)
+                                .map(|t| self.ctx.type_to_mir(t))
+                                .unwrap_or(MirType::I64);
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::TraitCall {
+                                dst: Some(result_local),
+                                trait_object: match &obj_op {
+                                    MirOperand::Local(id) => *id,
+                                    _ => return Err(LoweringError::InvalidConstruct(
+                                        "trait object must be a local variable".to_string()
+                                    )),
+                                },
+                                method_name: method.clone(),
+                                vtable_offset,
+                                args: arg_operands,
+                            });
+                            return Ok((MirOperand::Local(result_local), ret_ty));
+                        }
                     }
                 }
 
@@ -1510,6 +1568,33 @@ impl<'a> MirLowerer<'a> {
 
             // Cast
             ExprKind::Cast { expr, ty } => {
+                // Trait object boxing: `value as any Trait`
+                if let Some(trait_name) = ty.strip_prefix("any ") {
+                    let (val, concrete_mir_ty) = self.lower_expr(expr)?;
+
+                    // Determine concrete type name for vtable lookup.
+                    // Prefer MIR-level struct layout name ("Dog") over raw Type
+                    // which formats as "<type#N>" for Named types.
+                    let concrete_type = self.mir_type_name(&concrete_mir_ty)
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    let concrete_size = self.elem_size_for_type(&concrete_mir_ty) as u32;
+                    let vtable_name = format!(".vtable.{}__{}", concrete_type, trait_name);
+                    let trait_obj_ty = MirType::TraitObject { trait_name: trait_name.to_string() };
+                    let result_local = self.builder.alloc_temp(trait_obj_ty.clone());
+
+                    self.builder.push_stmt(MirStmt::TraitBox {
+                        dst: result_local,
+                        value: val,
+                        concrete_type: concrete_type.clone(),
+                        trait_name: trait_name.to_string(),
+                        concrete_size,
+                        vtable_name,
+                    });
+
+                    return Ok((MirOperand::Local(result_local), trait_obj_ty));
+                }
+
                 let (val, _) = self.lower_expr(expr)?;
                 let target_ty = self.ctx.resolve_type_str(ty);
                 let result_local = self.builder.alloc_temp(target_ty.clone());
@@ -1593,8 +1678,31 @@ impl<'a> MirLowerer<'a> {
                 self.lower_block(body)
             }
 
-            // Comptime expression
+            // Comptime expression — try compile-time evaluation (CC1)
             ExprKind::Comptime { body } => {
+                if let Some(ref interp_cell) = self.ctx.comptime_interp {
+                    // Try evaluating the entire comptime block
+                    let mut interp = interp_cell.borrow_mut();
+                    if let Ok(val) = interp.eval_block_to_value(body) {
+                        return Ok(match val {
+                            rask_comptime::ComptimeValue::Bool(b) => {
+                                (MirOperand::Constant(MirConst::Bool(b)), MirType::Bool)
+                            }
+                            rask_comptime::ComptimeValue::I64(n) => {
+                                (MirOperand::Constant(MirConst::Int(n)), MirType::I64)
+                            }
+                            rask_comptime::ComptimeValue::String(s) => {
+                                (MirOperand::Constant(MirConst::String(s)), MirType::String)
+                            }
+                            _ => {
+                                // Complex value — fall through to normal lowering
+                                drop(interp);
+                                return self.lower_block(body);
+                            }
+                        });
+                    }
+                    drop(interp);
+                }
                 self.lower_block(body)
             }
 
@@ -2929,6 +3037,43 @@ impl<'a> MirLowerer<'a> {
         Ok((MirOperand::Local(out), out_ty))
     }
 
+    /// Expand `Map.from([(k, v), ...])` into `Map.new()` + `Map.insert()` per pair.
+    fn lower_map_from_pairs(
+        &mut self,
+        elems: &[Expr],
+    ) -> Result<TypedOperand, LoweringError> {
+        // Create new map
+        let map_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(map_local),
+            func: FunctionRef::internal("Map_new".to_string()),
+            args: vec![],
+        });
+
+        // Insert each (key, value) pair
+        for elem in elems {
+            let (key_op, val_op) = match &elem.kind {
+                ExprKind::Tuple(parts) if parts.len() == 2 => {
+                    let (k, _) = self.lower_expr(&parts[0])?;
+                    let (v, _) = self.lower_expr(&parts[1])?;
+                    (k, v)
+                }
+                _ => {
+                    // Non-tuple element — lower as value and skip
+                    let _ = self.lower_expr(elem)?;
+                    continue;
+                }
+            };
+            self.builder.push_stmt(MirStmt::Call {
+                dst: None,
+                func: FunctionRef::internal("Map_insert".to_string()),
+                args: vec![MirOperand::Local(map_local), key_op, val_op],
+            });
+        }
+
+        Ok((MirOperand::Local(map_local), MirType::I64))
+    }
+
     /// Expand `json.encode(struct_val)` into a sequence of json_buf_* calls.
     fn lower_json_encode_struct(
         &mut self,
@@ -3082,7 +3227,7 @@ impl<'a> MirLowerer<'a> {
             MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
             MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
             | MirType::Result { .. } | MirType::Union(_)
-            | MirType::SimdVector { .. } => ty.size() as i64,
+            | MirType::SimdVector { .. } | MirType::TraitObject { .. } => ty.size() as i64,
             MirType::Void => 0,
         }
     }

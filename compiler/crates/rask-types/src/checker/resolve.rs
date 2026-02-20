@@ -461,6 +461,48 @@ impl TypeChecker {
                     }
                 }
             }
+            // Trait object: look up method in trait definition
+            Type::TraitObject { ref trait_name } => {
+                let trait_name = trait_name.clone();
+                let checker = crate::traits::TraitChecker::new(&self.types);
+                let trait_methods = checker.get_trait_methods_public(&trait_name);
+
+                if let Some(method_sig) = trait_methods.iter().find(|m| m.name == method) {
+                    // TR2: reject methods returning Self
+                    if matches!(&method_sig.ret, Type::UnresolvedNamed(n) if n == "Self") {
+                        return Err(TypeError::TraitObjectSelfReturn {
+                            trait_name,
+                            method,
+                            span,
+                        });
+                    }
+
+                    if method_sig.params.len() != args.len() {
+                        return Err(TypeError::ArityMismatch {
+                            expected: method_sig.params.len(),
+                            found: args.len(),
+                            span,
+                        });
+                    }
+
+                    let mut progress = false;
+                    for ((param_ty, _mode), arg) in method_sig.params.iter().zip(args.iter()) {
+                        if self.unify(param_ty, arg, span)? {
+                            progress = true;
+                        }
+                    }
+                    if self.unify(&method_sig.ret, &ret, span)? {
+                        progress = true;
+                    }
+                    Ok(progress)
+                } else {
+                    Err(TypeError::NoSuchMethod {
+                        ty,
+                        method,
+                        span,
+                    })
+                }
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,

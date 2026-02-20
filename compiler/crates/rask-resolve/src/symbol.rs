@@ -174,6 +174,8 @@ pub enum BuiltinModuleKind {
     Core,
     /// async - async runtime (spawn, etc.)
     Async,
+    /// cfg - compile-time build configuration (CT11-CT16)
+    Cfg,
 }
 
 /// A declared symbol.

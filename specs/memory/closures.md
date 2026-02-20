@@ -129,7 +129,7 @@ const f = items.filter(|i| vec[*i].active)
 
 ## Scoped Closures
 
-Closures that capture block-scoped borrows (slices, struct field references). Can't escape the block where the borrowed data lives.
+Closures that capture block-scoped borrows (struct field references, array views). Can't escape the block where the borrowed data lives.
 
 | Rule | Description |
 |------|-------------|
@@ -140,16 +140,16 @@ The compiler determines scope constraints through local analysis only:
 
 | Step | What Happens |
 |------|--------------|
-| Borrow creation | `s[0..3]` creates a slice tied to `s`'s block |
+| Borrow creation | `entity.name` creates a view tied to `entity`'s block |
 | Closure creation | Compiler sees the closure captures a borrow — marks it scoped |
 | Assignment check | Scoped closures must be assigned in the same or inner block |
 | Return/store check | Scoped closures cannot be returned, stored in structs, or sent cross-task |
 
 <!-- test: skip -->
 ```rask
-const s = get_string()
-const slice = s[0..3]               // scoped to s's block
-const f = || process(slice)         // f inherits scope constraint
+const entity = get_entity()
+const name = entity.name            // block-scoped borrow (struct field)
+const f = || process(name)         // f inherits scope constraint
 f()                                 // OK: called in same scope
 return f                            // ERROR: cannot escape scope (CL5)
 ```
@@ -160,9 +160,9 @@ Assigning to outer variable:
 ```rask
 let outer_closure
 {
-    const s = "hello"
-    const slice = s[0..3]
-    outer_closure = || process(slice)  // ERROR: outer_closure outlives s (CL4)
+    const entity = get_entity()
+    const name = entity.name
+    outer_closure = || process(name)  // ERROR: outer_closure outlives entity (CL4)
 }
 ```
 
@@ -170,8 +170,8 @@ Storing in struct:
 
 <!-- test: compile-fail -->
 ```rask
-const slice = s[0..3]
-const f = || process(slice)
+const name = entity.name
+const f = || process(name)
 const handler = Handler { callback: f }  // ERROR: struct fields cannot hold scope-constrained closures (CL5)
 ```
 
@@ -179,8 +179,8 @@ Passing to immediate consumer:
 
 <!-- test: skip -->
 ```rask
-const slice = s[0..3]
-const f = || process(slice)
+const name = entity.name
+const f = || process(name)
 execute_now(f)                    // OK: execute_now consumes f immediately
 ```
 
@@ -203,8 +203,8 @@ func store_callback<F: Fn()>(f: F) {
     const holder = Holder { callback: f }  // ERROR if F is scoped (CL5)
 }
 
-const slice = s[0..3]
-const greet = || print(slice)   // scoped (captures a borrow)
+const name = entity.name
+const greet = || print(name)   // scoped (captures a borrow)
 
 run_twice(greet)              // OK: run_twice doesn't store F
 store_callback(greet)         // ERROR: store_callback tries to store F
@@ -230,7 +230,7 @@ FIX 1: Use the closure immediately:
 
 FIX 2: Capture by value instead:
    |
-5  |  let active_set: Set<usize> = items.iter()
+5  |  let active_set: Set<usize> = items
    |      .filter(|i| vec[*i].active).collect()
    |  let f = items.filter(|i| active_set.contains(i))
 ```
@@ -239,15 +239,15 @@ FIX 2: Capture by value instead:
 ```
 ERROR [mem.closures/CL5]: scoped closure cannot escape
    |
-3  |  let slice = s[0..3]
-   |              ^^^^^^^ borrowed from 's' (line 2)
-4  |  let f = || process(slice)
-   |          ^^^^^^^^^^^^^^^^^ closure captures scoped borrow
+3  |  const name = entity.name
+   |               ^^^^^^^^^^^ borrowed from 'entity' (line 2)
+4  |  const f = || process(name)
+   |            ^^^^^^^^^^^^^^^^^ closure captures scoped borrow
 5  |  return f
-   |  ^^^^^^^^ cannot escape scope where 's' lives
+   |  ^^^^^^^^ cannot escape scope where 'entity' lives
 
-WHY: 'slice' is borrowed from 's'. Returning the closure would let
-     'slice' outlive 's' (use-after-free).
+WHY: 'name' is borrowed from 'entity'. Returning the closure would let
+     'name' outlive 'entity' (use-after-free).
 
 FIX 1: Use in same scope:
    |
@@ -255,8 +255,8 @@ FIX 1: Use in same scope:
 
 FIX 2: Capture owned data instead:
    |
-3  |  let owned = s[0..3].to_string()
-4  |  let f = || process(owned)
+3  |  const name = entity.name.clone()
+4  |  const f = || process(name)
 5  |  return f                          // OK: no scoped borrows
 ```
 
@@ -266,21 +266,21 @@ ERROR [mem.closures/CL4]: closure outlives its captured borrow
    |
 1  |  let outer_closure
    |      ^^^^^^^^^^^^^ declared here (outer scope)
-3  |      let s = "hello"
-4  |      let slice = s[0..3]
-5  |      outer_closure = || process(slice)
-   |                      ^^^^^^^^^^^^^^^^^ captures 'slice' (borrowed from 's')
+3  |      const entity = get_entity()
+4  |      const name = entity.name
+5  |      outer_closure = || process(name)
+   |                      ^^^^^^^^^^^^^^^^ captures 'name' (borrowed from 'entity')
 6  |  }
-   |   ^ 's' dropped here
+   |   ^ 'entity' dropped here
 
-WHY: 'outer_closure' lives longer than 's', but it captures 'slice'
-     which borrows from 's'.
+WHY: 'outer_closure' lives longer than 'entity', but it captures 'name'
+     which borrows from 'entity'.
 
 FIX: Create the closure inside the scope:
    |
-3  |      let s = "hello"
-4  |      let slice = s[0..3]
-5  |      let inner_closure = || process(slice)
+3  |      const entity = get_entity()
+4  |      const name = entity.name
+5  |      const inner_closure = || process(name)
 6  |      inner_closure()
 ```
 
@@ -289,12 +289,12 @@ FIX: Create the closure inside the scope:
 ERROR [mem.closures/CL10]: cannot store scoped type
    |
 // in store_callback<F>:
-3  |  let holder = Holder { callback: f }
-   |                        ^^^^^^^^^^^^ F is scope-constrained
+3  |  const holder = Holder { callback: f }
+   |                          ^^^^^^^^^^^^ F is scope-constrained
 
 Note: called with scoped closure at:
 10 |  store_callback(greet)
-   |                 ^^^^^ 'greet' captures borrowed 'slice' (line 8)
+   |                 ^^^^^ 'greet' captures borrowed 'name' (line 8)
 
 FIX 1: Use a function that doesn't store:
    |
@@ -302,8 +302,8 @@ FIX 1: Use a function that doesn't store:
 
 FIX 2: Remove the borrow from the closure:
    |
-8  |  let owned = s[0..3].to_string()
-9  |  let greet = || print(owned)
+8  |  const name = entity.name.clone()
+9  |  const greet = || print(name)
 10 |  store_callback(greet)         // OK
 ```
 
@@ -357,7 +357,7 @@ This is conservative local analysis: no cross-function tracking, no dataflow. A 
 
 **CL2 (inline closures):** Iterator chains like `.filter(|x| ...).map(|x| ...)` need access to surrounding scope without the overhead of capturing. Inline closures give you this with the constraint that the closure can't escape the expression. This covers the most common closure pattern (iterator adapters) with zero ceremony.
 
-**CL3–CL5 (scoped closures):** A stored closure that happens to capture a borrow becomes scoped. This is enforced through type-level scope markers, not escape analysis. All checks are local to the function — no cross-function tracking needed.
+**CL3–CL5 (scoped closures):** A stored closure that captures a block-scoped borrow (struct field, array element) becomes scoped. This is enforced through type-level scope markers, not escape analysis. All checks are local to the function — no cross-function tracking needed.
 
 **CL10 (generic propagation):** Functions don't need to declare "I consume inline" vs "I store." The constraint propagates through generics when specialized code is generated, and violations surface where storage is attempted. This keeps function signatures clean.
 
@@ -369,7 +369,7 @@ A useful way to think about the three closure kinds:
 |------|----------|-------------|
 | Stored | Backpack | Packs copies of everything. Can go anywhere. |
 | Inline | Hand-carry | Holding items directly. Must use now. |
-| Scoped | Day-trip bag | Packs some borrowed items. Can't leave the area those items came from. |
+| Scoped | Day-trip bag | Borrows some items from nearby. Can't leave the area those items came from. |
 
 ### Patterns & Guidance
 
@@ -426,7 +426,7 @@ app.run_with_state(state)
 | Event handler (stored) | Stored + params | `btn.on_click(\|e, app\| app[h].x += 1)` |
 | Async callback | Stored + params | `task.then(\|result, state\| state[h] = result)` |
 | Pure transformation | Either | `\|x\| x * 2` (no outer access) |
-| Closure with slice (same scope) | Scoped | `let f = \|\| process(slice); f()` |
+| Closure with field borrow (same scope) | Scoped | `const f = \|\| process(entity.name); f()` |
 
 ### IDE Integration
 
@@ -440,7 +440,7 @@ On hover over a closure, show captures:
 
 ```
 Closure captures:
-  slice: borrowed from 's' (line 3) -> makes closure scoped
+  name: borrowed from 'entity' (line 3) -> makes closure scoped
   count: copied (i32, 4 bytes)
 
 Kind: Scoped (to line 3)
@@ -457,6 +457,6 @@ When the cursor is in a scoped closure, the IDE highlights the block boundary it
 ### See Also
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
-- [Borrowing](borrowing.md) -- Block-scoped views and expression-scoped access (`mem.borrowing`)
+- [Borrowing](borrowing.md) -- Block-scoped (struct fields) and statement-scoped (buffers) access (`mem.borrowing`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must be storable (`conc.sync`)

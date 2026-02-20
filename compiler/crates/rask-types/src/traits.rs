@@ -194,6 +194,11 @@ impl<'a> TraitChecker<'a> {
         errors
     }
 
+    /// Get methods required by a trait (public accessor for trait object resolution).
+    pub fn get_trait_methods_public(&self, trait_name: &str) -> Vec<MethodSig> {
+        self.get_trait_methods(trait_name).unwrap_or_default()
+    }
+
     /// Get methods required by a trait.
     fn get_trait_methods(&self, trait_name: &str) -> Result<Vec<MethodSig>, TraitError> {
         self.trait_methods

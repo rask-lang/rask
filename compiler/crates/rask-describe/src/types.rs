@@ -29,6 +29,8 @@ pub struct ModuleDescription {
 #[derive(Debug, Serialize)]
 pub struct FunctionDesc {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub public: bool,
     pub params: Vec<ParamDesc>,
     pub returns: ReturnsDesc,
@@ -67,6 +69,8 @@ pub struct ReturnsDesc {
 #[derive(Debug, Serialize)]
 pub struct StructDesc {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub public: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_params: Option<Vec<String>>,
@@ -89,6 +93,8 @@ pub struct FieldDesc {
 #[derive(Debug, Serialize)]
 pub struct EnumDesc {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub public: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub type_params: Option<Vec<String>>,
@@ -107,6 +113,8 @@ pub struct VariantDesc {
 #[derive(Debug, Serialize)]
 pub struct TraitDesc {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub public: bool,
     pub methods: Vec<FunctionDesc>,
 }
@@ -124,6 +132,8 @@ pub struct ImportDesc {
 #[derive(Debug, Serialize)]
 pub struct ConstantDesc {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub type_str: Option<String>,
     pub public: bool,
@@ -134,6 +144,8 @@ pub struct ConstantDesc {
 pub struct ExternDesc {
     pub abi: String,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub doc: Option<String>,
     pub params: Vec<ParamDesc>,
     pub returns: ReturnsDesc,
 }

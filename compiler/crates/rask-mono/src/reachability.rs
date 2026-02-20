@@ -78,6 +78,17 @@ impl<'a> Monomorphizer<'a> {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     fn_table.insert(f.name.clone(), decl);
+                    // Free functions with Type_method naming (e.g. compiled stdlib
+                    // wrappers) should also be discoverable as instance methods.
+                    if let Some(underscore_pos) = f.name.find('_') {
+                        let bare_method = &f.name[underscore_pos + 1..];
+                        if !bare_method.is_empty() {
+                            method_by_bare_name
+                                .entry(bare_method.to_string())
+                                .or_default()
+                                .push(f.name.clone());
+                        }
+                    }
                 }
                 DeclKind::Struct(s) => {
                     for method in &s.methods {

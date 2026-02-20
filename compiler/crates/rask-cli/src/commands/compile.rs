@@ -23,6 +23,7 @@ pub fn compile_to_object(
     target: Option<&str>,
     obj_path: &str,
     build_mode: rask_codegen::BuildMode,
+    cfg: Option<&rask_comptime::CfgConfig>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -54,6 +55,25 @@ pub fn compile_to_object(
             (rask_types::TypeId(i as u32), name)
         })
         .collect();
+    // Build comptime interpreter with cfg for conditional compilation
+    let comptime_interp = cfg.map(|c| {
+        let mut interp = rask_comptime::ComptimeInterpreter::new();
+        interp.inject_cfg(c);
+        interp.register_functions(decls);
+        std::cell::RefCell::new(interp)
+    });
+
+    // Extract trait method lists for trait object dispatch
+    let trait_methods: HashMap<String, Vec<String>> = typed.types.iter()
+        .filter_map(|def| {
+            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
+                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            } else {
+                None
+            }
+        })
+        .collect();
+
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -64,6 +84,8 @@ pub fn compile_to_object(
         line_map: line_map.as_ref(),
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        comptime_interp,
+        trait_methods: trait_methods.clone(),
     };
 
     // MIR lowering
@@ -127,6 +149,13 @@ pub fn compile_to_object(
     codegen.register_comptime_globals(comptime_globals)
         .map_err(|e| vec![e.to_string()])?;
 
+    // Build and register vtables for trait objects
+    let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
+    if !vtables.is_empty() {
+        codegen.register_vtables(&vtables)
+            .map_err(|e| vec![e.to_string()])?;
+    }
+
     for mir_fn in &mir_functions {
         if let Err(e) = codegen.gen_function(mir_fn) {
             errors.push(format!("codegen '{}': {}", mir_fn.name, e));
@@ -141,6 +170,59 @@ pub fn compile_to_object(
         .map_err(|e| vec![format!("emit object: {}", e)])?;
 
     Ok(())
+}
+
+/// Scan MIR functions for TraitBox statements and build VTableInfo for each unique pair.
+fn collect_vtables(
+    mir_functions: &[rask_mir::MirFunction],
+    trait_methods: &HashMap<String, Vec<String>>,
+    mono: &MonoProgram,
+) -> Vec<rask_codegen::vtable::VTableInfo> {
+    use std::collections::HashSet;
+    let mut seen = HashSet::new();
+    let mut vtables = Vec::new();
+
+    for mir_fn in mir_functions {
+        for block in &mir_fn.blocks {
+            for stmt in &block.statements {
+                if let rask_mir::MirStmt::TraitBox {
+                    concrete_type, trait_name, concrete_size, vtable_name, ..
+                } = stmt {
+                    if seen.insert(vtable_name.clone()) {
+                        let methods = trait_methods.get(trait_name)
+                            .cloned()
+                            .unwrap_or_default();
+
+                        let vt_methods: Vec<_> = methods.iter().enumerate()
+                            .map(|(i, method_name)| {
+                                rask_codegen::vtable::VTableMethod {
+                                    name: method_name.clone(),
+                                    func_name: format!("{}_{}", concrete_type, method_name),
+                                    vtable_offset: 24 + (i as u32) * 8,
+                                }
+                            })
+                            .collect();
+
+                        // Get concrete alignment from struct layouts
+                        let concrete_align = mono.struct_layouts.iter()
+                            .find(|s| s.name == *concrete_type)
+                            .map(|s| s.align)
+                            .unwrap_or(8);
+
+                        vtables.push(rask_codegen::vtable::VTableInfo {
+                            data_name: vtable_name.clone(),
+                            concrete_type: concrete_type.clone(),
+                            trait_name: trait_name.clone(),
+                            concrete_size: *concrete_size,
+                            concrete_align,
+                            methods: vt_methods,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    vtables
 }
 
 /// Transform benchmark declarations into compilable functions, returning
@@ -254,6 +336,7 @@ pub fn compile_benchmarks_to_object(
     source_file: Option<&str>,
     source_text: Option<&str>,
     obj_path: &str,
+    cfg: Option<&rask_comptime::CfgConfig>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -284,6 +367,21 @@ pub fn compile_benchmarks_to_object(
             (rask_types::TypeId(i as u32), name)
         })
         .collect();
+    let bench_trait_methods: HashMap<String, Vec<String>> = typed.types.iter()
+        .filter_map(|def| {
+            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
+                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let bench_interp = cfg.map(|c| {
+        let mut interp = rask_comptime::ComptimeInterpreter::new();
+        interp.inject_cfg(c);
+        interp.register_functions(decls);
+        std::cell::RefCell::new(interp)
+    });
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -291,9 +389,11 @@ pub fn compile_benchmarks_to_object(
         type_names: &type_names,
         comptime_globals,
         extern_funcs: &extern_funcs,
+        trait_methods: bench_trait_methods,
         line_map: line_map.as_ref(),
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        comptime_interp: bench_interp,
     };
 
     // MIR lowering — skip the synthetic main() since gen_benchmark_runner replaces it

@@ -59,8 +59,8 @@ For `Option<T>`, see [Optionals](optionals.md).
 | Method | Signature | Behavior |
 |--------|-----------|----------|
 | `on_err` | `func(take self, default: T) -> T` | Returns T or default (discards error) |
-| `ok` | `func(take self) -> T?` | `Ok(t)` → `Some(t)`, `Err(_)` → `None` |
-| `err` | `func(take self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
+| `to_option` | `func(take self) -> T?` | `Ok(t)` → `Some(t)`, `Err(_)` → `None` |
+| `to_error` | `func(take self) -> E?` | `Err(e)` → `Some(e)`, `Ok(_)` → `None` |
 | `is_ok` | `func(self) -> bool` | True if Ok |
 | `is_err` | `func(self) -> bool` | True if Err |
 | `map` | `func<U>(take self, f: \|T\| -> U) -> Result<U, E>` | Transform Ok value |

@@ -82,6 +82,27 @@ pub enum MirStmt {
         dst: LocalId,
         name: String,
     },
+    /// Box a concrete value into a trait object: heap-allocate, copy data, build fat pointer.
+    TraitBox {
+        dst: LocalId,
+        value: MirOperand,
+        concrete_type: String,
+        trait_name: String,
+        concrete_size: u32,
+        vtable_name: String,
+    },
+    /// Call a method through a trait object's vtable.
+    TraitCall {
+        dst: Option<LocalId>,
+        trait_object: LocalId,
+        method_name: String,
+        vtable_offset: u32,
+        args: Vec<MirOperand>,
+    },
+    /// Drop a trait object: call vtable drop_fn, then free heap allocation.
+    TraitDrop {
+        trait_object: LocalId,
+    },
 }
 
 /// A captured variable in a closure environment.

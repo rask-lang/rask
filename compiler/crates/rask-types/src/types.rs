@@ -94,6 +94,10 @@ pub enum Type {
         elem: Box<Type>,
         lanes: usize,
     },
+    /// Trait object: `any TraitName` — heap-boxed, vtable-dispatched.
+    TraitObject {
+        trait_name: std::string::String,
+    },
     /// Never type (for return, panic, etc.)
     Never,
     /// Error placeholder for recovery
@@ -221,6 +225,7 @@ impl fmt::Display for Type {
             }
             Type::RawPtr(inner) => write!(f, "*{}", inner),
             Type::SimdVector { elem, lanes } => write!(f, "{}x{}", elem, lanes),
+            Type::TraitObject { trait_name } => write!(f, "any {}", trait_name),
             Type::Var(_) => write!(f, "_"),
             Type::Never => write!(f, "!"),
             Type::Error => write!(f, "<error>"),

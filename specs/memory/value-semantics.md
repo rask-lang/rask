@@ -21,6 +21,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | **VS1: Copy eligibility** | Copy if all fields are Copy AND total size ≤16 bytes |
 | **VS2: Primitives always Copy** | Primitives are always Copy |
 | **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (own heap memory) |
+| **VS3.1: Trait objects never Copy** | `any Trait` is never Copy (owns heap data; copying would create two owners) |
 | **VS4: Sync types never Copy** | Shared, Mutex, Atomic* are never Copy |
 | **VS5: Automatic derivation** | Copy is structural — no `extend Copy` needed |
 
@@ -109,6 +110,7 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | `@unique struct UserId{id: u64}` | No | Explicitly unique |
 | `string` | No | >16 bytes, owns heap memory |
 | `Vec<i32>` | No | Collection type, never Copy |
+| `any Widget` | No | Trait object, owns heap data |
 
 **Copy vs Clone:**
 

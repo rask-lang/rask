@@ -50,6 +50,10 @@ pub enum MirType {
         elem: Box<MirType>,
         lanes: u32,
     },
+    /// Trait object: fat pointer (data_ptr + vtable_ptr). 16 bytes.
+    TraitObject {
+        trait_name: String,
+    },
 }
 
 impl MirType {
@@ -76,7 +80,8 @@ impl MirType {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 (offset + max_align - 1) & !(max_align - 1)
             }
-            MirType::Slice(_) => 16, // ptr (8) + len (8)
+            MirType::Slice(_) => 16,         // ptr (8) + len (8)
+            MirType::TraitObject { .. } => 16, // data_ptr (8) + vtable_ptr (8)
             MirType::Option(inner) => {
                 // tag (8 bytes, aligned) + payload
                 8 + inner.size()

@@ -271,11 +271,11 @@ extend Option<T> {
         }
     }
 
-    // Explicitly consuming
-    func unwrap(take self) -> T {
+    // Explicitly consuming — prefer x! operator over calling this directly
+    func force(take self) -> T {
         match self {               // IDE ghost: [consumes] (inferred from returning v)
             Some(v) => v,
-            None => panic("unwrap on None")
+            None => panic("force on None")
         }
     }
 }
@@ -390,7 +390,7 @@ enum Never {}  // Cannot be constructed
 ```rask
 func infallible() -> i32 or Never { Ok(42) }
 
-const value = infallible().unwrap()  // Cannot panic (compiler knows)
+const value = infallible()!  // Cannot panic (compiler knows)
 ```
 
 ## Edge Cases
@@ -452,7 +452,7 @@ extend Connection {
 ```rask
 const opt = Some(5)
 if opt.is_some() {          // ✅ opt still valid (borrows self)
-    const val = opt.unwrap()  // ✅ opt consumed (take self)
+    const val = opt!  // ✅ opt consumed (force unwrap)
 }
 ```
 

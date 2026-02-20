@@ -26,7 +26,7 @@ Choose simple over easy
 |---------|-----|
 | `rask lint <file>` | Check .rk files for naming/style/idiom issues |
 | `rask test-specs <path>` | Verify spec code blocks parse + show staleness warnings |
-| `rask describe <file>` | Show a module's public API (structs, funcs, enums) |
+| `rask api <file>` | Show a module's public API (structs, funcs, enums) |
 | `rask fmt <file>` | Format .rk source files |
 | `rask check <file>` | Type-check a .rk file |
 | `rask run <file>` | Execute a .rk program |

@@ -9,7 +9,8 @@
 - [x] **Unsafe block codegen** — Unsafe context enforced by type checker. Raw pointer primitives (read, write, add, sub, offset, etc.) fully implemented with dispatch and C runtime.
 - [x] **Result return from internal functions** — `copy_aggregate` properly copies into caller stack slots. `return Ok(42)` from `-> T or E` works.
 - [x] **Struct constructor + threads** — Aggregate handling (`copy_aggregate` + `stack_slot_map`) prevents callee stack pointer dangling.
-- [ ] **HTTP server native compilation** — Concurrency codegen done (Shared, Channel, Sender). Still needs HTTP parsing/serialization in C runtime.
+- [x] **HTTP server native compilation** — C HTTP parser/response writer in runtime. Rask stdlib wrappers in `http.rk` compile alongside user code (injected at mono/codegen level). Request parsing (method, path, headers, body) and response writing (status, Content-Length, body) verified with curl. Full `http_api_server.rk` compiles but crashes at runtime due to `Shared<T>`/`Channel<T>`/`spawn` codegen bug (separate issue).
+- [ ] **Shared/Channel/spawn codegen** — `Shared.new()`, `Channel.buffered()`, and green `spawn` produce garbage allocation sizes (~2 PB). Complex generic type codegen needs debugging.
 - [x] **String interpolation with inline arithmetic** — Fixed: binary op MIR lowering now uses `binop_result_type()` instead of hardcoding `MirType::Bool`.
 
 ## Build System & Packages

@@ -546,8 +546,27 @@ impl TypeChecker {
             }
 
             ExprKind::Cast { expr: inner, ty } => {
-                self.infer_expr(inner);
-                parse_type_string(ty, &self.types).unwrap_or(Type::Error)
+                let inner_ty = self.infer_expr(inner);
+                let target = parse_type_string(ty, &self.types).unwrap_or(Type::Error);
+
+                // Validate trait satisfaction for `as any Trait` casts
+                if let Type::TraitObject { ref trait_name } = target {
+                    if !matches!(inner_ty, Type::Var(_) | Type::Error) {
+                        if !crate::traits::implements_trait(&self.types, &inner_ty, trait_name) {
+                            let ty_desc = match &inner_ty {
+                                Type::Named(id) => self.types.type_name(*id),
+                                other => format!("{}", other),
+                            };
+                            self.errors.push(TypeError::TraitNotSatisfied {
+                                ty: ty_desc,
+                                trait_name: trait_name.clone(),
+                                span: expr.span,
+                            });
+                        }
+                    }
+                }
+
+                target
             }
 
             ExprKind::Unsafe { body } => {
@@ -908,6 +927,27 @@ impl TypeChecker {
                 // Propagate expected param types to arguments
                 let ret = *ret.clone();
                 for (param, arg) in params.clone().iter().zip(args.iter()) {
+                    // TR8: require explicit `as any Trait` at call sites
+                    if let Type::TraitObject { ref trait_name } = param {
+                        let is_explicit_cast = matches!(
+                            &arg.expr.kind,
+                            ExprKind::Cast { ty, .. } if ty.starts_with("any ")
+                        );
+                        if !is_explicit_cast {
+                            let arg_ty = self.infer_expr(&arg.expr);
+                            if !matches!(arg_ty, Type::TraitObject { .. } | Type::Error) {
+                                let desc = match &arg_ty {
+                                    Type::Named(id) => self.types.type_name(*id),
+                                    other => format!("{}", other),
+                                };
+                                self.errors.push(TypeError::ImplicitTraitCoercion {
+                                    trait_name: trait_name.clone(),
+                                    value_desc: desc,
+                                    span: arg.expr.span,
+                                });
+                            }
+                        }
+                    }
                     let arg_ty = self.infer_expr_expecting(&arg.expr, param);
                     self.ctx
                         .add_constraint(TypeConstraint::Equal(param.clone(), arg_ty, span));

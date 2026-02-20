@@ -164,14 +164,14 @@ unsafe {
 | Operation | Signature | Description |
 |-----------|-----------|-------------|
 | `get_mut()` | `self -> *T` | Get raw pointer to inner value (unsafe to dereference) |
-| `into_inner()` | `take self -> T` | Consume atomic, return inner value |
+| `into_value()` | `take self -> T` | Consume atomic, return inner value |
 
-`into_inner` is safe because `take self` guarantees exclusive ownership.
+`into_value` is safe because `take self` guarantees exclusive ownership.
 
 <!-- test: skip -->
 ```rask
 let counter = AtomicU64.new(0)
-const final_value = counter.into_inner()
+const final_value = counter.into_value()
 ```
 
 ## Memory Fences
@@ -287,7 +287,7 @@ FIX: Use comptime if target.has_atomic128 { ... } to provide both paths.
 | Mixing atomic and non-atomic access to same location | — | Undefined behavior |
 | Overflow on `fetch_add` | AT5 | Wraps (no panic) |
 | `AtomicPtr.load` then deref | AT1 | Load is safe; deref requires `unsafe` |
-| `into_inner` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
+| `into_value` on shared atomic | AT3 | Requires `take self` — exclusive ownership |
 | Atomics at comptime | — | Not available (no meaningful semantics without threads) |
 | Atomic statics | AT1 | Safe to access from multiple threads without `unsafe` |
 
