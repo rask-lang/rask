@@ -4,7 +4,7 @@ name: Deploy Documentation
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - 'docs/book/**'
       - 'docs/blog/**'
