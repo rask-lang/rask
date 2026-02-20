@@ -78,6 +78,12 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
 
     rask_desugar::desugar(&mut parse_result.decls);
 
+    // Inject compilable stdlib functions (those with non-empty bodies)
+    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+    if !stdlib_decls.is_empty() {
+        parse_result.decls.extend(stdlib_decls);
+    }
+
     let resolved = match rask_resolve::resolve(&parse_result.decls) {
         Ok(r) => r,
         Err(errors) => {
@@ -131,6 +137,12 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         .collect();
 
     rask_desugar::desugar(&mut pkg_ctx.all_decls);
+
+    // Inject compilable stdlib functions (those with non-empty bodies)
+    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+    if !stdlib_decls.is_empty() {
+        pkg_ctx.all_decls.extend(stdlib_decls);
+    }
 
     // Resolver handles external packages via collect_package_exports —
     // only pass root package decls here to avoid double registration.

@@ -93,13 +93,15 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
     // === LC1 Step 1-3: Parse build.rk, discover packages + deps ===
     let mut registry = PackageRegistry::new();
-    let mut root_id = match registry.discover(&root) {
-        Ok(id) => id,
+    let root_ids = match registry.discover_workspace(&root) {
+        Ok(ids) => ids,
         Err(e) => {
             eprintln!("{}: {}", output::error_label(), e);
             process::exit(1);
         }
     };
+    let is_workspace = root_ids.len() > 1;
+    let mut root_id = root_ids[0];
 
     // === Validate manifest: version constraints + features (VR1-VR3, F1-F6, FG1-FG6) ===
     let manifest = registry.get(root_id).and_then(|p| p.manifest.clone());
@@ -263,10 +265,16 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             process::exit(1);
         }
 
-        // Generate or update lock file with capabilities (LK1-LK2)
-        let lockfile = rask_resolve::LockFile::generate_with_capabilities(
-            &registry, root_id, &root, &all_caps,
-        );
+        // Generate or update lock file with capabilities (LK1-LK2, WS2)
+        let lockfile = if is_workspace {
+            rask_resolve::LockFile::generate_workspace_with_capabilities(
+                &registry, &root_ids, &root, &all_caps,
+            )
+        } else {
+            rask_resolve::LockFile::generate_with_capabilities(
+                &registry, root_id, &root, &all_caps,
+            )
+        };
         if !lock_path.exists() {
             if let Err(e) = lockfile.write(&lock_path) {
                 eprintln!("warning: failed to write rask.lock: {}", e);
@@ -596,6 +604,12 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
             rask_desugar::desugar(&mut all_decls);
 
+            // Inject compilable stdlib functions (those with non-empty bodies)
+            let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+            if !stdlib_decls.is_empty() {
+                all_decls.extend(stdlib_decls);
+            }
+
             match rask_resolve::resolve_package(&all_decls, &registry, root_id) {
                 Ok(resolved) => {
                     match rask_types::typecheck(resolved, &all_decls) {
@@ -698,18 +712,20 @@ pub fn cmd_update(path: &str) {
     }
 
     let mut registry = PackageRegistry::new();
-    let root_id = match registry.discover(&root) {
-        Ok(id) => id,
+    let root_ids = match registry.discover_workspace(&root) {
+        Ok(ids) => ids,
         Err(e) => {
             eprintln!("{}: {}", output::error_label(), e);
             process::exit(1);
         }
     };
+    let is_workspace = root_ids.len() > 1;
+    let root_id = root_ids[0];
 
     // Infer capabilities for all external deps (PM6)
     let mut all_caps: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for pkg in registry.packages() {
-        if pkg.id == root_id { continue; }
+        if root_ids.contains(&pkg.id) { continue; }
         if !pkg.is_external { continue; }
 
         let decls: Vec<_> = pkg.all_decls().cloned().collect();
@@ -731,9 +747,15 @@ pub fn cmd_update(path: &str) {
         }
     }
 
-    let lockfile = rask_resolve::LockFile::generate_with_capabilities(
-        &registry, root_id, &root, &all_caps,
-    );
+    let lockfile = if is_workspace {
+        rask_resolve::LockFile::generate_workspace_with_capabilities(
+            &registry, &root_ids, &root, &all_caps,
+        )
+    } else {
+        rask_resolve::LockFile::generate_with_capabilities(
+            &registry, root_id, &root, &all_caps,
+        )
+    };
 
     if lockfile.is_empty() {
         if lock_path.exists() {

@@ -31,21 +31,26 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         return;
     }
 
-    // Discover packages
+    // Discover packages (workspace-aware)
     let mut registry = PackageRegistry::new();
-    let root_id = match registry.discover(&root) {
-        Ok(id) => id,
+    let root_ids = match registry.discover_workspace(&root) {
+        Ok(ids) => ids,
         Err(e) => {
             eprintln!("{}: {}", output::error_label(), e);
             process::exit(1);
         }
     };
+    let is_workspace = root_ids.len() > 1;
+    let root_id = root_ids[0];
 
-    let manifest = registry.get(root_id).and_then(|p| p.manifest.clone());
+    // Collect manifests from all workspace members
+    let manifests: Vec<_> = root_ids.iter()
+        .filter_map(|id| registry.get(*id).and_then(|p| p.manifest.clone()))
+        .collect();
 
-    // Validate version constraints on declared deps
+    // Validate version constraints on declared deps (all workspace members)
     let mut constraint_errors = 0;
-    if let Some(ref manifest) = manifest {
+    for manifest in &manifests {
         for dep in &manifest.deps {
             if let Some(ref version) = dep.version {
                 if let Err(e) = rask_resolve::semver::Constraint::parse(version) {
@@ -147,16 +152,18 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
     // Resolve registry dependencies (RG1)
     // =========================================================================
 
-    // Collect registry deps: have a version constraint but no path or git.
-    // Extract (name, version) pairs to avoid borrowing manifest.
-    let registry_deps: Vec<(String, String)> = manifest.as_ref()
-        .map(|m| {
-            m.deps.iter()
-                .filter(|d| d.version.is_some() && d.path.is_none() && d.git.is_none())
-                .map(|d| (d.name.clone(), d.version.clone().unwrap()))
-                .collect()
-        })
-        .unwrap_or_default();
+    // Collect registry deps from all workspace members.
+    let mut registry_deps: Vec<(String, String)> = Vec::new();
+    let mut seen_reg_deps = HashSet::new();
+    for m in &manifests {
+        for d in &m.deps {
+            if d.version.is_some() && d.path.is_none() && d.git.is_none() {
+                if seen_reg_deps.insert(d.name.clone()) {
+                    registry_deps.push((d.name.clone(), d.version.clone().unwrap()));
+                }
+            }
+        }
+    }
 
     let mut registry_fetched = 0;
 
@@ -171,6 +178,11 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
 
         let reg_config = rask_resolve::registry::RegistryConfig::from_env();
         let cache = rask_resolve::cache::PackageCache::new();
+
+        // VD4: Check vendor_dir for offline-first resolution
+        let vendor_dir: Option<PathBuf> = manifests.iter()
+            .find_map(|m| m.meta("vendor_dir"))
+            .map(|v| root.join(v));
 
         if verbose {
             println!("  {} {}", "Registry".dimmed(), reg_config.url);
@@ -253,6 +265,36 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
                     continue;
                 }
             };
+
+            // VD4: Vendor dir takes priority over registry cache
+            if let Some(ref vd) = vendor_dir {
+                let vendor_pkg = vd.join(format!("{}-{}", dep_name, version_str));
+                let checksum_file = vendor_pkg.join(".checksum");
+                if vendor_pkg.is_dir() && checksum_file.is_file() {
+                    if let Ok(stored) = std::fs::read_to_string(&checksum_file) {
+                        if stored.trim() == meta.checksum {
+                            if verbose {
+                                println!("  {} \"{}\" {} (vendored)", "Dep".dimmed(), dep_name, version_str);
+                            }
+                            if let Err(e) = registry.register_cached(
+                                &dep_name, &version_str, &vendor_pkg, &reg_config.url
+                            ) {
+                                eprintln!("{}: dep \"{}\": failed to register: {}",
+                                    output::error_label(), dep_name, e);
+                                fetch_errors += 1;
+                            } else {
+                                resolved_packages.push((dep_name.clone(), version_str));
+                                for transitive in &meta.deps {
+                                    if !visited.contains(&transitive.name) {
+                                        queue.push((transitive.name.clone(), transitive.version.clone()));
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
 
             // Check cache, download if needed
             let cached_path = match cache.get(&dep_name, &version_str, &meta.checksum) {
@@ -356,12 +398,14 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         all_caps.insert(pkg.name.clone(), inferred);
     }
 
-    // Check capabilities against allow lists
-    if let Some(ref manifest) = manifest {
-        let allows: std::collections::HashMap<String, Vec<String>> = manifest.deps.iter()
-            .map(|d| (d.name.clone(), d.allow.clone()))
-            .collect();
-
+    // Check capabilities against allow lists (all workspace members)
+    {
+        let mut allows: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+        for m in &manifests {
+            for d in &m.deps {
+                allows.entry(d.name.clone()).or_default().extend(d.allow.clone());
+            }
+        }
         for (pkg_name, caps) in &all_caps {
             if caps.is_empty() { continue; }
             let allowed = allows.get(pkg_name).cloned().unwrap_or_default();
@@ -378,11 +422,17 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
         }
     }
 
-    // Generate lock file
+    // Generate lock file (WS2: single lock at workspace root)
     let lock_path = root.join("rask.lock");
-    let lockfile = rask_resolve::LockFile::generate_with_capabilities(
-        &registry, root_id, &root, &all_caps,
-    );
+    let lockfile = if is_workspace {
+        rask_resolve::LockFile::generate_workspace_with_capabilities(
+            &registry, &root_ids, &root, &all_caps,
+        )
+    } else {
+        rask_resolve::LockFile::generate_with_capabilities(
+            &registry, root_id, &root, &all_caps,
+        )
+    };
 
     // Check if lock file changed
     let changed = if lock_path.exists() {

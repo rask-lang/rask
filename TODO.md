@@ -28,10 +28,12 @@
 - [x] **Feature resolution** — Additive and exclusive feature groups. Default selection, conflict detection, dependency activation (F1-F6, FG1-FG6).
 - [x] **Build scripts** — `func build()` in build.rk runs via interpreter. Build state caching (LC1-LC2, BL1-BL3).
 - [x] **Directory-based imports** — Multi-file packages, package discovery, cross-package symbol lookup (PO1-PO3, IM1-IM8).
-- [ ] **Remote package registry** — Download from `packages.rk-lang.org`, registry API, `rask publish` (RG1-RG4, PB1-PB7).
-- [ ] **Vendoring** — `rask vendor` to copy deps for offline builds (VD1-VD5).
-- [ ] **Dependency auditing** — `rask audit` for CVE checking (AU1-AU5).
-- [ ] **Workspace support** — Multi-package workspaces with shared lock file (WS1-WS3).
+- [x] **Remote package registry** — `rask fetch` downloads from `packages.rask-lang.dev`, semver resolution, SHA-256 verified cache, transitive deps, lock file with `registry+` sources (RG1-RG4).
+- [x] **`rask publish`** — Pre-checks (build), required metadata validation (description+license), reproducible tarballs (sorted, zero timestamps), 10MB size limit, `--dry-run`, auth via `RASK_REGISTRY_TOKEN` or `~/.rask/credentials`, uploads to registry (PB1-PB7).
+- [x] **`rask yank`** — Hide published versions from new resolution. Existing lock files unaffected. Auth token required.
+- [x] **Vendoring** — `rask vendor` copies registry deps to `vendor/` with checksums. `vendor_dir: "vendor"` in build.rk enables vendor-first resolution. Offline builds supported (VD1-VD5).
+- [x] **Dependency auditing** — `rask audit` checks locked versions against advisory database. Supports `--db` for offline JSON, `--ignore` for known risks, non-zero exit for CI gates (AU1-AU5).
+- [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 
 ## Design Questions

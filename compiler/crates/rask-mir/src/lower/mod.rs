@@ -530,6 +530,9 @@ impl<'a> MirLowerer<'a> {
             ("fs_append_file", MirType::Void),
             ("json_encode", MirType::I64),
             ("json_decode", MirType::I64),
+            ("io_read_string", MirType::I64),
+            ("io_write_string", MirType::I64),
+            ("io_close_fd", MirType::Void),
             ("net_tcp_listen", MirType::I64),
             // Rng type methods
             ("Rng_new", MirType::I64),

@@ -88,6 +88,63 @@ impl LockFile {
         lock
     }
 
+    /// Generate lock file for a workspace with multiple root packages (WS2).
+    /// All members' external deps go into a single lock file.
+    pub fn generate_workspace(
+        registry: &PackageRegistry,
+        root_ids: &[PackageId],
+        root_dir: &Path,
+    ) -> Self {
+        let mut packages = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for pkg in registry.packages() {
+            if root_ids.contains(&pkg.id) { continue; }
+            if !pkg.is_external { continue; }
+            if !seen.insert(pkg.name.clone()) { continue; }
+
+            let version = pkg.manifest.as_ref()
+                .map(|m| m.version.clone())
+                .unwrap_or_else(|| "0.0.0".into());
+
+            let source = if let Some(ref url) = pkg.registry_source {
+                format!("registry+{}", url)
+            } else {
+                let rel_path = diff_paths(&pkg.root_dir, root_dir)
+                    .unwrap_or_else(|| pkg.root_dir.clone());
+                format!("path+{}", rel_path.display())
+            };
+            let checksum = compute_checksum(&pkg.root_dir);
+
+            packages.push(LockedPackage {
+                name: pkg.name.clone(),
+                version,
+                source,
+                checksum,
+                capabilities: Vec::new(),
+            });
+        }
+
+        packages.sort_by(|a, b| a.name.cmp(&b.name));
+        LockFile { version: LOCKFILE_VERSION, packages }
+    }
+
+    /// Generate workspace lock file with capabilities.
+    pub fn generate_workspace_with_capabilities(
+        registry: &PackageRegistry,
+        root_ids: &[PackageId],
+        root_dir: &Path,
+        caps: &BTreeMap<String, Vec<String>>,
+    ) -> Self {
+        let mut lock = Self::generate_workspace(registry, root_ids, root_dir);
+        for pkg in &mut lock.packages {
+            if let Some(pkg_caps) = caps.get(&pkg.name) {
+                pkg.capabilities = pkg_caps.clone();
+            }
+        }
+        lock
+    }
+
     /// Load a lock file from disk.
     pub fn load(path: &Path) -> Result<Self, String> {
         let content = std::fs::read_to_string(path)

@@ -16,3 +16,6 @@ pub mod pipeline;
 pub mod cache;
 pub mod init;
 pub mod fetch;
+pub mod vendor;
+pub mod publish;
+pub mod audit;
