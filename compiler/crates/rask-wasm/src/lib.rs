@@ -39,53 +39,50 @@ impl Playground {
 
     /// Run Rask source code and return output or error.
     ///
-    /// Returns Ok(output) on success, Err(error_message) on failure.
-    /// The error message includes rich formatting with source context.
+    /// Runs the full compiler pipeline (lex → parse → desugar → resolve →
+    /// typecheck → ownership) before interpreting, matching `rask run`.
     pub fn run(&mut self, source: &str) -> Result<String, String> {
         // Clear previous output
         self.output_buffer.lock().unwrap().clear();
 
-        // Phase 1: Lexing
+        // Lex
         let mut lexer = Lexer::new(source);
         let lex_result = lexer.tokenize();
-
         if !lex_result.is_ok() {
-            let mut errors = Vec::new();
-            for err in &lex_result.errors {
-                let diag = err.to_diagnostic();
-                let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
-                let formatted = formatter.format(&diag);
-                errors.push(strip_ansi_codes(&formatted));
-            }
-            return Err(errors.join("\n\n"));
+            return Err(format_errors(source, &lex_result.errors));
         }
 
-        // Phase 2: Parsing
+        // Parse
         let mut parser = Parser::new(lex_result.tokens);
         let mut parse_result = parser.parse();
-
         if !parse_result.is_ok() {
-            let mut errors = Vec::new();
-            for err in &parse_result.errors {
-                let diag = err.to_diagnostic();
-                let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
-                let formatted = formatter.format(&diag);
-                errors.push(strip_ansi_codes(&formatted));
-            }
-            return Err(errors.join("\n\n"));
+            return Err(format_errors(source, &parse_result.errors));
         }
 
-        // Phase 3: Desugaring (required before interpretation)
+        // Desugar
         rask_desugar::desugar(&mut parse_result.decls);
 
-        // Phase 4: Interpretation
+        // Resolve
+        let resolved = rask_resolve::resolve(&parse_result.decls)
+            .map_err(|errors| format_errors(source, &errors))?;
+
+        // Typecheck
+        let typed = rask_types::typecheck(resolved, &parse_result.decls)
+            .map_err(|errors| format_errors(source, &errors))?;
+
+        // Ownership
+        let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
+        if !ownership_result.is_ok() {
+            return Err(format_errors(source, &ownership_result.errors));
+        }
+
+        // Interpret
         match self.interpreter.run(&parse_result.decls) {
             Ok(_) => {
                 let output = self.output_buffer.lock().unwrap().clone();
                 Ok(output)
             }
             Err(diag) if matches!(diag.error, RuntimeError::Exit(_)) => {
-                // Program called exit() - this is normal, return output
                 let output = self.output_buffer.lock().unwrap().clone();
                 if let RuntimeError::Exit(code) = diag.error {
                     if code == 0 {
@@ -104,30 +101,62 @@ impl Playground {
         }
     }
 
-    /// Check code for syntax errors without running it.
-    /// Returns JSON string containing diagnostics.
+    /// Check code for errors without running it.
+    ///
+    /// Runs the full pipeline (lex → parse → desugar → resolve → typecheck →
+    /// ownership) and returns JSON diagnostics.
     pub fn check(&self, source: &str) -> String {
         let mut all_diagnostics = Vec::new();
 
-        // Phase 1: Lexing
+        // Lex
         let mut lexer = Lexer::new(source);
         let lex_result = lexer.tokenize();
-
         for err in &lex_result.errors {
             all_diagnostics.push(err.to_diagnostic());
         }
 
-        // Phase 2: Parsing (only if lexing succeeded)
         if lex_result.is_ok() {
+            // Parse
             let mut parser = Parser::new(lex_result.tokens);
-            let parse_result = parser.parse();
-
+            let mut parse_result = parser.parse();
             for err in &parse_result.errors {
                 all_diagnostics.push(err.to_diagnostic());
             }
+
+            if parse_result.is_ok() {
+                // Desugar
+                rask_desugar::desugar(&mut parse_result.decls);
+
+                // Resolve
+                match rask_resolve::resolve(&parse_result.decls) {
+                    Ok(resolved) => {
+                        // Typecheck
+                        match rask_types::typecheck(resolved, &parse_result.decls) {
+                            Ok(typed) => {
+                                // Ownership
+                                let ownership = rask_ownership::check_ownership(
+                                    &typed, &parse_result.decls,
+                                );
+                                for err in &ownership.errors {
+                                    all_diagnostics.push(err.to_diagnostic());
+                                }
+                            }
+                            Err(errors) => {
+                                for err in &errors {
+                                    all_diagnostics.push(err.to_diagnostic());
+                                }
+                            }
+                        }
+                    }
+                    Err(errors) => {
+                        for err in &errors {
+                            all_diagnostics.push(err.to_diagnostic());
+                        }
+                    }
+                }
+            }
         }
 
-        // Convert to JSON
         let report = json::to_json_report(&all_diagnostics, source, "<playground>", "check");
         serde_json::to_string(&report).unwrap()
     }
@@ -136,6 +165,19 @@ impl Playground {
     pub fn version() -> String {
         env!("CARGO_PKG_VERSION").to_string()
     }
+}
+
+/// Format a list of errors into a single string for browser display.
+fn format_errors<E: ToDiagnostic>(source: &str, errors: &[E]) -> String {
+    errors
+        .iter()
+        .map(|err| {
+            let diag = err.to_diagnostic();
+            let formatter = DiagnosticFormatter::new(source).with_file_name("<playground>");
+            strip_ansi_codes(&formatter.format(&diag))
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 /// Convert ANSI color codes to HTML with CSS classes.
