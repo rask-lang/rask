@@ -1,0 +1,105 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>Rask Blog | Thoughts on systems programming, language design, and Rask development</title>
+<meta name="generator" content="Jekyll v4.4.1" />
+<meta property="og:title" content="Rask Blog" />
+<meta name="author" content="Rask Contributors" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Thoughts on systems programming, language design, and Rask development" />
+<meta property="og:description" content="Thoughts on systems programming, language design, and Rask development" />
+<link rel="canonical" href="https://rask-lang.dev/blog/" />
+<meta property="og:url" content="https://rask-lang.dev/blog/" />
+<meta property="og:site_name" content="Rask Blog" />
+<meta property="og:type" content="website" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="Rask Blog" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebSite","author":{"@type":"Person","name":"Rask Contributors"},"description":"Thoughts on systems programming, language design, and Rask development","headline":"Rask Blog","name":"Rask Blog","url":"https://rask-lang.dev/blog/"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+    <link rel="stylesheet" href="/blog/assets/css/style.css"><link type="application/atom+xml" rel="alternate" href="https://rask-lang.dev/blog/feed.xml" title="Rask Blog" /><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/nord.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-links">
+                <a href="/">home</a>
+                <a href="/book/index.html">docs</a>
+                <a href="/blog/" class="active">blog</a>
+                <a href="/app/">playground</a>
+                <a href="https://github.com/rask-lang/rask">github ↗</a>
+            </div>
+            <div class="status">early development · working compiler</div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <section class="blog-header">
+    <h1>Rask Blog</h1>
+    <p class="blog-description">Thoughts on systems programming, language design, and Rask development</p>
+</section>
+
+
+<section class="post-list"><article class="post-summary">
+        <h2><a href="/blog/2026/02/20/the-soul-of-rask/">The Soul of Rask</a></h2>
+        <time class="post-meta" datetime="2026-02-20T12:00:00+01:00">
+            February 20, 2026
+        </time><p class="post-excerpt">Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.
+</p></article><article class="post-summary">
+        <h2><a href="/blog/2026/02/07/welcome-to-rask-blog/">Welcome to the Rask Blog</a></h2>
+        <time class="post-meta" datetime="2026-02-07T23:30:00+01:00">
+            February 7, 2026
+        </time><p class="post-excerpt">Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!
+</p></article></section>
+    </main>
+
+    <footer>
+        <div class="container">
+            <a href="/">home</a> ·
+            <a href="/book/index.html">docs</a> ·
+            <a href="/blog/">blog</a> ·
+            <a href="/app/">playground</a> ·
+            <a href="https://github.com/rask-lang/rask">github</a>
+        </div>
+    </footer>
+
+    <script>
+        // Register Rask language then highlight all code blocks
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof hljs === 'undefined') return;
+            hljs.registerLanguage('rask', function(hljs) {
+                return {
+                    name: 'Rask',
+                    aliases: ['rk'],
+                    keywords: {
+                        keyword: 'func struct enum trait extend match if else for while loop return const let try ensure comptime with spawn using import export public take mutate own deliver any unsafe break continue is in as or',
+                        literal: 'true false none',
+                        built_in: 'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char Vec Map Pool Option Result Handle println print format panic'
+                    },
+                    contains: [
+                        hljs.COMMENT('//', '$'),
+                        hljs.COMMENT('/\\*', '\\*/'),
+                        { className: 'string', variants: [
+                            {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                            {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                        ]},
+                        { className: 'number', variants: [
+                            {begin: '\\b0b[01_]+'}, {begin: '\\b0o[0-7_]+'},
+                            {begin: '\\b0x[0-9a-fA-F_]+'}, {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?'}
+                        ], relevance: 0},
+                        { className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                        { className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                        { className: 'meta', begin: /@[a-z_][a-z0-9_]*/ }
+                    ]
+                };
+            });
+            hljs.highlightAll();
+        });
+    </script>
+</body>
+</html>

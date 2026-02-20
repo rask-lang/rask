@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?><feed xmlns="http://www.w3.org/2005/Atom" ><generator uri="https://jekyllrb.com/" version="4.4.1">Jekyll</generator><link href="https://rask-lang.dev/blog/feed.xml" rel="self" type="application/atom+xml" /><link href="https://rask-lang.dev/blog/" rel="alternate" type="text/html" /><updated>2026-02-20T22:19:40+01:00</updated><id>https://rask-lang.dev/blog/feed.xml</id><title type="html">Rask Blog</title><subtitle>Thoughts on systems programming, language design, and Rask development</subtitle><author><name>Rask Contributors</name></author><entry><title type="html">The Soul of Rask</title><link href="https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/" rel="alternate" type="text/html" title="The Soul of Rask" /><published>2026-02-20T12:00:00+01:00</published><updated>2026-02-20T12:00:00+01:00</updated><id>https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask</id><content type="html" xml:base="https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/"><![CDATA[<p>Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.</p>
+
+<p>Rask exists because I got frustrated. Rust has genuinely great ideas—ownership, traits, pattern matching, functional programming, zero-cost abstractions. But using it for everyday work feels like using a cannon to shoot a bird. Yes, it’s compile-time safe. Yes, it’s zero-cost. But at what cost for the programmer who just needs stuff to work? Half the time I’m satisfying the borrow checker instead of solving my actual problem.</p>
+
+<p>And the alternative is… Go? C#? Languages with garbage collectors where you trade control for convenience? There’s this gap between “fight the compiler for safety” and “give up and let the GC handle it.” I wanted something in that gap.</p>
+
+<p><a href="https://www.hylo-lang.org/">Hylo</a> is probably the closest to what I’m building—value semantics, no garbage collector, mutable value semantics instead of borrow checking. If you’re interested in this design space, look at what they’re doing. Where we differ is mostly in feel: Hylo comes from a more academic angle (it grew out of Val, a research project), while I’m trying to optimize for the programmer who just wants to ship things without thinking too hard about memory.</p>
+
+<p>When I started Rask, I didn’t start with features. Features are consequences. I started with a question: <em>what should a systems language feel like in 2026?</em> Get the values right first, the design follows.</p>
+
+<p>I care about three things: <strong>transparency</strong> (can I see what my code costs?), <strong>structural safety</strong> (are bugs impossible, not just caught?), and <strong>pragmatism</strong> (does this actually help me ship?). These three pull in different directions, and most of the interesting design work is figuring out which one wins for each decision.</p>
+
+<p>Let me show you what I mean.</p>
+
+<h2 id="no-garbage-collection">No garbage collection</h2>
+
+<p>This is the easy one—all three values agree. No GC means deterministic cleanup (safe), no hidden pauses (transparent), and no GC tuning (pragmatic). When all three point the same way, the decision is obvious.</p>
+
+<p>But most decisions aren’t this clean.</p>
+
+<h2 id="almost-no-hidden-costs">(Almost) No hidden costs</h2>
+
+<p>In C++, <code>auto result = greeting + " " + name</code> creates two temporary strings and two allocations. In Swift, passing a struct to a function silently copies it — could be 4 bytes, could be 4 kilobytes. These costs are real but invisible.</p>
+
+<p>Rask doesn’t do this. Large values move, not copy. If you want a copy, you write <code>.clone()</code>. Operators don’t allocate behind your back. When something is expensive, you can see it in the code:</p>
+
+<pre><code class="language-rask">const name = user.name.clone()                  // explicit: this copies
+process(own user)                               // explicit: ownership transferred
+</code></pre>
+
+<p>This is transparency winning over convenience. Some languages let you write <code>a + b</code> on strings and hide the allocation inside the operator. I’d rather make you call a function that says what it does.</p>
+
+<h2 id="implicit-bounds-checks">Implicit bounds checks</h2>
+
+<p>On the other hand, <code>results[i]</code> does a bounds check you can’t see. That’s pragmatism winning over transparency. I could require <code>results.checked_get(i)</code> everywhere, but writing checked access on every array index would be miserable for no real benefit—it’s O(1), cheap, and if it panics you get a clear message.</p>
+
+<p>This is where a strict “everything must be visible” rule would break down. Some costs just aren’t worth the ceremony.</p>
+
+<h2 id="handle-overhead">Handle overhead</h2>
+
+<p><a href="/2026/02/07/welcome-to-rask-blog/">I wrote about this in the first post</a>—references can’t be stored, so graph structures use handles into pools. Each handle access costs ~1-2ns for a generation check. That’s real overhead.</p>
+
+<pre><code class="language-rask">func damage(h: Handle&lt;Entity&gt;) using Pool&lt;Entity&gt; {
+    h.health -= 10                             // generation check here
+    if h.health &lt;= 0 {
+        h.state = EntityState.Dead
+    }
+}
+</code></pre>
+
+<p>This is safety winning over performance. I could skip the check with raw pointers, but use-after-free is worse than 2ns. For the 90% of code that isn’t a hot inner loop, I think that’s the right call. For the rest, there’s <code>unsafe</code>.</p>
+
+<h2 id="readable-over-writable">Readable over writable</h2>
+
+<p>Code is read far more than it’s written. Early languages optimized for fewer characters because of memory constrains and terminal size. We don’t need that inheritance.</p>
+
+<p>I try to keep things readable in plain English, without going full pseudo-code python. Common patterns deserve syntax sugar if it helps to keep mental tax down.</p>
+
+<p>Compare Rust and Rask:</p>
+
+<pre><code class="language-rust">// Rust
+fn save_user(db: &amp;mut Database, name: &amp;str) -&gt; Result&lt;UserId, Error&gt; {
+    let id = db.next_id()?;
+    let user = User::new(id, name.to_string());
+    db.insert(user)?;
+    Ok(id)
+}
+</code></pre>
+
+<pre><code class="language-rask">// Rask
+func save_user(mutate db: Database, name: string) -&gt; UserId or Error {
+    const id = try db.next_id()
+    const user = User.new(id, name)
+    try db.insert(user)
+    return id
+}
+</code></pre>
+
+<p><code>mutate</code> tells you the function changes <code>db</code>. <code>try</code> reads as a word, not a symbol (<code>?</code> is reserved for optionals). <code>return id</code> just works — functions returning <code>T or E</code> wrap it as <code>Ok</code> implicitly. No <code>&amp;mut</code>, no <code>&amp;str</code> vs <code>String</code>. You read the signature and know what it does — what it borrows, what it mutates, what it takes ownership of.</p>
+
+<p>Of course, we lose some coherence by treating Result, Error and Option different, compared to Rust where it is just “plain Rust” code. I think that they are so ubiquitous that they deserve special treatment, resulting in cleaner, less noisy code.</p>
+
+<h2 id="stealing-good-ideas">Stealing good ideas</h2>
+
+<p>Swift’s optional syntax is great—so Rask has <code>T?</code> with <code>??</code> fallback. Zig’s comptime is powerful—so Rask has compile-time execution. Go’s goroutines are ergonomic—so Rask has <code>spawn(|| {})</code> without async/await.</p>
+
+<p>That’s pragmatism. I’d rather take a proven solution than invent a worse one for the sake of originality. I compare against <em>whichever language is simplest for each task</em>—not just Rust or Go. If Python solves a CLI tool in 20 lines, that’s the bar.</p>
+
+<h2 id="linear-resources">Linear resources</h2>
+
+<p>Forget to close a file? Compile error. I/O handles must be consumed exactly once:</p>
+
+<pre><code class="language-rask">func process(path: string) -&gt; Stats or Error {
+    const file = try fs.open(path)
+    ensure file.close()
+
+    const data = try file.read_to_string()
+    return parse_stats(data)
+    // file.close() runs here, guaranteed
+}
+</code></pre>
+
+<p>No special cleanup syntax, no <code>defer</code>, no destructors-that-might-not-run. The compiler just refuses to compile if you forget. That’s safety by structure—the bug isn’t caught, it’s impossible.</p>
+
+<h2 id="so-whats-the-soul">So what’s the soul?</h2>
+
+<p>There’s no formula. Each decision is a judgment call, and I’ve probably gotten some of them wrong. But the pattern is: make the safe thing the default, make costs visible where it matters, and remove ceremony where it goes viral.</p>
+
+<p>What I’m reaching for is a language where memory safety doesn’t <em>feel like</em> memory safety. You write code thinking about your problem, and the safety falls out from the structure. I’m still early enough that it could all fall apart once real programs hit the design.</p>]]></content><author><name>Rask Contributors</name></author><category term="design" /><summary type="html"><![CDATA[Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.]]></summary></entry><entry><title type="html">Welcome to the Rask Blog</title><link href="https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/" rel="alternate" type="text/html" title="Welcome to the Rask Blog" /><published>2026-02-07T23:30:00+01:00</published><updated>2026-02-07T23:30:00+01:00</updated><id>https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog</id><content type="html" xml:base="https://rask-lang.dev/blog/2026/02/07/welcome-to-rask-blog/"><![CDATA[<p>Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!</p>
+
+<h2 id="what-is-rask">What is Rask?</h2>
+
+<p>What if I took the best parts of Rust, Zig and Go and created an in-between language?</p>
+
+<p>Can we have memory safety without Rust’s lifetime tracking? Don’t get me wrong, Rust is a perfectly good language for what it’s meant for. But sometimes fighting the borrow checker and waiting for compilation isn’t what you want. Most programs don’t need a mathematical proof to function.</p>
+
+<p>On the other side you have Go—simple to learn, easy to get stuff done with. But it lacks the powerful features Rust users take for granted. Plus it has a garbage collector and hard-wired runtime threading, which you don’t want for high-performance apps.</p>
+
+<p>In 2026 we have multiple contenders for this gap. Off the top of my head: Hylo, Zig, V, and Vale, all awesome in their own right. But Hylo is too academic for my taste, and Vale’s generational references for everything are too performance-taxing. V promises safe memory management without ceremony but has failed to live up to the claims. Zig is probably the closest to what I want, but it leaves safety as an opt-in rather than a default.</p>
+
+<p>This brings us to Rask. The simple premise is this:
+<strong>What if references cannot be stored?</strong></p>
+
+<p>Stored references cause use-after-free bugs, dangling pointers, and all the lifetime complexity Rust needs to track. If we can live without them, memory safety goes from complex lifetime tracking and global borrow checking to simple local analysis.</p>
+
+<p>Here’s the key insight: most code doesn’t store references. You pass them to functions, use them for a bit, then they expire. That’s expression-scoped borrowing—works great, no annotations needed. The problems come when references escape their scope or get stored in structs.</p>
+
+<p>So I made a tradeoff. <strong>References can’t be stored</strong>. If you need indirection for graphs or cycles, use handles—validated indices into a pool. Yes, that’s an extra indirection. But the cost is visible and you only pay it where you actually need it. This isn’t zero-cost abstraction. It’s mathematically impossible to have zero-cost memory safety <strong>and</strong> no lifetime tracking and global analysis. Rask’s design compensates for this using smart compiler optimization and forcing more data-oriented design.</p>
+
+<p>I’ve also made many improvements to Rust’s <strong>noisy</strong> grammar and restrictive, almost parental style of coding. This is fine for a hardcore system language with safety before anything else, but Rask takes a different approach: the common case should be the default, not the opposite. We sacrifice some of the safety the strictness of Rust gives, and get a more ergonomical developer experience. At least on paper, you will be the judge of that ;)</p>
+
+<p>Here’s a sneak peek at some core features:</p>
+
+<ul>
+  <li><strong>Linear resources</strong> - Files and sockets must be explicitly closed. The compiler checks this at compile time, so you can’t leak handles.</li>
+  <li><strong>No async/await</strong> - I/O is just I/O. No more refactoring half your codebase because one function needs to wait for network.</li>
+  <li><strong>Syntax sugar where it matters</strong> - Option and Result show up in 90% of code, so I made them ergonomic with <code>?</code> sugar and <code>try</code> for propagation.</li>
+</ul>
+
+<p>Here’s what it looks like:</p>
+
+<pre><code class="language-rask">func process_config(path: string) -&gt; Config or Error {
+    const file = try fs.open(path)
+    ensure file.close()
+
+    const content = try file.read_to_string()
+    const lines = content.split('\n')
+
+    let settings = Map.new()
+    for line in lines {
+        if line.starts_with('#'): continue
+
+        const parts = line.split('=')
+        if parts.len() != 2: return Error.InvalidFormat
+
+        settings.insert(parts[0].trim(), parts[1].trim())
+    }
+
+    return Config { settings }
+}
+</code></pre>
+
+<p>No lifetimes. No async. No borrow checker fights. Just clean, simple code that can’t leak resources.</p>
+
+<h2 id="what-ill-write-about">What I’ll write about</h2>
+
+<p>Design decisions. Why certain features work the way they do, what tradeoffs I’m making. Sometimes I’ll be wrong—that’s fine, I’ll write about that too.</p>
+
+<p>Implementation progress. Right now there’s a working interpreter but no compiler yet. I’ll document what I’m building and what’s blocking me.</p>
+
+<p>Real code. HTTP servers, text editors, game loops. If Rask makes these harder than Go, the design needs work.</p>
+
+<h2 id="where-we-are">Where we are</h2>
+
+<p>Design phase. Most of the specs are written, the interpreter handles the core features. Threading works, linear resources work, the type checker catches most errors.</p>
+
+<p>Next up: compiler. Probably LLVM backend, maybe cranelift. Haven’t decided yet.</p>
+
+<h2 id="try-it-yourself">Try it yourself</h2>
+
+<p>Want to see more? Try Rask in your browser with the <a href="/app/">playground</a>, read through the <a href="/book/guide/">language guide</a>, or dive into the <a href="https://github.com/rask-lang/rask/tree/main/specs">design specs</a>.</p>
+
+<p>Have thoughts or questions? <a href="https://github.com/rask-lang/rask/issues">Open an issue</a> or start a <a href="https://github.com/rask-lang/rask/discussions">discussion</a> on GitHub.</p>]]></content><author><name>Rask Contributors</name></author><category term="announcement" /><summary type="html"><![CDATA[Hi! I’m having great fun creating a new programming language! It is called Rask, and started out as a small experiment in language design, but now I feel it actually might bring something new!]]></summary></entry></feed>

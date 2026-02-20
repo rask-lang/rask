@@ -1,0 +1,215 @@
+<!-- SPDX-License-Identifier: (MIT OR Apache-2.0) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"><!-- Begin Jekyll SEO tag v2.8.0 -->
+<title>The Soul of Rask | Rask Blog</title>
+<meta name="generator" content="Jekyll v4.4.1" />
+<meta property="og:title" content="The Soul of Rask" />
+<meta name="author" content="Rask Contributors" />
+<meta property="og:locale" content="en_US" />
+<meta name="description" content="Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard." />
+<meta property="og:description" content="Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard." />
+<link rel="canonical" href="https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/" />
+<meta property="og:url" content="https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/" />
+<meta property="og:site_name" content="Rask Blog" />
+<meta property="og:type" content="article" />
+<meta property="article:published_time" content="2026-02-20T12:00:00+01:00" />
+<meta name="twitter:card" content="summary" />
+<meta property="twitter:title" content="The Soul of Rask" />
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"BlogPosting","author":{"@type":"Person","name":"Rask Contributors"},"dateModified":"2026-02-20T12:00:00+01:00","datePublished":"2026-02-20T12:00:00+01:00","description":"Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.","headline":"The Soul of Rask","mainEntityOfPage":{"@type":"WebPage","@id":"https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/"},"url":"https://rask-lang.dev/blog/2026/02/20/the-soul-of-rask/"}</script>
+<!-- End Jekyll SEO tag -->
+<link rel="icon" type="image/png" href="/book/assets/rask32.png">
+    <link rel="stylesheet" href="/blog/assets/css/style.css"><link type="application/atom+xml" rel="alternate" href="https://rask-lang.dev/blog/feed.xml" title="Rask Blog" /><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/nord.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-links">
+                <a href="/">home</a>
+                <a href="/book/index.html">docs</a>
+                <a href="/blog/" class="active">blog</a>
+                <a href="/app/">playground</a>
+                <a href="https://github.com/rask-lang/rask">github ↗</a>
+            </div>
+            <div class="status">early development · working compiler</div>
+        </div>
+    </nav>
+
+    <main class="container">
+        <article class="post">
+    <header class="post-header">
+        <h1>The Soul of Rask</h1>
+        <time class="post-meta" datetime="2026-02-20T12:00:00+01:00">
+            February 20, 2026
+        </time>
+    </header>
+
+    <div class="post-content">
+        <p>Every language has a personality. Go is pragmatic. Rust is principled. C is honest. You feel it in the syntax, in the error messages, in what the language makes easy and what it makes hard.</p>
+
+<p>Rask exists because I got frustrated. Rust has genuinely great ideas—ownership, traits, pattern matching, functional programming, zero-cost abstractions. But using it for everyday work feels like using a cannon to shoot a bird. Yes, it’s compile-time safe. Yes, it’s zero-cost. But at what cost for the programmer who just needs stuff to work? Half the time I’m satisfying the borrow checker instead of solving my actual problem.</p>
+
+<p>And the alternative is… Go? C#? Languages with garbage collectors where you trade control for convenience? There’s this gap between “fight the compiler for safety” and “give up and let the GC handle it.” I wanted something in that gap.</p>
+
+<p><a href="https://www.hylo-lang.org/">Hylo</a> is probably the closest to what I’m building—value semantics, no garbage collector, mutable value semantics instead of borrow checking. If you’re interested in this design space, look at what they’re doing. Where we differ is mostly in feel: Hylo comes from a more academic angle (it grew out of Val, a research project), while I’m trying to optimize for the programmer who just wants to ship things without thinking too hard about memory.</p>
+
+<p>When I started Rask, I didn’t start with features. Features are consequences. I started with a question: <em>what should a systems language feel like in 2026?</em> Get the values right first, the design follows.</p>
+
+<p>I care about three things: <strong>transparency</strong> (can I see what my code costs?), <strong>structural safety</strong> (are bugs impossible, not just caught?), and <strong>pragmatism</strong> (does this actually help me ship?). These three pull in different directions, and most of the interesting design work is figuring out which one wins for each decision.</p>
+
+<p>Let me show you what I mean.</p>
+
+<h2 id="no-garbage-collection">No garbage collection</h2>
+
+<p>This is the easy one—all three values agree. No GC means deterministic cleanup (safe), no hidden pauses (transparent), and no GC tuning (pragmatic). When all three point the same way, the decision is obvious.</p>
+
+<p>But most decisions aren’t this clean.</p>
+
+<h2 id="almost-no-hidden-costs">(Almost) No hidden costs</h2>
+
+<p>In C++, <code>auto result = greeting + " " + name</code> creates two temporary strings and two allocations. In Swift, passing a struct to a function silently copies it — could be 4 bytes, could be 4 kilobytes. These costs are real but invisible.</p>
+
+<p>Rask doesn’t do this. Large values move, not copy. If you want a copy, you write <code>.clone()</code>. Operators don’t allocate behind your back. When something is expensive, you can see it in the code:</p>
+
+<pre><code class="language-rask">const name = user.name.clone()                  // explicit: this copies
+process(own user)                               // explicit: ownership transferred
+</code></pre>
+
+<p>This is transparency winning over convenience. Some languages let you write <code>a + b</code> on strings and hide the allocation inside the operator. I’d rather make you call a function that says what it does.</p>
+
+<h2 id="implicit-bounds-checks">Implicit bounds checks</h2>
+
+<p>On the other hand, <code>results[i]</code> does a bounds check you can’t see. That’s pragmatism winning over transparency. I could require <code>results.checked_get(i)</code> everywhere, but writing checked access on every array index would be miserable for no real benefit—it’s O(1), cheap, and if it panics you get a clear message.</p>
+
+<p>This is where a strict “everything must be visible” rule would break down. Some costs just aren’t worth the ceremony.</p>
+
+<h2 id="handle-overhead">Handle overhead</h2>
+
+<p><a href="/2026/02/07/welcome-to-rask-blog/">I wrote about this in the first post</a>—references can’t be stored, so graph structures use handles into pools. Each handle access costs ~1-2ns for a generation check. That’s real overhead.</p>
+
+<pre><code class="language-rask">func damage(h: Handle&lt;Entity&gt;) using Pool&lt;Entity&gt; {
+    h.health -= 10                             // generation check here
+    if h.health &lt;= 0 {
+        h.state = EntityState.Dead
+    }
+}
+</code></pre>
+
+<p>This is safety winning over performance. I could skip the check with raw pointers, but use-after-free is worse than 2ns. For the 90% of code that isn’t a hot inner loop, I think that’s the right call. For the rest, there’s <code>unsafe</code>.</p>
+
+<h2 id="readable-over-writable">Readable over writable</h2>
+
+<p>Code is read far more than it’s written. Early languages optimized for fewer characters because of memory constrains and terminal size. We don’t need that inheritance.</p>
+
+<p>I try to keep things readable in plain English, without going full pseudo-code python. Common patterns deserve syntax sugar if it helps to keep mental tax down.</p>
+
+<p>Compare Rust and Rask:</p>
+
+<pre><code class="language-rust">// Rust
+fn save_user(db: &amp;mut Database, name: &amp;str) -&gt; Result&lt;UserId, Error&gt; {
+    let id = db.next_id()?;
+    let user = User::new(id, name.to_string());
+    db.insert(user)?;
+    Ok(id)
+}
+</code></pre>
+
+<pre><code class="language-rask">// Rask
+func save_user(mutate db: Database, name: string) -&gt; UserId or Error {
+    const id = try db.next_id()
+    const user = User.new(id, name)
+    try db.insert(user)
+    return id
+}
+</code></pre>
+
+<p><code>mutate</code> tells you the function changes <code>db</code>. <code>try</code> reads as a word, not a symbol (<code>?</code> is reserved for optionals). <code>return id</code> just works — functions returning <code>T or E</code> wrap it as <code>Ok</code> implicitly. No <code>&amp;mut</code>, no <code>&amp;str</code> vs <code>String</code>. You read the signature and know what it does — what it borrows, what it mutates, what it takes ownership of.</p>
+
+<p>Of course, we lose some coherence by treating Result, Error and Option different, compared to Rust where it is just “plain Rust” code. I think that they are so ubiquitous that they deserve special treatment, resulting in cleaner, less noisy code.</p>
+
+<h2 id="stealing-good-ideas">Stealing good ideas</h2>
+
+<p>Swift’s optional syntax is great—so Rask has <code>T?</code> with <code>??</code> fallback. Zig’s comptime is powerful—so Rask has compile-time execution. Go’s goroutines are ergonomic—so Rask has <code>spawn(|| {})</code> without async/await.</p>
+
+<p>That’s pragmatism. I’d rather take a proven solution than invent a worse one for the sake of originality. I compare against <em>whichever language is simplest for each task</em>—not just Rust or Go. If Python solves a CLI tool in 20 lines, that’s the bar.</p>
+
+<h2 id="linear-resources">Linear resources</h2>
+
+<p>Forget to close a file? Compile error. I/O handles must be consumed exactly once:</p>
+
+<pre><code class="language-rask">func process(path: string) -&gt; Stats or Error {
+    const file = try fs.open(path)
+    ensure file.close()
+
+    const data = try file.read_to_string()
+    return parse_stats(data)
+    // file.close() runs here, guaranteed
+}
+</code></pre>
+
+<p>No special cleanup syntax, no <code>defer</code>, no destructors-that-might-not-run. The compiler just refuses to compile if you forget. That’s safety by structure—the bug isn’t caught, it’s impossible.</p>
+
+<h2 id="so-whats-the-soul">So what’s the soul?</h2>
+
+<p>There’s no formula. Each decision is a judgment call, and I’ve probably gotten some of them wrong. But the pattern is: make the safe thing the default, make costs visible where it matters, and remove ceremony where it goes viral.</p>
+
+<p>What I’m reaching for is a language where memory safety doesn’t <em>feel like</em> memory safety. You write code thinking about your problem, and the safety falls out from the structure. I’m still early enough that it could all fall apart once real programs hit the design.</p>
+
+    </div>
+
+    <footer class="post-footer">
+        <a href="/blog/">← Back to blog</a>
+    </footer>
+</article>
+
+    </main>
+
+    <footer>
+        <div class="container">
+            <a href="/">home</a> ·
+            <a href="/book/index.html">docs</a> ·
+            <a href="/blog/">blog</a> ·
+            <a href="/app/">playground</a> ·
+            <a href="https://github.com/rask-lang/rask">github</a>
+        </div>
+    </footer>
+
+    <script>
+        // Register Rask language then highlight all code blocks
+        document.addEventListener('DOMContentLoaded', function() {
+            if (typeof hljs === 'undefined') return;
+            hljs.registerLanguage('rask', function(hljs) {
+                return {
+                    name: 'Rask',
+                    aliases: ['rk'],
+                    keywords: {
+                        keyword: 'func struct enum trait extend match if else for while loop return const let try ensure comptime with spawn using import export public take mutate own deliver any unsafe break continue is in as or',
+                        literal: 'true false none',
+                        built_in: 'string i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char Vec Map Pool Option Result Handle println print format panic'
+                    },
+                    contains: [
+                        hljs.COMMENT('//', '$'),
+                        hljs.COMMENT('/\\*', '\\*/'),
+                        { className: 'string', variants: [
+                            {begin: /"/, end: /"/, contains: [hljs.BACKSLASH_ESCAPE]},
+                            {begin: /'/, end: /'/, contains: [hljs.BACKSLASH_ESCAPE]}
+                        ]},
+                        { className: 'number', variants: [
+                            {begin: '\\b0b[01_]+'}, {begin: '\\b0o[0-7_]+'},
+                            {begin: '\\b0x[0-9a-fA-F_]+'}, {begin: '\\b\\d+(_\\d+)*(\\.[0-9]+)?'}
+                        ], relevance: 0},
+                        { className: 'title.function', begin: /\b[a-z_][a-z0-9_]*(?=\s*\()/, relevance: 0},
+                        { className: 'title.class', begin: /\b[A-Z][a-zA-Z0-9_]*/, relevance: 0},
+                        { className: 'meta', begin: /@[a-z_][a-z0-9_]*/ }
+                    ]
+                };
+            });
+            hljs.highlightAll();
+        });
+    </script>
+</body>
+</html>
