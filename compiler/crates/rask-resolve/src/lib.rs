@@ -9,13 +9,18 @@ mod scope;
 mod symbol;
 mod resolver;
 pub mod package;
-pub mod lockfile;
 pub mod capabilities;
 pub mod semver;
 pub mod features;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod lockfile;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod registry;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod cache;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod tarball;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod advisory;
 
 pub use error::{ResolveError, ResolveErrorKind};
@@ -23,6 +28,7 @@ pub use scope::{Scope, ScopeId, ScopeKind};
 pub use symbol::{Symbol, SymbolId, SymbolKind, SymbolTable};
 pub use resolver::Resolver;
 pub use package::{Package, PackageId, PackageRegistry, PackageError, SourceFile};
+#[cfg(not(target_arch = "wasm32"))]
 pub use lockfile::LockFile;
 
 use rask_ast::decl::Decl;
