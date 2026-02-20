@@ -13,6 +13,11 @@ on:
       - 'examples/**'
       - 'compiler/crates/rask-wasm/**'
       - 'compiler/crates/rask-interp/**'
+      - 'compiler/crates/rask-lexer/**'
+      - 'compiler/crates/rask-parser/**'
+      - 'compiler/crates/rask-desugar/**'
+      - 'compiler/crates/rask-diagnostics/**'
+      - 'compiler/crates/rask-ast/**'
       - '.github/workflows/docs.yml'
   workflow_dispatch:
 
