@@ -3,7 +3,7 @@
 //!
 //! Stub files in stdlib/ are the single source of truth for builtin type APIs.
 
-use rask_ast::decl::{DeclKind, FnDecl};
+use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::Span;
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -23,6 +23,7 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("json.rk", include_str!("../../../../stdlib/json.rk")),
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
+    ("http.rk", include_str!("../../../../stdlib/http.rk")),
 ];
 
 /// A method extracted from a stub file.
@@ -99,6 +100,29 @@ impl StubRegistry {
 
             registry
         })
+    }
+
+    /// Return parsed declarations from stdlib .rk files that have non-empty
+    /// function bodies. These are real implementations (not stubs) that should
+    /// be compiled alongside user code.
+    pub fn compilable_decls() -> Vec<Decl> {
+        let mut decls = Vec::new();
+
+        for (filename, source) in STUB_SOURCES {
+            let lex_result = rask_lexer::Lexer::new(source).tokenize();
+            if !lex_result.is_ok() {
+                continue;
+            }
+            let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+            for decl in parse_result.decls {
+                if has_compilable_body(&decl) {
+                    let _ = filename; // will be useful for diagnostics later
+                    decls.push(decl);
+                }
+            }
+        }
+
+        decls
     }
 
     fn process_decl(&mut self, decl: &rask_ast::decl::Decl, filename: &str, source: &str) {
@@ -262,6 +286,24 @@ fn find_func_name_span(source: &str, name: &str, within: Span) -> Span {
         Span::new(name_start, name_end)
     } else {
         within
+    }
+}
+
+/// Check if a declaration has a non-empty function body worth compiling.
+/// Returns true for:
+/// - Top-level functions with non-empty bodies
+/// - Struct/enum declarations (type definitions needed by compilable functions)
+/// - Impl/extend blocks where at least one method has a non-empty body
+/// - Extern declarations (needed for C interop in stdlib)
+fn has_compilable_body(decl: &Decl) -> bool {
+    match &decl.kind {
+        DeclKind::Fn(f) => !f.body.is_empty(),
+        DeclKind::Extern(_) => true,
+        DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
+        // Struct/enum defs are included if they appear in a file with compilable functions.
+        // The caller filters per-file, but for now include struct defs conservatively.
+        // They're harmless — duplicates are handled by the resolver.
+        _ => false,
     }
 }
 

@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// HTTP/1.1 request parsing and response serialization.
+// Compiled as part of stdlib — functions here get native-compiled alongside user code.
+
+/// Placeholder: test that stdlib compilation infrastructure works.
+func stdlib_http_test(x: i64) -> i64 {
+    return x + 42
+}

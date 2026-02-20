@@ -1231,6 +1231,7 @@ dependencies = [
  "rask-parser",
  "rask-resolve",
  "rask-spec-test",
+ "rask-stdlib",
  "rask-types",
 ]
 

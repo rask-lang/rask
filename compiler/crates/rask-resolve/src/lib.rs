@@ -15,6 +15,8 @@ pub mod semver;
 pub mod features;
 pub mod registry;
 pub mod cache;
+pub mod tarball;
+pub mod advisory;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};

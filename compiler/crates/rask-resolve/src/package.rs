@@ -260,6 +260,49 @@ impl PackageRegistry {
         self.discover_with_path(root, vec![])
     }
 
+    /// Discover a workspace root, returning IDs for all member packages (WS1-WS3).
+    ///
+    /// If the root build.rk has `members: [...]`, discovers each member as a
+    /// separate root package. Otherwise falls back to regular `discover()`.
+    /// All members share a single lock file (WS2) and can reference each
+    /// other via path dependencies (WS3).
+    pub fn discover_workspace(&mut self, root: &Path) -> Result<Vec<PackageId>, PackageError> {
+        let build_rk = root.join("build.rk");
+        if !build_rk.is_file() {
+            let id = self.discover(root)?;
+            return Ok(vec![id]);
+        }
+
+        let (manifest, _) = parse_build_rk(&build_rk)?;
+        let members = manifest.as_ref()
+            .and_then(|m| m.members())
+            .cloned()
+            .unwrap_or_default();
+
+        if members.is_empty() {
+            let id = self.discover(root)?;
+            return Ok(vec![id]);
+        }
+
+        let mut ids = Vec::new();
+        for member in &members {
+            let member_dir = root.join(member);
+            if !member_dir.is_dir() {
+                return Err(PackageError::Io(
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("workspace member '{}' not found", member),
+                    ),
+                    member_dir,
+                ));
+            }
+            let id = self.discover(&member_dir)?;
+            ids.push(id);
+        }
+
+        Ok(ids)
+    }
+
     /// Register a package and return its ID. Handles name_to_id dedup.
     fn register_package(&mut self, mut package: Package, pkg_path: Vec<String>) -> PackageId {
         let id = PackageId(self.packages.len() as u32);
@@ -499,6 +542,7 @@ impl PackageRegistry {
                 deps: Vec::new(),
                 features: Vec::new(),
                 metadata: Vec::new(),
+                list_metadata: Vec::new(),
                 profiles: Vec::new(),
             })
         });

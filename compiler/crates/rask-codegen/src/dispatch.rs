@@ -988,6 +988,29 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
 
+        // ── I/O primitives (used by Rask stdlib HTTP parser) ─────────
+        StdlibEntry {
+            mir_name: "io_read_string",
+            c_name: "rask_io_read_string",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "io_write_string",
+            c_name: "rask_io_write_string",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "io_close_fd",
+            c_name: "rask_io_close_fd",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+
         // ── Net module ──────────────────────────────────────────────
         StdlibEntry {
             mir_name: "net_tcp_listen",

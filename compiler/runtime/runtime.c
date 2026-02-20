@@ -385,10 +385,61 @@ int64_t rask_net_tcp_accept(int64_t listen_fd) {
     return (int64_t)client;
 }
 
+// ─── String-based socket I/O (used by Rask stdlib HTTP parser) ────
+
+// Read up to max_len bytes from fd, return as RaskString.
+RaskString *rask_io_read_string(int64_t fd, int64_t max_len) {
+    if (max_len <= 0 || max_len > 1024 * 1024) max_len = 65536;
+    char *buf = (char *)rask_alloc(max_len);
+    int64_t total = 0;
+
+    // Read until we have a complete HTTP request (double CRLF) or buffer full
+    while (total < max_len) {
+        ssize_t n = read((int)fd, buf + total, (size_t)(max_len - total));
+        if (n <= 0) break;
+        total += n;
+        // Check for end of HTTP headers (\r\n\r\n)
+        if (total >= 4) {
+            for (int64_t i = total - 4; i >= 0 && i >= total - n - 3; i--) {
+                if (buf[i] == '\r' && buf[i+1] == '\n' &&
+                    buf[i+2] == '\r' && buf[i+3] == '\n') {
+                    // Found header boundary — check Content-Length for body
+                    // For simplicity, just return what we have (sufficient for
+                    // simple JSON APIs where body fits in first read)
+                    goto done;
+                }
+            }
+        }
+    }
+done:;
+    RaskString *s = rask_string_from_bytes(buf, total);
+    rask_free(buf);
+    return s;
+}
+
+// Write a RaskString to fd. Returns bytes written or -1.
+int64_t rask_io_write_string(int64_t fd, int64_t str_ptr) {
+    const RaskString *s = (const RaskString *)(uintptr_t)str_ptr;
+    if (!s) return 0;
+    const char *data = rask_string_ptr(s);
+    int64_t len = rask_string_len(s);
+    int64_t written = 0;
+    while (written < len) {
+        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
+        if (n < 0) return -1;
+        written += n;
+    }
+    return written;
+}
+
+// Close a file descriptor.
+void rask_io_close_fd(int64_t fd) {
+    close((int)fd);
+}
+
 // Stub: read an HTTP request from a connection fd.
-// Returns pointer to an HttpRequest struct (stubbed as {method, path, body} strings).
+// (kept for backward compat — will be replaced by Rask stdlib function)
 int64_t rask_net_read_http_request(int64_t conn_fd) {
-    // Stub: allocate a pseudo-struct with 3 string fields
     int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 3);
     req[0] = (int64_t)(uintptr_t)rask_string_from_bytes("GET", 3);
     req[1] = (int64_t)(uintptr_t)rask_string_from_bytes("/", 1);

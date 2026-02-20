@@ -417,6 +417,48 @@ fn main() {
             let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
             commands::fetch::cmd_fetch(path, verbose);
         }
+        "vendor" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_vendor_help();
+                return;
+            }
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let path = find_positional_arg(&cmd_args, 2, &[]).unwrap_or(".");
+            commands::vendor::cmd_vendor(path, verbose);
+        }
+        "publish" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_publish_help();
+                return;
+            }
+            let dry_run = cmd_args.contains(&"--dry-run");
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let path = find_positional_arg(&cmd_args, 2, &["--dry-run"]).unwrap_or(".");
+            commands::publish::cmd_publish(path, dry_run, verbose);
+        }
+        "yank" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_yank_help();
+                return;
+            }
+            if cmd_args.len() < 4 {
+                eprintln!("{}: missing package name or version", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("yank"), output::arg("<package> <version>"));
+                process::exit(1);
+            }
+            commands::publish::cmd_yank(cmd_args[2], cmd_args[3]);
+        }
+        "audit" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_audit_help();
+                return;
+            }
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
+            let ignore = extract_repeated_flag(&cmd_args, "--ignore");
+            let db_path = extract_flag_value(&cmd_args, "--db");
+            let path = find_positional_arg(&cmd_args, 2, &["--ignore", "--db"]).unwrap_or(".");
+            commands::audit::cmd_audit(path, ignore, db_path.as_deref(), verbose);
+        }
         "watch" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_watch_help();

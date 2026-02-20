@@ -188,6 +188,88 @@ impl RegistryConfig {
         serde_json::from_str(&body)
             .map_err(|e| RegistryError::ParseError(format!("{}: {}", url, e)))
     }
+
+    /// Yank a published version — hides it from new resolution.
+    ///
+    /// POST {url}/yank with Bearer token auth.
+    pub fn yank(
+        &self,
+        name: &str,
+        version: &str,
+        token: &str,
+    ) -> Result<(), RegistryError> {
+        let url = format!("{}/yank", self.url);
+
+        let client = reqwest::blocking::Client::new();
+        let response = client.post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("X-Package-Name", name)
+            .header("X-Package-Version", version)
+            .send()
+            .map_err(|e| RegistryError::Http(format!("{}: {}", url, e)))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(RegistryError::Http(
+                "authentication failed — check your token".to_string()
+            ));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            return Err(RegistryError::Http(format!(
+                "HTTP {}: {}", status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Publish a package tarball to the registry.
+    ///
+    /// POST {url}/publish with Bearer token auth.
+    pub fn publish(
+        &self,
+        name: &str,
+        version: &str,
+        tarball: &Path,
+        token: &str,
+    ) -> Result<(), RegistryError> {
+        let url = format!("{}/publish", self.url);
+        let body = std::fs::read(tarball)?;
+
+        let client = reqwest::blocking::Client::new();
+        let response = client.post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("X-Package-Name", name)
+            .header("X-Package-Version", version)
+            .header("Content-Type", "application/gzip")
+            .body(body)
+            .send()
+            .map_err(|e| RegistryError::Http(format!("{}: {}", url, e)))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(RegistryError::Http(
+                "authentication failed — check your token".to_string()
+            ));
+        }
+
+        if response.status() == reqwest::StatusCode::CONFLICT {
+            return Err(RegistryError::Http(
+                format!("{} {} already exists in the registry", name, version)
+            ));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            return Err(RegistryError::Http(format!(
+                "HTTP {}: {}", status, body
+            )));
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]

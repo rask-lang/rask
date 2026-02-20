@@ -1627,6 +1627,7 @@ impl Parser {
         let mut deps = Vec::new();
         let mut features = Vec::new();
         let mut metadata = Vec::new();
+        let mut list_metadata = Vec::new();
         let mut profiles = Vec::new();
 
         self.skip_newlines();
@@ -1682,11 +1683,29 @@ impl Parser {
                         profiles.push(ProfileDecl { name: profile_name, settings });
                     }
                     TokenKind::Ident(_) => {
-                        // metadata: key: "value"
                         let key = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
-                        let value = self.expect_string()?;
-                        metadata.push((key, value));
+                        if self.check(&TokenKind::LBracket) {
+                            // list metadata: key: ["a", "b"]
+                            self.advance(); // consume [
+                            let mut values = Vec::new();
+                            self.skip_newlines();
+                            while !self.check(&TokenKind::RBracket) && !self.at_end() {
+                                values.push(self.expect_string()?);
+                                self.skip_newlines();
+                                if !self.match_token(&TokenKind::Comma) {
+                                    self.skip_newlines();
+                                    break;
+                                }
+                                self.skip_newlines();
+                            }
+                            self.expect(&TokenKind::RBracket)?;
+                            list_metadata.push((key, values));
+                        } else {
+                            // scalar metadata: key: "value"
+                            let value = self.expect_string()?;
+                            metadata.push((key, value));
+                        }
                     }
                     _ => {
                         self.advance();
@@ -1697,7 +1716,7 @@ impl Parser {
             self.expect(&TokenKind::RBrace)?;
         }
 
-        Ok(DeclKind::Package(PackageDecl { name, version, deps, features, metadata, profiles }))
+        Ok(DeclKind::Package(PackageDecl { name, version, deps, features, metadata, list_metadata, profiles }))
     }
 
     /// Parse a feature declaration inside a package block.

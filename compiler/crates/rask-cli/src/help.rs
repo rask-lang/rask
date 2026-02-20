@@ -39,6 +39,13 @@ pub fn print_usage() {
     println!("{}", output::section_header("Dependencies:"));
     println!("  {} {}       Add a dependency to build.rk", output::command("add"), output::arg("<pkg>"));
     println!("  {} {}    Remove a dependency", output::command("remove"), output::arg("<pkg>"));
+    println!("  {} {}   Copy deps to vendor/ for offline builds", output::command("vendor"), output::arg("[dir]"));
+    println!("  {} {}    Check deps for known vulnerabilities", output::command("audit"), output::arg("[dir]"));
+
+    println!();
+    println!("{}", output::section_header("Publishing:"));
+    println!("  {} {}  Publish a package to the registry", output::command("publish"), output::arg("[dir]"));
+    println!("  {} {} Hide a version from new resolution", output::command("yank"), output::arg("<pkg> <ver>"));
 
     println!();
     println!("{}", output::section_header("Development:"));
@@ -644,4 +651,76 @@ pub fn print_fetch_help() {
         output::command("rask"),
         output::command("fetch"),
         output::arg("-v"));
+}
+
+pub fn print_vendor_help() {
+    println!("{}", output::section_header("Vendor"));
+    println!();
+    println!("Copy all registry dependencies to vendor/ for offline builds.");
+    println!("Requires a rask.lock — run `rask fetch` first.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("vendor"),
+        output::arg("[directory] [--verbose]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
+    println!();
+    println!("After vendoring, add `vendor_dir: \"vendor\"` to build.rk");
+    println!("to resolve dependencies from the vendor directory.");
+}
+
+pub fn print_publish_help() {
+    println!("{}", output::section_header("Publish"));
+    println!();
+    println!("Publish a package to the registry.");
+    println!("Runs check + test, builds a reproducible tarball, and uploads.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("publish"),
+        output::arg("[directory] [--dry-run] [--verbose]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}    Show what would be published without uploading", output::arg("--dry-run"));
+    println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
+    println!();
+    println!("{}", output::section_header("Requirements:"));
+    println!("  build.rk must have `description` and `license` metadata.");
+    println!("  Packages with path dependencies cannot be published.");
+    println!("  Auth token via RASK_REGISTRY_TOKEN or ~/.rask/credentials.");
+}
+
+pub fn print_yank_help() {
+    println!("{}", output::section_header("Yank"));
+    println!();
+    println!("Hide a published version from new dependency resolution.");
+    println!("Existing lock files that pin this version are unaffected.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("yank"),
+        output::arg("<package> <version>"));
+    println!();
+    println!("Auth token via RASK_REGISTRY_TOKEN or ~/.rask/credentials.");
+}
+
+pub fn print_audit_help() {
+    println!("{}", output::section_header("Audit"));
+    println!();
+    println!("Check dependencies for known vulnerabilities.");
+    println!("Reads exact versions from rask.lock and queries the advisory database.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("audit"),
+        output::arg("[directory] [--ignore CVE-ID] [--db path]"));
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {} {} Ignore a specific advisory", output::arg("--ignore"), output::arg("<CVE-ID>"));
+    println!("  {}     {}  Use a local advisory database (offline)", output::arg("--db"), output::arg("<path>"));
+    println!("  {} {} Verbose output", output::arg("-v"), output::arg("--verbose"));
+    println!();
+    println!("Returns non-zero exit code if vulnerabilities are found (CI-friendly).");
 }

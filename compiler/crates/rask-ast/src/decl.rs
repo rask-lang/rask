@@ -272,7 +272,25 @@ pub struct PackageDecl {
     pub deps: Vec<DepDecl>,
     pub features: Vec<FeatureDecl>,
     pub metadata: Vec<(String, String)>,
+    /// List-valued metadata (e.g., `members: ["app", "lib"]`).
+    pub list_metadata: Vec<(String, Vec<String>)>,
     pub profiles: Vec<ProfileDecl>,
+}
+
+impl PackageDecl {
+    /// Workspace member directories, if this is a workspace root (WS1).
+    pub fn members(&self) -> Option<&Vec<String>> {
+        self.list_metadata.iter()
+            .find(|(k, _)| k == "members")
+            .map(|(_, v)| v)
+    }
+
+    /// Get a string metadata value by key.
+    pub fn meta(&self, key: &str) -> Option<&str> {
+        self.metadata.iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// A feature declaration inside a package block.
