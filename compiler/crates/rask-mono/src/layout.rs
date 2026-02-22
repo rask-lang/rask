@@ -114,6 +114,9 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::UnresolvedGeneric { name, .. } if name == "Map" => (8, 8),  // Pointer to map
         Type::UnresolvedGeneric { name, .. } if name == "Rng" => (8, 8),  // Pointer to rng state
         Type::UnresolvedGeneric { name, .. } if name == "Channel" => (8, 8),
+        Type::UnresolvedGeneric { name, .. } if name == "Shared" => (8, 8),  // Pointer to RaskShared*
+        Type::UnresolvedGeneric { name, .. } if name == "Sender" => (8, 8),  // Pointer to RaskSender*
+        Type::UnresolvedGeneric { name, .. } if name == "Receiver" => (8, 8), // Pointer to RaskRecver*
         Type::UnresolvedGeneric { name, args } => {
             eprintln!(
                 "warning: unresolved generic type in layout: {}<{} arg(s)>, defaulting to (8, 8)",

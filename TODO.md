@@ -10,7 +10,7 @@
 - [x] **Result return from internal functions** — `copy_aggregate` properly copies into caller stack slots. `return Ok(42)` from `-> T or E` works.
 - [x] **Struct constructor + threads** — Aggregate handling (`copy_aggregate` + `stack_slot_map`) prevents callee stack pointer dangling.
 - [x] **HTTP server native compilation** — C HTTP parser/response writer in runtime. Rask stdlib wrappers in `http.rk` compile alongside user code (injected at mono/codegen level). Request parsing (method, path, headers, body) and response writing (status, Content-Length, body) verified with curl. Full `http_api_server.rk` compiles but crashes at runtime due to `Shared<T>`/`Channel<T>`/`spawn` codegen bug (separate issue).
-- [ ] **Shared/Channel/spawn codegen** — `Shared.new()`, `Channel.buffered()`, and green `spawn` produce garbage allocation sizes (~2 PB). Complex generic type codegen needs debugging.
+- [x] **Shared/Channel/spawn codegen** — Added Sender.clone/try_send/drop, Receiver.drop, Shared.drop to interpreter and stdlib registry. Added Shared/Sender/Receiver to layout.rs known generics. Spawn with captured Shared+Sender works in both interpreter and native codegen.
 - [x] **String interpolation with inline arithmetic** — Fixed: binary op MIR lowering now uses `binop_result_type()` instead of hardcoding `MirType::Bool`.
 
 ## Build System & Packages
@@ -35,7 +35,7 @@
 - [x] **Vendoring** — `rask vendor` copies registry deps to `vendor/` with checksums. `vendor_dir: "vendor"` in build.rk enables vendor-first resolution. Offline builds supported (VD1-VD5).
 - [x] **Dependency auditing** — `rask audit` checks locked versions against advisory database. Supports `--db` for offline JSON, `--ignore` for known risks, non-zero exit for CI gates (AU1-AU5).
 - [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
-- [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
+- [x] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2). Already implemented: parser handles `comptime if` and `comptime { if }`, MIR lowering does dead branch elimination, all cfg fields (os, arch, env, profile, debug, features) work. Both interpreter and native codegen supported.
 
 ## Design Questions
 

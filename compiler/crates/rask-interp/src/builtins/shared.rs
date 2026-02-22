@@ -38,6 +38,7 @@ impl Interpreter {
                 self.call_shared_write_closure(shared, &closure)
             }
             "clone" => Ok(Value::Shared(Arc::clone(shared))),
+            "drop" => Ok(Value::Unit),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Shared".to_string(),
                 method: method.to_string(),

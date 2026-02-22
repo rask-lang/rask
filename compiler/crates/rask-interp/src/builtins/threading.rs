@@ -239,6 +239,35 @@ impl Interpreter {
                     }),
                 }
             }
+            "try_send" => {
+                let val = args.into_iter().next().unwrap_or(Value::Unit);
+                let tx = tx.lock().unwrap();
+                match tx.try_send(val) {
+                    Ok(()) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Ok".to_string(),
+                        fields: vec![Value::Unit],
+                    }),
+                    Err(mpsc::TrySendError::Full(_)) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel full".to_string(),
+                        )))],
+                    }),
+                    Err(mpsc::TrySendError::Disconnected(_)) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(
+                            "channel closed".to_string(),
+                        )))],
+                    }),
+                }
+            }
+            "clone" => {
+                Ok(Value::Sender(Arc::clone(tx)))
+            }
+            "drop" => Ok(Value::Unit),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Sender".to_string(),
                 method: method.to_string(),
@@ -292,6 +321,7 @@ impl Interpreter {
                     }),
                 }
             }
+            "drop" => Ok(Value::Unit),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Receiver".to_string(),
                 method: method.to_string(),
