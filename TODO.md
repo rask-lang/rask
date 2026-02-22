@@ -46,6 +46,8 @@
 - [ ] String interop — `as_c_str()`, `string.from_c()`
 - [ ] `pool.remove_with(h, |val| { ... })` — cascading @resource cleanup helper
 - [ ] Style guideline: max 3 context clauses per function
+- [ ] **Trait satisfaction on methods** — Instead of `extend Type with Trait { }`, annotate individual methods: `func compare(self, other: T) -> Ordering for Comparable`. One `extend` block per type, methods self-declare which `explicit trait` they satisfy. Needs design for: default method overrides, multiple trait satisfaction per method, interaction with structural matching
+- [ ] **Granular unsafe operations** — Replace blanket `unsafe { }` blocks with per-operation unsafe markers (functions or tags). Each unsafe operation individually marked instead of a block that enables everything. Needs design for: syntax (functions like `raw_deref(ptr)` vs tags like `@unsafe deref`), interaction with existing `unsafe func` declarations, FFI calling convention
 
 ## Post-v1.0
 
