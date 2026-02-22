@@ -1,40 +1,39 @@
 <!-- id: mem.closures -->
 <!-- status: decided -->
-<!-- summary: Three closure kinds — stored (by value), inline (outer scope), scoped (block-limited borrows) -->
+<!-- summary: One closure concept — compiler infers capture strategy and lifetime constraints -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
 # Closures
 
-When a closure uses a variable from outside its body, that variable is *captured* — copied or moved into the closure so it's available when the closure runs later. Closures capture by value (copy/move) for storage, access the outer scope directly for inline use, or capture borrows for scoped use. The kind is inferred from how you use the closure, not by annotation.
+Closures capture what they use. If what they use is temporary, they're temporary. One concept, compiler handles the rest.
 
-## Closure Kinds
+## The Rule
 
-| Rule | Kind | Capture | Storage | Use Cases |
-|------|------|---------|---------|-----------|
-| **CL1: Stored** | Stored | By value (copy/move) | Can be stored, returned, sent cross-task | Callbacks, event handlers, async tasks |
-| **CL2: Inline** | Inline | None (accesses outer scope) | Cannot store | Iterator adapters, inline callbacks |
-| **CL3: Scoped** | Scoped | By value + borrows | Limited to borrow's block | Closures capturing slices, temporary refs |
+When a closure uses a variable from outside its body, that variable is *captured*. The compiler decides how:
 
-Kind is inferred from context:
-- Used inline in an expression chain &rarr; inline
-- Stored/returned, captures only owned values &rarr; stored
-- Stored/assigned, captures borrows &rarr; scoped
+| What's captured | Strategy | Closure can... |
+|----------------|----------|----------------|
+| Owned/Copy values only | By value (copy or move) | Be stored, returned, sent cross-task |
+| Mutable local (with `mutate`) | Mutable borrow | Live as long as the borrowed variable |
+| Block-scoped borrow (struct field, array) | Borrow | Live as long as the borrowed data |
+| Nothing (or only reads outer scope inline) | Direct access (optimized) | Be consumed in the expression |
 
-## Stored Closures
+No annotations. No closure "kinds." The compiler infers everything from what the closure captures and how it's used. IDE shows capture list as ghost text.
 
-Capture by value (copy or move), never by reference. Can be stored in variables, structs, or returned.
+## Capturing Owned Values
+
+Closures that capture only owned or Copy values are self-contained. They can go anywhere.
 
 | Capture type | Behavior |
 |--------------|----------|
 | Small Copy types (≤16 bytes) | Copied into closure |
 | Large/non-Copy types | Moved into closure, source invalid |
-| Mutable state | Requires Pool + Handle pattern |
 
 <!-- test: run -->
 ```rask
 const name = "Alice"
-const greet = || print("Hello, {name}")  // Copies name (string is small)
+const greet = || print("Hello, {name}")  // Copies name (small)
 greet()  // "Hello, Alice"
 // name still valid
 
@@ -44,106 +43,108 @@ process_data()
 // data invalid after move
 ```
 
-Closures can accept parameters passed on each invocation:
+Closures can accept parameters:
 
 <!-- test: skip -->
 ```rask
 const double = |x| x * 2
 const result = double(5)  // 10
-
-const format_user = |id| "User #{id}"
-button.on_click(|event| {
-    print(format_user(event.user_id))
-})
 ```
 
-**Capture mutation:** Stored closures capture by copy, so mutating a captured value only mutates the closure's copy. Use Pool + Handle for shared mutable state.
+## Mutable Capture
 
-<!-- test: skip -->
-```rask
-// WRONG: mutating a copy
-const counter = 0
-const increment = || counter += 1  // Captures counter by COPY
-increment()
-// counter is still 0
-
-// CORRECT: Pool + Handle
-const state = Pool.new()
-const h = state.insert(Counter{value: 0})
-const increment = |state_pool| state_pool[h].value += 1
-increment(state)
-increment(state)
-```
-
-## Inline Closures
-
-Access outer scope directly without capturing. Must be consumed within the expression — they can't be stored or returned.
+Closures can borrow mutable locals with explicit `mutate` in the capture:
 
 | Rule | Description |
 |------|-------------|
-| **CL6: No capture** | Closure reads/writes the outer scope directly, does not copy values in |
-| **CL7: Must execute** | Must be called before expression completes |
-| **CL8: Cannot store** | Compile error if assigned to variable or returned |
-| **CL9: Aliasing rules** | Mutable access excludes other access during execution (`mem.borrowing/S5`) |
+| **MC1: Explicit annotation** | `mutate var` in closure capture list declares mutable borrow |
+| **MC2: Exclusive access** | While a mutable capture exists, no other access to the variable |
+| **MC3: Scope-limited** | Closure can't outlive the captured variable |
+| **MC4: See mutations** | Caller sees mutations after closure completes |
 
 <!-- test: skip -->
 ```rask
-const items = vec![...]
-const vec = vec![...]
+let count = 0
+const inc = |mutate count| { count += 1 }
+inc()
+inc()
+// count == 2
 
-// Closure accesses vec WITHOUT capturing it
+// Iterator example
+let total = 0
+items.for_each(|item, mutate total| { total += item.value })
+print(total)  // sees accumulated value
+```
+
+Without `mutate`, captured values are copies. The mutation stays inside the closure:
+
+<!-- test: skip -->
+```rask
+let count = 0
+const inc = || { count += 1 }  // Captures count by COPY
+inc()
+// count is still 0 — the closure mutated its own copy
+```
+
+The `mutate` keyword makes the intent visible — you see exactly which variables the closure borrows mutably. IDE shows this in the capture annotation.
+
+**Multiple closures can't share a mutable capture:**
+
+<!-- test: skip -->
+```rask
+let x = 0
+const a = |mutate x| { x += 1 }
+const b = |mutate x| { x += 2 }  // ERROR: x already mutably captured by a
+```
+
+Use `Cell<T>` (see `mem.cell`) or Pool+Handle for shared mutable state across multiple closures.
+
+## Inline Optimization
+
+When a closure is consumed within the expression where it's created, the compiler may optimize it to access the outer scope directly — no capture overhead.
+
+| Rule | Description |
+|------|-------------|
+| **IO1: No capture overhead** | Closures consumed inline access outer scope directly |
+| **IO2: Must execute** | Must be called before expression completes |
+| **IO3: Cannot store** | Compile error if assigned to variable or returned |
+| **IO4: Aliasing rules** | Mutable access excludes other access during execution (`mem.borrowing/S5`) |
+
+<!-- test: skip -->
+```rask
+// Compiler optimizes: no capture, direct access
 items.filter(|i| vec[*i].active)
      .map(|i| vec[*i].value * 2)
      .collect()
-// vec still valid after chain
+
+// Mutation in inline context
+let count = 0
+items.for_each(|item| { count += 1 })  // inline: direct access, no capture needed
 ```
 
-Mutable access with inline execution:
-
-<!-- test: skip -->
-```rask
-const app = AppState.new()
-
-// Immediate: closure executed within expression
-(try button.on_click(|event| {
-    app.counter += 1
-    app.last_click = event.timestamp
-})).execute_now()
-
-// app still valid here
-```
+This is a compiler optimization, not a user concept. Users don't need to think about whether a closure is "inline" — the compiler figures it out. If the closure is consumed immediately in an expression chain, it's optimized. If it's stored, it captures by value.
 
 Storage detection:
 
 <!-- test: skip -->
 ```rask
-// Legal: inline consumption
+// Inline: consumed immediately
 for i in items.filter(|i| vec[*i].active) {
     process(i)
 }
 
-// Illegal: storing an inline closure
-const f = items.filter(|i| vec[*i].active)
-//        ^^^^^^^^^ ERROR: closure accesses 'vec' but iterator is stored
+// Stored: captures by value
+const f = |x| x * 2  // stored closure, captures nothing (pure)
 ```
 
-## Scoped Closures
+## Scope-Limited Closures
 
-Closures that capture block-scoped borrows (struct field references, array views). Can't escape the block where the borrowed data lives.
+A closure that captures a block-scoped borrow (struct field, array view) inherits that borrow's scope limit. It can't outlive the data it references.
 
 | Rule | Description |
 |------|-------------|
-| **CL4: Scope inheritance** | Closure is limited to the innermost block of all its captured borrows |
-| **CL5: No escape** | Cannot return, store in struct, or send cross-task |
-
-The compiler determines scope constraints through local analysis only:
-
-| Step | What Happens |
-|------|--------------|
-| Borrow creation | `entity.name` creates a view tied to `entity`'s block |
-| Closure creation | Compiler sees the closure captures a borrow — marks it scoped |
-| Assignment check | Scoped closures must be assigned in the same or inner block |
-| Return/store check | Scoped closures cannot be returned, stored in structs, or sent cross-task |
+| **SL1: Scope inheritance** | Closure is limited to the innermost block of all its captured borrows |
+| **SL2: No escape** | Cannot return, store in struct, or send cross-task |
 
 <!-- test: skip -->
 ```rask
@@ -151,10 +152,8 @@ const entity = get_entity()
 const name = entity.name            // block-scoped borrow (struct field)
 const f = || process(name)         // f inherits scope constraint
 f()                                 // OK: called in same scope
-return f                            // ERROR: cannot escape scope (CL5)
+return f                            // ERROR: cannot escape scope
 ```
-
-Assigning to outer variable:
 
 <!-- test: compile-fail -->
 ```rask
@@ -162,82 +161,50 @@ let outer_closure
 {
     const entity = get_entity()
     const name = entity.name
-    outer_closure = || process(name)  // ERROR: outer_closure outlives entity (CL4)
+    outer_closure = || process(name)  // ERROR: outer_closure outlives entity
 }
 ```
 
-Storing in struct:
-
-<!-- test: compile-fail -->
-```rask
-const name = entity.name
-const f = || process(name)
-const handler = Handler { callback: f }  // ERROR: struct fields cannot hold scope-constrained closures (CL5)
-```
-
-Passing to immediate consumer:
+**Fix: clone to owned data:**
 
 <!-- test: skip -->
 ```rask
-const name = entity.name
-const f = || process(name)
-execute_now(f)                    // OK: execute_now consumes f immediately
+const name = entity.name.clone()   // owned copy
+const f = || process(name)         // captures owned value
+return f                            // OK: no scope constraint
 ```
 
 ## Generic Propagation
 
 | Rule | Description |
 |------|-------------|
-| **CL10: Constraint propagation** | Scope constraints propagate through generic type parameters when the compiler generates specialized code |
+| **GP1: Constraint propagation** | Scope constraints propagate through generic type parameters when the compiler generates specialized code |
 
-No special annotations needed. Functions that don't store their generic closure argument work with scoped closures automatically. Functions that store the argument produce a compile error at the storage site.
+Functions don't need to declare whether they store or consume closures. The constraint propagates through generics, and violations surface where storage is attempted.
 
 <!-- test: skip -->
 ```rask
 func run_twice<F: Fn()>(f: F) {
     f()
     f()
-}  // F dropped, never stored - works with scope-constrained closures
+}  // F dropped, never stored — works with scope-limited closures
 
 func store_callback<F: Fn()>(f: F) {
-    const holder = Holder { callback: f }  // ERROR if F is scoped (CL5)
+    const holder = Holder { callback: f }  // ERROR if F is scope-limited
 }
 
 const name = entity.name
-const greet = || print(name)   // scoped (captures a borrow)
+const greet = || print(name)   // scope-limited (captures a borrow)
 
 run_twice(greet)              // OK: run_twice doesn't store F
 store_callback(greet)         // ERROR: store_callback tries to store F
 ```
 
-The error surfaces inside `store_callback` at the storage site, not at the call site. Functions don't need to declare whether they store or consume inline.
-
 ## Error Messages
 
-**Inline closure stored [CL8]:**
+**Scope-limited closure escapes [SL2]:**
 ```
-ERROR [mem.closures/CL8]: inline closure cannot be stored
-   |
-5  |  let f = items.filter(|i| vec[*i].active)
-   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
-
-WHY: This closure accesses 'vec' in the outer scope directly.
-     It must be consumed within the same expression.
-
-FIX 1: Use the closure immediately:
-   |
-5  |  items.filter(|i| vec[*i].active).collect()
-
-FIX 2: Capture by value instead:
-   |
-5  |  let active_set: Set<usize> = items
-   |      .filter(|i| vec[*i].active).collect()
-   |  let f = items.filter(|i| active_set.contains(i))
-```
-
-**Scoped closure escapes [CL5]:**
-```
-ERROR [mem.closures/CL5]: scoped closure cannot escape
+ERROR [mem.closures/SL2]: closure cannot escape scope
    |
 3  |  const name = entity.name
    |               ^^^^^^^^^^^ borrowed from 'entity' (line 2)
@@ -246,79 +213,55 @@ ERROR [mem.closures/CL5]: scoped closure cannot escape
 5  |  return f
    |  ^^^^^^^^ cannot escape scope where 'entity' lives
 
-WHY: 'name' is borrowed from 'entity'. Returning the closure would let
-     'name' outlive 'entity' (use-after-free).
+FIX: Clone to owned data:
 
-FIX 1: Use in same scope:
-   |
-5  |  f()
-
-FIX 2: Capture owned data instead:
-   |
-3  |  const name = entity.name.clone()
-4  |  const f = || process(name)
-5  |  return f                          // OK: no scoped borrows
+  const name = entity.name.clone()
+  const f = || process(name)
+  return f                          // OK: no scoped borrows
 ```
 
-**Scoped closure assigned to outer variable [CL4]:**
+**Mutable capture conflict [MC2]:**
 ```
-ERROR [mem.closures/CL4]: closure outlives its captured borrow
+ERROR [mem.closures/MC2]: variable already mutably captured
    |
-1  |  let outer_closure
-   |      ^^^^^^^^^^^^^ declared here (outer scope)
-3  |      const entity = get_entity()
-4  |      const name = entity.name
-5  |      outer_closure = || process(name)
-   |                      ^^^^^^^^^^^^^^^^ captures 'name' (borrowed from 'entity')
-6  |  }
-   |   ^ 'entity' dropped here
+3  |  const a = |mutate x| { x += 1 }
+   |             ^^^^^^^^^ x mutably captured here
+4  |  const b = |mutate x| { x += 2 }
+   |             ^^^^^^^^^ cannot capture x again
 
-WHY: 'outer_closure' lives longer than 'entity', but it captures 'name'
-     which borrows from 'entity'.
+FIX: Use Cell<T> for shared mutable state:
 
-FIX: Create the closure inside the scope:
-   |
-3  |      const entity = get_entity()
-4  |      const name = entity.name
-5  |      const inner_closure = || process(name)
-6  |      inner_closure()
+  const x = Cell.new(0)
+  const a = || x.modify(|v| v += 1)
+  const b = || x.modify(|v| v += 2)
 ```
 
-**Generic function stores scoped closure [CL10]:**
+**Inline closure stored [IO3]:**
 ```
-ERROR [mem.closures/CL10]: cannot store scoped type
+ERROR [mem.closures/IO3]: closure accesses outer scope directly but is stored
    |
-// in store_callback<F>:
-3  |  const holder = Holder { callback: f }
-   |                          ^^^^^^^^^^^^ F is scope-constrained
+5  |  let f = items.filter(|i| vec[*i].active)
+   |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ closure accesses 'vec' without capturing
 
-Note: called with scoped closure at:
-10 |  store_callback(greet)
-   |                 ^^^^^ 'greet' captures borrowed 'name' (line 8)
+FIX 1: Consume immediately:
 
-FIX 1: Use a function that doesn't store:
-   |
-10 |  run_twice(greet)
+  items.filter(|i| vec[*i].active).collect()
 
-FIX 2: Remove the borrow from the closure:
-   |
-8  |  const name = entity.name.clone()
-9  |  const greet = || print(name)
-10 |  store_callback(greet)         // OK
+FIX 2: Capture explicitly:
+
+  let active_set = items.filter(|i| vec[*i].active).collect()
 ```
 
 ## Edge Cases
 
-| Case | Rule | Handling |
-|------|------|----------|
-| Closure captures move-only type | CL1 | Type moved into closure, source invalid |
-| Closure captures resource type | CL1 | Resource must be consumed within closure or transferred out |
-| Nested closures | CL1 | Each level captures from its immediate outer scope |
-| Async closure | CL1 | Treated as storable; captured values moved in |
-| Clone inside closure | CL1 | Creates independent copy |
-| Stored closure captures borrow | CL3 | Closure becomes scoped |
-| Pure closure (no captures, no outer access) | CL1 | Stored by default |
-| Mutable access in inline closure | CL9 | Exclusive access rule applies during execution |
+| Case | Handling |
+|------|----------|
+| Closure captures move-only type | Type moved into closure, source invalid |
+| Closure captures resource type | Resource must be consumed within closure or transferred out |
+| Nested closures | Each level captures from its immediate outer scope |
+| Pure closure (no captures, no outer access) | Self-contained, can go anywhere |
+| Clone inside closure | Creates independent copy |
+| `mutate` capture of Copy type | Borrows mutably (not copied), mutations visible to caller |
 
 ---
 
@@ -347,116 +290,70 @@ MIR lowering initially marks every closure `heap: true`. A per-function optimiza
 
 Stack-allocated closures use a Cranelift stack slot — no runtime allocator call, no cleanup needed. Heap-allocated closures call `rask_alloc` and get a matching `ClosureDrop` (which calls `rask_free`) inserted before every return path where the closure isn't the return value.
 
-This is conservative local analysis: no cross-function tracking, no dataflow. A closure that's only called locally but happens to be passed to another function stays heap-allocated. Correctness over cleverness.
+Conservative local analysis: no cross-function tracking, no dataflow.
 
 ## Appendix (non-normative)
 
 ### Rationale
 
-**CL1 (stored, capture by value):** I chose capture-by-value to make closures self-contained and thread-safe. The tradeoff is more `.clone()` calls and the Pool+Handle pattern for shared mutable state. I think that's better than reference-capturing closures that drag scope annotations into everything.
+**One concept:** I had three closure kinds (stored, inline, scoped) which mapped closely to Rust's `Fn`/`FnMut`/`FnOnce`. Three concepts for the user to learn, three sections in the spec. But the compiler already inferred the kind from context — users never wrote annotations. So the "kinds" were implementation categories, not user concepts. I collapsed them into one: closures capture what they use, the compiler figures out the rest.
 
-**CL2 (inline closures):** Iterator chains like `.filter(|x| ...).map(|x| ...)` need access to surrounding scope without the overhead of capturing. Inline closures give you this with the constraint that the closure can't escape the expression. This covers the most common closure pattern (iterator adapters) with zero ceremony.
+**Mutable capture (MC1):** Capture-by-value means mutating a captured variable only mutates the closure's copy — a common source of bugs. The `mutate` annotation makes mutable borrows explicit. You see exactly which outer variables the closure can modify. This replaces the Pool+Handle pattern for the simplest case (one closure mutating one local).
 
-**CL3–CL5 (scoped closures):** A stored closure that captures a block-scoped borrow (struct field, array element) becomes scoped. This is enforced through type-level scope markers, not escape analysis. All checks are local to the function — no cross-function tracking needed.
-
-**CL10 (generic propagation):** Functions don't need to declare "I consume inline" vs "I store." The constraint propagates through generics when specialized code is generated, and violations surface where storage is attempted. This keeps function signatures clean.
-
-### Metaphor: Closures as Luggage
-
-A useful way to think about the three closure kinds:
-
-| Kind | Metaphor | Explanation |
-|------|----------|-------------|
-| Stored | Backpack | Packs copies of everything. Can go anywhere. |
-| Inline | Hand-carry | Holding items directly. Must use now. |
-| Scoped | Day-trip bag | Borrows some items from nearby. Can't leave the area those items came from. |
+**Inline optimization (IO1-IO4):** Iterator chains like `.filter(|x| ...).map(|x| ...)` need access to surrounding scope without capture overhead. The compiler detects when a closure is consumed immediately and optimizes to direct access. This is transparent — the user writes the same closure syntax either way.
 
 ### Patterns & Guidance
 
-**Pool+Handle for stateful callbacks:**
+**Choosing capture strategy:**
+
+| Scenario | Pattern |
+|----------|---------|
+| Iterator adapter | `items.filter(\|i\| condition)` (inline optimized) |
+| Simple callback | `\|x\| x * 2` (captures nothing, self-contained) |
+| Callback with context | `\|event\| process(name, event)` (captures `name` by value) |
+| Mutating a local | `\|mutate count\| count += 1` (mutable capture) |
+| Shared mutable state (multiple closures) | `Cell<T>` or Pool+Handle |
+| Callback stored for later | Capture owned values, or clone borrows |
+
+**Cell<T> for shared mutable state:**
 
 <!-- test: skip -->
 ```rask
-struct App {
-    state: Pool<AppState>
-    state_handle: Handle<AppState>
-}
+const counter = Cell.new(0)
 
-func setup_handlers(app: App) {
-    const h = app.state_handle
+button1.on_click(|event| counter.modify(|c| c += 1))
+button2.on_click(|event| counter.modify(|c| c += 10))
 
-    // Each handler captures handles, receives state as parameter
-    button1.on_click(|event, state| {
-        state[h].mode = Mode.Edit
-    })
-
-    button2.on_click(|event, state| {
-        state[h].mode = Mode.View
-    })
-
-    button3.on_click(|event, state| {
-        try state[h].save()
-    })
-
-    app.run()  // Framework calls closures with state parameter
-}
+// After clicks: counter.read(|c| print(c))
 ```
 
-**Multiple closures sharing state:**
-
-<!-- test: skip -->
-```rask
-const state = Pool.new()
-const h = state.insert(AppData{...})
-
-// All closures capture same handle, receive state as parameter
-button1.on_click(|_, s| s[h].mode = Mode.A)
-button2.on_click(|_, s| s[h].mode = Mode.B)
-button3.on_click(|_, s| try s[h].save())
-
-app.run_with_state(state)
-```
-
-**Choosing between closure kinds:**
-
-| Scenario | Kind | Pattern |
-|----------|------|---------|
-| Iterator adapter | Inline | `items.filter(\|i\| vec[*i].active)` |
-| Event handler (run now) | Inline | `(try btn.on_click(\|e\| app.x += 1)).execute_now()` |
-| Event handler (stored) | Stored + params | `btn.on_click(\|e, app\| app[h].x += 1)` |
-| Async callback | Stored + params | `task.then(\|result, state\| state[h] = result)` |
-| Pure transformation | Either | `\|x\| x * 2` (no outer access) |
-| Closure with field borrow (same scope) | Scoped | `const f = \|\| process(entity.name); f()` |
+See `mem.cell` for `Cell<T>` details.
 
 ### IDE Integration
 
-| Closure Kind | Ghost Annotation |
-|--------------|------------------|
-| Stored | `[stored]` |
-| Scoped | `[scoped to line N]` |
-| Inline | `[inline]` |
+| Context | Ghost Annotation |
+|---------|------------------|
+| Self-contained closure | `[captures: name (copy), data (move)]` |
+| Scope-limited closure | `[scope-limited to line N]` |
+| Inline-optimized closure | `[inline]` |
+| Mutable capture | `[mutate: count]` |
 
 On hover over a closure, show captures:
 
 ```
 Closure captures:
-  name: borrowed from 'entity' (line 3) -> makes closure scoped
-  count: copied (i32, 4 bytes)
+  name: copied (string, 24 bytes)
+  count: mutably borrowed (line 3)
 
-Kind: Scoped (to line 3)
+Lifetime: scope-limited to line 3
 ```
 
-When the cursor is in a scoped closure, the IDE highlights the block boundary it's limited to.
-
-| Error | Quick Fix |
-|-------|-----------|
-| Inline closure stored | "Use inline" / "Clone captured values" |
-| Scoped closure escapes | "Move declaration into scope" / "Clone to owned" |
-| Generic stores scoped closure | "Use non-storing alternative" |
+When the cursor is in a scope-limited closure, the IDE highlights the block boundary it's limited to.
 
 ### See Also
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
-- [Borrowing](borrowing.md) -- Block-scoped (struct fields) and statement-scoped (buffers) access (`mem.borrowing`)
+- [Borrowing](borrowing.md) -- Block-scoped and statement-scoped access (`mem.borrowing`)
+- [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
-- [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must be storable (`conc.sync`)
+- [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

@@ -310,13 +310,7 @@ extend File {
 ### Enums (Sum Types)
 
 ```rask
-enum Status {
-    Pending
-    Active
-    Completed(timestamp: i64)
-    Failed(error: string)
-}
-
+// Positional payloads — clean for wrappers and simple cases
 enum Option<T> {
     Some(T)
     None
@@ -326,8 +320,23 @@ enum Result<T, E> {
     Ok(T)
     Err(E)
 }
+
+// Named payloads — when fields have distinct roles
+enum Status {
+    Pending
+    Active
+    Completed { timestamp: i64 }
+    Failed { error: string }
+}
+
+// Mix: each variant chooses independently
+enum Event {
+    Click(Point)                          // positional
+    Resize { width: i32, height: i32 }    // named
+    Quit                                   // no payload
+}
 ```
-ne
+
 ```rask
 enum Option<T> {
     Some(T)
@@ -517,6 +526,24 @@ struct Cache<Key, Value> {
     data: Map<Key, Value>
 }
 ```
+
+**Angle bracket parsing (no turbofish):**
+
+The parser resolves `<` as generic vs comparison without requiring Rust's `::<>` turbofish syntax:
+
+| Rule | Description |
+|------|-------------|
+| `<` after identifier | Try balanced `<...>` parse; if closing `>` is followed by `(`, `.`, `{`, `,`, `)`, `>`, or `;`, it's generics |
+| Otherwise | `<` is a comparison operator |
+
+```rask
+sort<i32>(items)           // > followed by ( → generic call
+Vec<Vec<i32>>              // nested >> → split into > > (generics)
+a < b                      // no matching generic pattern → comparison
+Map<string, Vec<i32>>      // , inside <> → generic parameters
+```
+
+The ambiguous case `f(a<b, c>(d))` parses as a generic call `a<b, c>(d)`. To express the comparison, use parentheses: `f((a < b), (c > d))`. This matches Kotlin, TypeScript, and Scala's approach — locally resolved, no name resolution during parsing.
 
 ---
 
