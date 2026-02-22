@@ -1,19 +1,20 @@
 <!-- id: type.enums -->
 <!-- status: decided -->
-<!-- summary: Tagged unions with inline payloads, inferred binding modes, exhaustive matching -->
+<!-- summary: Tagged unions with positional or named payloads, inferred binding modes, exhaustive matching -->
 <!-- depends: types/structs.md -->
 <!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
 
 # Enums
 
-Tagged unions with inline payloads. Compiler infers binding modes. Exhaustiveness checked at compile time. One `match` keyword, no mode annotations.
+Tagged unions with positional or named payloads. Compiler infers binding modes. Exhaustiveness checked at compile time. One `match` keyword, no mode annotations.
 
 ## Enum Definition
 
 <!-- test: parse -->
 ```rask
 enum Name { A, B }                    // Simple tag-only
-enum Name { A(T), B(U, V) }           // Variants with payloads
+enum Name { A(T), B(U, V) }           // Positional payloads
+enum Name { A { x: T, y: U } }       // Named payloads
 enum Name<T> { Some(T), None }        // Generic enum
 ```
 
@@ -22,6 +23,62 @@ enum Name<T> { Some(T), None }        // Generic enum
 | **E1: Inline storage** | Variant payloads stored inline (no heap except `Owned<T>`) |
 | **E2: Discriminant sizing** | Auto-sized: u8 (≤256 variants), u16 (≤65536 variants) |
 | **E3: Max variants** | Maximum 65536 variants per enum |
+
+## Positional vs Named Payloads
+
+| Rule | Description |
+|------|-------------|
+| **E12: Positional variants** | `Variant(T)` or `Variant(T, U)` — fields accessed by position in patterns |
+| **E13: Named variants** | `Variant { name: T }` — fields accessed by name in patterns |
+| **E14: No mixing** | A single variant is either positional or named, not both |
+
+<!-- test: parse -->
+```rask
+// Positional: clean for wrappers, single payloads, obvious types
+enum Token {
+    Number(f64),
+    Ident(string),
+    Plus,
+    Minus,
+}
+
+// Named: when fields have distinct roles
+enum Shape {
+    Circle { center: Point, radius: f32 },
+    Rect { origin: Point, width: f32, height: f32 },
+}
+
+// Mix within one enum is fine — each variant chooses independently
+enum Event {
+    Click(Point),                         // positional: one obvious payload
+    Resize { width: i32, height: i32 },   // named: two fields with distinct roles
+    Quit,                                  // no payload
+}
+```
+
+**Pattern matching follows the variant form:**
+
+```rask
+match token {
+    Number(n) => process(n),         // positional: bind by position
+    Ident(s) => lookup(s),           // positional
+    Plus => ...,
+    Minus => ...,
+}
+
+match shape {
+    Circle { radius, .. } => area(radius),     // named: bind by name
+    Rect { width, height, .. } => width * height,
+}
+
+match event {
+    Click(pos) => handle_click(pos),
+    Resize { width, height } => resize(width, height),
+    Quit => break,
+}
+```
+
+**Guidance:** Use positional for 0-1 payload or when the type makes the meaning obvious. Use named when there are 2+ fields with distinct roles.
 
 ## Value Semantics
 

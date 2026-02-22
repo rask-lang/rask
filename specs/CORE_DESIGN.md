@@ -20,14 +20,29 @@ I enforce memory safety through the type system and scope rules without requirin
 - No `&`, `&mut`, or equivalent markers
 - Safety is a property of well-typed programs, not extra work
 
-### 2. Value Semantics
+### 2. Everything is a Value
 
-All types are values—data is embedded, not pointed-to. There is no distinction between "value types" and "reference types."
+There is no distinction between "value types" and "reference types." Every type in Rask is a value — it has a single owner, it copies or moves on assignment, and it's freed when the owner goes out of scope.
 
 **What this means:**
 - Assigning or passing a value either copies it (for small types) or moves it (transfers ownership)
 - No implicit sharing; aliasing is explicit and controlled
 - Memory layout is predictable and cache-friendly
+
+**This applies uniformly:**
+- Primitives (`i32`, `bool`, `f64`) — values
+- Structs — values (embed their fields)
+- Enums — values (inline payloads)
+- Collections (`Vec<T>`, `Map<K,V>`) — values that own heap buffers
+- Strings (`string`) — values that own heap buffers
+- `any Trait` — values that own heap-allocated concrete data
+- `Cell<T>` — values that own a heap-allocated inner value
+- `Shared<T>`, `Mutex<T>` — values that own thread-safe inner data
+- Closures — values that own their captured data
+
+There's no `Box<T>` because there's no need to distinguish "heap-allocated value" from "value." Some values happen to own heap memory internally — that's an implementation detail, not a type-system concept. The allocation is visible at creation (`Vec.new()`, `Cell.new()`), not in the type's behavior.
+
+**Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model, no exceptions.
 
 ### 3. No Storable References
 
@@ -172,7 +187,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Pattern matching.** `match` for multiple branches, `if x is Pattern` for single checks. Compiler infers binding modes (borrow vs take) from usage. See [enums.md](types/enums.md), [control-flow.md](control/control-flow.md).
 
-**Closures.** Three kinds, inferred from context. Stored closures capture by value (copy or move) and can go anywhere. Inline closures access the outer scope directly without capturing — must be consumed in the expression (iterator chains). Scoped closures capture block-scoped borrows and can't escape the block where the borrowed data lives. IDE shows capture list as ghost annotation. See [closures.md](memory/closures.md).
+**Closures.** Closures capture what they use. If captured data is owned, the closure can go anywhere. If captured data is borrowed, the closure is limited to that scope. Mutable captures use explicit `mutate` annotation. The compiler optimizes inline closures (iterator chains) to access the outer scope directly. IDE shows capture list as ghost annotation. `Cell<T>` provides single-value mutable containers for sharing across closures without Pool+Handle ceremony. See [closures.md](memory/closures.md), [cell.md](memory/cell.md).
 
 **Traits.** Structural matching by default — if a type has the right methods, it satisfies the trait. `explicit trait` requires an `extend` declaration. Runtime polymorphism via `any Trait` for heterogeneous collections. Structural matching and generic constraints are in [generics.md](types/generics.md); `any Trait` runtime dispatch is in [traits.md](types/traits.md).
 
