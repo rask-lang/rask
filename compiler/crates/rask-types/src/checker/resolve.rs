@@ -373,8 +373,8 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
-            // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
-            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "HttpResponse" | "Shared") => {
+            // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared/Sender/Receiver (bare)
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "HttpResponse" | "Shared" | "Sender" | "Receiver") => {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
@@ -934,6 +934,15 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
+            // Sender<T>.try_send(value: T) -> () or string
+            ("Sender", "try_send") if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                let result_type = Type::Result {
+                    ok: Box::new(Type::Unit),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_type, span)
+            }
             // Sender<T>.clone() -> Sender<T>
             ("Sender", "clone") if args.is_empty() => {
                 let sender_ty = Type::UnresolvedGeneric {
@@ -941,6 +950,10 @@ impl TypeChecker {
                     args: type_args.to_vec(),
                 };
                 self.unify(ret, &sender_ty, span)
+            }
+            // Sender/Receiver/Shared.drop() -> ()
+            ("Sender" | "Receiver" | "Shared", "drop") if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
             }
             // Receiver<T>.recv() -> T or string
             ("Receiver", "recv") if args.is_empty() => {
