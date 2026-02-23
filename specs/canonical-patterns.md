@@ -308,17 +308,17 @@ See [stdlib/strings.md](stdlib/strings.md), [stdlib/fmt.md](stdlib/fmt.md).
 Message passing for communication, `Shared<T>` for shared data.
 
 ```rask
-// Shared data — closure-based access, no lock leaks
+// Shared data — with-based access, no lock leaks
 const db = Shared.new(Database.new())
 
-db.read(|d| {
+with db as d {
     const user = d.users.get(id)
     respond(user)
-})
+}
 
-db.write(|d| {
+with db as mutate d {
     d.users.insert(id, new_user)
-})
+}
 
 // Message passing — channels between tasks
 const ch = Channel.buffered(16)

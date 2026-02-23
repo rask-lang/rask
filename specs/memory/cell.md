@@ -1,11 +1,11 @@
 <!-- id: mem.cell -->
 <!-- status: decided -->
-<!-- summary: Single-value mutable container for shared access via closures -->
+<!-- summary: Single-value mutable container with `with`-based access -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 
 # Cell
 
-`Cell<T>` is a single heap-allocated value with closure-based access. When you need one mutable value shared across multiple closures without the ceremony of Pool+Handle.
+`Cell<T>` is a single heap-allocated value with `with`-based access. When you need one mutable value shared across multiple closures without the ceremony of Pool+Handle.
 
 ## Why Cell Exists
 
@@ -20,7 +20,9 @@ button.on_click(|event| pool[h].count += 1)
 
 // Cell: direct
 const state = Cell.new(AppState{...})
-button.on_click(|event| state.modify(|s| s.count += 1))
+button.on_click(|event, state| {
+    with state as mutate s { s.count += 1 }
+})
 ```
 
 ## Rules
@@ -30,28 +32,34 @@ button.on_click(|event| state.modify(|s| s.count += 1))
 | **CE1: Heap-allocated** | `Cell.new(value)` heap-allocates the value |
 | **CE2: Value semantics** | `Cell<T>` is a value that owns its heap data (like Vec, string) |
 | **CE3: Move-only** | `Cell<T>` is never Copy; assignment moves |
-| **CE4: Closure access** | Access only through `read` and `modify` closures |
-| **CE5: Exclusive mutation** | `modify` takes exclusive access; no concurrent reads or writes |
+| **CE4: with access** | Access through `with cell as v { ... }` (read) and `with cell as mutate v { ... }` (mutate) |
+| **CE5: Exclusive mutation** | `with...as mutate` takes exclusive access; no concurrent reads or writes |
 
 ## API
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Cell.new(value)` | `T -> Cell<T>` | Create cell with initial value |
-| `cell.read(f)` | `Func(T) -> R -> R` | Read access via closure |
-| `cell.modify(f)` | `Func(T) -> R -> R` | Mutable access via closure |
 | `cell.replace(value)` | `T -> T` | Swap in new value, return old |
 | `cell.into_inner()` | `take Cell<T> -> T` | Consume cell, return value |
+
+Access is through `with`:
 
 <!-- test: skip -->
 ```rask
 const counter = Cell.new(0)
 
 // Read
-const current = counter.read(|c| c)
+const current = with counter as c { c }
 
 // Mutate
-counter.modify(|c| c += 1)
+with counter as mutate c { c += 1 }
+
+// One-liner shorthand
+with counter as mutate c: c += 1
+
+// Expression context
+const doubled = with counter as c { c * 2 }
 
 // Replace
 const old = counter.replace(0)
@@ -70,8 +78,12 @@ For multiple closures to share a Cell, use a handle or pass it as a parameter:
 ```rask
 // Pattern: closures receive cell as parameter
 func setup(state: Cell<AppState>) {
-    button1.on_click(|event, state| state.modify(|s| s.mode = Mode.Edit))
-    button2.on_click(|event, state| state.modify(|s| s.mode = Mode.View))
+    button1.on_click(|event, state| {
+        with state as mutate s { s.mode = Mode.Edit }
+    })
+    button2.on_click(|event, state| {
+        with state as mutate s { s.mode = Mode.View }
+    })
     app.run_with(state)
 }
 
@@ -82,7 +94,7 @@ struct App {
 
 extend App {
     func on_click(self, event: Event) {
-        self.state.modify(|s| s.click_count += 1)
+        with self.state as mutate s { s.click_count += 1 }
     }
 }
 ```
@@ -102,7 +114,7 @@ extend App {
 |------|----------|
 | `Cell<Cell<T>>` | Allowed but discouraged — flatten to one Cell |
 | `Cell<@resource>` | Allowed; `into_inner()` returns the resource for consumption |
-| Recursive `modify` | Panic: cell is exclusively borrowed |
+| Recursive `with...as mutate` | Panic: cell is exclusively borrowed |
 | `Cell<T>` in Vec | Allowed (Cell is a value type) |
 | Drop | Heap data freed, inner T dropped normally |
 
@@ -110,7 +122,7 @@ extend App {
 
 **Recursive access [CE5]:**
 ```
-PANIC: Cell is exclusively borrowed — recursive access in modify()
+PANIC: Cell is exclusively borrowed — recursive access in with block
 ```
 
 ---
@@ -121,7 +133,7 @@ PANIC: Cell is exclusively borrowed — recursive access in modify()
 
 **CE1 (heap-allocated):** Cell needs a stable address so closures can share it. Stack allocation would require borrow tracking. Heap allocation with value ownership keeps it simple — same model as Vec or string.
 
-**CE4 (closure access):** Direct field access (`cell.value.field`) would create a reference that escapes the cell's control. Closure-based access ensures exclusive mutation and prevents dangling references. Same pattern as `Shared<T>` and collection `modify()`.
+**CE4 (with access):** Direct field access (`cell.value.field`) would create a reference that escapes the cell's control. `with`-based access ensures exclusive mutation and prevents dangling references. Same pattern as `Shared<T>`, `Mutex<T>`, and collection `with` blocks — one construct for all container types.
 
 **Why not just use `Shared<T>`?** `Shared<T>` is thread-safe (atomic operations, cross-task sending). Cell is single-task — no synchronization overhead. Use Cell when you don't need cross-task sharing.
 
@@ -130,3 +142,4 @@ PANIC: Cell is exclusively borrowed — recursive access in modify()
 - [Closures](closures.md) — Mutable capture, closure patterns (`mem.closures`)
 - [Pools](pools.md) — Handle-based collections (`mem.pools`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T>` for cross-task access (`conc.sync`)
+- [Borrowing](borrowing.md) — `with` semantics and rules (`mem.borrowing`)

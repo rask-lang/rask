@@ -109,7 +109,8 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Error propagation | `try expr` | `expr?` |
 | Pool context | `func f() using Pool<T>` | N/A |
 | Runtime context | `using Multitasking { }` | N/A |
-| Element binding | `with pool[h] as x { }` | N/A |
+| Element binding | `with pool[h] as x { }` / `with pool[h] as mutate x { }` | N/A |
+| Cell/Shared/Mutex | `with cell as mutate v { }` / `with shared as v { }` | N/A |
 | Async spawn | `spawn(\|\| {})` | `tokio::spawn(async {})` |
 | Thread pool spawn | `ThreadPool.spawn(\|\| {})` | N/A |
 | OS thread spawn | `Thread.spawn(\|\| {})` | `std::thread::spawn(\|\| {})` |
@@ -157,9 +158,13 @@ using Multitasking {                         // runtime executor
     spawn(|| { work() }).detach()
 }
 
-with pool[h] as entity {                     // element binding
+with pool[h] as mutate entity {              // mutable element binding
     entity.health -= 10
 }
+
+with cell as mutate v { v.count += 1 }      // Cell access
+with shared as v { v.timeout }               // Shared read lock
+with mutex as mutate v { v.push(item) }      // Mutex exclusive lock
 
 // Spawning (functions, not keywords)
 import async.spawn
@@ -218,7 +223,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Area | Decision | Spec |
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
-| Borrowing | Block-scoped (values) vs expression-scoped (collections) | [borrowing.md](specs/memory/borrowing.md) |
+| Borrowing | Block-scoped (fixed sources), value-based + `with` (collections) | [borrowing.md](specs/memory/borrowing.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |

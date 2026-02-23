@@ -23,11 +23,11 @@ func get_age(user: User) -> i32 {
 }
 
 func main() {
-    // Expression-scoped borrowing with collections
-    // Collections are borrowed only during method call
+    // Inline access with collections
+    // Collections are accessed only for the expression
     const numbers = Vec.from([1, 2, 3, 4, 5])
 
-    // Borrow happens during .iter() call, ends immediately
+    // Access during .iter() call, ends after expression
     const sum = numbers.iter().fold(0, |acc, x| acc + x)
 
     // Can use numbers again immediately
@@ -52,7 +52,7 @@ func main() {
         None => print("No first\n")
     }
 
-    // Block-scoped borrowing with values
+    // Block-scoped views with structs
     const user = User { name: "Alice", age: 30 }
 
     {
@@ -61,7 +61,7 @@ func main() {
         print("Age: ")
         print(borrowed.age)
         print("\n")
-    }  // Borrow ends here
+    }  // View ends here
 
     // user is accessible again after block
     print("User name: ")
@@ -100,7 +100,7 @@ func main() {
 
     print("All users:\n")
     for user in users.iter() {
-        print_user(user)  // Each user is borrowed during iteration
+        print_user(user)  // Each user is accessed during iteration
     }
 
     print("\n")
@@ -148,7 +148,7 @@ func main() {
     }
     print("\n\n")
 
-    // Pattern: borrow in expression, use immediately
+    // Pattern: inline access in expression, use immediately
     const data = Vec.from([5, 2, 8, 1, 9])
 
     const max = data.iter()

@@ -809,8 +809,8 @@ select {
 
 // Shared state
 const config = Shared.new(AppConfig.default())
-config.read(|c| c.timeout)
-config.write(|c| c.timeout = 60.seconds)
+const timeout = with config as c { c.timeout }
+with config as mutate c { c.timeout = 60.seconds }
 ```
 
 See [concurrency/](concurrency/).
