@@ -97,7 +97,7 @@ func sync_physics(mutate world: GameWorld) {
 }
 ```
 
-**Concepts: 8** — cursor iteration, statement-scoped views, cross-pool handles, two pools active, @resource in pool, raw value extraction, safe FFI wrapper, borrowing modes.
+**Concepts: 8** — cursor iteration, inline access, cross-pool handles, two pools active, @resource in pool, raw value extraction, safe FFI wrapper, borrowing modes.
 
 **Friction:** Cross-pool handle chaining — three mechanism boundaries in four lines. **MARGINAL.**
 
@@ -127,7 +127,7 @@ func update_entities(mutate world: GameWorld) -> () or Error {
 }
 ```
 
-**Concepts: 10** — cursor iteration, statement-scoped views, move semantics, cross-pool handles, pool removal, @resource consumption, error handling, handle collection pattern, Pool\<@resource> rules, ownership transfer.
+**Concepts: 10** — cursor iteration, inline access, move semantics, cross-pool handles, pool removal, @resource consumption, error handling, handle collection pattern, Pool\<@resource> rules, ownership transfer.
 
 **The 4-step destruction dance is unavoidable:** remove entity → extract handle → remove body → consume body. Miss any step → compile error or runtime panic. **FAIL.**
 
@@ -236,4 +236,4 @@ If a function needs >3, restructure (pass struct, use field projections, split f
 - `mem.resources` — @resource types, ensure cleanup
 - `mem.context` — context clauses
 - `conc.async` — spawn, must-use handles
-- `mem.borrowing` — statement-scoped views, field projections
+- `mem.borrowing` — inline access, `with` blocks, field projections

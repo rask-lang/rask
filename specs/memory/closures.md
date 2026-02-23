@@ -321,10 +321,14 @@ Conservative local analysis: no cross-function tracking, no dataflow.
 ```rask
 const counter = Cell.new(0)
 
-button1.on_click(|event| counter.modify(|c| c += 1))
-button2.on_click(|event| counter.modify(|c| c += 10))
+button1.on_click(|event, counter| {
+    with counter as mutate c { c += 1 }
+})
+button2.on_click(|event, counter| {
+    with counter as mutate c { c += 10 }
+})
 
-// After clicks: counter.read(|c| print(c))
+// After clicks: const value = with counter as c { c }
 ```
 
 See `mem.cell` for `Cell<T>` details.
@@ -353,7 +357,7 @@ When the cursor is in a scope-limited closure, the IDE highlights the block boun
 ### See Also
 
 - [Value Semantics](value-semantics.md) -- Copy vs move for captured values (`mem.value`)
-- [Borrowing](borrowing.md) -- Block-scoped and statement-scoped access (`mem.borrowing`)
+- [Borrowing](borrowing.md) -- Block-scoped views and `with`-based access (`mem.borrowing`)
 - [Cell](cell.md) -- Single-value mutable container (`mem.cell`)
 - [Pools](pools.md) -- Pool+Handle pattern for shared mutable state (`mem.pools`)
 - [Concurrency](../concurrency/sync.md) -- Closures sent cross-task must capture owned values (`conc.sync`)

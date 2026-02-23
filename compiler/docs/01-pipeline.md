@@ -208,10 +208,11 @@ The checker walks every function body. When a value is passed with `own`,
 it's marked `Moved`. Using it after that is an error. When a `@resource`
 binding reaches end of scope without being consumed, that's an error too.
 
-**Two borrow scopes—the key design choice:**
-- **Persistent** (block-scoped): `const ref = something` — borrow lasts until
+**Two access models—the key design choice:**
+- **Block-scoped** (fixed sources): `const ref = point.x` — view lasts until
   end of block.
-- **Instant** (statement-scoped): `items[0]` — borrow expires at the semicolon.
+- **Inline** (growable sources): `items[0]` — access for the expression only.
+  Multi-statement access uses `with items[0] as v { ... }`.
 
 This means you don't need lifetime annotations for the common case of "index
 into a collection, then mutate it on the next line." Rust requires explicit
