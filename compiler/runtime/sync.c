@@ -2,11 +2,12 @@
 
 // Synchronization primitives (conc.sync/SY1-SY4).
 //
-// Mutex<T>:   exclusive access via closure (conc.sync/MX1-MX2)
-// Shared<T>:  multiple-reader / exclusive-writer via closure (conc.sync/R1-R3)
+// Mutex<T>:   exclusive access via `with` blocks (conc.sync/MX1-MX2)
+// Shared<T>:  multiple-reader / exclusive-writer via `with` blocks (conc.sync/R1-R3)
 //
-// Both use closure-based access (conc.sync/CB1-CB2): the protected data
-// is only reachable inside the callback, preventing reference escapes.
+// Primary access is `with`-based blocks (conc.sync/WS1-WS4): the protected data
+// is only reachable inside the block, preventing reference escapes.
+// Non-blocking variants (try_read/try_write/try_lock) use closures.
 
 #include "rask_runtime.h"
 
