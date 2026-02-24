@@ -348,16 +348,18 @@ func update_user(db: Database, user_id: u64) -> () or Error {
 <!-- test: parse -->
 ```rask
 func handle_connections(pool: Pool<Connection>) -> () or Error {
-    // Process all connections
-    for h in pool.cursor() {
-        try pool.modify(h, |conn| {
-            if conn.should_close() {
-                // Remove and consume
-                const removed = pool.remove(h)!
-                try removed.close()
-            }
-            Ok(())
-        })
+    // Check which connections should close
+    const to_close: Vec<Handle<Connection>> = Vec.new()
+    for h in pool.handles().collect<Vec<_>>() {
+        if pool[h].should_close() {
+            to_close.push(h)
+        }
+    }
+
+    // Remove and consume outside the access
+    for h in to_close {
+        const conn = pool.remove(h)!
+        try conn.close()
     }
 
     // Clean up remaining

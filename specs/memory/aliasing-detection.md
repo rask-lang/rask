@@ -58,22 +58,22 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 
 ## Error Messages
 
-**Mutation during exclusive borrow [AL5]:**
+**Mutation during frozen source [AL5]:**
 ```
-ERROR [mem.aliasing/AL5]: cannot mutate `pool` while borrowed
+ERROR [mem.aliasing/AL5]: cannot access `pool` inside its own with block
    |
-1  |  pool.modify(h, |e| {
-   |       ------ `pool` is exclusively borrowed here
+1  |  with pool[h] as mutate e {
+   |  ---- pool frozen here
 2  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot mutate while borrowed
+   |      ^^^^^^^^^^^^^^ cannot access pool here
 
-WHY: modify() holds an exclusive borrow on pool. The closure
-     cannot access pool again until modify() completes.
+WHY: with block freezes the collection. No access to the source
+     is allowed inside the block.
 
-FIX: Collect operations, apply after:
+FIX: Separate the check from the mutation:
 
-  const to_remove = find_removable(pool)
-  for h in to_remove {
+  const should_remove = pool[h].health <= 0
+  if should_remove {
       pool.remove(h)
   }
 ```
@@ -120,24 +120,24 @@ FIX: Copy what you need, then mutate:
 
 ### Patterns & Guidance
 
-**Basic conflict — exclusive borrow blocks all access:**
+**Basic conflict — frozen source blocks all access:**
 <!-- test: skip -->
 ```rask
-pool.modify(h, |e| {
-    pool.remove(h)    // ERROR: pool exclusively borrowed by modify()
-})
+with pool[h] as mutate e {
+    pool.remove(h)    // ERROR: pool frozen inside with block
+}
 // Borrow stack: [Exclusive(pool)]
-// Closure accesses: [Call(pool.remove)] — conflicts with Exclusive(pool)
+// with body accesses: [Call(pool.remove)] — conflicts with Exclusive(pool)
 ```
 
 **Disjoint variables — different collections never conflict:**
 <!-- test: skip -->
 ```rask
-pool.modify(h, |e| {
+with pool[h] as mutate e {
     other_pool.remove(h2)    // OK: different variable
-})
+}
 // Borrow stack: [Exclusive(pool)]
-// Closure accesses: [Call(other_pool.remove)] — pool != other_pool
+// with body accesses: [Call(other_pool.remove)] — pool != other_pool
 ```
 
 **Multi-element access is compatible:**
