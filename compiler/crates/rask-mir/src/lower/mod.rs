@@ -1075,8 +1075,8 @@ impl<'a> MirLowerer<'a> {
                 self.walk_free_vars_block(body, bound, seen, free);
             }
             ExprKind::WithAs { bindings, body } => {
-                for (bind_expr, _) in bindings {
-                    self.walk_free_vars(bind_expr, bound, seen, free);
+                for binding in bindings {
+                    self.walk_free_vars(&binding.source, bound, seen, free);
                 }
                 self.walk_free_vars_block(body, bound, seen, free);
             }

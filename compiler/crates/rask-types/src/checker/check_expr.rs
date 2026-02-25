@@ -666,9 +666,9 @@ impl TypeChecker {
 
             ExprKind::WithAs { bindings, body } => {
                 self.push_scope();
-                for (source_expr, binding_name) in bindings {
-                    let elem_ty = self.infer_expr(source_expr);
-                    self.define_local(binding_name.clone(), elem_ty);
+                for binding in bindings {
+                    let elem_ty = self.infer_expr(&binding.source);
+                    self.define_local(binding.name.clone(), elem_ty);
                 }
                 for stmt in body {
                     self.check_stmt(stmt);
