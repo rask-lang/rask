@@ -1390,19 +1390,19 @@ impl Resolver {
                 self.scopes.pop();
             }
             ExprKind::WithAs { bindings, body } => {
-                for (source_expr, _) in bindings.iter() {
-                    self.resolve_expr(source_expr);
+                for binding in bindings.iter() {
+                    self.resolve_expr(&binding.source);
                 }
                 self.scopes.push(ScopeKind::Block);
-                for (_, binding_name) in bindings {
+                for binding in bindings {
                     let sym_id = self.symbols.insert(
-                        binding_name.clone(),
-                        SymbolKind::Variable { mutable: true },
+                        binding.name.clone(),
+                        SymbolKind::Variable { mutable: binding.mutable },
                         None,
                         expr.span,
                         false,
                     );
-                    if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, expr.span) {
+                    if let Err(e) = self.scopes.define(binding.name.clone(), sym_id, expr.span) {
                         self.errors.push(e);
                     }
                 }

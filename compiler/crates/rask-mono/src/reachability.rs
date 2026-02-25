@@ -402,8 +402,8 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
             ExprKind::WithAs { bindings, body } => {
-                for (expr, _) in bindings {
-                    self.visit_expr(expr);
+                for binding in bindings {
+                    self.visit_expr(&binding.source);
                 }
                 for s in body {
                     self.visit_stmt(s);

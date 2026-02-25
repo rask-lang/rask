@@ -1,6 +1,6 @@
 <!-- id: mem.pools -->
 <!-- status: decided -->
-<!-- summary: Handle-based sparse storage with generation counters for stable references -->
+<!-- summary: Handle-based sparse storage with generation counters, `with`-based multi-statement access -->
 <!-- depends: memory/ownership.md, memory/borrowing.md, memory/resource-types.md -->
 <!-- implemented-by: compiler/crates/rask-interp/ -->
 
@@ -68,59 +68,72 @@ Every access validates the handle.
 **Safe access (no panic):**
 ```rask
 pool.get(h)   // Returns Option<T> (T: Copy)
-pool.read(h, |v| ...)    // Returns Option<R>
-pool.modify(h, |v| ...)  // Returns Option<R>
 ```
 
 **Generation overflow:** Saturating semantics. When a slot's generation reaches max, the slot becomes permanently unusable. Practically never happens (~4B cycles per slot with default u32). For extreme high-churn: `Pool<T, Gen=u64>`.
 
-## Expression-Scoped Access
+## Inline Expression Access
 
-Pool access follows statement-scoped borrowing rules (`mem.borrowing/B1`). View released at the semicolon.
+Pool access uses inline expression access (`mem.borrowing/E1`). Each access is a temporary borrow for the expression.
 
 ```rask
-pool[h].health -= damage     // Borrow released
-if pool[h].health <= 0 {     // New borrow
+pool[h].health -= damage     // Inline access
+if pool[h].health <= 0 {     // New inline access
     pool.remove(h)           // No active borrow - OK
 }
 ```
 
-Aliased handles are safe because each `pool[h]` creates an independent statement-scoped view:
+Aliased handles are safe because each `pool[h]` creates an independent temporary access:
 
 ```rask
 const h1 = try pool.insert(entity)
 const h2 = h1  // h2 is a copy - both point to same entity
 
-pool[h1].health -= 10    // Borrow released at semicolon
-pool[h2].health -= 10    // New borrow - OK
+pool[h1].health -= 10    // Access ends after expression
+pool[h2].health -= 10    // New access - OK
 ```
 
 ## Multi-Statement Access
 
-Closure-based access for multi-statement operations.
+Use `with` for multi-statement operations on pool elements (`mem.borrowing/W1`).
 
-| Method | Signature | Use Case |
-|--------|-----------|----------|
-| `read(h, f)` | `func(T) -> R -> Option<R>` | Multi-statement read |
-| `modify(h, f)` | `func(T) -> R -> Option<R>` | Multi-statement mutation |
-
+<!-- test: skip -->
 ```rask
-try pool.modify(h, |entity| {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
         entity.status = Status.Dead
     }
-})
+}
+
+// Read-only access (explicit const)
+with pool[h] as const entity {
+    log("{entity.name} at {entity.position}")
+}
+
+// One-liner shorthand
+with pool[h] as e: e.health -= damage
 ```
 
-The closure borrows the collection exclusively — no other collection access inside it:
+The pool is frozen for the duration of the `with` block — no other pool access inside it:
 <!-- test: compile-fail -->
 ```rask
-pool.modify(h, |entity| {
+with pool[h] as entity {
     entity.health -= 10
-    pool.remove(h)    // ERROR: pool borrowed by closure
-})
+    pool.remove(h)    // ERROR: pool frozen inside with block
+}
+```
+
+`return`, `try`, `break`, and `continue` work naturally inside `with` blocks:
+<!-- test: skip -->
+```rask
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
+    with pool[h] as entity {
+        entity.strength += 10
+        try log_buff_applied(entity.id)   // propagates to function
+    }
+}
 ```
 
 ## Iteration
@@ -217,7 +230,7 @@ const pool = frozen.thaw()
 | `pool.freeze_ref()` | `Pool<T> -> FrozenPool<T>` | Freeze reference (scoped) |
 | `pool.with_frozen(f)` | `(|FrozenPool<T>| -> R) -> R` | Scoped freeze |
 
-**NOT available on FrozenPool:** `insert()`, `remove()`, `modify()`, `clear()`
+**NOT available on FrozenPool:** `insert()`, `remove()`, `clear()`, `with` mutable bindings
 
 ### FrozenPool Context Subsumption
 
@@ -422,14 +435,14 @@ FIX: Check validity before access:
   }
 ```
 
-**Pool borrowed by closure [PF8]:**
+**Pool frozen inside with block [W2]:**
 ```
-ERROR [mem.pools/PF8]: cannot mutate pool while borrowed by closure
+ERROR [mem.borrowing/W2]: cannot access collection inside its own with block
    |
-2  |  pool.modify(h, |entity| {
-   |       ------ pool is exclusively borrowed here
+2  |  with pool[h] as entity {
+   |  ---- pool frozen here
 3  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot mutate while borrowed
+   |      ^^^^^^^^^^^^^^ cannot access pool here
 
 FIX: Separate the check from the mutation:
 
@@ -455,10 +468,10 @@ ERROR [mem.pools/PF5]: cannot write through handle in frozen context
 |------|------|----------|
 | Stale handle access | PL4 | Panic on `pool[h]`, None on `pool.get(h)` |
 | Wrong-pool handle | PL4 | Panic on `pool[h]`, None on `pool.get(h)` |
-| `modify_many([h, h], _)` | — | Panic (duplicate index) |
+| `with pool[h] as e1, pool[h] as e2` | W3 | Panic (duplicate handle) |
 | Generation overflow | PH1 | Slot becomes permanently dead |
 | Pool ID overflow | PH1 | Panic (runtime error) |
-| Closure panics in `modify` | — | Pool left in valid state |
+| Panic inside `with` | — | Pool left in valid state |
 | Empty pool cursor | PF1 | `next()` returns None immediately |
 | Nested cursors | — | Compile error (pool already borrowed) |
 | Drop Pool<Resource> while non-empty | R5 | Runtime panic |
@@ -533,7 +546,7 @@ func render_frame(world: World) {
 
 ### Rationale
 
-**PL1–PL7 (pool design):** Entity systems, graphs with cycles, observers — they need stable references that survive mutations. Rust's borrow checker makes this painful without `Rc`/`RefCell`. Generation counters detect stale handles at O(1), expression-scoped access enables interleaved mutation, and handles are values with no lifetime parameters.
+**PL1–PL7 (pool design):** Entity systems, graphs with cycles, observers — they need stable references that survive mutations. Rust's borrow checker makes this painful without `Rc`/`RefCell`. Generation counters detect stale handles at O(1), inline expression access enables interleaved mutation, and handles are values with no lifetime parameters.
 
 **PH3 (handle identity):** Handles are database primary keys. You can have 10 copies of the key `42` — they all access the same row. The keys aren't borrowed; only the access is.
 
@@ -559,23 +572,23 @@ const configs = Pool.with_capacity(100)    // Modest config count
 
 Pool reuse: clear and reuse instead of drop and recreate.
 
-**Closure aliasing prevention patterns:**
+**Aliasing prevention patterns:**
 ```rask
 // Pattern 1: Separate pools for different operations
-entities.modify(h, |e| {
-    events.insert(Event.Died(h))    // OK: different pool
-})
+with entities[h] as e {
+    events.insert(Event.Died(h))    // OK: different collection
+}
 
 // Pattern 2: Restructure logic
 const should_remove = pool[h].health <= 0
 if should_remove {
-    pool.remove(h)    // OK: not inside closure
+    pool.remove(h)    // OK: not inside with block
 }
 
-// Pattern 3: Shared borrows are OK
-pool.read(h, |e| {
-    const other = pool.get(h2)    // OK: both are reads
-})
+// Pattern 3: Multi-element access
+with pool[h1] as e1, pool[h2] as const e2 {
+    e1.health -= e2.attack
+}
 ```
 
 **Pool partitioning — parallel physics:**
@@ -674,7 +687,7 @@ extend Observable<T> {
 
 ### See Also
 
-- [Borrowing](borrowing.md) — Expression-scoped views for growable sources (`mem.borrowing`)
+- [Borrowing](borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
 - [Resource Types](resource-types.md) — Resource consumption in pools (`mem.resources`)
 - [Context Clauses](context-clauses.md) — Handle auto-resolution (`mem.context`)
 - [Closures](closures.md) — Pool+Handle pattern for shared mutable state (`mem.closures`)

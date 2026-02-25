@@ -2,7 +2,7 @@
 //! The parser implementation using Pratt parsing for expressions.
 
 use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, UnionDecl, Variant};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
 use rask_ast::{NodeId, Span};
@@ -3334,16 +3334,27 @@ impl Parser {
         // Parse first binding (ident already consumed)
         let first_expr = self.build_with_as_expr(start, first_ident)?;
         self.expect(&TokenKind::As)?;
+        // `as const name` = read-only, `as name` = mutable (default)
+        let first_mutable = !self.match_token(&TokenKind::Const);
         let first_name = self.expect_ident()?;
-        bindings.push((first_expr, first_name));
+        bindings.push(WithBinding {
+            source: first_expr,
+            name: first_name,
+            mutable: first_mutable,
+        });
 
         // Parse additional comma-separated bindings
         while self.match_token(&TokenKind::Comma) {
             // Use bp=22 to stop before consuming 'as' (which has bp=21)
             let expr = self.parse_expr_bp(22)?;
             self.expect(&TokenKind::As)?;
+            let mutable = !self.match_token(&TokenKind::Const);
             let name = self.expect_ident()?;
-            bindings.push((expr, name));
+            bindings.push(WithBinding {
+                source: expr,
+                name,
+                mutable,
+            });
         }
 
         self.skip_newlines();

@@ -5,7 +5,7 @@
 use rask_ast::{
     decl::{Decl, DeclKind, FnDecl, Param, TypeParam},
     expr::{
-        CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind,
+        CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, WithBinding,
     },
     stmt::{Stmt, StmtKind},
     NodeId,
@@ -506,7 +506,11 @@ impl TypeSubstitutor {
                 ExprKind::WithAs { bindings, body } => ExprKind::WithAs {
                     bindings: bindings
                         .iter()
-                        .map(|(e, name)| (self.clone_expr(e), name.clone()))
+                        .map(|b| WithBinding {
+                            source: self.clone_expr(&b.source),
+                            name: b.name.clone(),
+                            mutable: b.mutable,
+                        })
                         .collect(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },

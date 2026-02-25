@@ -60,7 +60,7 @@ The prefix abbreviates the concept, not the filename. Keep it 1-3 uppercase lett
 | Spec | Prefixes | Examples |
 |------|----------|---------|
 | ownership.md | O, T, D | O1 (ownership), T2 (cross-task), D3 (drop) |
-| borrowing.md | B, V | B1 (borrow), V3 (view) |
+| borrowing.md | B, S, E, W, P, A | B1 (borrow tier), S3 (scope), E1 (expression), W2 (with), P1 (projection), A1 (aliasing) |
 | structs.md | S, M, P | S1 (struct), M3 (method), P2 (projection) |
 
 Multiple prefixes per file are fine — they group related rules.

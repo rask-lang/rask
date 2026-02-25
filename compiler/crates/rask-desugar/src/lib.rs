@@ -264,8 +264,8 @@ impl Desugarer {
                 }
             }
             ExprKind::WithAs { bindings, body } => {
-                for (expr, _) in bindings {
-                    self.desugar_expr(expr);
+                for binding in bindings {
+                    self.desugar_expr(&mut binding.source);
                 }
                 for s in body {
                     self.desugar_stmt(s);
