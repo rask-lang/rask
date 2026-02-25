@@ -27,8 +27,9 @@ Cross-task shared state when channels aren't enough.
 
 | Rule | Description |
 |------|-------------|
-| **R1: Read** | `with shared as v { ... }` — shared read lock; multiple readers concurrent |
-| **R2: Write** | `with shared as mutate v { ... }` — exclusive write lock; blocks until readers finish |
+| **R1: Read** | `with shared as const v { ... }` — shared read lock; multiple readers concurrent |
+| **R2: Write** | `with shared as v { ... }` — exclusive write lock (default); blocks until readers finish |
+| **R2a: Unused write warning** | Compiler warns when write lock taken but binding never mutated — suggests `const` |
 | **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `None` if contended |
 
 <!-- test: skip -->
@@ -38,8 +39,8 @@ let config = Shared.new(AppConfig {
     max_retries: 3,
 })
 
-const timeout = with config as c { c.timeout }
-with config as mutate c { c.timeout = 60.seconds }
+const timeout = with config as const c { c.timeout }
+with config as c { c.timeout = 60.seconds }
 ```
 
 ### API
@@ -55,20 +56,20 @@ extend Shared<T> {
 }
 ```
 
-`with shared as v { ... }` and `with shared as mutate v { ... }` are the primary access patterns. `try_read`/`try_write` remain as closure-based non-blocking variants.
+`with shared as const v { ... }` (read lock) and `with shared as v { ... }` (write lock, default) are the primary access patterns. `try_read`/`try_write` remain as closure-based non-blocking variants.
 
 ## Mutex\<T\>
 
 | Rule | Description |
 |------|-------------|
-| **MX1: Lock** | `with mutex as [mutate] v { ... }` — exclusive lock; blocks until available |
+| **MX1: Lock** | `with mutex as [const] v { ... }` — exclusive lock; blocks until available |
 | **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `None` if held |
 
 <!-- test: skip -->
 ```rask
 const queue = Mutex.new(Vec.new())
-with queue as mutate q { q.push(item) }
-const len = with queue as q { q.len() }
+with queue as q { q.push(item) }
+const len = with queue as const q { q.len() }
 ```
 
 ### API
@@ -83,9 +84,9 @@ extend Mutex<T> {
 }
 ```
 
-`with mutex as v { ... }` and `with mutex as mutate v { ... }` are the primary access patterns. `try_lock` remains as a closure-based non-blocking variant.
+`with mutex as v { ... }` (mutable, default) and `with mutex as const v { ... }` (read-only) are the primary access patterns. `try_lock` remains as a closure-based non-blocking variant.
 
-Mutex always takes an exclusive lock regardless of `mutate`. The keyword controls whether the binding is mutable inside the block, not the lock mode.
+Mutex always takes an exclusive lock regardless of `const`. The keyword controls whether the binding is mutable inside the block, not the lock mode.
 
 ## `with`-Based Access
 
@@ -99,7 +100,7 @@ Mutex always takes an exclusive lock regardless of `mutate`. The keyword control
 <!-- test: skip -->
 ```rask
 // with-based (Rask) — reference cannot escape, control flow works
-with mutex as mutate data {
+with mutex as data {
     data.field = value
     try validate(data)    // propagates to enclosing function
 }
@@ -113,14 +114,14 @@ with mutex as mutate data {
 | Rule | Description |
 |------|-------------|
 | **DL1: Direct nesting** | Nested `with` on different sync primitives is a compile error |
-| **DL2: Same lock** | `with shared as v { with shared as mutate v2 { ... } }` is a compile error |
+| **DL2: Same lock** | `with shared as const v { with shared as v2 { ... } }` is a compile error |
 | **DL3: Indirect — your responsibility** | Locks acquired through function calls or dynamic dispatch are NOT detected |
 
 ```
 ERROR [conc.sync/DL1]: nested lock acquisition
    |
-5  |  with mutex_a as mutate a {
-6  |      with mutex_b as mutate b {
+5  |  with mutex_a as a {
+6  |      with mutex_b as b {
    |      ^^^^ cannot acquire lock inside another with block
 
 WHY: Nested locks risk deadlock. Copy values out, then lock separately.
@@ -129,8 +130,8 @@ WHY: Nested locks risk deadlock. Copy values out, then lock separately.
 ```
 ERROR [conc.sync/DL2]: same lock re-acquisition
    |
-5  |  with shared as c {
-6  |      with shared as mutate c2 {
+5  |  with shared as const c {
+6  |      with shared as c2 {
    |      ^^^^ cannot acquire write lock — already holding read lock
 
 WHY: Re-acquiring the same lock inside a with block would deadlock.
@@ -139,7 +140,7 @@ WHY: Re-acquiring the same lock inside a with block would deadlock.
 <!-- test: skip -->
 ```rask
 // OK: multiple elements from same collection (not a lock)
-with pool[h1] as mutate e1, pool[h2] as mutate e2 {
+with pool[h1] as e1, pool[h2] as e2 {
     // runtime panic if h1 == h2
 }
 ```
@@ -151,7 +152,7 @@ with pool[h1] as mutate e1, pool[h2] as mutate e2 {
 <!-- test: skip -->
 ```rask
 // Blocking: with
-with mutex as mutate v { v.push(item) }
+with mutex as v { v.push(item) }
 
 // Non-blocking: closure
 const got_it = mutex.try_lock(|v| v.push(item))
@@ -178,7 +179,7 @@ const got_it = mutex.try_lock(|v| v.push(item))
 
 **SY1 (Shared naming):** `Shared<T>` describes intent, not mechanism. `RwLock<T>` is implementation jargon.
 
-**try_* stay as closures:** Non-blocking access is uncommon. The inconsistency is justified — `with` is inherently blocking (it's a scope, not a conditional). Could add `with try mutex as mutate v { ... } else { ... }` later if the pattern is common enough.
+**try_* stay as closures:** Non-blocking access is uncommon. The inconsistency is justified — `with` is inherently blocking (it's a scope, not a conditional). Could add `with try mutex as v { ... } else { ... }` later if the pattern is common enough.
 
 ### When to Use What
 
@@ -209,17 +210,17 @@ For patterns that genuinely need multiple locks:
 ```rask
 // Lock ordering — copy out, then lock separately
 func transfer(from: Mutex<Account>, to: Mutex<Account>, amount: u64) {
-    const from_balance = with from as f { f.balance }
-    with from as mutate f { f.balance -= amount }
-    with to as mutate t { t.balance += amount }
+    const from_balance = with from as const f { f.balance }
+    with from as f { f.balance -= amount }
+    with to as t { t.balance += amount }
 }
 
 // Copy out, modify, copy back
 func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
-    const a_val = with a as v { v }
-    const b_val = with b as v { v }
-    with a as mutate v { v = b_val }
-    with b as mutate v { v = a_val }
+    const a_val = with a as const v { v }
+    const b_val = with b as const v { v }
+    with a as v { v = b_val }
+    with b as v { v = a_val }
 }
 ```
 
@@ -240,7 +241,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
 
 func get_timeout() -> Duration {
-    return with CONFIG as c { c.timeout }
+    return with CONFIG as const c { c.timeout }
 }
 ```
 
@@ -256,7 +257,7 @@ struct Metrics {
 func record_request(latency: Duration, success: bool) {
     METRICS.requests.fetch_add(1, Relaxed)
     if !success { METRICS.errors.fetch_add(1, Relaxed) }
-    with METRICS.latencies as mutate v { v.push(latency) }
+    with METRICS.latencies as v { v.push(latency) }
 }
 ```
 
@@ -264,7 +265,7 @@ func record_request(latency: Duration, success: bool) {
 
 | Decision | Chosen | Rejected | Why |
 |----------|--------|----------|-----|
-| Access pattern | `with`-based blocks | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock |
+| Access pattern | `with`-based blocks (mutable default) | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock |
 | Read-heavy primitive | `Shared<T>` | Just `Mutex<T>` | Common pattern deserves optimization |
 | Naming | `Shared<T>` | `RwLock<T>` | Describes intent, not mechanism |
 | Direct nested locks | Compile error (syntactic) | Whole-program analysis | Local analysis only |

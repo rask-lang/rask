@@ -84,8 +84,8 @@ const users = Map.from([
 | `vec[i].field` | inline access (expression-scoped) | None | Yes (OOB) |
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
 | `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
-| `with vec[i] as v { ... }` | block value | None | Yes (OOB) |
-| `with vec[i] as mutate v { ... }` | block value | None | Yes (OOB) |
+| `with vec[i] as v { ... }` | block value (mutable, default) | None | Yes (OOB) |
+| `with vec[i] as const v { ... }` | block value (read-only) | None | Yes (OOB) |
 | `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
 
@@ -102,17 +102,17 @@ vec[i].field              // Read field (inline access)
 vec[i].field = value      // Mutate field (in-place)
 const x = vec[i]          // Copy out (T: Copy only)
 
-// Multi-statement access
-with vec[i] as mutate v {
+// Multi-statement access (mutable by default)
+with vec[i] as v {
     v.count += 1
     v.last_updated = now()
 }
 
 // One-liner shorthand
-with vec[i] as mutate v: v.count += 1
+with vec[i] as v: v.count += 1
 
 // Expression context — produces a value
-const name = with vec[i] as v { v.name.clone() }
+const name = with vec[i] as const v { v.name.clone() }
 ```
 
 ## Map -- Key-Based Access
@@ -123,8 +123,8 @@ const name = with vec[i] as v { v.name.clone() }
 | `map[k].field` | inline access (expression-scoped) | Panics if missing |
 | `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
 | `map.get_clone(k)` | `Option<V>` | Clone out (V: Clone) |
-| `with map[k] as v { ... }` | block value | Panics if missing |
-| `with map[k] as mutate v { ... }` | block value | Panics if missing |
+| `with map[k] as v { ... }` | block value (mutable, default) | Panics if missing |
+| `with map[k] as const v { ... }` | block value (read-only) | Panics if missing |
 | `map.remove(k)` | `Option<V>` | Remove and return |
 
 ### Entry API
@@ -341,8 +341,8 @@ FIX: Process existing items first, or use an unbounded collection:
 **Pattern selection for element access:**
 - 1 statement: `vec[i].field = x`
 - Method chain: `vec[i].value.method().chain()`
-- 2+ statements: `with vec[i] as mutate v { ... }`
-- Error propagation: `with vec[i] as mutate v { try validate(v) }`
+- 2+ statements: `with vec[i] as v { ... }`
+- Error propagation: `with vec[i] as v { try validate(v) }`
 
 **Slice descriptors — when to use:**
 - Storing references to substrings or sub-vectors

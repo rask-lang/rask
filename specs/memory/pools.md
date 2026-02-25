@@ -99,7 +99,7 @@ Use `with` for multi-statement operations on pool elements (`mem.borrowing/W1`).
 
 <!-- test: skip -->
 ```rask
-with pool[h] as mutate entity {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
@@ -107,19 +107,19 @@ with pool[h] as mutate entity {
     }
 }
 
-// Read-only access
-with pool[h] as entity {
+// Read-only access (explicit const)
+with pool[h] as const entity {
     log("{entity.name} at {entity.position}")
 }
 
 // One-liner shorthand
-with pool[h] as mutate e: e.health -= damage
+with pool[h] as e: e.health -= damage
 ```
 
 The pool is frozen for the duration of the `with` block — no other pool access inside it:
 <!-- test: compile-fail -->
 ```rask
-with pool[h] as mutate entity {
+with pool[h] as entity {
     entity.health -= 10
     pool.remove(h)    // ERROR: pool frozen inside with block
 }
@@ -129,7 +129,7 @@ with pool[h] as mutate entity {
 <!-- test: skip -->
 ```rask
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
-    with pool[h] as mutate entity {
+    with pool[h] as entity {
         entity.strength += 10
         try log_buff_applied(entity.id)   // propagates to function
     }
@@ -439,7 +439,7 @@ FIX: Check validity before access:
 ```
 ERROR [mem.borrowing/W2]: cannot access collection inside its own with block
    |
-2  |  with pool[h] as mutate entity {
+2  |  with pool[h] as entity {
    |  ---- pool frozen here
 3  |      pool.remove(h)
    |      ^^^^^^^^^^^^^^ cannot access pool here
@@ -575,7 +575,7 @@ Pool reuse: clear and reuse instead of drop and recreate.
 **Aliasing prevention patterns:**
 ```rask
 // Pattern 1: Separate pools for different operations
-with entities[h] as mutate e {
+with entities[h] as e {
     events.insert(Event.Died(h))    // OK: different collection
 }
 
@@ -586,7 +586,7 @@ if should_remove {
 }
 
 // Pattern 3: Multi-element access
-with pool[h1] as mutate e1, pool[h2] as e2 {
+with pool[h1] as e1, pool[h2] as const e2 {
     e1.health -= e2.attack
 }
 ```

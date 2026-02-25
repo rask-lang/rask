@@ -317,7 +317,7 @@ if health <= 0 {
 }
 
 // ✓ Pattern: use with for multi-statement access
-with pool[h] as mutate entity {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
 }
@@ -341,7 +341,7 @@ v.push(4)                    // ✓ No access active
 When you need to do multiple things with a collection element, use `with...as`:
 
 ```rask
-with pool[h] as mutate entity {
+with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
     if entity.health <= 0 {
@@ -358,7 +358,7 @@ blocks. They're real scopes, not closures.
 
 ```rask
 func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
-    with pool[h] as mutate entity {
+    with pool[h] as entity {
         entity.strength += 10
         try log_buff_applied(entity.id)   // propagates to function
     }
@@ -368,13 +368,13 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 `with` also works as an expression—the last expression in the block is the value:
 
 ```rask
-const name = with pool[h] as entity { entity.name.clone() }
+const name = with pool[h] as const entity { entity.name.clone() }
 ```
 
 One-liner shorthand (parallels `if cond: expr`):
 
 ```rask
-with pool[h] as mutate e: e.health -= damage
+with pool[h] as e: e.health -= damage
 ```
 
 ### Field Projections: Partial Borrowing
@@ -1298,17 +1298,17 @@ When you need shared mutable state across tasks, use synchronization primitives:
 let config = Shared.new(AppConfig { timeout: 30 })
 
 // Many readers (concurrent, non-blocking)
-const timeout = with config as c { c.timeout }
+const timeout = with config as const c { c.timeout }
 
 // Exclusive writer (blocks readers during write)
-with config as mutate c { c.timeout = 60 }
+with config as c { c.timeout = 60 }
 ```
 
 **`Mutex<T>`** — for data that's written often:
 
 ```rask
 const queue = Mutex.new(Vec.new())
-with queue as mutate q { q.push(item) }
+with queue as q { q.push(item) }
 ```
 
 Both use `with` blocks instead of lock guards. This means you can't accidentally hold a
@@ -1629,7 +1629,7 @@ Lock guards (Rust's approach) are a reference you hold. As long as the reference
 the lock is held. This makes it easy to accidentally hold a lock too long—or across an
 await point, causing deadlocks.
 
-`with` blocks scope the lock precisely: `with mutex as mutate data { ... }`. When the
+`with` blocks scope the lock precisely: `with mutex as data { ... }`. When the
 block ends, the lock is released. You can't hold it by accident. `return`, `try`,
 `break`, and `continue` work naturally inside the block. The compiler detects direct
 nested `with` blocks on sync primitives and flags them as errors.

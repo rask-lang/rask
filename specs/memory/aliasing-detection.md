@@ -62,7 +62,7 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 ```
 ERROR [mem.aliasing/AL5]: cannot access `pool` inside its own with block
    |
-1  |  with pool[h] as mutate e {
+1  |  with pool[h] as e {
    |  ---- pool frozen here
 2  |      pool.remove(h)
    |      ^^^^^^^^^^^^^^ cannot access pool here
@@ -99,7 +99,7 @@ FIX: Copy what you need, then mutate:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Disjoint variables | AL6 | `with pool[h] as mutate e { other_pool.remove(h2) }` is OK |
+| Disjoint variables | AL6 | `with pool[h] as e { other_pool.remove(h2) }` is OK |
 | Multi-element access | AL3 | `with pool[h1] as e1, pool[h2] as e2 { ... }` is OK |
 | Chained methods returning owned | AL1 | Borrow released when ownership transfers |
 | Dynamic indices | AL1 | `pool[computed]` borrows entire pool (conservative) |
@@ -123,7 +123,7 @@ FIX: Copy what you need, then mutate:
 **Basic conflict — frozen source blocks all access:**
 <!-- test: skip -->
 ```rask
-with pool[h] as mutate e {
+with pool[h] as e {
     pool.remove(h)    // ERROR: pool frozen inside with block
 }
 // Borrow stack: [Exclusive(pool)]
@@ -133,7 +133,7 @@ with pool[h] as mutate e {
 **Disjoint variables — different collections never conflict:**
 <!-- test: skip -->
 ```rask
-with pool[h] as mutate e {
+with pool[h] as e {
     other_pool.remove(h2)    // OK: different variable
 }
 // Borrow stack: [Exclusive(pool)]
