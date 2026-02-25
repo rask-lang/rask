@@ -14,7 +14,7 @@ Loops yield borrowed values by default (read-only). Index/handle mode requires e
 |------|-------------|
 | **LP1: Value iteration** | `for binding in collection` yields borrowed elements (read-only) |
 | **LP2: Index mode explicit** | Use `for i in 0..vec.len()` or `for h in pool.handles()` for mutation |
-| **LP3: Collection accessible** | Loop does not prevent collection access (expression-scoped borrows) |
+| **LP3: Collection accessible** | Loop does not prevent collection access (inline expression access) |
 
 ```rask
 for <binding> in <collection> { ... }
@@ -67,7 +67,7 @@ for h in entities.handles() {
 // Read-only value iteration
 for item in items {
     print(item.name)          // Copy small field
-    item.display()            // Call methods (expression-scoped borrow)
+    item.display()            // Call methods (inline access)
     // item.health -= 10      // ERROR: cannot mutate borrowed value
 }
 
@@ -113,7 +113,7 @@ for h in pool.handles() {
 
 ## Desugaring
 
-Value iteration creates expression-scoped borrows per element access.
+Value iteration creates inline access per element.
 
 <!-- test: skip -->
 ```rask
@@ -125,7 +125,7 @@ for item in vec { body }
     const _len = vec.len()
     let _pos = 0
     while _pos < _len {
-        const item = vec[_pos]  // Expression-scoped borrow
+        const item = vec[_pos]  // Inline access
         body
         _pos += 1
     }
@@ -172,7 +172,7 @@ for item in vec.take_all() { body }
 | Grow during index iteration | LP10 | New items not visited (length captured at start) |
 | Shrink during index iteration | LP10 | Stale index may panic — programmer responsibility |
 | Remove current handle (Pool) | LP9 | OK in handle mode if no further access |
-| Nested loops same collection | LP3 | Allowed (expression-scoped borrows) |
+| Nested loops same collection | LP3 | Allowed (inline access) |
 | Break/continue | — | Standard semantics (exit or skip iteration) |
 | Empty collection | — | Zero iterations |
 
@@ -186,7 +186,7 @@ for item in vec.take_all() { body }
 
 **LP2 (index mode explicit):** Mutation requires explicit syntax (`0..vec.len()` or `.handles()`). This makes the mutation intent clear and matches the "transparency of cost" principle — you see you're doing index-based access, not value iteration.
 
-**LP3 (collection accessible):** Each element access in value mode is statement-scoped (per `mem.borrowing/V1`), so the collection remains accessible. No block-scoped borrow exists. This enables natural patterns without borrow conflicts.
+**LP3 (collection accessible):** Each element access in value mode is inline (per `mem.borrowing/E1`), so the collection remains accessible. No block-scoped borrow exists. This enables natural patterns without borrow conflicts.
 
 **LP7 (take_all):** Ownership transfer is explicit. `vec.take_all()` empties the collection and yields owned items. This prevents accidental consumption while keeping consuming iteration ergonomic.
 
@@ -263,7 +263,7 @@ for h in to_remove {
 
 <!-- test: skip -->
 ```rask
-// No borrow conflict — each access is expression-scoped
+// No borrow conflict — each access is inline
 for a in entities {
     for b in entities {
         if a.collides_with(b) {
@@ -286,12 +286,12 @@ The IDE annotates loop bindings with their type and source semantics.
 <!-- test: skip -->
 ```rask
 for item in vec {           // item: borrowed T [read-only]
-    item.process()          // [expression-scoped borrow]
+    item.process()          // [inline access]
     // vec.push(x)          // [ERROR: cannot mutate during value iteration]
 }
 
 for i in 0..vec.len() {     // i: usize [index into vec]
-    vec[i].process()        // [expression-scoped view]
+    vec[i].process()        // [inline access]
     vec.push(item)          // [OK: no borrow held]
 }
 ```
@@ -308,7 +308,7 @@ Hover on `for i in 0..collection.len()` shows:
 
 ### See Also
 
-- [Borrowing](../memory/borrowing.md) — Collection view semantics (`mem.borrowing`)
+- [Borrowing](../memory/borrowing.md) — Value-based access, `with` blocks (`mem.borrowing`)
 - [Value Semantics](../memory/value-semantics.md) — Copy threshold (`mem.value-semantics`)
 - [Collections](../stdlib/collections.md) — Vec, Pool, Map APIs (`std.collections`)
 - [Iterator Protocol](iterator-protocol.md) — Iterator trait and adapters (`ctrl.iterator`)

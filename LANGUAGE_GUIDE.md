@@ -107,7 +107,7 @@ languages.
 **Go:** The race detector catches it at runtime, but only if your test hits the race.
 **Rask:** Same approach as Rust—the type system prevents it—but with simpler mechanisms.
 Shared data goes through `Shared<T>` (read-heavy) or `Mutex<T>` (write-heavy), both
-using closures that can't leak references out.
+using `with` blocks that can't leak references out.
 
 ### Problem 3: Resource Leaks
 
@@ -259,34 +259,35 @@ collection, the compiler asks one question:
 
 > **Can the thing I'm looking into change size?**
 
-- **No** (strings, struct fields, fixed arrays) → **Persistent view.** Your view lasts
+- **No** (struct fields, fixed arrays) → **Persistent view.** Your view lasts
   until the end of the block. The compiler knows the data won't move because the
   container can't resize.
 
-- **Yes** (Vec, Map, Pool) → **Instant view.** Your view lasts only until the
-  semicolon. The compiler knows the container might resize (moving its contents in
-  memory), which would invalidate your view.
+- **Yes** (Vec, Map, Pool, string) → **Value access.** You get the value out (if it's
+  small enough to copy) or use it inline in one expression. For multi-statement access,
+  use `with`. The compiler knows the container might resize (moving its contents in
+  memory), which would invalidate any held view.
 
 ```rask
-// Persistent view: string can't grow
-const s = "hello world"
-const slice = s[0..5]         // View valid until end of block
-process(slice)                // ✓ Still valid
-more_work(slice)              // ✓ Still valid
+// Persistent view: struct fields don't grow
+const point = Point { x: 1.0, y: 2.0 }
+const x_ref = point.x        // View valid until end of block
+process(x_ref)                // ✓ Still valid
+more_work(x_ref)              // ✓ Still valid
 
-// Instant view: Vec can grow
+// Value access: Vec can grow
 const v = Vec.from([1, 2, 3])
-v[0].process()                // View of v[0] lives until semicolon
-                              // Now the view is gone
-v.push(4)                     // ✓ Fine: no active views
+v[0].process()                // Inline access — just for this expression
+                              // Now access is done
+v.push(4)                     // ✓ Fine: nothing held
 ```
 
 **Why does this matter?** Imagine you're holding a reference to `v[0]`, and then
 someone calls `v.push(4)`. The push might need to allocate a bigger array and copy
-everything. Your reference now points to freed memory. By limiting collection views to
+everything. Your reference now points to freed memory. By limiting collection access to
 one expression, Rask makes this impossible.
 
-### What "Persistent" and "Instant" Mean in Practice
+### What This Means in Practice
 
 **Persistent views** (from fixed-size things) are comfortable—use them across multiple
 lines:
@@ -299,20 +300,26 @@ if x_ref > 0.0 {
 }
 ```
 
-**Instant views** (from growable things) are one-liners—chain what you need:
+**Inline access** (from growable things) is one expression—chain what you need:
 
 ```rask
 // ✓ Fine: everything in one expression
 vec[i].field.method()
 
-// ✗ Can't do this:
-const item = vec[i]           // View dies at semicolon
-item.process()                // ✗ View already expired
+// ✗ Can't do this (Entity isn't Copy):
+const item = vec[i]           // ERROR: Entity is not Copy
+item.process()
 
-// ✓ Pattern: copy out the data you need
+// ✓ Pattern: copy out small data
 const health = pool[h].health // Copy the i32 out (small, copies)
 if health <= 0 {
     handle_death()
+}
+
+// ✓ Pattern: use with for multi-statement access
+with pool[h] as entity {
+    entity.health -= damage
+    entity.last_hit = now()
 }
 ```
 
@@ -324,13 +331,9 @@ nobody else can view it. This is "exclusive access for mutation":
 ```rask
 const v = Vec.from([1, 2, 3])
 
-// ✗ Can't do: read and write overlap
-const first = v[0]
-v.push(4)                    // ✗ Error: v is being viewed
-
-// ✓ Works: views don't overlap
-v[0].process()               // View ends at semicolon
-v.push(4)                    // ✓ No view active
+// ✓ Works: each access is independent
+v[0].process()               // Access ends after expression
+v.push(4)                    // ✓ No access active
 ```
 
 ### Multi-Statement Collection Access
@@ -347,8 +350,32 @@ with pool[h] as entity {
 }
 ```
 
-This borrows the element for the whole block. The pool is locked during this block—you
-can't touch other elements in the same pool. When the block ends, the borrow ends.
+This binds the element for the whole block. The pool is frozen during this block—you
+can't touch other elements in the same pool. When the block ends, the binding ends.
+
+The big win: `return`, `try`, `break`, and `continue` work naturally inside `with`
+blocks. They're real scopes, not closures.
+
+```rask
+func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
+    with pool[h] as entity {
+        entity.strength += 10
+        try log_buff_applied(entity.id)   // propagates to function
+    }
+}
+```
+
+`with` also works as an expression—the last expression in the block is the value:
+
+```rask
+const name = with pool[h] as const entity { entity.name.clone() }
+```
+
+One-liner shorthand (parallels `if cond: expr`):
+
+```rask
+with pool[h] as e: e.health -= damage
+```
 
 ### Field Projections: Partial Borrowing
 
@@ -1271,21 +1298,23 @@ When you need shared mutable state across tasks, use synchronization primitives:
 let config = Shared.new(AppConfig { timeout: 30 })
 
 // Many readers (concurrent, non-blocking)
-const timeout = config.read(|c| c.timeout)
+const timeout = with config as const c { c.timeout }
 
 // Exclusive writer (blocks readers during write)
-config.write(|c| c.timeout = 60)
+with config as c { c.timeout = 60 }
 ```
 
 **`Mutex<T>`** — for data that's written often:
 
 ```rask
 const queue = Mutex.new(Vec.new())
-queue.lock(|q| q.push(item))
+with queue as q { q.push(item) }
 ```
 
-Both use closures instead of lock guards. This means you can't accidentally hold a lock
-across an await point or forget to unlock. When the closure returns, the lock is released.
+Both use `with` blocks instead of lock guards. This means you can't accidentally hold a
+lock across an await point or forget to unlock. When the block ends, the lock is
+released. And unlike closures, `return`, `try`, `break`, and `continue` work naturally
+inside `with` blocks.
 
 **Atomics** — for single values (counters, flags):
 
@@ -1582,8 +1611,9 @@ If closures captured by reference, they'd need lifetime tracking—exactly the c
 Rask eliminates by forbidding storable references. Capture by value means closures own
 their data and can be stored, sent across threads, or returned freely.
 
-The cost: mutating shared state through closures requires a Pool + Handle pattern instead
-of direct mutation. I think that's a reasonable trade for not needing lifetimes.
+The cost: mutating shared state through closures requires `Cell<T>`, a Pool + Handle
+pattern, or `with`-based access instead of direct mutation. I think that's a reasonable
+trade for not needing lifetimes.
 
 ### Why separate `Shared<T>` and `Mutex<T>` (instead of just `Mutex`)?
 
@@ -1593,15 +1623,16 @@ They optimize for different access patterns:
 
 Having both makes the programmer's intent clear and lets the runtime optimize accordingly.
 
-### Why closure-based locking instead of lock guards?
+### Why `with`-based locking instead of lock guards?
 
 Lock guards (Rust's approach) are a reference you hold. As long as the reference exists,
 the lock is held. This makes it easy to accidentally hold a lock too long—or across an
 await point, causing deadlocks.
 
-Closures scope the lock precisely: `mutex.lock(|data| { ... })`. When the closure
-returns, the lock is released. You can't hold it by accident. The compiler can also
-detect direct nested locking and flag it as an error.
+`with` blocks scope the lock precisely: `with mutex as data { ... }`. When the
+block ends, the lock is released. You can't hold it by accident. `return`, `try`,
+`break`, and `continue` work naturally inside the block. The compiler detects direct
+nested `with` blocks on sync primitives and flags them as errors.
 
 ### Why `using Multitasking { }` instead of just having async everywhere?
 
@@ -1627,7 +1658,7 @@ specific way. It's more flexible than RAII—you can ensure different cleanup pa
 (commit vs rollback) and the cleanup is visible in the code rather than hidden in a
 destructor.
 
-### Why expression-scoped borrows for collections?
+### Why value-based access for collections?
 
 If you hold a reference to `vec[0]` and then `vec.push(x)`, the push might reallocate
 the vector's backing array. Your reference now points to freed memory.
@@ -1635,8 +1666,8 @@ the vector's backing array. Your reference now points to freed memory.
 Languages handle this differently:
 - C++: Undefined behavior. Your problem.
 - Rust: Borrow checker refuses to compile it (but the error messages are confusing).
-- Rask: References to collection elements expire at the semicolon. Can't hold them.
-  Clear rule, clear error.
+- Rask: Collection access is inline (one expression). For multi-statement access,
+  `with` blocks freeze the collection. Clear rule, clear error.
 
 ### Why can't `+` allocate? (Why Copy-only operators?)
 

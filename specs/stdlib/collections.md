@@ -1,11 +1,11 @@
 <!-- id: std.collections -->
 <!-- status: decided -->
-<!-- summary: Vec and Map with fallible allocation, expression-scoped borrows, optional capacity bounds -->
+<!-- summary: Vec and Map with fallible allocation, value-based access, optional capacity bounds -->
 <!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
 
 # Collections (Vec and Map)
 
-Vec and Map with optional capacity constraints, expression-scoped borrows, fallible allocation. For handle-based sparse storage, see `mem.pools`.
+Vec and Map with optional capacity constraints, value-based access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
 
 ## Collection Types
 
@@ -13,7 +13,7 @@ Vec and Map with optional capacity constraints, expression-scoped borrows, falli
 |------|-------------|
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
 | **C2: Fallible allocation** | All growth operations return `Result` with rejected value on failure |
-| **C3: Expression-scoped borrows** | Element access via `[]` is expression-scoped (released at `;`) |
+| **C3: Value-based access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
 | **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
 
 | Type | Purpose | Creation |
@@ -81,11 +81,11 @@ const users = Map.from([
 | Method | Returns | Constraint | Panics |
 |--------|---------|------------|--------|
 | `vec[i]` | `T` | `T: Copy` | Yes (OOB) |
-| `vec[i].field` | expression-scoped borrow | None | Yes (OOB) |
+| `vec[i].field` | inline access (expression-scoped) | None | Yes (OOB) |
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
 | `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
-| `vec.read(i, \|v\| R)` | `Option<R>` | None | No |
-| `vec.modify(i, \|v\| R)` | `Option<R>` | None | No |
+| `with vec[i] as v { ... }` | block value (mutable, default) | None | Yes (OOB) |
+| `with vec[i] as const v { ... }` | block value (read-only) | None | Yes (OOB) |
 | `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
 
@@ -98,12 +98,21 @@ const users = Map.from([
 
 <!-- test: skip -->
 ```rask
-vec[i].field              // Read field (expression-scoped borrow)
-vec[i].field = value      // Mutate field (expression-scoped mutable borrow)
+vec[i].field              // Read field (inline access)
+vec[i].field = value      // Mutate field (in-place)
 const x = vec[i]          // Copy out (T: Copy only)
 
-const name = try vec.read(i, |v| v.name.clone())  // Option<string>
-try vec.modify(i, |v| v.count += 1)               // Option<()>
+// Multi-statement access (mutable by default)
+with vec[i] as v {
+    v.count += 1
+    v.last_updated = now()
+}
+
+// One-liner shorthand
+with vec[i] as v: v.count += 1
+
+// Expression context — produces a value
+const name = with vec[i] as const v { v.name.clone() }
 ```
 
 ## Map -- Key-Based Access
@@ -111,11 +120,11 @@ try vec.modify(i, |v| v.count += 1)               // Option<()>
 | Method | Returns | Semantics |
 |--------|---------|-----------|
 | `map[k]` | `V` | Panics if missing (V: Copy) |
-| `map[k].field` | expression-scoped borrow | Panics if missing |
+| `map[k].field` | inline access (expression-scoped) | Panics if missing |
 | `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
 | `map.get_clone(k)` | `Option<V>` | Clone out (V: Clone) |
-| `map.read(k, \|v\| R)` | `Option<R>` | Read if exists |
-| `map.modify(k, \|v\| R)` | `Option<R>` | Mutate if exists |
+| `with map[k] as v { ... }` | block value (mutable, default) | Panics if missing |
+| `with map[k] as const v { ... }` | block value (read-only) | Panics if missing |
 | `map.remove(k)` | `Option<V>` | Remove and return |
 
 ### Entry API
@@ -305,10 +314,10 @@ FIX: Process existing items first, or use an unbounded collection:
 | OOM on unbounded `push()` | C2 | Returns `Err(PushError.Alloc(x))` |
 | `vec.insert(n, x)` where `n > len()` | V4 | Panic (bounds check) |
 | `vec.remove(n)` where `n >= len()` | V5 | Panic (bounds check) |
-| `modify_many([i, i], _)` | D1 | Panic (duplicate index) |
+| `with vec[i] as e1, vec[i] as e2` | D1 | Panic (duplicate index) |
 | ZST in `Vec<()>` | — | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | C4 | Compile error |
-| Closure panics in `modify` | — | Collection left in valid state |
+| Panic inside `with` | — | Collection left in valid state |
 
 ---
 
@@ -318,7 +327,7 @@ FIX: Process existing items first, or use an unbounded collection:
 
 **C2 (fallible allocation):** All allocations can fail. Returning the rejected value in the error lets callers retry or log without losing data.
 
-**C3 (statement-scoped):** Collections can grow/shrink, invalidating any held views. Statement-scoped borrows kill this bug class. See `mem.borrowing/B1`.
+**C3 (value-based access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
 
 **C4 (no linear resources):** Collection drop can't propagate errors from linear resource cleanup. `Pool<T>` with explicit consumption is the right pattern.
 
@@ -332,8 +341,8 @@ FIX: Process existing items first, or use an unbounded collection:
 **Pattern selection for element access:**
 - 1 statement: `vec[i].field = x`
 - Method chain: `vec[i].value.method().chain()`
-- 2+ statements: `try vec.modify(i, |v| { ... })`
-- Error propagation: `try vec.modify(i, |v| -> Result { ... })`
+- 2+ statements: `with vec[i] as v { ... }`
+- Error propagation: `with vec[i] as v { try validate(v) }`
 
 **Slice descriptors — when to use:**
 - Storing references to substrings or sub-vectors

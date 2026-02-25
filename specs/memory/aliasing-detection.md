@@ -58,36 +58,36 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 
 ## Error Messages
 
-**Mutation during exclusive borrow [AL5]:**
+**Mutation during frozen source [AL5]:**
 ```
-ERROR [mem.aliasing/AL5]: cannot mutate `pool` while borrowed
+ERROR [mem.aliasing/AL5]: cannot access `pool` inside its own with block
    |
-1  |  pool.modify(h, |e| {
-   |       ------ `pool` is exclusively borrowed here
+1  |  with pool[h] as e {
+   |  ---- pool frozen here
 2  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot mutate while borrowed
+   |      ^^^^^^^^^^^^^^ cannot access pool here
 
-WHY: modify() holds an exclusive borrow on pool. The closure
-     cannot access pool again until modify() completes.
+WHY: with block freezes the collection. No access to the source
+     is allowed inside the block.
 
-FIX: Collect operations, apply after:
+FIX: Separate the check from the mutation:
 
-  const to_remove = find_removable(pool)
-  for h in to_remove {
+  const should_remove = pool[h].health <= 0
+  if should_remove {
       pool.remove(h)
   }
 ```
 
 **Mutation during shared borrow [AL4]:**
 ```
-ERROR [mem.aliasing/AL4]: cannot mutate `pool` while shared borrow active
+ERROR [mem.aliasing/AL4]: cannot mutate `pool` while access active
    |
-1  |  pool.read(h, |e| {
-   |       ---- `pool` is shared-borrowed here
+1  |  with pool[h] as e {
+   |  ---- pool frozen here
 2  |      pool.remove(other_h)
-   |      ^^^^^^^^^^^^^^^^^^^^ cannot mutate while borrowed
+   |      ^^^^^^^^^^^^^^^^^^^^ cannot access pool here
 
-WHY: read() holds a shared borrow. Mutation would invalidate it.
+WHY: with block freezes the collection. Mutation would invalidate it.
 
 FIX: Copy what you need, then mutate:
 
@@ -99,8 +99,8 @@ FIX: Copy what you need, then mutate:
 
 | Case | Rule | Handling |
 |------|------|----------|
-| Disjoint variables | AL6 | `pool.modify(h, \|e\| other_pool.remove(h2))` is OK |
-| Shared + shared | AL3 | `pool.read(h, \|e\| pool.get(h2))` is OK |
+| Disjoint variables | AL6 | `with pool[h] as e { other_pool.remove(h2) }` is OK |
+| Multi-element access | AL3 | `with pool[h1] as e1, pool[h2] as e2 { ... }` is OK |
 | Chained methods returning owned | AL1 | Borrow released when ownership transfers |
 | Dynamic indices | AL1 | `pool[computed]` borrows entire pool (conservative) |
 | Nested expression chains | AL1 | All borrows accumulate on stack |
@@ -120,34 +120,33 @@ FIX: Copy what you need, then mutate:
 
 ### Patterns & Guidance
 
-**Basic conflict — exclusive borrow blocks all access:**
+**Basic conflict — frozen source blocks all access:**
 <!-- test: skip -->
 ```rask
-pool.modify(h, |e| {
-    pool.remove(h)    // ERROR: pool exclusively borrowed by modify()
-})
+with pool[h] as e {
+    pool.remove(h)    // ERROR: pool frozen inside with block
+}
 // Borrow stack: [Exclusive(pool)]
-// Closure accesses: [Call(pool.remove)] — conflicts with Exclusive(pool)
+// with body accesses: [Call(pool.remove)] — conflicts with Exclusive(pool)
 ```
 
 **Disjoint variables — different collections never conflict:**
 <!-- test: skip -->
 ```rask
-pool.modify(h, |e| {
+with pool[h] as e {
     other_pool.remove(h2)    // OK: different variable
-})
+}
 // Borrow stack: [Exclusive(pool)]
-// Closure accesses: [Call(other_pool.remove)] — pool != other_pool
+// with body accesses: [Call(other_pool.remove)] — pool != other_pool
 ```
 
-**Shared reads are compatible:**
+**Multi-element access is compatible:**
 <!-- test: skip -->
 ```rask
-pool.read(h, |e| {
-    const x = pool.get(h2)    // OK: shared borrows compatible
-})
-// Borrow stack: [Shared(pool)]
-// Closure accesses: [Call(pool.get)] — Shared + Shared = OK
+with pool[h1] as e1, pool[h2] as e2 {
+    // OK: compiler verifies disjoint elements
+    // Runtime panic if h1 == h2
+}
 ```
 
 **Chained methods — borrow depends on return type:**
@@ -162,6 +161,6 @@ pool.get(h)?.transform().apply(|v| {
 
 ### See Also
 
-- [Borrowing](borrowing.md) — Expression-scoped vs block-scoped semantics (`mem.borrowing`)
+- [Borrowing](borrowing.md) — Value-based access, `with` blocks, block-scoped views (`mem.borrowing`)
 - [Closures](closures.md) — EC1-EC4 rules for expression-scoped closures (`mem.closures`)
-- [Pools](pools.md) — Pool methods that use closures (`mem.pools`)
+- [Pools](pools.md) — Pool `with`-based access (`mem.pools`)

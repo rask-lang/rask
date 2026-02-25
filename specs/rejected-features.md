@@ -122,13 +122,13 @@ Kotlin has `.let`, `.apply`, `.also` with implicit receivers—`it` or `this`. T
 Rask already has the pattern, just with explicit parameters:
 
 ```rask
-const users = db.read(|d| d.users.values().collect())
-db.write(|d| { d.users.insert(id, user) })
+const users = with db as const d { d.users.values().collect() }
+with db as d { d.users.insert(id, user) }
 ```
 
-Compare `obj.let { it.field }` vs `obj.read(|d| d.field)`. The parameter name shows intent—you're entering a read scope, not just "letting" something happen. More characters, but clearer. Parameter names also show up in stack traces when debugging.
+Compare `obj.let { it.field }` vs `with obj as d { d.field }`. The `with...as` syntax shows intent—you're entering a scoped access, not just "letting" something happen. The binding name is explicit. And `return`/`try`/`break` work naturally.
 
-Could add Kotlin-style methods as library code if needed—no parser changes required. But explicit parameters work well enough.
+Could add Kotlin-style methods as library code if needed—no parser changes required. But `with` covers the core use case.
 
 ---
 

@@ -543,8 +543,8 @@ impl HiddenParamPass {
                 self.rewrite_expr(count);
             }
             ExprKind::WithAs { bindings, body } => {
-                for (e, _) in bindings {
-                    self.rewrite_expr(e);
+                for binding in bindings {
+                    self.rewrite_expr(&mut binding.source);
                 }
                 self.rewrite_stmts(body);
             }
@@ -826,8 +826,8 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
             collect_callees_from_expr(count, callees);
         }
         ExprKind::WithAs { bindings, body } => {
-            for (e, _) in bindings {
-                collect_callees_from_expr(e, callees);
+            for binding in bindings {
+                collect_callees_from_expr(&binding.source, callees);
             }
             for s in body {
                 collect_callees_from_stmt(s, callees);

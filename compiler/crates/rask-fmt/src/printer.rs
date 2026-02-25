@@ -1241,13 +1241,17 @@ impl<'a> Printer<'a> {
             }
             ExprKind::WithAs { bindings, body } => {
                 self.emit("with ");
-                for (i, (expr, name)) in bindings.iter().enumerate() {
+                for (i, binding) in bindings.iter().enumerate() {
                     if i > 0 {
                         self.emit(", ");
                     }
-                    self.format_expr(expr);
-                    self.emit(" as ");
-                    self.emit(name);
+                    self.format_expr(&binding.source);
+                    if binding.mutable {
+                        self.emit(" as ");
+                    } else {
+                        self.emit(" as const ");
+                    }
+                    self.emit(&binding.name);
                 }
                 self.emit(" {");
                 self.emit_newline();

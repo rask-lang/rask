@@ -1208,23 +1208,24 @@ impl Interpreter {
             }
 
             ExprKind::WithAs { bindings, body } => {
-                // Collect (collection_value, key_value, binding_name, cloned_element)
                 struct BindingInfo {
                     collection: Value,
                     key: Value,
                     name: String,
+                    mutable: bool,
                 }
                 let mut infos: Vec<BindingInfo> = Vec::new();
 
-                for (source_expr, binding_name) in bindings {
+                for binding in bindings {
                     // Source must be an Index expression: collection[key]
-                    if let ExprKind::Index { object, index } = &source_expr.kind {
+                    if let ExprKind::Index { object, index } = &binding.source.kind {
                         let collection = self.eval_expr(object)?;
                         let key = self.eval_expr(index)?;
                         infos.push(BindingInfo {
                             collection,
                             key,
-                            name: binding_name.clone(),
+                            name: binding.name.clone(),
+                            mutable: binding.mutable,
                         });
                     } else {
                         return Err(RuntimeDiagnostic::new(
@@ -1266,11 +1267,13 @@ impl Interpreter {
                     result = self.exec_stmt(stmt)?;
                 }
 
-                // Writeback: read binding values and write back to collections
+                // Writeback: only for mutable bindings
                 for info in &infos {
-                    if let Some(updated) = self.env.get(&info.name).cloned() {
-                        self.write_back_index(&info.collection, &info.key, updated)
-                            .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                    if info.mutable {
+                        if let Some(updated) = self.env.get(&info.name).cloned() {
+                            self.write_back_index(&info.collection, &info.key, updated)
+                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                        }
                     }
                 }
 
