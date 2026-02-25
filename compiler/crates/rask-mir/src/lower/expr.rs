@@ -1639,10 +1639,10 @@ impl<'a> MirLowerer<'a> {
 
             // With-as binding
             ExprKind::WithAs { bindings, body } => {
-                for (bind_expr, name) in bindings {
-                    let (val, val_ty) = self.lower_expr(bind_expr)?;
-                    let local = self.builder.alloc_local(name.clone(), val_ty.clone());
-                    self.locals.insert(name.clone(), (local, val_ty));
+                for binding in bindings {
+                    let (val, val_ty) = self.lower_expr(&binding.source)?;
+                    let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
+                    self.locals.insert(binding.name.clone(), (local, val_ty));
                     self.builder.push_stmt(MirStmt::Assign {
                         dst: local,
                         rvalue: MirRValue::Use(val),

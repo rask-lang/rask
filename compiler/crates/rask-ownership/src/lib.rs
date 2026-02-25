@@ -481,8 +481,8 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(body);
             }
             ExprKind::WithAs { bindings, body } => {
-                for (expr, _) in bindings {
-                    self.check_expr(expr);
+                for binding in bindings {
+                    self.check_expr(&binding.source);
                 }
                 self.check_block(body);
             }

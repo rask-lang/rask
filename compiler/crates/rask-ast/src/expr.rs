@@ -137,9 +137,9 @@ pub enum ExprKind {
         args: Vec<CallArg>,
         body: Vec<super::stmt::Stmt>,
     },
-    /// With-as element binding (with expr as name, ... { body })
+    /// With-as element binding (with expr as [const] name, ... { body })
     WithAs {
-        bindings: Vec<(Expr, String)>,
+        bindings: Vec<WithBinding>,
         body: Vec<super::stmt::Stmt>,
     },
     /// Closure (|x, y| x + y)
@@ -210,6 +210,15 @@ pub struct CallArg {
 pub struct FieldInit {
     pub name: String,
     pub value: Expr,
+}
+
+/// A `with...as` binding: source expression, binding name, and mutability.
+/// Mutable by default; `as const name` for read-only.
+#[derive(Debug, Clone)]
+pub struct WithBinding {
+    pub source: Expr,
+    pub name: String,
+    pub mutable: bool,
 }
 
 /// A closure parameter.
