@@ -311,12 +311,12 @@ Message passing for communication, `Shared<T>` for shared data.
 // Shared data — with-based access, no lock leaks
 const db = Shared.new(Database.new())
 
-with db as d {
+with db as const d {
     const user = d.users.get(id)
     respond(user)
 }
 
-with db as mutate d {
+with db as d {
     d.users.insert(id, new_user)
 }
 

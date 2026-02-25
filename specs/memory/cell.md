@@ -21,7 +21,7 @@ button.on_click(|event| pool[h].count += 1)
 // Cell: direct
 const state = Cell.new(AppState{...})
 button.on_click(|event, state| {
-    with state as mutate s { s.count += 1 }
+    with state as s { s.count += 1 }
 })
 ```
 
@@ -32,8 +32,8 @@ button.on_click(|event, state| {
 | **CE1: Heap-allocated** | `Cell.new(value)` heap-allocates the value |
 | **CE2: Value semantics** | `Cell<T>` is a value that owns its heap data (like Vec, string) |
 | **CE3: Move-only** | `Cell<T>` is never Copy; assignment moves |
-| **CE4: with access** | Access through `with cell as v { ... }` (read) and `with cell as mutate v { ... }` (mutate) |
-| **CE5: Exclusive mutation** | `with...as mutate` takes exclusive access; no concurrent reads or writes |
+| **CE4: with access** | Access through `with cell as const v { ... }` (read) and `with cell as v { ... }` (mutate, default) |
+| **CE5: Exclusive mutation** | `with...as v` (mutable, default) takes exclusive access; no concurrent reads or writes |
 
 ## API
 
@@ -49,17 +49,17 @@ Access is through `with`:
 ```rask
 const counter = Cell.new(0)
 
-// Read
-const current = with counter as c { c }
+// Read (explicit const)
+const current = with counter as const c { c }
 
 // Mutate
-with counter as mutate c { c += 1 }
+with counter as c { c += 1 }
 
 // One-liner shorthand
-with counter as mutate c: c += 1
+with counter as c: c += 1
 
 // Expression context
-const doubled = with counter as c { c * 2 }
+const doubled = with counter as const c { c * 2 }
 
 // Replace
 const old = counter.replace(0)
@@ -79,10 +79,10 @@ For multiple closures to share a Cell, use a handle or pass it as a parameter:
 // Pattern: closures receive cell as parameter
 func setup(state: Cell<AppState>) {
     button1.on_click(|event, state| {
-        with state as mutate s { s.mode = Mode.Edit }
+        with state as s { s.mode = Mode.Edit }
     })
     button2.on_click(|event, state| {
-        with state as mutate s { s.mode = Mode.View }
+        with state as s { s.mode = Mode.View }
     })
     app.run_with(state)
 }
@@ -94,7 +94,7 @@ struct App {
 
 extend App {
     func on_click(self, event: Event) {
-        with self.state as mutate s { s.click_count += 1 }
+        with self.state as s { s.click_count += 1 }
     }
 }
 ```
@@ -114,7 +114,7 @@ extend App {
 |------|----------|
 | `Cell<Cell<T>>` | Allowed but discouraged — flatten to one Cell |
 | `Cell<@resource>` | Allowed; `into_inner()` returns the resource for consumption |
-| Recursive `with...as mutate` | Panic: cell is exclusively borrowed |
+| Recursive mutable `with...as` | Panic: cell is exclusively borrowed |
 | `Cell<T>` in Vec | Allowed (Cell is a value type) |
 | Drop | Heap data freed, inner T dropped normally |
 

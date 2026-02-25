@@ -322,13 +322,13 @@ Conservative local analysis: no cross-function tracking, no dataflow.
 const counter = Cell.new(0)
 
 button1.on_click(|event, counter| {
-    with counter as mutate c { c += 1 }
+    with counter as c { c += 1 }
 })
 button2.on_click(|event, counter| {
-    with counter as mutate c { c += 10 }
+    with counter as c { c += 10 }
 })
 
-// After clicks: const value = with counter as c { c }
+// After clicks: const value = with counter as const c { c }
 ```
 
 See `mem.cell` for `Cell<T>` details.

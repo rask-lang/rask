@@ -122,8 +122,8 @@ Kotlin has `.let`, `.apply`, `.also` with implicit receivers—`it` or `this`. T
 Rask already has the pattern, just with explicit parameters:
 
 ```rask
-const users = with db as d { d.users.values().collect() }
-with db as mutate d { d.users.insert(id, user) }
+const users = with db as const d { d.users.values().collect() }
+with db as d { d.users.insert(id, user) }
 ```
 
 Compare `obj.let { it.field }` vs `with obj as d { d.field }`. The `with...as` syntax shows intent—you're entering a scoped access, not just "letting" something happen. The binding name is explicit. And `return`/`try`/`break` work naturally.
