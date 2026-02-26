@@ -77,6 +77,7 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
     }
 
     rask_desugar::desugar(&mut parse_result.decls);
+    rask_desugar::desugar_default_args(&mut parse_result.decls);
 
     let resolved = match rask_resolve::resolve(&parse_result.decls) {
         Ok(r) => r,
@@ -131,6 +132,7 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         .collect();
 
     rask_desugar::desugar(&mut pkg_ctx.all_decls);
+    rask_desugar::desugar_default_args(&mut pkg_ctx.all_decls);
 
     // Resolver handles external packages via collect_package_exports —
     // only pass root package decls here to avoid double registration.
