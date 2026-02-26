@@ -1,6 +1,6 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
-<!-- summary: Errors are values with try propagation, union composition, and auto-Ok wrapping -->
+<!-- summary: Errors are values with try propagation, union composition, auto-Ok wrapping, origin tracking, and any Error auto-boxing -->
 <!-- depends: types/enums.md, types/optionals.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
 
@@ -134,23 +134,44 @@ func main() -> () or Error {
 | Rule | Description |
 |------|-------------|
 | **ER9: Auto-widen** | `try` auto-widens when return type is a union — succeeds if expression error type ⊆ return error union |
+| **ER10: Auto-box to `any Trait`** | `try` auto-boxes when return error type is `any Error` (or any `any Trait`) — succeeds if expression error type satisfies the trait |
 
 <!-- test: skip -->
 ```rask
+// Union widening — library code with precise types
 func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError widens to union
     const config = try parse(content)     // ParseError widens to union
     config
 }
+
+// Auto-boxing — application code with type-erased errors
+func start_app() -> App or any Error {
+    const config = try read_config(path)     // IoError | ParseError → boxed to any Error
+    const db = try connect(config.db_url)    // DbError → boxed to any Error
+    const schema = try validate(db)          // ValidationError → boxed to any Error
+    App.new(config, db, schema)
+}
 ```
 
-See [Union Types](union-types.md) for union type semantics.
+The pattern: libraries use union types (precise, matchable). Applications use `any Error` (ergonomic, sufficient for logging/reporting). Downcast with `is` for recovery:
+
+<!-- test: skip -->
+```rask
+match start_app() {
+    Ok(app) => app.run(),
+    Err(e) if e is IoError => retry(),
+    Err(e) => log("fatal: {} at {}", e.message(), e.origin),
+}
+```
+
+See [Union Types](union-types.md) for union type semantics. See [Traits](traits.md) for `any Trait` semantics.
 
 ## Custom Error Types
 
 | Rule | Description |
 |------|-------------|
-| **ER10: Enum errors** | Errors are defined as enums with a `message()` method |
+| **ER11: Enum errors** | Errors are defined as enums with a `message()` method |
 
 <!-- test: parse -->
 ```rask
@@ -193,9 +214,9 @@ extend IoError {
 
 | Rule | Description |
 |------|-------------|
-| **ER11: Same type** | Same error type propagates directly |
-| **ER12: Union** | Different error types compose via union (`A \| B`) |
-| **ER13: Union compose** | Union return types accept any subset union via `try` |
+| **ER12: Same type** | Same error type propagates directly |
+| **ER13: Union** | Different error types compose via union (`A \| B`) |
+| **ER14: Union compose** | Union return types accept any subset union via `try` |
 
 ### Same error type — direct propagation
 
@@ -247,7 +268,7 @@ match load() {
 
 | Rule | Description |
 |------|-------------|
-| **ER14: Linear payloads** | Errors can contain linear resources; wildcard on linear payloads is a compile error |
+| **ER19: Linear payloads** | Errors can contain linear resources; wildcard on linear payloads is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -263,6 +284,177 @@ match result {
     }
 }
 ```
+
+## Error Origin Tracking
+
+| Rule | Description |
+|------|-------------|
+| **ER15: Origin capture** | `try` records `(file, line)` on the error at the first propagation site. Available in both debug and release builds |
+| **ER16: Propagation trace** | In debug builds, each subsequent `try` appends its `(file, line)` to the error's trace. Stripped in release |
+| **ER17: Origin access** | All errors have `.origin` (always available) and `.trace()` (debug builds; empty in release) |
+
+<!-- test: skip -->
+```rask
+func load_config(path: string) -> Config or (IoError | ParseError) {
+    const content = try read_file(path)    // origin set: "config.rk:2"
+    const config = try parse(content)      // origin set: "config.rk:3"
+    config
+}
+
+func start() -> () or any Error {
+    const config = try load_config(path)   // trace appended: "main.rk:2" (debug only)
+    try run(config)
+}
+
+// In the error handler:
+match start() {
+    Err(e) => {
+        log("{}: {}", e.origin, e.message())
+        // "config.rk:2: file not found: /etc/app.conf"
+
+        // Debug builds only — full propagation chain
+        for loc in e.trace() {
+            log("  at {}", loc)
+        }
+        // "  at config.rk:2"
+        // "  at main.rk:2"
+    }
+    Ok(_) => {}
+}
+```
+
+Cost: `origin` is ~16 bytes per error (file pointer + line number) — negligible on the exceptional path. The propagation trace allocates in debug builds only.
+
+## Error Context
+
+Real-world error handling needs context. "IoError: file not found" is useless in production — you need "loading config from /app.toml: file not found". `map_err` handles this but is verbose enough that people skip it. `origin` tells you *where* it failed; context tells you *what you were trying to do*.
+
+| Rule | Description |
+|------|-------------|
+| **ER18: try-else** | `try expr else \|e\| error_expr` extracts `Ok` or transforms the error and returns `Err(error_expr)` from the current function |
+| **ER20: ContextError type** | `ContextError` is a stdlib type with `context: string` and `source: string` fields, satisfying `Error` |
+| **ER21: context() function** | `context(msg, err)` creates a `ContextError` from any `Error`, stringifying the source |
+| **ER22: Linear incompatibility** | `context()` is a compile error when the error type contains linear resources — must handle resources explicitly |
+
+### try-else
+
+`try...else` extends `try` with an error transformation clause. Follows the same `else |e|` pattern established by `ensure` ([ctrl.ensure/ER2](../control/ensure.md)).
+
+<!-- test: skip -->
+```rask
+// ensure's else (existing) — same pattern
+ensure file.close() else |e| log(e)
+
+// try's else (new) — transforms error, then propagates
+const text = try fs.read_file(path) else |e| context("reading {path}", e)
+```
+
+Desugars to:
+
+<!-- test: skip -->
+```rask
+const text = match fs.read_file(path) {
+    Ok(v) => v,
+    Err(e) => return Err(context("reading {path}", e)),
+}
+```
+
+Both expression and block forms work, matching Rask's block semantics (last expression = value):
+
+<!-- test: skip -->
+```rask
+// Expression form
+const text = try fs.read_file(path) else |e| context("reading {path}", e)
+
+// Block form — when you need multiple statements
+const text = try fs.read_file(path) else |e| {
+    log("failed to read {path}: {e.message()}")
+    context("reading {path}", e)
+}
+```
+
+`try...else` is general-purpose — works for string context AND typed error wrapping:
+
+<!-- test: skip -->
+```rask
+// Application code — string context chains
+func load_config(path: string) -> Config or ContextError {
+    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    return try Config.parse(text) else |e| context("parsing {path}", e)
+}
+
+// Library code — typed domain errors
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+}
+```
+
+`try`, `map_err`, and `try...else` are complementary:
+- `map_err` — transforms the error type without propagating
+- `try` — propagates without transforming
+- `try...else` — transforms AND propagates in one step
+
+### ContextError and context()
+
+`ContextError` is a stdlib type for application-level code that doesn't need typed errors. The `context()` free function wraps any error into a `ContextError`, stringifying the source.
+
+<!-- test: parse -->
+```rask
+struct ContextError {
+    context: string
+    source: string
+}
+
+extend ContextError {
+    func message(self) -> string {
+        return "{self.context}: {self.source}"
+    }
+}
+
+func context<E: Error>(msg: string, err: E) -> ContextError {
+    return ContextError { context: msg, source: err.message() }
+}
+```
+
+`ContextError` satisfies `Error` (has `message()`), so context chains naturally:
+
+<!-- test: skip -->
+```rask
+func main() -> () or ContextError {
+    const config = try load_config("app.toml") else |e| context("starting app", e)
+    // Chain: "starting app: reading config: file not found: /app.toml"
+}
+```
+
+### Linear resource constraint
+
+`context()` stringifies errors via `message()`. If the error contains a linear resource, the original error would be discarded without consuming the resource — compile error. Handle resources explicitly in the `else` block instead:
+
+<!-- test: skip -->
+```rask
+// Compile error: context() cannot stringify errors with linear resources
+const data = try file.read_all() else |e| context("reading", e)
+
+// OK: explicitly handle the resource
+const data = try file.read_all() else |e| {
+    match e {
+        FileError.ReadFailed(file, reason) => {
+            file.close()
+            context("reading", reason)
+        }
+    }
+}
+```
+
+### When to use which
+
+| Consumer | Tool | Error type |
+|----------|------|-----------|
+| Machine (match, retry, status codes) | `try...else \|e\| DomainError.Variant { ... }` | Typed enums |
+| Human (logs, stderr, CLI) | `try...else \|e\| context("msg", e)` | `ContextError` |
+
+The boundary is who consumes the error, not lib vs app. `origin` is automatic (where it failed); `context` is opt-in (what you were doing).
 
 ## Operator Family
 
@@ -323,9 +515,14 @@ thread panicked at 'entered unreachable code', src/handler.rk:12:21
 | Reach end of `() or E` function | ER8 | Implicit `Ok(())` |
 | `try` on error type not in return union | ER9 | Compile error — type not subset |
 | `try` on `Option` in `Result` function | ER6 | `None` maps to `Err` (types must align) |
-| Wildcard on linear error payload | ER14 | Compile error — must consume |
+| Wildcard on linear error payload | ER19 | Compile error — must consume |
+| `try` when return type is `any Error` | ER10 | Auto-box concrete error to `any Error` |
+| `.origin` in release build | ER15 | Always available (~16 bytes per error) |
+| `.trace()` in release build | ER16 | Returns empty — trace only in debug |
 | Nested `try` in closures | ER4 | Propagates to closure's return, not enclosing function |
 | `try` binding with method chain | ER5 | Binds to full expression; use parens to chain after |
+| `try...else` error type mismatch | ER18 | Compile error — else expression must match function's error return type |
+| `context()` on linear error type | ER22 | Compile error — must handle linear resources explicitly |
 
 ---
 
@@ -338,6 +535,16 @@ thread panicked at 'entered unreachable code', src/handler.rk:12:21
 **ER7/ER8 (auto-Ok):** If you wanted an error, you'd use `return Err(...)` or `try`. Reaching the end means success. Eliminates noisy `Ok(())` at function ends.
 
 **ER9 (auto-widen):** Without auto-widening, every `try` on a narrower error type would need an explicit conversion. The subset check keeps it type-safe without boilerplate.
+
+**ER10 (auto-box):** Libraries should use precise union error types — callers can match on them. But application code that calls 5 libraries shouldn't need `-> T or (IoError | ParseError | DbError | ValidationError | AuthError)` on every function. `any Error` is the escape hatch: type-erased, sufficient for logging/reporting, with `is` downcast for recovery. This mirrors Rust's thiserror (libraries) + anyhow (applications) split, but built into the language.
+
+**ER15–ER17 (error origin):** When an `IoError` propagates through 10 functions, "file not found" tells you nothing. `origin` captures where the error first surfaced — always available, ~16 bytes, negligible on the exceptional path. The full propagation trace is debug-only because it allocates per hop.
+
+**ER18 (try-else):** `try + map_err` is the most common error handling pattern — nearly every `try` in real code transforms the error. Fusing them into `try...else` reduces ceremony. The `else |e|` pattern already exists in `ensure` (ctrl.ensure/ER2), so no new concepts needed.
+
+**ER20/ER21 (ContextError):** Typed domain errors (`map_err` with custom enums) are right for code that callers match on. But application-level code — `main()`, CLI handlers, request handlers — just needs human-readable chains. `ContextError` fills that gap without forcing every app to define boilerplate error enums. `origin` tells you where; `context` tells you what.
+
+**ER22 (linear incompatibility):** `context()` stringifies errors, which borrows via `message()` but doesn't consume linear resources in the error payload. Silently dropping a `@resource` would violate linear consumption guarantees. The `else` block form lets you explicitly consume the resource before wrapping.
 
 **Operator split (`try` vs `?`):** `try` is for propagation (both Result and Option). `?` is reserved for Option sugar only — type suffix, chaining, defaults, smart unwrap. This avoids Rust's overloading where `?` means different things in different contexts.
 
@@ -428,9 +635,6 @@ panic("invalid state")
 IDE shows `→ returns Err` as ghost text after `try` for visibility.
 
 ### Remaining Issues
-
-#### Low Priority
-1. **Stack traces** — Debug builds could capture (not specified)
 
 #### Dependencies
 - **Union types** — See [Union Types](union-types.md) (TODO: create spec)

@@ -1,7 +1,7 @@
 <!-- id: std.json -->
 <!-- status: decided -->
 <!-- summary: Untyped JsonValue enum plus zero-ceremony struct encoding/decoding -->
-<!-- depends: stdlib/collections.md, types/error-types.md -->
+<!-- depends: stdlib/collections.md, types/error-types.md, stdlib/encoding.md -->
 
 # JSON
 
@@ -64,10 +64,10 @@ json.stringify_pretty(value: JsonValue) -> string
 
 | Rule | Description |
 |------|-------------|
-| **J6: Auto-encode** | Any struct with JSON-compatible fields can be encoded without manual implementation |
+| **J6: Auto-encode** | Any struct satisfying `Encode` can be encoded without manual implementation. Uses `comptime for` + field access (`std.encoding/E1`–`E3`) |
 | **J7: Compatible types** | `bool`, `i32`, `i64`, `u32`, `u64`, `f32`, `f64`, `string`, `Vec<T>`, `Map<string, T>`, `T?`, nested structs |
-| **J8: Field mapping** | Struct field name = JSON key (snake_case preserved) |
-| **J9: Optional fields** | `T?` fields decode `null` or missing as `None`; missing required fields produce `MissingField` |
+| **J8: Field mapping** | Struct field `serial_name` = JSON key. Defaults to field name (snake_case). Override with `@rename` (`std.encoding/E18`) |
+| **J9: Optional fields** | `T?` fields decode `null` or missing as `None`; missing required fields produce `MissingField`. `@default` fields (`std.encoding/E20`) also tolerate missing keys |
 | **J10: Extra keys ignored** | JSON keys not matching any struct field are silently skipped |
 
 <!-- test: skip -->
@@ -84,13 +84,33 @@ json.from_value<T>(value: JsonValue) -> T or JsonError
 import json
 
 struct User {
-    name: string
-    age: i64
-    email: string?
+    public name: string
+    public age: i64
+    public email: string?
 }
 
 const user = try json.decode<User>(input)
 const output = json.encode(user)
+```
+
+With field annotations:
+
+<!-- test: skip -->
+```rask
+struct ApiUser {
+    @rename("user_name")
+    public name: string
+
+    public age: i64
+
+    @default("user")
+    public role: string
+
+    @skip
+    public cache_key: string
+}
+// encode → {"user_name": "alice", "age": 30, "role": "admin"}
+// decode with missing role → role defaults to "user"
 ```
 
 ## Error Messages
@@ -135,19 +155,23 @@ WHY: Only primitive, collection, optional, and nested-struct types can be encode
 
 **J2 (f64 numbers):** Matches JavaScript's `JSON.parse()` behavior. Exact large integers would need a `JsonValue.Integer(i64)` variant — deferred until there's a real use case.
 
-**J6 (auto-encode):** Compiler generates conversion code for any struct with compatible fields. No derive macro or trait implementation needed.
+**J6 (auto-encode):** Uses `comptime for` over `reflect.fields<T>()` to generate per-field encoding at monomorphization time. No derive macro needed — any struct satisfying `Encode` (`std.encoding/E12`) works automatically.
 
-**J8 (snake_case):** Field renaming attributes (`@json(rename = "fieldName")`) deferred. Snake_case is the default; most JSON APIs use it.
+**J8 (field mapping):** `@rename` (`std.encoding/E18`) overrides the serialized key name. Default is the field name (snake_case). Format-agnostic — works for TOML, MessagePack, etc.
 
 ### Deferred
 
-- `@json(rename = "fieldName")` — field renaming attributes
-- `JsonEncodable` / `JsonDecodable` — custom serialization traits
 - `json.Parser` — streaming parser for large files
 - `JsonValue.Integer(i64)` — lossless integer round-trips
 - Date/time handling — dates are strings, parse with `time` module
 
+### Resolved (by std.encoding)
+
+- ~~`@json(rename = "fieldName")`~~ → `@rename("fieldName")` — format-agnostic field annotation (`std.encoding/E18`)
+- ~~`JsonEncodable` / `JsonDecodable`~~ → `Encode` / `Decode` marker traits (`std.encoding/E11`)
+
 ### See Also
 
+- `std.encoding` — Encode/Decode traits, comptime field iteration, field annotations
 - `std.collections` — `Vec`, `Map` used in JsonValue
 - `type.errors` — `JsonError` follows standard error pattern

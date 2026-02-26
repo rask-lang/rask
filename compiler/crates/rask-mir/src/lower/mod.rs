@@ -1513,7 +1513,7 @@ mod tests {
             id: NodeId(106),
             kind: ExprKind::Call {
                 func: Box::new(ident_expr(func)),
-                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
+                args: args.into_iter().map(|expr| CallArg { name: None, mode: ArgMode::Default, expr }).collect(),
             },
             span: sp(),
         }
@@ -1549,7 +1549,7 @@ mod tests {
                 object: Box::new(obj),
                 method: method.to_string(),
                 type_args: None,
-                args: args.into_iter().map(|expr| CallArg { mode: ArgMode::Default, expr }).collect(),
+                args: args.into_iter().map(|expr| CallArg { name: None, mode: ArgMode::Default, expr }).collect(),
             },
             span: sp(),
         }

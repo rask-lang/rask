@@ -470,6 +470,41 @@ with pool[h] as entity {
 with pool[h] as e: e.health -= damage
 ```
 
+**The pattern for parsers (zero-copy via indices):**
+
+Block-scoped borrowing means parsers can't return references into input buffers. Two patterns handle this.
+
+*Simple case:* `string_view` stores `(start, end)` indices. Resolve against the original input inline:
+
+<!-- test: parse -->
+```rask
+struct Token {
+    kind: TokenKind
+    span: string_view
+}
+
+func tokenize(input: string) -> Vec<Token> {
+    let tokens = Vec.new()
+    let pos = 0
+    // scan() returns positions — no allocations per token
+    for (start, end, kind) in scan(input) {
+        tokens.push(Token { kind, span: string_view(start, end) })
+    }
+    return tokens
+}
+
+// Caller resolves spans against original input
+const source = try read_file(path)
+const tokens = tokenize(source)
+for tok in tokens {
+    process(source[tok.span])  // inline access, no copy
+}
+```
+
+*Shared buffer case:* `StringPool` gives validated handle-based access when multiple functions share the buffer. See `std.strings` for the full tokenizer pattern.
+
+The cost vs Rust: one `.to_string()` call per token if you need owned strings, zero copies if you keep spans and resolve inline. For hot parsers, the StringPool pattern avoids allocations entirely.
+
 ### IDE Integration
 
 The IDE makes access patterns visible through ghost annotations.

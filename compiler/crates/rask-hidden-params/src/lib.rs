@@ -403,6 +403,7 @@ impl HiddenParamPass {
 
                             // Resolve: use the hidden param from current scope
                             args.push(CallArg {
+                                name: None,
                                 mode: ArgMode::Default,
                                 expr: Expr {
                                     id: self.fresh_id(),

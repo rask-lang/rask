@@ -951,6 +951,10 @@ impl<'a> Printer<'a> {
     // --- Expressions ---
 
     fn format_call_arg(&mut self, arg: &CallArg) {
+        if let Some(ref name) = arg.name {
+            self.emit(name);
+            self.emit(": ");
+        }
         match arg.mode {
             ArgMode::Mutate => self.emit("mutate "),
             ArgMode::Own => self.emit("own "),

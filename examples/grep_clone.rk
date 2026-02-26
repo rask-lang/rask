@@ -95,7 +95,7 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
 
 func grep_file(path: string, opts: Options) -> i64 or GrepError {
     const content = try fs.read_file(path.clone())
-        .map_err(|e| GrepError.FileError(e))
+        else |e| GrepError.FileError(e)
 
     const lines = content.lines()
     let match_count: i64 = 0
