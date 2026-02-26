@@ -1,11 +1,11 @@
 <!-- id: std.net -->
 <!-- status: decided -->
-<!-- summary: TCP networking with linear resource handles and string addresses -->
+<!-- summary: TCP/UDP networking and DNS resolution with linear resource handles and string addresses -->
 <!-- depends: stdlib/io.md, memory/resource-types.md -->
 
 # Net
 
-TCP networking with minimal API. String addresses, linear resource handles, built-in HTTP/1.1 convenience methods.
+TCP and UDP networking with DNS resolution. String addresses, linear resource handles. HTTP protocol support is in `std.http`.
 
 ## Types
 
@@ -76,31 +76,63 @@ try conn.write_all("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 const response = try conn.read_all()
 ```
 
-## HTTP Convenience
+## UDP
 
 | Rule | Description |
 |------|-------------|
-| **N6: HTTP on connection** | `read_http_request` and `write_http_response` are methods on `TcpConnection` — no separate HTTP module |
+| **U1: UdpSocket** | Connectionless datagram socket. Linear resource — must close |
+| **U2: Bind** | `net.udp_bind(addr)` creates a socket bound to a local address |
+| **U3: Connect** | `udp.connect(addr)` sets a default peer for `send`/`recv` — no actual handshake |
 
 <!-- test: skip -->
 ```rask
-extend TcpConnection {
-    func read_http_request(self) -> HttpRequest or IoError
-    func write_http_response(self, response: HttpResponse) -> () or IoError
-}
+@resource
+struct UdpSocket { }
 
-struct HttpRequest {
-    public method: string
-    public path: string
-    public headers: Map<string, string>
-    public body: string
-}
+net.udp_bind(addr: string) -> UdpSocket or IoError
+```
 
-struct HttpResponse {
-    public status: i32
-    public headers: Map<string, string>
-    public body: string
+<!-- test: skip -->
+```rask
+extend UdpSocket {
+    func send_to(self, data: []u8, addr: string) -> usize or IoError
+    func recv_from(self, buf: []u8) -> (usize, string) or IoError
+    func connect(self, addr: string) -> () or IoError
+    func send(self, data: []u8) -> usize or IoError     // to connected peer
+    func recv(self, buf: []u8) -> usize or IoError      // from connected peer
+    func local_addr(self) -> string
+    func close(take self)
 }
+```
+
+<!-- test: skip -->
+```rask
+import net
+
+const socket = try net.udp_bind("0.0.0.0:9000")
+ensure socket.close()
+
+let buf = [0u8; 1024]
+const (n, sender) = try socket.recv_from(buf)
+try socket.send_to(buf[0..n], sender)
+```
+
+## DNS
+
+| Rule | Description |
+|------|-------------|
+| **D1: Resolve** | `net.resolve(host)` returns IP address strings for a hostname |
+| **D2: No caching** | The stdlib does not cache DNS results. OS resolver caching applies |
+
+<!-- test: skip -->
+```rask
+net.resolve(host: string) -> Vec<string> or IoError
+```
+
+<!-- test: skip -->
+```rask
+const addrs = try net.resolve("example.com")
+// ["93.184.216.34", "2606:2800:220:1:248:1893:25c8:1946"]
 ```
 
 ## Resource Safety
@@ -114,8 +146,8 @@ struct HttpResponse {
 ```rask
 func handle(conn: TcpConnection) -> () or IoError {
     ensure conn.close()
-    const req = try conn.read_http_request()
-    try conn.write_http_response(response)
+    const data = try conn.read_all()
+    try conn.write_all(process(data))
 }
 ```
 
@@ -150,6 +182,10 @@ WHY: Another process is already listening on this address.
 | Invalid address string | `IoError.Other` | N4, N5 |
 | Remote closes during read | `IoError.ConnectionReset` or empty result | N2 |
 | Accept on closed listener | `IoError.Other("listener closed")` | N1 |
+| UDP `send`/`recv` without `connect` | `IoError.Other("not connected")` | U3 |
+| UDP packet too large for buffer | Truncated, remaining bytes lost | U1 |
+| DNS resolution with no results | Empty `Vec` | D1 |
+| DNS resolution for IP literal | Returns the IP itself | D1 |
 
 ---
 
@@ -159,19 +195,20 @@ WHY: Another process is already listening on this address.
 
 **N3 (string addresses):** No `SocketAddr` or `IpAddr` types. Simpler API, and parsing can be added later without breaking changes.
 
-**N6 (HTTP on TcpConnection):** The common case is "accept, read request, write response, close." A separate `http` module adds ceremony without benefit for simple servers. HTTP/2 or websockets would be a different library.
+**U1 (UDP as linear resource):** Same reasoning as TCP — sockets are OS resources that must be explicitly closed. UDP's connectionless nature doesn't change the resource obligation.
+
+**D1 (string results):** DNS results are IP address strings, consistent with N3's string address philosophy. Parsing into structured types can be added later.
 
 ### Deferred
 
-- UDP sockets
 - Multicast
 - Raw sockets
 - `SocketAddr` / `IpAddr` types
 - TLS / HTTPS
-- HTTP/2, websockets
+- Unix domain sockets
 
 ### See Also
 
+- `std.http` — HTTP/1.1 client and server (application layer)
 - `std.io` — `IoError`, `Reader`/`Writer` traits
-- `std.json` — JSON encoding for HTTP request/response bodies
 - `mem.resource-types` — `@resource` and `ensure` semantics
