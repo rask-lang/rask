@@ -138,10 +138,10 @@ Future stdlib additions must follow these patterns; `rask lint` enforces them. S
 
 ## Error Handling
 
-Propagate with `try`, handle with `match`. There's no third style.
+Propagate with `try`, handle with `match`, add context with `try...else`.
 
 ```rask
-// Propagation — pass the error up to the caller
+// Propagation — pass the error up as-is
 func load_config(path: string) -> Config or IoError {
     const text = try fs.read_file(path)
     const config = try Config.from_str(text)
@@ -161,10 +161,36 @@ func get_user(id: i64) -> User or NotFound {
 }
 ```
 
+### Error context
+
+Use `try...else` to add context when propagating errors. Two tiers depending on who consumes the error:
+
+```rask
+// Application code — human-readable context chains
+func load_config(path: string) -> Config or ContextError {
+    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    return try Config.parse(text) else |e| context("parsing {path}", e)
+}
+// Output: "reading /app.toml: file not found"
+
+// Library code — typed domain errors (callers can match)
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+}
+
+// Block form — when you need side effects before propagating
+const text = try fs.read_file(path) else |e| {
+    log("failed to read {path}: {e.message()}")
+    context("reading {path}", e)
+}
+```
+
 **Anti-patterns:**
 - `x!` in production code — crashes on error. Use `try` or `match`.
 - Long `if result is Err(e)` chains — use `try` for propagation.
 - Ignoring errors silently — always handle or propagate.
+- Using `context()` in library code where callers need to match on error types — use typed domain errors with `try...else` instead.
 
 See [types/error-types.md](types/error-types.md).
 
@@ -551,7 +577,7 @@ why: `own` transfers ownership — the caller can no longer access the value.
 |-----------|------------------|
 | Construct | Struct literal, `from_*`, `.new()`, `.with_*` |
 | Convert | `as_*` (free), `to_*` (allocates), `into_*` (consumes) |
-| Handle errors | `try` (propagate), `match` (handle) |
+| Handle errors | `try` (propagate), `try...else` (propagate with context), `match` (handle) |
 | Clean up resources | `ensure` |
 | Handle options | `if x is Some`, `??`, guard, `match` |
 | Access collections | `get` (safe), `[i]` (panic), `for` (iterate) |

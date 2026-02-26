@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // File Copy Utility
 // Demonstrates: CLI arg parsing, structs, enums, match, error propagation,
-//               closures (map_err), string interpolation, file I/O
+//               try...else error wrapping, string interpolation, file I/O
 
 import fs
 import cli
@@ -92,7 +92,7 @@ func copy_file(opts: CopyOptions) -> i64 or CopyError {
 
     // Check not same file (using canonical paths)
     const src_canonical = try fs.canonicalize(opts.source.clone())
-        .map_err(|e| CopyError.ReadError(e))
+        else |e| CopyError.ReadError(e)
     const dst_canonical = fs.canonicalize(opts.dest.clone()).ok()
 
     if dst_canonical is Some(dst) {
@@ -103,7 +103,7 @@ func copy_file(opts: CopyOptions) -> i64 or CopyError {
 
     // Copy the file
     const bytes = try fs.copy(opts.source.clone(), opts.dest.clone())
-        .map_err(|e| CopyError.WriteError(e))
+        else |e| CopyError.WriteError(e)
 
     return Ok(bytes)
 }

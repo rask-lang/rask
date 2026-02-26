@@ -264,6 +264,137 @@ match result {
 }
 ```
 
+## Error Context
+
+Real-world error handling needs context. "IoError: file not found" is useless in production — you need "loading config from /app.toml: file not found". `map_err` handles this but is verbose enough that people skip it.
+
+| Rule | Description |
+|------|-------------|
+| **ER15: try-else** | `try expr else \|e\| error_expr` extracts `Ok` or transforms the error and returns `Err(error_expr)` from the current function |
+| **ER16: ContextError type** | `ContextError` is a stdlib type with `context: string` and `source: string` fields, satisfying `Error` |
+| **ER17: context() function** | `context(msg, err)` creates a `ContextError` from any `Error`, stringifying the source |
+| **ER18: Linear incompatibility** | `context()` is a compile error when the error type contains linear resources — must handle resources explicitly |
+
+### try-else
+
+`try...else` extends `try` with an error transformation clause. Follows the same `else |e|` pattern established by `ensure` ([ctrl.ensure/ER2](../control/ensure.md)).
+
+<!-- test: skip -->
+```rask
+// ensure's else (existing) — same pattern
+ensure file.close() else |e| log(e)
+
+// try's else (new) — transforms error, then propagates
+const text = try fs.read_file(path) else |e| context("reading {path}", e)
+```
+
+Desugars to:
+
+<!-- test: skip -->
+```rask
+const text = match fs.read_file(path) {
+    Ok(v) => v,
+    Err(e) => return Err(context("reading {path}", e)),
+}
+```
+
+Both expression and block forms work, matching Rask's block semantics (last expression = value):
+
+<!-- test: skip -->
+```rask
+// Expression form
+const text = try fs.read_file(path) else |e| context("reading {path}", e)
+
+// Block form — when you need multiple statements
+const text = try fs.read_file(path) else |e| {
+    log("failed to read {path}: {e.message()}")
+    context("reading {path}", e)
+}
+```
+
+`try...else` is general-purpose — works for string context AND typed error wrapping:
+
+<!-- test: skip -->
+```rask
+// Application code — string context chains
+func load_config(path: string) -> Config or ContextError {
+    const text = try fs.read_file(path) else |e| context("reading {path}", e)
+    return try Config.parse(text) else |e| context("parsing {path}", e)
+}
+
+// Library code — typed domain errors
+func load_config(path: string) -> Config or ConfigError {
+    const text = try fs.read_file(path) else |e| ConfigError.Io { path, source: e }
+    return try Config.parse(text) else |e| ConfigError.Parse { path, source: e }
+}
+```
+
+`try`, `map_err`, and `try...else` are complementary:
+- `map_err` — transforms the error type without propagating
+- `try` — propagates without transforming
+- `try...else` — transforms AND propagates in one step
+
+### ContextError and context()
+
+`ContextError` is a stdlib type for application-level code that doesn't need typed errors. The `context()` free function wraps any error into a `ContextError`, stringifying the source.
+
+<!-- test: parse -->
+```rask
+struct ContextError {
+    context: string
+    source: string
+}
+
+extend ContextError {
+    func message(self) -> string {
+        return "{self.context}: {self.source}"
+    }
+}
+
+func context<E: Error>(msg: string, err: E) -> ContextError {
+    return ContextError { context: msg, source: err.message() }
+}
+```
+
+`ContextError` satisfies `Error` (has `message()`), so context chains naturally:
+
+<!-- test: skip -->
+```rask
+func main() -> () or ContextError {
+    const config = try load_config("app.toml") else |e| context("starting app", e)
+    // Chain: "starting app: reading config: file not found: /app.toml"
+}
+```
+
+### Linear resource constraint
+
+`context()` stringifies errors via `message()`. If the error contains a linear resource, the original error would be discarded without consuming the resource — compile error. Handle resources explicitly in the `else` block instead:
+
+<!-- test: skip -->
+```rask
+// Compile error: context() cannot stringify errors with linear resources
+const data = try file.read_all() else |e| context("reading", e)
+
+// OK: explicitly handle the resource
+const data = try file.read_all() else |e| {
+    match e {
+        FileError.ReadFailed(file, reason) => {
+            file.close()
+            context("reading", reason)
+        }
+    }
+}
+```
+
+### When to use which
+
+| Consumer | Tool | Error type |
+|----------|------|-----------|
+| Machine (match, retry, status codes) | `try...else \|e\| DomainError.Variant { ... }` | Typed enums |
+| Human (logs, stderr, CLI) | `try...else \|e\| context("msg", e)` | `ContextError` |
+
+The boundary is who consumes the error, not lib vs app.
+
 ## Operator Family
 
 | Syntax | Option | Result |
@@ -288,6 +419,8 @@ Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation �
 | Wildcard on linear error payload | ER14 | Compile error — must consume |
 | Nested `try` in closures | ER4 | Propagates to closure's return, not enclosing function |
 | `try` binding with method chain | ER5 | Binds to full expression; use parens to chain after |
+| `try...else` error type mismatch | ER15 | Compile error — else expression must match function's error return type |
+| `context()` on linear error type | ER18 | Compile error — must handle linear resources explicitly |
 
 ---
 
@@ -304,6 +437,12 @@ Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation �
 **Operator split (`try` vs `?`):** `try` is for propagation (both Result and Option). `?` is reserved for Option sugar only — type suffix, chaining, defaults, smart unwrap. This avoids Rust's overloading where `?` means different things in different contexts.
 
 **`??` not on Result:** Silently discarding errors masks real problems. `.on_err(default)` makes the intent explicit.
+
+**ER15 (try-else):** `try + map_err` is the most common error handling pattern — nearly every `try` in real code transforms the error. Fusing them into `try...else` reduces ceremony. The `else |e|` pattern already exists in `ensure` (ctrl.ensure/ER2), so no new concepts needed.
+
+**ER16/ER17 (ContextError):** Typed domain errors (`map_err` with custom enums) are right for code that callers match on. But application-level code — `main()`, CLI handlers, request handlers — just needs human-readable chains. `ContextError` fills that gap without forcing every app to define boilerplate error enums.
+
+**ER18 (linear incompatibility):** `context()` stringifies errors, which borrows via `message()` but doesn't consume linear resources in the error payload. Silently dropping a `@resource` would violate linear consumption guarantees. The `else` block form lets you explicitly consume the resource before wrapping.
 
 ### Patterns & Guidance
 
