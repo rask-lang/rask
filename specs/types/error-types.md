@@ -1,6 +1,6 @@
 <!-- id: type.errors -->
 <!-- status: decided -->
-<!-- summary: Errors are values with try propagation, union composition, and auto-Ok wrapping -->
+<!-- summary: Errors are values with try propagation, union composition, auto-Ok wrapping, origin tracking, and any Error auto-boxing -->
 <!-- depends: types/enums.md, types/optionals.md -->
 <!-- implemented-by: compiler/crates/rask-types/, compiler/crates/rask-interp/ -->
 
@@ -134,23 +134,44 @@ func main() -> () or Error {
 | Rule | Description |
 |------|-------------|
 | **ER9: Auto-widen** | `try` auto-widens when return type is a union — succeeds if expression error type ⊆ return error union |
+| **ER10: Auto-box to `any Trait`** | `try` auto-boxes when return error type is `any Error` (or any `any Trait`) — succeeds if expression error type satisfies the trait |
 
 <!-- test: skip -->
 ```rask
+// Union widening — library code with precise types
 func load() -> Config or (IoError | ParseError) {
     const content = try read_file(path)   // IoError widens to union
     const config = try parse(content)     // ParseError widens to union
     config
 }
+
+// Auto-boxing — application code with type-erased errors
+func start_app() -> App or any Error {
+    const config = try read_config(path)     // IoError | ParseError → boxed to any Error
+    const db = try connect(config.db_url)    // DbError → boxed to any Error
+    const schema = try validate(db)          // ValidationError → boxed to any Error
+    App.new(config, db, schema)
+}
 ```
 
-See [Union Types](union-types.md) for union type semantics.
+The pattern: libraries use union types (precise, matchable). Applications use `any Error` (ergonomic, sufficient for logging/reporting). Downcast with `is` for recovery:
+
+<!-- test: skip -->
+```rask
+match start_app() {
+    Ok(app) => app.run(),
+    Err(e) if e is IoError => retry(),
+    Err(e) => log("fatal: {} at {}", e.message(), e.origin),
+}
+```
+
+See [Union Types](union-types.md) for union type semantics. See [Traits](traits.md) for `any Trait` semantics.
 
 ## Custom Error Types
 
 | Rule | Description |
 |------|-------------|
-| **ER10: Enum errors** | Errors are defined as enums with a `message()` method |
+| **ER11: Enum errors** | Errors are defined as enums with a `message()` method |
 
 <!-- test: parse -->
 ```rask
@@ -193,9 +214,9 @@ extend IoError {
 
 | Rule | Description |
 |------|-------------|
-| **ER11: Same type** | Same error type propagates directly |
-| **ER12: Union** | Different error types compose via union (`A \| B`) |
-| **ER13: Union compose** | Union return types accept any subset union via `try` |
+| **ER12: Same type** | Same error type propagates directly |
+| **ER13: Union** | Different error types compose via union (`A \| B`) |
+| **ER14: Union compose** | Union return types accept any subset union via `try` |
 
 ### Same error type — direct propagation
 
@@ -247,7 +268,7 @@ match load() {
 
 | Rule | Description |
 |------|-------------|
-| **ER14: Linear payloads** | Errors can contain linear resources; wildcard on linear payloads is a compile error |
+| **ER19: Linear payloads** | Errors can contain linear resources; wildcard on linear payloads is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -263,6 +284,68 @@ match result {
     }
 }
 ```
+
+## Error Origin Tracking
+
+| Rule | Description |
+|------|-------------|
+| **ER15: Origin capture** | `try` records `(file, line)` on the error at the first propagation site. Available in both debug and release builds |
+| **ER16: Propagation trace** | In debug builds, each subsequent `try` appends its `(file, line)` to the error's trace. Stripped in release |
+| **ER17: Origin access** | All errors have `.origin` (always available) and `.trace()` (debug builds; empty in release) |
+
+<!-- test: skip -->
+```rask
+func load_config(path: string) -> Config or (IoError | ParseError) {
+    const content = try read_file(path)    // origin set: "config.rk:2"
+    const config = try parse(content)      // origin set: "config.rk:3"
+    config
+}
+
+func start() -> () or any Error {
+    const config = try load_config(path)   // trace appended: "main.rk:2" (debug only)
+    try run(config)
+}
+
+// In the error handler:
+match start() {
+    Err(e) => {
+        log("{}: {}", e.origin, e.message())
+        // "config.rk:2: file not found: /etc/app.conf"
+
+        // Debug builds only — full propagation chain
+        for loc in e.trace() {
+            log("  at {}", loc)
+        }
+        // "  at config.rk:2"
+        // "  at main.rk:2"
+    }
+    Ok(_) => {}
+}
+```
+
+Cost: `origin` is ~16 bytes per error (file pointer + line number) — negligible on the exceptional path. The propagation trace allocates in debug builds only.
+
+## Context Wrapping
+
+| Rule | Description |
+|------|-------------|
+| **ER18: context method** | `.context(msg)` wraps an error with a human-readable message, preserving the original error and its origin |
+
+<!-- test: skip -->
+```rask
+func load_app() -> App or any Error {
+    const config = try read_config(path)
+        .context("loading app config")          // wraps with context string
+    const db = try connect(config.db_url)
+        .context("connecting to database")
+    App.new(config, db)
+}
+
+// Error output: "loading app config: file not found: /etc/app.conf"
+//         at: config.rk:2
+```
+
+`.context()` is explicit and opt-in — use it at boundaries where semantic meaning matters. `origin` is automatic and free. Together they cover both "where did this fail" and "what was I trying to do."
 
 ## Operator Family
 
@@ -285,7 +368,10 @@ Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation �
 | Reach end of `() or E` function | ER8 | Implicit `Ok(())` |
 | `try` on error type not in return union | ER9 | Compile error — type not subset |
 | `try` on `Option` in `Result` function | ER6 | `None` maps to `Err` (types must align) |
-| Wildcard on linear error payload | ER14 | Compile error — must consume |
+| Wildcard on linear error payload | ER19 | Compile error — must consume |
+| `try` when return type is `any Error` | ER10 | Auto-box concrete error to `any Error` |
+| `.origin` in release build | ER15 | Always available (~16 bytes per error) |
+| `.trace()` in release build | ER16 | Returns empty — trace only in debug |
 | Nested `try` in closures | ER4 | Propagates to closure's return, not enclosing function |
 | `try` binding with method chain | ER5 | Binds to full expression; use parens to chain after |
 
@@ -300,6 +386,10 @@ Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation �
 **ER7/ER8 (auto-Ok):** If you wanted an error, you'd use `return Err(...)` or `try`. Reaching the end means success. Eliminates noisy `Ok(())` at function ends.
 
 **ER9 (auto-widen):** Without auto-widening, every `try` on a narrower error type would need an explicit conversion. The subset check keeps it type-safe without boilerplate.
+
+**ER10 (auto-box):** Libraries should use precise union error types — callers can match on them. But application code that calls 5 libraries shouldn't need `-> T or (IoError | ParseError | DbError | ValidationError | AuthError)` on every function. `any Error` is the escape hatch: type-erased, sufficient for logging/reporting, with `is` downcast for recovery. This mirrors Rust's thiserror (libraries) + anyhow (applications) split, but built into the language.
+
+**ER15–ER17 (error origin):** When an `IoError` propagates through 10 functions, "file not found" tells you nothing. `origin` captures where the error first surfaced — always available, ~16 bytes, negligible on the exceptional path. The full propagation trace is debug-only because it allocates per hop. `.context()` adds semantic meaning at boundaries where "what was I trying to do" matters more than "what file:line."
 
 **Operator split (`try` vs `?`):** `try` is for propagation (both Result and Option). `?` is reserved for Option sugar only — type suffix, chaining, defaults, smart unwrap. This avoids Rust's overloading where `?` means different things in different contexts.
 
@@ -390,9 +480,6 @@ panic("invalid state")
 IDE shows `→ returns Err` as ghost text after `try` for visibility.
 
 ### Remaining Issues
-
-#### Low Priority
-1. **Stack traces** — Debug builds could capture (not specified)
 
 #### Dependencies
 - **Union types** — See [Union Types](union-types.md) (TODO: create spec)
