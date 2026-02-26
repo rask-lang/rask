@@ -783,6 +783,23 @@ impl Parser {
             self.skip_newlines();
         }
 
+        // Validate: optional params (with defaults) must come after all required params
+        let mut saw_default = false;
+        for param in &params {
+            if param.name == "self" { continue; }
+            if param.default.is_some() {
+                saw_default = true;
+            } else if saw_default {
+                return Err(ParseError::expected(
+                    "default value",
+                    &TokenKind::Eq,
+                    param.name_span,
+                ).with_hint(
+                    "Required parameters must come before optional ones. Add a default value with `= expr`"
+                ));
+            }
+        }
+
         Ok(params)
     }
 
@@ -3070,13 +3087,23 @@ impl Parser {
         if self.check(&TokenKind::RParen) { return Ok(args); }
 
         loop {
-            // Skip named argument labels (name: expr)
-            if let TokenKind::Ident(_) = self.current_kind().clone() {
+            // Capture named argument labels (name: expr)
+            let arg_name = if let TokenKind::Ident(_) = self.current_kind().clone() {
                 if self.peek(1) == &TokenKind::Colon {
+                    let name = if let TokenKind::Ident(n) = self.current_kind().clone() {
+                        n.clone()
+                    } else {
+                        unreachable!()
+                    };
                     self.advance();
                     self.advance();
+                    Some(name)
+                } else {
+                    None
                 }
-            }
+            } else {
+                None
+            };
 
             // Capture call-site mode keywords
             let mode = if self.check(&TokenKind::MutateKw) {
@@ -3090,7 +3117,7 @@ impl Parser {
             };
 
             let expr = self.parse_expr()?;
-            args.push(CallArg { mode, expr });
+            args.push(CallArg { name: arg_name, mode, expr });
             self.skip_newlines();
             if !self.match_token(&TokenKind::Comma) { break; }
             self.skip_newlines();

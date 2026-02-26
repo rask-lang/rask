@@ -1,7 +1,7 @@
 <!-- id: std.reflect -->
 <!-- status: decided -->
 <!-- summary: Compile-time type introspection via stdlib module -->
-<!-- depends: control/comptime.md -->
+<!-- depends: control/comptime.md, stdlib/encoding.md -->
 
 # Reflect Module
 
@@ -34,12 +34,29 @@ const FIELD_COUNT = comptime reflect.fields(MyStruct).len
 | `is_copy<T>()` | `-> bool` | Whether T is implicitly copyable (≤16 bytes, all fields Copy) |
 | `is_resource<T>()` | `-> bool` | Whether T is a linear resource type |
 
+### Type Category
+
+| Function | Signature | Description |
+|----------|-----------|-------------|
+| `is_struct<T>()` | `-> bool` | Whether T is a struct |
+| `is_enum<T>()` | `-> bool` | Whether T is an enum |
+| `is_optional<T>()` | `-> bool` | Whether T is `U?` for some U |
+| `is_vec<T>()` | `-> bool` | Whether T is `Vec<U>` for some U |
+| `is_map<T>()` | `-> bool` | Whether T is `Map<K, V>` for some K, V |
+| `is_integer<T>()` | `-> bool` | Whether T is an integer type (`i8`–`i64`, `u8`–`u64`, `usize`) |
+| `is_float<T>()` | `-> bool` | Whether T is `f32` or `f64` |
+
+These enable comptime type dispatch without string-comparing type names. Primary use case: format libraries (`std.encoding`).
+
 <!-- test: skip -->
 ```rask
 comptime {
     const size = reflect.size_of<Point>()       // 8
     const align = reflect.align_of<Point>()     // 4
     const copy = reflect.is_copy<Point>()       // true (two i32 = 8 bytes)
+
+    const yes = reflect.is_struct<Point>()      // true
+    const no = reflect.is_enum<Point>()         // false
 }
 ```
 
@@ -58,8 +75,13 @@ struct FieldInfo {
     offset: usize
     size: usize
     is_public: bool
+    serial_name: string       // @rename value, or same as name
+    is_skipped: bool          // @skip present
+    has_default: bool         // @default present
 }
 ```
+
+`serial_name` equals `name` unless the field has `@rename("...")`. See `std.encoding` for field annotation semantics.
 
 ## Methods
 
@@ -99,6 +121,8 @@ struct VariantInfo {
     name: string
     has_fields: bool
     field_count: usize
+    fields: []FieldInfo       // payload fields (empty for unit variants)
+    serial_name: string       // @rename value, or same as name
 }
 ```
 
@@ -148,26 +172,18 @@ WHY: Reflection operates on imported types only. Type discovery requires whole-p
 
 ### Patterns & Guidance
 
-**Derive-style code generation** — the primary use case:
+**Comptime field iteration** — the primary use case. Uses `comptime for` + field access (`std.encoding/E1`–`E3`):
 
-<!-- test: parse -->
+<!-- test: skip -->
 ```rask
 import std.reflect
 
-comptime func gen_display<T>() -> string {
-    const code = string.new()
-    code.push_str("extend {reflect.name_of<T>()} {\n")
-    code.push_str("    func display(self) -> string {\n")
-    code.push_str("        const parts = Vec<string>.new()\n")
-
-    for field in reflect.fields<T>() {
-        code.push_str("        parts.push(\"{field.name}: \" + self.{field.name}.to_string())\n")
+func debug_print<T>(value: T) {
+    print("{reflect.name_of<T>()}(")
+    comptime for field in reflect.fields<T>() {
+        print("  {field.name}: {value.(field.name)}")
     }
-
-    code.push_str("        return \"{reflect.name_of<T>()}(\" + parts.join(\", \") + \")\"\n")
-    code.push_str("    }\n")
-    code.push_str("}\n")
-    return code.freeze()
+    print(")")
 }
 ```
 
@@ -175,25 +191,27 @@ comptime func gen_display<T>() -> string {
 
 <!-- test: skip -->
 ```rask
-comptime func assert_serializable<T>() {
+comptime func assert_all_public<T>() {
     for field in reflect.fields<T>() {
         @comptime_assert(
-            reflect.is_copy<T>() || reflect.has_method<T>("to_string"),
-            "Field '{field.name}' of {reflect.name_of<T>()} is not serializable"
+            field.is_public,
+            "Field '{field.name}' of {reflect.name_of<T>()} must be public"
         )
     }
 }
 ```
 
-**Conditional logic based on type properties:**
+**Conditional logic based on type category:**
 
 <!-- test: skip -->
 ```rask
-func serialize<T>(value: T) -> []u8 {
-    comptime if reflect.is_copy<T>() && reflect.size_of<T>() <= 8 {
-        return unsafe { mem_as_bytes(value) }
-    } else {
-        return serialize_fields(value)
+func encode_value<T: Encode>(value: T, w: mutate Writer) -> () or Error {
+    comptime if reflect.is_struct<T>() {
+        comptime for field in reflect.fields<T>() {
+            try encode_value(value.(field.name), mutate w)
+        }
+    } else if reflect.is_optional<T>() {
+        if value is Some(v) { try encode_value(v, mutate w) }
     }
 }
 ```
@@ -205,5 +223,6 @@ Ghost annotations show reflected values on hover (e.g., hovering `reflect.fields
 ### See Also
 
 - `ctrl.comptime` — Compile-time execution context
+- `std.encoding` — Comptime field iteration and serialization (`std.encoding/E1`–`E3`)
 - `type.traits` — Trait definitions and structural typing
 - `type.structs` — Struct field layout and visibility

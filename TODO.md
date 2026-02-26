@@ -44,6 +44,9 @@
 - [x] **Tuple spec** — Formalized existing tuple support. See [tuples.md](specs/types/tuples.md)
 - [x] **Destructuring spec** — Formalized existing destructuring. See [control-flow.md](specs/control/control-flow.md)
 - [ ] Macros / `format!`
+## Design — Decided
+
+- [x] **Serialization / encoding** — `comptime for` + field access, auto-derived `Encode`/`Decode` marker traits, field annotations (`@rename`, `@skip`, `@default`). See [encoding.md](specs/stdlib/encoding.md)
 
 ## Design Questions
 

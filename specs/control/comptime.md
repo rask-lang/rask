@@ -37,6 +37,36 @@ func fixed_array<comptime N: usize>() -> [u8; N] {
 const buf = repeat<16>(0xff)  // OK: 16 is comptime-known
 ```
 
+## Comptime For and Field Access
+
+| Rule | Form | Syntax | Meaning |
+|------|------|--------|---------|
+| **CT48: Comptime for** | Loop | `comptime for x in comptime_iterable { body }` | Loop fully unrolled at compile time. Each iteration generates separate monomorphized code |
+| **CT49: Field access** | Expression | `value.(comptime_expr)` | Access struct field by comptime-known string. Resolves at compile time to direct field access |
+
+<!-- test: skip -->
+```rask
+import std.reflect
+
+func print_fields<T>(value: T) {
+    comptime for field in reflect.fields<T>() {
+        // Each iteration: field.name is a different comptime string
+        // value.(field.name) resolves to value.x, value.y, etc.
+        print("{field.name} = {value.(field.name)}")
+    }
+}
+```
+
+| Rule | Description |
+|------|-------------|
+| **CT50: Unrolling** | `comptime for` fully unrolls at monomorphization time. Not a runtime loop — each iteration may have different types via comptime field access |
+| **CT51: Comptime iterable** | The iterable must be comptime-known: `reflect.fields<T>()`, `reflect.variants<T>()`, or any comptime array |
+| **CT52: No branch quota** | `comptime for` unrolling doesn't count against the backwards branch quota (CT35). The quota applies to comptime *interpreter* execution, not monomorphization-time unrolling |
+| **CT53: Field name must be comptime** | The expression in `value.(expr)` must be comptime-known. Runtime strings are a compile error |
+| **CT54: Field must exist** | Compile error if the comptime string doesn't match any field on the value's type |
+
+Primary use case: serialization format libraries. See `std.encoding` for the full pattern.
+
 ## Comptime Function Restrictions
 
 | Rule | Description |
@@ -163,6 +193,8 @@ const BAD = comptime {
 | **CT24: Arrays** | Arrays | ✅ Full: fixed-size arrays, indexing, iteration |
 | **CT25: Enums** | Enums | ✅ Full: variant construction, pattern matching |
 | **CT26: Collections** | Vec, Map, string | ✅ With freeze: must call `.freeze()` to escape |
+| **CT48: Comptime for** | Loop unrolling | ✅ Full: unrolls over comptime arrays, each iteration separate code |
+| **CT49: Field access** | `value.(name)` | ✅ Full: resolves to direct field access at compile time |
 
 ## Restricted Features
 
@@ -284,6 +316,10 @@ const B = comptime get_value(5)  // Compile error: "Index out of bounds: 5 >= 3"
 | Recursive comptime (within limit) | CT35 | Works; memoized to avoid recomputation |
 | Comptime type mismatch | - | Regular type error (type checking still applies) |
 | Unfrozen collection escape | CT19 | Compile error: "cannot return unfrozen Vec from comptime" |
+| Runtime string in field access | CT53 | Compile error: "runtime string in comptime field access" |
+| Non-existent field in field access | CT54 | Compile error: "no field X on type Y" |
+| Comptime for over runtime iterable | CT51 | Compile error: "comptime for requires comptime-known iterable" |
+| Nested comptime for | CT48 | Works — each level unrolls independently |
 
 ## Error Messages
 
@@ -634,5 +670,7 @@ IDEs should provide:
 ### See Also
 
 - [Generics](../types/generics.md) — Generic parameters and specialization (`type.generics`)
+- [Encoding](../stdlib/encoding.md) — Serialization via comptime for + field access (`std.encoding`)
+- [Reflect](../stdlib/reflect.md) — Comptime type introspection (`std.reflect`)
 - [Build System](../structure/build.md) — Build scripts and package configuration (`struct.build`)
 - [Error Types](../types/error-types.md) — Result and error handling (`type.errors`)
