@@ -865,6 +865,21 @@ test "addition" {
 | `@binary` | Struct | Wire format with bit-level fields |
 | `@unique` | Struct | Disable implicit copy |
 | `@resource` | Struct | Must consume, cannot copy or drop |
+| `@no_encode` | Struct | Prevent auto-derive of `Encode` (`std.encoding/E16`) |
+| `@no_decode` | Struct | Prevent auto-derive of `Decode` (`std.encoding/E16`) |
+| `@tag("field")` | Enum | Internally tagged serialization (`std.encoding/E24`) |
+| `@rename("name")` | Field, Variant | Override serialized name (`std.encoding/E18`) |
+| `@skip` | Field | Exclude from serialization (`std.encoding/E19`) |
+| `@default(expr)` | Field | Default value when field missing during decode (`std.encoding/E20`) |
+
+### Comptime Field Access
+
+Access a struct field by comptime-known string. Resolves at compile time to a direct field access (`ctrl.comptime/CT49`):
+
+```rask
+value.(field.name)              // inside comptime for over reflect.fields<T>()
+value.("x")                     // string literal
+```
 
 ---
 
