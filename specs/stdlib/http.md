@@ -266,7 +266,7 @@ func handle_users(req: Request) -> Response {
 <!-- test: skip -->
 ```rask
 enum HttpError {
-    Connection(string)
+    ConnectionFailed(string)
     Timeout
     InvalidUrl(string)
     InvalidResponse(string)
@@ -292,7 +292,7 @@ FIX: Add `ensure responder.respond(Response.internal_error("unhandled"))` after 
 ERROR [std.http/C1]: request failed
    |
 3  |  const resp = try http.get("http://down.example.com")
-   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ HttpError.Connection("connection refused")
+   |                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ HttpError.ConnectionFailed("connection refused")
 
 WHY: Could not establish TCP connection to the remote host.
 ```
