@@ -232,6 +232,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
 | Rust interop | compile_rust() in build scripts, C ABI, cbindgen | [build.md](specs/structure/build.md) |
+| Encoding | `comptime for` + field access, auto-derived Encode/Decode, field annotations | [encoding.md](specs/stdlib/encoding.md) |
 
 ### Open
 
