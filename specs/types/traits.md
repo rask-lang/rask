@@ -36,10 +36,9 @@ The vtable only contains slots for compatible methods. Incompatible methods have
 
 | Rule | Description |
 |------|-------------|
-| **TR5: Implicit at assignment** | `let w: any Widget = button` — the `any` type annotation signals the conversion |
-| **TR6: Explicit cast** | `const w = button as any Widget` — converts with `as` |
+| **TR5: Implicit when target is `any`** | Concrete values implicitly convert when the target type is `any Trait` — assignment, function arguments, collection elements, struct fields |
+| **TR6: Explicit cast** | `const w = button as any Widget` — converts with `as` when target type isn't known |
 | **TR7: Collection type** | `[]any Widget`, `Map<string, any Handler>` — heterogeneous collections |
-| **TR8: Explicit at call sites** | Passing a concrete value to a function taking `any Trait` requires `as any Trait` |
 
 <!-- test: parse -->
 ```rask
@@ -52,17 +51,24 @@ func render_all(widgets: []any Widget) {
 }
 ```
 
-TR8 means concrete values need explicit conversion at call sites:
+The `any` keyword in the target type is the cost signal. Conversion is implicit when the target type is known to be `any Trait`:
 
 <!-- test: skip -->
 ```rask
 const button = Button { label: "OK" }
 
-render(button as any Widget)   // OK: explicit conversion
-render(button)                 // ERROR: implicit coercion at call site
+// Implicit — target type is any Widget
+const w: any Widget = button          // TR5: type annotation
+render(button)                        // TR5: parameter type
+const widgets: []any Widget = [       // TR5: collection element type
+    button,
+    slider,
+    label,
+]
+router.add("/home", handler)          // TR5: struct field / parameter type
 
-const w: any Widget = button   // OK: type annotation signals it (TR5)
-render(w)                      // OK: w is already any Widget
+// Explicit — no target type context, or for clarity
+const w = button as any Widget        // TR6: no type annotation to infer from
 ```
 
 ## Boxing
@@ -134,16 +140,17 @@ FIX: Use a generic function for type-preserving operations:
   }
 ```
 
-**Implicit coercion at call site [TR8]:**
+**No target type for `as any` [TR6]:**
 ```
-ERROR [type.traits/TR8]: can't implicitly convert `Button` to `any Widget`
+ERROR [type.traits/TR6]: can't infer trait object type
    |
-5  |  render(button)
-   |         ^^^^^^ expected `any Widget`, found `Button`
+5  |  const w = button
+   |        ^ type `Button` — did you mean `button as any Widget`?
 
-FIX: Use explicit conversion:
+FIX: Add a type annotation or use explicit conversion:
 
-  render(button as any Widget)
+  const w: any Widget = button    // Implicit via type annotation
+  const w = button as any Widget  // Explicit cast
 ```
 
 ## Examples
@@ -204,7 +211,7 @@ extend Container {
 
 **TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. A trait with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
 
-**TR8 (explicit at call sites):** `render(button)` where `render` takes `any Widget` hides a heap allocation behind what looks like a regular function call. I'd rather make you write `render(button as any Widget)` — the `any` keyword should always appear in the code wherever a conversion happens. Assignment conversion (TR5) is implicit because the `any Widget` type annotation is already visible.
+**TR5 (implicit when target is `any`):** Originally I required explicit `as any Trait` at call sites (the old TR8). The rationale was cost visibility — `render(button)` hides a heap allocation. But in practice, the `any` keyword is already visible in the function signature, the collection type, or the struct field type. Requiring `as any Widget` on every handler registration, every collection element, every callback — it's ceremony that doesn't help readability. The `any` keyword in the *type system* is the cost signal, not the conversion at each use site. If you see `[]any Widget`, you know there's allocation. You don't need `[button as any Widget, slider as any Widget]` to remind you.
 
 **TR9 (heap allocation):** I chose owned heap allocation over alternatives. The `any` keyword is the cost signal — you see it in the type, you know there's indirection and allocation. This is a deliberate tradeoff: ergonomic for the use cases where you need it (handlers, plugins, UI), explicit enough that you won't accidentally use it in hot paths.
 
@@ -318,6 +325,31 @@ extend App {
     }
 }
 ```
+
+### Sealed Traits (future consideration)
+
+Sealed traits would restrict implementations to a known set, enabling exhaustive matching on `any Trait`:
+
+<!-- test: skip -->
+```rask
+// Hypothetical syntax
+@sealed
+trait Widget {
+    draw(self, canvas: Canvas)
+}
+
+// Only implementations in this module allowed.
+// External crates can use any Widget but can't add implementations.
+
+// Exhaustive matching would be possible:
+match widget {
+    w if w is Button => ...,
+    w if w is Slider => ...,
+    // Compiler knows this is exhaustive
+}
+```
+
+Without sealed traits, `any Trait` downcasting can miss implementations added by external code. This matters for UI widget trees, event systems, and protocol handlers where exhaustive handling is important. Not yet decided — needs design for: syntax, cross-module sealing rules, interaction with `any Trait` downcasting.
 
 ### Integration Notes
 
