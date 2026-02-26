@@ -37,6 +37,10 @@
 - [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 
+## Design — Decided
+
+- [x] **Serialization / encoding** — `comptime for` + field access, auto-derived `Encode`/`Decode` marker traits, field annotations (`@rename`, `@skip`, `@default`). See [encoding.md](specs/stdlib/encoding.md)
+
 ## Design Questions
 
 - [ ] Package granularity — folder = package (Go-style) vs file = package (Zig-style)

@@ -280,6 +280,8 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 | `Numeric<T>` | `add, sub, mul, div, neg, zero, one, from_int` |
 | `Default<T>` | `default() -> T` |
 | `Convert<From, Into>` | `convert(self: From) -> Into` |
+| `Encode` | Marker — no methods. Auto-derived for structs with all-Encode public fields (`std.encoding/E12`) |
+| `Decode` | Marker — no methods. Auto-derived for structs with all-Decode public fields (`std.encoding/E12`) |
 
 ### See Also
 
