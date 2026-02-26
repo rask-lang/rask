@@ -80,13 +80,13 @@ struct Cessna172 {
 //   designation → "Boeing 737-{variant}" (use self.variant)
 extend Boeing737 {
     func max_speed_knots(self) -> f64 {
-        panic("TODO")
+        todo()
     }
     func range_nm(self) -> f64 {
-        panic("TODO")
+        todo()
     }
     func designation(self) -> string {
-        panic("TODO")
+        todo()
     }
 }
 
@@ -96,20 +96,20 @@ extend Boeing737 {
 //   designation → "Cessna 172 ({registration})" (use self.registration)
 extend Cessna172 {
     func max_speed_knots(self) -> f64 {
-        panic("TODO")
+        todo()
     }
     func range_nm(self) -> f64 {
-        panic("TODO")
+        todo()
     }
     func designation(self) -> string {
-        panic("TODO")
+        todo()
     }
 }
 
 // --- Puzzle 2: Use the trait generically ---
 // Given two Aircraft, return the designation of the one with longer range.
 func longer_range<T: Aircraft, U: Aircraft>(a: T, b: U) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Summable trait ---
@@ -127,13 +127,13 @@ struct Measurement {
 // Implement Summable for Measurement — return self.reading
 extend Measurement {
     func value(self) -> f64 {
-        panic("TODO")
+        todo()
     }
 }
 
 // Sum a Vec of Summable things
 func total<T: Summable>(items: Vec<T>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

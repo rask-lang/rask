@@ -88,7 +88,7 @@ func add_item(mutate data: Vec<i32>, item: i32) {
 // When you return a Vec from a function, ownership transfers to the caller.
 // The function doesn't keep a copy — the value moves out.
 func flight_altitudes() -> Vec<i32> {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Modify without consuming ---
@@ -97,7 +97,7 @@ func flight_altitudes() -> Vec<i32> {
 //
 // Hint: use `mutate` parameter.
 func record_altitude(mutate log: Vec<i32>, altitude: i32) {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Read without consuming ---
@@ -106,7 +106,7 @@ func record_altitude(mutate log: Vec<i32>, altitude: i32) {
 //
 // Default parameters borrow — no special keyword needed.
 func max_altitude(log: Vec<i32>) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Compute statistics (borrow twice) ---
@@ -115,7 +115,7 @@ func max_altitude(log: Vec<i32>) -> i32 {
 // This works because default parameters borrow. The function
 // can call mean(data) and then still use data afterward.
 func mean(data: Vec<f64>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // Now compute the standard deviation using mean().
@@ -123,7 +123,7 @@ func mean(data: Vec<f64>) -> f64 {
 //
 // Formula: sqrt(average of (x - mean)² for each x)
 func std_dev(data: Vec<f64>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 func sqrt(x: f64) -> f64 {
@@ -147,7 +147,7 @@ func sqrt(x: f64) -> f64 {
 // depending on local air pressure — but they're separated safely
 // because they're both using the same reference.
 func altitudes_above(log: Vec<i32>, threshold: i32) -> Vec<i32> {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

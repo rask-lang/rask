@@ -71,11 +71,11 @@ func max_speed(t: TrainType) -> i32 {
 enum State { Solid, Liquid, Gas }
 
 func classify_water(kelvin: f64) -> State {
-    panic("TODO")
+    todo()
 }
 
 func state_name(s: State) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Unit conversion with enums ---
@@ -94,7 +94,7 @@ enum Distance {
 }
 
 func to_meters(d: Distance) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Train signal routing ---
@@ -116,7 +116,7 @@ enum Signal {
 //   Green              → "proceed"
 //   Flashing(msg)      → "caution: {msg}"
 func driver_action(s: Signal) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Boarding gate assignment ---
@@ -137,7 +137,7 @@ enum Region {
 //   European          → "T2"
 //   Intercontinental  → "T3"
 func terminal(r: Region) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

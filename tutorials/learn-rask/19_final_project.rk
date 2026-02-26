@@ -95,13 +95,13 @@ enum Phase {
 // Gravity: straight down. F = mass * g, where g = 9.81 m/s²
 // Return (0, 0, -mass * 9.81)
 func gravity(ac: Aircraft) -> Vec3 {
-    panic("TODO")
+    todo()
 }
 
 // Thrust: pushes the aircraft forward (positive y for simplicity)
 // Return (0, thrust_n, 0)
 func thrust(ac: Aircraft) -> Vec3 {
-    panic("TODO")
+    todo()
 }
 
 // Drag: opposes velocity. Slows you down.
@@ -117,7 +117,7 @@ func thrust(ac: Aircraft) -> Vec3 {
 // increases dramatically at higher speeds, and why the Concorde
 // (Mach 2) burned significantly more fuel per mile than subsonic jets.
 func drag(ac: Aircraft) -> Vec3 {
-    panic("TODO")
+    todo()
 }
 
 // Lift: pushes upward (simplified to z-axis only)
@@ -127,13 +127,13 @@ func drag(ac: Aircraft) -> Vec3 {
 // Real lift is perpendicular to the wing, not straight up.
 // Our simplification works for level flight.
 func lift(ac: Aircraft) -> Vec3 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Sum all forces ---
 // Return gravity + thrust + drag + lift
 func total_force(ac: Aircraft) -> Vec3 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Euler integration step ---
@@ -150,7 +150,7 @@ func total_force(ac: Aircraft) -> Vec3 {
 // forces at intermediate points for better accuracy. For our
 // small time steps, Euler works fine.
 func step(ac: Aircraft, dt: f64) -> Aircraft {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Determine flight phase ---
@@ -161,7 +161,7 @@ func step(ac: Aircraft, dt: f64) -> Aircraft {
 //   altitude > 0 and vz < -1.0     → Descending
 //   altitude > 0                    → Cruising (|vz| <= 1.0)
 func determine_phase(ac: Aircraft) -> Phase {
-    panic("TODO")
+    todo()
 }
 
 func phase_name(p: Phase) -> string {
@@ -180,7 +180,7 @@ func phase_name(p: Phase) -> string {
 // Each step: update the aircraft with step().
 // Return the final altitude (position.z).
 func simulate(ac: Aircraft, dt: f64, n_steps: i32) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

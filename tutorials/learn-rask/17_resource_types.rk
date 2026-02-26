@@ -91,7 +91,7 @@ extend Booking {
 //   4. If payment works, commit
 //   5. ensure runs on scope exit — but commit already happened, so no rollback
 func book_flight(id: i32, passenger: string) -> i32 or string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: LIFO cleanup ---
@@ -116,7 +116,7 @@ struct BookingStatus {
 }
 
 func two_bookings() -> BookingStatus {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Resource guard ---
@@ -134,7 +134,7 @@ func two_bookings() -> BookingStatus {
 // pattern. Every state change had a guaranteed rollback path.
 // The software flew 135 missions with zero in-flight failures.
 func process_flights(flights: Vec<string>) -> i32 or string {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

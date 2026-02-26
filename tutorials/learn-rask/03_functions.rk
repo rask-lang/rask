@@ -42,7 +42,7 @@ func is_positive(x: f64) -> bool {
 //
 // No ** operator in Rask. Write v * v instead.
 func kinetic_energy(mass: f64, velocity: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Gravitational force ---
@@ -54,7 +54,7 @@ func kinetic_energy(mass: f64, velocity: f64) -> f64 {
 // gives us tides. The same equation works for planets, stars, and
 // the apple that supposedly hit Newton.
 func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Square root (Newton's method) ---
@@ -68,7 +68,7 @@ func gravitational_force(m1: f64, m2: f64, r: f64) -> f64 {
 // This is the same algorithm your calculator uses, just unrolled.
 // Write a loop: for i in 0..20 { ... }
 func sqrt(x: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Orbital velocity ---
@@ -83,7 +83,7 @@ func sqrt(x: f64) -> f64 {
 // The ISS completes one orbit every 90 minutes. You cross
 // entire continents while eating lunch.
 func orbital_velocity(planet_mass: f64, orbit_radius: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---
