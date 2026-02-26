@@ -383,15 +383,15 @@ Sometimes a function only needs one field of a struct. Field projections let the
 know, so other fields remain available:
 
 ```rask
-func movement_system(state: GameState.{entities}, dt: f32) {
+func movement_system(mutate state: GameState.{entities}, dt: f32) {
     // Only touches state.entities
 }
 
-func scoring_system(state: GameState.{score}, points: i32) {
+func scoring_system(mutate state: GameState.{score}, points: i32) {
     // Only touches state.score
 }
 
-// These can theoretically run in parallel—they touch different fields
+// These can run in parallel—they touch different fields
 movement_system(state.{entities}, dt)
 scoring_system(state.{score}, 10)
 ```

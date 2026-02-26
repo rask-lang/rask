@@ -108,14 +108,13 @@ extend GameState {
 }
 
 // System: Update positions based on velocities
-// here we only use the entities pool from GameState, so we can use a projection
-// This allows us to avoid borrowing the entire GameState
-func movement_system(mutate entities: GameState.{entities}, dt: f32) {
-    for h in entities {
-        if !entities[h].active: continue
+// Only borrows the entities field — other GameState fields remain available
+func movement_system(mutate state: GameState.{entities}, dt: f32) {
+    for h in state.entities {
+        if !state.entities[h].active: continue
 
-        entities[h].position.x += entities[h].velocity.dx * dt
-        entities[h].position.y += entities[h].velocity.dy * dt
+        state.entities[h].position.x += state.entities[h].velocity.dx * dt
+        state.entities[h].position.y += state.entities[h].velocity.dy * dt
     }
 }
 
@@ -210,10 +209,11 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 }
 
 // Parallel movement update - processes entity batches across threads
-func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, num_threads: usize)
+// NOTE: Sending projections to threads requires scoped threading (type.structs/P4 — mechanism TBD)
+func parallel_movement_system(mutate state: GameState.{entities}, dt: f32, num_threads: usize)
     using ThreadPool
 {
-    let handles = entities.handles()
+    let handles = state.entities.handles()
     let chunk_size = (handles.len() + num_threads - 1) / num_threads
 
     // Split work across thread pool
@@ -222,9 +222,9 @@ func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, nu
         let chunk = chunk.to_vec()
         let task = ThreadPool.spawn(|| {
             for h in chunk {
-                if !entities[h].active: continue
-                entities[h].position.x += entities[h].velocity.dx * dt
-                entities[h].position.y += entities[h].velocity.dy * dt
+                if !state.entities[h].active: continue
+                state.entities[h].position.x += state.entities[h].velocity.dx * dt
+                state.entities[h].position.y += state.entities[h].velocity.dy * dt
             }
         })
         thread_handles.push(task).ok()
