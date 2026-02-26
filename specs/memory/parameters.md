@@ -208,7 +208,9 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Closure captures | — | Captured borrows follow closure lifetime rules (`mem.closures`) |
 | Pattern matching | PM2 | Mutation only allowed if parameter is `mutate` |
 | Copy type + mutate | PM2 | Value is copied in; mutations affect the copy |
-| Nested fields in projection | PM4 | `Player.{stats.health}` (TBD) |
+| Nested fields in projection | PM4 | `Player.{stats.health}` is invalid — projections are flat (`type.structs/P6`). Project `stats`, access `.health` normally |
+| `take` on projection | PM4 | Invalid — projections support borrow and `mutate` only (`type.structs/P9`) |
+| Projection in generic param | PM4 | Invalid — `T.{field}` where T is generic is a compile error (`type.structs/P10`) |
 
 ---
 
