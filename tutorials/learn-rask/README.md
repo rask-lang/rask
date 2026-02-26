@@ -17,7 +17,7 @@ See [00_setup.md](00_setup.md) to get running. Takes about 5 minutes.
 1. Open a lesson file (e.g. `03_functions.rk`) in VSCode
 2. Read the comments at the top — they explain each concept with Python comparisons
 3. Study the examples
-4. Fill in the puzzle functions (they start as `panic("TODO")`)
+4. Fill in the puzzle functions (they start as `todo()`)
 5. Run `rask test 03_functions.rk` to check your answers
 6. All tests green? Next lesson.
 
