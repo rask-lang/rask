@@ -250,7 +250,7 @@ Borrowing a struct borrows all of it. Field projections (`Type.{field1, field2}`
 | **P1: Syntax** | `value.{field1, field2}` creates a projection of the named fields |
 | **P2: Type syntax** | `Type.{field1}` in function params accepts a projection |
 | **P3: Non-overlapping** | Projections with disjoint fields can be borrowed simultaneously |
-| **P4: Parallel safe** | Non-overlapping mutable projections can be sent to different threads |
+| **P4: Parallel safe** | Non-overlapping mutable projections can be sent to different scoped threads |
 
 <!-- test: skip -->
 ```rask
@@ -260,19 +260,35 @@ struct GameState {
 }
 
 // Only borrows `entities` - other fields remain available
-func movement_system(state: GameState.{entities}, dt: f32) {
+func movement_system(mutate state: GameState.{entities}, dt: f32) {
     for h in state.entities {
         state.entities[h].position.x += state.entities[h].velocity.dx * dt
     }
 }
 
 // Only borrows `score` - can run alongside movement_system
-func update_score(state: GameState.{score}, points: i32) {
+func update_score(mutate state: GameState.{score}, points: i32) {
     state.score += points
 }
 ```
 
-See [types/structs.md](../types/structs.md) for projection type syntax (`type.structs/P1`).
+**Local projections (P1):**
+
+<!-- test: skip -->
+```rask
+func update(mutate state: GameState) {
+    // Local projection — borrows only the named fields
+    const proj = state.{entities}
+    proj.entities[h].health -= 10   // OK: entities is projected
+    state.score += 100               // OK: score not in projection
+
+    // Disjoint local projections
+    const a = state.{entities}
+    const b = state.{score}          // OK: disjoint from a
+}
+```
+
+See [types/structs.md](../types/structs.md) for full projection type rules (`type.structs/P1`–`P10`).
 
 ## Access Rules
 
@@ -377,6 +393,11 @@ FIX: Use comma syntax for multiple elements, or collect handles first:
 | `with` and `try` | W1 | Propagates to enclosing function |
 | `with` and `break`/`continue` | W1 | Applies to surrounding loop |
 | Nested `with` same collection | W2 | Compile error (source frozen) |
+| Projection stored in local | P1 | Block-scoped, follows S1–S3 (`type.structs/P8`) |
+| Overlapping projections | P3 | Compile error: fields overlap |
+| Projection + full struct borrow | P3 | Compile error: struct already borrowed |
+| Method on projection | — | Compile error (`type.structs/P7`) |
+| Nested field projection | P1 | Invalid: `T.{a.b}` (`type.structs/P6`) |
 
 ## Quick Reference
 
