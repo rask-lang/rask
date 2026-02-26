@@ -146,8 +146,8 @@ const addrs = try net.resolve("example.com")
 ```rask
 func handle(conn: TcpConnection) -> () or IoError {
     ensure conn.close()
-    const req = try conn.read_http_request()
-    try conn.write_http_response(response)
+    const data = try conn.read_all()
+    try conn.write_all(process(data))
 }
 ```
 
