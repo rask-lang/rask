@@ -125,6 +125,8 @@ pub enum BuiltinKind {
     Panic,
     Format,
     AsyncSpawn, // spawn(|| {}) from async module
+    Todo,
+    Unreachable,
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).

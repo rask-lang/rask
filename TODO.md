@@ -37,6 +37,14 @@
 - [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 
+## Language Features
+
+- [x] **Type aliases** — `type UserId = u64` transparent aliases. Parser, resolver, type checker. See [type-aliases.md](specs/types/type-aliases.md)
+- [x] **`todo()` / `unreachable()`** — Development panic builtins returning `!` (Never). Interpreter + native codegen (desugars to `panic()` in MIR). See [error-types.md](specs/types/error-types.md)
+- [x] **Tuple spec** — Formalized existing tuple support. See [tuples.md](specs/types/tuples.md)
+- [x] **Destructuring spec** — Formalized existing destructuring. See [control-flow.md](specs/control/control-flow.md)
+- [ ] Macros / `format!`
+
 ## Design Questions
 
 - [ ] Package granularity — folder = package (Go-style) vs file = package (Zig-style)
@@ -58,7 +66,6 @@
 - [ ] Fuzzing / property-based testing
 - [ ] Code coverage
 - [ ] `std.reflect` — comptime reflection. See [reflect.md](specs/stdlib/reflect.md)
-- [ ] Macros / `format!`
 - [ ] Inline assembly
 - [ ] Pointer provenance rules
 - [ ] `compile_cpp()` build script support

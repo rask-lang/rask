@@ -343,6 +343,54 @@ FIX: Consume in both branches or use ensure:
   if cond { /* ... */ }
 ```
 
+## Destructuring
+
+| Rule | Description |
+|------|-------------|
+| **DS1: Const destructuring** | `const (a, b) = expr` binds tuple elements as immutable |
+| **DS2: Let destructuring** | `let (a, b) = expr` binds tuple elements as mutable |
+| **DS3: For destructuring** | `for (k, v) in iter` destructures each iteration element |
+| **DS4: Arity match** | Number of bindings must match tuple length (compile error otherwise) |
+| **DS5: Nested** | `const (a, (b, c)) = expr` destructures nested tuples |
+| **DS6: Wildcard** | `_` discards an element: `const (_, b) = pair` |
+| **DS7: Guard pattern** | `const (a, b) = expr is Ok else { return }` combines destructuring with pattern matching |
+
+<!-- test: parse -->
+```rask
+// Basic destructuring
+const point = (10, 20)
+const (x, y) = point
+
+// Mutable destructuring
+let (a, b) = get_pair()
+a = a + 1
+
+// For loop destructuring
+for (key, value) in map {
+    println("{key}: {value}")
+}
+
+// Wildcard
+const (_, second) = pair
+
+// Channel pattern
+const (tx, rx) = Channel<Message>.buffered(100)
+```
+
+**Arity mismatch [DS4]:**
+```
+ERROR [ctrl.flow/DS4]: tuple destructuring arity mismatch
+   |
+3  |  const (a, b, c) = (1, 2)
+   |        ^^^^^^^^^ expected 2 elements, found 3 bindings
+
+WHY: Destructuring requires exactly one binding per tuple element.
+
+FIX: Match the number of bindings, use _ to discard:
+
+  const (a, b) = (1, 2)
+```
+
 ---
 
 ## Appendix (non-normative)

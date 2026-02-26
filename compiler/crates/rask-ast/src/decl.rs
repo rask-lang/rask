@@ -42,6 +42,17 @@ pub enum DeclKind {
     Extern(ExternDecl),
     /// Package block declaration (build.rk only)
     Package(PackageDecl),
+    /// Type alias declaration
+    TypeAlias(TypeAliasDecl),
+}
+
+/// A type alias declaration.
+#[derive(Debug, Clone)]
+pub struct TypeAliasDecl {
+    pub name: String,
+    pub type_params: Vec<TypeParam>,
+    pub target: String,
+    pub is_pub: bool,
 }
 
 /// A top-level constant declaration.

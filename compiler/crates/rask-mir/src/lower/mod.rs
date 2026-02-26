@@ -2357,6 +2357,7 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
+            trait_methods: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2405,6 +2406,7 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
+            trait_methods: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2459,6 +2461,7 @@ mod tests {
             line_map: None,
             source_file: None,
             comptime_interp: None,
+            trait_methods: HashMap::new(),
         };
 
         let decl = make_fn("f", vec![], None, vec![

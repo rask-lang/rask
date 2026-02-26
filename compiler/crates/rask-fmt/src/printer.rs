@@ -288,6 +288,7 @@ impl<'a> Printer<'a> {
             DeclKind::Extern(e) => self.format_extern_decl(e),
             DeclKind::Package(_) => {} // Package blocks formatted by build.rk tooling
             DeclKind::Union(_) => todo!(),
+            DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
         }
     }
 
@@ -645,6 +646,27 @@ impl<'a> Printer<'a> {
                 self.emit(alias);
             }
         }
+    }
+
+    fn format_type_alias_decl(&mut self, t: &TypeAliasDecl) {
+        self.emit_indent();
+        if t.is_pub {
+            self.emit("public ");
+        }
+        self.emit("type ");
+        self.emit(&t.name);
+        if !t.type_params.is_empty() {
+            self.emit("<");
+            for (i, tp) in t.type_params.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                self.emit(&tp.name);
+            }
+            self.emit(">");
+        }
+        self.emit(" = ");
+        self.emit(&t.target);
     }
 
     fn format_const_decl(&mut self, c: &ConstDecl) {

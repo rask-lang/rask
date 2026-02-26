@@ -52,5 +52,15 @@ pub fn builtins() -> Vec<BuiltinInfo> {
             kind: BuiltinKind::Panic,
             arity: Arity::Fixed(1),
         },
+        BuiltinInfo {
+            name: "todo",
+            kind: BuiltinKind::Todo,
+            arity: Arity::Variadic(0),
+        },
+        BuiltinInfo {
+            name: "unreachable",
+            kind: BuiltinKind::Unreachable,
+            arity: Arity::Variadic(0),
+        },
     ]
 }

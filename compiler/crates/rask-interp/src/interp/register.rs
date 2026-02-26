@@ -157,6 +157,10 @@ impl Interpreter {
             .define("panic".to_string(), Value::Builtin(BuiltinKind::Panic));
         self.env
             .define("format".to_string(), Value::Builtin(BuiltinKind::Format));
+        self.env
+            .define("todo".to_string(), Value::Builtin(BuiltinKind::Todo));
+        self.env
+            .define("unreachable".to_string(), Value::Builtin(BuiltinKind::Unreachable));
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env

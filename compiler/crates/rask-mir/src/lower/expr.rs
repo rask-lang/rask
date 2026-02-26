@@ -213,6 +213,31 @@ impl<'a> MirLowerer<'a> {
                     return Ok((val, MirType::I64));
                 }
 
+                // todo()/unreachable() — desugar to panic() with descriptive message
+                if func_name == "todo" || func_name == "unreachable" {
+                    let prefix = if func_name == "todo" {
+                        "not yet implemented"
+                    } else {
+                        "entered unreachable code"
+                    };
+                    let msg = if let Some(MirOperand::Constant(MirConst::String(s))) = arg_operands.first() {
+                        format!("{}: {}", prefix, s)
+                    } else {
+                        prefix.to_string()
+                    };
+                    let msg_op = MirOperand::Constant(MirConst::String(msg));
+                    let result_local = self.builder.alloc_temp(MirType::I64);
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: Some(result_local),
+                        func: FunctionRef::internal("panic".to_string()),
+                        args: vec![msg_op],
+                    });
+                    self.builder.terminate(MirTerminator::Unreachable);
+                    let cont = self.builder.create_block();
+                    self.builder.switch_to_block(cont);
+                    return Ok((MirOperand::Local(result_local), MirType::I64));
+                }
+
                 // Built-in variant constructors: Ok(v), Err(v), Some(v)
                 match func_name.as_str() {
                     "Some" if self.is_niche_option_expr(expr) => {
