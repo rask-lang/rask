@@ -838,7 +838,7 @@ impl TypeChecker {
                     self.infer_expr(&arg.expr);
                 }
                 return match name.as_str() {
-                    "panic" => Type::Never,
+                    "panic" | "todo" | "unreachable" => Type::Never,
                     "format" => Type::String,
                     _ => Type::Unit,
                 };
@@ -980,8 +980,8 @@ impl TypeChecker {
     }
 
     pub(super) fn is_builtin_function(&self, name: &str) -> bool {
-        matches!(name, "println" | "print" | "panic" | "assert" | "debug" | "format"
-            | "fence" | "compiler_fence")
+        matches!(name, "println" | "print" | "panic" | "todo" | "unreachable"
+            | "assert" | "debug" | "format" | "fence" | "compiler_fence")
     }
 
     /// Validate that call-site annotations match parameter declarations.

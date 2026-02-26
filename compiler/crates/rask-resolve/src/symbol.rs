@@ -91,6 +91,11 @@ pub enum SymbolKind {
         /// The PackageId this namespace refers to.
         package_id: PackageId,
     },
+    /// A type alias (transparent).
+    TypeAlias {
+        /// The target type name.
+        target: String,
+    },
 }
 
 /// Built-in type kinds.
@@ -141,6 +146,10 @@ pub enum BuiltinFunctionKind {
     Spawn,
     /// transmute - reinterpret bits as different type (unsafe)
     Transmute,
+    /// todo - panic with "not yet implemented"
+    Todo,
+    /// unreachable - panic with "entered unreachable code"
+    Unreachable,
 }
 
 /// Built-in module kinds (stdlib modules).

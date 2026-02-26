@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Pass 1: declaration collection and checking.
 
-use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl};
+use rask_ast::decl::{Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, StructDecl, TraitDecl, UnionDecl, TypeAliasDecl};
 use rask_resolve::SymbolKind;
 use super::type_defs::{TypeDef, MethodSig, SelfParam, ParamMode};
 use super::errors::TypeError;
@@ -23,6 +23,7 @@ impl TypeChecker {
                 DeclKind::Enum(e) => self.register_enum(e),
                 DeclKind::Trait(t) => self.register_trait(t),
                 DeclKind::Union(u) => self.register_union(u),
+                DeclKind::TypeAlias(a) => self.register_type_alias(a),
                 DeclKind::Fn(f) if !f.type_params.is_empty() => {
                     // Find this function's SymbolId by matching name + Function kind
                     let type_param_names: Vec<String> = f.type_params.iter()
@@ -118,6 +119,10 @@ impl TypeChecker {
             methods,
             is_unsafe: t.is_unsafe,
         });
+    }
+
+    pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl) {
+        self.types.register_alias(a.name.clone(), a.target.clone());
     }
 
     pub(super) fn register_union(&mut self, u: &UnionDecl) {

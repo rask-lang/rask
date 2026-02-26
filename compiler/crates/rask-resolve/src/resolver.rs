@@ -63,6 +63,8 @@ impl Resolver {
             ("format", BuiltinFunctionKind::Format, None),
             ("spawn", BuiltinFunctionKind::Spawn, None),
             ("transmute", BuiltinFunctionKind::Transmute, None),
+            ("todo", BuiltinFunctionKind::Todo, Some("!")),
+            ("unreachable", BuiltinFunctionKind::Unreachable, Some("!")),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {
@@ -442,6 +444,18 @@ impl Resolver {
                         const_decl.is_pub,
                     );
                     if let Err(e) = self.scopes.define(const_decl.name.clone(), sym_id, decl.span) {
+                        self.errors.push(e);
+                    }
+                }
+                DeclKind::TypeAlias(alias) => {
+                    let sym_id = self.symbols.insert(
+                        alias.name.clone(),
+                        SymbolKind::TypeAlias { target: alias.target.clone() },
+                        None,
+                        decl.span,
+                        alias.is_pub,
+                    );
+                    if let Err(e) = self.scopes.define(alias.name.clone(), sym_id, decl.span) {
                         self.errors.push(e);
                     }
                 }
@@ -865,6 +879,7 @@ impl Resolver {
                 DeclKind::Extern(_) => {}
                 DeclKind::Package(_) => {}
                 DeclKind::Union(_) => {}
+                DeclKind::TypeAlias(_) => {}
             }
         }
     }

@@ -12,6 +12,10 @@ pub enum BuiltinKind {
     Println,
     /// panic(msg) - terminates with error message
     Panic,
+    /// todo() - panics with "not yet implemented"
+    Todo,
+    /// unreachable() - panics with "entered unreachable code"
+    Unreachable,
 }
 
 impl fmt::Display for BuiltinKind {
@@ -20,6 +24,8 @@ impl fmt::Display for BuiltinKind {
             BuiltinKind::Print => write!(f, "print"),
             BuiltinKind::Println => write!(f, "println"),
             BuiltinKind::Panic => write!(f, "panic"),
+            BuiltinKind::Todo => write!(f, "todo"),
+            BuiltinKind::Unreachable => write!(f, "unreachable"),
         }
     }
 }
