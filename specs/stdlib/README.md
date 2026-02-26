@@ -42,8 +42,8 @@ Foundational types and modules for systems programming.
 ### Networking & Web
 | Module | Purpose | Status |
 |--------|---------|--------|
-| [net](#net) | TCP/UDP sockets | Planned |
-| [http](#http) | HTTP client and server | Planned |
+| [net](net.md) | TCP/UDP sockets, DNS | Specified |
+| [http](http.md) | HTTP client and server | Specified |
 | [tls](#tls) | TLS/SSL connections | Planned |
 | [url](#url) | URL parsing | Planned |
 
@@ -58,8 +58,8 @@ Foundational types and modules for systems programming.
 | Module | Purpose | Status |
 |--------|---------|--------|
 | [cli](cli.md) | Command-line argument parsing | Specified |
-| [time](#time) | Duration, Instant, timestamps | Specified |
-| [os](os.md) | Platform-specific operations | Specified |
+| [time](time.md) | Duration, Instant, SystemTime | Specified |
+| [os](os.md) | Process, env, subprocess, signals | Specified |
 | [fmt](fmt.md) | String formatting | Specified |
 | [math](math.md) | Mathematical functions | Specified |
 | [random](random.md) | Random number generation | Specified |
@@ -211,13 +211,13 @@ try stream.write_all(request)
 const response = try stream.read_all()
 ```
 
-**Status:** Specified — see [io.md](io.md).
+**Status:** Specified — see [net.md](net.md).
 
 ---
 
 ## Time
 
-Duration, Instant, SystemTime. See [time.md](time.md).
+Duration, Instant (monotonic), SystemTime (wall-clock), Duration arithmetic. See [time.md](time.md).
 
 ---
 
@@ -229,7 +229,7 @@ Cross-platform path manipulation (parent, extension, join). See [path.md](path.m
 
 ## OS
 
-Environment variables, process exit, args. See [os.md](os.md).
+Environment variables, process exit, args, subprocess spawning, signal handling. See [os.md](os.md).
 
 ---
 
@@ -318,7 +318,7 @@ const resp = try client.post("https://api.example.com/submit")
 | `resp.status` | `u16` | Status code |
 | `resp.headers` | `Headers` | Response headers |
 
-**Status:** Planned — detailed specification TODO.
+**Status:** Specified — see [http.md](http.md).
 
 ---
 

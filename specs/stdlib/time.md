@@ -1,11 +1,11 @@
 <!-- id: std.time -->
 <!-- status: decided -->
-<!-- summary: Duration (time span) and Instant (monotonic timestamp) for measuring intervals -->
+<!-- summary: Duration, Instant (monotonic), and SystemTime (wall-clock) for time operations -->
 <!-- depends: memory/value-semantics.md -->
 
 # Time
 
-Two types: `Duration` for time spans, `Instant` for monotonic timestamps. Wall-clock time (`SystemTime`) deferred.
+Three types: `Duration` for time spans, `Instant` for monotonic timestamps, `SystemTime` for wall-clock time.
 
 ## Types
 
@@ -87,29 +87,93 @@ ERROR [std.time/S1]: sleep failed
 WHY: Platform-specific sleep failure (rare).
 ```
 
+## SystemTime
+
+| Rule | Description |
+|------|-------------|
+| **W1: Wall-clock** | `SystemTime` represents a point in wall-clock time. Subject to NTP adjustments — can go backward |
+| **W2: UNIX epoch** | Epoch is 1970-01-01 00:00:00 UTC. Serializable (unlike Instant) |
+| **W3: Value type** | Copy, <=16 bytes, no `@resource` |
+
+<!-- test: skip -->
+```rask
+SystemTime.now() -> SystemTime
+SystemTime.unix_epoch() -> SystemTime
+SystemTime.from_unix_secs(secs: i64) -> SystemTime
+SystemTime.from_unix_millis(millis: i64) -> SystemTime
+```
+
+<!-- test: skip -->
+```rask
+extend SystemTime {
+    func unix_secs(self) -> i64
+    func unix_millis(self) -> i64
+    func unix_nanos(self) -> i128
+    func duration_since(self, earlier: SystemTime) -> Duration or TimeError
+    func elapsed(self) -> Duration or TimeError
+}
+```
+
+<!-- test: skip -->
+```rask
+enum TimeError {
+    Backwards    // clock went backward (NTP adjustment)
+}
+```
+
+<!-- test: skip -->
+```rask
+import time
+
+const now = time.SystemTime.now()
+const timestamp = now.unix_secs()         // 1709251200
+const millis = now.unix_millis()          // 1709251200000
+
+// Reconstruct from stored timestamp
+const restored = time.SystemTime.from_unix_secs(timestamp)
+
+// Duration since epoch
+const since_epoch = try now.duration_since(time.SystemTime.unix_epoch())
+```
+
 ## Arithmetic and Comparison
 
 | Rule | Description |
 |------|-------------|
 | **A1: Instant shift** | `instant + duration -> Instant`, `instant - duration -> Instant` |
 | **A2: Instant difference** | `instant - instant -> Duration` |
-| **A3: Duration arithmetic** | `duration + duration -> Duration`, `duration - duration -> Duration` |
-| **A4: Comparison** | `<`, `<=`, `>`, `>=`, `==` on same-type pairs (Instant/Instant or Duration/Duration) |
+| **A3: Duration add/sub** | `duration + duration -> Duration`, `duration - duration -> Duration` |
+| **A4: Duration scaling** | `duration * n -> Duration`, `n * duration -> Duration`, `duration / n -> Duration` |
+| **A5: Duration ratio** | `duration / duration -> u64` (integer ratio, truncated) |
+| **A6: Comparison** | `<`, `<=`, `>`, `>=`, `==` on same-type pairs (Instant, Duration, or SystemTime) |
+| **A7: SystemTime shift** | `systemtime + duration -> SystemTime`, `systemtime - duration -> SystemTime` |
+| **A8: SystemTime difference** | `systemtime - systemtime -> Duration` (wraps if negative — use `duration_since` for checked) |
 
-Both types are nanosecond i64 internally — arithmetic is native integer ops. No overflow checking (wraps).
+Arithmetic is native integer ops on nanosecond values. No overflow checking (wraps).
 
 <!-- test: skip -->
 ```rask
 import time
 
 const start = time.Instant.now()
-time.sleep(time.Duration.from_millis(10))
+time.sleep(time.Duration.millis(10))
 const end = time.Instant.now()
 
 const elapsed = end - start           // Duration
 const later = start + elapsed         // Instant
 const d2 = elapsed + elapsed          // Duration
 const before = end > start            // true
+
+// Duration scaling
+const frame = time.Duration.millis(16)
+const half = frame / 2                // 8ms
+const triple = frame * 3              // 48ms
+const five = 5 * frame                // 80ms
+const ratio = triple / frame          // 3
+
+// SystemTime arithmetic
+const now = time.SystemTime.now()
+const tomorrow = now + time.Duration.seconds(86400)
 ```
 
 ## Edge Cases
@@ -118,9 +182,14 @@ const before = end > start            // true
 |------|----------|------|
 | `Duration.from_secs_f64(0.5000000001)` | Truncated to 500000000 ns | D5 |
 | `Instant` across process restarts | Not comparable — opaque epoch | I2 |
-| `Instant` serialization | Not supported — use `SystemTime` when available | I2 |
+| `Instant` serialization | Not supported — use `SystemTime` | I2 |
 | Sleep interrupted by signal | May return early | S1 |
 | Duration overflow | Wraps (u64 nanoseconds) | D4 |
+| Duration divide by zero | Panic | A4 |
+| `SystemTime` before UNIX epoch | Negative `unix_secs()` | W2 |
+| `SystemTime` NTP adjustment backward | `duration_since` returns `Err(TimeError.Backwards)` | W1 |
+| `SystemTime` serialization | Use `unix_secs()` or `unix_millis()` | W2 |
+| `SystemTime` comparison across machines | Only meaningful if clocks are synchronized | W1 |
 
 ---
 
@@ -132,22 +201,29 @@ const before = end > start            // true
 
 **I2 (opaque epoch):** Monotonic clocks have arbitrary epochs. Exposing the epoch invites bugs where people treat Instant as wall-clock time.
 
-**SystemTime deferred:** Game loops, benchmarks, and timeouts only need Duration + Instant. Wall-clock time adds complexity (leap seconds, NTP adjustments) that can wait.
+**W1 (wall-clock separate from Instant):** Instant is monotonic — always goes forward, perfect for measuring intervals. SystemTime tracks real-world time but can jump (NTP, manual adjustment, leap seconds). Separate types prevent bugs where someone measures a benchmark with wall-clock time or serializes an Instant.
+
+**A4 (Duration scaling):** Scaling is essential for frame timing (`frame_time * frame_count`), timeout adjustment (`base_timeout * retry_count`), and benchmark normalization (`total / iterations`). Deferring this blocked real programs.
 
 ### Platform Mapping
 
-| Platform | Duration | Instant |
-|----------|----------|---------|
-| POSIX | u64 (nanos) | `clock_gettime(CLOCK_MONOTONIC)` |
-| Windows | u64 (nanos) | `QueryPerformanceCounter` |
-| WASM | u64 (nanos) | `performance.now()` |
+| Platform | Duration | Instant | SystemTime |
+|----------|----------|---------|------------|
+| POSIX | u64 (nanos) | `clock_gettime(CLOCK_MONOTONIC)` | `clock_gettime(CLOCK_REALTIME)` |
+| Windows | u64 (nanos) | `QueryPerformanceCounter` | `GetSystemTimePreciseAsFileTime` |
+| WASM | u64 (nanos) | `performance.now()` | `Date.now()` |
 
 ### Deferred
 
-- `SystemTime` — wall-clock with UNIX epoch, serializable
-- Duration scaling: `d1 * n`, `d1 / n`
+- Date/time formatting (RFC 3339, ISO 8601)
+- Time zone support
+- Calendar types (Date, Time, DateTime)
+- Leap second handling
+- `Timer` / periodic tick
 
 ### See Also
 
 - `mem.value-semantics` — Copy types <=16 bytes
 - `std.testing` — Benchmarks use Duration/Instant internally
+- `std.http` — SystemTime used for HTTP Date headers
+- `std.fs` — File timestamps as `u64` (seconds since epoch)
