@@ -349,7 +349,7 @@ impl TypeSubstitutor {
                 // Calls
                 ExprKind::Call { func, args } => ExprKind::Call {
                     func: Box::new(self.clone_expr(func)),
-                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
+                    args: args.iter().map(|a| CallArg { name: a.name.clone(), mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                 },
                 ExprKind::MethodCall {
                     object,
@@ -364,7 +364,7 @@ impl TypeSubstitutor {
                             .map(|t| self.substitute_type_string(t))
                             .collect()
                     }),
-                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
+                    args: args.iter().map(|a| CallArg { name: a.name.clone(), mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                 },
 
                 // Access
@@ -500,7 +500,7 @@ impl TypeSubstitutor {
                 // Context blocks
                 ExprKind::UsingBlock { name, args, body } => ExprKind::UsingBlock {
                     name: name.clone(),
-                    args: args.iter().map(|a| CallArg { mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
+                    args: args.iter().map(|a| CallArg { name: a.name.clone(), mode: a.mode, expr: self.clone_expr(&a.expr) }).collect(),
                     body: body.iter().map(|s| self.clone_stmt(s)).collect(),
                 },
                 ExprKind::WithAs { bindings, body } => ExprKind::WithAs {
