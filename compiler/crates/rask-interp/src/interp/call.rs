@@ -11,14 +11,31 @@ use crate::value::Value;
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+    pub(crate) fn call_function(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
+        // Fill in default values for missing trailing arguments
+        if args.len() < func.params.len() {
+            for i in args.len()..func.params.len() {
+                if let Some(ref default_expr) = func.params[i].default {
+                    let val = self.eval_expr(default_expr)?;
+                    args.push(val);
+                } else {
+                    return Err(RuntimeDiagnostic::new(
+                        RuntimeError::ArityMismatch {
+                            expected: func.params.len(),
+                            got: i,
+                        },
+                        Span::new(0, 0)
+                    ));
+                }
+            }
+        }
         if args.len() != func.params.len() {
             return Err(RuntimeDiagnostic::new(
                 RuntimeError::ArityMismatch {
                     expected: func.params.len(),
                     got: args.len(),
                 },
-                Span::new(0, 0) // Will be re-wrapped by caller with proper span
+                Span::new(0, 0)
             ));
         }
 

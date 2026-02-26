@@ -198,9 +198,11 @@ pub enum ArgMode {
     Mutate,
 }
 
-/// A function call argument with optional mode annotation.
+/// A function call argument with optional name label and mode annotation.
 #[derive(Debug, Clone)]
 pub struct CallArg {
+    /// Named argument label (e.g., `timeout:` in `connect(timeout: 60)`).
+    pub name: Option<String>,
     pub mode: ArgMode,
     pub expr: Expr,
 }

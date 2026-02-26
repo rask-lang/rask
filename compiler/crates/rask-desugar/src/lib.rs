@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Operator desugaring pass for Rask.
+//! Desugaring passes for Rask.
 //!
-//! Transforms binary operators into method calls:
+//! Operator desugaring transforms binary operators into method calls:
 //! - `a + b` → `a.add(b)`
 //! - `a - b` → `a.sub(b)`
 //! - `a == b` → `a.eq(b)`
 //! - etc.
 //!
-//! This pass runs before type checking.
+//! Default argument desugaring fills in missing call arguments from
+//! parameter defaults and resolves named arguments to positional form.
+//!
+//! These passes run before type checking.
+
+mod defaults;
+pub use defaults::{desugar_default_args, is_valid_default_expr};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, UnaryOp};
@@ -354,7 +360,7 @@ impl Desugarer {
                             object: Box::new(left_expr),
                             method: "eq".to_string(),
                             type_args: None,
-                            args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
+                            args: vec![CallArg { name: None, mode: ArgMode::Default, expr: right_expr }],
                         },
                         span,
                     };
@@ -367,7 +373,7 @@ impl Desugarer {
                         object: Box::new(left_expr),
                         method: method.to_string(),
                         type_args: None,
-                        args: vec![CallArg { mode: ArgMode::Default, expr: right_expr }],
+                        args: vec![CallArg { name: None, mode: ArgMode::Default, expr: right_expr }],
                     };
                 }
             }
@@ -464,7 +470,7 @@ impl Desugarer {
                     object: Box::new(result),
                     method: "concat".to_string(),
                     type_args: None,
-                    args: vec![CallArg { mode: ArgMode::Default, expr: seg_expr }],
+                    args: vec![CallArg { name: None, mode: ArgMode::Default, expr: seg_expr }],
                 },
                 span,
             };
