@@ -13,7 +13,7 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 |------|-------------|
 | **R1: Half-open** | `0..n` iterates [0, n) — excludes end |
 | **R2: Inclusive** | `0..=n` iterates [0, n] — includes end |
-| **R3: Infinite** | `0..` iterates indefinitely — requires `break`, `return`, or `.take()` |
+| **R3: Unbounded** | `0..` has no upper bound — terminates via `break`, `return`, `.take()`, or overflow panic (OV2) |
 | **R4: Empty range** | `start >= end` produces zero iterations, not an error |
 | **R5: End fits type** | Range end value must fit in iterator type — compile error otherwise |
 
@@ -23,7 +23,7 @@ Half-open (`0..n`) and inclusive (`0..=n`) ranges with step, reverse, and infini
 | `0..=n` | `RangeInclusive<Int>` | Closed [0, n] |
 | `(0..n).step(s)` | `StepRange<Int>` | Stepped half-open |
 | `(0..=n).step(s)` | `StepRangeInclusive<Int>` | Stepped closed |
-| `0..` | `RangeFrom<Int>` | Infinite |
+| `0..` | `RangeFrom<Int>` | Unbounded (panics on overflow per OV2) |
 | `..n` | `RangeTo<Int>` | Cannot iterate (no start) |
 | `..` | `RangeFull` | Cannot iterate (unbounded) |
 
@@ -75,9 +75,8 @@ for x in (0.0..1.0).step(0.1) { }  // Floats: 0.0, 0.1, ..., 0.9
 | Rule | Description |
 |------|-------------|
 | **OV1: End overflow** | End value must fit in type — compile error if not |
-| **OV2: Increment overflow (debug)** | Panic on overflow |
-| **OV3: Increment overflow (release)** | Wraps silently |
-| **OV4: Inclusive at max** | `RangeInclusive` tracks `exhausted` flag — `0u8..=255` terminates correctly |
+| **OV2: Increment overflow** | Panic on overflow in all builds — consistent with `type.overflow/OV1+OV4` |
+| **OV3: Inclusive at max** | `RangeInclusive` tracks `exhausted` flag — `0u8..=255` terminates correctly |
 
 ## Type Inference
 
@@ -114,8 +113,8 @@ ERROR [ctrl.ranges/SP3]: zero step
 | `start >= end` | R4 | Empty range, no iterations |
 | `10..0` | R4 | Empty — use `(0..10).rev()` for reverse |
 | `0u8..256` | OV1 | Compile error |
-| `0u8..=255` | OV4 | Valid, terminates correctly |
-| `0u8..` in release | OV3 | Wraps: 0, 1, ..., 255, 0, 1, ... |
+| `0u8..=255` | OV3 | Valid, terminates correctly |
+| `0u8..` | OV2 | Panic at 256 — use wider type or `.take(256)` |
 | `(0..10).step(0)` | SP3 | Compile error |
 | Float step precision | SP4 | `(0.0..1.0).step(0.3)` yields 0.0, 0.3, 0.6, 0.9 (not exact) |
 
