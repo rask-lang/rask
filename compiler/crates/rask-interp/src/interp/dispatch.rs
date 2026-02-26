@@ -101,6 +101,24 @@ impl Interpreter {
                 // This should have been handled in call_value
                 unreachable!("AsyncSpawn should be handled in call_value")
             }
+            BuiltinKind::Todo => {
+                let msg = if let Some(Value::String(s)) = args.first() {
+                    let s = s.lock().unwrap();
+                    format!("not yet implemented: {}", s)
+                } else {
+                    "not yet implemented".to_string()
+                };
+                Err(RuntimeError::Panic(msg))
+            }
+            BuiltinKind::Unreachable => {
+                let msg = if let Some(Value::String(s)) = args.first() {
+                    let s = s.lock().unwrap();
+                    format!("entered unreachable code: {}", s)
+                } else {
+                    "entered unreachable code".to_string()
+                };
+                Err(RuntimeError::Panic(msg))
+            }
             BuiltinKind::Format => {
                 if args.is_empty() {
                     return Err(RuntimeError::TypeError(

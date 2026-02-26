@@ -122,6 +122,7 @@ impl<'a> OwnershipChecker<'a> {
             }
             DeclKind::Package(_) => {}
             DeclKind::Union(_) => {}
+            DeclKind::TypeAlias(_) => {}
         }
     }
 

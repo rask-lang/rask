@@ -226,8 +226,8 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Borrowing | Block-scoped (fixed sources), value-based + `with` (collections) | [borrowing.md](specs/memory/borrowing.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
-| Types | Primitives, structs, enums, generics, traits, unions | [types/](specs/types/) |
-| Errors | `T or E` result, `try` propagation, `T?` optionals | [error-types.md](specs/types/error-types.md) |
+| Types | Primitives, structs, enums, generics, traits, unions, tuples, type aliases | [types/](specs/types/) |
+| Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](specs/types/error-types.md) |
 | Concurrency | spawn(\|\| {})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |

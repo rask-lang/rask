@@ -116,7 +116,7 @@ func sqrt(x: f64) -> f64 {
 // was lost because one team used pounds and another used newtons.
 // Validating inputs is boring but saves missions.
 func validate_temperature(reading: f64) -> f64 or string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Parse altitude ---
@@ -131,7 +131,7 @@ func validate_temperature(reading: f64) -> f64 or string {
 // For this puzzle: just check empty and negative.
 // Hint: use string.parse_i32() which returns `i32 or string`
 func parse_altitude(s: string) -> i32 or string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Chain with try ---
@@ -150,7 +150,7 @@ func parse_altitude(s: string) -> i32 or string {
 //
 // In Rask, the `try` keyword does the same but at each step:
 func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Option — safe Vec access ---
@@ -159,7 +159,7 @@ func average_readings(r1: f64, r2: f64, r3: f64) -> f64 or string {
 // The return type `i32?` is shorthand for `Option<i32>`.
 // Return Some(value) or None.
 func safe_get(v: Vec<i32>, i: i32) -> i32? {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

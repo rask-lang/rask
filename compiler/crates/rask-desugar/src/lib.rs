@@ -70,6 +70,7 @@ impl Desugarer {
             DeclKind::Extern(_) => {}
             DeclKind::Package(_) => {}
             DeclKind::Union(_) => {}
+            DeclKind::TypeAlias(_) => {}
         }
     }
 

@@ -52,6 +52,8 @@ Quick navigation by task or concept:
 | Write generic functions | [types/generics.md](types/generics.md) |
 | Omit types in private functions | [types/gradual-constraints.md](types/gradual-constraints.md) |
 | Define interfaces/contracts | [types/traits.md](types/traits.md) |
+| Create a type alias | [types/type-aliases.md](types/type-aliases.md) |
+| Work with tuples | [types/tuples.md](types/tuples.md) |
 | Work with iterators | [types/iterator-protocol.md](types/iterator-protocol.md) |
 
 ### Low-Level
@@ -97,6 +99,8 @@ Quick navigation by task or concept:
 | [iterator-protocol.md](types/iterator-protocol.md) | Iterator trait, adapters |
 | [integer-overflow.md](types/integer-overflow.md) | Overflow semantics |
 | [binary.md](types/binary.md) | Binary structs, bit-level layouts |
+| [tuples.md](types/tuples.md) | Anonymous product types, destructuring |
+| [type-aliases.md](types/type-aliases.md) | Transparent type aliases |
 
 ## Memory — How values are owned
 

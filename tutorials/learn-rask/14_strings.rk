@@ -68,7 +68,7 @@ struct Wind {
 }
 
 func parse_wind(metar: string) -> Wind {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Build a flight plan string ---
@@ -81,7 +81,7 @@ func parse_wind(metar: string) -> Wind {
 // there's MOPAR, OKRIX, and BANOX. Pilots navigate by chaining these
 // waypoints into routes called "airways."
 func format_flight_plan(departure: string, arrival: string, waypoints: Vec<string>) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Count words in ATC transmission ---
@@ -92,7 +92,7 @@ func format_flight_plan(departure: string, arrival: string, waypoints: Vec<strin
 // "two seven left." Altitudes use "flight level": 35,000 ft
 // is "flight level three five zero."
 func word_count(text: string) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Extract callsign prefix ---
@@ -105,7 +105,7 @@ func word_count(text: string) -> i32 {
 // Private aircraft use their registration instead: "N12345" is a
 // US-registered plane (N-numbers), "SE-XXX" is Swedish.
 func callsign_prefix(callsign: string) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 5: Simple CSV parser ---
@@ -114,7 +114,7 @@ func callsign_prefix(callsign: string) -> string {
 //
 // Split on newlines first, then split each line on commas.
 func parse_csv(input: string) -> Vec<Vec<string>> {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

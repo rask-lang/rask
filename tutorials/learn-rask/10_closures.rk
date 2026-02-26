@@ -62,7 +62,7 @@ func example_closures() {
 // When you integrate force over distance, you get work done.
 // When you integrate acceleration over time, you get velocity.
 func integrate(f: |f64| -> f64, a: f64, b: f64, n: i32) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Autopilot altitude filter ---
@@ -75,7 +75,7 @@ func integrate(f: |f64| -> f64, a: f64, b: f64, n: i32) -> f64 {
 // begins — the boundary between the troposphere and stratosphere.
 // Above this, temperature stops decreasing with altitude.
 func cruising_altitudes_meters(readings_feet: Vec<f64>) -> Vec<f64> {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Apply function n times ---
@@ -86,7 +86,7 @@ func cruising_altitudes_meters(readings_feet: Vec<f64>) -> Vec<f64> {
 // repeatedly until you converge on an answer. Newton's method (lesson 03)
 // was exactly this: applying the update rule over and over.
 func apply_n(f: |f64| -> f64, x: f64, n: i32) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Numerical derivative ---
@@ -99,7 +99,7 @@ func apply_n(f: |f64| -> f64, x: f64, n: i32) -> f64 {
 // Modern ML frameworks (PyTorch, JAX) use more sophisticated
 // versions of the same idea.
 func derivative(f: |f64| -> f64, x: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

@@ -50,7 +50,7 @@ func main() {
 //
 // Hint: build strings with interpolation: "value is {x}"
 func greet(name: string) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Flight announcement ---
@@ -64,7 +64,7 @@ func greet(name: string) -> string {
 //
 // Build and return the announcement from the parts.
 func announce(flight: string, destination: string, gate: string) -> string {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

@@ -545,6 +545,34 @@ Map<string, Vec<i32>>      // , inside <> → generic parameters
 
 The ambiguous case `f(a<b, c>(d))` parses as a generic call `a<b, c>(d)`. To express the comparison, use parentheses: `f((a < b), (c > d))`. This matches Kotlin, TypeScript, and Scala's approach — locally resolved, no name resolution during parsing.
 
+### Type Aliases
+
+Transparent aliases — the alias and underlying type are identical everywhere.
+
+```rask
+type UserId = u64
+type Pair<T> = (T, T)
+type Handler = func(i32) -> string
+
+const id: UserId = 42           // UserId is u64
+const coords: Pair<f64> = (1.0, 2.0)
+```
+
+Visibility: `public type Name = ...` exports the alias.
+
+### Tuples
+
+Anonymous product types. Use when naming fields adds nothing.
+
+```rask
+const pair: (i32, string) = (42, "hello")
+const nested: ((i32, i32), string) = ((1, 2), "point")
+
+// Destructuring
+const (x, y) = pair
+for (key, value) in map { ... }
+```
+
 ---
 
 ## Control Flow
@@ -784,6 +812,23 @@ func load_config() -> Config or (IoError | ParseError) {
 ```
 
 See [error-types.md](types/error-types.md), [optionals.md](types/optionals.md).
+
+### Development Panics
+
+```rask
+func process(item: Item) -> Result {
+    todo()                    // panics: "not yet implemented"
+    todo("handle edge case")  // panics: "not yet implemented: handle edge case"
+}
+
+match direction {
+    North => go_north(),
+    South => go_south(),
+    _ => unreachable()        // panics if reached
+}
+```
+
+Both return `!` (Never type) so they coerce to any type. `todo()` marks unfinished code; `unreachable()` marks impossible branches.
 
 ---
 
