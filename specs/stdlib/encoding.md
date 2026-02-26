@@ -163,6 +163,20 @@ extend DateTime {
 | **E19: @skip** | `@skip` excludes a field from serialization and deserialization. Reflected as `FieldInfo.is_skipped` |
 | **E20: @default** | `@default(expr)` provides a comptime value used when the field is missing during deserialization. The field becomes optional in the input. Reflected as `FieldInfo.has_default` |
 | **E21: Comptime expressions** | `@rename` takes a string literal. `@default` takes a comptime expression. Both validated at compile time |
+| **E28: @skip zero values** | `@skip` without `@default` requires a type with a known zero value. During decode, skipped fields are initialized to this value |
+
+**Types with known zero values (E28):**
+
+| Type | Zero value |
+|------|-----------|
+| `bool` | `false` |
+| `i8`–`i64`, `u8`–`u64` | `0` |
+| `f32`, `f64` | `0.0` |
+| `string` | `""` (empty) |
+| `T?` (optionals) | `None` |
+| `Vec<T>` | empty vec |
+| `Map<K,V>` | empty map |
+| Structs, enums, other types | **No zero value** — `@skip` requires `@default(expr)` or compile error |
 
 <!-- test: skip -->
 ```rask
@@ -420,6 +434,23 @@ ERROR [std.encoding/E5]: no field "z" on type `Point`
    |                    ^^^ Point has fields: x, y
 ```
 
+**@skip without default on type without zero value [E28]:**
+```
+ERROR [std.encoding/E28]: @skip field has no default value
+   |
+4  |  @skip
+5  |  public state: GameState
+   |                ^^^^^^^^^ GameState has no known zero value
+
+WHY: Skipped fields are initialized to a zero value during decode.
+     GameState is a struct — no automatic zero value exists.
+
+FIX: Add @default with an explicit value:
+
+  @skip @default(GameState.initial())
+  public state: GameState
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -429,7 +460,7 @@ ERROR [std.encoding/E5]: no field "z" on type `Point`
 | All fields `@skip` | E19, E27 | Encodes as `{}`; decode produces struct with all defaults |
 | `@default` on non-optional required field | E20 | Field becomes optional in input, required in struct definition. Default fills the gap |
 | `@rename` collision (two fields same serial name) | E18 | Compile error: duplicate serial name |
-| `@skip` field without `@default` during decode | E19 | Field must have a type-level default (zero for integers, empty for string, `None` for optionals) or compile error |
+| `@skip` field without `@default` during decode | E19, E28 | Field must have a known zero value (E28) or `@default`. Compile error otherwise |
 | Nested comptime for (struct within struct) | E3 | Works — `encode_value` recursively monomorphizes |
 | Private field with `@rename` | E6 | Annotation accepted but ineffective — field not encoded externally. Useful for same-module custom encoding |
 | Generic struct `Wrapper<T>` | E12 | `Encode` if `T: Encode`. Checked at monomorphization |
