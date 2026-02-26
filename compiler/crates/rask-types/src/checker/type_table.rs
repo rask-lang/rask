@@ -18,6 +18,8 @@ pub struct TypeTable {
     pub(super) type_names: HashMap<String, TypeId>,
     /// Built-in type names mapped to Type.
     pub(super) builtins: HashMap<String, Type>,
+    /// Type alias name → target type string.
+    pub(super) type_aliases: HashMap<String, String>,
     /// TypeId for the builtin Option<T> enum.
     pub(super) option_type_id: Option<TypeId>,
     /// TypeId for the builtin Result<T, E> enum.
@@ -32,6 +34,7 @@ impl TypeTable {
             types: Vec::new(),
             type_names: HashMap::new(),
             builtins: HashMap::new(),
+            type_aliases: HashMap::new(),
             option_type_id: None,
             result_type_id: None,
             builtin_modules: BuiltinModules::new(),
@@ -104,10 +107,41 @@ impl TypeTable {
         id
     }
 
+    /// Register a transparent type alias.
+    pub fn register_alias(&mut self, name: String, target: String) {
+        self.type_aliases.insert(name, target);
+    }
+
+    /// Resolve a type alias chain, returning the final target string.
+    /// Returns None if name is not an alias.
+    fn resolve_alias<'a>(&'a self, name: &'a str) -> Option<&'a str> {
+        let mut current = name;
+        // Walk the chain with a depth limit to catch cycles
+        for _ in 0..32 {
+            match self.type_aliases.get(current) {
+                Some(target) => current = target.as_str(),
+                None => {
+                    if current == name {
+                        return None;
+                    }
+                    return Some(current);
+                }
+            }
+        }
+        None // cycle detected — silently return None, resolver should catch cycles
+    }
+
     /// Look up a type by name.
     pub fn lookup(&self, name: &str) -> Option<Type> {
         if let Some(ty) = self.builtins.get(name) {
             return Some(ty.clone());
+        }
+        // Check type aliases
+        if let Some(target) = self.resolve_alias(name) {
+            if let Some(ty) = self.builtins.get(target) {
+                return Some(ty.clone());
+            }
+            return self.type_names.get(target).map(|&id| Type::Named(id));
         }
         self.type_names.get(name).map(|&id| Type::Named(id))
     }
@@ -124,12 +158,21 @@ impl TypeTable {
 
     /// Check if a name is registered.
     pub fn contains(&self, name: &str) -> bool {
-        self.builtins.contains_key(name) || self.type_names.contains_key(name)
+        self.builtins.contains_key(name)
+            || self.type_names.contains_key(name)
+            || self.type_aliases.contains_key(name)
     }
 
     /// Get TypeId for a name (user-defined types only).
+    /// Resolves through aliases.
     pub fn get_type_id(&self, name: &str) -> Option<TypeId> {
-        self.type_names.get(name).copied()
+        if let Some(id) = self.type_names.get(name) {
+            return Some(*id);
+        }
+        if let Some(target) = self.resolve_alias(name) {
+            return self.type_names.get(target).copied();
+        }
+        None
     }
 
     /// Check if a type name refers to a `@resource` struct.

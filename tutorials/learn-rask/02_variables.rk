@@ -54,7 +54,7 @@ func example_variables() {
 // is *defined* as the distance light travels in 1/299,792,458 of a second.
 // The speed of light defines the meter, not the other way around.
 func speed_of_light() -> i64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Schwarzschild radius ---
@@ -72,7 +72,7 @@ func speed_of_light() -> i64 {
 //
 // Hint: no ** operator in Rask. Write c * c instead of c**2.
 func schwarzschild_radius(mass: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Temperature conversion ---
@@ -81,7 +81,7 @@ func schwarzschild_radius(mass: f64) -> f64 {
 // 0 K (absolute zero) is -273.15°C — the coldest anything can be.
 // At cruising altitude, outside air is about -56°C (217 K).
 func celsius_to_kelvin(c: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Mutable accumulator ---
@@ -96,7 +96,7 @@ func celsius_to_kelvin(c: f64) -> f64 {
 // There are 50 such pairs, so the answer is 50×101 = 5050.
 // But here, just use a loop.
 func sum_to(n: i32) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

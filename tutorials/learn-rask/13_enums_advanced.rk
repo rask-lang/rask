@@ -72,14 +72,14 @@ enum LogEntry {
 // Extract the time from any log entry.
 // Every variant has a time field — match all five.
 func entry_time(entry: LogEntry) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // Calculate flight time: minutes between Takeoff and Landing.
 // Scan the log for the first Takeoff time and the first Landing time.
 // If either is missing, return 0.
 func flight_time(log: Vec<LogEntry>) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Postfix calculator ---
@@ -104,7 +104,7 @@ enum Token {
 //   (same pattern for Minus, Times, Divide)
 // Return the final value on the stack.
 func eval_postfix(tokens: Vec<Token>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Airport weather minimums ---
@@ -128,7 +128,7 @@ enum AirportStatus {
 //   Closed → no
 //   Restricted → yes if ceiling >= 200 ft AND visibility >= 0.5 sm
 func can_land_ifr(status: AirportStatus) -> bool {
-    panic("TODO")
+    todo()
 }
 
 // Can a VFR-only pilot land?
@@ -136,7 +136,7 @@ func can_land_ifr(status: AirportStatus) -> bool {
 //   Closed → no
 //   Restricted → yes if ceiling >= 1000 ft AND visibility >= 3.0 sm
 func can_land_vfr(status: AirportStatus) -> bool {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

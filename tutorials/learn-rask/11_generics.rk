@@ -54,11 +54,11 @@ extend Pair<A, B> {
 // --- Puzzle 1: Generic max ---
 // Return the larger of two values.
 func max_of<T: Comparable>(a: T, b: T) -> T {
-    panic("TODO")
+    todo()
 }
 
 func min_of<T: Comparable>(a: T, b: T) -> T {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Clamp to range ---
@@ -71,14 +71,14 @@ func min_of<T: Comparable>(a: T, b: T) -> T {
 // has a maximum deflection of about ±17°. Exceed that mechanically
 // and you'd overstress the airframe.
 func clamp<T: Comparable>(value: T, low: T, high: T) -> T {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Min and max of a Vec ---
 // Find both the minimum and maximum in one pass. Return as a Pair.
 // Assume the Vec is non-empty.
 func min_max<T: Comparable>(items: Vec<T>) -> Pair<T, T> {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Linear interpolation ---
@@ -89,13 +89,13 @@ func min_max<T: Comparable>(items: Vec<T>) -> Pair<T, T> {
 // If you're 40% of the way from waypoint A at 30,000 ft to waypoint B
 // at 35,000 ft, your expected altitude is lerp(30000, 35000, 0.4) = 32,000 ft.
 func lerp(a: f64, b: f64, t: f64) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 5: Generic contains ---
 // Check if a Vec contains a specific value.
 func contains<T: Comparable>(items: Vec<T>, target: T) -> bool {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

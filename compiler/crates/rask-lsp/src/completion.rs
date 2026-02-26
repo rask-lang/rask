@@ -142,6 +142,9 @@ impl Backend {
                 rask_resolve::SymbolKind::ExternFunction { .. } => {
                     (CompletionItemKind::FUNCTION, "extern func".to_string())
                 }
+                rask_resolve::SymbolKind::TypeAlias { .. } => {
+                    (CompletionItemKind::CLASS, "type alias".to_string())
+                }
                 rask_resolve::SymbolKind::Field { .. } => continue,
             };
 

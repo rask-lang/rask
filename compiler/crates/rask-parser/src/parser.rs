@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -557,6 +557,7 @@ impl Parser {
             TokenKind::Import => self.parse_import_decl()?,
             TokenKind::Export => self.parse_export_decl()?,
             TokenKind::Const => self.parse_const_decl(is_pub, doc)?,
+            TokenKind::Type => self.parse_type_alias_decl(is_pub)?,
             TokenKind::Test => self.parse_test_decl(is_comptime)?,
             TokenKind::Benchmark => self.parse_benchmark_decl()?,
             TokenKind::Extern => {
@@ -582,7 +583,7 @@ impl Parser {
             }
             _ => {
                 return Err(ParseError::expected(
-                    "declaration (func, struct, enum, union, trait, extend, import, export, const, test, benchmark, extern, package)",
+                    "declaration (func, struct, enum, union, trait, extend, import, export, const, type, test, benchmark, extern, package)",
                     self.current_kind(),
                     self.current().span,
                 ));
@@ -1561,6 +1562,24 @@ impl Parser {
         let init = self.parse_expr()?;
         self.expect_terminator()?;
         Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, doc }))
+    }
+
+    /// Parse a type alias: `type Name = TargetType` or `type Name<T> = (T, T)`
+    fn parse_type_alias_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
+        self.expect(&TokenKind::Type)?;
+        let name = self.expect_ident()?;
+        let type_params = if self.check(&TokenKind::Lt) {
+            self.advance();
+            let (params, _) = self.parse_type_params()?;
+            // parse_type_params already consumes the closing '>'
+            params
+        } else {
+            Vec::new()
+        };
+        self.expect(&TokenKind::Eq)?;
+        let target = self.parse_type_name()?;
+        self.expect_terminator()?;
+        Ok(DeclKind::TypeAlias(TypeAliasDecl { name, type_params, target, is_pub }))
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`

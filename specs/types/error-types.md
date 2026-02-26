@@ -469,6 +469,44 @@ The boundary is who consumes the error, not lib vs app. `origin` is automatic (w
 
 Optional sugar (`T?`, `x?.field`, `x ?? y`) is distinct from `try` propagation — `?` is never used for propagation.
 
+## Development Panics
+
+| Rule | Description |
+|------|-------------|
+| **DP1: todo()** | Panics with "not yet implemented" and source location |
+| **DP2: unreachable()** | Panics with "entered unreachable code" and source location |
+| **DP3: Optional message** | Both accept an optional string: `todo("auth flow")`, `unreachable("invalid state")` |
+| **DP4: Never type** | Both return `Never` (coerces to any type, same as `panic`) |
+| **DP5: Lint warning** | `rask lint` warns on `todo()` in non-test code |
+
+<!-- test: parse -->
+```rask
+func handle(event: Event) -> Response {
+    match event {
+        Click(pos) => handle_click(pos),
+        Key(k) => todo("keyboard handling"),
+    }
+}
+
+func process(status: Status) -> i32 {
+    match status {
+        Active => 1,
+        Inactive => 0,
+        Deleted => unreachable(),
+    }
+}
+```
+
+**`todo()` panic output:**
+```
+thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
+```
+
+**`unreachable()` panic output:**
+```
+thread panicked at 'entered unreachable code', src/handler.rk:12:21
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |

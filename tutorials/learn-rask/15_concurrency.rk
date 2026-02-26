@@ -69,7 +69,7 @@ func example_concurrency() -> () or Error {
 //
 // Hint: use own to transfer each half into its task.
 func parallel_max(readings: Vec<f64>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // Helper — finds the largest value in a Vec
@@ -90,7 +90,7 @@ func vec_max(v: Vec<f64>) -> f64 {
 // use queue.Queue. In Rask, Channel gives you the same thing
 // but the type system guarantees you only send i32 values.
 func channel_sum(n: i32) -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Parallel Monte Carlo ---
@@ -119,7 +119,7 @@ func channel_sum(n: i32) -> i32 {
 // approximate it. Enrico Fermi had used similar ideas earlier for
 // neutron diffusion calculations on the Manhattan Project.
 func estimate_pi(total: i32, num_tasks: i32) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

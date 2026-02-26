@@ -1252,6 +1252,22 @@ impl ComptimeInterpreter {
                 };
                 Err(ComptimeError::Panic(msg))
             }
+            "todo" => {
+                let msg = if let Some(ComptimeValue::String(s)) = args.first() {
+                    format!("not yet implemented: {}", s)
+                } else {
+                    "not yet implemented".to_string()
+                };
+                Err(ComptimeError::Panic(msg))
+            }
+            "unreachable" => {
+                let msg = if let Some(ComptimeValue::String(s)) = args.first() {
+                    format!("entered unreachable code: {}", s)
+                } else {
+                    "entered unreachable code".to_string()
+                };
+                Err(ComptimeError::Panic(msg))
+            }
             "println" | "print" => {
                 // At comptime, these are no-ops (or could be @comptime_print)
                 Ok(ComptimeValue::Unit)

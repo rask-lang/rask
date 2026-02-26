@@ -83,7 +83,7 @@ func example_shared() -> () or Error {
 // Flightradar24 aggregate data from thousands of volunteers'
 // receivers worldwide. Your Raspberry Pi can be one of them.
 func flight_tracker() -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Atomic flight counter ---
@@ -95,7 +95,7 @@ func flight_tracker() -> i32 {
 // CPU instruction. The tradeoff: they only work for simple values
 // (integers, booleans), not complex data structures.
 func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Shared config ---
@@ -109,7 +109,7 @@ func atomic_counter(num_tasks: i32, count_per_task: i32) -> i64 {
 // can't just climb to FL370 — they need "SAS 937, climb flight level
 // three seven zero." The shared config pattern models this nicely.
 func shared_config_update() -> i32 {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

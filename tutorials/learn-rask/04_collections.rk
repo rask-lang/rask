@@ -71,13 +71,13 @@ func example_map() {
 // identically except for mass. Nobody knows why there are exactly three
 // generations — it's one of the big open questions in physics.
 func particle_masses() -> Vec<f64> {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 2: Sum a Vec ---
 // Sum all elements. In Python: sum(numbers). In Rask: write a loop.
 func sum_vec(numbers: Vec<f64>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 3: Periodic table ---
@@ -89,7 +89,7 @@ func sum_vec(numbers: Vec<f64>) -> f64 {
 // predicted their properties. Gallium, germanium, and scandium were all
 // found later and matched his predictions almost exactly.
 func periodic_table() -> Map<string, i32> {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 4: Dot product ---
@@ -102,7 +102,7 @@ func periodic_table() -> Map<string, i32> {
 //
 // Hint: use indexing with a range: for i in 0..a.len() { ... a[i] ... }
 func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
-    panic("TODO")
+    todo()
 }
 
 // --- Puzzle 5: Count occurrences ---
@@ -118,7 +118,7 @@ func dot_product(a: Vec<f64>, b: Vec<f64>) -> f64 {
 //       map.insert(item, 1)
 //   }
 func count_occurrences(items: Vec<i32>) -> Map<i32, i32> {
-    panic("TODO")
+    todo()
 }
 
 // --- Tests ---

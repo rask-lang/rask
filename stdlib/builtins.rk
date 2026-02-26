@@ -9,6 +9,14 @@ public func print(msg: string) { }
 /// Abort execution with an error message.
 public func panic(msg: string) { }
 
+/// Mark unfinished code. Panics with "not yet implemented" at runtime.
+/// Returns `!` (Never) so it works in any type context.
+public func todo(msg: string?) { }
+
+/// Mark code that should never be reached. Panics if executed.
+/// Returns `!` (Never) so it works in any type context.
+public func unreachable(msg: string?) { }
+
 /// Format values into a string.
 public func format(fmt: string) -> string { }
 
