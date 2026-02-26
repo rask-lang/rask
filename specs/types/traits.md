@@ -326,31 +326,6 @@ extend App {
 }
 ```
 
-### Sealed Traits (future consideration)
-
-Sealed traits would restrict implementations to a known set, enabling exhaustive matching on `any Trait`:
-
-<!-- test: skip -->
-```rask
-// Hypothetical syntax
-@sealed
-trait Widget {
-    draw(self, canvas: Canvas)
-}
-
-// Only implementations in this module allowed.
-// External crates can use any Widget but can't add implementations.
-
-// Exhaustive matching would be possible:
-match widget {
-    w if w is Button => ...,
-    w if w is Slider => ...,
-    // Compiler knows this is exhaustive
-}
-```
-
-Without sealed traits, `any Trait` downcasting can miss implementations added by external code. This matters for UI widget trees, event systems, and protocol handlers where exhaustive handling is important. Not yet decided — needs design for: syntax, cross-module sealing rules, interaction with `any Trait` downcasting.
-
 ### Integration Notes
 
 - **Ownership**: `any` values own their heap data — the data pointer is owned, not a reference (`mem.ownership`)
