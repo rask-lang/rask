@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+import error.Error
+
+/// An error wrapping a human-readable context message around a stringified source error.
+/// Use with `try...else` for application-level error chains.
+public struct ContextError {
+    public context: string
+    public source: string
+}
+
+extend ContextError {
+    public func message(self) -> string {
+        return "{self.context}: {self.source}"
+    }
+}
+
+/// Wrap any error with a context message, stringifying the source.
+///
+/// Intended for use with `try...else`:
+///     const text = try fs.read_file(path) else |e| context("reading {path}", e)
+public func context<E: Error>(msg: string, err: E) -> ContextError {
+    return ContextError { context: msg, source: err.message() }
+}
