@@ -54,7 +54,7 @@ Strings have internal heap buffers that can reallocate — same as Vec. This mak
 
 ## The `string_view` Type
 
-Plain indices for lightweight stored references. No validation -- user ensures source string validity (like storing a Vec index).
+Plain indices for lightweight stored references — the span type for parsers, tokenizers, and diagnostics. No validation — user ensures source string validity (like storing a Vec index). 16 bytes, copy-eligible.
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
