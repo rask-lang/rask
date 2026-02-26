@@ -173,6 +173,31 @@ for item in vec.take_all() { }   // item: T (consuming iteration)
 | `vec.drain_where(\|x\| bool)` | `Vec<T>` | Remove and collect. Allocates |
 | `vec.retain(\|x\| bool)` | `()` | Retain non-matching |
 
+## Sorting
+
+| Rule | Description |
+|------|-------------|
+| **SO1: Stable by default** | `sort()` preserves relative order of equal elements |
+| **SO2: In-place** | Sorting mutates the Vec. No new allocation (may use O(log n) stack) |
+| **SO3: Comparable required** | `sort()` requires `T: Comparable`. Custom ordering uses `sort_by` |
+
+| Method | Signature | Semantics |
+|--------|-----------|-----------|
+| `vec.sort()` | `() -> ()` | Stable sort, `T: Comparable` |
+| `vec.sort_by(cmp)` | `(\|T, T\| -> Ordering) -> ()` | Stable sort with custom comparator |
+| `vec.sort_by_key(f)` | `(\|T\| -> K) -> ()` where `K: Comparable` | Stable sort by extracted key |
+
+<!-- test: skip -->
+```rask
+let scores = [3, 1, 4, 1, 5]
+scores.sort()
+// [1, 1, 3, 4, 5]
+
+let users = get_users()
+users.sort_by_key(|u| u.name)
+users.sort_by(|a, b| b.score.compare(a.score))  // descending
+```
+
 ## Shrinking
 
 Infallible, best-effort. If the allocator can't provide a smaller block, the collection keeps its current allocation.
@@ -318,6 +343,9 @@ FIX: Process existing items first, or use an unbounded collection:
 | ZST in `Vec<()>` | — | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | C4 | Compile error |
 | Panic inside `with` | — | Collection left in valid state |
+| `sort()` on empty Vec | SO1 | No-op |
+| `sort()` where `T: !Comparable` | SO3 | Compile error — use `sort_by` |
+| `sort_by` comparator panics | SO2 | Vec left in valid but unspecified order |
 
 ---
 
