@@ -34,10 +34,17 @@ trait Iterator<Item> {
 | Adapter | Behavior | Signature |
 |---------|----------|-----------|
 | `.filter(pred)` | Yields items where predicate is true | `(\|Item\| -> bool) -> Filter<Item, Pred>` |
+| `.map(f)` | Transforms each item | `(\|Item\| -> R) -> Map<Item, R, F>` |
+| `.enumerate()` | Pairs each item with its index | `() -> Enumerate<Item>` yielding `(usize, Item)` |
 | `.take(n)` | Yields first n items | `(usize) -> Take<Item>` |
 | `.skip(n)` | Skips first n items | `(usize) -> Skip<Item>` |
 | `.rev()` | Reverses iteration order (requires bidirectional) | `() -> Rev<Item>` |
-| `.map(f)` | Transforms each item | `(\|Item\| -> R) -> Map<Item, R, F>` |
+| `.zip(other)` | Pairs items from two iterators | `(Iterator<U>) -> Zip<Item, U>` yielding `(Item, U)` |
+| `.chain(other)` | Concatenates two iterators | `(Iterator<Item>) -> Chain<Item>` |
+| `.flat_map(f)` | Maps then flattens one level | `(\|Item\| -> Iterator<R>) -> FlatMap<Item, R, F>` |
+| `.flatten()` | Flattens nested iterators one level | `() -> Flatten<Item>` (Item must be Iterator) |
+| `.chunks(n)` | Yields non-overlapping groups of n | `(usize) -> Chunks<Item>` yielding `Vec<Item>` |
+| `.windows(n)` | Yields overlapping windows of n | `(usize) -> Windows<Item>` yielding `Vec<Item>` |
 
 <!-- test: skip -->
 ```rask
@@ -54,6 +61,86 @@ for i in vec.indices().filter(|i| vec[i].active).take(10) {
 | `let iter = vec.indices()` | Yes | No closure yet |
 | `let f = vec.filter(\|i\| vec[i].x)` | No | Closure accesses scope |
 | `let f = range.filter(\|i\| *i > 10)` | Yes | Closure doesn't access scope |
+
+## Terminal Operations
+
+Terminal operations consume the iterator and produce a final value. No further chaining after a terminal.
+
+| Rule | Description |
+|------|-------------|
+| **TE1: Consumption** | Terminal operations take ownership of the iterator. The chain is gone after the call |
+| **TE2: Eager evaluation** | Terminals drive the full chain — nothing runs until a terminal is called |
+| **TE3: Type inference** | `.collect()` infers target collection from context. Defaults to `Vec<Item>` |
+
+### Collection
+
+| Terminal | Behavior | Returns |
+|----------|----------|---------|
+| `.collect()` | Materializes into collection | `Vec<Item>` (default) or inferred from context |
+| `.collect<C>()` | Materializes into specific collection type | `C` where `C: FromIterator<Item>` |
+
+<!-- test: skip -->
+```rask
+const names = users.map(|u| u.name).collect()
+// names: Vec<string>, inferred
+
+const active = users
+    .filter(|u| u.is_active())
+    .map(|u| u.name)
+    .collect()
+
+// Explicit target type via annotation
+const lookup: Map<string, User> = users.map(|u| (u.name, u)).collect()
+```
+
+### Reduction
+
+| Terminal | Behavior | Returns |
+|----------|----------|---------|
+| `.fold(init, f)` | Reduces with initial value | `Acc` |
+| `.reduce(f)` | Reduces without initial value | `Option<Item>` (None if empty) |
+| `.sum()` | Sums items | `Item` (requires `Item: Numeric`) |
+| `.product()` | Multiplies items | `Item` (requires `Item: Numeric`) |
+| `.count()` | Counts elements | `usize` |
+| `.min()` | Smallest item | `Option<Item>` (requires `Item: Comparable`) |
+| `.max()` | Largest item | `Option<Item>` (requires `Item: Comparable`) |
+
+<!-- test: skip -->
+```rask
+const total = orders.map(|o| o.amount).sum()
+const biggest = scores.max()
+
+const csv = names.fold(string.new(), |acc, name| {
+    if acc.is_empty(): return name
+    return format("{acc},{name}")
+})
+```
+
+### Search
+
+| Terminal | Behavior | Returns |
+|----------|----------|---------|
+| `.find(pred)` | First item matching predicate | `Option<Item>` |
+| `.any(pred)` | True if any item matches | `bool` |
+| `.all(pred)` | True if all items match | `bool` |
+
+<!-- test: skip -->
+```rask
+const admin = users.find(|u| u.role == Role.Admin)
+if items.any(|i| i.is_expired()) { alert() }
+```
+
+### Application
+
+| Terminal | Behavior | Returns |
+|----------|----------|---------|
+| `.for_each(f)` | Applies function to each item | `()` |
+
+<!-- test: skip -->
+```rask
+let total = 0
+items.for_each(|item, mutate total| { total += item.value })
+```
 
 ## Built-In Iterator Types
 
@@ -192,6 +279,14 @@ FIX: Store Copy-able indices or handles instead.
 | Nested loops same collection | L3 | Independent iterators, cheap for index-based |
 | `.iterate()` returns non-Iterator | D5 | Compile error |
 | Closure escapes expression scope | AD3 | Compile error |
+| `.collect()` with no type context | TE3 | Defaults to `Vec<Item>` |
+| `.reduce()` on empty iterator | TE1 | Returns `None` |
+| `.sum()` on empty iterator | — | Returns zero value for the type |
+| `.min()` / `.max()` on empty | — | Returns `None` |
+| `.chunks(0)` | — | Panic (chunk size must be > 0) |
+| `.windows(0)` | — | Panic (window size must be > 0) |
+| `.windows(n)` where n > len | — | Yields nothing |
+| `.zip()` unequal lengths | — | Stops at shorter iterator |
 
 ---
 
@@ -202,6 +297,8 @@ FIX: Store Copy-able indices or handles instead.
 **I4 (no stored references):** Rask's "no storable references" rule applies to iterators. Storing a reference to the collection would create lifetime complexity. Index-based iteration avoids this entirely.
 
 **CU3 (iterate doesn't consume):** Vec's `.iterate()` returns a value iterator (borrowed elements), not an owning iterator. The collection remains accessible in the loop body. Use `.take_all()` for ownership transfer.
+
+**TE3 (collect defaults to Vec):** Most `.collect()` calls want a Vec. Requiring a type annotation for the common case adds noise. Annotate only when you want something else (Map, etc.).
 
 ### Patterns & Guidance
 
@@ -236,9 +333,36 @@ for h in pool.handles() {
 }
 ```
 
+**Chained adapter + terminal:**
+
+<!-- test: skip -->
+```rask
+// Filter-map-collect (most common pattern)
+const active_names = users
+    .filter(|u| u.is_active())
+    .map(|u| u.name)
+    .collect()
+
+// Enumerate for indexed processing
+for (i, item) in items.enumerate() {
+    print("{i}: {item}")
+}
+
+// Zip for parallel iteration
+for (name, score) in names.zip(scores) {
+    print("{name}: {score}")
+}
+
+// Fold for custom accumulation
+const csv = names.fold(string.new(), |acc, name| {
+    if acc.is_empty(): return name
+    return format("{acc},{name}")
+})
+```
+
 **Performance guarantees:**
 - Iterator chains must match hand-written loop performance
-- No heap allocations for standard adapters
+- No heap allocations for standard adapters (`.chunks()` and `.windows()` allocate per yield)
 - Closure inlining eliminates call overhead
 - Optimizer fuses chains into single loops
 
