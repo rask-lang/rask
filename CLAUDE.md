@@ -233,12 +233,15 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | C interop | Unsafe blocks, raw pointers | [unsafe.md](specs/memory/unsafe.md) |
 | Rust interop | compile_rust() in build scripts, C ABI, cbindgen | [build.md](specs/structure/build.md) |
 | Encoding | `comptime for` + field access, auto-derived Encode/Decode, field annotations | [encoding.md](specs/stdlib/encoding.md) |
+| Networking | TCP, UDP, DNS resolution | [net.md](specs/stdlib/net.md) |
+| HTTP | Client + server, linear Responder, HttpClient | [http.md](specs/stdlib/http.md) |
+| Time | Duration, Instant, SystemTime, Duration scaling | [time.md](specs/stdlib/time.md) |
+| OS | Env, args, subprocess spawning, signal handling | [os.md](specs/stdlib/os.md) |
 
 ### Open
 
 | Area | Status |
 |------|--------|
-| Stdlib I/O | Not specified (io, fs, net, http) |
 | Build system | Skeleton only |
 | Macros/attributes | Not specified |
 
