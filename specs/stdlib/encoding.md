@@ -9,11 +9,13 @@ Two language primitives — `comptime for` over struct fields and comptime field
 
 ## Core Mechanism
 
-| Rule | Description |
-|------|-------------|
-| **E1: Comptime field access** | `value.(name)` where `name` is a comptime-known string resolves at compile time to a direct field access. Compile error if field doesn't exist on the type |
-| **E2: Comptime for** | `comptime for field in reflect.fields<T>() { body }` unrolls the loop at compile time. Each iteration generates separate monomorphized code — the body may use different types per iteration |
-| **E3: Per-iteration typing** | Inside a `comptime for` body, `value.(field.name)` has the concrete type of that field. Generic calls like `encode_value(value.(field.name))` monomorphize per-field |
+Encoding uses `comptime for` and comptime field access — see `ctrl.comptime/CT48–CT54` for the full rules. In brief:
+
+- `comptime for field in reflect.fields<T>()` unrolls at compile time, each iteration monomorphized per-field type
+- `value.(field.name)` accesses a field by comptime-known string, resolving to direct field access
+- `comptime if` inside the loop body enables per-field conditional code generation
+
+Visibility rules apply: private fields are accessible only in the defining module.
 
 <!-- test: skip -->
 ```rask
@@ -30,48 +32,6 @@ struct Point { public x: f64, public y: f64 }
 // print_fields(Point { x: 1.0, y: 2.0 }) unrolls to:
 //   print("x = {value.x}")
 //   print("y = {value.y}")
-```
-
-### Comptime Field Access
-
-| Rule | Description |
-|------|-------------|
-| **E4: String must be comptime** | The expression in `value.(expr)` must be comptime-known. Runtime strings are a compile error |
-| **E5: Field must exist** | Compile error if the comptime string doesn't match any field of the value's type |
-| **E6: Visibility respected** | Same visibility rules as direct field access — private fields accessible only in the defining module |
-
-<!-- test: skip -->
-```rask
-const name = comptime "x"
-const v = point.(name)         // OK: comptime-known string
-
-let name = get_name()
-const v = point.(name)         // ERROR: runtime string in comptime field access
-
-const v = point.("z")          // ERROR: Point has no field "z"
-```
-
-### Comptime For
-
-| Rule | Description |
-|------|-------------|
-| **E7: Unrolling** | `comptime for` fully unrolls at monomorphization time. Each iteration becomes separate code |
-| **E8: Comptime iterable** | The iterable must be comptime-known: `reflect.fields<T>()`, `reflect.variants<T>()`, or any comptime array |
-| **E9: No branch quota** | `comptime for` unrolling doesn't count against the backwards branch quota (`ctrl.comptime/CT35`). The quota applies to comptime *interpreter* execution, not monomorphization-time unrolling |
-| **E10: Comptime if in body** | `comptime if` inside the loop body enables per-field conditional code generation (e.g., skip fields, type dispatch) |
-
-<!-- test: skip -->
-```rask
-func encode_struct<T: Encode>(value: T, w: mutate JsonWriter) -> () or JsonError {
-    try w.begin_object()
-    comptime for field in reflect.fields<T>() {
-        comptime if !field.is_skipped {
-            try w.key(field.serial_name)
-            try encode_value(value.(field.name), mutate w)
-        }
-    }
-    try w.end_object()
-}
 ```
 
 ## Encode and Decode Traits
@@ -410,9 +370,9 @@ WHY: @no_encode prevents auto-derive of Encode.
 FIX: Remove @no_encode, or implement a custom encoding method.
 ```
 
-**Runtime string in field access [E4]:**
+**Runtime string in field access [CT53]:**
 ```
-ERROR [std.encoding/E4]: runtime string in comptime field access
+ERROR [ctrl.comptime/CT53]: runtime string in comptime field access
    |
 5  |  const v = point.(name)
    |                   ^^^^ `name` is not comptime-known
@@ -426,9 +386,9 @@ FIX: Use a comptime-known string:
   const v = point.(field.name)       // inside comptime for
 ```
 
-**Unknown field [E5]:**
+**Unknown field [CT54]:**
 ```
-ERROR [std.encoding/E5]: no field "z" on type `Point`
+ERROR [ctrl.comptime/CT54]: no field "z" on type `Point`
    |
 5  |  const v = point.("z")
    |                    ^^^ Point has fields: x, y
@@ -461,8 +421,8 @@ FIX: Add @default with an explicit value:
 | `@default` on non-optional required field | E20 | Field becomes optional in input, required in struct definition. Default fills the gap |
 | `@rename` collision (two fields same serial name) | E18 | Compile error: duplicate serial name |
 | `@skip` field without `@default` during decode | E19, E28 | Field must have a known zero value (E28) or `@default`. Compile error otherwise |
-| Nested comptime for (struct within struct) | E3 | Works — `encode_value` recursively monomorphizes |
-| Private field with `@rename` | E6 | Annotation accepted but ineffective — field not encoded externally. Useful for same-module custom encoding |
+| Nested comptime for (struct within struct) | CT48 | Works — `encode_value` recursively monomorphizes |
+| Private field with `@rename` | — | Annotation accepted but ineffective — field not encoded externally. Useful for same-module custom encoding |
 | Generic struct `Wrapper<T>` | E12 | `Encode` if `T: Encode`. Checked at monomorphization |
 | Enum with non-Encode payload | E17 | Enum is not `Encode`. Error points to the non-Encode variant |
 
@@ -471,8 +431,6 @@ FIX: Add @default with an explicit value:
 ## Appendix (non-normative)
 
 ### Rationale
-
-**E1-E3 (comptime for + field access):** I chose Zig's proven approach adapted to Rask. The reflect spec listed "derive-style code generation" as the primary use case but showed code-as-string generation with no compilation mechanism. `comptime for` + `value.(name)` solves this with two focused primitives: loop unrolling and dynamic-name field access, both resolved at compile time. No macros, no string evaluation, no hidden code generation.
 
 **E11 (marker traits):** I wanted Encode/Decode for generic bounds (`T: Encode`) but Rask doesn't have associated types in MVP. A Serializer trait hierarchy (like serde) would need them. Marker traits are the simplest option that enables compile-time checked generic bounds. Format libraries use `comptime for` directly instead of dispatching through trait methods — each format writes ~100 lines, which is acceptable since formats differ genuinely in how they handle nulls, numbers, nesting.
 
