@@ -1,7 +1,7 @@
 <!-- id: tool.lint -->
 <!-- status: decided -->
 <!-- summary: Convention enforcement for naming, idioms, and style -->
-<!-- depends: tooling/warnings.md -->
+<!-- depends: tooling/warnings.md, compiler/effects.md -->
 
 # Lint
 
@@ -50,6 +50,41 @@ Common mistakes the canonical patterns address.
 |------|-------|----------|
 | **I1: force-unwrap-production** | `x!` force unwrap outside `test` blocks | warning |
 | **I2: missing-ensure** | `@resource` type created without matching `ensure` in same scope | warning |
+
+## Purity
+
+Check `@pure` annotations against compiler-inferred effects (see `comp.effects`). Uses effect metadata — not type-level enforcement.
+
+| Rule | Check | Severity |
+|------|-------|----------|
+| **P1: pure-io** | `@pure` function transitively calls an IO source | warning |
+| **P2: pure-async** | `@pure` function transitively calls an Async source | warning |
+| **P3: pure-mutation** | `@pure` function performs pool Grow/Shrink (`comp.advanced/EF4`) | warning |
+| **P4: pure-allows-errors** | `@pure` functions MAY return `T or E` — errors are values, not effects | — |
+
+`@pure` asserts that a function has no IO, Async, or Mutation effects. The compiler infers effects transitively (`comp.effects/FX2`). Violations are lint warnings, not compile errors — no function coloring.
+
+<!-- test: skip -->
+```rask
+@pure
+func validate(input: string) -> bool {
+    return input.len() > 0 and input.len() < 256
+}
+
+@pure
+func parse(input: string) -> Config or ParseError {
+    // P4: returning errors is fine — errors are values
+    if input.is_empty() { return Err(ParseError.Empty) }
+    return Config { value: input }
+}
+
+@pure
+func bad_pure(path: string) -> Config or Error {
+    // P1 violation: fs.read_file has IO effect
+    const data = try fs.read_file(path)
+    return try json.decode<Config>(data)
+}
+```
 
 ## Style
 
@@ -108,6 +143,23 @@ WARNING [tool.lint/N2]: `into_string` should take ownership of self
 FIX: change `self` to `take self`, or rename to `to_string`
 ```
 
+```
+WARNING [tool.lint/P1]: `@pure` function performs I/O
+   |
+2  |  @pure
+3  |  func bad_pure(path: string) -> Config or Error {
+4  |      const data = try fs.read_file(path)
+   |                       ^^^^^^^^^^^^ IO effect (file read)
+   |
+WHY: @pure asserts no I/O, async, or mutation effects.
+     fs.read_file transitively reaches a file system syscall.
+
+FIX: remove @pure, or restructure to accept data as a parameter:
+
+  @pure
+  func parse_config(data: string) -> Config or Error { ... }
+```
+
 ## JSON Output
 
 `rask lint --format json` produces structured diagnostics:
@@ -144,6 +196,11 @@ FIX: change `self` to `take self`, or rename to `to_string`
 | `@allow` on item overrides block | SU1 | Item-level wins over block-level |
 | Private `from_*` method | N1 | Still checked — conventions apply regardless of visibility |
 | `into_*` with `mutate self` | N2 | Violation — must be `take self` |
+| `@pure` on `comptime func` | P1 | Redundant — comptime is already pure. No warning (harmless) |
+| `@pure` on function with `unsafe` block | P1 | Warning: unsafe is conservatively IO (`comp.effects/IO3`). Suppress with `@allow(purity/io)` if known-pure |
+| `@pure` on public vs private function | P1-P3 | Same check — purity annotation applies regardless of visibility |
+| `@pure` with `using frozen Pool<T>` | P3 | OK — frozen context has Access effect only, no Mutation |
+| `@pure` with `using Pool<T>` (non-frozen) | P3 | Warning only if function actually performs Grow/Shrink. Access-only usage is fine |
 
 ---
 
@@ -156,6 +213,8 @@ FIX: change `self` to `take self`, or rename to `to_string`
 **N5/N7 as errors, not warnings:** `is_*` returning non-bool and `try_*` not returning a Result are strong enough contract violations that they should block — callers rely on these naming conventions for correctness assumptions.
 
 **ST3 (public return type):** Public API signatures are documentation. Forcing explicit return types makes the API surface readable without hovering or inference.
+
+**P1-P3 (purity lint, not type error):** `@pure` is a lint annotation, not a type-system keyword. Violations are warnings, not compile errors. This prevents function coloring — a `@pure` function doesn't restrict its callers or create a "pure world" vs "impure world" split. It's opt-in documentation with compiler-checked teeth. See `comp.effects/FX3` for why effects aren't in the type system.
 
 ### Patterns & Guidance
 
@@ -179,4 +238,5 @@ rask lint src/ --exclude idiom/force-unwrap-production
 
 - `tool.warnings` — compiler warnings (`rask check`)
 - `tool.describe` — module API schema
+- `comp.effects` — effect inference that powers `@pure` checks
 - [canonical-patterns.md](../canonical-patterns.md) — naming convention source
