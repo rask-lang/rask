@@ -36,6 +36,9 @@
 - [x] **Dependency auditing** — `rask audit` checks locked versions against advisory database. Supports `--db` for offline JSON, `--ignore` for known risks, non-zero exit for CI gates (AU1-AU5).
 - [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
+- [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
+- [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).
+- [ ] **Build exec gating** — `exec()`/`exec_output()` require `build_exec` capability (PM9-PM10).
 
 ## Language Features
 
@@ -73,4 +76,4 @@
 - [ ] Pointer provenance rules
 - [ ] `compile_cpp()` build script support
 - [ ] Auto Rask wrapper generation from cbindgen
-- [ ] Capability-based security for dependencies
+- [x] Capability-based security for dependencies
