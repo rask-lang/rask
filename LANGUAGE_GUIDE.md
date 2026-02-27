@@ -517,7 +517,8 @@ Self-referential structures work naturally. No lifetime annotations anywhere.
 **Mitigations for the cost:**
 - The compiler coalesces checks: `pool[h].x = 1; pool[h].y = 2; pool[h].z = 3` becomes
   one check, not three.
-- Frozen pools (`pool.freeze()`) skip all checks—you promise no inserts/removes happen.
+- Frozen pools (`pool.freeze()`) provide zero-cost iteration—no inserts/removes can happen,
+  so iterating with `values()`/`entries()` skips all checks.
 - Copy out values you need: `const hp = pool[h].health` does one check, then `hp` is
   just a number.
 
