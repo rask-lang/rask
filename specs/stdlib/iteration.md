@@ -5,7 +5,7 @@
 
 # Collection Iteration Patterns
 
-Three iteration modes per collection: value (default), index (explicit), and take-all. Default iteration yields borrowed values (read-only), matching all major languages.
+Four iteration modes per collection: value (default, read-only), mutable (read-write), index (explicit), and take-all (consuming).
 
 ## Iteration Modes
 
@@ -14,12 +14,13 @@ Three iteration modes per collection: value (default), index (explicit), and tak
 | **I1: Value mode** | Default `for x in collection` yields borrowed elements (read-only). Natural, matches all major languages |
 | **I2: Index mode** | Use range `for i in 0..collection.len()` for index-based mutation |
 | **I3: Take-all mode** | `.take_all()` consumes the collection, yields owned values |
+| **I4: Mutable mode** | `for mutate x in collection` yields mutable access to each element. Structural mutation still forbidden |
 
-| Collection | Value Mode (Default) | Index Mode | Take All Mode |
-|------------|---------------------|------------|--------------|
-| `Vec<T>` | `for item in vec` -> borrowed `T` | `for i in 0..vec.len()` -> `usize` | `for item in vec.take_all()` -> `T` |
-| `Pool<T>` | `for item in pool` -> borrowed `T` | `for h in pool.handles()` -> `Handle<T>` | `for item in pool.take_all()` -> `T` |
-| `Map<K,V>` | `for (k, v) in map` -> `(K, borrowed V)` | `for k in map.keys()` -> `K` | `for (k,v) in map.take_all()` -> `(K, V)` |
+| Collection | Value Mode (Default) | Mutable Mode | Index Mode | Take All Mode |
+|------------|---------------------|--------------|------------|--------------|
+| `Vec<T>` | `for item in vec` -> borrowed `T` | `for mutate item in vec` -> mutable `T` | `for i in 0..vec.len()` -> `usize` | `for item in vec.take_all()` -> `T` |
+| `Pool<T>` | `for item in pool` -> borrowed `T` | `for mutate item in pool` -> mutable `T` | `for h in pool.handles()` -> `Handle<T>` | `for item in pool.take_all()` -> `T` |
+| `Map<K,V>` | `for (k, v) in map` -> `(K, borrowed V)` | `for mutate (k, v) in map` -> `(K, mutable V)` | `for k in map.keys()` -> `K` | `for (k,v) in map.take_all()` -> `(K, V)` |
 
 ## Value Access
 
@@ -53,6 +54,81 @@ vec[i] = value            // Mutate in place
 | Read-only access | Allowed | Natural use case |
 | `take` param | Forbidden | Ownership transfer impossible |
 
+## Mutable Iteration
+
+`for mutate` provides mutable access to each element without switching to index mode. The binding acts as a mutable alias for the current element — each use desugars to inline access on the underlying collection.
+
+| Rule | Description |
+|------|-------------|
+| **MI1: No structural mutation** | Cannot insert, remove, or clear during mutable iteration (same as R1) |
+| **MI2: In-place mutation** | `item.field = x` is in-place mutation. `item = x` replaces the entire element |
+| **MI3: Collection readable** | Other elements accessible via inline expression access during iteration |
+| **MI4: No take parameters** | Cannot pass `item` to `take` parameters (same as R3) |
+
+<!-- test: skip -->
+```rask
+// Mutable iteration (clean)
+for mutate entity in entities {
+    entity.health -= damage
+    entity.last_hit = now()
+    if entity.health <= 0 {
+        entity.status = Status.Dead
+    }
+}
+
+// Equivalent index mode (verbose)
+for i in 0..entities.len() {
+    entities[i].health -= damage
+    entities[i].last_hit = now()
+    if entities[i].health <= 0 {
+        entities[i].status = Status.Dead
+    }
+}
+```
+
+Reading other elements is allowed (MI3):
+
+<!-- test: skip -->
+```rask
+for mutate entity in entities {
+    entity.health -= damage
+    const max = entities[0].max_health    // OK: inline read of another element
+    if entity.health > max {
+        entity.health = max
+    }
+}
+```
+
+**Map mutable iteration:** Keys are always copies. `mutate` applies to the value binding:
+
+<!-- test: skip -->
+```rask
+for mutate (key, value) in config {
+    // key is a copy (immutable), value is mutable
+    value.count += 1
+    value.last_access = now()
+}
+```
+
+**Pool mutable iteration:**
+
+<!-- test: skip -->
+```rask
+for mutate entity in pool {
+    entity.health -= 10
+    entity.velocity *= 0.9
+}
+```
+
+### When to use mutable vs index mode
+
+| Need | Use |
+|------|-----|
+| Mutate element fields | `for mutate item in vec` — clean, intent clear |
+| Mutate + access other elements | `for mutate item in vec` — MI3 allows reads |
+| Structural mutation (insert/remove) | Index mode — `for i in 0..` or `for h in pool.handles()` |
+| Swap or reorder elements | Index mode — need indices for `vec.swap(i, j)` |
+
 ## Take-All Iteration
 
 | Rule | Description |
@@ -79,7 +155,7 @@ for file in files.take_all() {
 
 ## Mutation During Iteration
 
-Mutation requires index mode (explicit range or `.handles()`). Programmer responsibility.
+In-place mutation uses mutable mode (`for mutate`). Structural mutation requires index mode (explicit range or `.handles()`). Programmer responsibility for structural changes.
 
 | Rule | Description |
 |------|-------------|
@@ -89,14 +165,21 @@ Mutation requires index mode (explicit range or `.handles()`). Programmer respon
 
 <!-- test: skip -->
 ```rask
-// Mutation requires explicit index mode
-for i in 0..entities.len() {
-    entities[i].health -= 10    // Clear you're mutating via index
+// Mutable mode for in-place mutation
+for mutate entity in entities {
+    entity.health -= 10
+}
+
+// Index mode for structural mutation
+for i in (0..entities.len()).rev() {
+    if entities[i].health <= 0 {
+        entities.swap_remove(i)
+    }
 }
 
 // Value mode is read-only
 for entity in entities {
-    print(entity.health)        // Natural iteration
+    print(entity.health)
 }
 ```
 
@@ -121,6 +204,7 @@ for file in files.take_all() { try file.close() }
 | Rule | Description |
 |------|-------------|
 | **K1: Keys copied** | `for (k, v) in map` copies keys (required K: Copy) to allow lookup. Non-Copy keys: use `.take_all()` |
+| **K2: Float key warning** | `Map<f32, V>` and `Map<f64, V>` produce a compile-time warning. NaN != NaN breaks map lookup invariants |
 
 <!-- test: skip -->
 ```rask
@@ -189,18 +273,63 @@ FIX: Use index mode or collect first:
 ```
 
 ```
-ERROR [std.iteration/M2]: cannot mutate items during value iteration
+ERROR [std.iteration/R2]: cannot mutate items during value iteration
    |
 3  |  for entity in entities {
    |                ^^^^^^^^ value iteration is read-only
 4  |      entity.health -= 10
    |      ^^^^^^^^^^^^^^^^^^ cannot mutate borrowed value
 
-FIX: Use index mode for mutation:
+FIX: Use mutable iteration:
 
-  for i in 0..entities.len() {
-      entities[i].health -= 10
+  for mutate entity in entities {
+      entity.health -= 10
   }
+```
+
+```
+ERROR [std.iteration/MI1]: cannot modify collection structure during mutable iteration
+   |
+3  |  for mutate entity in entities {
+   |                       ^^^^^^^^ mutable iteration active
+4  |      entities.push(new_entity)
+   |      ^^^^^^^^^^^^^^^^^^^^^^^^^ structural mutation forbidden
+
+WHY: Mutable iteration allows in-place element mutation, not structural
+     changes (insert/remove/clear). Structural changes could invalidate
+     the iteration position.
+
+FIX: Use index mode for structural mutation, or collect changes first:
+
+  // Option 1: index mode
+  for i in 0..entities.len() {
+      if entities[i].should_split {
+          entities.push(entities[i].split())
+      }
+  }
+
+  // Option 2: collect first
+  let to_add = Vec.new()
+  for mutate entity in entities {
+      if entity.should_split {
+          to_add.push(entity.split())
+      }
+  }
+  for item in to_add.take_all() { try entities.push(item) }
+```
+
+```
+WARNING [std.iteration/K2]: float type used as map key
+   |
+3  |  const cache: Map<f64, Result> = Map.new()
+   |                   ^^^ f64 keys break map lookups when NaN is present
+
+WHY: NaN != NaN by IEEE 754. A NaN key can be inserted but never
+     found by lookup, silently breaking map semantics.
+
+FIX: Use an integer key or newtype wrapper with defined equality:
+
+  const cache: Map<u64, Result> = Map.new()
 ```
 
 ## Edge Cases
@@ -209,12 +338,15 @@ FIX: Use index mode for mutation:
 |------|------|----------|
 | Empty collection | — | Loop body never executes |
 | `Vec<Linear>` value iteration | L1 | Compile error |
+| `Vec<Linear>` mutable iteration | L1 | Compile error (same reason — use `.take_all()`) |
 | Out-of-bounds index | — | Panic |
 | Invalid handle | — | Panic (generation mismatch) |
 | Mutate in value loop | R2 | Compile error |
+| Structural mutation in mutable loop | MI1 | Compile error |
 | `break value` for !Copy | A4 | Requires `.clone()` |
 | Infinite range (`0..`) | — | Works (lazy) |
 | Zero-sized types (`Vec<()>`) | — | Yields values (all identical) |
+| `Map<f32, V>` or `Map<f64, V>` | K2 | Compile-time warning |
 
 ---
 
@@ -226,8 +358,9 @@ FIX: Use index mode for mutation:
 
 | Mode | Use When |
 |------|----------|
-| Value (default) | Read-only iteration - the common case |
-| Index (explicit) | Need to mutate or remove during iteration |
+| Value (default) | Read-only iteration — the common case |
+| Mutable | In-place element mutation without structural changes |
+| Index (explicit) | Structural mutation (insert/remove), swaps, or need indices |
 | Take All | Consuming all items, transferring ownership |
 
 **Safe removal patterns:**

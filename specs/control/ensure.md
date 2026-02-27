@@ -117,6 +117,7 @@ Cleanup actions may fail. Errors are ignored by default; opt-in handling with `e
 | **ER2: Opt-in else clause** | `ensure expr else \|e\| handler` passes error to handler |
 | **ER3: Infallible handler** | `else` handler must not use `try`—nowhere to propagate |
 | **ER4: try forbidden** | Cannot use `try` inside ensure body |
+| **ER5: Multi-failure independent** | When multiple ensures run (LIFO), each runs regardless of whether previous ensures failed. Errors are independent — each is ignored (ER1) or handled by its own `else` clause (ER2). The function's return value is unaffected by ensure failures |
 
 <!-- test: skip -->
 ```rask
@@ -128,6 +129,31 @@ ensure file.close() else |_| panic("!")   // ER2: panic on error
 
 ensure { try file.close() }                     // ❌ Error: ER4
 ensure file.close() else |e| { try fallible() }   // ❌ Error: ER3
+```
+
+**Multiple ensure failures (ER5):**
+
+<!-- test: skip -->
+```rask
+func process() -> () or Error {
+    const a = try open("a.txt")
+    ensure a.close() else |e| log("a close failed: {e}")
+
+    const b = try open("b.txt")
+    ensure b.close() else |e| log("b close failed: {e}")
+
+    const c = try open("c.txt")
+    ensure c.close() else |e| log("c close failed: {e}")
+
+    try do_work()
+    Ok(())
+}
+// If do_work() fails with WorkError:
+//   1. c.close() runs — if it fails, logs and continues
+//   2. b.close() runs — if it fails, logs and continues
+//   3. a.close() runs — if it fails, logs and continues
+//   4. WorkError is returned to the caller
+// Ensure failures never replace the function's own error.
 ```
 
 **When cleanup errors matter, use explicit handling instead:**
@@ -163,6 +189,43 @@ func process() -> () or Error {
     log(config.summary)
     Ok(())
 }
+```
+
+## Loop Iteration Scoping
+
+`ensure` inside a loop body runs at the end of **each iteration**, not at loop exit. The loop body `{ ... }` is the enclosing block per EN1.
+
+| Rule | Description |
+|------|-------------|
+| **EN7: Per-iteration** | `ensure` in a loop body runs when that iteration's block exits — on every iteration, not once at loop end |
+
+<!-- test: skip -->
+```rask
+for path in paths {
+    const file = try open(path)
+    ensure file.close()         // Runs at end of THIS iteration
+
+    try process(file)
+}
+// After each iteration: file.close() runs
+// NOT: all files accumulate and close at loop exit
+```
+
+This is the correct behavior — accumulating resources until loop exit would be a resource leak for long-running loops. Each iteration acquires, uses, and releases its resources independently.
+
+<!-- test: skip -->
+```rask
+// LIFO within an iteration
+for item in items {
+    const a = try acquire_a(item)
+    ensure a.release()
+
+    const b = try acquire_b(item)
+    ensure b.release()
+
+    try process(a, b)
+}
+// Each iteration: b.release(), then a.release() (LIFO within iteration)
 ```
 
 ## Explicit Consumption Cancellation
@@ -255,8 +318,10 @@ func process_many_files_careful(paths: Vec<string>) -> () or Error {
 | Case | Rule | Handling |
 |------|------|----------|
 | Multiple ensures | EN2 | Run in LIFO order (last scheduled runs first) |
+| Multiple ensures all fail | ER5 | Each runs independently, errors handled per-ensure |
 | Ensure on already-consumed value | — | Compile error: value not available |
 | Ensure in nested blocks | EN1 | Each ensure runs when its enclosing block exits |
+| Ensure in loop body | EN7 | Runs at end of each iteration, not loop exit |
 | Ensure + explicit consumption | C1 | Explicit consumption cancels ensure |
 | Ensure body panics | — | Panic propagates, subsequent ensures don't run |
 | Ensure body returns value | — | Value discarded (ensure is statement, not expression) |

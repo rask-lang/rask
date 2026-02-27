@@ -156,6 +156,8 @@ items.for_each(|item, mutate total| { total += item.value })
 | `Map<K,V>` | `.take_all()` | `MapTakeAll<K,V>` | `(K, V)` |
 | Range | `0..n` | `RangeIterator` | Integer type |
 
+**Mutable iteration** (`for mutate x in collection`) does not use the Iterator protocol. The compiler desugars it to index-based access with a mutable binding alias (see `ctrl.loops/LP11`). No `iterate_mut()` method or mutable iterator types exist — the binding is syntactic sugar over `collection[_pos]`.
+
 ## For-In Desugaring
 
 | Rule | Description |
@@ -165,6 +167,7 @@ items.for_each(|item, mutate total| { total += item.value })
 | **D3: Consuming** | `for x in collection.take_all()` — takes ownership of elements |
 | **D4: Index mode** | `for i in 0..vec.len()` or `for h in pool.handles()` — explicit index/handle iteration |
 | **D5: Method resolution** | Check Range type first, then explicit method call, then `.iterate()` |
+| **D6: Mutable mode** | `for mutate x in collection` — compiler desugars to index-based mutable access. Does not call `.iterate()` |
 
 <!-- test: skip -->
 ```rask

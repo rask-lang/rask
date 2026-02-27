@@ -217,9 +217,15 @@ with pool[h1] as e1, pool[h2] as const e2 {
 }
 ```
 
-For iteration + mutation, collect handles first:
+For iteration + mutation, use mutable iteration (`std.iteration/I4`) or collect handles:
 <!-- test: skip -->
 ```rask
+// Mutable iteration (preferred for in-place mutation)
+for mutate entity in pool {
+    entity.update()
+}
+
+// Handle collection (for structural mutation like remove)
 const handles = pool.handles().collect()
 for h in handles {
     with pool[h] as e { e.update() }
