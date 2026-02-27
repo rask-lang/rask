@@ -3,6 +3,7 @@
 // Demonstrates: Threading, timing, struct methods, match, real-time deadlines
 
 import thread.Thread
+import async.Channel
 import time
 
 // ============================================================================
@@ -109,10 +110,17 @@ func isqrt(n: i64) -> i64 {
 // Interrupt Handler Simulation (runs on separate thread)
 // ============================================================================
 
-// Pushes sensor readings into a shared Vec. The Vec handle is heap-allocated,
-// so the main thread sees appended data via its own copy of the handle.
+// Sensor reading sent through a channel (ownership transfer, no data race).
+struct SensorReading {
+    sensor_id: i64
+    value: f64
+    timestamp_ns: i64
+}
+
+// Sends readings through a channel. Previous version shared a bare Vec between
+// threads — that's a data race (Vec has value semantics, no implicit sharing).
 func interrupt_handler(
-    readings: Vec<i64>,
+    tx: Sender<SensorReading>,
     start_time: time.Instant,
     sample_rate_hz: i64
 ) {
@@ -124,10 +132,11 @@ func interrupt_handler(
 
         for sensor_id in 0..3 {
             const value = read_hardware_sensor(sensor_id, sequence)
-            // Encode reading as 3 consecutive i64s: sensor_id, value bits, timestamp
-            readings.push(sensor_id)
-            readings.push(value as i64)
-            readings.push(now_ns)
+            tx.send(SensorReading {
+                sensor_id: sensor_id,
+                value: value,
+                timestamp_ns: now_ns,
+            }).ok()
         }
 
         sequence += 1
@@ -212,9 +221,8 @@ func main() {
     // Build lookup tables
     const crc_table = build_crc8_table()
 
-    // Shared buffer: interrupt handler appends, main thread reads.
-    // Vec handles are heap-allocated — both threads see the same data.
-    const readings = Vec.new()
+    // Channel transfers ownership of readings (no shared state, no data race)
+    const (tx, rx) = Channel<SensorReading>.bounded(1024)
 
     const temp_hist = Vec.new()
     const pres_hist = Vec.new()
@@ -254,27 +262,22 @@ func main() {
     const process_period_ns = 1000000000 / PROCESS_RATE_HZ
     const deadline_ns = HARD_DEADLINE_US * 1000
 
-    // Start interrupt handler on separate thread
+    // Start interrupt handler on separate thread (tx moved into closure)
     let isr_handle = Thread.spawn(|| {
-        interrupt_handler(readings, start_time, SAMPLE_RATE_HZ)
+        interrupt_handler(tx, start_time, SAMPLE_RATE_HZ)
     })
 
     println("Started. Processing for {DURATION_SECS} seconds...")
     println("")
 
     let cycle: i64 = 0
-    let read_idx: i64 = 0
 
     while (time.Instant.now().duration_since(start_time).as_secs() as i64) < DURATION_SECS {
         const cycle_start = time.Instant.now()
 
-        // Drain available samples — each reading is 3 consecutive i64s
-        while read_idx + 2 < readings.len() {
-            const sensor_id = readings.get(read_idx).unwrap()
-            const value_bits = readings.get(read_idx + 1).unwrap()
-            const value = value_bits as f64
-            read_idx += 3
-            state.process_reading(sensor_id, value)
+        // Drain available readings from channel (non-blocking)
+        while rx.try_recv() is Ok(reading) {
+            state.process_reading(reading.sensor_id, reading.value)
         }
 
         // Compute derived values periodically

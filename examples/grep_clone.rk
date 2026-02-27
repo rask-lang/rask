@@ -83,8 +83,11 @@ func print_usage() {
     println("  -h    Show this help")
 }
 
+// line and pattern are borrowed for call duration (B3).
+// No clones needed — all operations are read-only.
 func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     if ignore_case {
+        // to_lowercase allocates new strings (necessary for case folding)
         const lower_line = line.to_lowercase()
         const lower_pattern = pattern.to_lowercase()
         return lower_line.contains(lower_pattern)
@@ -93,8 +96,9 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     }
 }
 
+// path and opts are borrowed (default param mode). No clones needed.
 func grep_file(path: string, opts: Options) -> i64 or GrepError {
-    const content = try fs.read_file(path.clone())
+    const content = try fs.read_file(path)
         .map_err(|e| GrepError.FileError(e))
 
     const lines = content.lines()
@@ -103,7 +107,9 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
 
     for line in lines {
         line_num = line_num + 1
-        const matches = line_matches(line.clone(), opts.pattern.clone(), opts.ignore_case)
+        // line is borrowed for loop body; opts.pattern is block-scoped (struct field).
+        // Both passed as borrows to line_matches — no clones needed.
+        const matches = line_matches(line, opts.pattern, opts.ignore_case)
         const show = if opts.invert_match: !matches else: matches
 
         if show {
@@ -141,8 +147,10 @@ func main() {
     let total_matches = 0
     let had_errors = false
 
-    for file_path in opts.files.clone() {
-        match grep_file(file_path, opts.clone()) {
+    // Value iteration borrows elements. opts is block-scoped (local struct).
+    // Both passed as borrows — no clones needed.
+    for file_path in opts.files {
+        match grep_file(file_path, opts) {
             Ok(count) => total_matches = total_matches + count,
             Err(e) => {
                 const msg = e.message()

@@ -130,14 +130,17 @@ func collision_system(mutate state: GameState) {
 
             if !state.entities[h1].active || !state.entities[h2].active: continue
 
-            const e1 = state.entities[h1]
-            const e2 = state.entities[h2]
+            // Pool elements are statement-scoped (V2) — can't store in const.
+            // Copy out small sub-structs: Position (8 bytes) and Collider (4 bytes) are Copy.
+            const p1 = state.entities[h1].position
+            const p2 = state.entities[h2].position
+            const c1 = state.entities[h1].collider
+            const c2 = state.entities[h2].collider
 
-            // Calculate distance
-            const dx = e1.position.x - e2.position.x
-            const dy = e1.position.y - e2.position.y
+            const dx = p1.x - p2.x
+            const dy = p1.y - p2.y
             const dist = (dx * dx + dy * dy).sqrt()
-            const min_dist = e1.collider.radius + e2.collider.radius
+            const min_dist = c1.radius + c2.radius
 
             if dist < min_dist {
                 handle_collision(mutate state, h1, h2)
@@ -209,30 +212,45 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
     }
 }
 
-// Parallel movement update - processes entity batches across threads
+// Parallel movement update — copy out, compute in parallel, write back.
+// Closures can't capture mutable borrows across threads (S3: no escape).
+// Pattern: batch-read → parallel-compute → batch-write.
 func parallel_movement_system(mutate entities: GameState.{entities}, dt: f32, num_threads: usize)
     using ThreadPool
 {
-    let handles = entities.handles()
-    let chunk_size = (handles.len() + num_threads - 1) / num_threads
+    const handles = entities.handles()
 
-    // Split work across thread pool
-    let thread_handles = Vec.new()
-    for chunk in handles.chunks(chunk_size) {
-        let chunk = chunk.to_vec()
-        let task = ThreadPool.spawn(|| {
-            for h in chunk {
-                if !entities[h].active: continue
-                entities[h].position.x += entities[h].velocity.dx * dt
-                entities[h].position.y += entities[h].velocity.dy * dt
-            }
-        })
-        thread_handles.push(task).ok()
+    // 1. Copy out positions and velocities (both Copy: ≤16 bytes)
+    let work: Vec<(Handle<Entity>, Position, Velocity)> = Vec.new()
+    for h in handles {
+        if !entities[h].active: continue
+        work.push((h, entities[h].position, entities[h].velocity))
     }
 
-    // Wait for all chunks to complete
-    for h in thread_handles {
-        h.join().ok()
+    // 2. Split into chunks and compute new positions in parallel
+    const chunk_size = (work.len() + num_threads - 1) / num_threads
+    let tasks = Vec.new()
+    for chunk in work.chunks(chunk_size) {
+        const owned_chunk = chunk.to_vec()
+        let task = ThreadPool.spawn(|| {
+            let results = Vec.new()
+            for (h, pos, vel) in owned_chunk {
+                results.push((h, Position {
+                    x: pos.x + vel.dx * dt,
+                    y: pos.y + vel.dy * dt,
+                }))
+            }
+            return results
+        })
+        tasks.push(task)
+    }
+
+    // 3. Collect and write back
+    for task in tasks {
+        const updated = task.join().unwrap()
+        for (h, new_pos) in updated {
+            entities[h].position = new_pos
+        }
     }
 }
 
