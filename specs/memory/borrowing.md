@@ -135,25 +135,25 @@ For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone(
 | **W2: Source frozen** | Source collection cannot be accessed inside the `with` block (no structural mutations, no other element access) |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
-| **W5: Mutable default** | `as v` is mutable (default); `as const v` is read-only (explicit). Compiler warns when Shared takes write lock but binding is never mutated |
+| **W5: Mutable binding** | `with` bindings are always mutable. Read-only access is enforced by the source (e.g., `shared.read()` prevents mutation). Compiler warns when binding is never mutated |
 | **W6: Value production** | Block can produce a value (last expression) — `with` works in expression context |
 | **W7: One-liner shorthand** | `with X as v: expr` — no braces for single expressions (parallels `if cond: expr`) |
 
 ### Syntax
 
 ```
-with <source>[<key>] as [const] <binding> { <body> }
-with <source>[<key>] as [const] <binding>: <expr>
+with <source>[<key>] as <binding> { <body> }
+with <source>[<key>] as <binding>: <expr>
 
 // Multiple elements
-with <source>[<key1>] as [const] <binding1>, <source>[<key2>] as [const] <binding2> { <body> }
+with <source>[<key1>] as <binding1>, <source>[<key2>] as <binding2> { <body> }
 ```
 
 ### Examples
 
 <!-- test: skip -->
 ```rask
-// Mutable multi-statement access (default — no keyword needed)
+// Multi-statement access
 with pool[h] as entity {
     entity.health -= damage
     entity.last_hit = now()
@@ -162,18 +162,13 @@ with pool[h] as entity {
     }
 }
 
-// Read-only access (explicit const)
-with pool[h] as const entity {
-    log("{entity.name} at {entity.position}")
-}
-
 // Multiple elements from same collection
 with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack    // Runtime panic if h1 == h2
 }
 
 // Expression context — produces a value
-const name = with pool[h] as const entity { entity.name.clone() }
+const name = with pool[h] as entity { entity.name.clone() }
 
 // One-liner shorthand
 with pool[h] as e: e.health -= 10
@@ -212,7 +207,7 @@ with pool[h] as entity {
 For accessing multiple elements, use the comma syntax:
 <!-- test: skip -->
 ```rask
-with pool[h1] as e1, pool[h2] as const e2 {
+with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack
 }
 ```
@@ -234,16 +229,16 @@ for h in handles {
 
 ### Unified `with` across container types
 
-One syntax for all container types that hold values behind indirection.
+One syntax for all container types that hold values behind indirection. Bindings are always mutable — read-only access is enforced by the source.
 
-| Container | Mutate (default) | Read-only |
-|-----------|------------------|-----------|
-| Pool/Vec/Map | `with pool[h] as e { ... }` | `with pool[h] as const e { ... }` |
-| Cell | `with cell as v { ... }` | `with cell as const v { ... }` |
-| Shared | `with shared as v { ... }` (write lock) | `with shared as const v { ... }` (read lock) |
-| Mutex | `with mutex as v { ... }` (exclusive lock) | `with mutex as const v { ... }` (exclusive lock) |
+| Container | Access | Read-only access |
+|-----------|--------|------------------|
+| Pool/Vec/Map | `with pool[h] as e { ... }` | — (just don't mutate) |
+| Cell | `with cell as v { ... }` | — (just don't mutate) |
+| Shared | `with shared.write() as v { ... }` | `with shared.read() as v { ... }` (mutation is compile error) |
+| Mutex | `with mutex as v { ... }` | — (always exclusive) |
 
-Mutex always takes an exclusive lock regardless. The `const` distinction controls whether the binding is mutable inside the block, not the lock mode. For Shared, the distinction matters: `as const v` takes a shared read lock (concurrent readers OK), `as v` takes an exclusive write lock. The compiler warns when a Shared write lock is taken but the binding is never mutated — suggests adding `const`.
+Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is a compile error. For all other types, `with` gives mutable access. The compiler warns if a binding is never mutated (consider whether you need the `with` block at all, or use `.read()` for Shared).
 
 See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.
 
@@ -471,7 +466,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 **W2 (source frozen):** Start strict — freeze the entire collection during `with`. The comma syntax handles the multi-element case. Relaxing to "structural mutations only" is a future option if real code needs it.
 
-**W5 (mutable default):** `with` exists for multi-statement access — and 3 out of 4 container types (Pool/Vec/Map, Cell, Mutex) are used for mutation in the overwhelming majority of cases. If you just need to read, inline access often suffices. Defaulting to mutable saves `mutate` on every `with` block. The outlier is `Shared<T>` (read-heavy by design), where the compiler warns when a write lock is taken but the binding is never mutated. Function parameters default to immutable because they're contracts affecting all callers — `with` bindings are local to the block, different context, different default.
+**W5 (always mutable):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access often suffices. Making bindings always mutable eliminates the `const` keyword from `with` entirely, removing a concept that caused confusion: for `Shared<T>`, `const` previously changed the lock type (shared vs exclusive), while for everything else it only controlled binding mutability. With explicit `.read()`/`.write()` on Shared, there's no need for `const` on `with` bindings. The compiler warns when a `with` binding is never mutated.
 
 **Why strings are value-access, not block-scoped:** Strings own heap buffers — structurally the same as Vec. Block-scoped string views would require a hidden view type distinct from `string` and borrow-of-borrow tracking when views are passed to functions. This contradicts the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
 

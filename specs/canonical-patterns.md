@@ -163,7 +163,7 @@ func get_user(id: i64) -> User or NotFound {
 
 ### Error context
 
-Use `try...else` to add context when propagating errors. Two tiers depending on who consumes the error:
+Use `try...else` to add context when propagating errors. Stdlib provides `ContextError` and `context()` for human-readable chains. Two tiers depending on who consumes the error:
 
 ```rask
 // Application code — human-readable context chains
@@ -337,12 +337,12 @@ Message passing for communication, `Shared<T>` for shared data.
 // Shared data — with-based access, no lock leaks
 const db = Shared.new(Database.new())
 
-with db as const d {
+with db.read() as d {
     const user = d.users.get(id)
     respond(user)
 }
 
-with db as d {
+with db.write() as d {
     d.users.insert(id, new_user)
 }
 
@@ -353,8 +353,8 @@ const result = try ch.receiver.recv()
 ```
 
 **Anti-patterns:**
-- Global mutable state — use `Shared<T>` with explicit read/write scopes.
-- Holding locks across await points — `Shared` closures prevent this by design.
+- Global mutable state — use `Shared<T>` with explicit `.read()`/`.write()` scopes.
+- Holding locks across await points — `Shared` `with` blocks prevent this by design.
 
 See [concurrency/sync.md](concurrency/sync.md).
 

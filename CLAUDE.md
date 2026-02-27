@@ -109,8 +109,9 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Error propagation | `try expr` | `expr?` |
 | Pool context | `func f() using Pool<T>` | N/A |
 | Runtime context | `using Multitasking { }` | N/A |
-| Element binding | `with pool[h] as x { }` (mutable default) / `with pool[h] as const x { }` | N/A |
-| Cell/Shared/Mutex | `with cell as v { }` (mutable default) / `with shared as const v { }` (read lock) | N/A |
+| Element binding | `with pool[h] as x { }` (always mutable) | N/A |
+| Cell/Mutex | `with cell as v { }` / `with mutex as v { }` | N/A |
+| Shared read/write | `with shared.read() as v { }` / `with shared.write() as v { }` | N/A |
 | Async spawn | `spawn(\|\| {})` | `tokio::spawn(async {})` |
 | Thread pool spawn | `ThreadPool.spawn(\|\| {})` | N/A |
 | OS thread spawn | `Thread.spawn(\|\| {})` | `std::thread::spawn(\|\| {})` |
@@ -158,13 +159,14 @@ using Multitasking {                         // runtime executor
     spawn(|| { work() }).detach()
 }
 
-with pool[h] as entity {                     // mutable element binding (default)
+with pool[h] as entity {                     // mutable element binding
     entity.health -= 10
 }
 
-with cell as v { v.count += 1 }             // Cell access (mutable default)
-with shared as const v { v.timeout }         // Shared read lock (explicit const)
-with mutex as v { v.push(item) }             // Mutex exclusive lock (mutable default)
+with cell as v { v.count += 1 }             // Cell access (mutable)
+with shared.read() as v { v.timeout }        // Shared read lock (explicit)
+with shared.write() as v { v.count += 1 }    // Shared write lock (explicit)
+with mutex as v { v.push(item) }             // Mutex exclusive lock
 
 // Spawning (functions, not keywords)
 import async.spawn

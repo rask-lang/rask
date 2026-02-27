@@ -107,11 +107,6 @@ with pool[h] as entity {
     }
 }
 
-// Read-only access (explicit const)
-with pool[h] as const entity {
-    log("{entity.name} at {entity.position}")
-}
-
 // One-liner shorthand
 with pool[h] as e: e.health -= damage
 ```
@@ -596,7 +591,7 @@ if should_remove {
 }
 
 // Pattern 3: Multi-element access
-with pool[h1] as e1, pool[h2] as const e2 {
+with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack
 }
 ```
