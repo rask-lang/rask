@@ -168,6 +168,16 @@ for entity in pool.values() {
 }
 ```
 
+**Mutable mode** — `for mutate` provides in-place element mutation (`std.iteration/I4`):
+```rask
+for mutate entity in pool {
+    entity.health -= 10
+    entity.velocity *= 0.9
+}
+```
+
+Structural mutation (insert/remove) is forbidden during mutable iteration. Use handle mode for that.
+
 **Entries mode** — `pool.entries()` yields both:
 ```rask
 for (h, entity) in pool.entries() {
@@ -526,9 +536,9 @@ func build_graph() -> Pool<Node> or Error {
 
 ```rask
 func render_frame(world: World) {
-    // Physics update (needs mutation)
-    for h in world.entities.handles() {
-        world.entities[h].update_physics()
+    // Physics update (mutable iteration — clean)
+    for mutate entity in world.entities {
+        entity.update_physics()
     }
 
     // Render pass (read-only, zero-cost)

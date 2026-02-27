@@ -115,6 +115,12 @@ with vec[i] as v: v.count += 1
 const name = with vec[i] as const v { v.name.clone() }
 ```
 
+## Map Key Constraints
+
+| Rule | Description |
+|------|-------------|
+| **K1: Float key warning** | `Map<f32, V>` and `Map<f64, V>` produce a compile-time warning. NaN != NaN by IEEE 754, which breaks map lookup invariants — a NaN key can be inserted but never found |
+
 ## Map -- Key-Based Access
 
 | Method | Returns | Semantics |
@@ -342,6 +348,7 @@ FIX: Process existing items first, or use an unbounded collection:
 | `with vec[i] as e1, vec[i] as e2` | D1 | Panic (duplicate index) |
 | ZST in `Vec<()>` | — | `len()` tracks count, no storage allocated |
 | `Vec<LinearResource>` | C4 | Compile error |
+| `Map<f32, V>` or `Map<f64, V>` | K1 | Compile-time warning (NaN breaks lookups) |
 | Panic inside `with` | — | Collection left in valid state |
 | `sort()` on empty Vec | SO1 | No-op |
 | `sort()` where `T: !Comparable` | SO3 | Compile error — use `sort_by` |
