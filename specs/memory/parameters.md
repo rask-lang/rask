@@ -224,6 +224,20 @@ ERROR [mem.parameters/PM3]: value used after being taken
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 
+**Why no call-site markers for `mutate`?** Swift (`&x`), C# (`ref x`), and Rue (`&x`) all require markers at call sites for mutable parameters. Three languages converging on the same choice deserves an answer for why Rask diverges.
+
+The argument *for* call-site markers: mutation is a major effect. When reading `apply_damage(player, 10)` in a diff, you can't tell if `player` gets mutated without checking the signature. Diffs, terminal output, and code review tools don't have ghost annotations.
+
+I chose against it for three reasons:
+
+1. **Ceremony cost is per-call, not per-definition.** A `mutate` parameter is declared once but called many times. Adding markers to every call site trades one line of signature clarity for N lines of call-site noise. The signature is the contract — calls are uses of the contract.
+
+2. **`own` already marks the destructive case.** Ownership transfer (`take`) is the dangerous one — after the call, your value is gone. That gets a call-site marker (`own`). Mutation is temporary — your value comes back, possibly changed. The asymmetry is intentional: mark the irreversible action, not the reversible one.
+
+3. **IDE ghost annotations cover the readability gap.** The compiler knows which arguments are mutated. IDEs show `mutate` as ghost text at call sites. This gives you the information without the ceremony. The cost: code review outside IDEs loses this. I think that's acceptable — the signature is one jump away, and `mutate` in the signature is loud enough to notice.
+
+This is a deliberate tradeoff, not an oversight. If real-world usage shows that hidden mutation at call sites causes bugs or confusion, call-site markers can be added without breaking existing code (they'd be optional annotations on existing syntax).
+
 ### Patterns & Guidance
 
 **Method chains:**
@@ -249,13 +263,24 @@ Builder.new()
 
 ### IDE Integration
 
-| Context | Annotation |
-|---------|------------|
-| Default parameter | No ghost (read-only is explicit in source) |
-| `mutate` parameter | No ghost (explicit in source) |
-| Take parameter | No ghost (explicit in source) |
+**Signatures:** All modes are visible in source — no ghost annotations needed.
 
-All parameter modes are visible in source text. Ghost annotations are not needed.
+**Call sites:** The IDE shows parameter modes as ghost text at each argument:
+
+<!-- test: skip -->
+```rask
+apply_damage(player, 10)        // IDE shows: apply_damage(mutate player, 10)
+consume(user)                   // IDE shows: consume(own user)  [already in source if take]
+process(data)                   // IDE shows nothing (borrow is default, no annotation)
+```
+
+| Context | Ghost annotation |
+|---------|-----------------|
+| Borrow argument | None (default, no noise) |
+| `mutate` argument | `mutate` ghost before argument |
+| `take` argument | `own` ghost before argument (redundant if `own` already written) |
+
+This bridges the gap between source-level simplicity and full visibility. In an IDE, mutation is always visible. In plain text (diffs, terminal), check the function signature.
 
 ### See Also
 
