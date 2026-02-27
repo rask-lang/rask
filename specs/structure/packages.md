@@ -49,6 +49,7 @@ Algorithm: build transitive dependency graph → collect all version constraints
 | **LK5: Capabilities** | Lock file records inferred capabilities per package (struct.build/PM5) |
 | **LK6: Versioned format** | `lockfile-version = 1` header — compiler errors on unsupported versions |
 | **LK7: Relative paths** | Path dependencies stored relative to package root for cross-machine reproducibility |
+| **LK8: Signing key pinned** | Lock file records expected Ed25519 signing key fingerprint per registry package. Key change on update = warning |
 
 ```
 # rask.lock — auto-generated, do not edit
@@ -59,6 +60,7 @@ name = "http-client"
 version = "2.1.0"
 source = "registry+https://packages.rk-lang.org"
 checksum = "sha256:a1b2c3d4..."
+signing-key = "ed25519:f9e8d7c6..."
 capabilities = ["net"]
 
 [[package]]
@@ -67,6 +69,8 @@ version = "1.3.0"
 source = "path+../parser"
 checksum = "sha256:e5f6g7h8..."
 ```
+
+Note: `signing-key` is only present for registry packages. Path and git dependencies don't have it.
 
 | Command | Effect |
 |---------|--------|
@@ -135,6 +139,8 @@ FIX: rask update
 | Pre-release in constraint | VR2 | Must use exact: `=1.0.0-beta.1` |
 | Path dep in publish | RG3 | Error |
 | Dev-dependency conflict | MV1 | Dev-deps don't affect transitive resolution |
+| Lock file missing `signing-key` for signed package | LK8 | Added on next `rask fetch` or `rask update` |
+| Signing key changed without rotation record | SG4 | Hard error — possible compromise |
 
 ---
 
@@ -198,9 +204,10 @@ public func old_function() { ... }
 | `rask fetch` validation | Implemented |
 | `rask update` lock regeneration | Implemented |
 | Build-time constraint validation | Implemented |
-| Remote registry (RG1-RG4) | Not started |
-| Dependency cache (CA1-CA3) | Not started |
-| Workspaces (WS1-WS3) | Not started |
+| Remote registry (RG1-RG4) | Implemented |
+| Dependency cache (CA1-CA3) | Implemented |
+| Workspaces (WS1-WS3) | Implemented |
+| Lock file signing key (LK8) | Not started |
 
 ### See Also
 
