@@ -139,15 +139,15 @@ func render_frame(world: GameWorld) {
     const frozen_entities = world.entities.freeze_ref()
     const frozen_meshes = world.meshes.freeze_ref()
 
-    for h in frozen_entities.handles() {
-        const entity = frozen_entities[h]
-        const mesh = frozen_meshes[entity.mesh]
-        draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+    for (h, entity) in frozen_entities.entries() {
+        if frozen_meshes.get(entity.mesh) is Some(mesh) {
+            draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+        }
     }
 }
 ```
 
-**Concepts: 6** — frozen pools, cross-pool handles, zero gen checks, unsafe FFI, read-only borrowing, two frozen pools. **PASS.**
+**Concepts: 6** — frozen pools, cross-pool handles, checked random access, unsafe FFI, read-only borrowing, two frozen pools. **PASS.**
 
 ## Phase 5: Parallel Variant
 
@@ -160,10 +160,10 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
     const mesh_snap = world.meshes.freeze_ref()
 
     const render_handle = ThreadPool.spawn(|| {
-        for h in snapshot.handles() {
-            const entity = snapshot[h]
-            const mesh = mesh_snap[entity.mesh]
-            draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+        for (h, entity) in snapshot.entries() {
+            if mesh_snap.get(entity.mesh) is Some(mesh) {
+                draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
+            }
         }
     }
 
