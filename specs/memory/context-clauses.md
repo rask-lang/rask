@@ -18,6 +18,8 @@
 
 Without `frozen`, contexts are mutable by default — writes through handles are allowed, but only `Pool<T>` satisfies the context (not `FrozenPool<T>`). See `mem.pools` for the full subsumption rule.
 
+**Note:** `h.field` auto-resolution in frozen contexts performs generation checks (same as mutable contexts). The `frozen` modifier means "no structural mutations" — it doesn't skip validity checks. Zero-cost access on frozen pools is available through iteration (`values()`, `entries()`), not through handle auto-resolution.
+
 <!-- test: skip -->
 ```rask
 // Named — binding + auto-resolution
@@ -34,7 +36,7 @@ func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     // players.remove(h)      // ERROR: 'players' not in scope
 }
 
-// Frozen — read-only
+// Frozen — read-only (h.field still generation-checked)
 func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
     return h.health
 }
