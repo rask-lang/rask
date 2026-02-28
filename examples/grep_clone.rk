@@ -31,7 +31,7 @@ extend GrepError {
     }
 }
 
-func parse_args(args: Vec<string>) -> Options or GrepError {
+func parse_args(take args: Vec<string>) -> Options or GrepError {
     let opts = Options {
         pattern: "",
         files: Vec.new(),
@@ -43,7 +43,7 @@ func parse_args(args: Vec<string>) -> Options or GrepError {
 
     let positional = Vec.new()
 
-    for arg in args.iter().skip(1) {
+    for arg in args.take_all().skip(1) {
         match arg {
             "-i" => opts.ignore_case = true,
             "-n" => opts.line_numbers = true,
@@ -53,21 +53,16 @@ func parse_args(args: Vec<string>) -> Options or GrepError {
                 print_usage()
                 std.exit(0)
             }
-            "--" => {}  // Skip arg delimiter
-            _ => positional.push(arg.clone()),
+            "--" => {}
+            _ => positional.push(arg),
         }
     }
 
-    if positional.len() == 0: return Err(GrepError.NoPattern)
-    opts.pattern = positional[0].clone()
+    if positional.is_empty(): return Err(GrepError.NoPattern)
+    if positional.len() < 2: return Err(GrepError.NoFiles)
 
-    // Collect remaining positional args as files
-    if positional.len() == 1: return Err(GrepError.NoFiles)
-    let i = 1
-    while i < positional.len() {
-        opts.files.push(positional[i].clone())
-        i = i + 1
-    }
+    opts.pattern = positional.remove(0)
+    opts.files = positional
 
     return Ok(opts)
 }
@@ -94,7 +89,7 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
 }
 
 func grep_file(path: string, opts: Options) -> i64 or GrepError {
-    const content = try fs.read_file(path.clone())
+    const content = try fs.read_file(path)
         else |e| GrepError.FileError(e)
 
     const lines = content.lines()
@@ -103,7 +98,7 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
 
     for line in lines {
         line_num = line_num + 1
-        const matches = line_matches(line.clone(), opts.pattern.clone(), opts.ignore_case)
+        const matches = line_matches(line, opts.pattern, opts.ignore_case)
         const show = if opts.invert_match: !matches else: matches
 
         if show {
@@ -128,7 +123,7 @@ func grep_file(path: string, opts: Options) -> i64 or GrepError {
 
 func main() {
     const args = cli.args()
-    const opts = match parse_args(args) {
+    let opts = match parse_args(own args) {
         Ok(o) => o,
         Err(e) => {
             const msg = e.message()
@@ -141,8 +136,8 @@ func main() {
     let total_matches = 0
     let had_errors = false
 
-    for file_path in opts.files.clone() {
-        match grep_file(file_path, opts.clone()) {
+    for file_path in opts.files.take_all() {
+        match grep_file(file_path, opts) {
             Ok(count) => total_matches = total_matches + count,
             Err(e) => {
                 const msg = e.message()

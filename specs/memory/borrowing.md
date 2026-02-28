@@ -559,6 +559,8 @@ apply(pos, vel)              // [uses views from lines 3-4]
 
 Hover information shows the access type, duration, and suggested patterns for that source type.
 
+**String ownership patterns (reducing clone noise):** Most string `.clone()` calls are unnecessary — O3 borrow inference handles the common case. See the `std.strings` appendix [Why Not COW Strings?](../stdlib/strings.md#why-not-cow-strings) for the full pattern catalog.
+
 ### See Also
 
 - [Value Semantics](value-semantics.md) — Copy vs move behavior (`mem.value-semantics`)
