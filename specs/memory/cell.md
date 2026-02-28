@@ -32,7 +32,7 @@ button.on_click(|event, state| {
 | **CE1: Heap-allocated** | `Cell.new(value)` heap-allocates the value |
 | **CE2: Value semantics** | `Cell<T>` is a value that owns its heap data (like Vec, string) |
 | **CE3: Move-only** | `Cell<T>` is never Copy; assignment moves |
-| **CE4: with access** | Access through `with cell as const v { ... }` (read) and `with cell as v { ... }` (mutate, default) |
+| **CE4: with access** | Access through `with cell as v { ... }` — always mutable binding |
 | **CE5: Exclusive mutation** | `with...as v` (mutable, default) takes exclusive access; no concurrent reads or writes |
 
 ## API
@@ -49,8 +49,8 @@ Access is through `with`:
 ```rask
 const counter = Cell.new(0)
 
-// Read (explicit const)
-const current = with counter as const c { c }
+// Read
+const current = with counter as c { c }
 
 // Mutate
 with counter as c { c += 1 }
@@ -59,7 +59,7 @@ with counter as c { c += 1 }
 with counter as c: c += 1
 
 // Expression context
-const doubled = with counter as const c { c * 2 }
+const doubled = with counter as c { c * 2 }
 
 // Replace
 const old = counter.replace(0)

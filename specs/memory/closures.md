@@ -328,7 +328,7 @@ button2.on_click(|event, counter| {
     with counter as c { c += 10 }
 })
 
-// After clicks: const value = with counter as const c { c }
+// After clicks: const value = with counter as c { c }
 ```
 
 See `mem.cell` for `Cell<T>` details.
