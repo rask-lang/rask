@@ -82,12 +82,22 @@ Specified but not implemented:
 - [ ] **Runtime trait dispatch** — `any Trait` for heterogeneous collections
 - [ ] **Cross-compilation** — `--target` flag wired to Cranelift + cross-linker detection (XT1-XT6)
 
+### Phase 5: Incremental compilation foundations
+
+Design the IR for function-level granularity now — this can't be retrofitted. See [incremental.md](specs/compiler/incremental.md).
+
+- [ ] **Semantic hashing** — implement `comp.semantic-hash` (hash computation, Merkle tree, cache keys)
+- [ ] **Function identity** — add `MonoFunctionKey` to monomorphization output
+- [ ] **MIR serialization** — `serde` derives on MIR types for object caching
+- [ ] **Per-function object caching** — cache compiled code blobs by semantic hash (Phase 1)
+- [ ] **Fast relink** — incremental relink with `mold`/`lld`
+- [ ] **In-place binary patching** — function slots + GOT + ELF patcher (Phase 2, when relink becomes bottleneck)
+
 ### Post-v1.0
 
 - **State machine codegen** — stackless transforms for green tasks (optimization, not blocking)
 - **Cross-compilation extras** — platform-specific deps (XT7), multi-target builds (XT8), `rask targets` (XT9)
 - LLVM backend
-- Incremental compilation (semantic hashing)
 - Macros / `format!`
 - Comptime debugger
 - Fuzzing / property-based testing
