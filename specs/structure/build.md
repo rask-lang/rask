@@ -43,6 +43,7 @@ All keywords inside `package` follow: `keyword "name" ["version"] [{ key: value 
 | `license` | string | SPDX license identifier |
 | `repository` | string | Source repository URL |
 | `members` | list | Workspace member directories |
+| `sandbox` | bool | Sandbox root build script (default: `false`). Deps always sandboxed (SB1) |
 
 ## Dependencies
 
@@ -84,7 +85,9 @@ I chose compile-time capability inference over author annotations — the compil
 | **PM5: Lock file tracking** | `rask.lock` records inferred capabilities per package (struct.packages/LK5) |
 | **PM6: Update detection** | `rask update` warns if a dependency's capabilities changed |
 | **PM7: Transitive** | A dep's capabilities include its transitive deps' capabilities |
-| **PM8: Build script sandboxing** | Build scripts run in the interpreter — fs/exec/net are interceptable |
+| **PM8: Build script sandbox** | Dependency build scripts run sandboxed by default (SB1-SB7) — structured APIs work without escape, `exec()` gated by `build_exec` |
+| **PM9: build_exec gating** | `exec()` and `exec_output()` in build scripts require `allow: ["build_exec"]` on the dep. Structured APIs don't require it |
+| **PM10: Structured build APIs** | `compile_c`, `compile_rust`, `pkg_config`, `link_library`, `write_source` need no extra capabilities — sandboxed by construction |
 
 | Import prefix | Capability |
 |---------------|------------|
@@ -92,14 +95,18 @@ I chose compile-time capability inference over author annotations — the compil
 | `io.fs` | `read`, `write` |
 | `os.exec`, `os.process` | `exec` |
 | `unsafe` blocks, `extern` declarations | `ffi` |
+| `exec()` / `exec_output()` in `func build()` | `build_exec` |
 
 ```rask
 dep "http-client" "^2.0" {
     allow: ["net"]
 }
-dep "parser" "^1.0"          // no capabilities needed — silent
+dep "parser" "^1.0"              // no capabilities needed — silent
 dep "native-lib" "^3.0" {
-    allow: ["ffi", "read"]   // uses extern + file reading
+    allow: ["ffi", "read"]       // uses extern + file reading
+}
+dep "protobuf-gen" "^2.0" {
+    allow: ["build_exec"]        // build script calls protoc via exec()
 }
 ```
 
@@ -107,6 +114,12 @@ dep "native-lib" "^3.0" {
 ERROR [struct.build/PM4]: capability violation
    dependency 'sketchy-lib' uses network access (io.net, http) but is not allowed
    add `allow: ["net"]` to the dep declaration in build.rk
+```
+
+```
+ERROR [struct.build/PM9]: build_exec capability required
+   dependency 'protobuf-gen' build script calls exec("protoc") but is not allowed
+   add `allow: ["build_exec"]` to the dep declaration in build.rk
 ```
 
 ## Features
@@ -281,6 +294,42 @@ func build(ctx: BuildContext) -> () or Error {
 | **TV1: Tool fingerprint** | When `tool` is specified, step also hashes the tool binary's version/path |
 | **TV2: Version command** | `ctx.tool_version("protoc", "--version")` — records version string in cache |
 
+## Build Script Sandbox
+
+Your code is trusted. Their code is sandboxed. Dependency build scripts run in an OS-native sandbox that restricts filesystem access, blocks network, and filters environment variables. Structured build APIs (`compile_c`, `pkg_config`, etc.) work inside the sandbox — only `exec()` requires explicit permission.
+
+| Rule | Description |
+|------|-------------|
+| **SB1: Deps always sandboxed** | Dependency build scripts run sandboxed — no network, restricted filesystem. No opt-out |
+| **SB2: Filesystem scope** | Read: package source dir, declared inputs, system lib paths. Write: `build/`, `.rk-gen/` only |
+| **SB3: No network** | Build scripts cannot access the network. Downloads belong in dependency resolution, not build scripts |
+| **SB4: Env whitelist** | Build scripts see `PATH`, `HOME`, `CC`, `CXX`, `PKG_CONFIG_PATH`, `RASK_*`. All others hidden |
+| **SB5: Root not sandboxed** | Root package build scripts are not sandboxed by default. Opt in with `sandbox: true` in package block |
+| **SB6: Structured APIs exempt** | `compile_c`, `compile_rust`, `pkg_config`, `link_library`, `write_source` work inside the sandbox without extra capabilities |
+| **SB7: Platform implementation** | Sandbox uses OS-native isolation — spec defines behavior, not mechanism |
+
+```
+ERROR [struct.build/SB2]: sandbox violation
+   build script for 'sketchy-lib' tried to read /home/user/.ssh/id_rsa
+   build scripts can only read their own source directory and declared inputs
+```
+
+```
+ERROR [struct.build/SB4]: sandbox violation
+   build script for 'aws-codegen' tried to read environment variable AWS_SECRET_ACCESS_KEY
+   only safe environment variables are exposed to build scripts (PATH, HOME, CC, CXX, PKG_CONFIG_PATH, RASK_*)
+```
+
+Root package opt-in (for CI with untrusted PRs):
+
+<!-- test: skip -->
+```rask
+package "my-app" "1.0.0" {
+    sandbox: true     // sandbox own build script too — deps are always sandboxed regardless
+    dep "http" "^2.0" { allow: ["net"] }
+}
+```
+
 ## Build Pipeline
 
 | Rule | Description |
@@ -296,9 +345,9 @@ rask build
   ├─ 1. Find build.rk (or use defaults)
   ├─ 2. Parse package block (PK3)
   ├─ 3. Resolve dependencies (maximal compatible)
-  ├─ 4. Check rask.lock + verify capabilities (PM4)
+  ├─ 4. Check rask.lock + verify capabilities (PM4) + verify signatures (SG4)
   ├─ 5. Download missing deps
-  ├─ 6. Run build steps (if build() exists)
+  ├─ 6. Run build steps (if build() exists) — sandboxed for deps (SB1)
   ├─ 7. Compile packages (dependency order, parallel)
   │     ├─ Parse → Resolve → Type-check → Ownership-check
   │     ├─ Monomorphize → MIR → Cranelift/LLVM
@@ -495,6 +544,39 @@ These are deferred — rules defined for future implementation.
 | **PB6: Reproducible tarball** | Deterministic file ordering, no timestamps in archive |
 | **PB7: Size limit** | 10 MB max package size. Error with breakdown if exceeded |
 
+### Signing
+
+| Rule | Description |
+|------|-------------|
+| **SG1: Sign on publish** | `rask publish` signs the tarball with the author's Ed25519 key |
+| **SG2: Unsigned flag** | Publishing without a key requires explicit `--unsigned` |
+| **SG3: Registry stores signatures** | Registry stores detached signatures alongside tarballs |
+| **SG4: Verify on fetch** | `rask fetch` verifies signatures. Mismatch = hard error, no `--skip-verify` |
+| **SG5: TOFU** | First publish of a package records the signing key. Subsequent publishes must match or use explicit rotation (KM2) |
+| **SG6: Lock file fingerprint** | `rask.lock` records expected signing key fingerprint per registry package (struct.packages/LK8) |
+| **SG7: Grandfathered** | Packages published before signing was required are verified by checksum only (LK3) |
+
+```
+ERROR [struct.build/SG4]: signature verification failed
+   package 'http-client' version 2.1.0 — signature does not match known key
+   expected key: ed25519:a1b2c3d4...
+   got key:      ed25519:e5f6g7h8...
+```
+
+### Key Management
+
+| Rule | Description |
+|------|-------------|
+| **KM1: Key storage** | Ed25519 private key in `~/.rask/credentials` alongside API token (PB4) |
+| **KM2: Key rotation** | `rask keys rotate` generates new key, publishes rotation record signed by old key |
+| **KM3: Multi-key** | A package can have multiple authorized keys (team publishing) |
+
+| Command | Description |
+|---------|-------------|
+| `rask keys generate` | Generate Ed25519 keypair, store in `~/.rask/credentials` |
+| `rask keys list` | Show key fingerprints and associated packages |
+| `rask keys rotate` | Rotate signing key — new key signed by old |
+
 ### Vendoring
 
 | Rule | Description |
@@ -543,6 +625,12 @@ ERROR [struct.build/BL3]: circular dependency
 | Dep with both `path` and `git` | D2 | Compile error: conflicting sources |
 | Circular `enables` | F6 | Compile error |
 | Dep needs capabilities but no `allow` | PM4 | Build error with fix suggestion |
+| Build script reads outside source dir | SB2 | Sandbox error with path shown |
+| Build script accesses hidden env var | SB4 | Sandbox error — variable not in whitelist |
+| Dep build script calls `exec()` without `build_exec` | PM9 | Build error with fix suggestion |
+| Root uses `sandbox: true` + `exec()` | SB5 | Works — root chooses its own restrictions |
+| Signature mismatch on fetch | SG4 | Hard error — no override |
+| Package predates signing | SG7 | Checksum-only verification (LK3) |
 
 ---
 
@@ -557,6 +645,20 @@ ERROR [struct.build/BL3]: circular dependency
 **PM1 (import-inferred permissions):** I could have gone with author-declared capabilities (like npm's `engines` field) or process-level permissions (like Deno's `--allow-net`). Author declarations are trust-based — a malicious package just lies. Process-level permissions work but check at runtime, not compile time. Import-inferred capabilities are verifiable (the compiler traces the import graph), catch issues before any code runs, and don't add annotation burden to package authors. The tradeoff: `unsafe`/FFI is the escape hatch — a package with `allow: ["ffi"]` can do anything through C calls. But `ffi` is a loud, visible capability, and if a JSON parser needs it, that's a red flag.
 
 **FG1-FG6 (exclusive features):** Cargo features are additive-only — you can't express "pick exactly one backend." This causes real bugs: sqlx with both tokio and async-std enabled, openssl with conflicting vendoring options. Exclusive groups solve this with one keyword modifier. Additive features keep set-union resolution. Exclusive groups require all selectors to agree, with clear conflict errors showing both sources. Root override is the escape hatch.
+
+**SB1 (default sandbox):** I chose to always sandbox dependency build scripts because the threat model is supply chain attacks — you can't trust a package to opt into its own restrictions. Root package build scripts are unsandboxed by default because the threat model doesn't include your own code. For CI with untrusted PRs, `sandbox: true` opts in. Structured APIs (`compile_c`, `pkg_config`, etc.) cover most build needs without sandbox escape.
+
+**PM9 (build_exec as separate capability):** I separated `build_exec` from runtime `exec` because they're different trust decisions. A git library that shells out to `git` at runtime (`allow: ["exec"]`) is different from a library whose build script calls `protoc` (`allow: ["build_exec"]`). Most deps with build scripts only use structured APIs and need zero special permissions — that's the design goal.
+
+**SG1 (package signing):** Checksums (LK3) verify integrity — the bits you got match what was published. Signing verifies provenance — the bits were published by someone who holds the key. TOFU is pragmatic: a full PKI adds complexity most users won't engage with. The first publish establishes the key binding; the common attack (compromised registry serving modified packages) is caught without a trust hierarchy. Ed25519 because it's fast, small keys/signatures, widely implemented.
+
+### Sandbox Platform Mechanisms
+
+The sandbox spec (SB1-SB7) defines behavior. Platform mechanisms are implementation details:
+
+- **Linux:** Mount namespace (bind-mount source dir, build dir, system lib paths read-only) + network namespace (no interfaces). Lightweight — similar to what Flatpak/bubblewrap use.
+- **macOS:** Seatbelt profile via `sandbox_init()` — deny network, allow file-read on source/system paths, allow file-write on build dir. The kernel mechanism behind App Sandbox.
+- **Windows:** AppContainer with explicit capability grants for filesystem paths. Provides filesystem and network isolation.
 
 ### Comptime vs Build Scripts
 
@@ -606,6 +708,7 @@ package "my-api" "1.0.0" {
     dep "http" "^2.0" { allow: ["net"] }
     dep "json" "^1.5"
     dep "epoll" "^1.0" { target: "linux" }
+    dep "protobuf-rask" "^0.9" { allow: ["build_exec"] }
 
     scope "dev" { dep "mock-server" "^2.0" }
 
@@ -646,11 +749,14 @@ func build(ctx: BuildContext) -> () or Error {
 | `rask targets` (XT9) | Implemented |
 | `rask watch` (WA1-WA8) | Implemented |
 | CLI flags: --release, --target, --verbose (CL1-CL4) | Implemented |
-| Remote registry (RG1-RG4) | Not started |
-| Vendoring (VD1-VD5) | Not started |
-| Workspaces (WS1-WS3) | Not started |
+| Remote registry (RG1-RG4) | Implemented |
+| Vendoring (VD1-VD5) | Implemented |
+| Workspaces (WS1-WS3) | Implemented |
 | Conditional compilation (CC1-CC2) | Implemented |
 | Cross-compilation toolchain (XT1-XT8) | Not started |
+| Build script sandbox (SB1-SB7) | Not started |
+| Build exec gating (PM9-PM10) | Not started |
+| Package signing (SG1-SG7, KM1-KM3) | Not started |
 
 ### See Also
 
