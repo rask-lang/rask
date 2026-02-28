@@ -175,3 +175,36 @@ int64_t rask_shared_clone_i64(int64_t shared) {
 void rask_shared_drop_i64(int64_t shared) {
     rask_shared_free((RaskShared *)(intptr_t)shared);
 }
+
+// ─── Pointer-based wrappers for aggregate types ──────────
+//
+// These work with any data size. The closure receives a pointer to
+// the data inside the Shared, not a copy. For write, modifications
+// happen in-place through the pointer (no copy-back needed).
+
+int64_t rask_shared_new_ptr(int64_t data_ptr, int64_t data_size) {
+    RaskShared *s = rask_shared_new((const void *)(intptr_t)data_ptr, data_size);
+    return (int64_t)(intptr_t)s;
+}
+
+int64_t rask_shared_read_ptr(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+    int64_t env = CLOSURE_ENV(closure);
+
+    pthread_rwlock_rdlock(&s->lock);
+    int64_t result = fn(env, (int64_t)(intptr_t)s->data);
+    pthread_rwlock_unlock(&s->lock);
+    return result;
+}
+
+int64_t rask_shared_write_ptr(int64_t shared, int64_t closure) {
+    RaskShared *s = (RaskShared *)(intptr_t)shared;
+    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+    int64_t env = CLOSURE_ENV(closure);
+
+    pthread_rwlock_wrlock(&s->lock);
+    int64_t result = fn(env, (int64_t)(intptr_t)s->data);
+    pthread_rwlock_unlock(&s->lock);
+    return result;
+}

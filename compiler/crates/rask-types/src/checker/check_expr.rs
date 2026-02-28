@@ -673,17 +673,19 @@ impl TypeChecker {
                 for stmt in body {
                     self.check_stmt(stmt);
                 }
-                self.pop_scope();
-                // Check if the block ends with a diverging statement
-                if let Some(last) = body.last() {
+                let result = if let Some(last) = body.last() {
                     match &last.kind {
+                        StmtKind::Expr(e) => self.infer_expr(e),
                         StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => {
-                            return Type::Never;
+                            Type::Never
                         }
-                        _ => {}
+                        _ => Type::Unit,
                     }
-                }
-                Type::Unit
+                } else {
+                    Type::Unit
+                };
+                self.pop_scope();
+                result
             }
 
             ExprKind::BlockCall { body, .. } => {

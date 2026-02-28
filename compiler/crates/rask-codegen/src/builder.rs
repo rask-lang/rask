@@ -2022,10 +2022,77 @@ impl<'a> FunctionBuilder<'a> {
             // Pool get/index: result is void*, deref to get value
             "Pool_get" | "Pool_index" | "Pool_checked_access" => CallAdapt::DerefResult,
 
-            // Channel_unbuffered: MIR has no args, C expects capacity=0
+            // Channel_unbuffered: MIR injects elem_size; builder appends capacity=0
             "Channel_unbuffered" => {
                 let zero = builder.ins().iconst(types::I64, 0);
                 args.push(zero);
+                CallAdapt::None
+            }
+
+            // Shared_new: args are [data, data_size]. Ensure data is a pointer.
+            // Compute actual data_size from struct layout (overrides MIR default
+            // which may be 8 when Shared.new(val) lacks explicit generic arg).
+            "Shared_new" => {
+                if args.len() >= 2 {
+                    let mut data_size: i64 = 8;
+                    let mut is_struct = false;
+                    if let Some(MirOperand::Local(arg_id)) = mir_args.first() {
+                        if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                            if let MirType::Struct(layout_id) = &local.ty {
+                                if let Some(layout) = struct_layouts.get(layout_id.0 as usize) {
+                                    data_size = layout.size as i64;
+                                    is_struct = true;
+                                }
+                            }
+                        }
+                    }
+                    if !is_struct {
+                        let val = args[0];
+                        args[0] = Self::value_to_ptr(builder, val);
+                    }
+                    // Override data_size with actual computed value
+                    args[1] = builder.ins().iconst(types::I64, data_size);
+                }
+                CallAdapt::None
+            }
+
+            // Sender_send / send: wrap value as pointer (scalars need value_to_ptr,
+            // structs are already pointers in the all-i64 model).
+            "Sender_send" | "send" => {
+                if args.len() >= 2 {
+                    let mut is_struct = false;
+                    if let Some(MirOperand::Local(arg_id)) = mir_args.get(1) {
+                        if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                            if matches!(&local.ty, MirType::Struct(_)) {
+                                is_struct = true;
+                            }
+                        }
+                    }
+                    if !is_struct {
+                        let val = args[1];
+                        args[1] = Self::value_to_ptr(builder, val);
+                    }
+                }
+                CallAdapt::None
+            }
+
+            // Receiver_recv_struct: allocate buffer for received struct data.
+            // MIR args: [rx, elem_size]. Replace elem_size with stack buffer address.
+            "Receiver_recv_struct" => {
+                let elem_size = match mir_args.get(1) {
+                    Some(MirOperand::Constant(MirConst::Int(size))) => *size as u32,
+                    _ => 8,
+                };
+                let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, elem_size, 0,
+                ));
+                let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                if args.len() >= 2 {
+                    args[1] = addr;
+                } else {
+                    args.push(addr);
+                }
+                // recv_ptr returns out_ptr, which IS the struct pointer
                 CallAdapt::None
             }
 

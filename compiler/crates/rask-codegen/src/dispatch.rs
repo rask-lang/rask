@@ -1435,17 +1435,18 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Concurrency: channels ──────────────────────────────────
         // Channel construction (MIR produces Channel_buffered / Channel_unbuffered)
+        // Pointer-based: elem_size is injected by builder from struct layout.
         StdlibEntry {
             mir_name: "Channel_buffered",
-            c_name: "rask_channel_new_i64",
-            params: &[types::I64],
+            c_name: "rask_channel_new_ptr",
+            params: &[types::I64, types::I64],  // elem_size (injected), capacity
             ret_ty: Some(types::I64),
             can_panic: false,
         },
         StdlibEntry {
             mir_name: "Channel_unbuffered",
-            c_name: "rask_channel_new_i64",
-            params: &[types::I64],  // builder injects capacity=0
+            c_name: "rask_channel_new_ptr",
+            params: &[types::I64, types::I64],  // elem_size (injected), capacity=0 (injected)
             ret_ty: Some(types::I64),
             can_panic: false,
         },
@@ -1473,9 +1474,11 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // Sender methods (qualified: Sender_send, etc.)
+        // Pointer-based: works for both scalars (builder wraps via value_to_ptr)
+        // and structs (already pointers in the all-i64 model).
         StdlibEntry {
             mir_name: "Sender_send",
-            c_name: "rask_channel_send_i64",
+            c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
@@ -1504,7 +1507,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // Legacy bare names
         StdlibEntry {
             mir_name: "send",
-            c_name: "rask_channel_send_i64",
+            c_name: "rask_channel_send_ptr",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
@@ -1529,6 +1532,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "Receiver_recv",
             c_name: "rask_channel_recv_i64",
             params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: true,
+        },
+        // Struct variant: builder allocates out-buffer, passes as second arg
+        StdlibEntry {
+            mir_name: "Receiver_recv_struct",
+            c_name: "rask_channel_recv_ptr",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: true,
         },
@@ -1563,23 +1574,25 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── Concurrency: Shared<T> ──────────────────────────────────
+        // Pointer-based: new takes (data_ptr, data_size), read/write pass
+        // data pointer to closure instead of loading as i64.
         StdlibEntry {
             mir_name: "Shared_new",
-            c_name: "rask_shared_new_i64",
-            params: &[types::I64],
+            c_name: "rask_shared_new_ptr",
+            params: &[types::I64, types::I64],  // data_ptr, data_size (injected by builder)
             ret_ty: Some(types::I64),
             can_panic: false,
         },
         StdlibEntry {
             mir_name: "Shared_read",
-            c_name: "rask_shared_read_i64",
+            c_name: "rask_shared_read_ptr",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
         StdlibEntry {
             mir_name: "Shared_write",
-            c_name: "rask_shared_write_i64",
+            c_name: "rask_shared_write_ptr",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
