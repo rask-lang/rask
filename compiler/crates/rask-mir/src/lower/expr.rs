@@ -545,6 +545,24 @@ impl<'a> MirLowerer<'a> {
                                 let (op, _) = self.lower_expr(&arg.expr)?;
                                 arg_operands.push(op);
                             }
+
+                            // Inject elem_size/data_size for generic constructors.
+                            // The C runtime needs actual sizes for struct types;
+                            // the dispatch table expects these as extra arguments.
+                            if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
+                                || (base_name == "Shared" && method == "new")
+                            {
+                                let elem_size = self.generic_inner_struct_size(name);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                if base_name == "Channel" {
+                                    // Channel: elem_size goes first → (elem_size, capacity)
+                                    arg_operands.insert(0, size_op);
+                                } else {
+                                    // Shared: data_size goes last → (data_ptr, data_size)
+                                    arg_operands.push(size_op);
+                                }
+                            }
+
                             let ret_ty = self
                                 .func_sigs
                                 .get(&func_name)
@@ -891,6 +909,24 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                 }
+
+                // Channel recv with struct elements: switch to struct variant
+                // and inject elem_size so the builder can allocate the right buffer.
+                let qualified_name = if qualified_name == "Receiver_recv" {
+                    let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
+                        self.channel_elem_sizes.get(var_name).copied().unwrap_or(8)
+                    } else {
+                        8
+                    };
+                    if elem_size > 8 {
+                        all_args.push(MirOperand::Constant(MirConst::Int(elem_size)));
+                        "Receiver_recv_struct".to_string()
+                    } else {
+                        qualified_name
+                    }
+                } else {
+                    qualified_name
+                };
 
                 // Use tracked element type for Vec_get return instead of default I64.
                 // Checks per-function map first, then shared cross-function map.
@@ -1664,6 +1700,39 @@ impl<'a> MirLowerer<'a> {
 
             // With-as binding
             ExprKind::WithAs { bindings, body } => {
+                // Detect Shared.read() / Shared.write() pattern:
+                //   with shared.read() as d { body }
+                // Synthesize a closure from the body and call Shared_read(handle, closure).
+                if bindings.len() == 1 {
+                    let binding = &bindings[0];
+                    if let ExprKind::MethodCall { object, method, args: call_args, .. } = &binding.source.kind {
+                        let is_shared_access = (method == "read" || method == "write") && call_args.is_empty();
+                        if is_shared_access {
+                            // Check if the object type is Shared
+                            let obj_raw_type = self.ctx.lookup_raw_type(object.id);
+                            let is_shared = obj_raw_type.map(|ty| {
+                                matches!(ty,
+                                    rask_types::Type::UnresolvedGeneric { name, .. }
+                                    | rask_types::Type::UnresolvedNamed(name)
+                                    if name == "Shared"
+                                )
+                            }).unwrap_or(false)
+                            // Fallback: check local_type_prefix
+                            || if let ExprKind::Ident(var_name) = &object.kind {
+                                self.local_type_prefix.get(var_name)
+                                    .map(|p| p == "Shared")
+                                    .unwrap_or(false)
+                            } else {
+                                false
+                            };
+                            if is_shared {
+                                return self.lower_shared_with_block(object, method, &binding.name, body);
+                            }
+                        }
+                    }
+                }
+
+                // Default: simple alias binding (Pool, Cell, Mutex, etc.)
                 for binding in bindings {
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
                     let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
@@ -2606,6 +2675,176 @@ impl<'a> MirLowerer<'a> {
         });
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
+    }
+
+    /// Extract the inner struct size from a generic type name like "Channel<LogEntry>".
+    /// Returns 8 (scalar size) if the inner type is not a known struct.
+    fn generic_inner_struct_size(&self, generic_name: &str) -> i64 {
+        let inner = generic_name.split('<').nth(1)
+            .and_then(|s| s.strip_suffix('>'));
+        if let Some(type_name) = inner {
+            if let Some((_, layout)) = self.ctx.find_struct(type_name) {
+                return layout.size as i64;
+            }
+        }
+        8 // scalar default
+    }
+
+
+    /// Extract the inner type name from a Shared variable expression.
+    /// Tries type checker info first, falls back to local_type_prefix context.
+    fn resolve_shared_inner_type_name(&self, object: &Expr) -> Option<String> {
+        // Try type checker: Shared<Database> → "Database"
+        if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
+            if let rask_types::Type::UnresolvedGeneric { args, .. } = raw_ty {
+                if let Some(rask_types::GenericArg::Type(inner)) = args.first() {
+                    if let rask_types::Type::UnresolvedNamed(name) = inner.as_ref() {
+                        return Some(name.clone());
+                    }
+                    // Also handle Named types
+                    if let Some(prefix) = super::MirContext::type_prefix(inner) {
+                        return Some(prefix);
+                    }
+                }
+            }
+        }
+        // Fallback: parse inner type from stored full type annotation (e.g. "Shared<Database>" → "Database")
+        if let ExprKind::Ident(var_name) = &object.kind {
+            if let Some(full_type) = self.local_full_type.get(var_name) {
+                let inner = full_type.split('<').nth(1)
+                    .and_then(|s| s.strip_suffix('>'));
+                if let Some(name) = inner {
+                    return Some(name.to_string());
+                }
+            }
+        }
+        None
+    }
+
+    /// Lower `with shared.read() as d { body }` / `with shared.write() as d { body }`.
+    ///
+    /// Synthesizes a closure from the body with `d` as a parameter, then calls
+    /// Shared_read(handle, closure) or Shared_write(handle, closure).
+    /// The C runtime acquires the lock, passes data to the closure, and releases.
+    fn lower_shared_with_block(
+        &mut self,
+        object: &Expr,
+        method: &str,
+        binding_name: &str,
+        body: &[rask_ast::stmt::Stmt],
+    ) -> Result<TypedOperand, LoweringError> {
+        // 1. Evaluate the Shared object to get the handle
+        let (shared_op, _) = self.lower_expr(object)?;
+
+        // 2. Collect free variables from the body, excluding the binding name
+        let mut free_vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut bound = std::collections::HashSet::new();
+        bound.insert(binding_name.to_string());
+        self.walk_free_vars_block(body, &bound, &mut seen, &mut free_vars);
+
+        // 3. Build closure environment layout
+        let closure_name = format!("{}__with_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let mut captures = Vec::new();
+        let mut env_offset = 0u32;
+        for (_name, local_id, ty) in &free_vars {
+            let size = ty.size();
+            let aligned_offset = (env_offset + 7) & !7;
+            captures.push(ClosureCapture {
+                local_id: *local_id,
+                offset: aligned_offset,
+                size,
+            });
+            env_offset = aligned_offset + size;
+        }
+
+        // 4. Synthesize closure: fn(env_ptr: ptr, data: i64) -> i64
+        let mut closure_builder = BlockBuilder::new(closure_name.clone(), MirType::I64);
+
+        // env_ptr is the implicit first parameter
+        let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
+
+        // Resolve the Shared's inner type: struct layout for field offsets, prefix for method dispatch.
+        let mut data_param_ty = MirType::I64;
+        let inner_type_name = self.resolve_shared_inner_type_name(object);
+        if let Some(ref type_name) = inner_type_name {
+            if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
+                data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
+            }
+            self.local_type_prefix.insert(binding_name.to_string(), type_name.clone());
+        }
+
+        // data parameter — the Shared's inner data, passed by the C runtime
+        let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());
+
+        let mut closure_locals = std::collections::HashMap::new();
+        closure_locals.insert(binding_name.to_string(), (data_param_id, data_param_ty));
+
+        // Emit LoadCapture for each free variable
+        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+            let cap = &captures[i];
+            let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
+            closure_builder.push_stmt(MirStmt::LoadCapture {
+                dst: local_id,
+                env_ptr: env_param_id,
+                offset: cap.offset,
+            });
+            closure_locals.insert(name.clone(), (local_id, ty.clone()));
+        }
+
+        // 5. Lower the body
+        let body_result;
+        {
+            let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
+            let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
+            let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+
+            body_result = self.lower_block(body);
+
+            closure_builder = std::mem::replace(&mut self.builder, saved_builder);
+            self.locals = saved_locals;
+            self.loop_stack = saved_loop_stack;
+        }
+
+        let (body_val, _) = body_result?;
+
+        if closure_builder.current_block_unterminated() {
+            closure_builder.terminate(MirTerminator::Return {
+                value: Some(body_val),
+            });
+        }
+
+        let closure_fn = closure_builder.finish();
+        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
+            ret_ty: MirType::I64,
+        });
+        self.synthesized_functions.push(closure_fn);
+
+        // 6. In the parent: create closure, call Shared_read/Shared_write
+        let closure_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::ClosureCreate {
+            dst: closure_local,
+            func_name: closure_name,
+            captures,
+            heap: false,
+        });
+
+        let func_name = if method == "read" {
+            "Shared_read".to_string()
+        } else {
+            "Shared_write".to_string()
+        };
+
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(result_local),
+            func: FunctionRef::internal(func_name),
+            args: vec![shared_op, MirOperand::Local(closure_local)],
+        });
+
+        Ok((MirOperand::Local(result_local), MirType::I64))
     }
 
     /// Spawn lowering: synthesize a closure function from the body block,

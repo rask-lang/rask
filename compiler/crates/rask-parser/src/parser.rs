@@ -3414,8 +3414,8 @@ impl Parser {
     }
 
 
-    /// Build an expression from an already-consumed ident, parsing postfix [index] and .field
-    /// until we reach the `as` keyword.
+    /// Build an expression from an already-consumed ident, parsing postfix
+    /// [index], .field, and .method() until we reach the `as` keyword.
     fn build_with_as_expr(&mut self, start: usize, ident: String) -> Result<Expr, ParseError> {
         let ident_end = self.current().span.start;
         let mut expr = Expr {
@@ -3437,13 +3437,31 @@ impl Parser {
                 };
             } else if self.check(&TokenKind::Dot) {
                 self.advance();
-                let field = self.expect_ident()?;
-                let end = self.tokens[self.pos - 1].span.end;
-                expr = Expr {
-                    id: self.next_id(),
-                    kind: ExprKind::Field { object: Box::new(expr), field },
-                    span: Span::new(start, end),
-                };
+                let field = self.expect_ident_or_keyword()?;
+                // Method call: .field(args...)
+                if self.check(&TokenKind::LParen) {
+                    self.advance();
+                    let args = self.parse_args()?;
+                    self.expect(&TokenKind::RParen)?;
+                    let end = self.tokens[self.pos - 1].span.end;
+                    expr = Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::MethodCall {
+                            object: Box::new(expr),
+                            method: field,
+                            type_args: None,
+                            args,
+                        },
+                        span: Span::new(start, end),
+                    };
+                } else {
+                    let end = self.tokens[self.pos - 1].span.end;
+                    expr = Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Field { object: Box::new(expr), field },
+                        span: Span::new(start, end),
+                    };
+                }
             } else {
                 break;
             }
