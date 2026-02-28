@@ -84,8 +84,7 @@ const users = Map.from([
 | `vec[i].field` | inline access (expression-scoped) | None | Yes (OOB) |
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
 | `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
-| `with vec[i] as v { ... }` | block value (mutable, default) | None | Yes (OOB) |
-| `with vec[i] as const v { ... }` | block value (read-only) | None | Yes (OOB) |
+| `with vec[i] as v { ... }` | block value (mutable) | None | Yes (OOB) |
 | `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
 
@@ -112,7 +111,7 @@ with vec[i] as v {
 with vec[i] as v: v.count += 1
 
 // Expression context — produces a value
-const name = with vec[i] as const v { v.name.clone() }
+const name = with vec[i] as v { v.name.clone() }
 ```
 
 ## Map Key Constraints
@@ -129,8 +128,7 @@ const name = with vec[i] as const v { v.name.clone() }
 | `map[k].field` | inline access (expression-scoped) | Panics if missing |
 | `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
 | `map.get_clone(k)` | `Option<V>` | Clone out (V: Clone) |
-| `with map[k] as v { ... }` | block value (mutable, default) | Panics if missing |
-| `with map[k] as const v { ... }` | block value (read-only) | Panics if missing |
+| `with map[k] as v { ... }` | block value (mutable) | Panics if missing |
 | `map.remove(k)` | `Option<V>` | Remove and return |
 
 ### Entry API
