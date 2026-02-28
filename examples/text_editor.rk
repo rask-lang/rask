@@ -273,7 +273,7 @@ func main() -> () or Error {
                 if try doc.redo(): println("Redone") else: println("Nothing to redo")
             }
             Save(path) => {
-                try doc.save(path.clone())
+                try doc.save(path)
                 println("Saved to {path}")
             }
             Print => doc.display(),

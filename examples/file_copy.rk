@@ -34,7 +34,7 @@ struct CopyOptions {
     verbose: bool
 }
 
-func parse_args(args: Vec<string>) -> CopyOptions or string {
+func parse_args(take args: Vec<string>) -> CopyOptions or string {
     let opts = CopyOptions {
         source: "",
         dest: "",
@@ -44,7 +44,7 @@ func parse_args(args: Vec<string>) -> CopyOptions or string {
 
     let positional = Vec.new()
 
-    for arg in args.iter().skip(1) {
+    for arg in args.take_all().skip(1) {
         match arg {
             "-f" | "--force" => opts.force = true,
             "-v" | "--verbose" => opts.verbose = true,
@@ -52,7 +52,7 @@ func parse_args(args: Vec<string>) -> CopyOptions or string {
                 print_usage()
                 std.exit(0)
             }
-            _ => positional.push(arg.clone()),
+            _ => positional.push(arg),
         }
     }
 
@@ -60,8 +60,8 @@ func parse_args(args: Vec<string>) -> CopyOptions or string {
         return Err("usage: rcopy [-fv] SOURCE DEST")
     }
 
-    opts.source = positional[0].clone()
-    opts.dest = positional[1].clone()
+    opts.source = positional.remove(0)
+    opts.dest = positional.remove(0)
 
     return Ok(opts)
 }
@@ -78,22 +78,21 @@ func print_usage() {
 }
 
 func copy_file(opts: CopyOptions) -> i64 or CopyError {
-    // Check source exists
-    if !fs.exists(opts.source.clone()) {
-        return Err(CopyError.SourceNotFound(opts.source))
+    // O3 borrows opts — fs calls borrow the fields, only error enums need owned strings
+    if !fs.exists(opts.source) {
+        return Err(CopyError.SourceNotFound(opts.source.clone()))
     }
 
-    // Check destination
-    if fs.exists(opts.dest.clone()) {
+    if fs.exists(opts.dest) {
         if !opts.force {
-            return Err(CopyError.DestinationExists(opts.dest))
+            return Err(CopyError.DestinationExists(opts.dest.clone()))
         }
     }
 
     // Check not same file (using canonical paths)
-    const src_canonical = try fs.canonicalize(opts.source.clone())
+    const src_canonical = try fs.canonicalize(opts.source)
         else |e| CopyError.ReadError(e)
-    const dst_canonical = fs.canonicalize(opts.dest.clone()).ok()
+    const dst_canonical = fs.canonicalize(opts.dest).ok()
 
     if dst_canonical is Some(dst) {
         if src_canonical == dst {
@@ -102,7 +101,7 @@ func copy_file(opts: CopyOptions) -> i64 or CopyError {
     }
 
     // Copy the file
-    const bytes = try fs.copy(opts.source.clone(), opts.dest.clone())
+    const bytes = try fs.copy(opts.source, opts.dest)
         else |e| CopyError.WriteError(e)
 
     return Ok(bytes)
@@ -123,7 +122,7 @@ func format_size(bytes: i64) -> string {
 func main() {
     const args = cli.args()
 
-    const opts = match parse_args(args) {
+    const opts = match parse_args(own args) {
         Ok(o) => o,
         Err(msg) => {
             println("rcopy: {msg}")
@@ -135,7 +134,7 @@ func main() {
         println("Copying '{opts.source}' to '{opts.dest}'...")
     }
 
-    match copy_file(opts.clone()) {
+    match copy_file(opts) {
         Ok(bytes) => {
             if opts.verbose {
                 const size = format_size(bytes)
