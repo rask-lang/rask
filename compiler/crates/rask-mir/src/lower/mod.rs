@@ -447,6 +447,13 @@ pub struct MirLowerer<'a> {
     /// Variable name → stdlib type prefix (e.g. "Rng", "File", "Vec")
     /// Used as fallback when the type checker leaves types unresolved.
     local_type_prefix: HashMap<String, String>,
+    /// Channel/Shared element sizes: variable name → elem_size in bytes.
+    /// Populated when destructuring Channel<T>.buffered() results.
+    /// Used by Receiver_recv to allocate correctly-sized output buffers.
+    channel_elem_sizes: HashMap<String, i64>,
+    /// Full type annotation string: variable name → type annotation (e.g. "Shared<Database>").
+    /// Used to resolve generic inner types when the type checker leaves types unresolved.
+    local_full_type: HashMap<String, String>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -582,6 +589,8 @@ impl<'a> MirLowerer<'a> {
                 ok: Box::new(MirType::I64),
                 err: Box::new(MirType::I64),
             }),
+            // Struct recv: panics on closed channel, returns struct pointer directly
+            ("Receiver_recv_struct", MirType::Ptr),
             ("Receiver_try_recv", MirType::Result {
                 ok: Box::new(MirType::I64),
                 err: Box::new(MirType::I64),
@@ -628,6 +637,8 @@ impl<'a> MirLowerer<'a> {
             closure_locals: std::collections::HashSet::new(),
             collection_elem_types: HashMap::new(),
             local_type_prefix: HashMap::new(),
+            channel_elem_sizes: HashMap::new(),
+            local_full_type: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -656,6 +667,10 @@ impl<'a> MirLowerer<'a> {
                 lowerer.local_type_prefix.insert(param.name.clone(), prefix);
             } else if let Some(prefix) = type_prefix_from_str(param_ty_str) {
                 lowerer.local_type_prefix.insert(param.name.clone(), prefix);
+            }
+            // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
+            if param_ty_str.contains('<') {
+                lowerer.local_full_type.insert(param.name.clone(), param_ty_str.to_string());
             }
         }
 
@@ -1324,6 +1339,9 @@ fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
         | "string_lines" | "string_split" | "string_split_whitespace"
         | "Map_keys" | "Map_values" => Some("Vec"),
         "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
+        "Shared_clone" => Some("Shared"),
+        "Sender_clone" => Some("Sender"),
+        "Receiver_clone" => Some("Receiver"),
         _ if func_name.starts_with("AtomicBool_") => Some("AtomicBool"),
         _ if func_name.starts_with("f32x4_") && !is_scalar_return(func_name) => Some("f32x4"),
         _ if func_name.starts_with("f32x8_") && !is_scalar_return(func_name) => Some("f32x8"),

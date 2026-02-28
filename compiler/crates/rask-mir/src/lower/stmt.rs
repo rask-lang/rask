@@ -392,6 +392,42 @@ impl<'a> MirLowerer<'a> {
                     if let Some(prefix) = super::func_return_type_prefix(&func_name) {
                         self.local_type_prefix.insert(name.to_string(), prefix.to_string());
                     }
+                    // Propagate full generic type through clone (Shared, Sender, Receiver)
+                    if method == "clone" {
+                        if let Some(full_ty) = self.local_full_type.get(obj_name).cloned() {
+                            self.local_full_type.insert(name.to_string(), full_ty);
+                        }
+                    }
+                }
+            }
+        }
+        // Track full generic type for Shared.new(data) calls:
+        // infer inner type from the constructor argument.
+        if let ExprKind::MethodCall { object, method, args: call_args, .. } = &init.kind {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                if obj_name == "Shared" && method == "new" && !call_args.is_empty() {
+                    // Infer inner type from the first arg
+                    let inner_name = match &call_args[0].expr.kind {
+                        ExprKind::StructLit { name: sn, .. } => Some(sn.clone()),
+                        ExprKind::MethodCall { object: inner_obj, .. } => {
+                            if let ExprKind::Ident(tn) = &inner_obj.kind {
+                                if tn.chars().next().map_or(false, |c| c.is_uppercase()) {
+                                    Some(tn.clone())
+                                } else { None }
+                            } else { None }
+                        }
+                        ExprKind::Ident(vn) => {
+                            // Look up variable type from local_type_prefix
+                            self.local_type_prefix.get(vn).cloned()
+                        }
+                        _ => None,
+                    };
+                    if let Some(inner) = inner_name {
+                        self.local_full_type.insert(
+                            name.to_string(),
+                            format!("Shared<{}>", inner),
+                        );
+                    }
                 }
             }
         }
@@ -528,6 +564,17 @@ impl<'a> MirLowerer<'a> {
                                 _ => continue,
                             };
                             self.local_type_prefix.insert(name.clone(), prefix.to_string());
+                            // Track channel element size for struct-aware recv
+                            let inner = type_name.split('<').nth(1)
+                                .and_then(|s| s.strip_suffix('>'));
+                            let elem_size = if let Some(tn) = inner {
+                                self.ctx.find_struct(tn)
+                                    .map(|(_, l)| l.size as i64)
+                                    .unwrap_or(8)
+                            } else {
+                                8
+                            };
+                            self.channel_elem_sizes.insert(name.clone(), elem_size);
                         }
                     }
                 }
