@@ -35,6 +35,8 @@ Single owned `string` type with UTF-8 validation, inline slicing for zero-copy e
 | **O3: Borrow inferred** | `func foo(s: string)` borrows for call duration (compiler infers mode) |
 | **O4: Explicit take** | `func foo(take s: string)` transfers ownership |
 
+> Most string `.clone()` calls are unnecessary — O3 handles the common case. See [Why Not COW Strings?](#why-not-cow-strings) in the appendix for patterns that minimize clones.
+
 ## Inline Slicing
 
 `s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned.
@@ -309,6 +311,67 @@ FIX: Accept string and let the compiler infer borrow mode:
 **S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
 
 **S5 (byte indices):** Byte indexing matches the underlying UTF-8 representation. Character indexing would be O(n) and misleading for multi-byte characters.
+
+### Why Not COW Strings?
+
+COW (copy-on-write) strings were considered and rejected. Under COW, strings share their buffer via reference counting, cloning only on mutation. Fewer `.clone()` calls — but it violates core design principles.
+
+**Transparency of cost.** COW mutation is O(n) when the string is shared, O(1) when unique. The call site looks identical either way. The cost depends on sharing state established elsewhere — non-local reasoning that Rask exists to prevent.
+
+**Consistency.** `Vec<T>`, `Map<K,V>`, and every other heap type use move semantics. Making `string` special creates a rule to remember. "All heap types move" is one rule; "all heap types move except strings" is two rules and a footnote.
+
+**Refcount overhead.** Every string carries an atomic reference count. Atomic operations are cheap individually but they add up in string-heavy code — and they're invisible at the call site.
+
+**The actual clone count is low.** I audited the four validation programs (~600 lines, 30 `.clone()` calls). Half were eliminable using existing language features — O3 borrow inference and consuming iteration. The remaining 15 are genuinely needed: cross-task sharing, undo buffers, constructing owned error messages from borrowed data, extracting fields from inside lock scopes. COW wouldn't eliminate those either; it would just hide them.
+
+#### Patterns That Minimize Clones
+
+**O3 borrow inference — most function calls don't need clones:**
+
+<!-- test: skip -->
+```rask
+// NO clone needed — fs.read_file borrows path for call duration
+const content = try fs.read_file(path)
+
+// NO clone needed — line and pattern are borrowed
+const matches = line_matches(line, pattern, ignore_case)
+```
+
+**Consuming iteration for arg parsing:**
+
+<!-- test: skip -->
+```rask
+func parse_args(take args: Vec<string>) -> Options or Error {
+    let positional = Vec.new()
+    for arg in args.take_all().skip(1) {
+        match arg {
+            "-v" => verbose = true,
+            _ => positional.push(arg),  // arg is owned, no clone
+        }
+    }
+    // positional elements are owned — extract without cloning
+    opts.pattern = positional.remove(0)
+    opts.files = positional  // move remaining
+    return Ok(opts)
+}
+```
+
+**Restructure before divergent use:**
+
+<!-- test: skip -->
+```rask
+// Instead of cloning opts.files to iterate + cloning opts per call:
+for file_path in opts.files.take_all() {     // consume files vec
+    grep_file(file_path, opts)               // O3 borrows opts (files field now empty, that's fine)
+}
+```
+
+**When `.clone()` is genuinely needed:**
+- Cross-task sharing (`Shared<T>.clone()`, channel sender `.clone()`)
+- Undo buffers (old state must survive the edit)
+- Reading from a Pool element to return an owned value
+- Constructing owned error values from borrowed parameters
+- Building owned data inside a `with shared.read()` block (fields must be cloned out of the lock scope)
 
 ### Patterns & Guidance
 
