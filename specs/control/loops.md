@@ -155,6 +155,14 @@ for h in pool.handles() {
 }
 ```
 
+## Loop Binding Scope
+
+| Rule | Description |
+|------|-------------|
+| **LP17: Binding is alias** | Loop bindings are inline aliases — each use of `item` desugars to `collection[_pos]` at point of use. Not a regular `const` binding; no copy or move at binding creation. `mem.borrowing/E4` and `std.iteration/A4` do not apply to loop bindings |
+
+In value mode, `item` is a read-only alias. In mutable mode, `item` is a mutable alias. The binding doesn't exist as a separate variable — it's syntactic shorthand for indexed access into the collection.
+
 ## Desugaring
 
 Value iteration creates inline access per element. Mutable iteration creates mutable inline access.
@@ -169,7 +177,9 @@ for item in vec { body }
     const _len = vec.len()
     let _pos = 0
     while _pos < _len {
-        const item = vec[_pos]  // Inline access (read-only)
+        // `item` is a read-only alias for vec[_pos]  (LP17)
+        // item.field  → vec[_pos].field  (inline access, E1)
+        // item.method() → vec[_pos].method()  (expression borrow, E2)
         body
         _pos += 1
     }

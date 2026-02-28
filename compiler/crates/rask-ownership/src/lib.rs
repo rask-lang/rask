@@ -197,7 +197,8 @@ impl<'a> OwnershipChecker<'a> {
         match &stmt.kind {
             StmtKind::Let { name, name_span: _, ty, init } => {
                 self.check_expr(init);
-                // let creates mutable binding - moves the value
+                // let: Copy types are copied (source stays valid),
+                // non-Copy types are moved (source invalidated)
                 self.handle_assignment(init, stmt.span, true);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
@@ -221,7 +222,8 @@ impl<'a> OwnershipChecker<'a> {
             }
             StmtKind::Const { name, name_span: _, ty, init } => {
                 self.check_expr(init);
-                // const creates immutable binding - borrows the value
+                // const: Copy types are copied, non-Copy types create
+                // a block-scoped borrow (source stays valid but frozen)
                 self.handle_assignment(init, stmt.span, false);
                 self.bindings.insert(name.clone(), BindingState::Owned);
                 if let Some(t) = self.program.node_types.get(&init.id).cloned() {
@@ -523,48 +525,53 @@ impl<'a> OwnershipChecker<'a> {
         }
     }
 
-    /// Handle assignment: borrow or move depending on context.
+    /// Handle assignment semantics based on Copy status:
     ///
-    /// For `let` statements: check if borrowed, then move (is_mutable = true)
-    /// For `const` statements: create block-scoped borrow (is_mutable = false)
+    /// Copy types (VS1/VS2): implicit bitwise copy, source stays valid.
+    /// Non-Copy + `let` (is_mutable=true): move, source invalidated.
+    /// Non-Copy + `const` (is_mutable=false): block-scoped borrow.
     fn handle_assignment(&mut self, expr: &Expr, span: Span, is_mutable: bool) {
         if let Some(ty) = self.program.node_types.get(&expr.id) {
-            if !self.is_copy(ty) {
-                if let ExprKind::Ident(source_name) = &expr.kind {
-                    if is_mutable {
-                        // Mutable binding (let): check not borrowed, then move
-                        if let Some(state) = self.bindings.get(source_name) {
-                            match state {
-                                BindingState::Borrowed { .. } => {
-                                    self.errors.push(OwnershipError {
-                                        kind: OwnershipErrorKind::MutateWhileBorrowed {
-                                            name: source_name.clone(),
-                                            borrow_span: span,
-                                        },
-                                        span,
-                                    });
-                                    return;
-                                }
-                                BindingState::Moved { at } => {
-                                    let reason = self.move_reason_for(&source_name);
-                                    self.errors.push(OwnershipError {
-                                        kind: OwnershipErrorKind::UseAfterMove {
-                                            name: source_name.clone(),
-                                            moved_at: *at,
-                                            reason,
-                                        },
-                                        span,
-                                    });
-                                    return;
-                                }
-                                BindingState::Owned => {}
+            // Copy types: both source and target remain valid (VS1/VS2)
+            if self.is_copy(ty) {
+                return;
+            }
+
+            // Non-Copy types: move or borrow depending on binding mutability
+            if let ExprKind::Ident(source_name) = &expr.kind {
+                if is_mutable {
+                    // Mutable binding (let): check not borrowed, then move
+                    if let Some(state) = self.bindings.get(source_name) {
+                        match state {
+                            BindingState::Borrowed { .. } => {
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::MutateWhileBorrowed {
+                                        name: source_name.clone(),
+                                        borrow_span: span,
+                                    },
+                                    span,
+                                });
+                                return;
                             }
+                            BindingState::Moved { at } => {
+                                let reason = self.move_reason_for(&source_name);
+                                self.errors.push(OwnershipError {
+                                    kind: OwnershipErrorKind::UseAfterMove {
+                                        name: source_name.clone(),
+                                        moved_at: *at,
+                                        reason,
+                                    },
+                                    span,
+                                });
+                                return;
+                            }
+                            BindingState::Owned => {}
                         }
-                        self.bindings.insert(source_name.clone(), BindingState::Moved { at: span });
-                    } else {
-                        // Immutable binding (const): create block-scoped borrow
-                        self.create_borrow(source_name.clone(), BorrowMode::Shared, span);
                     }
+                    self.bindings.insert(source_name.clone(), BindingState::Moved { at: span });
+                } else {
+                    // Immutable binding (const): create block-scoped borrow
+                    self.create_borrow(source_name.clone(), BorrowMode::Shared, span);
                 }
             }
         }

@@ -29,7 +29,7 @@ Four iteration modes per collection: value (default, read-only), mutable (read-w
 | **A1: Copy out** | `collection[i]` copies T when T: Copy (≤16 bytes) |
 | **A2: Field copy** | `collection[i].field` copies field when field: Copy |
 | **A3: Expression borrow** | `collection[i].method()` borrows for call, released at `;` |
-| **A4: No move** | `collection[i]` where T: !Copy is a compile error. Use `.clone()` or `.take_all()` |
+| **A4: No move** | `collection[i]` where T: !Copy is a compile error in user code. Use `.clone()` or `.take_all()`. Loop bindings bypass this — see `ctrl.loops/LP17` |
 
 <!-- test: skip -->
 ```rask
