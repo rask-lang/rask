@@ -146,3 +146,19 @@ fn run_native_multi_func() {
     assert_eq!(code, 0);
     assert_eq!(stdout, "25\n");
 }
+
+// ─── Copy semantics tests ─────────────────────────────────
+
+#[test]
+fn compile_copy_rebind() {
+    let (stdout, code) = compile_and_run("copy_rebind.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42 42\n");
+}
+
+#[test]
+fn run_native_copy_rebind() {
+    let (stdout, code) = run_native("copy_rebind.rk");
+    assert_eq!(code, 0);
+    assert_eq!(stdout, "42 42\n");
+}

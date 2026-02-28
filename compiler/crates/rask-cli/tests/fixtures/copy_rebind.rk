@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Copy types survive let rebinding — source stays valid after copy.
+
+func main() {
+    let x = 42
+    let y = x
+    print(x)
+    print(" ")
+    print(y)
+    print("\n")
+}
