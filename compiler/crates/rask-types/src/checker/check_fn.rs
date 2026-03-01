@@ -49,11 +49,39 @@ impl TypeChecker {
             self.in_unsafe = true;
         }
 
+        // GC9: Infer self mode for private methods with unmodified self
+        let self_param = f.params.iter().find(|p| p.name == "self");
+        let inferred_self_mutate = if let Some(sp) = self_param {
+            if !sp.is_mutate && !sp.is_take && !f.is_pub {
+                // Scan body for self mutations
+                Self::body_writes_self(&f.body)
+            } else {
+                sp.is_mutate || sp.is_take
+            }
+        } else {
+            false
+        };
+
+        // GC10: Public methods must declare self mode explicitly
+        if let Some(sp) = self_param {
+            if f.is_pub && !sp.is_mutate && !sp.is_take && Self::body_writes_self(&f.body) {
+                // Public method writes to self but doesn't declare mutate
+                self.errors.push(TypeError::MutateReadOnlyParam {
+                    name: "self".to_string(),
+                    span: f.span,
+                });
+            }
+        }
+
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
                 if let Some(self_ty) = &self.current_self_type {
-                    self.define_local("self".to_string(), self_ty.clone());
+                    if inferred_self_mutate || param.is_mutate || param.is_take {
+                        self.define_local("self".to_string(), self_ty.clone());
+                    } else {
+                        self.define_local_read_only("self".to_string(), self_ty.clone());
+                    }
                 }
                 continue;
             }
@@ -266,4 +294,55 @@ impl TypeChecker {
         }
     }
 
+    /// GC9: Check if body writes to self fields (implies mutate self).
+    pub(super) fn body_writes_self(body: &[Stmt]) -> bool {
+        body.iter().any(|stmt| Self::stmt_writes_self(stmt))
+    }
+
+    fn stmt_writes_self(stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Assign { target, .. } => Self::expr_targets_self(target),
+            StmtKind::Expr(e) => Self::expr_writes_self(e),
+            StmtKind::While { body, .. } | StmtKind::For { body, .. }
+            | StmtKind::Loop { body, .. } | StmtKind::WhileLet { body, .. } => {
+                Self::body_writes_self(body)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an expression is an assignment target involving self.
+    fn expr_targets_self(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) if name == "self" => true,
+            ExprKind::Field { object, .. } => Self::expr_targets_self(object),
+            ExprKind::Index { object, .. } => Self::expr_targets_self(object),
+            _ => false,
+        }
+    }
+
+    /// Check if an expression contains self-mutating method calls.
+    fn expr_writes_self(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::MethodCall { object, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if name == "self" {
+                        // Conservative: method calls on self could mutate
+                        // Precise check would need type info we don't have yet
+                        return false;
+                    }
+                }
+                false
+            }
+            ExprKind::Block(stmts) => Self::body_writes_self(stmts),
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::expr_writes_self(then_branch)
+                    || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e))
+            }
+            ExprKind::Match { arms, .. } => {
+                arms.iter().any(|arm| Self::expr_writes_self(&arm.body))
+            }
+            _ => false,
+        }
+    }
 }
