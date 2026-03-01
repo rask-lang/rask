@@ -175,7 +175,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Value semantics.** Types ≤16 bytes with all-Copy fields copy implicitly. Larger types move. The threshold is fixed (not configurable) for semantic stability across platforms. `@unique` prevents copying; `@resource` requires exactly-once consumption. See [value-semantics.md](memory/value-semantics.md).
 
-**Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Heap-buffered sources (Vec, Pool, Map, string) use value-based access: inline expression access for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
+**Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Growable sources (Vec, Pool, Map, string) use inline access: expression-scoped for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
 
 **Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Projections like `mutate p: Player.{health}` enable disjoint field borrows. See [parameters.md](memory/parameters.md).
 

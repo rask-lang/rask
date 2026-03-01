@@ -1659,7 +1659,7 @@ specific way. It's more flexible than RAII—you can ensure different cleanup pa
 (commit vs rollback) and the cleanup is visible in the code rather than hidden in a
 destructor.
 
-### Why value-based access for collections?
+### Why inline access for collections?
 
 If you hold a reference to `vec[0]` and then `vec.push(x)`, the push might reallocate
 the vector's backing array. Your reference now points to freed memory.
