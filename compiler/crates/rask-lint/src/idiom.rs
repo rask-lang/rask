@@ -179,7 +179,13 @@ fn walk_expr_for_unwrap(expr: &Expr, source: &str, diags: &mut Vec<LintDiagnosti
             walk_expr_for_unwrap(object, source, diags);
             walk_expr_for_unwrap(index, source, diags);
         }
-        ExprKind::Try(inner) | ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
+        ExprKind::Try { expr: inner, ref else_clause } => {
+            walk_expr_for_unwrap(inner, source, diags);
+            if let Some(ec) = else_clause {
+                walk_expr_for_unwrap(&ec.body, source, diags);
+            }
+        }
+        ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
             walk_expr_for_unwrap(inner, source, diags);
         }
         ExprKind::NullCoalesce { value, default } => {

@@ -1308,8 +1308,23 @@ impl Resolver {
                     self.scopes.pop();
                 }
             }
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 self.resolve_expr(inner);
+                if let Some(ec) = else_clause {
+                    self.scopes.push(ScopeKind::Block);
+                    let sym_id = self.symbols.insert(
+                        ec.error_binding.clone(),
+                        SymbolKind::Variable { mutable: false },
+                        None,
+                        Span::new(0, 0),
+                        false,
+                    );
+                    if let Err(e) = self.scopes.define(ec.error_binding.clone(), sym_id, Span::new(0, 0)) {
+                        self.errors.push(e);
+                    }
+                    self.resolve_expr(&ec.body);
+                    self.scopes.pop();
+                }
             }
             ExprKind::Unwrap { expr: inner, message: _ } => {
                 self.resolve_expr(inner);

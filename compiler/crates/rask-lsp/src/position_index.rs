@@ -236,8 +236,11 @@ fn visit_expr(expr: &Expr, index: &mut PositionIndex) {
                 visit_expr(&arm.body, index);
             }
         }
-        ExprKind::Try(e) => {
+        ExprKind::Try { expr: e, ref else_clause } => {
             visit_expr(e, index);
+            if let Some(ec) = else_clause {
+                visit_expr(&ec.body, index);
+            }
         }
         ExprKind::Unwrap { expr: e, .. } => {
             visit_expr(e, index);

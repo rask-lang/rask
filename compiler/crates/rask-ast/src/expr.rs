@@ -99,7 +99,10 @@ pub enum ExprKind {
         arms: Vec<MatchArm>,
     },
     /// Try expression (try prefix or postfix ?)
-    Try(Box<Expr>),
+    Try {
+        expr: Box<Expr>,
+        else_clause: Option<TryElse>,
+    },
     /// Unwrap expression (postfix !) - panics if None/Err
     Unwrap {
         expr: Box<Expr>,
@@ -212,6 +215,13 @@ pub struct CallArg {
 pub struct FieldInit {
     pub name: String,
     pub value: Expr,
+}
+
+/// Error transformation clause for `try...else |e| expr`.
+#[derive(Debug, Clone)]
+pub struct TryElse {
+    pub error_binding: String,
+    pub body: Box<Expr>,
 }
 
 /// A `with...as` binding: source expression, binding name, and mutability.

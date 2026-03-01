@@ -342,7 +342,13 @@ impl<'a> Monomorphizer<'a> {
                     }
                 }
             }
-            ExprKind::Try(e) | ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
+            ExprKind::Try { expr: e, ref else_clause } => {
+                self.visit_expr(e);
+                if let Some(ec) = else_clause {
+                    self.visit_expr(&ec.body);
+                }
+            }
+            ExprKind::Unwrap { expr: e, .. } => self.visit_expr(e),
             ExprKind::NullCoalesce { value, default } => {
                 self.visit_expr(value);
                 self.visit_expr(default);

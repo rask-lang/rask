@@ -452,8 +452,11 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(&arm.body);
                 }
             }
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 self.check_expr(inner);
+                if let Some(ec) = else_clause {
+                    self.check_expr(&ec.body);
+                }
             }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);

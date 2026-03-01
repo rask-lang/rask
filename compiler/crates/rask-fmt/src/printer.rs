@@ -1141,9 +1141,15 @@ impl<'a> Printer<'a> {
                     self.emit("}");
                 }
             }
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 self.emit("try ");
                 self.format_expr(inner);
+                if let Some(ec) = else_clause {
+                    self.emit(" else |");
+                    self.emit(&ec.error_binding);
+                    self.emit("| ");
+                    self.format_expr(&ec.body);
+                }
             }
             ExprKind::Unwrap { expr: inner, message } => {
                 self.format_expr(inner);
