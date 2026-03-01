@@ -225,7 +225,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Area | Decision | Spec |
 |------|----------|------|
 | Ownership | Single owner, move semantics, 16-byte copy threshold | [memory/](specs/memory/) |
-| Borrowing | Block-scoped (fixed sources), value-based + `with` (collections) | [borrowing.md](specs/memory/borrowing.md) |
+| Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
 | Types | Primitives, structs, enums, generics, traits, unions, tuples, type aliases | [types/](specs/types/) |
