@@ -122,7 +122,7 @@ Structs hold data, traits define behavior, you extend types with methods. No inh
 
 I'm not pretending there aren't tradeoffs. Here's what you give up:
 
-**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process. Compiler coalesces redundant checks; `pool.freeze()` eliminates them entirely for read-heavy phases.
+**Handle overhead:** Accessing through handles costs ~1-2ns (generation check + bounds check, needs actual benchmark proof). In most code this doesn't matter. In tight loops processing millions of items, copy data out and batch process. Compiler coalesces redundant checks; frozen contexts (`using frozen Pool<T>`) enable further elimination during iteration.
 
 **Restructuring some patterns:**
 - Parent pointers → store handles

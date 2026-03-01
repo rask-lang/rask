@@ -209,72 +209,28 @@ Automatically invalidated when the element is removed, the pool is cleared, or t
 | Cross-task communication | `WeakHandle<T>` |
 | Cache that may be invalidated | `WeakHandle<T>` |
 
-## Frozen Pools
+## Frozen Context
 
-`pool.freeze()` returns an immutable view. No structural mutations are possible while frozen.
+The `frozen` modifier on context clauses (`mem.context/CC3`) means "no structural mutations." Writing through handles, inserting, removing, and clearing are all compile errors.
 
 | Rule | Description |
 |------|-------------|
-| **PF5: Freeze guarantees** | No insert/remove while frozen — all handles valid at freeze time remain valid |
-| **PF6: No index access** | `frozen[h]` is a compile error. Use iteration or `frozen.get(h)` |
-| **PF7: Safe random access** | `frozen.get(h)` returns `Option<T>` with a generation check — stale handles return `None` |
-
-FrozenPool provides two access paths: **iteration** (zero-cost, handles are valid by construction) and **checked get** (one generation check, returns Option).
+| **PF5: Frozen guarantees** | No insert/remove/clear/write in `using frozen Pool<T>` context |
+| **PF6: Effect inference** | Private functions can have `frozen` inferred; public functions must declare it |
 
 ```rask
-const frozen = pool.freeze()
-
-// Iteration — zero generation checks (handles valid by construction)
-for (h, entity) in frozen.entries() {
-    render(entity)
-}
-
-// Random access — checked, returns Option
-if frozen.get(h) is Some(val) {
-    use(val)
-}
-
-const pool = frozen.thaw()
-```
-
-**Freezing API:**
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `pool.freeze()` | `Pool<T> -> FrozenPool<T>` | Freeze, consume ownership |
-| `pool.freeze_ref()` | `Pool<T> -> FrozenPool<T>` | Freeze reference (scoped) |
-| `pool.with_frozen(f)` | `(|FrozenPool<T>| -> R) -> R` | Scoped freeze |
-| `frozen.get(h)` | `(Handle<T>) -> Option<T>` | Checked random access |
-| `frozen.with_valid(h, f)` | `(Handle<T>, \|T\| -> R) -> Option<R>` | One check, callback access |
-
-**NOT available on FrozenPool:** `insert()`, `remove()`, `clear()`, `frozen[h]`, `with` mutable bindings
-
-### FrozenPool Context Subsumption
-
-Context clauses (`mem.context`) default to mutable. Add `frozen` for read-only — both `Pool<T>` and `FrozenPool<T>` satisfy it.
-
-```rask
-// Default — mutable, only Pool<T>
+// Default — mutable
 func damage(h: Handle<Entity>, amount: i32) using Pool<Entity> {
     h.health -= amount
 }
 
-// Frozen — read-only, accepts both Pool<T> and FrozenPool<T>
+// Frozen — read-only, no structural mutations
 func get_health(h: Handle<Entity>) using frozen Pool<Entity> -> i32 {
-    return h.health    // Generation-checked (h came from outside)
+    return h.health    // Generation-checked
 }
 ```
 
-| Context | `Pool<T>` | `FrozenPool<T>` |
-|---------|-----------|-----------------|
-| `using Pool<T>` | Accepted | Rejected |
-| `using frozen Pool<T>` | Accepted | Accepted |
-| `using name: Pool<T>` | Accepted | Rejected |
-| `using frozen name: Pool<T>` | Accepted | Accepted |
-
-Writing through handles in a `frozen` context is a compile error. Private functions can have `frozen` inferred; public functions must declare it.
-
-**Note:** `h.field` auto-resolution in frozen contexts performs generation checks (same as mutable contexts). The `frozen` modifier means "no structural mutations" — it doesn't skip validity checks. Zero-cost access is available through iteration on the frozen pool itself.
+In frozen contexts, the compiler may eliminate generation checks during iteration since structural mutations are impossible (see `comp.gen-coalesce`). This is a compiler optimization, not a separate type.
 
 ## Generation Check Coalescing
 
@@ -319,40 +275,27 @@ func cleanup(h: Handle<Entity>) using entities: Pool<Entity> {
 }
 ```
 
-## Pool Partitioning
+## Snapshot
 
-Split a pool for parallel processing.
+`pool.snapshot()` creates a shallow clone for concurrent read access while the original continues to be mutated.
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `pool.with_partition(n, f)` | `(usize, \|[FrozenChunk<T>]\| -> R) -> R` | Scoped read-only partition |
-| `pool.with_partition_mut(n, f)` | `(usize, \|[MutableChunk<T>]\| -> R) -> R` | Scoped read-write partition |
-| `pool.snapshot()` | `Pool<T> -> (FrozenPool<T>, Pool<T>)` | Copy-on-write snapshot isolation |
+| `pool.snapshot()` | `Pool<T> -> (Pool<T>, Pool<T>)` | Returns `(snapshot, original)` — snapshot is an independent clone |
 
-```rask
-entities.with_partition(4, |chunks| {
-    parallel_for(chunks) { |chunk|
-        for (h, entity) in chunk.entries() {
-            analyze(entity)  // Zero generation checks (frozen iteration)
-        }
-    }
-})  // Auto-reunifies here
-```
-
-**Snapshot isolation** — frozen snapshot for readers while writer continues:
-
+<!-- test: skip -->
 ```rask
 let (snapshot, mut pool) = entities.snapshot()
 
-// Readers see frozen state (iterate for zero-check access)
-spawn(|| { render_frame(snapshot) }
+// Readers see frozen state
+spawn(|| { render_frame(snapshot) })
 
 // Writer can mutate concurrently
 try pool.insert(new_entity)
 pool.remove(dead_entity)
 ```
 
-First mutation after snapshot triggers O(n) copy-on-write.
+First mutation after `snapshot()` triggers an O(n) copy. The snapshot is a regular `Pool<T>` — use it with `using frozen Pool<T>` functions to enforce read-only access at the call site.
 
 ## Linear Types in Pools
 
@@ -382,9 +325,6 @@ ensure files.take_all_with(|f| { f.close(); })
 | `Pool<T>` | if `T: Send` | if `T: Sync` |
 | `Handle<T>` | Yes (Copy) | Yes |
 | `WeakHandle<T>` | Yes (Copy) | Yes |
-| `FrozenPool<T>` | if `T: Send` | Yes (immutable) |
-| `FrozenChunk<T>` | if `T: Send` | if `T: Sync` |
-| `MutableChunk<T>` | if `T: Send` | No |
 
 ## Capacity and Allocation
 
@@ -482,19 +422,10 @@ ERROR [mem.pools/PF5]: cannot write through handle in frozen context
    |                                     ------ context is frozen
 2  |      h.health -= 10
    |      ^^^^^^^^^^^^^^ cannot write in frozen context
-```
 
-**Frozen pool index access [PF6]:**
-```
-ERROR [mem.pools/PF6]: FrozenPool does not support index access
-   |
-3  |  const entity = frozen[h]
-   |                 ^^^^^^^^^ cannot index FrozenPool with handle
+FIX: Remove the frozen annotation if mutation is needed:
 
-FIX: Use get() for checked random access, or iterate:
-
-  if frozen.get(h) is Some(entity) { ... }
-  for (h, entity) in frozen.entries() { ... }
+  func bad(h: Handle<Entity>) using Pool<Entity> { ... }
 ```
 
 ## Edge Cases
@@ -511,12 +442,8 @@ FIX: Use get() for checked random access, or iterate:
 | Nested cursors | — | Compile error (pool already borrowed) |
 | Drop Pool<Resource> while non-empty | R5 | Runtime panic |
 | `clear()` on Pool<Resource> | — | Compile error (would abandon resources) |
-| `frozen[h]` index access | PF6 | Compile error (use `get()` or iterate) |
-| `frozen.get(h)` with stale handle | PF7 | Returns `None` |
+| Write in frozen context | PF5 | Compile error |
 | `get_unchecked` with stale handle | — | **Undefined behavior** |
-| `with_partition(0, f)` | — | Compile error (n must be > 0) |
-| Partition while borrowed | — | Compile error |
-| Drop snapshot while readers active | — | Safe (refcount keeps data alive) |
 
 ## Examples
 
@@ -561,19 +488,22 @@ func build_graph() -> Pool<Node> or Error {
 
 ### Rendering Pipeline
 
+<!-- test: skip -->
 ```rask
 func render_frame(world: World) {
-    // Physics update (mutable iteration — clean)
+    // Physics update (mutable iteration)
     for mutate entity in world.entities {
         entity.update_physics()
     }
 
-    // Render pass (read-only, zero-cost iteration)
-    const frozen = world.entities.freeze()
-    for entity in frozen.values() {
+    // Render pass (read-only via frozen context)
+    render_entities(world.entities)
+}
+
+func render_entities() using frozen entities: Pool<Entity> {
+    for entity in entities.values() {
         renderer.draw(entity)
     }
-    world.entities = frozen.thaw()
 }
 ```
 
@@ -587,7 +517,7 @@ func render_frame(world: World) {
 
 **PH3 (handle identity):** Handles are database primary keys. You can have 10 copies of the key `42` — they all access the same row. The keys aren't borrowed; only the access is.
 
-**PF5–PF7 (frozen pools):** Frozen pools don't support `frozen[h]` indexing — this prevents stale handle access from being possible in safe code. Zero-cost access is available through iteration (`values()`, `entries()`, `handles()`), which only yields occupied slots from an immutable pool. Random access with external handles uses `frozen.get(h)` which returns `Option<T>` with a generation check. The common pattern (iterate all entities for a render pass) is zero-cost; the uncommon pattern (follow stored handles) has a checked fallback.
+**PF5 (frozen context):** I considered making FrozenPool a separate type with freeze/thaw ownership ceremonies. That's the Rust approach — explicit state transitions. But it adds a whole type to learn, and `using frozen Pool<T>` already provides the compile-time guarantee. The `frozen` modifier is a context property, not a type.
 
 **PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. Pointers would become dangling; handles never do.
 
@@ -628,30 +558,10 @@ with pool[h1] as e1, pool[h2] as e2 {
 }
 ```
 
-**Pool partitioning — parallel physics:**
-```rask
-func physics_tick(mut entities: Pool<Entity>, dt: f32) {
-    // Phase 1: Parallel read (compute forces)
-    const forces = entities.with_partition(num_cpus(), |chunks| {
-        parallel_map(chunks) { |chunk|
-            chunk.entries().map(|(h, e)| {
-                (h, compute_forces(e.position, e.mass))
-            }).collect<Vec<_>>()
-        }
-    });
-
-    // Phase 2: Serial write (apply forces)
-    for (h, force) in forces.flatten() {
-        entities[h].velocity += force * dt
-        entities[h].position += entities[h].velocity * dt
-    }
-}
-```
-
 **Self-referential patterns:** Doubly-linked lists, trees with parent pointers, graphs with cycles, and arena-allocated ASTs all use the pool+handle pattern. Key guidance:
-- Use `freeze_ref()` for read-only traversal (zero-cost iteration via `values()`/`entries()`)
-- Follow stored handles across a frozen pool with `frozen.get(h)` (checked, returns Option)
-- ASTs: build once, then freeze for analysis passes
+- Use `pool.values()` or `pool.entries()` for read-only traversal
+- Follow stored handles with `pool.get(h)` (checked, returns Option)
+- Use `using frozen Pool<T>` functions for analysis passes that shouldn't mutate
 
 **Shared state:** Share handles, not data. Handles are 12-byte copyable values that can be sent anywhere. The pool stays in one thread; commands flow back to it.
 
@@ -688,14 +598,10 @@ func process_by_type(mut entities: Pool<Entity>) {
 |-----------|------|-------|
 | `pool[h]` | ~1 ns | Generation check + index |
 | `pool.get(h)` | ~1 ns | Same + Option wrap |
-| Frozen iteration | ~0 ns/element | No generation check (valid by construction) |
-| `frozen.get(h)` | ~1 ns | Generation check + Option wrap |
 | `insert()` | Amortized O(1) | May allocate (unbounded) |
 | `remove()` | O(1) | Bumps generation |
 | `cursor()` iteration | O(capacity) | Scans all slots |
-| `with_partition(n, f)` | O(1) setup/teardown | Auto-reunifies |
-| `snapshot()` | O(1) | CoW on first mutation |
-| First mutation after snapshot | O(n) | Triggers copy-on-write |
+| `snapshot()` | O(n) | Shallow clone |
 | Registry lookup | ~1-2 ns | Thread-local HashMap |
 
 ### IDE Integration
