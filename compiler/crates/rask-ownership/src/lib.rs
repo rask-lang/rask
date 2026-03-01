@@ -564,10 +564,12 @@ impl<'a> OwnershipChecker<'a> {
             }
 
             // Non-Copy types: move or borrow depending on binding mutability
-            if let ExprKind::Ident(source_name) = &expr.kind {
+            // F1: Extract root binding and optional field projection
+            let (root, projection) = Self::extract_root_and_fields(expr);
+            if let Some(source_name) = root {
                 if is_mutable {
                     // Mutable binding (let): check not borrowed, then move
-                    if let Some(state) = self.bindings.get(source_name) {
+                    if let Some(state) = self.bindings.get(&source_name) {
                         match state {
                             BindingState::Borrowed { .. } => {
                                 self.errors.push(OwnershipError {
@@ -594,19 +596,41 @@ impl<'a> OwnershipChecker<'a> {
                             BindingState::Owned => {}
                         }
                     }
-                    self.bindings.insert(source_name.clone(), BindingState::Moved { at: span });
+                    if projection.is_some() {
+                        // F1: Field-projected borrow — disjoint fields don't conflict
+                        self.create_borrow_with_projection(source_name, BorrowMode::Exclusive, span, projection);
+                    } else {
+                        self.bindings.insert(source_name, BindingState::Moved { at: span });
+                    }
                 } else {
                     // Immutable binding (const): create block-scoped borrow
-                    self.create_borrow(source_name.clone(), BorrowMode::Shared, span);
+                    self.create_borrow_with_projection(source_name, BorrowMode::Shared, span, projection);
                 }
             }
         }
     }
 
-    /// Create a borrow of a binding, optionally projected to specific fields.
-    fn create_borrow(&mut self, source_name: String, mode: BorrowMode, span: Span) {
-        self.create_borrow_with_projection(source_name, mode, span, None);
+    /// F1: Extract root binding name and field projection from a field expression.
+    /// `state.health` → (Some("state"), Some(["health"]))
+    /// `state` → (Some("state"), None)
+    /// Complex expressions → (None, None)
+    fn extract_root_and_fields(expr: &Expr) -> (Option<String>, Option<Vec<String>>) {
+        match &expr.kind {
+            ExprKind::Ident(name) => (Some(name.clone()), None),
+            ExprKind::Field { object, field } => {
+                let (root, fields) = Self::extract_root_and_fields(object);
+                if let Some(root) = root {
+                    let mut projection = fields.unwrap_or_default();
+                    projection.push(field.clone());
+                    (Some(root), Some(projection))
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        }
     }
+
 
     fn create_borrow_with_projection(
         &mut self,
