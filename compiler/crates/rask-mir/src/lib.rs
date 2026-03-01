@@ -18,6 +18,7 @@ pub mod lower;
 
 pub use builder::BlockBuilder;
 pub use closures::optimize_all_closures;
+pub use transform::clone_elision::elide_clones;
 pub use transform::gen_coalesce::coalesce_generation_checks;
 pub use transform::string_append::optimize_string_concat;
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
