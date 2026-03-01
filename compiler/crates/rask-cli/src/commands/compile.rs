@@ -113,6 +113,9 @@ pub fn compile_to_object(
     // Self-concat → in-place append (eliminates O(n²) string building)
     rask_mir::optimize_string_concat(&mut mir_functions);
 
+    // Last-use clone elision — replace clone with move when source is dead
+    rask_mir::elide_clones(&mut mir_functions);
+
     // Generation check coalescing — eliminate redundant pool access checks
     rask_mir::coalesce_generation_checks(&mut mir_functions);
 
@@ -420,6 +423,7 @@ pub fn compile_benchmarks_to_object(
 
     rask_mir::optimize_all_closures(&mut mir_functions);
     rask_mir::optimize_string_concat(&mut mir_functions);
+    rask_mir::elide_clones(&mut mir_functions);
     rask_mir::coalesce_generation_checks(&mut mir_functions);
 
     // Insert cleanup calls for benchmark functions to prevent memory leaks.

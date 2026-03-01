@@ -1423,6 +1423,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "rask-semantic-hash"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
+]
+
+[[package]]
 name = "rask-spec-test"
 version = "0.1.0"
 dependencies = [
