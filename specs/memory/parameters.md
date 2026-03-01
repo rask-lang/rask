@@ -95,32 +95,27 @@ try file.close()      // takes file
 try file.read(buf)    // ERROR: file was taken
 ```
 
-## Projections (Partial Borrows)
+## Disjoint Field Borrows
 
-Projections borrow only specific fields, enabling disjoint borrows across function calls.
-
-| Rule | Description |
-|------|-------------|
-| **PM4: Projection syntax** | `Type.{field1, field2}` in function params accepts a projection |
-| **PM5: Disjoint** | Non-overlapping projections can coexist |
-| **PM6: Scope** | Only projected fields are accessible |
+When passing `value.field` to a `mutate` parameter, the borrow checker tracks the borrow at field granularity. Functions take the field's concrete type — no special projection syntax needed.
 
 <!-- test: skip -->
 ```rask
-func heal(mutate p: Player.{health}) {
-    p.health += 10       // OK: health is projected
-    p.inventory          // ERROR: not in projection
+func heal(mutate health: Health) {
+    health.current += 10
 }
 
-func loot(mutate p: Player.{inventory}) {
-    p.inventory.push(item)
+func loot(mutate inventory: Inventory) {
+    inventory.push(item)
 }
 
 func update(mutate player: Player) {
-    heal(player)         // Borrows player.health
-    loot(player)         // OK: borrows player.inventory (disjoint)
+    heal(player.health)         // Borrows player.health
+    loot(player.inventory)      // OK: borrows player.inventory (disjoint)
 }
 ```
+
+See `mem.borrowing/F1`–`F4` for the full disjoint field borrowing rules.
 
 ## Interaction with Copy Types
 
@@ -208,9 +203,7 @@ ERROR [mem.parameters/PM3]: value used after being taken
 | Closure captures | — | Captured borrows follow closure lifetime rules (`mem.closures`) |
 | Pattern matching | PM2 | Mutation only allowed if parameter is `mutate` |
 | Copy type + mutate | PM2 | Value is copied in; mutations affect the copy |
-| Nested fields in projection | PM4 | `Player.{stats.health}` is invalid — projections are flat (`type.structs/P6`). Project `stats`, access `.health` normally |
-| `take` on projection | PM4 | Invalid — projections support borrow and `mutate` only (`type.structs/P9`) |
-| Projection in generic param | PM4 | Invalid — `T.{field}` where T is generic is a compile error (`type.structs/P10`) |
+| Disjoint field borrows | — | Passing `value.field` to `mutate` borrows only that field (`mem.borrowing/F1`) |
 
 ---
 
@@ -288,4 +281,4 @@ This bridges the gap between source-level simplicity and full visibility. In an 
 - [Resource Types](resource-types.md) — Must-consume resources (`mem.resources`)
 - [Borrowing](borrowing.md) — Borrow scope rules (`mem.borrowing`)
 - [Closures](closures.md) — Closure parameter modes (`mem.closures`)
-- [Structs](../types/structs.md) — Projection type syntax (`type.structs`)
+- [Structs](../types/structs.md) — Struct definition, methods (`type.structs`)

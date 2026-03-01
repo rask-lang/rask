@@ -49,7 +49,7 @@ pub struct ActiveBorrow {
     pub scope: BorrowScope,
     /// Where the borrow was created.
     pub span: Span,
-    /// Field projection — `None` means whole-object borrow,
+    /// Disjoint field borrow — `None` means whole-object borrow,
     /// `Some(fields)` means only those fields are borrowed.
     pub projection: Option<Vec<String>>,
 }
@@ -64,7 +64,7 @@ impl ActiveBorrow {
         self
     }
 
-    /// Check if this borrow overlaps with a given projection.
+    /// Check if this borrow overlaps with another field-level borrow.
     /// Two borrows overlap if either is whole-object or they share fields.
     pub fn overlaps(&self, other_projection: &Option<Vec<String>>) -> bool {
         match (&self.projection, other_projection) {

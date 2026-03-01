@@ -785,12 +785,13 @@ const result = search: loop {
 
 ## Ownership & Memory Syntax
 
-Pool access, `ensure` cleanup, `@resource` types, and projection syntax are shown in the sections above (see [Structs](#structs), [Generics](#generics), [Parameter modes](#functions)). For full semantics, see:
+Pool access, `ensure` cleanup, and `@resource` types are shown in the sections above (see [Structs](#structs), [Generics](#generics), [Parameter modes](#functions)). For full semantics, see:
 
 - [pools.md](memory/pools.md) — Handle-based access, context clauses
 - [ensure.md](control/ensure.md) — Deferred cleanup
 - [resource-types.md](memory/resource-types.md) — Must-consume types
-- [parameters.md](memory/parameters.md) — Projections (`Type.{field}`)
+- [parameters.md](memory/parameters.md) — Parameter modes (borrow, mutate, take)
+- [borrowing.md](memory/borrowing.md) — Disjoint field borrowing
 
 ---
 
@@ -1114,7 +1115,6 @@ println("{sum}")
 | Closures | `\|x\| expr` | Rust-style pipes |
 | Named args | `name: value` | Order-fixed, optional (IDE ghosts) |
 | Default args | `param = value` | Constants only, after required |
-| Projections | `Type.{field}` | Partial borrows |
 | Interpolation | `"{x}"` | In all strings |
 | Comments | `//` and `/* */` | Standard |
 
