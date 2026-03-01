@@ -1010,21 +1010,6 @@ impl Parser {
             name.push('?');
         }
 
-        if self.check(&TokenKind::Dot) && matches!(self.peek(1), TokenKind::LBrace) {
-            self.advance();
-            self.advance();
-            name.push_str(".{");
-            let mut first = true;
-            while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                if !first { name.push_str(", "); }
-                first = false;
-                name.push_str(&self.expect_ident()?);
-                if !self.match_token(&TokenKind::Comma) { break; }
-            }
-            self.expect(&TokenKind::RBrace)?;
-            name.push('}');
-        }
-
         Ok(name)
     }
 

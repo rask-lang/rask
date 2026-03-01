@@ -12,11 +12,6 @@ use crate::types::{GenericArg, Type};
 pub fn parse_type_string(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     let s = s.trim();
 
-    // Strip field projection syntax: `Type.{field1, field2}` → `Type`
-    // Projections affect borrowing, not the type itself.
-    let s = strip_projection(s);
-    let s = s.as_ref();
-
     if s.is_empty() || s == "()" {
         return Ok(Type::Unit);
     }
@@ -293,35 +288,3 @@ fn parse_fn_type(s: &str, types: &TypeTable) -> Result<Type, TypeError> {
     })
 }
 
-/// Strip field projection suffix from a type string.
-/// `"GameState.{entities, score}"` → `"GameState"`
-/// `"Vec<i32>"` → `"Vec<i32>"` (unchanged)
-fn strip_projection(s: &str) -> std::borrow::Cow<'_, str> {
-    if let Some(pos) = s.find(".{") {
-        // Verify it ends with `}`
-        if s.ends_with('}') {
-            return std::borrow::Cow::Owned(s[..pos].to_string());
-        }
-    }
-    std::borrow::Cow::Borrowed(s)
-}
-
-/// Extract projection fields from a type string, if any.
-/// `"GameState.{entities, score}"` → `Some(vec!["entities", "score"])`
-/// `"Vec<i32>"` → `None`
-pub fn extract_projection(s: &str) -> Option<Vec<String>> {
-    if let Some(pos) = s.find(".{") {
-        if s.ends_with('}') {
-            let fields_str = &s[pos + 2..s.len() - 1];
-            let fields: Vec<String> = fields_str
-                .split(',')
-                .map(|f| f.trim().to_string())
-                .filter(|f| !f.is_empty())
-                .collect();
-            if !fields.is_empty() {
-                return Some(fields);
-            }
-        }
-    }
-    None
-}
