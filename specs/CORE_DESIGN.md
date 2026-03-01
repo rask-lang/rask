@@ -44,7 +44,7 @@ There's no `Box<T>` because there's no need to distinguish "heap-allocated value
 
 **Why this matters:** When everything is a value, the ownership rules apply everywhere identically. Move a `Vec` and the buffer moves. Move a `Cell` and the inner value moves. Move an `any Widget` and the heap data moves. One model, no exceptions.
 
-**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, field projections for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
+**Design space:** This approach is called *mutable value semantics* (MVS). The core idea: ban aliasing instead of banning mutation, then provide controlled mutation through parameter modes (`mutate`) and scoped access (`with`). [Hylo](https://www.hylo-lang.org/) (formerly Val, from Google Research) pioneered this as a formal model. [Rue](https://github.com/steveklabnik/rue) (by Steve Klabnik, author of *The Rust Programming Language*) explores the same tradeoff with `inout` parameters. Swift's value types are a partial version. Where Rask differs: `with` blocks for multi-statement collection access, `Pool`+`Handle` for graphs, disjoint field borrowing for partial borrows, and context clauses for implicit state threading — solutions to problems that pure MVS hits once you go beyond simple value passing.
 
 ### 3. No Storable References
 
@@ -177,7 +177,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Borrowing.** References are block-scoped for fixed-layout sources (struct fields, arrays — valid until end of enclosing block). Growable sources (Vec, Pool, Map, string) use inline access: expression-scoped for one-liners, `with...as` blocks for multi-statement operations. Cannot be stored in structs, returned, or sent cross-task. See [borrowing.md](memory/borrowing.md).
 
-**Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Projections like `mutate p: Player.{health}` enable disjoint field borrows. See [parameters.md](memory/parameters.md).
+**Parameters.** Three modes declared in the signature: borrow (default, read-only), `mutate` (mutable access, caller keeps ownership), and `take` (ownership transfer). Passing `value.field` to a `mutate` parameter borrows only that field — disjoint fields don't conflict. See [parameters.md](memory/parameters.md), [borrowing.md](memory/borrowing.md).
 
 **Collections.** `Vec<T>` for sequences, `Map<K,V>` for key-value lookup, `Pool<T>` for handle-based sparse storage (graphs, entities, caches). All growth operations return `Result` — allocation is fallible. `with pool[h] as entity { ... }` for multi-statement element access. See [collections.md](stdlib/collections.md), [pools.md](memory/pools.md).
 

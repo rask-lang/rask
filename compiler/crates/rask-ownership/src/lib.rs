@@ -18,7 +18,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind, Pattern};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
-use rask_types::{Type, TypedProgram, extract_projection};
+use rask_types::{Type, TypedProgram};
 
 /// Result of ownership analysis.
 #[derive(Debug)]
@@ -154,17 +154,12 @@ impl<'a> OwnershipChecker<'a> {
                         scope: BorrowScope::Persistent { block_id: 0 },
                     },
                 );
-                // Track field projection if parameter has one (e.g., `state: GameState.{entities}`)
-                let projection = extract_projection(&param.ty);
-                let mut borrow = ActiveBorrow::new(
+                let borrow = ActiveBorrow::new(
                     param.name.clone(),
                     mode,
                     BorrowScope::Persistent { block_id: 0 },
                     Span::new(0, 0),
                 );
-                if let Some(fields) = projection {
-                    borrow = borrow.with_projection(fields);
-                }
                 self.borrows.push(borrow);
             }
         }
@@ -611,8 +606,8 @@ impl<'a> OwnershipChecker<'a> {
                     self.borrows.push(borrow);
                 }
                 BindingState::Borrowed { mode: existing_mode, .. } => {
-                    // Check if there's an actual conflict considering projections.
-                    // Non-overlapping projections on the same binding don't conflict.
+                    // Check if there's an actual conflict considering field-level borrows.
+                    // Non-overlapping field borrows on the same binding don't conflict.
                     let has_conflict = self.borrows.iter().any(|b| {
                         b.source == source_name && b.overlaps(&projection) && (
                             *existing_mode == BorrowMode::Exclusive

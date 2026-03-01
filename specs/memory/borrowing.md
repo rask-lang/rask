@@ -251,16 +251,16 @@ Shared requires explicit `.read()` or `.write()` — bare `with shared as v` is 
 
 See [cell.md](cell.md) for Cell specifics, [sync.md](../concurrency/sync.md) for Shared/Mutex specifics.
 
-## Field Projections for Partial Borrowing
+## Disjoint Field Borrowing
 
-Borrowing a struct borrows all of it. Field projections (`Type.{field1, field2}`) borrow only specific fields.
+When you pass `value.field` to a function, the borrow checker tracks the borrow at field granularity. Two borrows on different fields of the same struct don't conflict.
 
 | Rule | Description |
 |------|-------------|
-| **P1: Syntax** | `value.{field1, field2}` creates a projection of the named fields |
-| **P2: Type syntax** | `Type.{field1}` in function params accepts a projection |
-| **P3: Non-overlapping** | Projections with disjoint fields can be borrowed simultaneously |
-| **P4: Parallel safe** | Non-overlapping mutable projections can be sent to different scoped threads |
+| **F1: Field-level tracking** | Passing `value.field` to a `mutate` parameter borrows only that field |
+| **F2: Non-overlapping** | Borrows on disjoint fields of the same struct can coexist |
+| **F3: Whole-object conflict** | A borrow of the whole struct conflicts with any field-level borrow |
+| **F4: Closure captures** | Closures capture variables at field granularity — disjoint field captures on different threads don't conflict |
 
 <!-- test: skip -->
 ```rask
@@ -269,36 +269,44 @@ struct GameState {
     score: i32
 }
 
-// Only borrows `entities` - other fields remain available
-func movement_system(mutate state: GameState.{entities}, dt: f32) {
-    for h in state.entities {
-        state.entities[h].position.x += state.entities[h].velocity.dx * dt
+// Takes the field directly — decoupled from GameState
+func movement_system(mutate entities: Pool<Entity>, dt: f32) {
+    for h in entities {
+        entities[h].position.x += entities[h].velocity.dx * dt
     }
 }
 
-// Only borrows `score` - can run alongside movement_system
-func update_score(mutate state: GameState.{score}, points: i32) {
-    state.score += points
+func update_score(mutate score: i32, points: i32) {
+    score += points
+}
+
+func update(mutate state: GameState, dt: f32) {
+    movement_system(state.entities, dt)   // Borrows state.entities
+    update_score(state.score, 10)          // Borrows state.score (no conflict — F2)
 }
 ```
 
-**Local projections (P1):**
+**Parallel field access (F4):**
 
 <!-- test: skip -->
 ```rask
-func update(mutate state: GameState) {
-    // Local projection — borrows only the named fields
-    const proj = state.{entities}
-    proj.entities[h].health -= 10   // OK: entities is projected
-    state.score += 100               // OK: score not in projection
-
-    // Disjoint local projections
-    const a = state.{entities}
-    const b = state.{score}          // OK: disjoint from a
+func parallel_update(mutate state: GameState, dt: f32) {
+    scoped {
+        // Compiler sees: captures state.entities mutably
+        spawn(|| {
+            for h in state.entities {
+                state.entities[h].position.x += state.entities[h].velocity.dx * dt
+            }
+        })
+        // Compiler sees: captures state.score mutably — disjoint, no conflict
+        spawn(|| {
+            state.score += 10
+        })
+    }
 }
 ```
 
-See [types/structs.md](../types/structs.md) for full projection type rules (`type.structs/P1`–`P10`).
+Functions take concrete field types, not struct-coupled projections. This means `movement_system` works with any `Pool<Entity>`, not just one from `GameState`.
 
 ## Access Rules
 
@@ -410,11 +418,9 @@ FIX: Move the structural mutation outside the with block:
 | Inline read of other element inside `with` | W2 | Allowed |
 | Inline write of other element inside `with` | W2 | Allowed (runtime panic if same handle) |
 | Structural mutation inside `with` | W2 | Compile error |
-| Projection stored in local | P1 | Block-scoped, follows S1–S3 (`type.structs/P8`) |
-| Overlapping projections | P3 | Compile error: fields overlap |
-| Projection + full struct borrow | P3 | Compile error: struct already borrowed |
-| Method on projection | — | Compile error (`type.structs/P7`) |
-| Nested field projection | P1 | Invalid: `T.{a.b}` (`type.structs/P6`) |
+| Disjoint field borrows | F2 | Non-overlapping fields can be borrowed simultaneously |
+| Field borrow + whole-struct borrow | F3 | Compile error: struct already borrowed |
+| Same field borrowed twice | F2 | Compile error: field already borrowed |
 
 ## Quick Reference
 
@@ -585,3 +591,4 @@ Hover information shows the access type, duration, and suggested patterns for th
 - [Collections](../stdlib/collections.md) — Vec, Map APIs (`std.collections`)
 - [Cell](cell.md) — Single-value `with` access (`mem.cell`)
 - [Synchronization](../concurrency/sync.md) — `Shared<T>`/`Mutex<T>` `with` access (`conc.sync`)
+- [Structs](../types/structs.md) — Struct definition, methods, value semantics (`type.structs`)

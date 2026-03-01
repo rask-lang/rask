@@ -42,35 +42,7 @@ impl Interpreter {
         self.env.push_scope();
 
         for (param, arg) in func.params.iter().zip(args.into_iter()) {
-            if let Some(proj_start) = param.ty.find(".{") {
-                let proj_fields_str = &param.ty[proj_start + 2..param.ty.len() - 1];
-                let proj_fields: Vec<&str> = proj_fields_str.split(',').map(|s| s.trim()).collect();
-                if proj_fields.len() == 1 && param.name == proj_fields[0] {
-                    if let Value::Struct { fields, .. } = &arg {
-                        if let Some(field_val) = fields.get(proj_fields[0]) {
-                            self.env.define(param.name.clone(), field_val.clone());
-                        } else {
-                            return Err(RuntimeDiagnostic::new(
-                                RuntimeError::TypeError(format!(
-                                    "struct has no field '{}' for projection", proj_fields[0]
-                                )),
-                                Span::new(0, 0)
-                            ));
-                        }
-                    } else {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(format!(
-                                "projection parameter expects struct, got {}", arg.type_name()
-                            )),
-                            Span::new(0, 0)
-                        ));
-                    }
-                } else {
-                    self.env.define(param.name.clone(), arg);
-                }
-            } else {
-                self.env.define(param.name.clone(), arg);
-            }
+            self.env.define(param.name.clone(), arg);
         }
 
         let result = self.exec_stmts(&func.body);

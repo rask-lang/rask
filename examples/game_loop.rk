@@ -108,13 +108,13 @@ extend GameState {
 }
 
 // System: Update positions based on velocities
-// Only borrows the entities field — other GameState fields remain available
-func movement_system(mutate state: GameState.{entities}, dt: f32) {
-    for h in state.entities {
-        if !state.entities[h].active: continue
+// Takes Pool<Entity> directly — decoupled from GameState, works with any entity pool
+func movement_system(mutate entities: Pool<Entity>, dt: f32) {
+    for h in entities {
+        if !entities[h].active: continue
 
-        state.entities[h].position.x += state.entities[h].velocity.dx * dt
-        state.entities[h].position.y += state.entities[h].velocity.dy * dt
+        entities[h].position.x += entities[h].velocity.dx * dt
+        entities[h].position.y += entities[h].velocity.dy * dt
     }
 }
 
@@ -209,11 +209,11 @@ func spawn_system(mutate state: GameState, time_since_last_spawn: f32) -> f32 {
 }
 
 // Parallel movement update - processes entity batches across threads
-// NOTE: Sending projections to threads requires scoped threading (type.structs/P4 — mechanism TBD)
-func parallel_movement_system(mutate state: GameState.{entities}, dt: f32, num_threads: usize)
+// Takes Pool<Entity> directly — borrow checker tracks field-level borrow at call site
+func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_threads: usize)
     using ThreadPool
 {
-    let handles = state.entities.handles()
+    let handles = entities.handles()
     let chunk_size = (handles.len() + num_threads - 1) / num_threads
 
     // Split work across thread pool
@@ -222,9 +222,9 @@ func parallel_movement_system(mutate state: GameState.{entities}, dt: f32, num_t
         let chunk = chunk.to_vec()
         let task = ThreadPool.spawn(|| {
             for h in chunk {
-                if !state.entities[h].active: continue
-                state.entities[h].position.x += state.entities[h].velocity.dx * dt
-                state.entities[h].position.y += state.entities[h].velocity.dy * dt
+                if !entities[h].active: continue
+                entities[h].position.x += entities[h].velocity.dx * dt
+                entities[h].position.y += entities[h].velocity.dy * dt
             }
         })
         thread_handles.push(task).ok()
@@ -275,7 +275,8 @@ func main() -> () or Error {
 
             // Parallel physics: split entity updates across thread pool
             // Each thread processes a batch of entities
-            parallel_movement_system(mutate state, dt, NUM_PHYSICS_THREADS)
+            // Borrow checker tracks that only state.entities is borrowed
+            parallel_movement_system(state.entities, dt, NUM_PHYSICS_THREADS)
 
             // Collision runs single-threaded (needs to see all entities)
             collision_system(mutate state)
