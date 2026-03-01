@@ -44,6 +44,66 @@ impl TypeChecker {
             }
         }
         self.auto_derive_traits();
+
+        // GC1/GC2: Pre-register type vars for functions with inferred params/returns
+        self.pre_register_inferred_fns(decls);
+    }
+
+    /// Create fresh type vars for functions with omitted parameter types or return types.
+    /// Stores them in `symbol_types` (for callers) and `inferred_fn_types` (for check_fn).
+    fn pre_register_inferred_fns(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let fns: Vec<&FnDecl> = match &decl.kind {
+                DeclKind::Fn(f) => vec![f],
+                DeclKind::Struct(s) => s.methods.iter().collect(),
+                DeclKind::Enum(e) => e.methods.iter().collect(),
+                _ => continue,
+            };
+            for f in fns {
+                let has_inferred_params = f.params.iter().any(|p| p.name != "self" && p.ty.is_empty());
+                let has_inferred_return = f.ret_ty.is_none() && !f.is_pub && self.has_explicit_return(&f.body);
+                if !has_inferred_params && !has_inferred_return {
+                    continue;
+                }
+
+                // Build param type list, creating fresh vars for empty-typed params
+                let mut param_vars = Vec::new();
+                let mut param_types = Vec::new();
+                for p in &f.params {
+                    if p.name == "self" {
+                        continue;
+                    }
+                    let ty = if p.ty.is_empty() {
+                        self.ctx.fresh_var()
+                    } else {
+                        parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error)
+                    };
+                    param_vars.push((p.name.clone(), ty.clone()));
+                    param_types.push(ty);
+                }
+
+                let ret_ty = if has_inferred_return {
+                    self.ctx.fresh_var()
+                } else if let Some(t) = &f.ret_ty {
+                    parse_type_string(t, &self.types).unwrap_or(Type::Error)
+                } else {
+                    Type::Unit
+                };
+
+                // Register in symbol_types so callers see the right type
+                if let Some(sym) = self.resolved.symbols.iter()
+                    .find(|s| s.name == f.name && matches!(s.kind, SymbolKind::Function { .. }))
+                {
+                    self.symbol_types.insert(sym.id, Type::Fn {
+                        params: param_types,
+                        ret: Box::new(ret_ty.clone()),
+                    });
+                }
+
+                // Store for check_fn to reuse
+                self.inferred_fn_types.insert(f.name.clone(), (param_vars, ret_ty));
+            }
+        }
     }
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl) {

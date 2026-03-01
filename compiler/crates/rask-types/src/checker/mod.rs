@@ -68,6 +68,9 @@ pub struct TypeChecker {
     pub(super) in_unsafe: bool,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
+    /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
+    /// Key is function name, value is (param_type_vars, return_type_var).
+    pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
 }
 
 impl TypeChecker {
@@ -88,6 +91,7 @@ impl TypeChecker {
             pending_call_type_args: Vec::new(),
             fn_type_params: HashMap::new(),
             in_unsafe: false,
+            inferred_fn_types: HashMap::new(),
             in_assign_target: false,
         }
     }

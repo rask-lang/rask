@@ -14,11 +14,33 @@ use crate::types::Type;
 
 impl TypeChecker {
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
-        let ret_ty = f
-            .ret_ty
-            .as_ref()
-            .map(|t| parse_type_string(t, &self.types).unwrap_or(Type::Error))
-            .unwrap_or(Type::Unit);
+        // GC5: public functions must have full type annotations
+        let unannotated_params: Vec<String> = f.params.iter()
+            .filter(|p| p.name != "self" && p.ty.is_empty())
+            .map(|p| p.name.clone())
+            .collect();
+        let missing_return = f.ret_ty.is_none()
+            && f.is_pub
+            && self.has_explicit_return(&f.body);
+        if f.is_pub && (!unannotated_params.is_empty() || missing_return) {
+            self.errors.push(TypeError::PublicMissingAnnotation {
+                function_name: f.name.clone(),
+                params: unannotated_params.clone(),
+                missing_return,
+                span: f.span,
+            });
+        }
+
+        // GC1/GC2: Reuse pre-registered type vars for inferred params/return
+        let inferred = self.inferred_fn_types.get(&f.name).cloned();
+
+        let ret_ty = if let Some(t) = &f.ret_ty {
+            parse_type_string(t, &self.types).unwrap_or(Type::Error)
+        } else if let Some((_, ref ret_var)) = inferred {
+            ret_var.clone()
+        } else {
+            Type::Unit
+        };
         self.current_return_type = Some(ret_ty);
 
         // UF1: unsafe func body is implicitly unsafe
@@ -35,13 +57,25 @@ impl TypeChecker {
                 }
                 continue;
             }
-            if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
-                if param.is_mutate || param.is_take {
-                    self.define_local(param.name.clone(), ty);
+            // GC1: Look up pre-created type var for inferred params
+            let ty = if param.ty.is_empty() {
+                if let Some((ref pvars, _)) = inferred {
+                    pvars.iter()
+                        .find(|(name, _)| name == &param.name)
+                        .map(|(_, ty)| ty.clone())
+                        .unwrap_or_else(|| self.ctx.fresh_var())
                 } else {
-                    // Default params are read-only
-                    self.define_local_read_only(param.name.clone(), ty);
+                    self.ctx.fresh_var()
                 }
+            } else if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+                ty
+            } else {
+                continue;
+            };
+            if param.is_mutate || param.is_take {
+                self.define_local(param.name.clone(), ty);
+            } else {
+                self.define_local_read_only(param.name.clone(), ty);
             }
         }
 

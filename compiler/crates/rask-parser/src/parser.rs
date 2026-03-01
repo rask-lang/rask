@@ -762,11 +762,8 @@ impl Parser {
             } else if name == "self" {
                 "Self".to_string()
             } else {
-                return Err(ParseError::expected(
-                    "':'",
-                    self.current_kind(),
-                    self.current().span,
-                ).with_hint("Parameters need a type, like: name: Type"));
+                // GC1: Allow omitting parameter type — inferred from body
+                String::new()
             };
 
             let default = if self.match_token(&TokenKind::Eq) {
