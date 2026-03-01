@@ -377,30 +377,27 @@ One-liner shorthand (parallels `if cond: expr`):
 with pool[h] as e: e.health -= damage
 ```
 
-### Field Projections: Partial Borrowing
+### Disjoint Field Borrowing
 
-Sometimes a function only needs one field of a struct. Field projections let the compiler
-know, so other fields remain available:
+When a function only needs one field of a struct, pass the field directly. The borrow
+checker tracks which field is borrowed, so other fields remain available:
 
 ```rask
-func movement_system(mutate state: GameState.{entities}, dt: f32) {
-    // Only touches state.entities
+func movement_system(mutate entities: Pool<Entity>, dt: f32) {
+    // Works with any Pool<Entity>, not coupled to GameState
 }
 
-func scoring_system(mutate state: GameState.{score}, points: i32) {
-    // Only touches state.score
+func update_score(mutate score: i32, points: i32) {
+    score += points
 }
 
-// These can run in parallel—they touch different fields
-movement_system(state.{entities}, dt)
-scoring_system(state.{score}, 10)
+// Borrow checker knows these touch different fields — no conflict
+movement_system(state.entities, dt)
+update_score(state.score, 10)
 ```
 
-**Why `.{entities}` with braces, not just `.entities`?** Because `state.entities` is
-normal field access—it gives you the value. `state.{entities}` creates a *projection*—a
-restricted view of the struct where only that field is accessible. The braces
-disambiguate "I'm reading a field" from "I'm creating a partial view for borrowing
-purposes." The compiler verifies you don't touch anything outside the projection.
+For parallel access, closures capture at field granularity too — two spawned closures
+accessing disjoint fields of the same struct don't conflict.
 
 ---
 

@@ -109,9 +109,7 @@ Design the IR for function-level granularity now — this can't be retrofitted. 
 ## Open design questions
 
 - Package granularity — folder = package (Go-style) vs file = package (Zig-style)
-- Field projections for `ThreadPool.spawn` closures (disjoint field access)
 - Task-local storage syntax
-- `Projectable` trait — custom containers with `with...as`
 - String C interop — `as_c_str()`, `string.from_c()`
 - `pool.remove_with(h, |val| { ... })` — cascading @resource cleanup
 - Style guideline: max 3 context clauses per function

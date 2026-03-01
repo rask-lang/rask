@@ -70,7 +70,7 @@ struct GameWorld {
 | 4: Render | 6 | PASS | |
 | 5: Parallel | **12** | **FAIL** | |
 
-**Root cause:** Not any single mechanism. ECS-with-FFI sits at the intersection of ALL mechanisms simultaneously. The 4-step destruction dance (Phase 3) and thread+snapshot+projection pile-up (Phase 5) break the budget.
+**Root cause:** Not any single mechanism. ECS-with-FFI sits at the intersection of ALL mechanisms simultaneously. The 4-step destruction dance (Phase 3) and thread+snapshot pile-up (Phase 5) break the budget.
 
 **Metrics impact:** Game engines carry only 5% weight in UCC, so failing here doesn't sink the language. But ED target (≤ 1.2 vs simplest alternative) is at risk — Odin or Jai would handle Phase 3 in 2 lines.
 
@@ -209,13 +209,14 @@ world.entities.remove_with(h, |entity| {
 })
 ```
 
-### 2. Field projections for `spawn thread` closures
+### 2. Disjoint field borrows in thread closures
 
 <!-- test: skip -->
 ```rask
-const physics_handle = spawn thread(world.{physics}) {
+// Compiler tracks that the closure only captures world.physics
+const physics_handle = spawn thread(|| {
     world.physics.step(dt)
-}
+})
 ```
 
 ### 3. `ensure` ordering lint for @resource cleanup
@@ -224,7 +225,7 @@ Warn when LIFO ordering might close a dependency before its dependent is drained
 
 ### 4. Style guideline: max 3 context clauses
 
-If a function needs >3, restructure (pass struct, use field projections, split function). Lint, not language rule.
+If a function needs >3, restructure (pass struct, pass individual fields, split function). Lint, not language rule.
 
 ---
 
@@ -236,4 +237,4 @@ If a function needs >3, restructure (pass struct, use field projections, split f
 - `mem.resources` — @resource types, ensure cleanup
 - `mem.context` — context clauses
 - `conc.async` — spawn, must-use handles
-- `mem.borrowing` — inline access, `with` blocks, field projections
+- `mem.borrowing` — inline access, `with` blocks, disjoint field borrowing

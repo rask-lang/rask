@@ -54,9 +54,7 @@
 ## Design Questions
 
 - [ ] Package granularity — folder = package (Go-style) vs file = package (Zig-style)
-- [ ] Field projections for `ThreadPool.spawn` closures — disjoint field access across threads
 - [ ] Task-local storage syntax
-- [ ] `Projectable` trait — custom containers with `with...as`
 - [ ] String interop — `as_c_str()`, `string.from_c()`
 - [ ] `pool.remove_with(h, |val| { ... })` — cascading @resource cleanup helper
 - [ ] Style guideline: max 3 context clauses per function
