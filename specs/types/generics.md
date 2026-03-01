@@ -127,6 +127,89 @@ trait Clone<T> {
 | Array/Vec of Clone | Auto-derived (element-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
 
+## Compiler-Verified Equatable
+
+The compiler auto-derives Equatable where all fields implement Equatable — same pattern as Clone.
+
+| Rule | Description |
+|------|-------------|
+| **EQ1: Auto-derive** | Primitives, structs with all Equatable fields, enums (tag + payload equality): auto-derived |
+| **EQ2: Override** | `extend Type with Equatable { ... }` overrides the auto-derived version |
+| **EQ3: Enum equality** | Variants compared by tag, then field-wise payload equality |
+
+```rask
+struct Point {
+    x: i32
+    y: i32
+}
+
+// No extend block needed — Point is Equatable because i32 is Equatable
+const a = Point { x: 1, y: 2 }
+const b = Point { x: 1, y: 2 }
+// a == b → true (field-wise comparison)
+```
+
+| Type | Equatable Status |
+|------|-----------------|
+| Primitives (i32, bool, f64, string) | Auto-derived |
+| Struct with all Equatable fields | Auto-derived (field-wise) |
+| Enum with all Equatable payloads | Auto-derived (tag + payload) |
+| Struct with `any Trait` field | NOT Equatable unless manually implemented |
+| Struct with closure field | NOT Equatable (closures have no equality) |
+
+## Compiler-Verified Hashable
+
+The compiler auto-derives Hashable where all fields implement Hashable. Since Hashable requires Equatable, auto-derive applies only when both are satisfied.
+
+| Rule | Description |
+|------|-------------|
+| **HA1: Auto-derive** | Primitives, structs with all Hashable fields, enums (tag + payload hash): auto-derived |
+| **HA2: Override** | `extend Type with Hashable { ... }` overrides the auto-derived version |
+| **HA3: Hash combine** | Field-wise hash uses deterministic combine (order matches declaration order) |
+| **HA4: Float exclusion** | `f32` and `f64` are NOT Hashable (NaN != NaN violates Hashable contract) |
+
+| Type | Hashable Status |
+|------|-----------------|
+| Integer primitives, bool, string | Auto-derived |
+| `f32`, `f64` | NOT Hashable (NaN breaks equality) |
+| Struct with all Hashable fields | Auto-derived (field-wise hash combine) |
+| Enum with all Hashable payloads | Auto-derived (tag + payload) |
+| Handle types | Auto-derived (hash of index + generation) |
+
+## Compiler-Verified Default
+
+The compiler auto-derives Default where all fields have a known default value.
+
+| Rule | Description |
+|------|-------------|
+| **DF1: Auto-derive for structs** | Struct is Default if every field's type is Default |
+| **DF2: No enum default** | Enums do NOT auto-derive Default (which variant?) — requires manual implementation |
+| **DF3: Override** | `extend Type with Default { ... }` overrides the auto-derived version |
+| **DF4: Primitive defaults** | `0` for integers, `0.0` for floats, `false` for bool, `""` for string |
+
+| Type | Default Value |
+|------|--------------|
+| Integer types | `0` |
+| Float types | `0.0` |
+| `bool` | `false` |
+| `string` | `""` (empty string) |
+| `Vec<T>` | Empty vec |
+| `Map<K, V>` | Empty map |
+| `T?` (Option) | `None` |
+| Struct with all Default fields | Field-wise default |
+| Enum | NOT auto-derived |
+
+<!-- test: skip -->
+```rask
+struct Config {
+    timeout: i32          // default: 0
+    retries: i32          // default: 0
+    verbose: bool         // default: false
+}
+
+const c = Config.default()  // Config { timeout: 0, retries: 0, verbose: false }
+```
+
 ## Comptime Generics
 
 ```rask
@@ -271,17 +354,17 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 
 ### Standard Library Traits
 
-| Trait | Methods |
-|-------|---------|
-| `Comparable<T>` | `compare(self, other: T) -> Ordering` |
-| `Equatable<T>` | `eq(self, other: T) -> bool` |
-| `Hashable<T>` | `hash(self) -> u64; eq(self, other: T) -> bool` |
-| `Clone<T>` | `clone(self) -> T` (compiler-verified) |
-| `Numeric<T>` | `add, sub, mul, div, neg, zero, one, from_int` |
-| `Default<T>` | `default() -> T` |
-| `Convert<From, Into>` | `convert(self: From) -> Into` |
-| `Encode` | Marker — no methods. Auto-derived for structs with all-Encode public fields (`std.encoding/E12`) |
-| `Decode` | Marker — no methods. Auto-derived for structs with all-Decode public fields (`std.encoding/E12`) |
+| Trait | Methods | Auto-Derived? |
+|-------|---------|---------------|
+| `Equatable<T>` | `eq(self, other: T) -> bool` | Yes — all Equatable fields (EQ1) |
+| `Hashable<T>` | `hash(self) -> u64; eq(self, other: T) -> bool` | Yes — all Hashable fields (HA1) |
+| `Clone<T>` | `clone(self) -> T` | Yes — all Clone fields, no raw pointers (CL1) |
+| `Default<T>` | `default() -> T` | Yes — all Default fields, structs only (DF1) |
+| `Comparable<T>` | `compare(self, other: T) -> Ordering` | No — ordering is domain-specific |
+| `Numeric<T>` | `add, sub, mul, div, neg, zero, one, from_int` | No |
+| `Convert<From, Into>` | `convert(self: From) -> Into` | No |
+| `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |
+| `Decode` | Marker — no methods | Yes — all-Decode public fields (`std.encoding/E12`) |
 
 ### See Also
 

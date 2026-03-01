@@ -216,6 +216,32 @@ func cleanup(entities: Vec<Handle<Entity>>) using Pool<Entity> {
 
 ---
 
+## Frozen Context Lint for Public Functions
+
+Public functions that use `using Pool<T>` but perform no structural mutations should declare `frozen`. The compiler detects this and warns.
+
+| Rule | Description |
+|------|-------------|
+| **FL1: Missing frozen warning** | If a public function's body performs no `Grow` or `Shrink` effects on a pool context, warn: "add `frozen` — this function only reads" |
+| **FL2: Private functions exempt** | Private functions already have frozen inferred (EF3). The lint targets public functions only |
+| **FL3: IDE quick-fix** | IDE offers "Add `frozen` modifier" quick action |
+| **FL4: Ghost text** | IDE shows `frozen` as ghost text on public functions where the lint fires |
+
+```
+WARNING [comp.advanced/FL1]: public function only reads from pool
+   |
+2  |  public func get_health(h: Handle<Player>) using Pool<Player> -> i32 {
+   |                                                  ^^^^^^^^^^^^ consider `frozen Pool<Player>`
+3  |      return h.health
+   |
+FIX: Add frozen modifier:
+  public func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
+```
+
+This is a **lint**, not an inference — because adding `frozen` to a public signature is an API change. The compiler suggests it; the user decides.
+
+---
+
 ## Compilation Performance Model
 
 All analyses are designed for linear or near-linear time complexity.
