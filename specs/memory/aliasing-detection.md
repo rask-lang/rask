@@ -6,7 +6,7 @@
 
 # Aliasing Detection
 
-Compile-time analysis that prevents closures from mutating collections already borrowed by the calling method. Local to each function, O(function size).
+Compile-time analysis that prevents structural mutations on collections with active element borrows, and prevents closures from violating borrow invariants. Local to each function, O(function size).
 
 ## Borrow Stack
 
@@ -58,17 +58,17 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 
 ## Error Messages
 
-**Mutation during frozen source [AL5]:**
+**Structural mutation during element borrow [AL5]:**
 ```
-ERROR [mem.aliasing/AL5]: cannot access `pool` inside its own with block
+ERROR [mem.aliasing/AL5]: cannot structurally mutate `pool` inside with block
    |
 1  |  with pool[h] as e {
-   |  ---- pool frozen here
+   |  ---- element borrowed here
 2  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot access pool here
+   |      ^^^^^^^^^^^^^^ structural mutation not allowed
 
-WHY: with block freezes the collection. No access to the source
-     is allowed inside the block.
+WHY: insert, remove, and clear can invalidate the borrowed element.
+     Reading and writing other elements is fine.
 
 FIX: Separate the check from the mutation:
 
@@ -78,21 +78,31 @@ FIX: Separate the check from the mutation:
   }
 ```
 
-**Mutation during shared borrow [AL4]:**
+**Structural mutation during element borrow (different handle) [AL4]:**
 ```
-ERROR [mem.aliasing/AL4]: cannot mutate `pool` while access active
+ERROR [mem.aliasing/AL4]: cannot structurally mutate `pool` inside with block
    |
 1  |  with pool[h] as e {
-   |  ---- pool frozen here
+   |  ---- element borrowed here
 2  |      pool.remove(other_h)
-   |      ^^^^^^^^^^^^^^^^^^^^ cannot access pool here
+   |      ^^^^^^^^^^^^^^^^^^^^ structural mutation not allowed
 
-WHY: with block freezes the collection. Mutation would invalidate it.
+WHY: remove can trigger reallocation, invalidating the borrowed element.
 
-FIX: Copy what you need, then mutate:
+FIX: Move the mutation outside the with block:
 
-  const data = pool[h].clone()
-  pool.remove(other_h)
+  const should_remove = with pool[h] as e { e.health <= 0 }
+  if should_remove {
+      pool.remove(other_h)
+  }
+```
+
+Non-structural access to other elements is allowed:
+```rask
+with pool[h] as e {
+    e.health -= pool[other_h].bonus    // OK: inline read of other element
+    pool[other_h].hit_count += 1       // OK: inline write to other element
+}
 ```
 
 ## Edge Cases
@@ -112,7 +122,7 @@ FIX: Copy what you need, then mutate:
 
 ### Rationale
 
-**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/EC4`) access outer scope directly. Without detection, a closure could mutate a collection while the calling method holds a borrow — causing handle invalidation, generation counter desync, or panics. Compile-time detection kills this bug class with zero runtime cost.
+**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/EC4`) access outer scope directly. Without detection, a closure could structurally mutate a collection while the calling method holds an element borrow — causing reallocation, handle invalidation, or panics. Compile-time detection kills this bug class with zero runtime cost. Non-structural access (reading/writing other elements) is safe because element borrows don't conflict with access to different slots.
 
 **AL7 (local analysis):** Method signatures provide borrow requirements without examining method bodies. Same cost as existing type checking.
 
@@ -120,14 +130,24 @@ FIX: Copy what you need, then mutate:
 
 ### Patterns & Guidance
 
-**Basic conflict — frozen source blocks all access:**
+**Basic conflict — structural mutations are forbidden:**
 <!-- test: skip -->
 ```rask
 with pool[h] as e {
-    pool.remove(h)    // ERROR: pool frozen inside with block
+    pool.remove(h)    // ERROR: structural mutation inside with block
 }
-// Borrow stack: [Exclusive(pool)]
-// with body accesses: [Call(pool.remove)] — conflicts with Exclusive(pool)
+// Borrow stack: [ElementBorrow(pool, h)]
+// with body accesses: [Call(pool.remove)] — structural mutation conflicts with ElementBorrow
+```
+
+**Non-structural access — reading/writing other elements is fine:**
+<!-- test: skip -->
+```rask
+with pool[h] as e {
+    e.health -= pool[other_h].attack    // OK: inline read of different element
+}
+// Borrow stack: [ElementBorrow(pool, h)]
+// with body accesses: [Read(pool[other_h])] — non-structural, different element, OK
 ```
 
 **Disjoint variables — different collections never conflict:**

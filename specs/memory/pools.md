@@ -111,12 +111,12 @@ with pool[h] as entity {
 with pool[h] as e: e.health -= damage
 ```
 
-The pool is frozen for the duration of the `with` block — no other pool access inside it:
+Structural mutations are forbidden inside the `with` block — but reading and writing other elements is fine (`mem.borrowing/W2`):
 <!-- test: compile-fail -->
 ```rask
 with pool[h] as entity {
-    entity.health -= 10
-    pool.remove(h)    // ERROR: pool frozen inside with block
+    entity.health -= pool[other_h].bonus    // OK: read other element
+    pool.remove(h)    // ERROR: structural mutation inside with block
 }
 ```
 
@@ -454,14 +454,17 @@ FIX: Check validity before access:
   }
 ```
 
-**Pool frozen inside with block [W2]:**
+**Structural mutation inside with block [W2]:**
 ```
-ERROR [mem.borrowing/W2]: cannot access collection inside its own with block
+ERROR [mem.borrowing/W2]: cannot structurally mutate collection inside with block
    |
 2  |  with pool[h] as entity {
-   |  ---- pool frozen here
+   |  ---- element borrowed here
 3  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ cannot access pool here
+   |      ^^^^^^^^^^^^^^ structural mutation not allowed inside with block
+
+WHY: insert, remove, and clear can invalidate the borrowed element.
+     Reading and writing other elements is fine.
 
 FIX: Separate the check from the mutation:
 
