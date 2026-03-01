@@ -83,6 +83,13 @@ pub enum OwnershipErrorKind {
         name: String,
         consumed_at: Span,
     },
+
+    /// Mutation in a frozen context (CC3/PF5).
+    #[error("cannot mutate in frozen context — `{context_ty}` is frozen")]
+    FrozenContextMutation {
+        context_ty: String,
+        operation: String,
+    },
 }
 
 /// User-friendly access kind for error messages.

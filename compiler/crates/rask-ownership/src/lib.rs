@@ -54,6 +54,8 @@ pub struct OwnershipChecker<'a> {
     ensure_registered: HashSet<String>,
     /// True when inside an `ensure` body (defer moves).
     in_ensure: bool,
+    /// Pool type names with frozen context (CC3/PF5: no writes, inserts, removes, clears).
+    frozen_contexts: HashSet<String>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -70,6 +72,7 @@ impl<'a> OwnershipChecker<'a> {
             resource_bindings: HashSet::new(),
             ensure_registered: HashSet::new(),
             in_ensure: false,
+            frozen_contexts: HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -132,8 +135,19 @@ impl<'a> OwnershipChecker<'a> {
         self.borrows.clear();
         self.resource_bindings.clear();
         self.ensure_registered.clear();
+        self.frozen_contexts.clear();
         self.current_block = 0;
         self.current_stmt = 0;
+
+        // CC3/PF5: Track frozen pool contexts
+        for clause in &fn_decl.context_clauses {
+            if clause.is_frozen {
+                self.frozen_contexts.insert(clause.ty.clone());
+                if let Some(name) = &clause.name {
+                    self.frozen_contexts.insert(name.clone());
+                }
+            }
+        }
 
         // Register parameters as owned or borrowed bindings
         for param in &fn_decl.params {
@@ -345,6 +359,20 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(object);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                }
+                // CC3/PF5: Check for mutations on frozen pool contexts
+                if matches!(method.as_str(), "insert" | "remove" | "clear") {
+                    if let ExprKind::Ident(name) = &object.kind {
+                        if self.frozen_contexts.contains(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::FrozenContextMutation {
+                                    context_ty: name.clone(),
+                                    operation: method.clone(),
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    }
                 }
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
