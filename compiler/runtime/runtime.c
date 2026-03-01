@@ -678,9 +678,9 @@ RaskJsonBuf *rask_json_buf_new(void) {
     return b;
 }
 
-void rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const RaskString *val) {
+void rask_json_buf_add_string(RaskJsonBuf *buf, const RaskString *key, const RaskString *val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, ":");
     if (val) {
         json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
@@ -690,34 +690,34 @@ void rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const RaskStrin
     buf->field_count++;
 }
 
-void rask_json_buf_add_i64(RaskJsonBuf *buf, const char *key, int64_t val) {
+void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskString *key, int64_t val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     char num[32];
     snprintf(num, sizeof(num), ":%lld", (long long)val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }
 
-void rask_json_buf_add_f64(RaskJsonBuf *buf, const char *key, double val) {
+void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskString *key, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     char num[64];
     snprintf(num, sizeof(num), ":%g", val);
     json_buf_append_cstr(buf, num);
     buf->field_count++;
 }
 
-void rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val) {
+void rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskString *key, int64_t val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, val ? ":true" : ":false");
     buf->field_count++;
 }
 
-void rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *raw_json) {
+void rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskString *key, const RaskString *raw_json) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    json_buf_append_escaped(buf, key, (int64_t)strlen(key));
+    json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, ":");
     if (raw_json) {
         json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
@@ -729,6 +729,68 @@ void rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *
 
 RaskString *rask_json_buf_finish(RaskJsonBuf *buf) {
     json_buf_append_cstr(buf, "}");
+    RaskString *s = rask_string_from_bytes(buf->data, buf->len);
+    rask_free(buf->data);
+    rask_free(buf);
+    return s;
+}
+
+// ─── JSON array buffer ──────────────────────────────────────────
+
+RaskJsonBuf *rask_json_buf_new_array(void) {
+    RaskJsonBuf *b = (RaskJsonBuf *)rask_alloc(sizeof(RaskJsonBuf));
+    b->cap = 256;
+    b->data = (char *)rask_alloc(b->cap);
+    b->len = 0;
+    b->field_count = 0;
+    json_buf_append_cstr(b, "[");
+    return b;
+}
+
+void rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskString *raw_json) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    if (raw_json) {
+        json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
+    } else {
+        json_buf_append_cstr(buf, "null");
+    }
+    buf->field_count++;
+}
+
+void rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskString *val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    if (val) {
+        json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
+    } else {
+        json_buf_append_cstr(buf, "null");
+    }
+    buf->field_count++;
+}
+
+void rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    char num[32];
+    snprintf(num, sizeof(num), "%lld", (long long)val);
+    json_buf_append_cstr(buf, num);
+    buf->field_count++;
+}
+
+void rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    char num[64];
+    snprintf(num, sizeof(num), "%g", val);
+    json_buf_append_cstr(buf, num);
+    buf->field_count++;
+}
+
+void rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val) {
+    if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
+    json_buf_append_cstr(buf, val ? "true" : "false");
+    buf->field_count++;
+}
+
+RaskString *rask_json_buf_finish_array(RaskJsonBuf *buf) {
+    json_buf_append_cstr(buf, "]");
     RaskString *s = rask_string_from_bytes(buf->data, buf->len);
     rask_free(buf->data);
     rask_free(buf);

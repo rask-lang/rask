@@ -478,7 +478,7 @@ impl<'a> MirLowerer<'a> {
                             }
                         }
 
-                        // json.encode — expand struct serialization at MIR level
+                        // json.encode — expand struct/vec/primitive serialization at MIR level
                         if name == "json" && method == "encode" && args.len() == 1 {
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
                             if let MirType::Struct(StructLayoutId(id)) = &arg_ty {
@@ -486,6 +486,40 @@ impl<'a> MirLowerer<'a> {
                                     return self.lower_json_encode_struct(arg_op, layout.clone());
                                 }
                             }
+
+                            // Vec<T>: generate loop that encodes each element.
+                            // Detection: check type checker first, fall back to local_type_prefix.
+                            let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
+                            let is_vec_from_type = raw_ty.map_or(false, |ty| {
+                                matches!(ty,
+                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec"
+                                ) || matches!(ty, rask_types::Type::UnresolvedNamed(n) if n == "Vec")
+                            });
+                            let is_vec_from_prefix = if !is_vec_from_type {
+                                if let ExprKind::Ident(var_name) = &args[0].expr.kind {
+                                    self.local_type_prefix.get(var_name)
+                                        .map(|p| p == "Vec")
+                                        .unwrap_or(false)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            };
+                            if is_vec_from_type || is_vec_from_prefix {
+                                // Extract element type from generic args when available
+                                let elem_ty = raw_ty.and_then(|ty| match ty {
+                                    rask_types::Type::UnresolvedGeneric { args: ga, .. } => {
+                                        ga.first().and_then(|a| match a {
+                                            rask_types::GenericArg::Type(t) => Some(t.as_ref().clone()),
+                                            _ => None,
+                                        })
+                                    }
+                                    _ => None,
+                                });
+                                return self.lower_json_encode_vec(arg_op, elem_ty);
+                            }
+
                             // Non-struct: string or integer
                             let helper = if matches!(arg_ty, MirType::String) {
                                 "json_encode_string"
@@ -3412,6 +3446,141 @@ impl<'a> MirLowerer<'a> {
             dst: Some(result),
             func: FunctionRef::internal("json_buf_finish".to_string()),
             args: vec![MirOperand::Local(buf)],
+        });
+
+        Ok((MirOperand::Local(result), MirType::I64))
+    }
+
+    /// Expand `json.encode(vec)` into a loop that encodes each element and builds a JSON array.
+    fn lower_json_encode_vec(
+        &mut self,
+        vec_op: MirOperand,
+        elem_ty: Option<rask_types::Type>,
+    ) -> Result<TypedOperand, LoweringError> {
+        use rask_types::Type;
+
+        // arr_buf = json_buf_new_array()
+        let arr_buf = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(arr_buf),
+            func: FunctionRef::internal("json_buf_new_array".to_string()),
+            args: vec![],
+        });
+
+        // collection = vec_op (store in temp for repeated use)
+        let collection = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: collection,
+            rvalue: MirRValue::Use(vec_op),
+        });
+
+        // len = Vec_len(collection)
+        let len_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(len_local),
+            func: FunctionRef::internal("Vec_len".to_string()),
+            args: vec![MirOperand::Local(collection)],
+        });
+
+        // idx = 0
+        let idx = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
+        });
+
+        let check_block = self.builder.create_block();
+        let body_block = self.builder.create_block();
+        let exit_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
+
+        // check: idx < len
+        self.builder.switch_to_block(check_block);
+        let cond = self.builder.alloc_temp(MirType::Bool);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: cond,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Lt,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Local(len_local),
+            },
+        });
+        self.builder.terminate(MirTerminator::Branch {
+            cond: MirOperand::Local(cond),
+            then_block: body_block,
+            else_block: exit_block,
+        });
+
+        // body: elem = Vec_get(collection, idx), encode, add to array
+        self.builder.switch_to_block(body_block);
+
+        // elem = Vec_get(collection, idx)
+        // Vec_get returns void*; codegen applies DerefResult to load the i64 value
+        let elem = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(elem),
+            func: FunctionRef::internal("Vec_get".to_string()),
+            args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
+        });
+
+        // Encode element based on type, then add to array buffer
+        let elem_ref = &elem_ty;
+        let nested_struct = match elem_ref {
+            Some(Type::UnresolvedNamed(name)) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
+            Some(Type::UnresolvedGeneric { name, .. }) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
+            Some(Type::Named(type_id)) => {
+                // Resolved type: look up name via type_names, then find struct
+                self.ctx.type_names.get(type_id)
+                    .and_then(|name| self.ctx.find_struct(name).map(|(_, l)| l.clone()))
+            }
+            _ => None,
+        };
+
+        if let Some(layout) = nested_struct {
+            // Struct element: encode to JSON string, add as raw
+            let (json_str, _) = self.lower_json_encode_struct(
+                MirOperand::Local(elem),
+                layout,
+            )?;
+            self.builder.push_stmt(MirStmt::Call {
+                dst: None,
+                func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
+                args: vec![MirOperand::Local(arr_buf), json_str],
+            });
+        } else {
+            // Primitive element: pick the right array_add function
+            let helper = match elem_ref {
+                Some(Type::String) => "json_buf_array_add_string",
+                Some(Type::Bool) => "json_buf_array_add_bool",
+                Some(Type::F32) | Some(Type::F64) => "json_buf_array_add_f64",
+                _ => "json_buf_array_add_i64",
+            };
+            self.builder.push_stmt(MirStmt::Call {
+                dst: None,
+                func: FunctionRef::internal(helper.to_string()),
+                args: vec![MirOperand::Local(arr_buf), MirOperand::Local(elem)],
+            });
+        }
+
+        // idx = idx + 1
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: idx,
+            rvalue: MirRValue::BinaryOp {
+                op: crate::operand::BinOp::Add,
+                left: MirOperand::Local(idx),
+                right: MirOperand::Constant(MirConst::Int(1)),
+            },
+        });
+        self.builder.terminate(MirTerminator::Goto { target: check_block });
+
+        // exit: result = json_buf_finish_array(arr_buf)
+        self.builder.switch_to_block(exit_block);
+        let result = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(result),
+            func: FunctionRef::internal("json_buf_finish_array".to_string()),
+            args: vec![MirOperand::Local(arr_buf)],
         });
 
         Ok((MirOperand::Local(result), MirType::I64))
