@@ -300,7 +300,12 @@ fn resolve_field_type(
     }
 }
 
-/// Compute struct layout with field offsets (spec rules S1-S4)
+/// Check whether a struct has `@layout(C)` attribute.
+fn has_c_layout(attrs: &[String]) -> bool {
+    attrs.iter().any(|a| a == "layout(C)")
+}
+
+/// Compute struct layout with field offsets (spec rules S1-S4, L4)
 pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &LayoutCache) -> StructLayout {
     use rask_ast::decl::DeclKind;
 
@@ -310,30 +315,42 @@ pub fn compute_struct_layout(struct_def: &Decl, type_args: &[Type], cache: &Layo
     };
 
     let subst = build_subst(&struct_decl.type_params, type_args);
+    let c_layout = has_c_layout(&struct_decl.attrs);
+
+    // Resolve types and compute sizes for all fields first
+    let mut resolved: Vec<(String, Type, u32, u32)> = struct_decl.fields.iter()
+        .map(|field| {
+            let field_ty = resolve_field_type(&field.ty, &subst);
+            let (field_size, field_align) = type_size_align(&field_ty, cache);
+            (field.name.clone(), field_ty, field_size, field_align)
+        })
+        .collect();
+
+    // S1/L4: Default @layout(Rask) reorders by alignment (largest first).
+    // Stable sort preserves source order for fields with equal alignment.
+    // S2: @layout(C) preserves source order for FFI.
+    if !c_layout {
+        resolved.sort_by(|a, b| b.3.cmp(&a.3));
+    }
 
     let mut field_layouts = Vec::new();
     let mut offset = 0u32;
     let mut max_align = 1u32;
 
-    // S1-S2: Process fields in source order, no reordering
-    for field in &struct_decl.fields {
-        let field_ty = resolve_field_type(&field.ty, &subst);
-
-        let (field_size, field_align) = type_size_align(&field_ty, cache);
-        max_align = max_align.max(field_align);
-
+    for (name, ty, size, align) in resolved {
+        max_align = max_align.max(align);
         // S3: Align offset for this field
-        offset = align_up(offset, field_align);
+        offset = align_up(offset, align);
 
         field_layouts.push(FieldLayout {
-            name: field.name.clone(),
-            ty: field_ty,
+            name,
+            ty,
             offset,
-            size: field_size,
-            align: field_align,
+            size,
+            align,
         });
 
-        offset += field_size;
+        offset += size;
     }
 
     // S4: Total size with tail padding to struct alignment
@@ -823,6 +840,110 @@ mod tests {
 
         // Size = tag (8) + max_payload (16) = 24
         assert_eq!(layout.size, 24);
+    }
+
+    // ── Field reordering (S1/L4) ──────────────────────────────────
+
+    fn make_struct_with_attrs(name: &str, fields: Vec<(&str, &str)>, attrs: Vec<&str>) -> Decl {
+        Decl {
+            id: NodeId(0),
+            kind: DeclKind::Struct(StructDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                fields: fields
+                    .into_iter()
+                    .map(|(n, ty)| Field {
+                        name: n.to_string(),
+                        name_span: dummy_span(),
+                        ty: ty.to_string(),
+                        is_pub: false,
+                    })
+                    .collect(),
+                methods: vec![],
+                is_pub: false,
+                attrs: attrs.into_iter().map(|a| a.to_string()).collect(),
+                doc: None,
+            }),
+            span: dummy_span(),
+        }
+    }
+
+    #[test]
+    fn field_reorder_largest_alignment_first() {
+        // Source: a: u8, b: u64, c: u16
+        // Reordered: b (align 8), c (align 8*), a (align 8*)
+        // *note: codegen stores all scalars as 8 bytes
+        // All fields are 8-byte aligned in current codegen, so order is stable (source order preserved)
+        let decl = make_struct("Mixed", vec![("a", "u8"), ("b", "u64"), ("c", "u16")]);
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        // All 8-byte alignment — stable sort preserves source order
+        assert_eq!(layout.fields[0].name, "a");
+        assert_eq!(layout.fields[1].name, "b");
+        assert_eq!(layout.fields[2].name, "c");
+    }
+
+    #[test]
+    fn field_reorder_with_different_alignments() {
+        // Use cache to give types different alignments
+        let mut cache = LayoutCache::new();
+        cache.insert("Small".to_string(), (1, 1));   // 1-byte align
+        cache.insert("Medium".to_string(), (4, 4));   // 4-byte align
+        cache.insert("Large".to_string(), (16, 8));    // 8-byte align
+
+        let decl = make_struct("Ordered", vec![
+            ("s", "Small"), ("m", "Medium"), ("l", "Large"),
+        ]);
+        let layout = compute_struct_layout(&decl, &[], &cache);
+
+        // Reordered: Large (align 8), Medium (align 4), Small (align 1)
+        assert_eq!(layout.fields[0].name, "l");
+        assert_eq!(layout.fields[1].name, "m");
+        assert_eq!(layout.fields[2].name, "s");
+    }
+
+    #[test]
+    fn field_reorder_reduces_padding() {
+        let mut cache = LayoutCache::new();
+        cache.insert("Small".to_string(), (1, 1));
+        cache.insert("Big".to_string(), (8, 8));
+
+        // Source order: Small, Big, Small → 1 + 7pad + 8 + 1 + 7pad = 24
+        // Reordered:   Big, Small, Small → 8 + 1 + 1 + 6pad = 16 (if true sizes)
+        // With current codegen (all 8-byte), reordering still sorts by alignment desc
+        let decl = make_struct("Padded", vec![
+            ("s1", "Small"), ("b", "Big"), ("s2", "Small"),
+        ]);
+        let layout = compute_struct_layout(&decl, &[], &cache);
+        assert_eq!(layout.fields[0].name, "b");
+        // s1, s2 have equal alignment — stable sort preserves relative order
+        assert_eq!(layout.fields[1].name, "s1");
+        assert_eq!(layout.fields[2].name, "s2");
+    }
+
+    #[test]
+    fn c_layout_preserves_source_order() {
+        let mut cache = LayoutCache::new();
+        cache.insert("Small".to_string(), (1, 1));
+        cache.insert("Big".to_string(), (8, 8));
+
+        let decl = make_struct_with_attrs(
+            "CStruct",
+            vec![("s", "Small"), ("b", "Big")],
+            vec!["layout(C)"],
+        );
+        let layout = compute_struct_layout(&decl, &[], &cache);
+
+        // @layout(C): source order preserved
+        assert_eq!(layout.fields[0].name, "s");
+        assert_eq!(layout.fields[1].name, "b");
+    }
+
+    #[test]
+    fn empty_struct_reorder_noop() {
+        let decl = make_struct("Empty", vec![]);
+        let layout = compute_struct_layout(&decl, &[], &empty_cache());
+        assert_eq!(layout.size, 0);
+        assert_eq!(layout.fields.len(), 0);
     }
 
 }
