@@ -178,6 +178,38 @@ impl Interpreter {
         }
     }
 
+    /// Compute a hash for a runtime value (for auto-derived Hashable).
+    pub(crate) fn value_hash(value: &Value) -> u64 {
+        use std::hash::{Hash, Hasher};
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        match value {
+            Value::Unit => 0u8.hash(&mut hasher),
+            Value::Bool(b) => b.hash(&mut hasher),
+            Value::Int(n) => n.hash(&mut hasher),
+            Value::Int128(n) => n.hash(&mut hasher),
+            Value::Uint128(n) => n.hash(&mut hasher),
+            Value::Char(c) => c.hash(&mut hasher),
+            Value::String(s) => s.lock().unwrap().hash(&mut hasher),
+            Value::Enum { name, variant, fields } => {
+                name.hash(&mut hasher);
+                variant.hash(&mut hasher);
+                for f in fields {
+                    Self::value_hash(f).hash(&mut hasher);
+                }
+            }
+            Value::Struct { name, fields, .. } => {
+                name.hash(&mut hasher);
+                for (k, v) in fields {
+                    k.hash(&mut hasher);
+                    Self::value_hash(v).hash(&mut hasher);
+                }
+            }
+            _ => 0u8.hash(&mut hasher),
+        }
+        hasher.finish()
+    }
+
     /// Compare two runtime values for ordering.
     /// Returns None if the values are not comparable.
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {

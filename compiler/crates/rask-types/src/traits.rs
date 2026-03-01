@@ -332,22 +332,33 @@ impl<'a> TraitChecker<'a> {
     /// Check if a primitive type has a builtin method.
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
-            // Numeric types have arithmetic methods
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 |
-            Type::U8 | Type::U16 | Type::U32 | Type::U64 |
+            // Integer types: eq, hash, clone, default, arithmetic
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+                matches!(method,
+                    "add" | "sub" | "mul" | "div" | "rem" |
+                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" |
+                    "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
+                    "hash" | "clone" | "default"
+                )
+            }
+            // Floats: eq, clone, default, but NOT hash (HA4)
             Type::F32 | Type::F64 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
                     "neg" | "eq" | "lt" | "le" | "gt" | "ge" |
-                    "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not"
+                    "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
+                    "clone" | "default"
                 )
             }
-            // Bool has equality
-            Type::Bool => matches!(method, "eq"),
-            // Char has equality and comparison
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge"),
-            // String has many methods
-            Type::String => matches!(method, "eq" | "len" | "clone"),
+            // Bool: eq, hash, clone, default
+            Type::Bool => matches!(method, "eq" | "hash" | "clone" | "default"),
+            // Char: eq, hash, clone, default, comparison
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "hash" | "clone" | "default"),
+            // String: eq, hash, clone, default, len
+            Type::String => matches!(method, "eq" | "len" | "clone" | "hash" | "default"),
+            // Unit: eq, hash, clone, default
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default"),
             _ => false,
         }
     }
