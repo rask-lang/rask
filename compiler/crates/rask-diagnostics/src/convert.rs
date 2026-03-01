@@ -693,6 +693,17 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_fix(format!("call `.close()` on `{}` or use `ensure` for cleanup", name))
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
+
+            FrozenContextMutation { context_ty, operation } => {
+                Diagnostic::error(format!(
+                    "cannot {} in frozen context `{}`",
+                    operation, context_ty
+                ))
+                .with_code("E0807")
+                .with_primary(self.span, format!("{} not allowed in frozen context", operation))
+                .with_help("remove `frozen` from the context clause, or remove the mutation")
+                .with_why("frozen contexts guarantee no structural mutations — this enables safe iteration without generation checks")
+            }
         }
     }
 }
