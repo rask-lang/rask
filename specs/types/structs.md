@@ -14,7 +14,7 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 |------|-------------|
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
-| **S3: Field ordering** | Fields laid out in declaration order (source order); no automatic reordering |
+| **S3: Field ordering** | Default layout (`@layout(Rask)`): compiler reorders fields for optimal alignment. `@layout(C)`: declaration order preserved. Field *access* is always by name — reordering doesn't change semantics |
 | **S4: Visibility** | Default: package-visible. `public` makes externally visible |
 
 <!-- test: parse -->
@@ -210,12 +210,15 @@ struct Marker {}
 
 | Attribute | Behavior |
 |-----------|----------|
-| `@layout(C)` | C layout rules: declaration order, C alignment, no reordering |
+| (default) | `@layout(Rask)` — compiler reorders fields for minimal padding. User writes logical order; compiler uses optimal physical order |
+| `@layout(C)` | C layout rules: declaration order, C alignment, no reordering. Required for FFI structs |
 | `@packed` | Remove padding (may cause unaligned access) |
 | `@align(N)` | Minimum alignment of N bytes |
 | `@binary` | Binary wire format (see [Binary Structs](binary.md)) |
 
-Default (`@layout(Rask)`): compiler may reorder for optimal packing; natural alignment of largest field; no guaranteed offsets.
+The default `@layout(Rask)` means users don't think about field ordering for performance. The compiler sorts fields largest-alignment-first to minimize padding. Since field access is by name, reordering has no semantic effect.
+
+IDE shows actual memory layout (field offsets, total size, padding) on hover over a struct definition.
 
 <!-- test: parse -->
 ```rask
