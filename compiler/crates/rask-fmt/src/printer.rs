@@ -287,7 +287,7 @@ impl<'a> Printer<'a> {
             DeclKind::Benchmark(b) => self.format_benchmark_decl(b),
             DeclKind::Extern(e) => self.format_extern_decl(e),
             DeclKind::Package(_) => {} // Package blocks formatted by build.rk tooling
-            DeclKind::Union(_) => todo!(),
+            DeclKind::Union(u) => self.format_union_decl(u, decl.span),
             DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
         }
     }
@@ -477,6 +477,54 @@ impl<'a> Printer<'a> {
             f.name.len() + 2 + f.ty.len() + if f.is_pub { 7 } else { 0 }
         }).sum::<usize>() + (fields.len().saturating_sub(1) * 2);
         est < 60
+    }
+
+    fn format_union_decl(&mut self, u: &UnionDecl, span: Span) {
+        self.emit_indent();
+
+        if u.is_pub {
+            self.emit("public ");
+        }
+        self.emit("union ");
+        self.emit(&u.name);
+
+        let source_is_multiline = self.source_text(span).contains('\n');
+
+        if !source_is_multiline && u.fields.len() <= 4 && self.struct_fields_fit_one_line(&u.fields) {
+            self.emit(" { ");
+            for (i, field) in u.fields.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                if field.is_pub {
+                    self.emit("public ");
+                }
+                self.emit(&field.name);
+                self.emit(": ");
+                let ty = self.format_type(&field.ty);
+                self.emit(&ty);
+            }
+            self.emit(" }");
+        } else {
+            self.emit(" {");
+            self.emit_newline();
+
+            self.indent += 1;
+            for field in &u.fields {
+                self.emit_indent();
+                if field.is_pub {
+                    self.emit("public ");
+                }
+                self.emit(&field.name);
+                self.emit(": ");
+                let ty = self.format_type(&field.ty);
+                self.emit(&ty);
+                self.emit_newline();
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
+        }
     }
 
     fn format_enum_decl(&mut self, e: &EnumDecl, span: Span) {

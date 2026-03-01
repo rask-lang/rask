@@ -248,9 +248,9 @@ impl<'a> MirLowerer<'a> {
 
                 self.builder.switch_to_block(cleanup_block);
                 if let Some((param_name, handler_body)) = else_handler {
-                    // Error type - would need full type inference to determine exact type
-                    // For now, use I32 as a placeholder for error values
-                    let param_ty = MirType::I32;
+                    // Needs full type inference to determine exact error type from
+                    // try expressions in the body. I64 matches runtime error representation.
+                    let param_ty = MirType::I64;
                     let param_local = self.builder.alloc_local(param_name.clone(), param_ty.clone());
                     self.locals.insert(param_name.clone(), (param_local, param_ty));
                     for s in handler_body {
