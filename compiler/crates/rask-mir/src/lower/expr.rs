@@ -12,7 +12,7 @@ use crate::{
     BlockId, FunctionRef, LocalId, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
 };
 use rask_ast::{
-    expr::{Expr, ExprKind, UnaryOp},
+    expr::{Expr, ExprKind, TryElse, UnaryOp},
     stmt::{Stmt, StmtKind},
     token::{FloatSuffix, IntSuffix},
 };
@@ -773,16 +773,38 @@ impl<'a> MirLowerer<'a> {
                     return Ok((obj_op, obj_ty));
                 }
 
-                // .unwrap(): Option<T>/Result<T,E> → T (pass through — runtime values
-                // are already unwrapped; actual None/Err checking is TODO)
+                // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
                 if method == "unwrap" && args.is_empty() {
-                    return Ok((obj_op, obj_ty));
+                    let is_niche = self.is_niche_option_expr(object);
+                    let tag_local = self.emit_option_tag(&obj_op, is_niche);
+
+                    let ok_block = self.builder.create_block();
+                    let panic_block = self.builder.create_block();
+                    self.builder.terminate(MirTerminator::Branch {
+                        cond: MirOperand::Local(tag_local),
+                        then_block: panic_block,
+                        else_block: ok_block,
+                    });
+
+                    self.builder.switch_to_block(panic_block);
+                    self.emit_source_location(&expr.span);
+                    self.builder.push_stmt(MirStmt::Call {
+                        dst: None,
+                        func: FunctionRef::internal("panic_unwrap".to_string()),
+                        args: vec![],
+                    });
+                    self.builder.terminate(MirTerminator::Unreachable);
+
+                    self.builder.switch_to_block(ok_block);
+                    let payload_ty = self.extract_payload_type(object)
+                        .unwrap_or(MirType::I64);
+                    let result_local = self.emit_option_payload(obj_op, payload_ty.clone(), is_niche);
+                    return Ok((MirOperand::Local(result_local), payload_ty));
                 }
 
-                // .clone(): pass through (no runtime cloning yet)
-                if method == "clone" && args.is_empty() {
-                    return Ok((obj_op, obj_ty));
-                }
+                // .clone(): dispatch to type-specific clone (Vec_clone, string_clone, etc.)
+                // Value types (integers, bools) fall through to generic rask_clone.
+                // Heap types (Vec, Map, string) need deep copy via their runtime functions.
 
                 // Array.len() → compile-time constant (no runtime call)
                 if method == "len" && args.is_empty() {
@@ -1493,10 +1515,11 @@ impl<'a> MirLowerer<'a> {
 
             // Try expression (spec L3)
             ExprKind::Try { expr: inner, ref else_clause } => {
-                if else_clause.is_some() {
-                    // TODO: lower try...else with error transformation
+                if let Some(try_else) = else_clause {
+                    self.lower_try_else(inner, try_else)
+                } else {
+                    self.lower_try(inner)
                 }
-                self.lower_try(inner)
             }
 
             // Unwrap (postfix !) - panic on None/Err
@@ -3164,6 +3187,87 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 None
+            })
+            .unwrap_or(MirType::I64);
+        let ok_val = self.builder.alloc_temp(ok_ty.clone());
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: ok_val,
+            rvalue: MirRValue::Field {
+                base: result,
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        });
+        self.builder.terminate(MirTerminator::Goto {
+            target: merge_block,
+        });
+
+        self.builder.switch_to_block(merge_block);
+        Ok((MirOperand::Local(ok_val), ok_ty))
+    }
+
+    /// Try-else expression: `try expr else |e| { transform(e) }`
+    ///
+    /// Like lower_try but the error path evaluates the else body (with the
+    /// error bound to the parameter) and returns the transformed value.
+    fn lower_try_else(&mut self, inner: &Expr, try_else: &TryElse) -> Result<TypedOperand, LoweringError> {
+        let (result, result_ty) = self.lower_expr(inner)?;
+
+        let tag_local = self.builder.alloc_temp(MirType::U8);
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: tag_local,
+            rvalue: MirRValue::EnumTag {
+                value: result.clone(),
+            },
+        });
+
+        let ok_block = self.builder.create_block();
+        let err_block = self.builder.create_block();
+        let merge_block = self.builder.create_block();
+
+        self.builder.terminate(MirTerminator::Branch {
+            cond: MirOperand::Local(tag_local),
+            then_block: err_block,
+            else_block: ok_block,
+        });
+
+        // Err path — bind error to param, evaluate else body, return transformed error
+        self.builder.switch_to_block(err_block);
+        let err_ty = self.extract_err_type(inner)
+            .or_else(|| match &result_ty {
+                MirType::Result { err, .. } => Some(err.as_ref().clone()),
+                _ => None,
+            })
+            .unwrap_or(MirType::I64);
+        let err_val = self.builder.alloc_temp(err_ty.clone());
+        self.builder.push_stmt(MirStmt::Assign {
+            dst: err_val,
+            rvalue: MirRValue::Field {
+                base: result.clone(),
+                field_index: 0,
+                byte_offset: None,
+                field_size: None,
+            },
+        });
+
+        // Bind the error to the else clause's parameter name
+        let err_binding = &try_else.error_binding;
+        self.locals.insert(err_binding.clone(), (err_val, err_ty));
+
+        // Lower the else body — produces the transformed error value
+        let (transformed_op, _transformed_ty) = self.lower_expr(&try_else.body)?;
+
+        self.builder.terminate(MirTerminator::Return {
+            value: Some(transformed_op),
+        });
+
+        // Ok path — extract payload
+        self.builder.switch_to_block(ok_block);
+        let ok_ty = self.extract_payload_type(inner)
+            .or_else(|| match &result_ty {
+                MirType::Result { ok, .. } => Some(ok.as_ref().clone()),
+                _ => None,
             })
             .unwrap_or(MirType::I64);
         let ok_val = self.builder.alloc_temp(ok_ty.clone());

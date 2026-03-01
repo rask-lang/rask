@@ -338,28 +338,16 @@ impl Desugarer {
 
         // Then, transform operators if applicable
         let span = expr.span;
-        if let ExprKind::Binary { op, left, right } = &mut expr.kind {
-            if let Some(method) = binary_op_method(*op) {
-                // Transform: a op b → a.method(b)
-                let left_expr = std::mem::replace(
-                    left.as_mut(),
-                    Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::Bool(false), // placeholder
-                        span,
-                    },
-                );
-                let right_expr = std::mem::replace(
-                    right.as_mut(),
-                    Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::Bool(false), // placeholder
-                        span,
-                    },
-                );
+        if matches!(&expr.kind, ExprKind::Binary { op, .. } if binary_op_method(*op).is_some()) {
+            // Take ownership of the entire Binary node to avoid placeholder values
+            let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
+            if let ExprKind::Binary { op, left, right } = old {
+                let method = binary_op_method(op).unwrap();
+                let left_expr = *left;
+                let right_expr = *right;
 
                 // Special case for != which is !a.eq(b)
-                if *op == BinOp::Ne {
+                if op == BinOp::Ne {
                     let eq_call = Expr {
                         id: self.fresh_id(),
                         kind: ExprKind::MethodCall {
@@ -383,29 +371,24 @@ impl Desugarer {
                     };
                 }
             }
+        } else if matches!(&expr.kind, ExprKind::Binary { .. }) {
             // And/Or are short-circuiting, leave as binary
         }
 
         // Transform unary operators
-        if let ExprKind::Unary { op, operand } = &mut expr.kind {
-            if let Some(method) = unary_op_method(*op) {
-                let operand_expr = std::mem::replace(
-                    operand.as_mut(),
-                    Expr {
-                        id: self.fresh_id(),
-                        kind: ExprKind::Bool(false),
-                        span,
-                    },
-                );
+        if matches!(&expr.kind, ExprKind::Unary { op, .. } if unary_op_method(*op).is_some()) {
+            let old = std::mem::replace(&mut expr.kind, ExprKind::Bool(false));
+            if let ExprKind::Unary { op, operand } = old {
+                let method = unary_op_method(op).unwrap();
                 expr.kind = ExprKind::MethodCall {
-                    object: Box::new(operand_expr),
+                    object: operand,
                     method: method.to_string(),
                     type_args: None,
                     args: vec![],
                 };
             }
-            // Not and Ref remain as unary
         }
+        // Not and Ref remain as unary
 
         // Desugar string interpolation: "hello {name}" → "hello ".concat(name.to_string())
         if let ExprKind::String(s) = &expr.kind {
