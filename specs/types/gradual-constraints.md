@@ -143,6 +143,71 @@ ERROR [type.gradual/GC2]: inferred return type changed
      main.rk:45  const result: i32 = compute(items)
 ```
 
+## Error Union Inference
+
+Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and explicit `Err()` returns in the body.
+
+| Rule | Description |
+|------|-------------|
+| **GC7: Error union from body** | `try` calls and `Err()` returns contribute to the inferred error union |
+| **GC8: Public errors explicit** | Public functions must declare error types explicitly (same as GC5) |
+
+<!-- test: skip -->
+```rask
+// Private: error union inferred
+func load_config(path: string) {
+    const text = try read_file(path)     // contributes IoError
+    const config = try parse(text)       // contributes ParseError
+    return config
+}
+// Inferred: -> Config or (IoError | ParseError)
+
+// Public: must be explicit
+public func load_config(path: string) -> Config or (IoError | ParseError) {
+    const text = try read_file(path)
+    return try parse(text)
+}
+```
+
+See `type.errors/ER20–ER22` for full rules.
+
+## Self Mode Inference
+
+Private methods can omit the `self` mode modifier. The compiler infers it from how `self` is used in the body.
+
+| Rule | Description |
+|------|-------------|
+| **GC9: Self mode from body** | `self` only read → borrow (default). `self` fields written → `mutate self`. `self` moved/consumed → `take self` |
+| **GC10: Public self explicit** | Public methods must declare self mode explicitly (API contract) |
+
+<!-- test: skip -->
+```rask
+extend Player {
+    // Private: self mode inferred as mutate (writes to self.health)
+    func damage(self, amount: i32) {
+        self.health -= amount
+    }
+    // IDE ghost text: func damage(mutate self, amount: i32)
+
+    // Private: self mode inferred as take (self consumed)
+    func into_stats(self) -> Stats {
+        Stats { health: self.health, name: self.name }
+    }
+    // IDE ghost text: func into_stats(take self) -> Stats
+
+    // Public: must be explicit
+    public func heal(mutate self, amount: i32) {
+        self.health += amount
+    }
+}
+```
+
+Inference rules:
+- Read-only access to any `self` field → borrow (unchanged from default)
+- Write to any `self` field → `mutate self`
+- Move of `self` or field that triggers ownership transfer → `take self`
+- Conflict (read in one branch, write in another) → `mutate self` (conservative)
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -155,6 +220,10 @@ ERROR [type.gradual/GC2]: inferred return type changed
 | Empty function body | GC1 | Parameters are unconstrained generics, return type is `()` |
 | Multiple return types | GC2 | Incompatible branch types produce compile error |
 | `extern` functions | GC5 | Must have full explicit signatures (C ABI requires it) |
+| Private function with `try` | GC7 | Error union inferred from body |
+| Private method writing to `self` | GC9 | `mutate self` inferred |
+| Private method consuming `self` | GC9 | `take self` inferred |
+| Public method omitting self mode | GC10 | Compile error — must be explicit |
 
 ---
 
@@ -198,7 +267,8 @@ func process(data, handler) {           // ghost: <T: Validatable>(data: Vec<T>,
 ```
 
 Quick actions:
-- **"Make signature explicit"** — fills in all inferred types and bounds
+- **"Make signature explicit"** — fills in all inferred types, bounds, error unions, and self modes
+- **"Make error type explicit"** — fills in only the inferred error union
 - **"Make public"** — adds `public` and fills in the full explicit signature
 
 Hover on a parameter shows its full inferred type. Hover on the function name shows the complete inferred signature.

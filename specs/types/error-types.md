@@ -437,6 +437,52 @@ thread panicked at 'not yet implemented: keyboard handling', src/handler.rk:4:19
 thread panicked at 'entered unreachable code', src/handler.rk:12:21
 ```
 
+## Inferred Error Unions for Private Functions
+
+Private functions can omit error return types entirely. The compiler infers the error union from all `try` calls and explicit `Err()` returns in the body — same local analysis pattern as [Gradual Constraints](gradual-constraints.md).
+
+| Rule | Description |
+|------|-------------|
+| **ER20: Error union inference** | Private functions may omit error types in their return signature. The compiler computes the union from all error-producing expressions in the body |
+| **ER21: Public must be explicit** | `public` functions must declare error types explicitly (API stability, same as `type.gradual/GC5`) |
+| **ER22: Recursive annotation** | Mutually recursive functions where error type is ambiguous require annotation on at least one function in the cycle (same as `type.gradual/GC2`) |
+
+<!-- test: skip -->
+```rask
+// Private function — error union inferred from body
+func load_config(path: string) {
+    const text = try read_file(path)       // IoError
+    const config = try parse(text)         // ParseError
+    return config
+}
+// Compiler infers: -> Config or (IoError | ParseError)
+// IDE ghost text shows the full signature
+
+// Explicit error type still works — merges with inferred (GC4)
+func load_config(path: string) -> Config or (IoError | ParseError) {
+    const text = try read_file(path)
+    return try parse(text)
+}
+
+// Public — must be explicit (ER21)
+public func load_config(path: string) -> Config or (IoError | ParseError) {
+    const text = try read_file(path)
+    return try parse(text)
+}
+```
+
+Inference rules:
+- Each `try expr` where `expr` returns `T or E` contributes `E` to the inferred union
+- Each `return Err(e)` where `e: E` contributes `E` to the inferred union
+- `try...else |e| transform(e)` contributes the type of `transform(e)`, not the original error
+- If no error-producing expressions exist, the return type has no error component
+- Inferred union is deduplicated and sorted alphabetically for deterministic output
+
+IDE integration:
+- Ghost text shows inferred error union after return type
+- Quick action: "Make error type explicit" fills in the full union
+- Quick action: "Make public" adds `public` and the explicit error union
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -451,6 +497,9 @@ thread panicked at 'entered unreachable code', src/handler.rk:12:21
 | Nested `try` in closures | ER4 | Propagates to closure's return, not enclosing function |
 | `try` binding with method chain | ER5 | Binds to full expression; use parens to chain after |
 | `try...else` error type mismatch | ER18 | Compile error — else expression must match function's error return type |
+| Private function, inferred error | ER20 | Union computed from all `try` and `Err()` in body |
+| Private function, no `try` calls | ER20 | No error component — return type is plain `T` |
+| Recursive private function | ER22 | Annotation required on at least one function in cycle |
 
 ---
 
