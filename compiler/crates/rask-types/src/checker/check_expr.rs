@@ -407,22 +407,61 @@ impl TypeChecker {
                 Type::UnresolvedNamed("Range".to_string())
             }
 
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 let inner_ty = self.infer_expr(inner);
                 let resolved = self.ctx.apply(&inner_ty);
                 match &resolved {
                     Type::Option(inner) => {
-                        // For Option, just return the inner type
-                        // The function return type should also be Option (checked elsewhere)
+                        if else_clause.is_some() {
+                            // try...else on Option doesn't make sense (no error value)
+                            self.errors.push(TypeError::TryOnNonResult {
+                                found: resolved.clone(),
+                                span: expr.span,
+                            });
+                            return Type::Error;
+                        }
                         *inner.clone()
                     }
                     Type::Result { ok, err } => {
-                        // For Result, extract the ok type and ensure error types match
-                        if let Some(return_ty) = &self.current_return_type {
-                            let resolved_ret = self.ctx.apply(return_ty);
-                            if let Type::Result { err: ret_err, .. } = &resolved_ret {
-                                // Unify the Result's error type with the function's error type
-                                let _ = self.unify(err, ret_err, expr.span);
+                        if let Some(ec) = else_clause {
+                            // try...else: bind error, infer handler, unify handler type with
+                            // function's error return type
+                            self.push_scope();
+                            if let Some(scope) = self.local_types.last_mut() {
+                                scope.insert(ec.error_binding.clone(), (*err.clone(), true));
+                            }
+                            let handler_ty = self.infer_expr(&ec.body);
+                            self.pop_scope();
+                            // Handler produces the transformed error; unify with function's error type
+                            if let Some(return_ty) = &self.current_return_type {
+                                let resolved_ret = self.ctx.apply(return_ty);
+                                if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                    let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                } else if matches!(resolved_ret, Type::Var(_)) {
+                                    // GC7/ER20: Return type is inferred — make it Result
+                                    let ret_ok = self.ctx.fresh_var();
+                                    let ret_result = Type::Result {
+                                        ok: Box::new(ret_ok),
+                                        err: Box::new(handler_ty),
+                                    };
+                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                }
+                            }
+                        } else {
+                            // Plain try: unify error types directly
+                            if let Some(return_ty) = &self.current_return_type {
+                                let resolved_ret = self.ctx.apply(return_ty);
+                                if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                    let _ = self.unify(err, ret_err, expr.span);
+                                } else if matches!(resolved_ret, Type::Var(_)) {
+                                    // GC7/ER20: Return type is inferred — make it Result
+                                    let ret_ok = self.ctx.fresh_var();
+                                    let ret_result = Type::Result {
+                                        ok: Box::new(ret_ok),
+                                        err: err.clone(),
+                                    };
+                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                }
                             }
                         }
                         *ok.clone()
@@ -448,7 +487,23 @@ impl TypeChecker {
                                     ok_ty
                                 }
                                 Type::Var(_) => {
-                                    self.ctx.fresh_var()
+                                    // GC7/ER20: Both inner and return type unresolved.
+                                    // Create Result structure — try implies error propagation.
+                                    let ok_ty = self.ctx.fresh_var();
+                                    let err_ty = self.ctx.fresh_var();
+                                    let inner_result = Type::Result {
+                                        ok: Box::new(ok_ty.clone()),
+                                        err: Box::new(err_ty.clone()),
+                                    };
+                                    let _ = self.unify(&inner_ty, &inner_result, expr.span);
+                                    // Unify return type with Result to enable error propagation
+                                    let ret_ok = self.ctx.fresh_var();
+                                    let ret_result = Type::Result {
+                                        ok: Box::new(ret_ok),
+                                        err: Box::new(err_ty),
+                                    };
+                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                    ok_ty
                                 }
                                 _ => {
                                     self.errors.push(TypeError::TryInNonPropagatingContext {

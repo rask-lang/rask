@@ -54,6 +54,8 @@ pub struct OwnershipChecker<'a> {
     ensure_registered: HashSet<String>,
     /// True when inside an `ensure` body (defer moves).
     in_ensure: bool,
+    /// Pool type names with frozen context (CC3/PF5: no writes, inserts, removes, clears).
+    frozen_contexts: HashSet<String>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -70,6 +72,7 @@ impl<'a> OwnershipChecker<'a> {
             resource_bindings: HashSet::new(),
             ensure_registered: HashSet::new(),
             in_ensure: false,
+            frozen_contexts: HashSet::new(),
             errors: Vec::new(),
         }
     }
@@ -132,8 +135,19 @@ impl<'a> OwnershipChecker<'a> {
         self.borrows.clear();
         self.resource_bindings.clear();
         self.ensure_registered.clear();
+        self.frozen_contexts.clear();
         self.current_block = 0;
         self.current_stmt = 0;
+
+        // CC3/PF5: Track frozen pool contexts
+        for clause in &fn_decl.context_clauses {
+            if clause.is_frozen {
+                self.frozen_contexts.insert(clause.ty.clone());
+                if let Some(name) = &clause.name {
+                    self.frozen_contexts.insert(name.clone());
+                }
+            }
+        }
 
         // Register parameters as owned or borrowed bindings
         for param in &fn_decl.params {
@@ -346,6 +360,20 @@ impl<'a> OwnershipChecker<'a> {
                 for arg in args {
                     self.check_expr(&arg.expr);
                 }
+                // CC3/PF5: Check for mutations on frozen pool contexts
+                if matches!(method.as_str(), "insert" | "remove" | "clear") {
+                    if let ExprKind::Ident(name) = &object.kind {
+                        if self.frozen_contexts.contains(name) {
+                            self.errors.push(OwnershipError {
+                                kind: OwnershipErrorKind::FrozenContextMutation {
+                                    context_ty: name.clone(),
+                                    operation: method.clone(),
+                                },
+                                span: expr.span,
+                            });
+                        }
+                    }
+                }
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
@@ -452,8 +480,11 @@ impl<'a> OwnershipChecker<'a> {
                     self.check_expr(&arm.body);
                 }
             }
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 self.check_expr(inner);
+                if let Some(ec) = else_clause {
+                    self.check_expr(&ec.body);
+                }
             }
             ExprKind::Unwrap { expr: inner, .. } => {
                 self.check_expr(inner);
@@ -533,10 +564,12 @@ impl<'a> OwnershipChecker<'a> {
             }
 
             // Non-Copy types: move or borrow depending on binding mutability
-            if let ExprKind::Ident(source_name) = &expr.kind {
+            // F1: Extract root binding and optional field projection
+            let (root, projection) = Self::extract_root_and_fields(expr);
+            if let Some(source_name) = root {
                 if is_mutable {
                     // Mutable binding (let): check not borrowed, then move
-                    if let Some(state) = self.bindings.get(source_name) {
+                    if let Some(state) = self.bindings.get(&source_name) {
                         match state {
                             BindingState::Borrowed { .. } => {
                                 self.errors.push(OwnershipError {
@@ -563,19 +596,41 @@ impl<'a> OwnershipChecker<'a> {
                             BindingState::Owned => {}
                         }
                     }
-                    self.bindings.insert(source_name.clone(), BindingState::Moved { at: span });
+                    if projection.is_some() {
+                        // F1: Field-projected borrow — disjoint fields don't conflict
+                        self.create_borrow_with_projection(source_name, BorrowMode::Exclusive, span, projection);
+                    } else {
+                        self.bindings.insert(source_name, BindingState::Moved { at: span });
+                    }
                 } else {
                     // Immutable binding (const): create block-scoped borrow
-                    self.create_borrow(source_name.clone(), BorrowMode::Shared, span);
+                    self.create_borrow_with_projection(source_name, BorrowMode::Shared, span, projection);
                 }
             }
         }
     }
 
-    /// Create a borrow of a binding, optionally projected to specific fields.
-    fn create_borrow(&mut self, source_name: String, mode: BorrowMode, span: Span) {
-        self.create_borrow_with_projection(source_name, mode, span, None);
+    /// F1: Extract root binding name and field projection from a field expression.
+    /// `state.health` → (Some("state"), Some(["health"]))
+    /// `state` → (Some("state"), None)
+    /// Complex expressions → (None, None)
+    fn extract_root_and_fields(expr: &Expr) -> (Option<String>, Option<Vec<String>>) {
+        match &expr.kind {
+            ExprKind::Ident(name) => (Some(name.clone()), None),
+            ExprKind::Field { object, field } => {
+                let (root, fields) = Self::extract_root_and_fields(object);
+                if let Some(root) = root {
+                    let mut projection = fields.unwrap_or_default();
+                    projection.push(field.clone());
+                    (Some(root), Some(projection))
+                } else {
+                    (None, None)
+                }
+            }
+            _ => (None, None),
+        }
     }
+
 
     fn create_borrow_with_projection(
         &mut self,

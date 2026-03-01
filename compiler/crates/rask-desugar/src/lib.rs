@@ -223,7 +223,12 @@ impl Desugarer {
                     self.desugar_match_arm(arm);
                 }
             }
-            ExprKind::Try(e) => self.desugar_expr(e),
+            ExprKind::Try { expr: e, ref mut else_clause } => {
+                self.desugar_expr(e);
+                if let Some(ec) = else_clause {
+                    self.desugar_expr(&mut ec.body);
+                }
+            }
             ExprKind::Unwrap { expr: e, message: _ } => self.desugar_expr(e),
             ExprKind::GuardPattern {
                 expr,

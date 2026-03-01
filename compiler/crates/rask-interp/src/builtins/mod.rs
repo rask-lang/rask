@@ -82,6 +82,33 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(true));
             }
+            Value::Struct { .. } if method == "eq" => {
+                if let Some(other) = args.first() {
+                    if let (Value::Struct { name: n1, fields: f1, .. },
+                            Value::Struct { name: n2, fields: f2, .. }) = (&receiver, other) {
+                        if n1 == n2 && f1.len() == f2.len() {
+                            let all_eq = f1.iter()
+                                .all(|(k, v1)| f2.get(k).map_or(false, |v2| Self::value_eq(v1, v2)));
+                            return Ok(Value::Bool(all_eq));
+                        }
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                return Ok(Value::Bool(false));
+            }
+            Value::Struct { .. } if method == "ne" => {
+                let eq_result = self.call_builtin_method(receiver, "eq", args)?;
+                if let Value::Bool(b) = eq_result {
+                    return Ok(Value::Bool(!b));
+                }
+                return Ok(Value::Bool(true));
+            }
+            Value::Struct { .. } if method == "hash" => {
+                return Ok(Value::Int(Self::value_hash(&receiver) as i64));
+            }
+            Value::Enum { .. } if method == "hash" => {
+                return Ok(Value::Int(Self::value_hash(&receiver) as i64));
+            }
             Value::Struct { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             _ => {}

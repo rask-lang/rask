@@ -164,6 +164,20 @@ impl Interpreter {
                 }
             }
             _ => {
+                // Auto-derived default() — construct struct with default-valued fields
+                if method == "default" {
+                    if let Some(struct_decl) = self.struct_decls.get(type_name).cloned() {
+                        let fields: std::collections::HashMap<String, Value> = struct_decl.fields.iter()
+                            .map(|f| (f.name.clone(), Value::default_for_type(&f.ty)))
+                            .collect();
+                        return Ok(Value::Struct {
+                            name: type_name.to_string(),
+                            fields,
+                            resource_id: None,
+                        });
+                    }
+                }
+
                 // User-defined static methods from extend blocks
                 if let Some(type_methods) = self.methods.get(type_name).cloned() {
                     if let Some(method_fn) = type_methods.get(method) {

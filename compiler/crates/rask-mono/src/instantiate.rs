@@ -426,7 +426,13 @@ impl TypeSubstitutor {
                 },
 
                 // Error handling
-                ExprKind::Try(inner) => ExprKind::Try(Box::new(self.clone_expr(inner))),
+                ExprKind::Try { expr: inner, ref else_clause } => ExprKind::Try {
+                    expr: Box::new(self.clone_expr(inner)),
+                    else_clause: else_clause.as_ref().map(|ec| rask_ast::expr::TryElse {
+                        error_binding: ec.error_binding.clone(),
+                        body: Box::new(self.clone_expr(&ec.body)),
+                    }),
+                },
                 ExprKind::Unwrap { expr: inner, message } => ExprKind::Unwrap {
                     expr: Box::new(self.clone_expr(inner)),
                     message: message.clone(),
