@@ -36,8 +36,8 @@ pool[h].z = 3
 
 | Guarantee Level | Mechanism | Checks | Use Case |
 |-----------------|-----------|--------|----------|
-| Guaranteed zero | Frozen pool iteration (FZ1) | 0 | Read-only hot paths |
-| Guaranteed 1 | `frozen.get(h)` / `with_valid(h, f)` | 1 | Random access (safe) |
+| Optimizable to zero | Frozen context iteration (FZ1) | 0 | Read-only hot paths |
+| Guaranteed 1 | `pool.get(h)` / `with_valid(h, f)` | 1 | Random access (safe) |
 | Guaranteed zero | `get_unchecked(h)` (unsafe) | 0 | Caller-validated handles |
 | Expected 1 or fewer per handle | Coalescing | 1 or fewer | General code |
 | Worst case | No coalescing | 1/access | Compiler can't prove safety |
@@ -107,13 +107,14 @@ using pool {
 }
 ```
 
-## Frozen Pools
+## Frozen Context Optimization
 
 | Rule | Description |
 |------|-------------|
-| **FZ1: Iteration zero-check** | Handles from `frozen.values()`, `frozen.entries()`, `frozen.handles()` require no generation checks — the iterator only yields occupied slots from an immutable pool |
-| **FZ2: get() checked** | `frozen.get(h)` performs a standard generation check and returns `Option<T>` |
-| **FZ3: No index access** | `frozen[h]` is a compile error (`mem.pools/PF6`). Coalescing does not apply |
+| **FZ1: Frozen iteration** | In `using frozen Pool<T>` contexts, iteration via `values()`, `entries()`, `handles()` may skip generation checks — structural mutations are impossible, so handles can't become stale mid-iteration |
+| **FZ2: Random access checked** | `pool.get(h)` and `pool[h]` in frozen contexts still perform standard generation checks — the handle may have been stale before the context began |
+
+This is a compiler optimization, not a type-level guarantee. The compiler applies it when it can prove the pool is not structurally mutated within the iteration scope.
 
 ## Debug vs Release
 
@@ -151,9 +152,8 @@ store %slot2.y, 2
 | Mutation between accesses | Fresh check after mutation | GC2, MT1 |
 | Unknown function with `&mut pool` | Fresh check after call | MT3 |
 | Async: after await point | Fresh check | CF5 |
-| Frozen pool iteration | No checks (valid by construction) | FZ1 |
-| Frozen pool `get(h)` | One generation check, returns Option | FZ2 |
-| Frozen pool `frozen[h]` | Compile error | FZ3 |
+| Frozen context iteration | Optimizable to zero checks | FZ1 |
+| Random access in frozen context | Standard generation check | FZ2 |
 
 ---
 

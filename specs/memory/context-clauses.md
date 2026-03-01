@@ -14,11 +14,11 @@
 |------|------|--------|--------|
 | **CC1: Named context** | `using name: Pool<T>` | `func f() using players: Pool<Player>` | Creates binding `players` + enables auto-resolution for `Handle<Player>` |
 | **CC2: Unnamed context** | `using Pool<T>` | `func f() using Pool<Player>` | Auto-resolution only, no binding for structural ops |
-| **CC3: Frozen context** | `using frozen Pool<T>` | `func f() using frozen Pool<Player>` | Read-only, accepts both `Pool<T>` and `FrozenPool<T>` |
+| **CC3: Frozen context** | `using frozen Pool<T>` | `func f() using frozen Pool<Player>` | Read-only — no writes, inserts, removes, or clears |
 
-Without `frozen`, contexts are mutable by default — writes through handles are allowed, but only `Pool<T>` satisfies the context (not `FrozenPool<T>`). See `mem.pools` for the full subsumption rule.
+Without `frozen`, contexts are mutable by default — writes through handles are allowed. The `frozen` modifier means "no structural mutations and no writes" — a context property, not a separate type.
 
-**Note:** `h.field` auto-resolution in frozen contexts performs generation checks (same as mutable contexts). The `frozen` modifier means "no structural mutations" — it doesn't skip validity checks. Zero-cost access on frozen pools is available through iteration (`values()`, `entries()`), not through handle auto-resolution.
+**Note:** `h.field` auto-resolution in frozen contexts performs generation checks (same as mutable contexts). The compiler may optimize away checks during iteration in frozen contexts (see `comp.gen-coalesce/FZ1`).
 
 <!-- test: skip -->
 ```rask
