@@ -430,7 +430,13 @@ impl DefaultDesugarer {
                     self.desugar_expr(&mut arm.body);
                 }
             }
-            ExprKind::Try(e) | ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+            ExprKind::Try { expr: e, ref mut else_clause } => {
+                self.desugar_expr(e);
+                if let Some(ec) = else_clause {
+                    self.desugar_expr(&mut ec.body);
+                }
+            }
+            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
                 self.desugar_expr(e);
             }
             ExprKind::NullCoalesce { value, default } => {

@@ -1041,7 +1041,15 @@ impl<'a> MirLowerer<'a> {
                 for p in inner_params { inner_bound.insert(p.name.clone()); }
                 self.walk_free_vars(body, &inner_bound, seen, free);
             }
-            ExprKind::Try(inner) | ExprKind::Unwrap { expr: inner, .. } => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
+                self.walk_free_vars(inner, bound, seen, free);
+                if let Some(ec) = else_clause {
+                    let mut inner_bound = bound.clone();
+                    inner_bound.insert(ec.error_binding.clone());
+                    self.walk_free_vars(&ec.body, &inner_bound, seen, free);
+                }
+            }
+            ExprKind::Unwrap { expr: inner, .. } => {
                 self.walk_free_vars(inner, bound, seen, free);
             }
             ExprKind::Cast { expr: inner, .. } => {
@@ -1599,7 +1607,7 @@ mod tests {
     fn try_expr(inner: Expr) -> Expr {
         Expr {
             id: NodeId(112),
-            kind: ExprKind::Try(Box::new(inner)),
+            kind: ExprKind::Try { expr: Box::new(inner), else_clause: None },
             span: sp(),
         }
     }

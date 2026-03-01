@@ -2703,10 +2703,24 @@ impl Parser {
             TokenKind::Try => {
                 self.advance();
                 let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
-                let end = inner.span.end;
+                let mut end = inner.span.end;
+                let else_clause = if self.check(&TokenKind::Else) {
+                    self.advance();
+                    self.expect(&TokenKind::Pipe)?;
+                    let error_binding = self.expect_ident()?;
+                    self.expect(&TokenKind::Pipe)?;
+                    let body = self.parse_expr()?;
+                    end = body.span.end;
+                    Some(rask_ast::expr::TryElse {
+                        error_binding,
+                        body: Box::new(body),
+                    })
+                } else {
+                    None
+                };
                 Ok(Expr {
                     id: self.next_id(),
-                    kind: ExprKind::Try(Box::new(inner)),
+                    kind: ExprKind::Try { expr: Box::new(inner), else_clause },
                     span: Span::new(start, end),
                 })
             }
@@ -3029,7 +3043,7 @@ impl Parser {
             TokenKind::Question => {
                 self.advance();
                 let end = self.tokens[self.pos - 1].span.end;
-                Ok(Expr { id: self.next_id(), kind: ExprKind::Try(Box::new(lhs)), span: Span::new(start, end) })
+                Ok(Expr { id: self.next_id(), kind: ExprKind::Try { expr: Box::new(lhs), else_clause: None }, span: Span::new(start, end) })
             }
 
             // Unwrap operator (!) - panics if None/Err
