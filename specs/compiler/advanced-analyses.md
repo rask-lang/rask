@@ -166,7 +166,7 @@ Formalize Rask's `using Pool<T>` context clauses as a lightweight effect system 
 | **EF2: Frozen context** | `using frozen Pool<T>` forbids Grow and Shrink effects |
 | **EF3: Effect inference** | Private functions infer effects; public functions must declare frozen explicitly |
 | **EF4: Effect checking** | Calling a Shrink function from frozen context is a compile error |
-| **EF5: Frozen iteration** | Frozen pool iteration requires no generation checks (see `comp.gen-coalesce/FZ1`). `h.field` auto-resolution in frozen contexts uses standard generation checks |
+| **EF5: Frozen iteration** | In frozen contexts, the compiler may eliminate generation checks during iteration (see `comp.gen-coalesce/FZ1`). `h.field` auto-resolution uses standard generation checks |
 | **EF6: Effect polymorphism** | Functions can be effect-polymorphic: work with both frozen and mutable pools |
 
 <!-- test: compile-fail -->
@@ -185,9 +185,9 @@ func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
 | Annotation | Allowed Effects | Generation Checks | Use Case |
 |------------|-----------------|-------------------|----------|
 | `using Pool<T>` | Access, Grow, Shrink | Normal (coalesced) | Default |
-| `using frozen Pool<T>` | Access only | Checked (`h.field`), zero (iteration) | Read-only passes |
+| `using frozen Pool<T>` | Access only | Checked (optimizable in iteration) | Read-only passes |
 | `using name: Pool<T>` | Access, Grow, Shrink | Normal | Structural ops via name |
-| `using frozen name: Pool<T>` | Access only | Checked (`h.field`), zero (iteration) | Explicit frozen access |
+| `using frozen name: Pool<T>` | Access only | Checked (optimizable in iteration) | Explicit frozen access |
 
 ### Effect Lattice
 
@@ -202,7 +202,6 @@ func render(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> {
 // Effect-polymorphic: works with frozen or mutable
 func count_alive(entities: Vec<Handle<Entity>>) using frozen Pool<Entity> -> usize {
     return entities.filter(|h| pool[h].alive).count()
-    // Compiler eliminates all generation checks in this function
 }
 
 func cleanup(entities: Vec<Handle<Entity>>) using Pool<Entity> {
@@ -347,7 +346,7 @@ NOTE: Consider adding a range check:
 | Loop with conditional remove | TS4, FN4 | Each iteration resets to pre-loop state |
 | Range analysis timeout | BE2 | Conservative: keep the check |
 | Effect inference failure | EF3 | Public functions require explicit annotation |
-| Frozen pool with external handle | PF6 | `frozen[h]` is compile error; use `frozen.get(h)` or iterate |
+| External handle in frozen context | PF5 | Standard generation check; writes are compile error |
 | Typestate at merge with Unknown | TS2 | Join takes lower bound (e.g., Valid ∧ Unknown = Unknown) |
 | Generation overflow | — | Not addressed by static analysis (runtime invariant) |
 | Concurrent mutation | — | Not addressed (use Mutex for cross-task pools) |
@@ -364,7 +363,7 @@ I chose a four-state lattice (Fresh > Valid > Unknown > Invalid) because it bala
 
 **IV1–IV7 (interval analysis):** GCC's Project Ranger showed that demand-driven VRP is nearly free — you only pay for queries you make. By triggering analysis lazily at bounds checks, we avoid computing ranges for all variables. The backward SSA walk (IV3) is fast because SSA has no cycles (except through φ-nodes at loop headers, where we widen conservatively).
 
-**EF1–EF6 (effect system):** Rask already has `using Pool<T>` clauses. I formalized them as an effect system to make the guarantees explicit. Frozen contexts forbid structural mutations, making it safe to accept `FrozenPool<T>` values. `h.field` auto-resolution in frozen contexts uses standard generation checks; zero-cost access is available through frozen pool iteration (`values()`, `entries()`). Effect inference (EF3) means most code doesn't need annotations — the compiler figures it out.
+**EF1–EF6 (effect system):** Rask already has `using Pool<T>` clauses. I formalized them as an effect system to make the guarantees explicit. Frozen contexts forbid structural mutations — the `frozen` modifier is a context property, not a separate type. `h.field` auto-resolution in frozen contexts uses standard generation checks; the compiler may optimize away checks during iteration when it can prove no structural mutations occur. Effect inference (EF3) means most code doesn't need annotations — the compiler figures it out.
 
 **5× compilation speed vs Rust:** This is achievable because:
 1. **No lifetime inference** — Rust's region inference is expensive. Rask has no lifetimes.
@@ -435,10 +434,10 @@ func process(h: Handle<Entity>) using Pool<Entity> {
 
 **Optimization patterns for frozen contexts:**
 ```rask
-// Hot read path — zero generation checks via frozen iteration
+// Hot read path — generation checks optimizable via frozen context (FZ1)
 func render_all() using frozen entities: Pool<Entity> {
     for entity in entities.values() {
-        renderer.draw(entity)  // Zero checks: frozen iteration (FZ1)
+        renderer.draw(entity)
     }
 }
 
@@ -449,12 +448,8 @@ func tick(mut pool: Pool<Entity>) {
         pool[h].update_physics()
     }
 
-    // Phase 2: Frozen render
-    pool.with_frozen(|frozen_pool| {
-        for entity in frozen_pool.values() {
-            render(entity)  // Zero checks (frozen iteration)
-        }
-    })
+    // Phase 2: Read-only render (call frozen-context function)
+    render_all(pool)
 }
 ```
 
