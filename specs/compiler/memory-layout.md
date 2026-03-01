@@ -14,7 +14,7 @@ Precise memory layout for enums, closures, trait objects, and other compound typ
 | **L1: Natural alignment** | Type aligned to its largest field's alignment (max 16 bytes) |
 | **L2: Padding inserted** | Fields padded to maintain alignment of next field |
 | **L3: Struct tail padding** | Structs padded to multiple of their alignment |
-| **L4: Field ordering** | Fields laid out in source order (no reordering) |
+| **L4: Default reordering** | Default `@layout(Rask)`: compiler reorders fields for minimal padding (largest-alignment-first). `@layout(C)`: source order preserved |
 
 ## Primitive Sizes and Alignment
 
@@ -31,21 +31,22 @@ Precise memory layout for enums, closures, trait objects, and other compound typ
 
 ## Structs
 
-Fields stored in source order, padded for alignment.
+Default layout (`@layout(Rask)`): compiler reorders fields for minimal padding. `@layout(C)`: source order preserved for FFI compatibility.
 
 ```rask
 struct Example {
-    a: u8,      // offset 0, size 1
-    b: u32,     // offset 4, size 4 (3 bytes padding after a)
-    c: u16,     // offset 8, size 2
+    a: u8,      // source order: first
+    b: u32,     // source order: second
+    c: u16,     // source order: third
 }
-// total: 10 bytes + 6 bytes tail padding = 16 bytes (aligned to 4)
+// Source layout (if @layout(C)): 10 bytes + 6 padding = 16 bytes
+// Optimized layout (default):   b at 0, c at 4, a at 6 = 8 bytes (0 padding)
 ```
 
 | Rule | Description |
 |------|-------------|
-| **S1: Source order** | Fields laid out exactly as declared |
-| **S2: No reordering** | Compiler doesn't reorder for optimal packing |
+| **S1: Default reorder** | Default `@layout(Rask)`: fields sorted by alignment (largest first) to minimize padding |
+| **S2: C layout** | `@layout(C)`: fields in source order, no reordering (required for FFI) |
 | **S3: Offset calculation** | `offset[i] = align_up(offset[i-1] + size[i-1], align[i])` |
 | **S4: Total size** | `size = align_up(offset[last] + size[last], struct_align)` |
 
