@@ -453,6 +453,24 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_fix(format!("implement `{}` for `{}`", trait_name, ty))
                     .with_why("casting to a trait object requires the concrete type to implement all trait methods")
             }
+
+            PublicMissingAnnotation { function_name, params, missing_return, span } => {
+                let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
+                if !params.is_empty() {
+                    msg.push_str(&format!(" — unannotated parameters: {}", params.join(", ")));
+                }
+                let mut diag = Diagnostic::error(msg)
+                    .with_code("E0334")
+                    .with_primary(*span, "public function with missing annotations")
+                    .with_why("public functions are API contracts — callers need to see the full signature (GC5)");
+                if !params.is_empty() {
+                    diag = diag.with_help(format!("add type annotations to: {}", params.join(", ")));
+                }
+                if *missing_return {
+                    diag = diag.with_help("add an explicit return type with `->`");
+                }
+                diag
+            }
         }
     }
 }

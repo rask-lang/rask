@@ -391,9 +391,11 @@ impl<'a> Printer<'a> {
                 self.emit("mutate ");
             }
             self.emit(&param.name);
-            self.emit(": ");
-            let ty = self.format_type(&param.ty);
-            self.emit(&ty);
+            if !param.ty.is_empty() {
+                self.emit(": ");
+                let ty = self.format_type(&param.ty);
+                self.emit(&ty);
+            }
             if let Some(ref default) = param.default {
                 self.emit(" = ");
                 self.format_expr(default);
