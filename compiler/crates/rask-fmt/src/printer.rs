@@ -391,9 +391,11 @@ impl<'a> Printer<'a> {
                 self.emit("mutate ");
             }
             self.emit(&param.name);
-            self.emit(": ");
-            let ty = self.format_type(&param.ty);
-            self.emit(&ty);
+            if !param.ty.is_empty() {
+                self.emit(": ");
+                let ty = self.format_type(&param.ty);
+                self.emit(&ty);
+            }
             if let Some(ref default) = param.default {
                 self.emit(" = ");
                 self.format_expr(default);
@@ -1141,9 +1143,15 @@ impl<'a> Printer<'a> {
                     self.emit("}");
                 }
             }
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 self.emit("try ");
                 self.format_expr(inner);
+                if let Some(ec) = else_clause {
+                    self.emit(" else |");
+                    self.emit(&ec.error_binding);
+                    self.emit("| ");
+                    self.format_expr(&ec.body);
+                }
             }
             ExprKind::Unwrap { expr: inner, message } => {
                 self.format_expr(inner);

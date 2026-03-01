@@ -14,11 +14,33 @@ use crate::types::Type;
 
 impl TypeChecker {
     pub(super) fn check_fn(&mut self, f: &FnDecl) {
-        let ret_ty = f
-            .ret_ty
-            .as_ref()
-            .map(|t| parse_type_string(t, &self.types).unwrap_or(Type::Error))
-            .unwrap_or(Type::Unit);
+        // GC5: public functions must have full type annotations
+        let unannotated_params: Vec<String> = f.params.iter()
+            .filter(|p| p.name != "self" && p.ty.is_empty())
+            .map(|p| p.name.clone())
+            .collect();
+        let missing_return = f.ret_ty.is_none()
+            && f.is_pub
+            && self.has_explicit_return(&f.body);
+        if f.is_pub && (!unannotated_params.is_empty() || missing_return) {
+            self.errors.push(TypeError::PublicMissingAnnotation {
+                function_name: f.name.clone(),
+                params: unannotated_params.clone(),
+                missing_return,
+                span: f.span,
+            });
+        }
+
+        // GC1/GC2: Reuse pre-registered type vars for inferred params/return
+        let inferred = self.inferred_fn_types.get(&f.name).cloned();
+
+        let ret_ty = if let Some(t) = &f.ret_ty {
+            parse_type_string(t, &self.types).unwrap_or(Type::Error)
+        } else if let Some((_, ref ret_var)) = inferred {
+            ret_var.clone()
+        } else {
+            Type::Unit
+        };
         self.current_return_type = Some(ret_ty);
 
         // UF1: unsafe func body is implicitly unsafe
@@ -27,21 +49,61 @@ impl TypeChecker {
             self.in_unsafe = true;
         }
 
+        // GC9: Infer self mode for private methods with unmodified self
+        let self_param = f.params.iter().find(|p| p.name == "self");
+        let inferred_self_mutate = if let Some(sp) = self_param {
+            if !sp.is_mutate && !sp.is_take && !f.is_pub {
+                // Scan body for self mutations
+                Self::body_writes_self(&f.body)
+            } else {
+                sp.is_mutate || sp.is_take
+            }
+        } else {
+            false
+        };
+
+        // GC10: Public methods must declare self mode explicitly
+        if let Some(sp) = self_param {
+            if f.is_pub && !sp.is_mutate && !sp.is_take && Self::body_writes_self(&f.body) {
+                // Public method writes to self but doesn't declare mutate
+                self.errors.push(TypeError::MutateReadOnlyParam {
+                    name: "self".to_string(),
+                    span: f.span,
+                });
+            }
+        }
+
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
                 if let Some(self_ty) = &self.current_self_type {
-                    self.define_local("self".to_string(), self_ty.clone());
+                    if inferred_self_mutate || param.is_mutate || param.is_take {
+                        self.define_local("self".to_string(), self_ty.clone());
+                    } else {
+                        self.define_local_read_only("self".to_string(), self_ty.clone());
+                    }
                 }
                 continue;
             }
-            if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
-                if param.is_mutate || param.is_take {
-                    self.define_local(param.name.clone(), ty);
+            // GC1: Look up pre-created type var for inferred params
+            let ty = if param.ty.is_empty() {
+                if let Some((ref pvars, _)) = inferred {
+                    pvars.iter()
+                        .find(|(name, _)| name == &param.name)
+                        .map(|(_, ty)| ty.clone())
+                        .unwrap_or_else(|| self.ctx.fresh_var())
                 } else {
-                    // Default params are read-only
-                    self.define_local_read_only(param.name.clone(), ty);
+                    self.ctx.fresh_var()
                 }
+            } else if let Ok(ty) = parse_type_string(&param.ty, &self.types) {
+                ty
+            } else {
+                continue;
+            };
+            if param.is_mutate || param.is_take {
+                self.define_local(param.name.clone(), ty);
+            } else {
+                self.define_local_read_only(param.name.clone(), ty);
             }
         }
 
@@ -232,4 +294,55 @@ impl TypeChecker {
         }
     }
 
+    /// GC9: Check if body writes to self fields (implies mutate self).
+    pub(super) fn body_writes_self(body: &[Stmt]) -> bool {
+        body.iter().any(|stmt| Self::stmt_writes_self(stmt))
+    }
+
+    fn stmt_writes_self(stmt: &Stmt) -> bool {
+        match &stmt.kind {
+            StmtKind::Assign { target, .. } => Self::expr_targets_self(target),
+            StmtKind::Expr(e) => Self::expr_writes_self(e),
+            StmtKind::While { body, .. } | StmtKind::For { body, .. }
+            | StmtKind::Loop { body, .. } | StmtKind::WhileLet { body, .. } => {
+                Self::body_writes_self(body)
+            }
+            _ => false,
+        }
+    }
+
+    /// Check if an expression is an assignment target involving self.
+    fn expr_targets_self(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Ident(name) if name == "self" => true,
+            ExprKind::Field { object, .. } => Self::expr_targets_self(object),
+            ExprKind::Index { object, .. } => Self::expr_targets_self(object),
+            _ => false,
+        }
+    }
+
+    /// Check if an expression contains self-mutating method calls.
+    fn expr_writes_self(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::MethodCall { object, .. } => {
+                if let ExprKind::Ident(name) = &object.kind {
+                    if name == "self" {
+                        // Conservative: method calls on self could mutate
+                        // Precise check would need type info we don't have yet
+                        return false;
+                    }
+                }
+                false
+            }
+            ExprKind::Block(stmts) => Self::body_writes_self(stmts),
+            ExprKind::If { then_branch, else_branch, .. } => {
+                Self::expr_writes_self(then_branch)
+                    || else_branch.as_ref().map_or(false, |e| Self::expr_writes_self(e))
+            }
+            ExprKind::Match { arms, .. } => {
+                arms.iter().any(|arm| Self::expr_writes_self(&arm.body))
+            }
+            _ => false,
+        }
+    }
 }

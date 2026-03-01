@@ -763,14 +763,31 @@ impl Interpreter {
                 Ok(Value::Bool(matched))
             }
 
-            ExprKind::Try(inner) => {
+            ExprKind::Try { expr: inner, ref else_clause } => {
                 let val = self.eval_expr(inner)?;
                 match &val {
                     Value::Enum {
                         variant, fields, ..
                     } => match variant.as_str() {
                         "Ok" | "Some" => Ok(fields.first().cloned().unwrap_or(Value::Unit)),
-                        "Err" | "None" => Err(RuntimeDiagnostic::new(RuntimeError::TryError(val), expr.span)),
+                        "Err" | "None" => {
+                            if let Some(ec) = else_clause {
+                                // try...else: bind error value, evaluate handler, wrap in Err and propagate
+                                let err_val = fields.first().cloned().unwrap_or(Value::Unit);
+                                self.env.push_scope();
+                                self.env.define(ec.error_binding.clone(), err_val);
+                                let transformed = self.eval_expr(&ec.body)?;
+                                self.env.pop_scope();
+                                let wrapped = Value::Enum {
+                                    name: "Result".to_string(),
+                                    variant: "Err".to_string(),
+                                    fields: vec![transformed],
+                                };
+                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
+                            } else {
+                                Err(RuntimeDiagnostic::new(RuntimeError::TryError(val), expr.span))
+                            }
+                        }
                         _ => Err(RuntimeDiagnostic::new(
                             RuntimeError::TypeError(format!(
                                 "? operator requires Ok/Some or Err/None variant, got {}",

@@ -504,7 +504,13 @@ impl HiddenParamPass {
                     self.rewrite_expr(&mut arm.body);
                 }
             }
-            ExprKind::Try(e) | ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+            ExprKind::Try { expr: e, ref mut else_clause } => {
+                self.rewrite_expr(e);
+                if let Some(ec) = else_clause {
+                    self.rewrite_expr(&mut ec.body);
+                }
+            }
+            ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
                 self.rewrite_expr(e);
             }
             ExprKind::GuardPattern {
@@ -787,7 +793,13 @@ fn collect_callees_from_expr(expr: &Expr, callees: &mut HashSet<String>) {
                 collect_callees_from_expr(&arm.body, callees);
             }
         }
-        ExprKind::Try(e) | ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
+        ExprKind::Try { expr: e, ref else_clause } => {
+            collect_callees_from_expr(e, callees);
+            if let Some(ec) = else_clause {
+                collect_callees_from_expr(&ec.body, callees);
+            }
+        }
+        ExprKind::Unwrap { expr: e, .. } | ExprKind::Cast { expr: e, .. } => {
             collect_callees_from_expr(e, callees);
         }
         ExprKind::GuardPattern {

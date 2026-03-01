@@ -43,6 +43,67 @@ impl TypeChecker {
                 self.register_impl_methods(i);
             }
         }
+        self.auto_derive_traits();
+
+        // GC1/GC2: Pre-register type vars for functions with inferred params/returns
+        self.pre_register_inferred_fns(decls);
+    }
+
+    /// Create fresh type vars for functions with omitted parameter types or return types.
+    /// Stores them in `symbol_types` (for callers) and `inferred_fn_types` (for check_fn).
+    fn pre_register_inferred_fns(&mut self, decls: &[Decl]) {
+        for decl in decls {
+            let fns: Vec<&FnDecl> = match &decl.kind {
+                DeclKind::Fn(f) => vec![f],
+                DeclKind::Struct(s) => s.methods.iter().collect(),
+                DeclKind::Enum(e) => e.methods.iter().collect(),
+                _ => continue,
+            };
+            for f in fns {
+                let has_inferred_params = f.params.iter().any(|p| p.name != "self" && p.ty.is_empty());
+                let has_inferred_return = f.ret_ty.is_none() && !f.is_pub && self.has_explicit_return(&f.body);
+                if !has_inferred_params && !has_inferred_return {
+                    continue;
+                }
+
+                // Build param type list, creating fresh vars for empty-typed params
+                let mut param_vars = Vec::new();
+                let mut param_types = Vec::new();
+                for p in &f.params {
+                    if p.name == "self" {
+                        continue;
+                    }
+                    let ty = if p.ty.is_empty() {
+                        self.ctx.fresh_var()
+                    } else {
+                        parse_type_string(&p.ty, &self.types).unwrap_or(Type::Error)
+                    };
+                    param_vars.push((p.name.clone(), ty.clone()));
+                    param_types.push(ty);
+                }
+
+                let ret_ty = if has_inferred_return {
+                    self.ctx.fresh_var()
+                } else if let Some(t) = &f.ret_ty {
+                    parse_type_string(t, &self.types).unwrap_or(Type::Error)
+                } else {
+                    Type::Unit
+                };
+
+                // Register in symbol_types so callers see the right type
+                if let Some(sym) = self.resolved.symbols.iter()
+                    .find(|s| s.name == f.name && matches!(s.kind, SymbolKind::Function { .. }))
+                {
+                    self.symbol_types.insert(sym.id, Type::Fn {
+                        params: param_types,
+                        ret: Box::new(ret_ty.clone()),
+                    });
+                }
+
+                // Store for check_fn to reuse
+                self.inferred_fn_types.insert(f.name.clone(), (param_vars, ret_ty));
+            }
+        }
     }
 
     pub(super) fn register_impl_methods(&mut self, i: &ImplDecl) {
@@ -146,7 +207,14 @@ impl TypeChecker {
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
             Some(p) if p.is_mutate => SelfParam::Mutate,
-            Some(_) => SelfParam::Value,
+            Some(_) => {
+                // GC9: Infer mutate for private methods that write self fields
+                if !m.is_pub && Self::body_writes_self(&m.body) {
+                    SelfParam::Mutate
+                } else {
+                    SelfParam::Value
+                }
+            }
             None => SelfParam::None,
         };
 
@@ -178,6 +246,181 @@ impl TypeChecker {
             self_param,
             params,
             ret,
+        }
+    }
+
+    // ------------------------------------------------------------------------
+    // Auto-Derive: inject synthetic methods for Equatable, Hashable, Default, Clone
+    // Runs after all types and impl methods are registered.
+    // ------------------------------------------------------------------------
+
+    fn auto_derive_traits(&mut self) {
+        use crate::types::TypeId;
+
+        let type_count = self.types.types.len();
+        for idx in 0..type_count {
+            let id = TypeId(idx as u32);
+            let def = self.types.get(id).unwrap().clone();
+            match &def {
+                TypeDef::Struct { fields, methods, is_resource, .. } => {
+                    if *is_resource { continue; }
+                    let field_types: Vec<Type> = fields.iter().map(|(_, ty)| ty.clone()).collect();
+                    let mut new_methods = Vec::new();
+
+                    // EQ1: auto-derive eq if all fields are Equatable
+                    if !methods.iter().any(|m| m.name == "eq")
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "eq".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            ret: Type::Bool,
+                        });
+                    }
+
+                    // HA1: auto-derive hash if all fields are Hashable (requires eq too)
+                    if !methods.iter().any(|m| m.name == "hash")
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "hash"))
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "hash".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::U64,
+                        });
+                    }
+
+                    // DF1: auto-derive default if all fields are Default (structs only)
+                    if !methods.iter().any(|m| m.name == "default")
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "default"))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "default".to_string(),
+                            self_param: SelfParam::None,
+                            params: vec![],
+                            ret: Type::Named(id),
+                        });
+                    }
+
+                    // CL1: auto-derive clone if all fields are Clone and no raw pointers (CL2)
+                    if !methods.iter().any(|m| m.name == "clone")
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !field_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "clone".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::Named(id),
+                        });
+                    }
+
+                    if !new_methods.is_empty() {
+                        if let Some(TypeDef::Struct { methods, .. }) = self.types.get_mut(id) {
+                            methods.extend(new_methods);
+                        }
+                    }
+                }
+                TypeDef::Enum { variants, methods, .. } => {
+                    let payload_types: Vec<Type> = variants.iter()
+                        .flat_map(|(_, fields)| fields.iter().cloned())
+                        .collect();
+                    let mut new_methods = Vec::new();
+
+                    // EQ3: auto-derive eq for enums (tag + payload equality)
+                    if !methods.iter().any(|m| m.name == "eq")
+                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "eq".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            ret: Type::Bool,
+                        });
+                    }
+
+                    // HA1: auto-derive hash for enums
+                    if !methods.iter().any(|m| m.name == "hash")
+                        && payload_types.iter().all(|ty| self.type_has_method(ty, "hash"))
+                        && payload_types.iter().all(|ty| self.type_has_method(ty, "eq"))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "hash".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::U64,
+                        });
+                    }
+
+                    // DF2: enums do NOT auto-derive Default
+
+                    // CL1: auto-derive clone for enums
+                    if !methods.iter().any(|m| m.name == "clone")
+                        && payload_types.iter().all(|ty| self.type_has_method(ty, "clone"))
+                        && !payload_types.iter().any(|ty| matches!(ty, Type::RawPtr(_)))
+                    {
+                        new_methods.push(MethodSig {
+                            name: "clone".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::Named(id),
+                        });
+                    }
+
+                    if !new_methods.is_empty() {
+                        if let Some(TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
+                            methods.extend(new_methods);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Check if a type has a given method (for auto-derive field checking).
+    fn type_has_method(&self, ty: &Type, method: &str) -> bool {
+        match ty {
+            // Primitives
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
+            Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
+                matches!(method, "eq" | "hash" | "clone" | "default")
+            }
+            Type::F32 | Type::F64 => {
+                matches!(method, "eq" | "clone" | "default")
+            }
+            Type::Bool | Type::Char | Type::Unit => {
+                matches!(method, "eq" | "hash" | "clone" | "default")
+            }
+            Type::String => {
+                matches!(method, "eq" | "hash" | "clone" | "default")
+            }
+            // Named types: check registered methods
+            Type::Named(id) => {
+                if let Some(def) = self.types.get(*id) {
+                    match def {
+                        TypeDef::Struct { methods, .. } |
+                        TypeDef::Enum { methods, .. } => {
+                            methods.iter().any(|m| m.name == method)
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            }
+            // Option/Result: delegate to inner types
+            Type::Option(inner) => self.type_has_method(inner, method),
+            Type::Result { ok, err } => {
+                self.type_has_method(ok, method) && self.type_has_method(err, method)
+            }
+            // Tuples: all elements must have the method
+            Type::Tuple(elems) => elems.iter().all(|e| self.type_has_method(e, method)),
+            // Arrays: element must have the method
+            Type::Array { elem, .. } | Type::Slice(elem) => self.type_has_method(elem, method),
+            _ => false,
         }
     }
 

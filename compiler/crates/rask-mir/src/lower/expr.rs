@@ -1492,7 +1492,12 @@ impl<'a> MirLowerer<'a> {
             }
 
             // Try expression (spec L3)
-            ExprKind::Try(inner) => self.lower_try(inner),
+            ExprKind::Try { expr: inner, ref else_clause } => {
+                if else_clause.is_some() {
+                    // TODO: lower try...else with error transformation
+                }
+                self.lower_try(inner)
+            }
 
             // Unwrap (postfix !) - panic on None/Err
             ExprKind::Unwrap { expr: inner, message: _ } => {

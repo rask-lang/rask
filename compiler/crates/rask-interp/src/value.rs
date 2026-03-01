@@ -537,6 +537,22 @@ impl Value {
         }
     }
 
+    /// Produce the default value for a type string (DF4).
+    pub fn default_for_type(ty: &str) -> Value {
+        match ty {
+            "i8" | "i16" | "i32" | "i64" | "int" | "isize" |
+            "u8" | "u16" | "u32" | "u64" | "uint" | "usize" => Value::Int(0),
+            "i128" => Value::Int128(0),
+            "u128" => Value::Uint128(0),
+            "f32" | "f64" => Value::Float(0.0),
+            "bool" => Value::Bool(false),
+            "char" => Value::Char('\0'),
+            "string" => Value::String(Arc::new(Mutex::new(String::new()))),
+            "()" => Value::Unit,
+            _ => Value::Unit,
+        }
+    }
+
     /// Deep clone a value — creates independent copies of reference-counted internals.
     pub fn deep_clone(&self) -> Value {
         match self {

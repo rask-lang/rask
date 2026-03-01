@@ -133,4 +133,13 @@ pub enum TypeError {
         trait_name: String,
         span: Span,
     },
+
+    /// GC5: public function missing type annotation
+    #[error("public function `{function_name}` requires explicit type annotations")]
+    PublicMissingAnnotation {
+        function_name: String,
+        params: Vec<String>,
+        missing_return: bool,
+        span: Span,
+    },
 }
