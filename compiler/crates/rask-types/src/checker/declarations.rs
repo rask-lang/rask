@@ -207,7 +207,14 @@ impl TypeChecker {
         let self_param = match self_param_decl {
             Some(p) if p.is_take => SelfParam::Take,
             Some(p) if p.is_mutate => SelfParam::Mutate,
-            Some(_) => SelfParam::Value,
+            Some(_) => {
+                // GC9: Infer mutate for private methods that write self fields
+                if !m.is_pub && Self::body_writes_self(&m.body) {
+                    SelfParam::Mutate
+                } else {
+                    SelfParam::Value
+                }
+            }
             None => SelfParam::None,
         };
 
