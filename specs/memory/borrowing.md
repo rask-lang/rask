@@ -132,7 +132,7 @@ For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone(
 | Rule | Description |
 |------|-------------|
 | **W1: First-class block** | `with` is a real scope — `return` exits the function, `try` propagates to the enclosing function, `break`/`continue` work for surrounding loops |
-| **W2: Source frozen** | Source collection cannot be accessed inside the `with` block (no structural mutations, no other element access) |
+| **W2: No structural mutation** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, clear). Reading and writing other elements via inline access is allowed |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
 | **W5: Mutable binding** | `with` bindings are always mutable. Read-only access is enforced by the source (e.g., `shared.read()` prevents mutation). Compiler warns when binding is never mutated |
@@ -184,33 +184,38 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 }
 ```
 
-### Source freezing (W2)
+### Structural mutation restriction (W2)
 
-The source is frozen for the duration of the `with` block. No access to the collection is allowed inside the block — not even reading other elements.
-
-<!-- test: compile-fail -->
-```rask
-with pool[h] as entity {
-    entity.health -= 10
-    pool.remove(other_h)     // ERROR: pool frozen inside with block
-}
-```
+Structural mutations on the source collection are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally.
 
 <!-- test: compile-fail -->
 ```rask
 with pool[h] as entity {
     entity.health -= 10
-    const other = pool[other_h].health   // ERROR: pool frozen inside with block
+    pool.remove(other_h)     // ERROR: structural mutation inside with block
 }
 ```
 
-For accessing multiple elements, use the comma syntax:
+Reading and writing other elements is allowed:
+
+<!-- test: skip -->
+```rask
+with pool[h] as entity {
+    entity.health -= pool[other_h].bonus    // OK: inline read of other element
+    pool[other_h].last_attacker = Some(h)   // OK: inline write to other element
+    pool.insert(new_entity)                 // ERROR: structural mutation (insert)
+}
+```
+
+For multi-statement access to multiple elements, the comma syntax is still preferred:
 <!-- test: skip -->
 ```rask
 with pool[h1] as e1, pool[h2] as e2 {
-    e1.health -= e2.attack
+    e1.health -= e2.attack    // Runtime panic if h1 == h2
 }
 ```
+
+The same-handle restriction still applies — accessing `pool[h]` (same handle variable as the `with` binding) inside the block is a compile error. Use the binding instead.
 
 For iteration + mutation, use mutable iteration (`std.iteration/I4`) or collect handles:
 <!-- test: skip -->
@@ -359,20 +364,24 @@ FIX 2: Store indices:
   process(line[view])
 ```
 
-**Source frozen inside with [W2]:**
+**Structural mutation inside with [W2]:**
 ```
-ERROR [mem.borrowing/W2]: cannot access collection inside its own with block
+ERROR [mem.borrowing/W2]: cannot structurally mutate collection inside with block
    |
 5  |  with pool[h] as entity {
-   |  ---- pool frozen here
+   |  ---- element borrowed here
 6  |      entity.health -= 10
 7  |      pool.remove(other)
-   |      ^^^^^^^^^^^^^^^^^ cannot access pool here
+   |      ^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
 
-FIX: Use comma syntax for multiple elements, or collect handles first:
+WHY: insert, remove, and clear can invalidate the borrowed element.
+     Reading and writing other elements is fine.
 
-  with pool[h] as e1, pool[other] as e2 {
-      e1.health -= e2.attack
+FIX: Move the structural mutation outside the with block:
+
+  const should_remove = pool[h].health <= 0
+  if should_remove {
+      pool.remove(other)
   }
 ```
 
@@ -393,7 +402,10 @@ FIX: Use comma syntax for multiple elements, or collect handles first:
 | `with` and `return` | W1 | Exits the function |
 | `with` and `try` | W1 | Propagates to enclosing function |
 | `with` and `break`/`continue` | W1 | Applies to surrounding loop |
-| Nested `with` same collection | W2 | Compile error (source frozen) |
+| Nested `with` same collection | W2 | Compile error (use comma syntax) |
+| Inline read of other element inside `with` | W2 | Allowed |
+| Inline write of other element inside `with` | W2 | Allowed (runtime panic if same handle) |
+| Structural mutation inside `with` | W2 | Compile error |
 | Projection stored in local | P1 | Block-scoped, follows S1–S3 (`type.structs/P8`) |
 | Overlapping projections | P3 | Compile error: fields overlap |
 | Projection + full struct borrow | P3 | Compile error: struct already borrowed |
@@ -464,7 +476,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 **W1 (with as first-class block):** The biggest concrete win over the old closure-based `modify()`. Closures can't propagate `return`/`try`/`break` to the enclosing function — `with` can. One access pattern for every container type.
 
-**W2 (source frozen):** Start strict — freeze the entire collection during `with`. The comma syntax handles the multi-element case. Relaxing to "structural mutations only" is a future option if real code needs it.
+**W2 (no structural mutation):** The compiler categorizes each collection method as structural (changes element count or triggers reallocation: insert, remove, push, pop, clear) or non-structural (reads/writes existing elements). Structural mutations are forbidden inside `with` — they could invalidate the borrowed element. Non-structural access to other elements is allowed because it doesn't affect the held element's memory. This pushes complexity into the compiler (method categorization) to give the user natural access patterns.
 
 **W5 (always mutable):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access often suffices. Making bindings always mutable eliminates the `const` keyword from `with` entirely, removing a concept that caused confusion: for `Shared<T>`, `const` previously changed the lock type (shared vs exclusive), while for everything else it only controlled binding mutability. With explicit `.read()`/`.write()` on Shared, there's no need for `const` on `with` bindings. The compiler warns when a `with` binding is never mutated.
 
