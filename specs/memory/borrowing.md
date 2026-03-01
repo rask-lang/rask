@@ -1,19 +1,23 @@
 <!-- id: mem.borrowing -->
 <!-- status: decided -->
-<!-- summary: Block-scoped views for fixed-layout sources, value-based access for collections with `with` for multi-statement binding -->
+<!-- summary: Block-scoped views for fixed-layout sources, inline access + `with` for growable sources -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-ownership/, compiler/crates/rask-interp/ -->
 
 # Borrowing
 
-Views last as long as the source is stable. Sources with fixed layout (struct fields, arrays) keep views until the block ends. Sources with heap buffers (collections, strings) give you values — copy for Copy types, error for non-Copy. Multi-statement access to collection elements uses `with`.
+A view into `point.x` can't go stale — struct fields sit at fixed offsets. But `vec[i]` points into a heap buffer that any `push` could reallocate, invalidating every reference into it. That difference determines how long you can hold a view.
+
+**Fixed-layout sources** (struct fields, arrays) can't resize. Views persist until the block ends.
+
+**Growable sources** (Vec, Pool, Map, string) own heap buffers that can reallocate. Each access is temporary — copy out the value for one expression, or use `with` for multi-statement access.
 
 | Rule | Source | Access model | Why |
 |------|--------|-------------|-----|
-| **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Fixed layout, no reallocation possible |
-| **B2: Growable = value access** | Vec, Pool, Map, string | Copy out (Copy types) or use `with` | Heap buffer could reallocate |
+| **B1: Fixed = block-scoped** | Struct fields, arrays | View valid until block ends | Layout can't change |
+| **B2: Growable = inline + `with`** | Vec, Pool, Map, string | Copy out (Copy types) or use `with` | Heap buffer can reallocate |
 
-The dividing line is **"has a heap buffer"** vs **"doesn't."** Strings own heap-allocated UTF-8 buffers — they go in B2 regardless of `const`/`let`. Struct fields and arrays have fixed in-place layout — they go in B1.
+**The test:** can the source resize? Strings own heap-allocated UTF-8 buffers — they're growable, same as Vec. Struct fields and arrays have fixed in-place layout.
 
 ## Parameter and Receiver Borrows
 
@@ -82,7 +86,7 @@ const x = {
 // x would outlive p
 ```
 
-**Strings are value-access (B2), not block-scoped:**
+**Strings are growable (B2), not block-scoped:**
 <!-- test: compile-fail -->
 ```rask
 const s = "hello world"
@@ -458,7 +462,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 ### Rationale
 
-**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Block-scoped views into them would dangle. Value-based access kills this bug class.
+**B1/B2 (fixed vs growable):** I wanted to avoid "borrow checker wrestling" — code that looks fine then explodes 20 lines later. Collections can change structurally — `Vec` reallocates, `Pool` compacts, `Map` rehashes. Block-scoped views into them would dangle. Inline access + `with` kills this bug class.
 
 **S3 (no escape):** The cost is more `.clone()` calls. I think that's better than scope annotations leaking into function signatures.
 

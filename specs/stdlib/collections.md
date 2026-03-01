@@ -1,11 +1,11 @@
 <!-- id: std.collections -->
 <!-- status: decided -->
-<!-- summary: Vec and Map with fallible allocation, value-based access, optional capacity bounds -->
+<!-- summary: Vec and Map with fallible allocation, inline access + `with`, optional capacity bounds -->
 <!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
 
 # Collections (Vec and Map)
 
-Vec and Map with optional capacity constraints, value-based access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
+Vec and Map with optional capacity constraints, inline element access, fallible allocation. For handle-based sparse storage, see `mem.pools`.
 
 ## Collection Types
 
@@ -13,7 +13,7 @@ Vec and Map with optional capacity constraints, value-based access, fallible all
 |------|-------------|
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
 | **C2: Fallible allocation** | All growth operations return `Result` with rejected value on failure |
-| **C3: Value-based access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
+| **C3: Inline access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
 | **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
 
 | Type | Purpose | Creation |
@@ -360,7 +360,7 @@ FIX: Process existing items first, or use an unbounded collection:
 
 **C2 (fallible allocation):** All allocations can fail. Returning the rejected value in the error lets callers retry or log without losing data.
 
-**C3 (value-based access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
+**C3 (inline access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
 
 **C4 (no linear resources):** Collection drop can't propagate errors from linear resource cleanup. `Pool<T>` with explicit consumption is the right pattern.
 
