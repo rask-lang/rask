@@ -453,7 +453,7 @@ func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
     h.health -= amount
 }
 
-// Frozen context (read-only, accepts FrozenPool too)
+// Frozen context (read-only, no structural mutations)
 func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
     return h.health
 }

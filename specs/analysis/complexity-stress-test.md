@@ -136,18 +136,19 @@ func update_entities(mutate world: GameWorld) -> () or Error {
 <!-- test: skip -->
 ```rask
 func render_frame(world: GameWorld) {
-    const frozen_entities = world.entities.freeze_ref()
-    const frozen_meshes = world.meshes.freeze_ref()
+    render_entities(world)
+}
 
-    for (h, entity) in frozen_entities.entries() {
-        if frozen_meshes.get(entity.mesh) is Some(mesh) {
+func render_entities(world: GameWorld) using frozen Pool<Entity>, frozen Pool<Mesh> {
+    for (h, entity) in world.entities.entries() {
+        if world.meshes.get(entity.mesh) is Some(mesh) {
             draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
         }
     }
 }
 ```
 
-**Concepts: 6** — frozen pools, cross-pool handles, checked random access, unsafe FFI, read-only borrowing, two frozen pools. **PASS.**
+**Concepts: 5** — frozen context, cross-pool handles, checked random access, value iteration, context clauses. **PASS.**
 
 ## Phase 5: Parallel Variant
 
@@ -156,20 +157,20 @@ func render_frame(world: GameWorld) {
 func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
     using ThreadPool
 {
-    const (snapshot, _) = world.entities.snapshot()
-    const mesh_snap = world.meshes.freeze_ref()
+    const (entity_snap, _) = world.entities.snapshot()
+    const (mesh_snap, _) = world.meshes.snapshot()
 
     const render_handle = ThreadPool.spawn(|| {
-        for (h, entity) in snapshot.entries() {
+        for (h, entity) in entity_snap.entries() {
             if mesh_snap.get(entity.mesh) is Some(mesh) {
                 draw_mesh(mesh.vertex_buffer, mesh.index_count, entity.position)
             }
         }
-    }
+    })
 
     const physics_handle = ThreadPool.spawn(|| {
         world.physics.step(dt)
-    }
+    })
 
     try render_handle.join()
     try physics_handle.join()
@@ -180,7 +181,7 @@ func game_loop_parallel(mutate world: GameWorld, dt: f32) -> () or Error
 }
 ```
 
-**Concepts: 12** — ThreadPool, spawn thread, must-use handles, snapshot isolation, FrozenPool, freeze_ref, cross-pool handles, Send/Sync constraints, disjoint field access, error handling, @resource across threads, copy-on-write. **FAIL.**
+**Concepts: 9** — ThreadPool, spawn thread, must-use handles, snapshot (clone), cross-pool handles, Send/Sync constraints, error handling, checked random access, join semantics. **Marginal PASS** (down from 12 — no FrozenPool type, no freeze_ref, no CoW).
 
 ## Friction Points
 
@@ -232,7 +233,7 @@ If a function needs >3, restructure (pass struct, use field projections, split f
 
 ### See Also
 
-- `mem.pools` — Pool\<T>, Handle\<T>, frozen pools, snapshots
+- `mem.pools` — Pool\<T>, Handle\<T>, frozen contexts, snapshots
 - `mem.resources` — @resource types, ensure cleanup
 - `mem.context` — context clauses
 - `conc.async` — spawn, must-use handles
