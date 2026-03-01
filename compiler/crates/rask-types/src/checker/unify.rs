@@ -347,11 +347,18 @@ impl TypeChecker {
                     ))
                 }
             }
-            _ => Err(TypeError::Mismatch {
-                expected: Type::Error,  // TODO: Better error representation
-                found: Type::Error,
-                span,
-            }),
+            (GenericArg::Type(_), GenericArg::ConstUsize(_)) => {
+                Err(TypeError::GenericError(
+                    "expected type argument, found const argument".to_string(),
+                    span,
+                ))
+            }
+            (GenericArg::ConstUsize(_), GenericArg::Type(_)) => {
+                Err(TypeError::GenericError(
+                    "expected const argument, found type argument".to_string(),
+                    span,
+                ))
+            }
         }
     }
 
