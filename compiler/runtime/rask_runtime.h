@@ -245,15 +245,24 @@ int64_t rask_net_tcp_listen(const RaskString *addr);
 typedef struct RaskJsonBuf RaskJsonBuf;
 
 RaskJsonBuf *rask_json_buf_new(void);
-void         rask_json_buf_add_string(RaskJsonBuf *buf, const char *key, const RaskString *val);
-void         rask_json_buf_add_i64(RaskJsonBuf *buf, const char *key, int64_t val);
-void         rask_json_buf_add_f64(RaskJsonBuf *buf, const char *key, double val);
-void         rask_json_buf_add_bool(RaskJsonBuf *buf, const char *key, int64_t val);
-void         rask_json_buf_add_raw(RaskJsonBuf *buf, const char *key, const RaskString *raw_json);
+void         rask_json_buf_add_string(RaskJsonBuf *buf, const RaskString *key, const RaskString *val);
+void         rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskString *key, int64_t val);
+void         rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskString *key, double val);
+void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskString *key, int64_t val);
+void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskString *key, const RaskString *raw_json);
 RaskString  *rask_json_buf_finish(RaskJsonBuf *buf);
 
 RaskString  *rask_json_encode_string(const RaskString *s);
 RaskString  *rask_json_encode_i64(int64_t val);
+
+// JSON array buffer — keyless element encoding for Vec serialization.
+RaskJsonBuf *rask_json_buf_new_array(void);
+void         rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskString *raw_json);
+void         rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskString *val);
+void         rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val);
+void         rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val);
+void         rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val);
+RaskString  *rask_json_buf_finish_array(RaskJsonBuf *buf);
 
 // Decode helpers — minimal JSON object parser.
 typedef struct RaskJsonObj RaskJsonObj;
