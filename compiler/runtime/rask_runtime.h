@@ -91,6 +91,7 @@ int64_t     rask_string_append(RaskString *s, const RaskString *other);
 int64_t     rask_string_append_cstr(RaskString *s, const char *cstr);
 RaskString *rask_string_clone(const RaskString *s);
 int64_t     rask_string_eq(const RaskString *a, const RaskString *b);
+int64_t     rask_string_byte_at(const RaskString *s, int64_t pos);
 RaskString *rask_string_substr(const RaskString *s, int64_t start, int64_t end);
 RaskString *rask_string_concat(const RaskString *a, const RaskString *b);
 int64_t     rask_string_contains(const RaskString *haystack, const RaskString *needle);

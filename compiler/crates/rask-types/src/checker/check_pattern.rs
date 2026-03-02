@@ -25,6 +25,10 @@ impl TypeChecker {
                 if name.contains('.') {
                     return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
                 }
+                // Bare constructors (Ok, Err, Some, None) without parens — match, don't bind
+                if matches!(name.as_str(), "Ok" | "Err" | "Some" | "None") {
+                    return self.check_constructor_pattern(name, &[], scrutinee_ty, span);
+                }
                 vec![(name.clone(), scrutinee_ty.clone())]
             }
 
@@ -157,6 +161,10 @@ impl TypeChecker {
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], ok, span);
                         }
+                        // Bare `Ok` (no fields): return inner type for guard unwrapping
+                        if fields.is_empty() {
+                            return vec![("".to_string(), *ok.clone())];
+                        }
                     }
                     Type::Var(_) => {
                         let ok_ty = self.ctx.fresh_var();
@@ -172,6 +180,10 @@ impl TypeChecker {
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], &ok_ty, span);
                         }
+                        // Bare `Ok`: return fresh inner type for guard unwrapping
+                        if fields.is_empty() {
+                            return vec![("".to_string(), ok_ty)];
+                        }
                     }
                     _ => {}
                 }
@@ -181,6 +193,9 @@ impl TypeChecker {
                     Type::Result { err, .. } => {
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], err, span);
+                        }
+                        if fields.is_empty() {
+                            return vec![("".to_string(), *err.clone())];
                         }
                     }
                     Type::Var(_) => {
@@ -197,6 +212,9 @@ impl TypeChecker {
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], &err_ty, span);
                         }
+                        if fields.is_empty() {
+                            return vec![("".to_string(), err_ty)];
+                        }
                     }
                     _ => {}
                 }
@@ -206,6 +224,9 @@ impl TypeChecker {
                     Type::Option(inner) => {
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], inner, span);
+                        }
+                        if fields.is_empty() {
+                            return vec![("".to_string(), *inner.clone())];
                         }
                     }
                     Type::Var(_) => {
@@ -217,6 +238,9 @@ impl TypeChecker {
                         ));
                         if fields.len() == 1 {
                             return self.check_pattern(&fields[0], &inner_ty, span);
+                        }
+                        if fields.is_empty() {
+                            return vec![("".to_string(), inner_ty)];
                         }
                     }
                     _ => {}

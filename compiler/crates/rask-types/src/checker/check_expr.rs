@@ -122,8 +122,8 @@ impl TypeChecker {
                 object,
                 method,
                 args,
-                ..
-            } => self.check_method_call(object, method, args, expr.span),
+                type_args,
+            } => self.check_method_call(object, method, args, type_args.as_deref(), expr.span),
 
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
@@ -1118,12 +1118,13 @@ impl TypeChecker {
         object: &Expr,
         method: &str,
         args: &[CallArg],
+        type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
         // Check if this is a builtin module method call (e.g., fs.open)
         if let ExprKind::Ident(name) = &object.kind {
             if self.types.builtin_modules.is_module(name) {
-                return self.check_module_method(name, method, args, span);
+                return self.check_module_method(name, method, args, type_args, span);
             }
         }
 
@@ -1226,6 +1227,7 @@ impl TypeChecker {
         module: &str,
         method: &str,
         args: &[CallArg],
+        type_args: Option<&[String]>,
         span: Span,
     ) -> Type {
         let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
@@ -1255,8 +1257,18 @@ impl TypeChecker {
                 }
             }
 
+            // If explicit type args provided (e.g., json.decode<Foo>),
+            // substitute them directly instead of using unconstrained fresh vars
+            let ret = sig.ret.clone();
+            if let Some(ta) = type_args {
+                if ta.len() == 1 {
+                    let explicit_ty = self.resolve_type_name(&ta[0], span);
+                    return self.freshen_module_return_type_with(&ret, &explicit_ty);
+                }
+            }
+
             // Replace placeholder types with fresh vars for generic module methods
-            self.freshen_module_return_type(&sig.ret.clone())
+            self.freshen_module_return_type(&ret)
         } else {
             self.errors.push(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedNamed(module.to_string()),
@@ -1278,6 +1290,27 @@ impl TypeChecker {
             Type::Option(inner) => Type::Option(Box::new(self.freshen_module_return_type(inner))),
             _ => ty.clone(),
         }
+    }
+
+    /// Replace internal placeholder types with an explicit type (from type args).
+    fn freshen_module_return_type_with(&mut self, ty: &Type, explicit: &Type) -> Type {
+        match ty {
+            Type::UnresolvedNamed(n) if n.starts_with('_') => explicit.clone(),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(self.freshen_module_return_type_with(ok, explicit)),
+                err: Box::new(self.freshen_module_return_type_with(err, explicit)),
+            },
+            Type::Option(inner) => {
+                Type::Option(Box::new(self.freshen_module_return_type_with(inner, explicit)))
+            }
+            _ => ty.clone(),
+        }
+    }
+
+    /// Resolve a type name string to a Type.
+    fn resolve_type_name(&self, name: &str, _span: Span) -> Type {
+        let ty = Type::UnresolvedNamed(name.to_string());
+        self.resolve_named(&ty)
     }
 
     pub(super) fn check_field_access(&mut self, object: &Expr, field: &str, span: Span) -> Type {

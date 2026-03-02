@@ -390,6 +390,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
+            mir_name: "string_byte_at",
+            c_name: "rask_string_byte_at",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
             mir_name: "string_substr",
             c_name: "rask_string_substr",
             params: &[types::I64, types::I64, types::I64],
