@@ -483,25 +483,14 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
         return Err(RegistryError.IoError("expected object in {path}"))
     }
 
-    const name_val = obj.get("name") is Some(v) else {
+    const name = obj.get("name")?.as_string() is Some else {
         return Err(RegistryError.IoError("missing 'name' in {path}"))
     }
-    const name = name_val.as_string() is Some(s) else {
-        return Err(RegistryError.IoError("'name' not a string in {path}"))
-    }
-
-    const ver_val = obj.get("version") is Some(v) else {
+    const ver_str = obj.get("version")?.as_string() is Some else {
         return Err(RegistryError.IoError("missing 'version' in {path}"))
     }
-    const ver_str = ver_val.as_string() is Some(s) else {
-        return Err(RegistryError.IoError("'version' not a string in {path}"))
-    }
-
-    const check_val = obj.get("checksum") is Some(v) else {
+    const checksum = obj.get("checksum")?.as_string() is Some else {
         return Err(RegistryError.IoError("missing 'checksum' in {path}"))
-    }
-    const checksum = check_val.as_string() is Some(s) else {
-        return Err(RegistryError.IoError("'checksum' not a string in {path}"))
     }
 
     const version = Version.parse(ver_str) is Ok(v) else {
@@ -509,17 +498,12 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
     }
 
     let deps = Vec.new()
-    const deps_val = obj.get("deps")
-    if deps_val is Some(dv) {
-        const dep_arr = dv.as_array() is Some(arr) else {
-            return Err(RegistryError.IoError("'deps' not an array in {path}"))
-        }
+    if obj.get("deps")?.as_array() is Some(dep_arr) {
         for d_val in dep_arr {
             const d_obj = d_val.as_object() is Some(dm) else { continue }
-            const dn_val = d_obj.get("name") is Some(v) else { continue }
-            const dn = dn_val.as_string() is Some(s) else { continue }
-            const dc_val = d_obj.get("constraint") is Some(v) else { continue }
-            const dc = dc_val.as_string() is Some(s) else { continue }
+            const dn = d_obj.get("name")?.as_string() ?? ""
+            const dc = d_obj.get("constraint")?.as_string() ?? ""
+            if dn.is_empty() || dc.is_empty() { continue }
             const constraint = Constraint.parse(dc) is Ok(c) else { continue }
             deps.push(Dependency { name: dn, constraint: constraint })
         }
@@ -558,26 +542,20 @@ func http_available(base_url: string, name: string) -> Vec<PackageMeta> or Regis
     let versions = Vec.new()
     for entry in arr {
         const obj = entry.as_object() is Some(m) else { continue }
-
-        const n_val = obj.get("name") is Some(v) else { continue }
-        const pkg_name = n_val.as_string() is Some(s) else { continue }
-        const v_val = obj.get("version") is Some(v) else { continue }
-        const ver_str = v_val.as_string() is Some(s) else { continue }
-        const c_val = obj.get("checksum") is Some(v) else { continue }
-        const checksum = c_val.as_string() is Some(s) else { continue }
+        const pkg_name = obj.get("name")?.as_string() ?? ""
+        const ver_str = obj.get("version")?.as_string() ?? ""
+        const checksum = obj.get("checksum")?.as_string() ?? ""
+        if pkg_name.is_empty() || ver_str.is_empty() { continue }
 
         const version = Version.parse(ver_str) is Ok(v) else { continue }
 
         let deps = Vec.new()
-        const deps_val = obj.get("deps")
-        if deps_val is Some(dv) {
-            const dep_arr = dv.as_array() is Some(a) else { continue }
+        if obj.get("deps")?.as_array() is Some(dep_arr) {
             for d_val in dep_arr {
                 const d_obj = d_val.as_object() is Some(dm) else { continue }
-                const dn_val = d_obj.get("name") is Some(v) else { continue }
-                const dn = dn_val.as_string() is Some(s) else { continue }
-                const dc_val = d_obj.get("constraint") is Some(v) else { continue }
-                const dc = dc_val.as_string() is Some(s) else { continue }
+                const dn = d_obj.get("name")?.as_string() ?? ""
+                const dc = d_obj.get("constraint")?.as_string() ?? ""
+                if dn.is_empty() || dc.is_empty() { continue }
                 const constraint = Constraint.parse(dc) is Ok(c) else { continue }
                 deps.push(Dependency { name: dn, constraint: constraint })
             }
