@@ -13,6 +13,7 @@ Errors are values. Any type with `message()` can be an error. Composition uses u
 | Rule | Description |
 |------|-------------|
 | **ER1: Structural matching** | Any type with `func message(self) -> string` satisfies the Error trait |
+| **ER1a: Auto-Displayable** | Error types auto-satisfy `Displayable` — `to_string()` calls `message()`. See `std.fmt/D5` |
 
 <!-- test: parse -->
 ```rask
@@ -20,6 +21,8 @@ trait Error {
     func message(self) -> string
 }
 ```
+
+Error types work directly in `format("{}", err)` and string interpolation without implementing `Displayable` separately.
 
 ## Result Type
 

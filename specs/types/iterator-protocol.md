@@ -104,11 +104,17 @@ const lookup: Map<string, User> = users.map(|u| (u.name, u)).collect()
 | `.count()` | Counts elements | `usize` |
 | `.min()` | Smallest item | `Option<Item>` (requires `Item: Comparable`) |
 | `.max()` | Largest item | `Option<Item>` (requires `Item: Comparable`) |
+| `.min_by(cmp)` | Smallest by custom comparator | `Option<Item>` |
+| `.max_by(cmp)` | Largest by custom comparator | `Option<Item>` |
+| `.min_by_key(f)` | Smallest by extracted key | `Option<Item>` (requires key: Comparable) |
+| `.max_by_key(f)` | Largest by extracted key | `Option<Item>` (requires key: Comparable) |
 
 <!-- test: skip -->
 ```rask
 const total = orders.map(|o| o.amount).sum()
 const biggest = scores.max()
+const cheapest = orders.min_by_key(|o| o.price)
+const oldest = users.max_by(|a, b| a.age.compare(b.age))
 
 const csv = names.fold(string.new(), |acc, name| {
     if acc.is_empty(): return name

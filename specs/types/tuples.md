@@ -53,7 +53,7 @@ const (x, y) = point
 | Rule | Description |
 |------|-------------|
 | **TU7: Copy** | Tuples are Copy when all elements are Copy |
-| **TU8: Clone** | Tuples are Clone when all elements are Clone |
+| **TU8: Cloneable** | Tuples are Cloneable when all elements are Cloneable |
 | **TU9: Equality** | `==` and `!=` work when all elements support equality |
 | **TU10: Layout** | Struct layout rules apply: elements in order, padded for alignment (see `comp.mem-layout`) |
 

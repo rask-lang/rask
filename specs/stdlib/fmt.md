@@ -1,10 +1,10 @@
 <!-- id: std.fmt -->
 <!-- status: decided -->
-<!-- summary: String formatting via format(), Display/Debug traits, println interpolation -->
+<!-- summary: String formatting via format(), Displayable/Debug traits, Error auto-bridge, println interpolation -->
 
 # Formatting
 
-`format(template, args...)` with `{}`, `{0}`, `{name}`, `{:spec}` placeholders. `Display` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit `{name}` interpolation.
+`format(template, args...)` with `{}`, `{0}`, `{name}`, `{:spec}` placeholders. `Displayable` and `Debug` traits for type-to-string conversion. `println`/`print` do implicit `{name}` interpolation.
 
 ## format() Function
 
@@ -40,24 +40,47 @@ const hex = format("0x{:08X}", 0xDEAD)
 const table = format("{:<10} {:>8}", "Name", "Score")
 ```
 
-## Display Trait
+## Displayable Trait
 
 | Rule | Description |
 |------|-------------|
-| **D1: Trait** | `trait Display { func to_string(self) -> string }` |
-| **D2: Primitives** | All primitive types implement `Display` by default |
-| **D3: Structs opt-in** | Structs do NOT auto-implement `Display` — must add via `extend Type with Display` |
-| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Display` not implemented |
+| **D1: Trait** | `trait Displayable { func to_string(self) -> string }` |
+| **D2: Primitives** | All primitive types implement `Displayable` by default |
+| **D3: Structs opt-in** | Structs do NOT auto-implement `Displayable` — must add via `extend Type with Displayable` |
+| **D4: Required for {}** | `format("{}", x)` calls `to_string()`. Compile error if `Displayable` not implemented |
+| **D5: Error bridge** | Types satisfying `Error` (have `message(self) -> string`) auto-satisfy `Displayable` — `to_string()` calls `message()`. No boilerplate needed for error types in `format("{}", err)` |
 
 <!-- test: parse -->
 ```rask
 struct Point { x: f64, y: f64 }
 
-extend Point with Display {
+extend Point with Displayable {
     func to_string(self) -> string {
         return format("({}, {})", self.x, self.y)
     }
 }
+```
+
+**Error types are automatically Displayable (D5):**
+
+<!-- test: parse -->
+```rask
+enum AppError {
+    NotFound(path: string),
+    Timeout,
+}
+
+extend AppError {
+    func message(self) -> string {
+        match self {
+            NotFound(p) => format("not found: {}", p),
+            Timeout => "timed out",
+        }
+    }
+}
+
+// No extend with Displayable needed — Error types get it for free
+// format("{}", AppError.Timeout) → "timed out"
 ```
 
 ## Debug Trait
@@ -97,16 +120,23 @@ println("Position: {point.x}, {point.y}")
 ## Error Messages
 
 ```
-ERROR [std.fmt/D4]: type does not implement Display
+ERROR [std.fmt/D4]: type does not implement Displayable
    |
 5  |  println(format("{}", my_struct))
-   |                       ^^^^^^^^^ `MyStruct` does not implement Display
+   |                       ^^^^^^^^^ `MyStruct` does not implement Displayable
 
-WHY: {} calls to_string(), which requires the Display trait.
+WHY: {} calls to_string(), which requires the Displayable trait.
 
-FIX: Add Display implementation:
-  extend MyStruct with Display {
+FIX 1: Add Displayable implementation:
+
+  extend MyStruct with Displayable {
       func to_string(self) -> string { ... }
+  }
+
+FIX 2: If this is an error type, add message() instead (auto-bridges to Displayable):
+
+  extend MyStruct {
+      func message(self) -> string { ... }
   }
 ```
 
@@ -138,7 +168,8 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Case | Rule | Handling |
 |------|------|----------|
 | Missing arg for `{2}` | F2 | Compile-time error (when possible) or runtime panic |
-| Type without Display in `{}` | D4 | Compile-time error |
+| Type without Displayable in `{}` | D4 | Compile-time error |
+| Error type in `{}` | D5 | Auto-bridges — calls `message()` |
 | `{{` in template | F4 | Literal `{` |
 | Empty template | F1 | Returns empty string |
 | `format("{:?}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
@@ -149,7 +180,7 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 |------|-------------|
 | **CM1: Compiler-known** | `format()` is a compiler-known function, not a regular function. It accepts variable arguments through compiler support (`struct.modules/BF4`), not through a general variadic mechanism |
 | **CM2: Template parsing** | The compiler parses the template string at compile time, extracting placeholder positions, names, and format specifiers |
-| **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Display`, `{:?}` requires `Debug`, `{:x}` requires integer type |
+| **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Displayable`, `{:?}` requires `Debug`, `{:x}` requires integer type |
 | **CM4: Compile-time errors** | Missing arguments, type mismatches, and malformed specifiers are compile-time errors. No runtime formatting failures for static templates |
 | **CM5: Codegen** | The compiler generates specialized string-building code per call site. No runtime template parsing for static templates |
 | **CM6: Comptime folding** | When all arguments are comptime-known, the result is a static string |
@@ -162,7 +193,9 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 
 ### Rationale
 
-**D3 (structs opt-in):** Auto-deriving Display would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Display is for users, so you write it.
+**D3 (structs opt-in):** Auto-deriving Displayable would produce output that looks intentional but isn't. Debug auto-derives because it's for developers. Displayable is for users, so you write it.
+
+**D5 (Error bridge):** Every error type already has `message()` — requiring a separate `to_string()` that just calls `message()` is pure boilerplate. The compiler auto-bridges: if a type has `message(self) -> string`, it satisfies `Displayable` with `to_string()` delegating to `message()`. If you want different Displayable output than the error message, override with an explicit `extend Type with Displayable`.
 
 **I3 (no expressions):** Expressions in string interpolation create hidden complexity. `format()` makes the formatting explicit. Keeps println simple.
 
@@ -176,13 +209,13 @@ println(format("{:<20} {:>10} {:>10}", "Item", "Qty", "Price"))
 println(format("{:<20} {:>10} {:>10.2}", "Widget", 5, 9.99))
 ```
 
-**Custom Display with hex:**
+**Custom Displayable with hex:**
 
 <!-- test: parse -->
 ```rask
 struct Color { r: u8, g: u8, b: u8 }
 
-extend Color with Display {
+extend Color with Displayable {
     func to_string(self) -> string {
         return format("#{:02X}{:02X}{:02X}", self.r, self.g, self.b)
     }
@@ -209,4 +242,5 @@ const report = b.build()
 ### See Also
 
 - `std.strings` — `format()` returns a `string`, uses `string_builder` internally
-- `type.traits` — Display and Debug are standard traits
+- `type.traits` — Displayable and Debug are standard traits
+- `type.errors` — Error types auto-bridge to Displayable (D5)

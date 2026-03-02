@@ -176,9 +176,9 @@ func write(h: Handle<T>) using Pool<T>
 → `_R4core_F5write_GHandle[T]:Pool[T]`
 
 ```rask
-func sort(arr: Vec<T>) using Compare<T> using Clone<T>
+func sort(arr: Vec<T>) using Comparable using Cloneable
 ```
-→ `_R4core_F4sort_GVec[T]:Compare[T]:Clone[T]`
+→ `_R4core_F4sort_GVec[T]:Comparable:Cloneable`
 
 **Rule:** Type parameters, then colon-separated context clauses.
 

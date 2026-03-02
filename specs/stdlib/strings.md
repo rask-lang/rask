@@ -146,6 +146,19 @@ Iterators borrow for expression scope only. Cannot be stored.
 
 No `+` operator. Allocation must be visible via method name or interpolation.
 
+## Join
+
+| Operation | Return | Notes |
+|-----------|--------|-------|
+| `strings.join(sep)` | `string` | Join a `Vec<string>` with separator, allocates |
+
+<!-- test: skip -->
+```rask
+const names = ["Alice", "Bob", "Charlie"]
+const result = names.join(", ")    // "Alice, Bob, Charlie"
+const csv = headers.join(",")      // CSV header row
+```
+
 ## In-Place Mutation
 
 | Operation | Signature | Notes |
@@ -429,7 +442,7 @@ for (i, c) in text.char_indices() {
 
 ### Integration
 
-- `string` implements `Clone`, `Display`, `Hash`, `Ord` traits
+- `string` implements `Cloneable`, `Displayable`, `Hashable`, `Comparable` traits
 - All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
 - String literals and interpolation at comptime produce static strings
