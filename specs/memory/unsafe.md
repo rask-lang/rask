@@ -14,7 +14,7 @@ Explicit `unsafe` blocks quarantine operations that bypass safety checks. Debug 
 |------|-------------|
 | **U1: Explicit scope** | Unsafe operations are ONLY valid inside `unsafe {}` blocks |
 | **U2: Local scope** | Unsafe does not propagate; calling a safe function from unsafe is safe |
-| **U3: Expression result** | Unsafe block can return a value: `const x = unsafe { ptr.read() }` |
+| **U3: Expression result** | Unsafe block/expression can return a value: `const x = unsafe ptr.read()` |
 | **U4: Minimal scope** | Unsafe blocks SHOULD be as small as possible |
 
 <!-- test: skip -->
@@ -361,9 +361,10 @@ ERROR [mem.unsafe/U1]: unsafe operation outside unsafe block
 
 WHY: Unsafe operations must be explicitly scoped so safety boundaries are visible.
 
-FIX: Wrap in an unsafe block:
+FIX: Wrap in unsafe:
 
-  const x = unsafe { *ptr }
+  const x = unsafe *ptr
+  const x = unsafe { *ptr }  // block form also works
 ```
 
 **Calling unsafe function without block [U1]:**
@@ -374,7 +375,8 @@ ERROR [mem.unsafe/U1]: call to unsafe function outside unsafe block
    |  ^^^^^^^^^^^^^^^^^^^^^^^ requires unsafe
 
 FIX:
-  unsafe { dangerous_operation(ptr) }
+  unsafe dangerous_operation(ptr)
+  unsafe { dangerous_operation(ptr) }  // block form also works
 ```
 
 **Missing clobber declaration [ASM2]:**
@@ -566,6 +568,42 @@ IDE SHOULD highlight unsafe blocks distinctly. Lints SHOULD warn about large uns
 | Unsafe highlighting | `unsafe {}` blocks shown with distinct background |
 | Hover on `unsafe` | Shows which operations inside require unsafe |
 | Large block warning | Lint when unsafe block exceeds ~20 lines |
+
+### Expression Form
+
+`unsafe` supports both block and expression forms. The expression form is shorthand for a single-operation unsafe block:
+
+<!-- test: parse -->
+```rask
+extern "C" func get_ptr() -> *i32
+
+func example() {
+    const ptr = unsafe get_ptr()
+
+    // Block form
+    const a = unsafe { *ptr }
+
+    // Expression form (equivalent)
+    const b = unsafe *ptr
+}
+```
+
+The expression form encourages minimal unsafe scope — one operation, no ceremony. For multiple operations, use the block form.
+
+### Design Decision: Granular Unsafe
+
+I considered replacing blanket `unsafe {}` blocks with per-operation markers — syntax like `@unsafe deref` or specialized functions like `raw_deref(ptr)` that would tag each operation individually.
+
+I decided against it. Per-operation syntax doesn't catch real bugs. The bugs in unsafe code are logic errors *within* correctly-identified operations (dangling pointer, wrong offset), not accidentally using the wrong *category* of operation. Adding per-operation markers increases ceremony without safety benefit — exactly the kind of abstraction tax the language tries to eliminate.
+
+The compiler already classifies every unsafe operation internally (`UnsafeCategory` enum: pointer deref, deref write, arithmetic, extern call, unsafe func call, transmute, union field access). This data enables tooling — a future CLI command can report all unsafe operations by category across a codebase, providing auditability without syntax cost.
+
+What I added instead:
+- **Expression-form `unsafe <expr>`** — minimal syntax for single operations
+- **`idiom/large-unsafe-block` lint** — warns when an unsafe block exceeds 10 statements, enforcing U4 (minimal scope)
+- **Operation classification infrastructure** — compiler tracks categories for future tooling
+
+This is "information without enforcement" — the data exists for tools that want it, but the language doesn't force developers to annotate what the compiler already knows.
 
 ### See Also
 

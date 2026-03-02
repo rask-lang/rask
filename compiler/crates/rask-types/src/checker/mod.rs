@@ -33,6 +33,19 @@ pub use parse_type::parse_type_string;
 
 use borrow::{ActiveBorrow, PersistentBorrow};
 
+/// Classification of unsafe operations for auditing and tooling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum UnsafeCategory {
+    PointerDeref,
+    PointerDerefWrite,
+    PointerArithmetic,
+    PointerMethod,
+    ExternCall,
+    UnsafeFuncCall,
+    Transmute,
+    UnionFieldAccess,
+}
+
 pub struct TypeChecker {
     /// Symbol table from resolution.
     pub(super) resolved: ResolvedProgram,
@@ -66,6 +79,8 @@ pub struct TypeChecker {
     pub(super) fn_type_params: HashMap<SymbolId, Vec<String>>,
     /// Whether we're inside an `unsafe {}` block (for validating pointer ops and extern calls).
     pub(super) in_unsafe: bool,
+    /// Collected unsafe operations with their locations (for tooling/auditing).
+    pub(super) unsafe_ops: Vec<(rask_ast::Span, UnsafeCategory)>,
     /// Whether we're inferring an assignment target (union field writes are safe per UN3).
     pub(super) in_assign_target: bool,
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
@@ -91,6 +106,7 @@ impl TypeChecker {
             pending_call_type_args: Vec::new(),
             fn_type_params: HashMap::new(),
             in_unsafe: false,
+            unsafe_ops: Vec::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
         }

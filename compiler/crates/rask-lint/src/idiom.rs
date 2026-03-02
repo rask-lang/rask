@@ -444,3 +444,108 @@ fn extract_ensure_receiver(body: &[Stmt]) -> Option<String> {
         _ => None,
     }
 }
+
+/// idiom/large-unsafe-block: Flag unsafe blocks with too many statements.
+/// Big unsafe blocks defeat the purpose — keep them minimal so each unsafe
+/// operation is visible and auditable (mem.unsafe/U4).
+pub fn check_large_unsafe_blocks(decls: &[Decl], source: &str) -> Vec<LintDiagnostic> {
+    const MAX_STMTS: usize = 10;
+    let mut diags = Vec::new();
+
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Fn(f) => walk_for_large_unsafe(&f.body, source, MAX_STMTS, &mut diags),
+            DeclKind::Struct(s) => {
+                for m in &s.methods {
+                    walk_for_large_unsafe(&m.body, source, MAX_STMTS, &mut diags);
+                }
+            }
+            DeclKind::Enum(e) => {
+                for m in &e.methods {
+                    walk_for_large_unsafe(&m.body, source, MAX_STMTS, &mut diags);
+                }
+            }
+            DeclKind::Impl(imp) => {
+                for m in &imp.methods {
+                    walk_for_large_unsafe(&m.body, source, MAX_STMTS, &mut diags);
+                }
+            }
+            DeclKind::Test(t) => walk_for_large_unsafe(&t.body, source, MAX_STMTS, &mut diags),
+            _ => {}
+        }
+    }
+
+    diags
+}
+
+fn walk_for_large_unsafe(stmts: &[Stmt], source: &str, max: usize, diags: &mut Vec<LintDiagnostic>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Expr(e) => check_expr_for_large_unsafe(e, source, max, diags),
+            StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
+                check_expr_for_large_unsafe(init, source, max, diags);
+            }
+            StmtKind::While { cond, body } => {
+                check_expr_for_large_unsafe(cond, source, max, diags);
+                walk_for_large_unsafe(body, source, max, diags);
+            }
+            StmtKind::For { iter, body, .. } => {
+                check_expr_for_large_unsafe(iter, source, max, diags);
+                walk_for_large_unsafe(body, source, max, diags);
+            }
+            StmtKind::Loop { body, .. } => walk_for_large_unsafe(body, source, max, diags),
+            _ => {}
+        }
+    }
+}
+
+fn check_expr_for_large_unsafe(expr: &Expr, source: &str, max: usize, diags: &mut Vec<LintDiagnostic>) {
+    match &expr.kind {
+        ExprKind::Unsafe { body } => {
+            if body.len() > max {
+                let (line, col) = util::line_col(source, expr.span.start);
+                let source_line = util::get_source_line(source, line);
+                diags.push(LintDiagnostic {
+                    rule: "idiom/large-unsafe-block".to_string(),
+                    severity: Severity::Warning,
+                    message: format!(
+                        "unsafe block has {} statements — keep unsafe blocks minimal (mem.unsafe/U4)",
+                        body.len()
+                    ),
+                    location: LintLocation {
+                        line,
+                        column: col,
+                        source_line,
+                    },
+                    fix: "extract operations into small safe wrapper functions".to_string(),
+                });
+            }
+            // Still recurse into the body for nested unsafe blocks
+            walk_for_large_unsafe(body, source, max, diags);
+        }
+        ExprKind::Block(stmts)
+        | ExprKind::UsingBlock { body: stmts, .. }
+        | ExprKind::Spawn { body: stmts }
+        | ExprKind::Comptime { body: stmts }
+        | ExprKind::BlockCall { body: stmts, .. } => {
+            walk_for_large_unsafe(stmts, source, max, diags);
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            check_expr_for_large_unsafe(cond, source, max, diags);
+            check_expr_for_large_unsafe(then_branch, source, max, diags);
+            if let Some(e) = else_branch {
+                check_expr_for_large_unsafe(e, source, max, diags);
+            }
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            check_expr_for_large_unsafe(scrutinee, source, max, diags);
+            for arm in arms {
+                check_expr_for_large_unsafe(&arm.body, source, max, diags);
+            }
+        }
+        ExprKind::Closure { body, .. } => {
+            check_expr_for_large_unsafe(body, source, max, diags);
+        }
+        _ => {}
+    }
+}
