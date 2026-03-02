@@ -79,7 +79,7 @@ Creating an `any Trait` value heap-allocates the concrete data.
 |------|-------------|
 | **TR9: Heap allocation** | `any Trait` heap-allocates the concrete value and constructs a fat pointer (data pointer + vtable pointer) |
 | **TR10: Owned data** | `any Trait` owns its heap data — same ownership model as Vec or string |
-| **TR11: Move-only** | `any Trait` is never Copy; assignment moves. Clone only if the trait provides a clone method |
+| **TR11: Move-only** | `any Trait` is never Copy; assignment moves. Cloneable only if the trait provides a clone method |
 
 The `any` keyword in the type is the cost signal.
 
@@ -116,7 +116,7 @@ Overhead is one pointer indirection per call plus a heap allocation per value. N
 |------|------|----------|
 | Method returns `Self` | TR2 | Can't call through `any`; other methods still work |
 | Generic method | TR3 | Can't call through `any`; other methods still work |
-| Clone of `any` value | TR11 | Not automatic; requires explicit trait method |
+| Clone of `any` value | TR11 | Not automatic; requires explicit Cloneable trait method |
 | Assignment | TR11 | Moves (never copies) |
 | Concurrency | — | `any` values sendable if underlying type is sendable |
 | Pool element | — | Not supported; use `[]any Trait` for heterogeneous collections |
@@ -329,7 +329,7 @@ extend App {
 ### Integration Notes
 
 - **Ownership**: `any` values own their heap data — the data pointer is owned, not a reference (`mem.ownership`)
-- **Clone**: `any Trait` is NOT automatically cloneable — requires an explicit trait method
+- **Cloneable**: `any Trait` is NOT automatically cloneable — requires an explicit trait method
 - **Drop**: scope exit calls vtable `drop_fn` then frees the heap allocation (`TR14`)
 - **Concurrency**: `any` values can be sent between tasks if the underlying type is sendable (`conc.tasks`)
 

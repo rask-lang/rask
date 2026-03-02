@@ -363,12 +363,12 @@ extend Option<T> {
 ### Traits
 
 ```rask
-trait Display {
-    func display(self) -> string
+trait Displayable {
+    func to_string(self) -> string
 }
 
-trait Iterator<T> {
-    func next(self) -> Option<T>
+trait Iterator {
+    func next(self) -> Option<Self.Item>
 }
 ```
 
@@ -381,17 +381,17 @@ struct Point {
 }
 
 extend Point {
-    func display(self) -> string {
+    func to_string(self) -> string {
         return "{self.x}, {self.y}"
     }
 }
-// Point satisfies Display automatically
+// Point satisfies Displayable automatically
 ```
 
 **Explicit trait implementation:** Use `extend Type with Trait` when you want to document intent:
 ```rask
-extend Point with Display {
-    func display(self) -> string {
+extend Point with Displayable {
+    func to_string(self) -> string {
         return "({self.x}, {self.y})"
     }
 }
@@ -479,7 +479,7 @@ func transfer(from: Handle<Player>, to: Handle<Player>, item: Handle<Item>)
 
 **Constraints with `where`:**
 ```rask
-func sort(items: Vec<T>) -> Vec<T> where T: Ord {
+func sort(items: Vec<T>) -> Vec<T> where T: Comparable {
     // ...
 }
 
@@ -488,7 +488,7 @@ func process(data: T) -> U where T: Input, U: Output {
 }
 
 // Multiple constraints on same type
-func debug_sort(items: Vec<T>) where T: Ord + Debug {
+func debug_sort(items: Vec<T>) where T: Comparable + Debug {
     // ...
 }
 ```

@@ -245,7 +245,7 @@ Inference rules:
 
 1. **Prototype:** `func process(data, handler) { ... }` — all inferred
 2. **Solidify:** `func process(data: Vec<Record>, handler) { ... }` — partial
-3. **Publish:** `public func process<T: Ord>(data: Vec<T>, handler: Handler<T>) -> T` — explicit
+3. **Publish:** `public func process<T: Comparable>(data: Vec<T>, handler: Handler<T>) -> T` — explicit
 
 Fully statically checked at every stage. Not dynamic typing.
 

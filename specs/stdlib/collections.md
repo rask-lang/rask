@@ -83,7 +83,7 @@ const users = Map.from([
 | `vec[i]` | `T` | `T: Copy` | Yes (OOB) |
 | `vec[i].field` | inline access (expression-scoped) | None | Yes (OOB) |
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
-| `vec.get_clone(i)` | `Option<T>` | `T: Clone` | No |
+| `vec.get_clone(i)` | `Option<T>` | `T: Cloneable` | No |
 | `with vec[i] as v { ... }` | block value (mutable) | None | Yes (OOB) |
 | `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
@@ -127,7 +127,7 @@ const name = with vec[i] as v { v.name.clone() }
 | `map[k]` | `V` | Panics if missing (V: Copy) |
 | `map[k].field` | inline access (expression-scoped) | Panics if missing |
 | `map.get(k)` | `Option<V>` | Copy out (V: Copy) |
-| `map.get_clone(k)` | `Option<V>` | Clone out (V: Clone) |
+| `map.get_clone(k)` | `Option<V>` | Clone out (V: Cloneable) |
 | `with map[k] as v { ... }` | block value (mutable) | Panics if missing |
 | `map.remove(k)` | `Option<V>` | Remove and return |
 
@@ -200,6 +200,44 @@ scores.sort()
 let users = get_users()
 users.sort_by_key(|u| u.name)
 users.sort_by(|a, b| b.score.compare(a.score))  // descending
+```
+
+## Vec Convenience Methods
+
+| Method | Signature | Trait Required | Notes |
+|--------|-----------|----------------|-------|
+| `vec.contains(item)` | `(T) -> bool` | `T: Equal` | Linear scan |
+| `vec.first()` | `() -> T?` | `T: Copy` | First element or None |
+| `vec.last()` | `() -> T?` | `T: Copy` | Last element or None |
+| `vec.reverse()` | `(mutate self)` | None | In-place reversal |
+| `vec.dedup()` | `(mutate self)` | `T: Equal` | Remove consecutive duplicates |
+
+<!-- test: skip -->
+```rask
+let items = [3, 1, 4, 1, 5]
+items.contains(4)             // true
+items.first()                 // Some(3)
+items.last()                  // Some(5)
+items.reverse()               // [5, 1, 4, 1, 3]
+
+items.sort()                  // [1, 1, 3, 4, 5]
+items.dedup()                 // [1, 3, 4, 5]
+```
+
+## Map Convenience Methods
+
+| Method | Returns | Notes |
+|--------|---------|-------|
+| `map.contains_key(k)` | `bool` | Check key existence without copying value |
+| `map.keys()` | expression-scoped iterator | Iterate over keys |
+| `map.values()` | expression-scoped iterator | Iterate over values |
+
+<!-- test: skip -->
+```rask
+const scores = Map.from([["alice", 10], ["bob", 20]])
+scores.contains_key("alice")      // true
+for name in scores.keys() { println(name) }
+for score in scores.values() { println(format("{}", score)) }
 ```
 
 ## Shrinking

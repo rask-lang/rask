@@ -44,6 +44,30 @@ Dedicated `math` module for functions that don't attach to a single value (trig,
 | **M1: hypot** | `math.hypot(x, y)` computes sqrt(x^2 + y^2) without overflow |
 | **M2: clamp** | `math.clamp(x, lo, hi)` clamps to [lo, hi]; generic over ordered numeric types |
 
+## Generic Comparison Functions (Prelude)
+
+These are always available — no import needed. They work on any `Comparable` type, not just numbers.
+
+| Rule | Description |
+|------|-------------|
+| **G1: min** | `min(a, b)` returns the smaller of two values. `T: Comparable` |
+| **G2: max** | `max(a, b)` returns the larger of two values. `T: Comparable` |
+| **G3: clamp** | `clamp(value, lo, hi)` restricts value to [lo, hi]. `T: Comparable` |
+
+<!-- test: skip -->
+```rask
+// Work on any Comparable type — prelude, no import needed
+const smaller = min(a, b)
+const larger = max(a, b)
+const bounded = clamp(score, 0, 100)
+
+// Also work on strings (lexicographic), custom types, etc.
+const first_name = min(name_a, name_b)
+const newest = max(version_a, version_b)
+```
+
+`math.clamp` remains for numeric-specific use. The prelude `clamp` is generic over all Comparable types.
+
 ## Conversion and Classification
 
 | Rule | Description |

@@ -60,7 +60,7 @@ match r {
 |----------|------|
 | Copy | Struct is Copy if: all fields Copy AND size <=16 bytes AND not `@unique` |
 | Move | Non-Copy structs move on assignment; source invalidated |
-| Clone | Auto-derived if all fields implement Clone |
+| Cloneable | Auto-derived if all fields implement Cloneable |
 
 <!-- test: parse -->
 ```rask
@@ -181,11 +181,11 @@ const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 
 <!-- test: skip -->
 ```rask
-struct SortedVec<T: Ord> {
+struct SortedVec<T: Comparable> {
     items: Vec<T>
 }
 
-extend SortedVec<T: Ord> {
+extend SortedVec<T: Comparable> {
     func insert(self, item: T) {
         // ... maintain sorted order
     }

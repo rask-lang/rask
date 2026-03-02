@@ -47,7 +47,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | Rule | Description |
 |------|-------------|
 | **U1: No implicit copy** | Unique types MUST be explicitly cloned; assignment/passing moves |
-| **U2: Clone still available** | `.clone()` works if all fields implement Clone |
+| **U2: Clone still available** | `.clone()` works if all fields implement Cloneable |
 | **U3: Size independent** | Works for any size, but most useful for small types |
 | **U4: Transitive** | Structs containing unique fields are automatically unique |
 
@@ -117,9 +117,9 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | Trait | Operation | When available | Cost |
 |-------|-----------|----------------|------|
 | `Copy` | Implicit copy on assign/pass | Structural: ≤16 bytes, no `@unique` | Bitwise copy (cheap) |
-| `Clone` | Explicit `.clone()` call | If all fields are Clone | May allocate (visible cost) |
+| `Cloneable` | Explicit `.clone()` call | If all fields are Cloneable | May allocate (visible cost) |
 
-All Copy types are also Clone. Not all Clone types are Copy.
+All Copy types are also Cloneable. Not all Cloneable types are Copy.
 
 **Generic constraint propagation:**
 
