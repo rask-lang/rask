@@ -87,7 +87,7 @@ match event {
 | **E4: Copy eligibility** | Enum is Copy if total size ≤16 bytes AND all variants are Copy |
 | **E5: Move semantics** | Non-Copy enums move on assignment; source invalidated |
 
-Clone derived automatically if all variants implement Clone.
+Cloneable derived automatically if all variants implement Cloneable.
 
 **Copy vs Move in patterns:**
 

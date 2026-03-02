@@ -1,6 +1,6 @@
 <!-- id: type.operators -->
 <!-- status: decided -->
-<!-- summary: Operator precedence, comparison/equality traits, operator trait list -->
+<!-- summary: Operator precedence, Equal/Comparable traits, operator trait list -->
 <!-- depends: types/primitives.md, types/traits.md -->
 
 # Operators
@@ -62,18 +62,18 @@ trait Equal {
 
 **Programmer must ensure:** reflexive (`a == a`), symmetric (`a == b` implies `b == a`), transitive.
 
-## Ordering Trait
+## Comparable Trait
 
 | Rule | Description |
 |------|-------------|
-| **ORD1: Ordered trait** | `<`, `>`, `<=`, `>=` derived from `cmp()` returning `Ordering` |
-| **ORD2: Derivable** | Structs derive lexicographic ordering (first field, then second, etc.) |
-| **ORD3: Float exclusion** | `f32`/`f64` don't implement `Ordered` (NaN breaks totality); use `.total_cmp()` |
+| **ORD1: Comparable trait** | `<`, `>`, `<=`, `>=` derived from `compare()` returning `Ordering` |
+| **ORD2: Derivable** | Structs and enums auto-derive lexicographic ordering (first field, then second, etc.). Override with explicit `extend Type with Comparable` |
+| **ORD3: Float exclusion** | `f32`/`f64` don't implement `Comparable` (NaN breaks totality); use `.total_cmp()` |
 
 <!-- test: skip -->
 ```rask
-trait Ordered: Equal {
-    func cmp(self, other: Self) -> Ordering
+trait Comparable: Equal {
+    func compare(self, other: Self) -> Ordering
 }
 
 enum Ordering { Less, Equal, Greater }
@@ -83,8 +83,8 @@ enum Ordering { Less, Equal, Greater }
 
 ## Type Support Summary
 
-| Type | `Equal` | `Ordered` | Notes |
-|------|---------|-----------|-------|
+| Type | `Equal` | `Comparable` | Notes |
+|------|---------|--------------|-------|
 | Integers | Yes | Yes | Natural ordering |
 | `bool` | Yes | Yes | `false < true` |
 | `char` | Yes | Yes | Unicode scalar order |
@@ -101,10 +101,10 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 | Case | Rule | Behavior |
 |------|------|----------|
 | `NaN == NaN` | EQ3 | `false` (IEEE 754) |
-| `NaN < 1.0` | ORD3 | Compile error (floats don't implement `Ordered`) |
+| `NaN < 1.0` | ORD3 | Compile error (floats don't implement `Comparable`) |
 | Shift exceeding bit width | BW2 | Panic |
 | Comparison chaining | P2 | Compile error |
-| Struct with float field | ORD2 | Cannot auto-derive `Ordered`; implement manually with `.total_cmp()` |
+| Struct with float field | ORD2 | Cannot auto-derive `Comparable`; implement manually with `.total_cmp()` |
 
 ---
 
@@ -114,7 +114,7 @@ Operator traits: `Add`, `Sub`, `Mul`, `Div`, `Rem`, `Neg`, `BitAnd`, `BitOr`, `B
 
 **EQ3 (float semantics):** IEEE 754 compliance means `NaN == NaN` is false, breaking reflexivity. Rather than silently deviating from IEEE or forbidding equality on floats, we provide `.total_eq()` and `.total_cmp()` as explicit opt-ins for total ordering.
 
-**ORD3 (float exclusion):** Excluding floats from `Ordered` prevents subtle sorting bugs. If you need to sort floats, `.total_cmp()` makes the choice explicit.
+**ORD3 (float exclusion):** Excluding floats from `Comparable` prevents subtle sorting bugs. If you need to sort floats, `.total_cmp()` makes the choice explicit.
 
 **P2 (no chaining):** Chained comparisons (`a < b < c`) are ambiguous in most languages. Requiring `&&` is explicit and matches user expectation.
 

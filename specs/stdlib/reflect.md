@@ -144,7 +144,7 @@ FIX: Wrap in comptime block:
 ```
 ERROR [std.reflect/R2]: cannot discover types not in scope
    |
-3  |  const impls = reflect.implementors<Display>()
+3  |  const impls = reflect.implementors<Displayable>()
    |                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ whole-program query
 
 WHY: Reflection operates on imported types only. Type discovery requires whole-program analysis.
