@@ -326,6 +326,22 @@ impl TypeChecker {
                 Ok(false)
             }
 
+            // Trait object coercion: concrete → any Trait (TR5)
+            (concrete, Type::TraitObject { ref trait_name })
+            | (Type::TraitObject { ref trait_name }, concrete)
+                if !matches!(concrete, Type::TraitObject { .. }) =>
+            {
+                if crate::traits::implements_trait(&self.types, concrete, trait_name) {
+                    Ok(false)
+                } else {
+                    Err(TypeError::Mismatch {
+                        expected: t1,
+                        found: t2,
+                        span,
+                    })
+                }
+            }
+
             _ => Err(TypeError::Mismatch {
                 expected: t1,
                 found: t2,

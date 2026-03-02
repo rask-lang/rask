@@ -299,6 +299,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         source_file: Some(path),
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
         comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
+        trait_coercions: &typed.trait_coercions,
     };
 
     let mut mir_errors = 0;

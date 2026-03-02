@@ -111,6 +111,8 @@ pub struct MirContext<'a> {
     /// Trait method lists for trait object dispatch.
     /// Key: trait name, Value: method names in declaration order.
     pub trait_methods: HashMap<String, Vec<String>>,
+    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
+    pub trait_coercions: &'a HashMap<NodeId, String>,
 }
 
 impl<'a> MirContext<'a> {
@@ -121,6 +123,8 @@ impl<'a> MirContext<'a> {
         static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TYPE_NAMES: std::sync::LazyLock<HashMap<rask_types::TypeId, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_COERCIONS: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
@@ -134,6 +138,7 @@ impl<'a> MirContext<'a> {
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             comptime_interp: None,
             trait_methods: HashMap::new(),
+            trait_coercions: &EMPTY_COERCIONS,
         }
     }
 
@@ -2372,6 +2377,7 @@ mod tests {
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
+        let empty_coercions = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2384,6 +2390,7 @@ mod tests {
             source_file: None,
             comptime_interp: None,
             trait_methods: HashMap::new(),
+            trait_coercions: &empty_coercions,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2421,6 +2428,7 @@ mod tests {
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
+        let empty_coercions = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2433,6 +2441,7 @@ mod tests {
             source_file: None,
             comptime_interp: None,
             trait_methods: HashMap::new(),
+            trait_coercions: &empty_coercions,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2476,6 +2485,7 @@ mod tests {
         let comptime_globals = HashMap::new();
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
+        let empty_coercions = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2488,6 +2498,7 @@ mod tests {
             source_file: None,
             comptime_interp: None,
             trait_methods: HashMap::new(),
+            trait_coercions: &empty_coercions,
         };
 
         let decl = make_fn("f", vec![], None, vec![

@@ -989,7 +989,7 @@ impl TypeChecker {
                 // Propagate expected param types to arguments
                 let ret = *ret.clone();
                 for (param, arg) in params.clone().iter().zip(args.iter()) {
-                    // TR8: require explicit `as any Trait` at call sites
+                    // TR5: record implicit trait coercion for MIR boxing
                     if let Type::TraitObject { ref trait_name } = param {
                         let is_explicit_cast = matches!(
                             &arg.expr.kind,
@@ -998,15 +998,10 @@ impl TypeChecker {
                         if !is_explicit_cast {
                             let arg_ty = self.infer_expr(&arg.expr);
                             if !matches!(arg_ty, Type::TraitObject { .. } | Type::Error) {
-                                let desc = match &arg_ty {
-                                    Type::Named(id) => self.types.type_name(*id),
-                                    other => format!("{}", other),
-                                };
-                                self.errors.push(TypeError::ImplicitTraitCoercion {
-                                    trait_name: trait_name.clone(),
-                                    value_desc: desc,
-                                    span: arg.expr.span,
-                                });
+                                self.trait_coercions.insert(
+                                    arg.expr.id,
+                                    trait_name.clone(),
+                                );
                             }
                         }
                     }

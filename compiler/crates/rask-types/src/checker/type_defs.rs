@@ -86,4 +86,6 @@ pub struct TypedProgram {
     /// Resolved type arguments for each generic call site.
     /// Key is the Call/MethodCall expression's NodeId.
     pub call_type_args: HashMap<NodeId, Vec<Type>>,
+    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
+    pub trait_coercions: HashMap<NodeId, String>,
 }
