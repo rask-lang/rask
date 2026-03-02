@@ -271,7 +271,6 @@ impl Parser {
             TokenKind::Asm => "asm".to_string(),
             // Build system
             TokenKind::Package => "package".to_string(),
-            TokenKind::Dep => "dep".to_string(),
             TokenKind::Scope => "scope".to_string(),
             TokenKind::Feature => "feature".to_string(),
             TokenKind::Profile => "profile".to_string(),
@@ -778,6 +777,10 @@ impl Parser {
                 break;
             }
             self.skip_newlines();
+            // Trailing comma before closing paren
+            if self.check(&TokenKind::RParen) {
+                break;
+            }
         }
 
         // Validate: optional params (with defaults) must come after all required params
@@ -965,6 +968,9 @@ impl Parser {
                         } else {
                             trait_name.push_str(&self.parse_type_name()?);
                         }
+                        if self.pending_gt {
+                            break;
+                        }
                         if self.match_token(&TokenKind::Comma) {
                             trait_name.push_str(", ");
                         } else {
@@ -992,6 +998,11 @@ impl Parser {
                     name.push_str(&n.to_string());
                 } else {
                     name.push_str(&self.parse_type_name()?);
+                }
+                // If >> was split, pending_gt means the next > belongs to this
+                // generic's closing bracket — don't consume a comma.
+                if self.pending_gt {
+                    break;
                 }
                 if self.match_token(&TokenKind::Comma) {
                     name.push_str(", ");
@@ -1673,7 +1684,7 @@ impl Parser {
 
             while !self.check(&TokenKind::RBrace) && !self.at_end() {
                 match self.current_kind() {
-                    TokenKind::Dep => {
+                    TokenKind::Ident(ref s) if s == "dep" => {
                         deps.push(self.parse_dep_item()?);
                     }
                     TokenKind::Scope => {
@@ -1684,7 +1695,7 @@ impl Parser {
                         self.expect(&TokenKind::LBrace)?;
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                            if matches!(self.current_kind(), TokenKind::Dep) {
+                            if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
                                 deps.push(self.parse_dep_item()?);
                             } else {
                                 self.advance();
@@ -1782,7 +1793,7 @@ impl Parser {
                     if self.match_token(&TokenKind::LBrace) {
                         self.skip_newlines();
                         while !self.check(&TokenKind::RBrace) && !self.at_end() {
-                            if matches!(self.current_kind(), TokenKind::Dep) {
+                            if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
                                 opt_deps.push(self.parse_dep_item()?);
                             } else {
                                 self.advance();
@@ -1792,7 +1803,7 @@ impl Parser {
                         self.expect(&TokenKind::RBrace)?;
                     }
                     options.push(FeatureOption { name: opt_name, deps: opt_deps });
-                } else if matches!(self.current_kind(), TokenKind::Dep) {
+                } else if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
                     feature_deps.push(self.parse_dep_item()?);
                 } else if matches!(self.current_kind(), TokenKind::Ident(_)) {
                     // default: "tokio"
@@ -1825,7 +1836,12 @@ impl Parser {
     /// dep "tokio" "^1.0" { with: ["rt-multi-thread", "net"] }
     /// ```
     fn parse_dep_item(&mut self) -> Result<DepDecl, ParseError> {
-        self.expect(&TokenKind::Dep)?;
+        // `dep` is a contextual keyword — only recognized inside package blocks
+        if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "dep") {
+            self.advance();
+        } else {
+            return Err(ParseError::expected("'dep'", self.current_kind(), self.current().span));
+        }
 
         let name = self.expect_string()?;
 
@@ -2706,7 +2722,11 @@ impl Parser {
                 self.advance();
                 let inner = self.parse_expr_bp(Self::PREFIX_BP)?;
                 let mut end = inner.span.end;
-                let else_clause = if self.check(&TokenKind::Else) {
+                let else_clause = if self.check(&TokenKind::Else) ||
+                    (self.check(&TokenKind::Newline) && self.peek_past_newlines_is_else()) {
+                    if self.check(&TokenKind::Newline) {
+                        self.skip_newlines();
+                    }
                     self.advance();
                     self.expect(&TokenKind::Pipe)?;
                     let error_binding = self.expect_ident()?;
