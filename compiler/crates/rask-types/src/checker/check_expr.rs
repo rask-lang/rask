@@ -99,6 +99,7 @@ impl TypeChecker {
                 let operand_ty = self.infer_expr(operand);
                 match op {
                     rask_ast::expr::UnaryOp::Deref => {
+                        self.unsafe_ops.push((expr.span, super::UnsafeCategory::PointerDeref));
                         if !self.in_unsafe {
                             self.errors.push(TypeError::UnsafeRequired {
                                 operation: "pointer dereference".to_string(),
@@ -871,6 +872,7 @@ impl TypeChecker {
         if let ExprKind::Ident(name) = &func.kind {
             // transmute(val) — reinterpret bits, requires unsafe
             if name == "transmute" {
+                self.unsafe_ops.push((span, super::UnsafeCategory::Transmute));
                 if !self.in_unsafe {
                     self.errors.push(TypeError::UnsafeRequired {
                         operation: "transmute".to_string(),
@@ -906,20 +908,23 @@ impl TypeChecker {
         if let ExprKind::Ident(_) = &func.kind {
             if let Some(&sym_id) = self.resolved.resolutions.get(&func.id) {
                 if let Some(sym) = self.resolved.symbols.get(sym_id) {
-                    let requires_unsafe = match &sym.kind {
-                        SymbolKind::ExternFunction { .. } => true,
-                        SymbolKind::Function { is_unsafe: true, .. } => true,
-                        _ => false,
+                    let unsafe_category = match &sym.kind {
+                        SymbolKind::ExternFunction { .. } => Some(super::UnsafeCategory::ExternCall),
+                        SymbolKind::Function { is_unsafe: true, .. } => Some(super::UnsafeCategory::UnsafeFuncCall),
+                        _ => None,
                     };
-                    if requires_unsafe && !self.in_unsafe {
-                        let operation = match &sym.kind {
-                            SymbolKind::ExternFunction { .. } => "extern function call",
-                            _ => "unsafe function call",
-                        };
-                        self.errors.push(TypeError::UnsafeRequired {
-                            operation: operation.to_string(),
-                            span,
-                        });
+                    if let Some(category) = unsafe_category {
+                        self.unsafe_ops.push((span, category));
+                        if !self.in_unsafe {
+                            let operation = match category {
+                                super::UnsafeCategory::ExternCall => "extern function call",
+                                _ => "unsafe function call",
+                            };
+                            self.errors.push(TypeError::UnsafeRequired {
+                                operation: operation.to_string(),
+                                span,
+                            });
+                        }
                     }
                 }
             }
@@ -1202,11 +1207,18 @@ impl TypeChecker {
         span: Span,
     ) -> Option<Type> {
         let requires_unsafe = method != "is_null";
-        if requires_unsafe && !self.in_unsafe {
-            self.errors.push(TypeError::UnsafeRequired {
-                operation: format!("pointer method .{}()", method),
-                span,
-            });
+        if requires_unsafe {
+            let category = match method {
+                "add" | "sub" | "offset" => super::UnsafeCategory::PointerArithmetic,
+                _ => super::UnsafeCategory::PointerMethod,
+            };
+            self.unsafe_ops.push((span, category));
+            if !self.in_unsafe {
+                self.errors.push(TypeError::UnsafeRequired {
+                    operation: format!("pointer method .{}()", method),
+                    span,
+                });
+            }
         }
 
         match method {
@@ -1328,6 +1340,7 @@ impl TypeChecker {
         if !self.in_assign_target {
             if let Type::Named(type_id) = &obj_ty {
                 if let Some(TypeDef::Union { .. }) = self.types.get(*type_id) {
+                    self.unsafe_ops.push((span, super::UnsafeCategory::UnionFieldAccess));
                     if !self.in_unsafe {
                         self.errors.push(TypeError::UnsafeRequired {
                             operation: "union field access".to_string(),
