@@ -30,7 +30,7 @@ drop(ptr)                         // Consume (deallocate)
 |----------|-------|
 | Size | 8 bytes (pointer) |
 | Copy | No (linear) |
-| Clone | Yes, if T: Clone (explicit `.clone()` required) |
+| Cloneable | Yes, if T: Cloneable (explicit `.clone()` required) |
 | Default | No |
 
 ## Linearity Rules
@@ -163,9 +163,9 @@ func eval(take expr: Owned<Expr>) -> i32 {
 }
 ```
 
-## Clone
+## Cloneable
 
-If `T: Clone`, then `Owned<T>: Clone`. Cloning allocates a new heap value. Clone is explicit — no implicit copying.
+If `T: Cloneable`, then `Owned<T>: Cloneable`. Cloning allocates a new heap value. Clone is explicit — no implicit copying.
 
 <!-- test: skip -->
 ```rask

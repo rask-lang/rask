@@ -128,11 +128,14 @@ Always available without import:
 | Trait | Description |
 |-------|-------------|
 | `Copy` | Implicitly copyable (≤16 bytes) |
-| `Clone` | Explicitly cloneable |
-| `Display` | Human-readable formatting |
+| `Cloneable` | Explicitly cloneable |
+| `Equal` | Equality (`==`, `!=`) |
+| `Comparable` | Ordering (`<`, `>`, `<=`, `>=`) |
+| `Hashable` | Hash-based collections |
+| `Displayable` | Human-readable formatting |
 | `Debug` | Debug formatting |
-| `Eq`, `Ord` | Equality, ordering |
-| `Hash` | Hashable |
+| `Default` | Default values |
+| `Numeric` | Arithmetic operations |
 | `Iterator` | Iteration protocol |
 
 ---

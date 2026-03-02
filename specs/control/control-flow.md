@@ -551,7 +551,7 @@ const input = loop {
 **Search pattern:**
 <!-- test: skip -->
 ```rask
-func find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
+func find_first<T: Equal>(items: Vec<T>, target: T) -> Option<usize> {
     let i = 0
     loop {
         if i >= items.len() {
@@ -567,7 +567,7 @@ func find_first<T: Eq>(items: Vec<T>, target: T) -> Option<usize> {
 
 **Labeled break with value:**
 ```rask
-func find_in_matrix<T: Eq>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
+func find_in_matrix<T: Equal>(matrix: Vec<Vec<T>>, target: T) -> Option<(usize, usize)> {
     search: loop {
         for i in 0..matrix.len() {
             for j in 0..matrix[i].len() {

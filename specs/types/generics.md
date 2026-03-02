@@ -1,6 +1,6 @@
 <!-- id: type.generics -->
 <!-- status: decided -->
-<!-- summary: Trait matching by shape, operator-to-method expansion, verified clone, code specialization per type -->
+<!-- summary: Trait matching by shape, operator-to-method expansion, verified clone/equal/comparable, code specialization per type -->
 <!-- depends: types/structs.md, types/enums.md, types/traits.md -->
 <!-- implemented-by: compiler/crates/rask-types/ -->
 
@@ -30,12 +30,12 @@ Traits match by shape — if your type has the right methods, it satisfies the t
 
 | Trait Form | Meaning |
 |------------|---------|
-| `trait Comparable<T>` | Structural matching allowed |
-| `explicit trait Serializable<T>` | Requires explicit `extend` (for library stability) |
-| `trait HashKey<T>: Hashable<T>` | Composition (requires all methods from Hashable plus HashKey's own) |
+| `trait Comparable` | Structural matching allowed |
+| `explicit trait Serializable` | Requires explicit `extend` (for library stability) |
+| `trait Hashable: Equal` | Composition (requires all methods from Equal plus Hashable's own) |
 
 ```rask
-trait Name<T> {
+trait Name {
     method_name(self, params...) -> ReturnType
     another_method(self) -> OtherType
 
@@ -104,37 +104,37 @@ The compiler expands operators into method calls before type checking (G4), then
 | `a == b` | `a.eq(b)` | `eq(self, other: T) -> bool` |
 | `a < b` | `a.compare(b) == Less` | `compare(self, other: T) -> Ordering` |
 
-## Compiler-Verified Clone
+## Compiler-Verified Cloneable
 
-The compiler auto-derives Clone where all fields implement Clone and no raw pointers exist (G5).
+The compiler auto-derives Cloneable where all fields implement Cloneable and no raw pointers exist (G5).
 
 | Rule | Description |
 |------|-------------|
-| **CL1: Auto-derive** | Primitives, structs with all Clone fields, arrays/Vec of Clone, handles: auto-derived |
-| **CL2: Pointer block** | Struct with raw pointer is NOT Clone unless `unsafe extend` |
+| **CL1: Auto-derive** | Primitives, structs with all Cloneable fields, arrays/Vec of Cloneable, handles: auto-derived |
+| **CL2: Pointer block** | Struct with raw pointer is NOT Cloneable unless `unsafe extend` |
 
 ```rask
-trait Clone<T> {
-    clone(self) -> T
+trait Cloneable {
+    clone(self) -> Self
 }
 ```
 
-| Type | Clone Status |
-|------|--------------|
+| Type | Cloneable Status |
+|------|------------------|
 | Primitives (i32, bool, f64) | Auto-derived (bitwise copy) |
-| Struct with all Clone fields | Auto-derived (deep copy) |
-| Struct with raw pointer | NOT Clone unless `unsafe extend` |
-| Array/Vec of Clone | Auto-derived (element-wise clone) |
+| Struct with all Cloneable fields | Auto-derived (deep copy) |
+| Struct with raw pointer | NOT Cloneable unless `unsafe extend` |
+| Array/Vec of Cloneable | Auto-derived (element-wise clone) |
 | Handle types | Auto-derived (handle copy, not referent) |
 
-## Compiler-Verified Equatable
+## Compiler-Verified Equal
 
-The compiler auto-derives Equatable where all fields implement Equatable — same pattern as Clone.
+The compiler auto-derives Equal where all fields implement Equal — same pattern as Cloneable.
 
 | Rule | Description |
 |------|-------------|
-| **EQ1: Auto-derive** | Primitives, structs with all Equatable fields, enums (tag + payload equality): auto-derived |
-| **EQ2: Override** | `extend Type with Equatable { ... }` overrides the auto-derived version |
+| **EQ1: Auto-derive** | Primitives, structs with all Equal fields, enums (tag + payload equality): auto-derived |
+| **EQ2: Override** | `extend Type with Equal { ... }` overrides the auto-derived version |
 | **EQ3: Enum equality** | Variants compared by tag, then field-wise payload equality |
 
 ```rask
@@ -143,23 +143,23 @@ struct Point {
     y: i32
 }
 
-// No extend block needed — Point is Equatable because i32 is Equatable
+// No extend block needed — Point is Equal because i32 is Equal
 const a = Point { x: 1, y: 2 }
 const b = Point { x: 1, y: 2 }
 // a == b → true (field-wise comparison)
 ```
 
-| Type | Equatable Status |
-|------|-----------------|
+| Type | Equal Status |
+|------|--------------|
 | Primitives (i32, bool, f64, string) | Auto-derived |
-| Struct with all Equatable fields | Auto-derived (field-wise) |
-| Enum with all Equatable payloads | Auto-derived (tag + payload) |
-| Struct with `any Trait` field | NOT Equatable unless manually implemented |
-| Struct with closure field | NOT Equatable (closures have no equality) |
+| Struct with all Equal fields | Auto-derived (field-wise) |
+| Enum with all Equal payloads | Auto-derived (tag + payload) |
+| Struct with `any Trait` field | NOT Equal unless manually implemented |
+| Struct with closure field | NOT Equal (closures have no equality) |
 
 ## Compiler-Verified Hashable
 
-The compiler auto-derives Hashable where all fields implement Hashable. Since Hashable requires Equatable, auto-derive applies only when both are satisfied.
+The compiler auto-derives Hashable where all fields implement Hashable. Since Hashable requires Equal (supertrait), auto-derive applies only when both are satisfied.
 
 | Rule | Description |
 |------|-------------|
@@ -175,6 +175,49 @@ The compiler auto-derives Hashable where all fields implement Hashable. Since Ha
 | Struct with all Hashable fields | Auto-derived (field-wise hash combine) |
 | Enum with all Hashable payloads | Auto-derived (tag + payload) |
 | Handle types | Auto-derived (hash of index + generation) |
+
+## Compiler-Verified Comparable
+
+The compiler auto-derives Comparable where all fields implement Comparable — lexicographic by declaration order. Since Comparable requires Equal (supertrait), auto-derive applies only when both are satisfied.
+
+| Rule | Description |
+|------|-------------|
+| **CO1: Auto-derive** | Primitives, structs with all Comparable fields, enums (variant order, then payload): auto-derived |
+| **CO2: Override** | `extend Type with Comparable { ... }` overrides the auto-derived version |
+| **CO3: Lexicographic** | Fields compared in declaration order — first field is most significant |
+| **CO4: Float exclusion** | `f32`/`f64` are NOT Comparable (NaN breaks totality); see `type.operators/ORD3` |
+
+```rask
+trait Comparable: Equal {
+    compare(self, other: Self) -> Ordering
+}
+
+enum Ordering { Less, Equal, Greater }
+```
+
+| Type | Comparable Status |
+|------|-------------------|
+| Integer primitives, bool, char, string | Auto-derived |
+| `f32`, `f64` | NOT Comparable (NaN breaks totality) |
+| Struct with all Comparable fields | Auto-derived (lexicographic by field order) |
+| Enum with all Comparable payloads | Auto-derived (variant order, then payload) |
+| Struct with float field | NOT Comparable unless manually implemented with `.total_cmp()` |
+
+<!-- test: skip -->
+```rask
+struct Version {
+    major: u32
+    minor: u32
+    patch: u32
+}
+
+// No extend block needed — Version is Comparable because u32 is Comparable
+// Compares major first, then minor, then patch (lexicographic)
+const a = Version { major: 1, minor: 2, patch: 0 }
+const b = Version { major: 1, minor: 3, patch: 0 }
+// a < b → true (minor field differs)
+// a.compare(b) → Ordering.Less
+```
 
 ## Compiler-Verified Default
 
@@ -235,17 +278,15 @@ Must-consume resource types (`@resource`) can be generic parameters. Pattern mat
 
 Composition via `:` is additive (TD3). `T: HashKey` requires `hash`, `eq`, AND `clone`.
 
-Compiler collects all methods, deduplicates identical requirements, errors on conflicts.
+Compiler collects all methods from the full supertrait chain, deduplicates identical requirements, errors on conflicts.
 
 ```rask
-trait Hashable<T> {
+trait Hashable: Equal {
     hash(self) -> u64
-    eq(self, other: T) -> bool
 }
 
-trait HashKey<T>: Hashable<T> {
-    clone(self) -> T
-}
+trait HashKey: Hashable + Cloneable {}
+// Requires: eq (from Equal), hash (from Hashable), clone (from Cloneable)
 ```
 
 ## Code Specialization (Monomorphization)
@@ -264,11 +305,11 @@ When you call `sort<i32>` and `sort<string>`, the compiler generates two separat
 Integer literals auto-coerce to T when `T: Numeric`. Compiler inserts `T.from_int()`. IDE shows ghost text.
 
 ```rask
-trait Numeric<T> {
-    add(self, other: T) -> T
-    zero() -> T
-    one() -> T
-    from_int(n: i64) -> T
+trait Numeric {
+    add(self, other: Self) -> Self
+    zero() -> Self
+    one() -> Self
+    from_int(n: i64) -> Self
 }
 
 func increment<T: Numeric>(val: T) -> T {
@@ -300,7 +341,7 @@ func increment<T: Numeric>(val: T) -> T {
 
 **G4 (operator expansion):** Makes numeric code ergonomic — `a + b` reads naturally while the trait system handles dispatch.
 
-**G5 (verified clone):** Compiler-verified clone prevents aliasing bugs. Types with raw pointers can't silently claim to be cloneable.
+**G5 (verified clone):** Compiler-verified Cloneable prevents aliasing bugs. Types with raw pointers can't silently claim to be cloneable.
 
 **G6 (code specialization):** Keeps costs transparent and compilation fast. Each usage generates specialized code — no hidden function-pointer overhead.
 
@@ -311,10 +352,6 @@ func increment<T: Numeric>(val: T) -> T {
 **Generic sorting:**
 
 ```rask
-trait Comparable<T> {
-    compare(self, other: T) -> Ordering
-}
-
 public func sort<T: Comparable>(items: []T) {
     for i in 1..items.len() {
         let j = i
@@ -329,7 +366,7 @@ public func sort<T: Comparable>(items: []T) {
 **HashMap with verified clone:**
 
 ```rask
-trait HashKey<T>: Hashable<T> + Clone<T> {}
+trait HashKey: Hashable + Cloneable {}
 
 public struct HashMap<K: HashKey, V> {
     buckets: []Bucket<K, V>
@@ -337,7 +374,7 @@ public struct HashMap<K: HashKey, V> {
 
 public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
     const idx = key.hash() % map.buckets.len()
-    map.buckets[idx].add(key.clone(), val)  // Clone is compiler-verified deep copy
+    map.buckets[idx].add(key.clone(), val)  // Cloneable is compiler-verified deep copy
 }
 ```
 
@@ -356,13 +393,15 @@ public func insert<K: HashKey, V>(map: HashMap<K, V>, key: K, val: V) {
 
 | Trait | Methods | Auto-Derived? |
 |-------|---------|---------------|
-| `Equatable<T>` | `eq(self, other: T) -> bool` | Yes — all Equatable fields (EQ1) |
-| `Hashable<T>` | `hash(self) -> u64; eq(self, other: T) -> bool` | Yes — all Hashable fields (HA1) |
-| `Clone<T>` | `clone(self) -> T` | Yes — all Clone fields, no raw pointers (CL1) |
-| `Default<T>` | `default() -> T` | Yes — all Default fields, structs only (DF1) |
-| `Comparable<T>` | `compare(self, other: T) -> Ordering` | No — ordering is domain-specific |
-| `Numeric<T>` | `add, sub, mul, div, neg, zero, one, from_int` | No |
-| `Convert<From, Into>` | `convert(self: From) -> Into` | No |
+| `Equal` | `eq(self, other: Self) -> bool` | Yes — all Equal fields (EQ1) |
+| `Comparable`: Equal | `compare(self, other: Self) -> Ordering` | Yes — all Comparable fields, lexicographic (CO1) |
+| `Hashable`: Equal | `hash(self) -> u64` | Yes — all Hashable fields, no floats (HA1) |
+| `Cloneable` | `clone(self) -> Self` | Yes — all Cloneable fields, no raw pointers (CL1) |
+| `Default` | `default() -> Self` | Yes — all Default fields, structs only (DF1) |
+| `Displayable` | `to_string(self) -> string` | No — opt-in (user-facing output is intentional) |
+| `Debug` | `debug_string(self) -> string` | Yes — all types |
+| `Numeric` | `add, sub, mul, div, neg, zero, one, from_int` | No |
+| `Convert<From, To>` | `convert(self: From) -> To` | No |
 | `Encode` | Marker — no methods | Yes — all-Encode public fields (`std.encoding/E12`) |
 | `Decode` | Marker — no methods | Yes — all-Decode public fields (`std.encoding/E12`) |
 
