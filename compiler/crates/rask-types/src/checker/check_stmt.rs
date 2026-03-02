@@ -68,11 +68,14 @@ impl TypeChecker {
             }
             StmtKind::Assign { target, value } => {
                 // Deref write (*ptr = value) requires unsafe
-                if matches!(&target.kind, rask_ast::expr::ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }) && !self.in_unsafe {
-                    self.errors.push(TypeError::UnsafeRequired {
-                        operation: "pointer dereference write".to_string(),
-                        span: stmt.span,
-                    });
+                if matches!(&target.kind, rask_ast::expr::ExprKind::Unary { op: rask_ast::expr::UnaryOp::Deref, .. }) {
+                    self.unsafe_ops.push((stmt.span, super::UnsafeCategory::PointerDerefWrite));
+                    if !self.in_unsafe {
+                        self.errors.push(TypeError::UnsafeRequired {
+                            operation: "pointer dereference write".to_string(),
+                            span: stmt.span,
+                        });
+                    }
                 }
                 // Reject mutation of read-only parameters (default params are read-only)
                 if let Some(root) = Self::root_ident_name(target) {

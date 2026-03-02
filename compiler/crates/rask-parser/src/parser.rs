@@ -2675,8 +2675,13 @@ impl Parser {
             TokenKind::Unsafe => {
                 self.advance();
                 self.skip_newlines();
-                let body = self.parse_block_body()?;
-                let end = self.tokens[self.pos - 1].span.end;
+                let body = if self.check(&TokenKind::LBrace) {
+                    self.parse_block_body()?
+                } else {
+                    let expr = self.parse_expr()?;
+                    vec![Stmt { id: self.next_id(), kind: StmtKind::Expr(expr.clone()), span: expr.span }]
+                };
+                let end = body.last().map(|s| s.span.end).unwrap_or(start);
                 Ok(Expr { id: self.next_id(), kind: ExprKind::Unsafe { body }, span: Span::new(start, end) })
             }
 
