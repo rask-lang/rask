@@ -239,6 +239,10 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 // Basic TCP socket operations.
 
 int64_t rask_net_tcp_listen(const RaskString *addr);
+int64_t rask_net_tcp_connect(const RaskString *addr);
+
+// Response reading (reads until EOF for Connection: close pattern).
+RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len);
 
 // ─── JSON module ────────────────────────────────────────────
 // Encode helpers — used by codegen-generated struct serialization.
