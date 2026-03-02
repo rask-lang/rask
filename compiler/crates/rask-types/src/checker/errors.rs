@@ -115,12 +115,6 @@ pub enum TypeError {
         operation: String,
         span: Span,
     },
-    #[error("pass `{value_desc} as any {trait_name}` — implicit trait coercion is not allowed at call sites")]
-    ImplicitTraitCoercion {
-        trait_name: String,
-        value_desc: String,
-        span: Span,
-    },
     #[error("method `{method}` returns Self and cannot be called through `any {trait_name}`")]
     TraitObjectSelfReturn {
         trait_name: String,

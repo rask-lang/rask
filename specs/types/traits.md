@@ -53,7 +53,7 @@ func render_all(widgets: []any Widget) {
 
 The `any` keyword in the target type is the cost signal. Conversion is implicit when the target type is known to be `any Trait`:
 
-<!-- test: skip -->
+<!-- test: parse -->
 ```rask
 const button = Button { label: "OK" }
 
@@ -211,7 +211,7 @@ extend Container {
 
 **TR1–TR4 (per-method restrictions):** Rust rejects entire traits from `dyn` if any method is incompatible — "trait is not object-safe." I think that's too coarse. A trait with nine compatible methods and one `Self`-returning method should work with `any` — you just can't call that one method. The error appears at the call site where the problem is, not at the coercion site where it isn't.
 
-**TR5 (implicit when target is `any`):** Originally I required explicit `as any Trait` at call sites (the old TR8). The rationale was cost visibility — `render(button)` hides a heap allocation. But in practice, the `any` keyword is already visible in the function signature, the collection type, or the struct field type. Requiring `as any Widget` on every handler registration, every collection element, every callback — it's ceremony that doesn't help readability. The `any` keyword in the *type system* is the cost signal, not the conversion at each use site. If you see `[]any Widget`, you know there's allocation. You don't need `[button as any Widget, slider as any Widget]` to remind you.
+**TR5 (implicit when target is `any`):** The `any` keyword is already visible in the function signature, the collection type, or the struct field type. Requiring `as any Widget` on every handler registration, every collection element, every callback — it's ceremony that doesn't help readability. The `any` keyword in the *type system* is the cost signal, not the conversion at each use site. If you see `[]any Widget`, you know there's allocation. You don't need `[button as any Widget, slider as any Widget]` to remind you.
 
 **TR9 (heap allocation):** I chose owned heap allocation over alternatives. The `any` keyword is the cost signal — you see it in the type, you know there's indirection and allocation. This is a deliberate tradeoff: ergonomic for the use cases where you need it (handlers, plugins, UI), explicit enough that you won't accidentally use it in hot paths.
 
