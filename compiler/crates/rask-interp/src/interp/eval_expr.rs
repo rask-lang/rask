@@ -471,6 +471,12 @@ impl Interpreter {
                     Value::Struct { fields, .. } => {
                         Ok(fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
+                    // Tuple field access: tuple.0, tuple.1, ...
+                    Value::Vec(v) if field.parse::<usize>().is_ok() => {
+                        let idx = field.parse::<usize>().unwrap();
+                        let vec = v.lock().unwrap();
+                        Ok(vec.get(idx).cloned().unwrap_or(Value::Unit))
+                    }
                     Value::Module(ModuleKind::Time) => {
                         match field.as_str() {
                             "Instant" => Ok(Value::Type("Instant".to_string())),

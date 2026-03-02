@@ -82,6 +82,8 @@ impl<'a> MirLowerer<'a> {
                                     .map(|f| f.offset)
                                     .unwrap_or(0)
                             } else { 0 }
+                        } else if let Some((_, _, Some(bo), _)) = Self::resolve_tuple_field(&obj_ty, field) {
+                            bo
                         } else { 0 };
                         let base_local = match obj_op {
                             MirOperand::Local(id) => id,

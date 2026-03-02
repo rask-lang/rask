@@ -33,7 +33,14 @@ Single-element tuple with trailing comma (`(i32,)`) — not yet implemented in p
 | **TU5: Positional access** | `.0`, `.1`, `.2`, etc. access tuple elements by position |
 | **TU6: Bounds checked** | Accessing beyond tuple length is a compile error |
 
-Positional access (`.0`, `.1`) — not yet implemented in parser. Destructure instead:
+<!-- test: parse -->
+```rask
+const point = (10, 20)
+const x = point.0
+const y = point.1
+```
+
+Destructuring also works:
 
 <!-- test: parse -->
 ```rask
