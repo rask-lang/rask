@@ -208,11 +208,11 @@ mod tests {
         let bm = BuiltinModules::new();
         let sig = bm.get_method("json", "decode").unwrap();
         assert_eq!(sig.params, vec![Type::String]);
-        // Return type should be Result { ok: _Any (freshened), err: Error }
+        // Return type should be Result { ok: _Any (freshened), err: JsonError }
         match &sig.ret {
             Type::Result { ok, err } => {
                 assert!(matches!(ok.as_ref(), Type::UnresolvedNamed(n) if n.starts_with('_')));
-                assert_eq!(err.as_ref(), &Type::UnresolvedNamed("Error".to_string()));
+                assert_eq!(err.as_ref(), &Type::UnresolvedNamed("JsonError".to_string()));
             }
             other => panic!("Expected Result, got {:?}", other),
         }

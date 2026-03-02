@@ -127,27 +127,15 @@ impl TypeChecker {
                     // time module namespace
                     ("__module_time", "Instant") => Some(Type::UnresolvedNamed("Instant".to_string())),
                     ("__module_time", "Duration") => Some(Type::UnresolvedNamed("Duration".to_string())),
-                    // HttpResponse struct fields
-                    ("HttpResponse", "status") => Some(Type::I32),
-                    ("HttpResponse", "headers") => Some(Type::UnresolvedGeneric {
-                        name: "Map".to_string(),
-                        args: vec![
-                            GenericArg::Type(Box::new(Type::String)),
-                            GenericArg::Type(Box::new(Type::String)),
-                        ],
-                    }),
-                    ("HttpResponse", "body") => Some(Type::String),
-                    // HttpRequest struct fields
-                    ("HttpRequest", "method") => Some(Type::String),
-                    ("HttpRequest", "path") => Some(Type::String),
-                    ("HttpRequest", "body") => Some(Type::String),
-                    ("HttpRequest", "headers") => Some(Type::UnresolvedGeneric {
-                        name: "Map".to_string(),
-                        args: vec![
-                            GenericArg::Type(Box::new(Type::String)),
-                            GenericArg::Type(Box::new(Type::String)),
-                        ],
-                    }),
+                    // Response struct fields
+                    ("Response", "status") => Some(Type::U16),
+                    ("Response", "headers") => Some(Type::UnresolvedNamed("Headers".to_string())),
+                    ("Response", "body") => Some(Type::String),
+                    // Request struct fields
+                    ("Request", "method") => Some(Type::UnresolvedNamed("Method".to_string())),
+                    ("Request", "url") => Some(Type::String),
+                    ("Request", "body") => Some(Type::String),
+                    ("Request", "headers") => Some(Type::UnresolvedNamed("Headers".to_string())),
                     _ => None,
                 };
                 if let Some(ft) = field_ty {
@@ -374,7 +362,7 @@ impl TypeChecker {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
-            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "HttpResponse" | "Shared") => {
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared") => {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
@@ -851,7 +839,7 @@ impl TypeChecker {
             // TcpConnection
             ("TcpConnection", "read_http_request") if args.is_empty() => {
                 let result_type = Type::Result {
-                    ok: Box::new(Type::UnresolvedNamed("HttpRequest".to_string())),
+                    ok: Box::new(Type::UnresolvedNamed("Request".to_string())),
                     err: Box::new(error_ty),
                 };
                 self.unify(ret, &result_type, span)
@@ -863,9 +851,9 @@ impl TypeChecker {
                 };
                 self.unify(ret, &result_type, span)
             }
-            // HttpResponse — allow method-style access for chaining
-            ("HttpResponse", "status") if args.is_empty() => {
-                self.unify(ret, &Type::I32, span)
+            // Response — allow method-style access for chaining
+            ("Response", "status") if args.is_empty() => {
+                self.unify(ret, &Type::U16, span)
             }
             // Shared static constructor: Shared.new(value) -> Shared<T>
             ("Shared", "new") if args.len() == 1 => {

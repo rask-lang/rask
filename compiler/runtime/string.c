@@ -150,6 +150,11 @@ int64_t rask_string_eq(const RaskString *a, const RaskString *b) {
     return memcmp(a->data, b->data, (size_t)a->len) == 0;
 }
 
+int64_t rask_string_byte_at(const RaskString *s, int64_t pos) {
+    if (!s || pos < 0 || pos >= s->len) return 0;
+    return (int64_t)(uint8_t)s->data[pos];
+}
+
 RaskString *rask_string_substr(const RaskString *s, int64_t start, int64_t end) {
     if (!s) return rask_string_new();
     if (start < 0) start = 0;
