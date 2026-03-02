@@ -8,6 +8,19 @@ use std::sync::{Arc, Mutex};
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
 
+/// Create an Ordering enum value from a std::cmp::Ordering.
+fn ordering_value(ord: std::cmp::Ordering) -> Value {
+    Value::Enum {
+        name: "Ordering".to_string(),
+        variant: match ord {
+            std::cmp::Ordering::Less => "Less".to_string(),
+            std::cmp::Ordering::Equal => "Equal".to_string(),
+            std::cmp::Ordering::Greater => "Greater".to_string(),
+        },
+        fields: vec![],
+    }
+}
+
 impl Interpreter {
     /// Handle integer method calls.
     pub(crate) fn call_int_method(
@@ -36,6 +49,7 @@ impl Interpreter {
             "le" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_int(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "compare" => { let b = self.expect_int(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "bit_and" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a & b)) }
             "bit_or" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a | b)) }
             "bit_xor" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a ^ b)) }
@@ -81,6 +95,7 @@ impl Interpreter {
             "le" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_int128(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "compare" => { let b = self.expect_int128(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "bit_and" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a & b)) }
             "bit_or" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a | b)) }
             "bit_xor" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a ^ b)) }
@@ -124,6 +139,7 @@ impl Interpreter {
             "le" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "compare" => { let b = self.expect_uint128(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "bit_and" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a & b)) }
             "bit_or" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a | b)) }
             "bit_xor" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a ^ b)) }
@@ -158,6 +174,10 @@ impl Interpreter {
             "le" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a <= b)) }
             "gt" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a > b)) }
             "ge" => { let b = self.expect_float(args, 0)?; Ok(Value::Bool(a >= b)) }
+            "compare" => {
+                let b = self.expect_float(args, 0)?;
+                Ok(ordering_value(a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)))
+            }
             "abs" => Ok(Value::Float(a.abs())),
             "floor" => Ok(Value::Float(a.floor())),
             "ceil" => Ok(Value::Float(a.ceil())),
@@ -184,6 +204,7 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "eq" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a == b)) }
+            "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
             "to_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "bool".to_string(),
@@ -209,6 +230,7 @@ impl Interpreter {
             "to_uppercase" => Ok(Value::Char(c.to_uppercase().next().unwrap_or(c))),
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
+            "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "char".to_string(),
                 method: method.to_string(),

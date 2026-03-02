@@ -65,6 +65,9 @@ impl Resolver {
             ("transmute", BuiltinFunctionKind::Transmute, None),
             ("todo", BuiltinFunctionKind::Todo, Some("!")),
             ("unreachable", BuiltinFunctionKind::Unreachable, Some("!")),
+            ("min", BuiltinFunctionKind::Min, None),
+            ("max", BuiltinFunctionKind::Max, None),
+            ("clamp", BuiltinFunctionKind::Clamp, None),
         ];
 
         for (name, builtin, ret_ty) in builtin_fns {

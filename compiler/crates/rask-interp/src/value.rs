@@ -127,6 +127,9 @@ pub enum BuiltinKind {
     AsyncSpawn, // spawn(|| {}) from async module
     Todo,
     Unreachable,
+    Min,   // generic min(a, b) — prelude
+    Max,   // generic max(a, b) — prelude
+    Clamp, // generic clamp(value, lo, hi) — prelude
 }
 
 /// Type constructor kinds (for static method calls like Vec.new()).

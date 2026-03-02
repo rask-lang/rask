@@ -136,6 +136,39 @@ impl Interpreter {
                     )),
                 }
             }
+            BuiltinKind::Min => {
+                if args.len() != 2 {
+                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
+                }
+                match Self::value_cmp(&args[0], &args[1]) {
+                    Some(std::cmp::Ordering::Greater) => Ok(args.into_iter().nth(1).unwrap()),
+                    _ => Ok(args.into_iter().next().unwrap()),
+                }
+            }
+            BuiltinKind::Max => {
+                if args.len() != 2 {
+                    return Err(RuntimeError::ArityMismatch { expected: 2, got: args.len() });
+                }
+                match Self::value_cmp(&args[0], &args[1]) {
+                    Some(std::cmp::Ordering::Less) => Ok(args.into_iter().nth(1).unwrap()),
+                    _ => Ok(args.into_iter().next().unwrap()),
+                }
+            }
+            BuiltinKind::Clamp => {
+                if args.len() != 3 {
+                    return Err(RuntimeError::ArityMismatch { expected: 3, got: args.len() });
+                }
+                let value = &args[0];
+                let lo = &args[1];
+                let hi = &args[2];
+                if Self::value_cmp(value, lo) == Some(std::cmp::Ordering::Less) {
+                    Ok(args.into_iter().nth(1).unwrap())
+                } else if Self::value_cmp(value, hi) == Some(std::cmp::Ordering::Greater) {
+                    Ok(args.into_iter().nth(2).unwrap())
+                } else {
+                    Ok(args.into_iter().next().unwrap())
+                }
+            }
         }
     }
 

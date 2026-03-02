@@ -255,6 +255,13 @@ impl<'a> TraitChecker<'a> {
             }]),
             "Comparable" | "Ord" => Some(vec![
                 MethodSig {
+                    name: "compare".to_string(),
+                    self_param: SelfParam::Value,
+                    params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
+                    // Returns Ordering enum — use Var as placeholder (structural check)
+                    ret: Type::Var(crate::types::TypeVarId(0)),
+                },
+                MethodSig {
                     name: "lt".to_string(),
                     self_param: SelfParam::Value,
                     params: vec![(Type::Var(crate::types::TypeVarId(0)), ParamMode::Default)],
@@ -279,7 +286,7 @@ impl<'a> TraitChecker<'a> {
                     ret: Type::Bool,
                 },
             ]),
-            "Clone" => Some(vec![MethodSig {
+            "Clone" | "Cloneable" => Some(vec![MethodSig {
                 name: "clone".to_string(),
                 self_param: SelfParam::Value,
                 params: vec![],
@@ -305,6 +312,18 @@ impl<'a> TraitChecker<'a> {
                     ret: Type::Bool,
                 },
             ]),
+            "Displayable" => Some(vec![MethodSig {
+                name: "to_string".to_string(),
+                self_param: SelfParam::Value,
+                params: vec![],
+                ret: Type::String,
+            }]),
+            "Debug" => Some(vec![MethodSig {
+                name: "debug_string".to_string(),
+                self_param: SelfParam::Value,
+                params: vec![],
+                ret: Type::String,
+            }]),
             _ => None,
         }
     }
@@ -332,33 +351,33 @@ impl<'a> TraitChecker<'a> {
     /// Check if a primitive type has a builtin method.
     fn has_builtin_method(&self, ty: &Type, method: &str) -> bool {
         match ty {
-            // Integer types: eq, hash, clone, default, arithmetic
+            // Integer types: eq, hash, clone, default, arithmetic, compare, to_string
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
-                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" |
+                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "hash" | "clone" | "default"
+                    "hash" | "clone" | "default" | "to_string" | "debug_string"
                 )
             }
             // Floats: eq, clone, default, but NOT hash (HA4)
             Type::F32 | Type::F64 => {
                 matches!(method,
                     "add" | "sub" | "mul" | "div" | "rem" |
-                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" |
+                    "neg" | "eq" | "lt" | "le" | "gt" | "ge" | "compare" |
                     "bit_and" | "bit_or" | "bit_xor" | "shl" | "shr" | "bit_not" |
-                    "clone" | "default"
+                    "clone" | "default" | "to_string" | "debug_string"
                 )
             }
-            // Bool: eq, hash, clone, default
-            Type::Bool => matches!(method, "eq" | "hash" | "clone" | "default"),
-            // Char: eq, hash, clone, default, comparison
-            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "hash" | "clone" | "default"),
-            // String: eq, hash, clone, default, len
-            Type::String => matches!(method, "eq" | "len" | "clone" | "hash" | "default"),
+            // Bool: eq, hash, clone, default, compare, to_string
+            Type::Bool => matches!(method, "eq" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
+            // Char: eq, hash, clone, default, comparison, to_string
+            Type::Char => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
+            // String: eq, hash, clone, default, len, comparison, to_string
+            Type::String => matches!(method, "eq" | "lt" | "le" | "gt" | "ge" | "compare" | "len" | "clone" | "hash" | "default" | "to_string" | "debug_string"),
             // Unit: eq, hash, clone, default
-            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default"),
+            Type::Unit => matches!(method, "eq" | "hash" | "clone" | "default" | "to_string" | "debug_string"),
             _ => false,
         }
     }
@@ -482,7 +501,8 @@ pub fn implemented_traits(types: &TypeTable, ty: &Type) -> Vec<String> {
     let known_traits = [
         "Add", "Sub", "Mul", "Div", "Rem", "Neg",
         "Equal", "Eq", "Comparable", "Ord",
-        "Clone", "Default", "Hashable",
+        "Clone", "Cloneable", "Default", "Hashable",
+        "Displayable", "Debug",
     ];
 
     for trait_name in known_traits {
