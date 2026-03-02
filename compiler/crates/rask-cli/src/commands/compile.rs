@@ -86,6 +86,7 @@ pub fn compile_to_object(
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
         comptime_interp,
         trait_methods: trait_methods.clone(),
+        trait_coercions: &typed.trait_coercions,
     };
 
     // MIR lowering
@@ -397,6 +398,7 @@ pub fn compile_benchmarks_to_object(
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
         comptime_interp: bench_interp,
+        trait_coercions: &typed.trait_coercions,
     };
 
     // MIR lowering — skip the synthetic main() since gen_benchmark_runner replaces it

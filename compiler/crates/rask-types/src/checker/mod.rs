@@ -86,6 +86,9 @@ pub struct TypeChecker {
     /// GC1/GC2: Pre-created type vars for functions with inferred params/return.
     /// Key is function name, value is (param_type_vars, return_type_var).
     pub(super) inferred_fn_types: HashMap<String, (Vec<(String, Type)>, Type)>,
+    /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
+    /// MIR lowering uses this to emit TraitBox instructions at coercion sites.
+    pub(super) trait_coercions: HashMap<NodeId, String>,
 }
 
 impl TypeChecker {
@@ -109,6 +112,7 @@ impl TypeChecker {
             unsafe_ops: Vec::new(),
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
+            trait_coercions: HashMap::new(),
         }
     }
 
@@ -143,6 +147,8 @@ impl TypeChecker {
             })
             .collect();
 
+        let trait_coercions = self.trait_coercions.clone();
+
         if self.errors.is_empty() {
             Ok(TypedProgram {
                 symbols: self.resolved.symbols,
@@ -150,6 +156,7 @@ impl TypeChecker {
                 types: self.types,
                 node_types,
                 call_type_args,
+                trait_coercions,
             })
         } else {
             let ctx = &self.ctx;
@@ -167,6 +174,7 @@ impl TypeChecker {
                     types: self.types,
                     node_types,
                     call_type_args,
+                    trait_coercions,
                 })
             } else {
                 Err(errors)

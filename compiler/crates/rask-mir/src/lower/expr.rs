@@ -36,6 +36,33 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Emit a TraitBox instruction: heap-allocate `value` and produce a trait object.
+    /// Used for both explicit `as any Trait` casts and implicit TR5 coercions.
+    fn emit_trait_box(
+        &mut self,
+        val: MirOperand,
+        concrete_mir_ty: &MirType,
+        trait_name: &str,
+    ) -> (MirOperand, MirType) {
+        let concrete_type = self.mir_type_name(concrete_mir_ty)
+            .unwrap_or_else(|| "unknown".to_string());
+        let concrete_size = self.elem_size_for_type(concrete_mir_ty) as u32;
+        let vtable_name = format!(".vtable.{}__{}", concrete_type, trait_name);
+        let trait_obj_ty = MirType::TraitObject { trait_name: trait_name.to_string() };
+        let result_local = self.builder.alloc_temp(trait_obj_ty.clone());
+
+        self.builder.push_stmt(MirStmt::TraitBox {
+            dst: result_local,
+            value: val,
+            concrete_type,
+            trait_name: trait_name.to_string(),
+            concrete_size,
+            vtable_name,
+        });
+
+        (MirOperand::Local(result_local), trait_obj_ty)
+    }
+
     /// Derive a tracking key for Vec element type inference.
     /// Returns `"v"` for `v.push(x)` and `"self.field"` for `self.field.push(x)`.
     fn vec_tracking_key(object: &Expr) -> Option<String> {
@@ -157,8 +184,14 @@ impl<'a> MirLowerer<'a> {
             ExprKind::Call { func, args } => {
                 let mut arg_operands = Vec::new();
                 for a in args {
-                    let (op, _) = self.lower_expr(&a.expr)?;
-                    arg_operands.push(op);
+                    let (op, mir_ty) = self.lower_expr(&a.expr)?;
+                    // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
+                    if let Some(trait_name) = self.ctx.trait_coercions.get(&a.expr.id) {
+                        let (boxed_op, _) = self.emit_trait_box(op, &mir_ty, trait_name);
+                        arg_operands.push(boxed_op);
+                    } else {
+                        arg_operands.push(op);
+                    }
                 }
 
                 // Non-ident callees: field access, returned functions, etc.
@@ -1694,28 +1727,7 @@ impl<'a> MirLowerer<'a> {
                 // Trait object boxing: `value as any Trait`
                 if let Some(trait_name) = ty.strip_prefix("any ") {
                     let (val, concrete_mir_ty) = self.lower_expr(expr)?;
-
-                    // Determine concrete type name for vtable lookup.
-                    // Prefer MIR-level struct layout name ("Dog") over raw Type
-                    // which formats as "<type#N>" for Named types.
-                    let concrete_type = self.mir_type_name(&concrete_mir_ty)
-                        .unwrap_or_else(|| "unknown".to_string());
-
-                    let concrete_size = self.elem_size_for_type(&concrete_mir_ty) as u32;
-                    let vtable_name = format!(".vtable.{}__{}", concrete_type, trait_name);
-                    let trait_obj_ty = MirType::TraitObject { trait_name: trait_name.to_string() };
-                    let result_local = self.builder.alloc_temp(trait_obj_ty.clone());
-
-                    self.builder.push_stmt(MirStmt::TraitBox {
-                        dst: result_local,
-                        value: val,
-                        concrete_type: concrete_type.clone(),
-                        trait_name: trait_name.to_string(),
-                        concrete_size,
-                        vtable_name,
-                    });
-
-                    return Ok((MirOperand::Local(result_local), trait_obj_ty));
+                    return Ok(self.emit_trait_box(val, &concrete_mir_ty, trait_name));
                 }
 
                 let (val, _) = self.lower_expr(expr)?;
