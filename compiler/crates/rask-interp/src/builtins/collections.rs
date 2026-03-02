@@ -317,11 +317,33 @@ impl Interpreter {
             "sort_by" => {
                 let closure = args.into_iter().next().unwrap_or(Value::Unit);
                 let mut vec = v.lock().unwrap();
-                // Custom comparison via closure
+                // Custom comparison via closure — accepts Ordering enum or Int
                 vec.sort_by(|a, b| {
                     match self.call_value(closure.clone(), vec![a.clone(), b.clone()]) {
+                        Ok(Value::Enum { name, variant, .. }) if name == "Ordering" => {
+                            match variant.as_str() {
+                                "Less" => std::cmp::Ordering::Less,
+                                "Greater" => std::cmp::Ordering::Greater,
+                                _ => std::cmp::Ordering::Equal,
+                            }
+                        }
                         Ok(Value::Int(n)) if n < 0 => std::cmp::Ordering::Less,
                         Ok(Value::Int(n)) if n > 0 => std::cmp::Ordering::Greater,
+                        _ => std::cmp::Ordering::Equal,
+                    }
+                });
+                Ok(Value::Unit)
+            }
+            "sort_by_key" => {
+                let closure = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut vec = v.lock().unwrap();
+                vec.sort_by(|a, b| {
+                    let ka = self.call_value(closure.clone(), vec![a.clone()]).ok();
+                    let kb = self.call_value(closure.clone(), vec![b.clone()]).ok();
+                    match (ka, kb) {
+                        (Some(ref va), Some(ref vb)) => {
+                            Self::value_cmp(va, vb).unwrap_or(std::cmp::Ordering::Equal)
+                        }
                         _ => std::cmp::Ordering::Equal,
                     }
                 });

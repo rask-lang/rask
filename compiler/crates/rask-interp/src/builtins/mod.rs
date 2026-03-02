@@ -109,13 +109,75 @@ impl Interpreter {
             Value::Enum { .. } if method == "hash" => {
                 return Ok(Value::Int(Self::value_hash(&receiver) as i64));
             }
+            Value::Struct { .. } if method == "compare" => {
+                if let Some(other) = args.first() {
+                    let ord = Self::value_cmp(&receiver, other).unwrap_or(std::cmp::Ordering::Equal);
+                    return Ok(Value::Enum {
+                        name: "Ordering".to_string(),
+                        variant: match ord {
+                            std::cmp::Ordering::Less => "Less".to_string(),
+                            std::cmp::Ordering::Equal => "Equal".to_string(),
+                            std::cmp::Ordering::Greater => "Greater".to_string(),
+                        },
+                        fields: vec![],
+                    });
+                }
+                return Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "Equal".to_string(),
+                    fields: vec![],
+                });
+            }
+            Value::Enum { .. } if method == "compare" => {
+                if let Some(other) = args.first() {
+                    let ord = Self::value_cmp(&receiver, other).unwrap_or(std::cmp::Ordering::Equal);
+                    return Ok(Value::Enum {
+                        name: "Ordering".to_string(),
+                        variant: match ord {
+                            std::cmp::Ordering::Less => "Less".to_string(),
+                            std::cmp::Ordering::Equal => "Equal".to_string(),
+                            std::cmp::Ordering::Greater => "Greater".to_string(),
+                        },
+                        fields: vec![],
+                    });
+                }
+                return Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: "Equal".to_string(),
+                    fields: vec![],
+                });
+            }
             Value::Struct { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             _ => {}
         }
 
-        // Generic to_string fallback
+        // Generic to_string fallback — Error→Displayable bridge (D5):
+        // If the type has a user-defined message() method, use it for to_string().
         if method == "to_string" {
+            let type_name = match &receiver {
+                Value::Struct { name, .. } => Some(name.clone()),
+                Value::Enum { name, .. } => Some(name.clone()),
+                _ => None,
+            };
+            if let Some(ref tn) = type_name {
+                // Check for user-defined to_string first, then message (Error bridge)
+                let base_name = tn.find('.').map_or(tn.as_str(), |pos| &tn[..pos]);
+                let has_to_string = self.methods.get(tn)
+                    .and_then(|m| m.get("to_string"))
+                    .or_else(|| self.methods.get(base_name).and_then(|m| m.get("to_string")));
+                if let Some(method_fn) = has_to_string {
+                    let method_fn = method_fn.clone();
+                    return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
+                }
+                let has_message = self.methods.get(tn)
+                    .and_then(|m| m.get("message"))
+                    .or_else(|| self.methods.get(base_name).and_then(|m| m.get("message")));
+                if let Some(method_fn) = has_message {
+                    let method_fn = method_fn.clone();
+                    return self.call_function(&method_fn, vec![receiver]).map_err(|diag| diag.error);
+                }
+            }
             return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
         }
 

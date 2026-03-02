@@ -161,6 +161,12 @@ impl Interpreter {
             .define("todo".to_string(), Value::Builtin(BuiltinKind::Todo));
         self.env
             .define("unreachable".to_string(), Value::Builtin(BuiltinKind::Unreachable));
+        self.env
+            .define("min".to_string(), Value::Builtin(BuiltinKind::Min));
+        self.env
+            .define("max".to_string(), Value::Builtin(BuiltinKind::Max));
+        self.env
+            .define("clamp".to_string(), Value::Builtin(BuiltinKind::Clamp));
 
         // Builtin types (always in scope, matching resolver builtins)
         self.env
