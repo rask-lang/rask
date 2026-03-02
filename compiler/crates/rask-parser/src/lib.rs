@@ -310,4 +310,90 @@ mod tests {
         let result = parse("extend Foo {\n    public comptime func freeze(self) -> i64 { }\n}");
         assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
     }
+
+    #[test]
+    fn multiline_function_params() {
+        let result = parse("func add(\n    a: i32,\n    b: i32,\n) -> i32 {\n    return a + b\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.params.len(), 2);
+            assert_eq!(f.params[0].name, "a");
+            assert_eq!(f.params[1].name, "b");
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn multiline_params_no_trailing_comma() {
+        let result = parse("func add(\n    a: i32,\n    b: i32\n) -> i32 { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn nested_generics_in_param_list() {
+        let result = parse(
+            "struct Foo { x: i32 }\nfunc process(m: Map<string, Handle<Foo>>, items: Vec<Foo>) -> i32 {\n    return 0\n}"
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[1].kind {
+            assert_eq!(f.params.len(), 2);
+            assert_eq!(f.params[0].name, "m");
+            assert!(f.params[0].ty.contains("Handle<Foo>"));
+            assert_eq!(f.params[1].name, "items");
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn triple_nested_generics() {
+        let result = parse("func foo(x: A<B<C<i32>>>) { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.params[0].ty, "A<B<C<i32>>>");
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    #[test]
+    fn try_else_multiline() {
+        let result = parse(
+            "func foo() -> i32 or string {\n    const x = try bar()\n        else |e| \"fallback\"\n    return x\n}"
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn try_else_same_line() {
+        let result = parse(
+            "func foo() -> i32 or string {\n    const x = try bar() else |e| \"fallback\"\n    return x\n}"
+        );
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn dep_as_variable_name() {
+        let result = parse("func main() {\n    const dep = 42\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn dep_in_for_loop() {
+        let result = parse("func main() {\n    const deps = Vec.new()\n    for dep in deps {\n        dep\n    }\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+    }
+
+    #[test]
+    fn dep_still_works_in_package() {
+        let result = parse("package \"myapp\" \"0.1.0\" {\n    dep \"serde\" \"1.0\"\n}");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Package(ref p) = result.decls[0].kind {
+            assert_eq!(p.deps.len(), 1);
+            assert_eq!(p.deps[0].name, "serde");
+        } else {
+            panic!("Expected package declaration");
+        }
+    }
 }

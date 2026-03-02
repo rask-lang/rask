@@ -490,7 +490,7 @@ impl<'a> Lexer<'a> {
             RawToken::Try => TokenKind::Try,
             RawToken::Or => TokenKind::Or,
             RawToken::Package => TokenKind::Package,
-            RawToken::Dep => TokenKind::Dep,
+            RawToken::Dep => TokenKind::Ident("dep".to_string()),
             RawToken::Scope => TokenKind::Scope,
             RawToken::Feature => TokenKind::Feature,
             RawToken::Exclusive => TokenKind::Exclusive,
