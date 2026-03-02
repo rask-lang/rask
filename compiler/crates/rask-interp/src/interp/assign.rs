@@ -66,6 +66,15 @@ impl Interpreter {
                         fields.insert(field.clone(), value);
                         return Ok(());
                     }
+                    Value::Vec(v) if field.parse::<usize>().is_ok() => {
+                        let idx = field.parse::<usize>().unwrap();
+                        let mut vec = v.lock().unwrap();
+                        if idx < vec.len() {
+                            vec[idx] = value;
+                            return Ok(());
+                        }
+                        return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
+                    }
                     _ => return Err(RuntimeError::TypeError(format!(
                         "cannot assign field '{}' on {}", field, current.type_name()
                     ))),
