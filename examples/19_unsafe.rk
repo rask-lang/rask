@@ -11,12 +11,10 @@ extern "C" func memcpy(dest: *u8, src: *u8, n: i32)
 extern "C" func malloc(size: i32) -> *u8
 extern "C" func free(ptr: *u8)
 
-// Wrapper for C strlen
+// Wrapper for C strlen — expression form for single operations
 func c_string_length(s: string) -> i32 {
-    unsafe {
-        const ptr = s.as_ptr()
-        return strlen(ptr)
-    }
+    const ptr = s.as_ptr()
+    return unsafe strlen(ptr)
 }
 
 // Safe wrapper for raw pointer operations
@@ -111,6 +109,15 @@ func main() {
         print(second)
         print("\n")
     }
+
+    // Expression form — no braces needed for single operations
+    print("\n=== Expression-Form Unsafe ===\n")
+    const x = 42
+    let ptr: *i32 = &x as *i32
+    const value = unsafe *ptr
+    print("Read via expression-form unsafe: ")
+    print(value)
+    print("\n")
 
     print("\n=== When to Use Unsafe ===\n")
     print("1. FFI - calling C/C++ libraries\n")
