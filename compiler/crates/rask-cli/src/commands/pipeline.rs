@@ -23,7 +23,7 @@ pub struct PackageContext {
     pub all_decls: Vec<Decl>,
 }
 
-/// Result of the frontend pipeline (lex → parse → desugar → resolve → typecheck → ownership).
+/// Result of the frontend pipeline (lex → parse → desugar → resolve → typecheck → ownership → effects).
 pub struct FrontendResult {
     pub decls: Vec<Decl>,
     pub typed: rask_types::TypedProgram,
@@ -33,6 +33,10 @@ pub struct FrontendResult {
     pub package_names: Vec<String>,
     /// Per-file source text for multi-file diagnostics (path, source).
     pub source_files: Vec<(std::path::PathBuf, String)>,
+    /// Per-function effect metadata (comp.effects).
+    pub effects: rask_effects::EffectMap,
+    /// Effect warnings (CW1, CW2).
+    pub effect_warnings: Vec<rask_effects::EffectWarning>,
 }
 
 /// Run the frontend pipeline on a .rk file.
@@ -113,12 +117,25 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         process::exit(1);
     }
 
+    // Effect inference (comp.effects) — metadata only, no AST changes
+    let (effects, effect_warnings) = rask_effects::infer_effects(&parse_result.decls);
+
+    // Show effect warnings (non-blocking)
+    if !effect_warnings.is_empty() && format == Format::Human {
+        let diags: Vec<Diagnostic> = effect_warnings.iter()
+            .map(|w| effect_warning_to_diagnostic(w))
+            .collect();
+        show_diagnostics(&diags, &source, path, "effects", format);
+    }
+
     FrontendResult {
         decls: parse_result.decls,
         typed,
         source: Some(source),
         package_names: vec![],
         source_files: vec![],
+        effects,
+        effect_warnings,
     }
 }
 
@@ -248,13 +265,33 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
 
     let _ = path; // used for context only, not for reading in package mode
 
+    // Effect inference (comp.effects) — metadata only, no AST changes
+    let (effects, effect_warnings) = rask_effects::infer_effects(&pkg_ctx.all_decls);
+
+    // Show effect warnings (non-blocking)
+    if !effect_warnings.is_empty() && format == Format::Human {
+        let diags: Vec<Diagnostic> = effect_warnings.iter()
+            .map(|w| effect_warning_to_diagnostic(w))
+            .collect();
+        show_multifile_diagnostics(&diags, &source_files, format);
+    }
+
     FrontendResult {
         decls: std::mem::take(&mut pkg_ctx.all_decls),
         typed,
         source: None,
         package_names,
         source_files,
+        effects,
+        effect_warnings,
     }
+}
+
+/// Convert an effect warning to a Diagnostic for display.
+fn effect_warning_to_diagnostic(w: &rask_effects::EffectWarning) -> Diagnostic {
+    Diagnostic::warning(&w.message)
+        .with_code(w.code)
+        .with_primary(w.span, format!("`{}` has IO effect", w.callee_name))
 }
 
 /// Show diagnostics for multi-file packages.
