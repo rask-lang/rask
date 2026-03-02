@@ -389,11 +389,41 @@ Rust programmers will find this backwards. I think it's clearer for everyone els
 
 ---
 
+## General Macro System
+
+**Looked at:** Rust (declarative + procedural macros), Zig (comptime), Nim (templates + macros)
+
+Rust macros solve real problems: variadic arguments (`format!`, `vec!`), conditional compilation (`cfg!`), code generation (`derive`), and domain-specific syntax. But they're a second language with their own syntax, error messages, and learning curve. `macro_rules!` is notoriously hard to read. Procedural macros require a separate crate. Both make code harder to analyze.
+
+I'm not adding a macro system. Here's what covers those use cases instead.
+
+### Variadic arguments
+
+`format()`, `println()`, and `print()` are compiler-known functions (`struct.modules/BF2`). The compiler parses templates, type-checks arguments, and generates specialized code. No variadic mechanism needed—the compiler handles these directly.
+
+For user-defined variadic functions: Rask doesn't have them. Pass a `Vec` or use generic overloads. Variadics complicate type checking and make call-site errors harder to diagnose.
+
+### Code generation
+
+`comptime for` + `std.reflect` handles serialization, encoding, and struct-walking patterns (`ctrl.comptime/CT48-CT54`). Build scripts handle external codegen (protobuf, schemas). `comptime if cfg.*` handles conditional compilation.
+
+### Domain-specific syntax
+
+Not supported. DSLs in macros look concise but break tooling—IDEs, formatters, linters all need macro expansion to understand the code. Write functions instead.
+
+### What I chose instead
+
+Compiler-known functions for the handful of variadic built-ins. Comptime for compile-time computation. Build scripts for complex codegen. No user-extensible syntax transformation.
+
+This means Rask can't express `vec![1, 2, 3]`—you write `Vec.from([1, 2, 3])`. I think that's fine.
+
+---
+
 ## Summary
 
 Common thread: I optimize for transparency and local reasoning, but not at the cost of ergonomics.
 
-**Rejected:** Exceptions, async/await keywords, lifetime annotations, automatic supervision, algebraic effects, implicit receivers.
+**Rejected:** Exceptions, async/await keywords, lifetime annotations, automatic supervision, algebraic effects, implicit receivers, general macro system.
 
 **Chose:** Result types, green tasks without coloring, block-scoped borrows, library patterns, explicit parameters.
 
