@@ -2989,6 +2989,22 @@ impl Parser {
 
             TokenKind::Dot => {
                 self.advance();
+
+                // Tuple field access: expr.0, expr.1, ...
+                if let TokenKind::Int(n, None) = self.current_kind().clone() {
+                    if n < 0 {
+                        return Err(ParseError::expected(
+                            "a non-negative index",
+                            self.current_kind(),
+                            self.current().span,
+                        ));
+                    }
+                    let field = n.to_string();
+                    self.advance();
+                    let end = self.tokens[self.pos - 1].span.end;
+                    return Ok(Expr { id: self.next_id(), kind: ExprKind::Field { object: Box::new(lhs), field }, span: Span::new(start, end) });
+                }
+
                 let field = self.expect_ident_or_keyword()?;
 
                 let type_args = if self.check(&TokenKind::Lt) && self.looks_like_generic_method_call() {
@@ -3045,7 +3061,19 @@ impl Parser {
             // Optional chaining
             TokenKind::QuestionDot => {
                 self.advance();
-                let field = self.expect_ident_or_keyword()?;
+                let field = if let TokenKind::Int(n, None) = self.current_kind().clone() {
+                    if n < 0 {
+                        return Err(ParseError::expected(
+                            "a non-negative index",
+                            self.current_kind(),
+                            self.current().span,
+                        ));
+                    }
+                    self.advance();
+                    n.to_string()
+                } else {
+                    self.expect_ident_or_keyword()?
+                };
                 let end = self.tokens[self.pos - 1].span.end;
                 Ok(Expr { id: self.next_id(), kind: ExprKind::OptionalField { object: Box::new(lhs), field }, span: Span::new(start, end) })
             }
@@ -3458,6 +3486,27 @@ impl Parser {
                 };
             } else if self.check(&TokenKind::Dot) {
                 self.advance();
+
+                // Tuple field access: expr.0, expr.1, ...
+                if let TokenKind::Int(n, None) = self.current_kind().clone() {
+                    if n < 0 {
+                        return Err(ParseError::expected(
+                            "a non-negative index",
+                            self.current_kind(),
+                            self.current().span,
+                        ));
+                    }
+                    let field = n.to_string();
+                    self.advance();
+                    let end = self.tokens[self.pos - 1].span.end;
+                    expr = Expr {
+                        id: self.next_id(),
+                        kind: ExprKind::Field { object: Box::new(expr), field },
+                        span: Span::new(start, end),
+                    };
+                    continue;
+                }
+
                 let field = self.expect_ident_or_keyword()?;
                 // Method call: .field(args...)
                 if self.check(&TokenKind::LParen) {

@@ -52,6 +52,34 @@ impl<'a> MirLowerer<'a> {
         }
     }
 
+    /// Resolve a numeric field name on a tuple type.
+    /// Returns (field_index, element_type, byte_offset, field_size).
+    pub(super) fn resolve_tuple_field(
+        ty: &MirType,
+        field: &str,
+    ) -> Option<(u32, MirType, Option<u32>, Option<u32>)> {
+        let fields = match ty {
+            MirType::Tuple(fields) => fields,
+            _ => return None,
+        };
+        let idx: usize = field.parse().ok()?;
+        if idx >= fields.len() {
+            return None;
+        }
+        let elem_ty = fields[idx].clone();
+        let mut offset = 0u32;
+        for (i, f) in fields.iter().enumerate() {
+            let align = f.align();
+            offset = (offset + align - 1) & !(align - 1);
+            if i == idx {
+                break;
+            }
+            offset += f.size();
+        }
+        let size = elem_ty.size();
+        Some((idx as u32, elem_ty, Some(offset), Some(size)))
+    }
+
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
         match &expr.kind {
             // Literals
@@ -1054,6 +1082,8 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         (0, MirType::I64, None, None)
                     }
+                } else if let Some(resolved) = Self::resolve_tuple_field(&obj_ty, field) {
+                    resolved
                 } else {
                     // Object isn't MirType::Struct — try the type checker to
                     // resolve struct info (e.g. pool[h] returns Ptr but the
@@ -1079,6 +1109,21 @@ impl<'a> MirLowerer<'a> {
                                     resolved = true;
                                 }
                             }
+                        } else if let Some(tuple_resolved) = Self::resolve_tuple_field(&obj_mir, field) {
+                            return {
+                                let (ti, trt, tbo, tfs) = tuple_resolved;
+                                let result_local = self.builder.alloc_temp(trt.clone());
+                                self.builder.push_stmt(MirStmt::Assign {
+                                    dst: result_local,
+                                    rvalue: MirRValue::Field {
+                                        base: obj_op,
+                                        field_index: ti,
+                                        byte_offset: tbo,
+                                        field_size: tfs,
+                                    },
+                                });
+                                Ok((MirOperand::Local(result_local), trt))
+                            };
                         }
                     }
 
@@ -1098,6 +1143,14 @@ impl<'a> MirLowerer<'a> {
                                             fs = Some(fl.size);
                                             resolved = true;
                                         }
+                                    }
+                                } else if let Some(MirType::Tuple(_)) = &local_ty {
+                                    if let Some(tuple_resolved) = Self::resolve_tuple_field(&local_ty.unwrap(), field) {
+                                        fi = tuple_resolved.0;
+                                        rt = tuple_resolved.1;
+                                        bo = tuple_resolved.2;
+                                        fs = tuple_resolved.3;
+                                        resolved = true;
                                     }
                                 }
                             }
