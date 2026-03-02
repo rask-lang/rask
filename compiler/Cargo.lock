@@ -1220,6 +1220,7 @@ dependencies = [
  "rask-describe",
  "rask-desugar",
  "rask-diagnostics",
+ "rask-effects",
  "rask-fmt",
  "rask-hidden-params",
  "rask-interp",
@@ -1295,6 +1296,13 @@ dependencies = [
  "rask-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rask-effects"
+version = "0.1.0"
+dependencies = [
+ "rask-ast",
 ]
 
 [[package]]
