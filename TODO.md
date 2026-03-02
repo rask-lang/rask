@@ -46,7 +46,7 @@
 - [x] **`todo()` / `unreachable()`** — Development panic builtins returning `!` (Never). Interpreter + native codegen (desugars to `panic()` in MIR). See [error-types.md](specs/types/error-types.md)
 - [x] **Tuple spec** — Formalized existing tuple support. See [tuples.md](specs/types/tuples.md)
 - [x] **Destructuring spec** — Formalized existing destructuring. See [control-flow.md](specs/control/control-flow.md)
-- [ ] Macros / `format!`
+- [x] **Macros / `format!`** — `format()` is a compiler-known function (`std.fmt/CM1`, `struct.modules/BF2`). General macro system rejected (`rejected-features.md`)
 ## Design — Decided
 
 - [x] **Serialization / encoding** — `comptime for` + field access, auto-derived `Encode`/`Decode` marker traits, field annotations (`@rename`, `@skip`, `@default`). See [encoding.md](specs/stdlib/encoding.md)
