@@ -423,7 +423,10 @@ mod tests {
         let reg = StubRegistry::load();
         let expected = [
             "Vec", "Map", "Pool", "Handle", "string", "Option", "Result", "File", "Rng",
-            "fs", "net", "json", "cli", "io", "std",
+            "fs", "net", "json", "cli", "io", "std", "http",
+            "JsonValue", "JsonError", "JsonParser",
+            "Headers", "Request", "Response", "HttpServer", "Responder", "HttpClient",
+            "Method", "HttpError",
         ];
         for name in &expected {
             assert!(reg.get_type(name).is_some(), "Missing type: {}", name);

@@ -140,6 +140,19 @@ impl Resolver {
             "Less", "Equal", "Greater",                          // comparison
             "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst", // memory
         ]);
+        self.register_builtin_enum("Method", &[
+            "Get", "Head", "Post", "Put", "Delete", "Patch", "Options",
+        ]);
+        self.register_builtin_enum("JsonValue", &[
+            "Null", "Bool", "Number", "String", "Array", "Object",
+        ]);
+        self.register_builtin_enum("JsonError", &[
+            "ParseError", "TypeError", "MissingField",
+        ]);
+        self.register_builtin_enum("HttpError", &[
+            "ConnectionFailed", "Timeout", "InvalidUrl", "InvalidResponse",
+            "TooManyRedirects", "Io",
+        ]);
 
         let builtin_modules = [
             ("io", BuiltinModuleKind::Io),
@@ -156,6 +169,7 @@ impl Resolver {
             ("core", BuiltinModuleKind::Core),
             ("async", BuiltinModuleKind::Async),
             ("cfg", BuiltinModuleKind::Cfg),
+            ("http", BuiltinModuleKind::Http),
         ];
 
         for (name, module) in builtin_modules {
@@ -169,8 +183,13 @@ impl Resolver {
             let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
         }
 
-        // Register net module types (HttpRequest, HttpResponse, TcpListener, TcpConnection)
-        for net_type in &["HttpRequest", "HttpResponse", "TcpListener", "TcpConnection"] {
+        // Register net/http module types
+        for net_type in &[
+            "TcpListener", "TcpConnection",
+            "Request", "Response", "Method", "Headers",
+            "HttpServer", "Responder", "HttpClient", "HttpError",
+            "JsonValue", "JsonError",
+        ] {
             let sym_id = self.symbols.insert(
                 net_type.to_string(),
                 SymbolKind::Struct { fields: vec![] },
@@ -679,6 +698,7 @@ impl Resolver {
                 "net" => Some(BuiltinModuleKind::Net),
                 "core" => Some(BuiltinModuleKind::Core),
                 "async" => Some(BuiltinModuleKind::Async),
+                "http" => Some(BuiltinModuleKind::Http),
                 _ => None,
             };
 
@@ -772,7 +792,7 @@ impl Resolver {
             let is_stdlib_module = matches!(pkg_name.as_str(),
                 "io" | "fs" | "env" | "cli" | "std" | "json" | "random"
                 | "time" | "math" | "path" | "os" | "net" | "core" | "async"
-                | "thread"
+                | "thread" | "http"
             );
 
             if is_stdlib_module {

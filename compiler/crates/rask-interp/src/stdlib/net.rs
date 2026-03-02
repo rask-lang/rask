@@ -272,7 +272,7 @@ impl Interpreter {
         );
 
         Ok(make_result_ok(Value::Struct {
-            name: "HttpRequest".to_string(),
+            name: "Request".to_string(),
             fields,
             resource_id: None,
         }))
@@ -317,7 +317,7 @@ impl Interpreter {
             }
             _ => {
                 return Err(RuntimeError::TypeError(
-                    "expected HttpResponse struct with `status`, `headers`, and `body` fields".to_string(),
+                    "expected Response struct with `status`, `headers`, and `body` fields".to_string(),
                 ));
             }
         };
