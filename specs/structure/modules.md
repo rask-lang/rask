@@ -29,6 +29,15 @@ Package-visible default with explicit `public`, fixed built-in types, simple pat
 | **BI3: No shadowing** | Defining local type with built-in name is a compile error |
 | **BI4: Qualified fallback** | `core.Result` always works regardless of local names |
 
+## Built-in Functions
+
+| Rule | Description |
+|------|-------------|
+| **BF1: Always available** | `println`, `print`, `format`, `panic`, `todo`, `unreachable`, `spawn`, `transmute` |
+| **BF2: Compiler-known** | Not regular functions. The compiler knows their signatures, validates arguments, and generates specialized code per call site |
+| **BF3: No shadowing** | Defining a function with a built-in name is a compile error |
+| **BF4: No variadics** | `format`, `println`, `print` accept variable arguments through compiler support, not through a general variadic mechanism. The compiler parses template strings at compile time and type-checks each argument against its placeholder |
+
 ## Package Organization
 
 | Rule | Description |

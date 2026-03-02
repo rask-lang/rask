@@ -143,6 +143,19 @@ FIX: Use all auto ({}, {}) or all explicit ({0}, {1}).
 | Empty template | F1 | Returns empty string |
 | `format("{:?}", x)` on auto-derived type | G2 | Shows struct fields / enum variants |
 
+## Compiler Mechanism
+
+| Rule | Description |
+|------|-------------|
+| **CM1: Compiler-known** | `format()` is a compiler-known function, not a regular function. It accepts variable arguments through compiler support (`struct.modules/BF4`), not through a general variadic mechanism |
+| **CM2: Template parsing** | The compiler parses the template string at compile time, extracting placeholder positions, names, and format specifiers |
+| **CM3: Per-arg type check** | Each argument is type-checked against its placeholder: `{}` requires `Display`, `{:?}` requires `Debug`, `{:x}` requires integer type |
+| **CM4: Compile-time errors** | Missing arguments, type mismatches, and malformed specifiers are compile-time errors. No runtime formatting failures for static templates |
+| **CM5: Codegen** | The compiler generates specialized string-building code per call site. No runtime template parsing for static templates |
+| **CM6: Comptime folding** | When all arguments are comptime-known, the result is a static string |
+
+`println` and `print` use the same mechanism for interpolation: the compiler rewrites `println("Hello, {name}!")` into string-building code at compile time.
+
 ---
 
 ## Appendix (non-normative)
