@@ -1,12 +1,575 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-/// JSON encoding and decoding.
+// JSON encoding and decoding.
+//
+// Two layers: untyped JsonValue enum for dynamic JSON, compiler-generated
+// struct encoding/decoding for known schemas. The parser is a recursive
+// descent implementation handling the full RFC 8259 grammar.
+
+// ─── Types ───────────────────────────────────────────────────────
+
+enum JsonValue {
+    Null
+    Bool(bool)
+    Number(f64)
+    String(string)
+    Array(Vec<JsonValue>)
+    Object(Map<string, JsonValue>)
+}
+
+enum JsonError {
+    ParseError(string)
+    TypeError(string)
+    MissingField(string)
+}
+
+// ─── JsonValue accessors ─────────────────────────────────────────
+
+extend JsonValue {
+    public func is_null(self) -> bool {
+        return self is Null
+    }
+
+    public func as_bool(self) -> bool? {
+        if self is Bool(b) { return Some(b) }
+        return None
+    }
+
+    public func as_number(self) -> f64? {
+        if self is Number(n) { return Some(n) }
+        return None
+    }
+
+    public func as_string(self) -> string? {
+        if self is String(s) { return Some(s) }
+        return None
+    }
+
+    public func as_array(self) -> Vec<JsonValue>? {
+        if self is Array(a) { return Some(a) }
+        return None
+    }
+
+    public func as_object(self) -> Map<string, JsonValue>? {
+        if self is Object(m) { return Some(m) }
+        return None
+    }
+}
+
+// ─── Parser internals ────────────────────────────────────────────
+
+// Parser state: input string + current byte position.
+struct JsonParser {
+    input: string
+    pos: usize
+    len: usize
+}
+
+extend JsonParser {
+    func new(input: string) -> JsonParser {
+        return JsonParser {
+            input: input,
+            pos: 0,
+            len: input.len(),
+        }
+    }
+
+    // Peek at the current byte without advancing.
+    func peek(self) -> u8 {
+        if self.pos >= self.len { return 0 }
+        return self.input.byte_at(self.pos)
+    }
+
+    // Advance one byte and return it.
+    func advance(mutate self) -> u8 {
+        if self.pos >= self.len { return 0 }
+        const b = self.input.byte_at(self.pos)
+        self.pos += 1
+        return b
+    }
+
+    // Skip past ASCII whitespace (space, tab, newline, carriage return).
+    func skip_ws(mutate self) {
+        while self.pos < self.len {
+            const b = self.input.byte_at(self.pos)
+            if b != 32 && b != 9 && b != 10 && b != 13 {
+                return
+            }
+            self.pos += 1
+        }
+    }
+
+    // Expect a specific byte, returning error if not found.
+    func expect(mutate self, expected: u8) -> () or JsonError {
+        self.skip_ws()
+        if self.pos >= self.len {
+            return Err(JsonError.ParseError("unexpected end of input"))
+        }
+        const b = self.advance()
+        if b != expected {
+            return Err(JsonError.ParseError("expected '{expected}', got '{b}'"))
+        }
+        return Ok(())
+    }
+
+    // Parse a complete JSON value.
+    func parse_value(mutate self) -> JsonValue or JsonError {
+        self.skip_ws()
+        if self.pos >= self.len {
+            return Err(JsonError.ParseError("unexpected end of input"))
+        }
+
+        const b = self.peek()
+
+        // Object
+        if b == 123 { return self.parse_object() }
+        // Array
+        if b == 91 { return self.parse_array() }
+        // String
+        if b == 34 { return self.parse_string_value() }
+        // true
+        if b == 116 { return self.parse_true() }
+        // false
+        if b == 102 { return self.parse_false() }
+        // null
+        if b == 110 { return self.parse_null() }
+        // Number: digit or minus sign
+        if b == 45 || (b >= 48 && b <= 57) {
+            return self.parse_number()
+        }
+
+        return Err(JsonError.ParseError("unexpected character at position {self.pos}"))
+    }
+
+    // Parse a JSON object: { "key": value, ... }
+    func parse_object(mutate self) -> JsonValue or JsonError {
+        self.pos += 1  // skip '{'
+        self.skip_ws()
+
+        let map = Map<string, JsonValue>.new()
+
+        // Empty object
+        if self.peek() == 125 {
+            self.pos += 1
+            return Ok(JsonValue.Object(map))
+        }
+
+        loop {
+            self.skip_ws()
+
+            // Parse key (must be a string)
+            if self.peek() != 34 {
+                return Err(JsonError.ParseError("expected string key in object"))
+            }
+            const key = try self.parse_raw_string()
+
+            // Expect colon
+            self.skip_ws()
+            if self.advance() != 58 {
+                return Err(JsonError.ParseError("expected ':' after object key"))
+            }
+
+            // Parse value
+            const value = try self.parse_value()
+
+            // Last value wins for duplicate keys (J5)
+            map.insert(key, value)
+
+            self.skip_ws()
+            const next = self.advance()
+            // comma — continue
+            if next == 44 { continue }
+            // closing brace — done
+            if next == 125 { return Ok(JsonValue.Object(map)) }
+
+            return Err(JsonError.ParseError("expected ',' or '}' in object"))
+        }
+    }
+
+    // Parse a JSON array: [ value, ... ]
+    func parse_array(mutate self) -> JsonValue or JsonError {
+        self.pos += 1  // skip '['
+        self.skip_ws()
+
+        let arr = Vec<JsonValue>.new()
+
+        // Empty array
+        if self.peek() == 93 {
+            self.pos += 1
+            return Ok(JsonValue.Array(arr))
+        }
+
+        loop {
+            const value = try self.parse_value()
+            arr.push(value)
+
+            self.skip_ws()
+            const next = self.advance()
+            // comma — continue
+            if next == 44 { continue }
+            // closing bracket — done
+            if next == 93 { return Ok(JsonValue.Array(arr)) }
+
+            return Err(JsonError.ParseError("expected ',' or ']' in array"))
+        }
+    }
+
+    // Parse a JSON string, returning the raw string content.
+    func parse_raw_string(mutate self) -> string or JsonError {
+        if self.advance() != 34 {
+            return Err(JsonError.ParseError("expected '\"'"))
+        }
+
+        let result = string.new()
+
+        while self.pos < self.len {
+            const b = self.advance()
+
+            // End of string
+            if b == 34 {
+                return Ok(result)
+            }
+
+            // Escape sequence
+            if b == 92 {
+                if self.pos >= self.len {
+                    return Err(JsonError.ParseError("unterminated escape sequence"))
+                }
+                const esc = self.advance()
+                if esc == 34 { result.push('"') }
+                else if esc == 92 { result.push('\\') }
+                else if esc == 47 { result.push('/') }
+                else if esc == 110 { result.push('\n') }
+                else if esc == 114 { result.push('\r') }
+                else if esc == 116 { result.push('\t') }
+                else if esc == 98 { result.push(8 as char) }
+                else if esc == 102 { result.push(12 as char) }
+                else if esc == 117 {
+                    // \uXXXX unicode escape — parse 4 hex digits
+                    const cp = try self.parse_unicode_escape()
+                    result.push(cp)
+                } else {
+                    return Err(JsonError.ParseError("invalid escape character"))
+                }
+                continue
+            }
+
+            // Regular byte
+            result.push(b as char)
+        }
+
+        return Err(JsonError.ParseError("unterminated string"))
+    }
+
+    // Parse 4 hex digits after \u, return the codepoint as a char.
+    func parse_unicode_escape(mutate self) -> char or JsonError {
+        if self.pos + 4 > self.len {
+            return Err(JsonError.ParseError("incomplete unicode escape"))
+        }
+        let cp: u32 = 0
+        let i = 0
+        while i < 4 {
+            const b = self.advance()
+            const digit = hex_digit(b)
+            if digit < 0 {
+                return Err(JsonError.ParseError("invalid hex digit in unicode escape"))
+            }
+            cp = cp * 16 + digit as u32
+            i += 1
+        }
+        return Ok(cp as char)
+    }
+
+    // Parse a JSON string as a JsonValue.
+    func parse_string_value(mutate self) -> JsonValue or JsonError {
+        const s = try self.parse_raw_string()
+        return Ok(JsonValue.String(s))
+    }
+
+    // Parse "true".
+    func parse_true(mutate self) -> JsonValue or JsonError {
+        if self.pos + 4 > self.len {
+            return Err(JsonError.ParseError("unexpected end of input"))
+        }
+        if self.input[self.pos..self.pos + 4] == "true" {
+            self.pos += 4
+            return Ok(JsonValue.Bool(true))
+        }
+        return Err(JsonError.ParseError("invalid token"))
+    }
+
+    // Parse "false".
+    func parse_false(mutate self) -> JsonValue or JsonError {
+        if self.pos + 5 > self.len {
+            return Err(JsonError.ParseError("unexpected end of input"))
+        }
+        if self.input[self.pos..self.pos + 5] == "false" {
+            self.pos += 5
+            return Ok(JsonValue.Bool(false))
+        }
+        return Err(JsonError.ParseError("invalid token"))
+    }
+
+    // Parse "null".
+    func parse_null(mutate self) -> JsonValue or JsonError {
+        if self.pos + 4 > self.len {
+            return Err(JsonError.ParseError("unexpected end of input"))
+        }
+        if self.input[self.pos..self.pos + 4] == "null" {
+            self.pos += 4
+            return Ok(JsonValue.Null)
+        }
+        return Err(JsonError.ParseError("invalid token"))
+    }
+
+    // Parse a JSON number (integer or float).
+    func parse_number(mutate self) -> JsonValue or JsonError {
+        const start = self.pos
+
+        // Optional minus
+        if self.peek() == 45 { self.pos += 1 }
+
+        // Integer part
+        if self.pos >= self.len {
+            return Err(JsonError.ParseError("unexpected end in number"))
+        }
+        if self.peek() == 48 {
+            // Leading zero — only valid as "0" or "0.xxx"
+            self.pos += 1
+        } else if self.peek() >= 49 && self.peek() <= 57 {
+            while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
+                self.pos += 1
+            }
+        } else {
+            return Err(JsonError.ParseError("invalid number"))
+        }
+
+        // Fractional part
+        if self.pos < self.len && self.peek() == 46 {
+            self.pos += 1
+            if self.pos >= self.len || self.peek() < 48 || self.peek() > 57 {
+                return Err(JsonError.ParseError("expected digit after decimal point"))
+            }
+            while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
+                self.pos += 1
+            }
+        }
+
+        // Exponent part
+        if self.pos < self.len && (self.peek() == 101 || self.peek() == 69) {
+            self.pos += 1
+            if self.pos < self.len && (self.peek() == 43 || self.peek() == 45) {
+                self.pos += 1
+            }
+            if self.pos >= self.len || self.peek() < 48 || self.peek() > 57 {
+                return Err(JsonError.ParseError("expected digit in exponent"))
+            }
+            while self.pos < self.len && self.peek() >= 48 && self.peek() <= 57 {
+                self.pos += 1
+            }
+        }
+
+        const num_str = self.input[start..self.pos]
+        const n = try num_str.parse<f64>().map_err(|_| JsonError.ParseError("invalid number: {num_str}"))
+        return Ok(JsonValue.Number(n))
+    }
+}
+
+// Convert a hex ASCII byte to its numeric value, or -1 if invalid.
+func hex_digit(b: u8) -> i32 {
+    if b >= 48 && b <= 57 { return (b - 48) as i32 }
+    if b >= 65 && b <= 70 { return (b - 55) as i32 }
+    if b >= 97 && b <= 102 { return (b - 87) as i32 }
+    return -1
+}
+
+// ─── Public API: parsing ─────────────────────────────────────────
+
 struct json { }
 
 extend json {
+    /// Parse a JSON string into a JsonValue tree. RFC 8259 compliant.
+    public func parse(input: string) -> JsonValue or JsonError {
+        let parser = JsonParser.new(input)
+        const value = try parser.parse_value()
+
+        // Verify no trailing content (except whitespace)
+        parser.skip_ws()
+        if parser.pos < parser.len {
+            return Err(JsonError.ParseError("trailing content after JSON value"))
+        }
+
+        return Ok(value)
+    }
+
+    /// Serialize a JsonValue to a compact JSON string.
+    public func stringify(value: JsonValue) -> string {
+        return stringify_value(value)
+    }
+
+    /// Serialize a JsonValue to a pretty-printed JSON string.
+    public func stringify_pretty(value: JsonValue) -> string {
+        let result = string.new()
+        stringify_pretty_inner(value, mutate result, 0)
+        return result
+    }
+
     /// Encode a value as a JSON string.
+    /// Compiler-expanded at MIR level for structs via comptime for + reflect.
     public func encode(value: T) -> string { }
 
     /// Decode a JSON string into a typed value.
-    public func decode(str: string) -> T or Error { }
+    /// Compiler-expanded at MIR level for structs via comptime for + reflect.
+    public func decode(str: string) -> T or JsonError { }
+
+    /// Convert a typed value to a JsonValue tree.
+    public func to_value(value: T) -> JsonValue { }
+
+    /// Convert a JsonValue tree to a typed value.
+    public func from_value(value: JsonValue) -> T or JsonError { }
+}
+
+// ─── Stringify internals ─────────────────────────────────────────
+
+func stringify_value(value: JsonValue) -> string {
+    match value {
+        JsonValue.Null => return "null",
+        JsonValue.Bool(b) => {
+            if b { return "true" }
+            return "false"
+        }
+        JsonValue.Number(n) => return format_number(n),
+        JsonValue.String(s) => return escape_string(s),
+        JsonValue.Array(arr) => return stringify_array(arr),
+        JsonValue.Object(map) => return stringify_object(map),
+    }
+}
+
+func stringify_array(arr: Vec<JsonValue>) -> string {
+    let result = string.new()
+    result.push_str("[")
+    let first = true
+    for item in arr {
+        if !first { result.push_str(",") }
+        result.push_str(stringify_value(item))
+        first = false
+    }
+    result.push_str("]")
+    return result
+}
+
+func stringify_object(map: Map<string, JsonValue>) -> string {
+    let result = string.new()
+    result.push_str("{")
+    let first = true
+    for (key, value) in map {
+        if !first { result.push_str(",") }
+        result.push_str(escape_string(key))
+        result.push_str(":")
+        result.push_str(stringify_value(value))
+        first = false
+    }
+    result.push_str("}")
+    return result
+}
+
+// Escape a string for JSON output: wrap in quotes, escape special chars.
+func escape_string(s: string) -> string {
+    let result = string.new()
+    result.push('"')
+    let i: usize = 0
+    while i < s.len() {
+        const b = s.byte_at(i)
+        if b == 34 { result.push_str("\\\"") }
+        else if b == 92 { result.push_str("\\\\") }
+        else if b == 10 { result.push_str("\\n") }
+        else if b == 13 { result.push_str("\\r") }
+        else if b == 9 { result.push_str("\\t") }
+        else if b == 8 { result.push_str("\\b") }
+        else if b == 12 { result.push_str("\\f") }
+        else if b < 32 {
+            // Control characters: \u00XX
+            result.push_str("\\u00")
+            result.push(hex_char(b / 16))
+            result.push(hex_char(b % 16))
+        } else {
+            result.push(b as char)
+        }
+        i += 1
+    }
+    result.push('"')
+    return result
+}
+
+func hex_char(n: u8) -> char {
+    if n < 10 { return (48 + n) as char }
+    return (87 + n) as char
+}
+
+// Format a number for JSON output.
+// Integers (no fractional part) render without decimal point.
+func format_number(n: f64) -> string {
+    const i = n as i64
+    if (i as f64) == n && n >= -9007199254740992.0 && n <= 9007199254740992.0 {
+        return "{i}"
+    }
+    return "{n}"
+}
+
+// ─── Pretty-print internals ─────────────────────────────────────
+
+func stringify_pretty_inner(value: JsonValue, mutate out: string, indent: usize) {
+    match value {
+        JsonValue.Null => out.push_str("null"),
+        JsonValue.Bool(b) => {
+            if b { out.push_str("true") }
+            else { out.push_str("false") }
+        }
+        JsonValue.Number(n) => out.push_str(format_number(n)),
+        JsonValue.String(s) => out.push_str(escape_string(s)),
+        JsonValue.Array(arr) => {
+            if arr.is_empty() {
+                out.push_str("[]")
+                return
+            }
+            out.push_str("[\n")
+            let first = true
+            for item in arr {
+                if !first { out.push_str(",\n") }
+                write_indent(mutate out, indent + 1)
+                stringify_pretty_inner(item, mutate out, indent + 1)
+                first = false
+            }
+            out.push('\n')
+            write_indent(mutate out, indent)
+            out.push(']')
+        }
+        JsonValue.Object(map) => {
+            if map.is_empty() {
+                out.push_str("{}")
+                return
+            }
+            out.push_str("{\n")
+            let first = true
+            for (key, val) in map {
+                if !first { out.push_str(",\n") }
+                write_indent(mutate out, indent + 1)
+                out.push_str(escape_string(key))
+                out.push_str(": ")
+                stringify_pretty_inner(val, mutate out, indent + 1)
+                first = false
+            }
+            out.push('\n')
+            write_indent(mutate out, indent)
+            out.push('}')
+        }
+    }
+}
+
+func write_indent(mutate out: string, level: usize) {
+    let i: usize = 0
+    while i < level {
+        out.push_str("  ")
+        i += 1
+    }
 }

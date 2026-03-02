@@ -185,6 +185,8 @@ pub enum BuiltinModuleKind {
     Async,
     /// cfg - compile-time build configuration (CT11-CT16)
     Cfg,
+    /// http - HTTP client and server
+    Http,
 }
 
 /// A declared symbol.
