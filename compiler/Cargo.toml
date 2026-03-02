@@ -24,6 +24,7 @@ members = [
     "crates/rask-lint",
     "crates/rask-hidden-params",
     "crates/rask-semantic-hash",
+    "crates/rask-effects",
 ]
 
 [workspace.package]

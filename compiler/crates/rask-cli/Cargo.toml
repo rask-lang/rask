@@ -28,4 +28,5 @@ rask-mir = { path = "../rask-mir" }
 rask-codegen = { path = "../rask-codegen" }
 rask-stdlib = { path = "../rask-stdlib" }
 rask-hidden-params = { path = "../rask-hidden-params" }
+rask-effects = { path = "../rask-effects" }
 colored = "3"
