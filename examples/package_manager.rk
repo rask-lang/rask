@@ -5,9 +5,10 @@
 // dependency graph construction, lock file generation, and package fetching
 // from a local or HTTP registry.
 //
-// Demonstrates: Pool<T>/Handle<T> for dependency graphs, enum-based registry
-// dispatch, layered error types with cross-layer propagation, Map/Vec-heavy
-// algorithms, string parsing, file I/O with ensure cleanup, pattern matching
+// Demonstrates: Pool<T>/Handle<T> for dependency graphs, trait-based registry
+// dispatch with implicit `any Trait` coercion, layered error types with
+// cross-layer propagation, Map/Vec-heavy algorithms, string parsing, file I/O,
+// multi-line function signatures, try/else across lines, pattern matching
 // at scale.
 
 import fs
@@ -326,8 +327,8 @@ func parse_manifest(content: string) -> Manifest or ManifestError {
         }
 
         if in_block && trimmed.starts_with("dep ") {
-            const d = try parse_dep_line(trimmed, line_num)
-            deps.push(d)
+            const dep = try parse_dep_line(trimmed, line_num)
+            deps.push(dep)
             continue
         }
 
@@ -404,33 +405,33 @@ func parse_dep_line(line: string, line_num: i32) -> Dependency or ManifestError 
 
 // ─── Registry ───────────────────────────────────────────────────────
 //
-// Enum-based dispatch: local filesystem for testing, HTTP for real registries.
-// Using enum rather than `any Trait` for explicit dispatch.
+// Trait-based dispatch with implicit coercion (TR5). Functions accept
+// `any Registry`; concrete types coerce automatically at call sites.
 
-enum RegistrySource {
-    Local(string)       // root path
-    Http(string)        // base URL
-}
-
-// Local registry layout:
-//   root/<pkg>/index.json   → ["1.0.0", "1.1.0"]
-//   root/<pkg>/1.0.0/meta.json
-
-func registry_available(source: RegistrySource, name: string) -> Vec<PackageMeta> or RegistryError {
-    match source {
-        Local(root) => return local_available(root, name),
-        Http(base_url) => return http_available(base_url, name),
-    }
-}
-
-func registry_fetch(source: RegistrySource, name: string, version: Version) -> string or RegistryError {
-    match source {
-        Local(root) => return local_fetch(root, name, version),
-        Http(base_url) => return http_fetch(base_url, name, version),
-    }
+trait Registry {
+    func available(self, name: string) -> Vec<PackageMeta> or RegistryError
+    func fetch_package(self, name: string, version: Version) -> string or RegistryError
 }
 
 // ─── Local Registry ─────────────────────────────────────────────────
+//
+// Layout:
+//   root/<pkg>/index.json   → ["1.0.0", "1.1.0"]
+//   root/<pkg>/1.0.0/meta.json
+
+struct LocalRegistry {
+    root: string
+}
+
+extend LocalRegistry with Registry {
+    func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
+        return local_available(self.root, name)
+    }
+
+    func fetch_package(self, name: string, version: Version) -> string or RegistryError {
+        return local_fetch(self.root, name, version)
+    }
+}
 
 func local_available(root: string, name: string) -> Vec<PackageMeta> or RegistryError {
     // Read index file listing available versions
@@ -519,6 +520,20 @@ func load_package_meta(path: string) -> PackageMeta or RegistryError {
 
 // ─── HTTP Registry ──────────────────────────────────────────────────
 
+struct HttpRegistry {
+    base_url: string
+}
+
+extend HttpRegistry with Registry {
+    func available(self, name: string) -> Vec<PackageMeta> or RegistryError {
+        return http_available(self.base_url, name)
+    }
+
+    func fetch_package(self, name: string, version: Version) -> string or RegistryError {
+        return http_fetch(self.base_url, name, version)
+    }
+}
+
 func http_available(base_url: string, name: string) -> Vec<PackageMeta> or RegistryError {
     const url = "{base_url}/packages/{name}"
     const resp = http.get(url) is Ok(r) else {
@@ -599,15 +614,14 @@ func http_fetch(base_url: string, name: string, version: Version) -> string or R
 // satisfies the constraint. Detect conflicts when two constraints
 // for the same package are incompatible. Detect cycles via a visited set.
 
-// Bundle resolver working state into a struct to avoid nested generics
-// in function signatures (Map<string, Handle<T>> triggers parser >> ambiguity).
+// Bundle resolver working state: pool, name→handle map, and cycle-detection stack.
 struct ResolveState {
     packages: Pool<ResolvedPkg>
     by_name: Map<string, Handle<ResolvedPkg>>
     visiting: Vec<string>
 }
 
-func resolve(manifest: Manifest, source: RegistrySource) -> DepGraph or FetchError {
+func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchError {
     let state = ResolveState {
         packages: Pool.new(),
         by_name: Map.new(),
@@ -627,8 +641,8 @@ func resolve(manifest: Manifest, source: RegistrySource) -> DepGraph or FetchErr
     }) else |e| FetchError.Io("pool insert failed")
 
     // Resolve each dependency
-    for d in manifest.deps {
-        const handle = try resolve_one(d.name.clone(), d.constraint, source, mutate state)
+    for dep in manifest.deps {
+        const handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
         with state.packages[root] as root_pkg {
             root_pkg.deps.push(handle)
         }
@@ -641,7 +655,12 @@ func resolve(manifest: Manifest, source: RegistrySource) -> DepGraph or FetchErr
     })
 }
 
-func resolve_one(name: string, constraint: Constraint, source: RegistrySource, mutate state: ResolveState) -> Handle<ResolvedPkg> or FetchError {
+func resolve_one(
+    name: string,
+    constraint: Constraint,
+    registry: any Registry,
+    mutate state: ResolveState,
+) -> Handle<ResolvedPkg> or FetchError {
     // Check for circular dependency
     for v in state.visiting {
         if v == name {
@@ -672,7 +691,8 @@ func resolve_one(name: string, constraint: Constraint, source: RegistrySource, m
     }
 
     // Query registry for available versions
-    const versions = try registry_available(source, name) else |e| FetchError.Registry(e)
+    const versions = try registry.available(name)
+        else |e| FetchError.Registry(e)
 
     // Pick newest version satisfying constraint (maximal compatible)
     let best: PackageMeta? = None
@@ -708,8 +728,8 @@ func resolve_one(name: string, constraint: Constraint, source: RegistrySource, m
 
     // Recursively resolve transitive deps
     state.visiting.push(name.clone())
-    for d in meta.deps {
-        const dep_handle = try resolve_one(d.name.clone(), d.constraint, source, mutate state)
+    for dep in meta.deps {
+        const dep_handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
         with state.packages[handle] as pkg {
             pkg.deps.push(dep_handle)
         }
@@ -731,7 +751,11 @@ func format_cycle(chain: Vec<string>, name: string) -> string {
 
 // ─── Fetch Packages ─────────────────────────────────────────────────
 
-func fetch_packages(graph: DepGraph, source: RegistrySource, cache_dir: string) -> () or FetchError {
+func fetch_packages(
+    graph: DepGraph,
+    registry: any Registry,
+    cache_dir: string,
+) -> () or FetchError {
     const handles = graph.packages.handles()
     let fetched = 0
 
@@ -753,7 +777,8 @@ func fetch_packages(graph: DepGraph, source: RegistrySource, cache_dir: string) 
 
             // Fetch from registry
             println("  fetch   {name}@{ver_str}")
-            const pkg_path = try registry_fetch(source, name, version) else |e| FetchError.Registry(e)
+            const pkg_path = try registry.fetch_package(name, version)
+                else |e| FetchError.Registry(e)
 
             // Verify checksum (placeholder — real impl would SHA-256)
             // For now, just record that we fetched it
@@ -892,7 +917,12 @@ func topo_sort(graph: DepGraph) -> Vec<Handle<ResolvedPkg>> {
     return order
 }
 
-func topo_visit(graph: DepGraph, handle: Handle<ResolvedPkg>, mutate visited: Map<i64, bool>, mutate order: Vec<Handle<ResolvedPkg>>) {
+func topo_visit(
+    graph: DepGraph,
+    handle: Handle<ResolvedPkg>,
+    mutate visited: Map<i64, bool>,
+    mutate order: Vec<Handle<ResolvedPkg>>,
+) {
     const key = handle as i64
     if visited.contains_key(key) { return }
     visited.insert(key, true)
@@ -1074,15 +1104,15 @@ func print_usage() {
 
 // ─── Main ───────────────────────────────────────────────────────────
 
-func create_registry(args: CliArgs) -> RegistrySource {
+func create_registry(args: CliArgs) -> any Registry {
     if args.registry_type == "http" {
-        return RegistrySource.Http(args.registry_url)
+        return HttpRegistry { base_url: args.registry_url }
     }
-    return RegistrySource.Local(args.registry_path)
+    return LocalRegistry { root: args.registry_path }
 }
 
 func run(args: CliArgs) -> () or FetchError {
-    const source = create_registry(args)
+    const registry = create_registry(args)
 
     println("Loading manifest: {args.manifest_path}")
     const manifest = try load_manifest(args.manifest_path)
@@ -1093,20 +1123,20 @@ func run(args: CliArgs) -> () or FetchError {
     match args.command {
         "resolve" => {
             println("Resolving dependencies...")
-            const graph = try resolve(manifest, source)
+            const graph = try resolve(manifest, registry)
             print_dep_graph(graph)
         }
         "fetch" => {
             println("Resolving dependencies...")
-            const graph = try resolve(manifest, source)
+            const graph = try resolve(manifest, registry)
             print_dep_graph(graph)
             println("")
             println("Fetching packages to {args.cache_dir}...")
-            try fetch_packages(graph, source, args.cache_dir)
+            try fetch_packages(graph, registry, args.cache_dir)
         }
         "lock" => {
             println("Resolving dependencies...")
-            const graph = try resolve(manifest, source)
+            const graph = try resolve(manifest, registry)
 
             // Check against existing lock
             const old_lock = try read_lockfile(args.lock_path)
@@ -1124,7 +1154,7 @@ func run(args: CliArgs) -> () or FetchError {
             }
 
             println("Resolving dependencies...")
-            const graph = try resolve(manifest, source)
+            const graph = try resolve(manifest, registry)
 
             let drift = false
             const handles = graph.packages.handles()
