@@ -36,8 +36,8 @@ func main() {
 }
 ```
 
-- `const` creates an immutable binding
-- `let` creates a mutable binding (for values you'll reassign)
+- `const` creates a permanent binding — the name can't be reassigned, but the value is still mutable
+- `let` creates a rebindable name (for values you'll reassign)
 - Types are inferred, but you can write them explicitly: `const year: i64 = 2025`
 
 ## Functions
