@@ -46,6 +46,9 @@ extend string {
     /// Remove trailing whitespace.
     public func trim_end(self) -> string { }
 
+    /// Byte indices of trimmed content: (start, end).
+    public func trim_bounds(self) -> (usize, usize) { }
+
     /// Append a character.
     public func push(mutate self, c: char) { }
 
@@ -63,6 +66,9 @@ extend string {
 
     /// Iterate over characters.
     public func chars(self) -> Iterator<char> { }
+
+    /// Iterate over (byte_index, char) pairs.
+    public func char_indices(self) -> Iterator<(usize, char)> { }
 
     /// Iterate over bytes.
     public func bytes(self) -> Iterator<u8> { }

@@ -91,16 +91,17 @@ const BOOL_METHODS: &[&str] = &["eq"];
 const CHAR_METHODS: &[&str] = &[
     "is_whitespace", "is_alphabetic", "is_alphanumeric",
     "is_digit", "is_uppercase", "is_lowercase",
-    "to_uppercase", "to_lowercase", "eq",
+    "to_uppercase", "to_lowercase", "len_utf8",
+    "to_string", "eq",
 ];
 
 const STRING_METHODS: &[&str] = &[
     "len", "is_empty", "clone", "starts_with", "ends_with", "contains",
-    "push", "push_str", "trim", "trim_start", "trim_end",
+    "push", "push_str", "trim", "trim_start", "trim_end", "trim_bounds",
     "to_string", "to_owned", "to_uppercase", "to_lowercase",
-    "split", "split_whitespace", "chars", "lines",
+    "split", "split_whitespace", "chars", "char_indices", "bytes", "lines",
     "replace", "substring", "parse_int", "parse",
-    "char_at", "byte_at", "parse_float", "index_of",
+    "char_at", "byte_at", "parse_float", "find", "index_of", "rfind",
     "repeat", "reverse", "eq", "ne",
 ];
 
