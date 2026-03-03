@@ -8,6 +8,7 @@
 //! json.encode(struct), json.decode<T>(string).
 
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 use rask_ast::decl::StructDecl;
@@ -390,7 +391,7 @@ fn parse_json(input: &str) -> Result<Value, String> {
 /// Stringify a JsonValue (or any Value) into JSON.
 fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
     match value {
-        Value::Enum { name, variant, fields } if name == "JsonValue" => {
+        Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
             stringify_json_variant(variant, fields, pretty, indent)
         }
         // Also handle raw Rask values directly (for json.encode)
@@ -474,7 +475,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                 format!("{{{}}}", pairs.join(","))
             }
         }
-        Value::Enum { name, variant, fields } if name == "Option" => {
+        Value::Enum { name, variant, fields, .. } if name == "Option" => {
             match variant.as_str() {
                 "Some" => stringify_value(fields.first().unwrap_or(&Value::Unit), pretty, indent),
                 "None" => "null".to_string(),
@@ -583,18 +584,19 @@ fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
                 .collect();
             Ok(make_json_object(entries?))
         }
-        Value::Enum { name, variant, fields } if name == "Option" => {
+        Value::Enum { name, variant, fields, .. } if name == "Option" => {
             match variant.as_str() {
                 "Some" if !fields.is_empty() => value_to_json(&fields[0]),
                 _ => Ok(make_json_null()),
             }
         }
-        Value::Enum { name, variant, fields } if name == "JsonValue" => {
+        Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
             // Already a JsonValue, return as-is
             Ok(Value::Enum {
                 name: name.clone(),
                 variant: variant.clone(),
                 fields: fields.clone(),
+                variant_index: 0,
             })
         }
         _ => Err(RuntimeError::TypeError(format!(
@@ -611,6 +613,7 @@ fn make_json_null() -> Value {
         name: "JsonValue".to_string(),
         variant: "Null".to_string(),
         fields: vec![],
+        variant_index: 0,
     }
 }
 
@@ -619,6 +622,7 @@ fn make_json_bool(b: bool) -> Value {
         name: "JsonValue".to_string(),
         variant: "Bool".to_string(),
         fields: vec![Value::Bool(b)],
+        variant_index: 0,
     }
 }
 
@@ -627,6 +631,7 @@ fn make_json_number(n: f64) -> Value {
         name: "JsonValue".to_string(),
         variant: "Number".to_string(),
         fields: vec![Value::Float(n)],
+        variant_index: 0,
     }
 }
 
@@ -635,6 +640,7 @@ fn make_json_string(s: &str) -> Value {
         name: "JsonValue".to_string(),
         variant: "String".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(s.to_string())))],
+        variant_index: 0,
     }
 }
 
@@ -643,12 +649,13 @@ fn make_json_array(items: Vec<Value>) -> Value {
         name: "JsonValue".to_string(),
         variant: "Array".to_string(),
         fields: vec![Value::Vec(Arc::new(Mutex::new(items)))],
+        variant_index: 0,
     }
 }
 
 fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     // Store as a struct with string keys (like a Map)
-    let mut map = HashMap::new();
+    let mut map = IndexMap::new();
     for (k, v) in entries {
         map.insert(k, v);
     }
@@ -660,7 +667,8 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
             fields: map,
             resource_id: None,
         }],
-    }
+            variant_index: 0,
+        }
 }
 
 // ─── JSON Decode (typed deserialization) ───
@@ -685,7 +693,7 @@ fn json_to_typed(
                 .get(type_name)
                 .ok_or_else(|| format!("unknown type: {}", type_name))?;
             let obj_fields = extract_object_fields(raw)?;
-            let mut struct_fields = HashMap::new();
+            let mut struct_fields = IndexMap::new();
 
             for field in &decl.fields {
                 if let Some(json_field) = obj_fields.get(&field.name) {
@@ -760,6 +768,7 @@ fn unwrap_json_value(json: &Value) -> &Value {
             name,
             variant,
             fields,
+            ..
         } if name == "JsonValue" => match variant.as_str() {
             "String" | "Number" | "Bool" | "Array" | "Object" => {
                 fields.first().unwrap_or(json)
@@ -815,14 +824,14 @@ fn extract_array(v: &Value) -> Result<Vec<Value>, String> {
 }
 
 /// Extract fields from a JSON object (either a JsonValue.Object or a Map/Struct).
-fn extract_object_fields(v: &Value) -> Result<HashMap<String, Value>, String> {
+fn extract_object_fields(v: &Value) -> Result<IndexMap<String, Value>, String> {
     match v {
         // JsonValue.Object wraps a Struct named "Map" with field→value pairs
         Value::Struct { fields, .. } => Ok(fields.clone()),
         // Direct Map (from parsed JSON)
         Value::Map(m) => {
             let map = m.lock().unwrap();
-            let mut result = HashMap::new();
+            let mut result = IndexMap::new();
             for (k, v) in map.iter() {
                 let key = match k {
                     Value::String(s) => s.lock().unwrap().clone(),
@@ -843,6 +852,7 @@ fn make_result_ok(value: Value) -> Value {
         name: "Result".to_string(),
         variant: "Ok".to_string(),
         fields: vec![value],
+        variant_index: 0,
     }
 }
 
@@ -851,6 +861,7 @@ fn make_result_err(msg: &str) -> Value {
         name: "Result".to_string(),
         variant: "Err".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
+        variant_index: 0,
     }
 }
 
@@ -859,6 +870,7 @@ fn option_some(value: Value) -> Value {
         name: "Option".to_string(),
         variant: "Some".to_string(),
         fields: vec![value],
+        variant_index: 0,
     }
 }
 
@@ -867,5 +879,6 @@ fn option_none() -> Value {
         name: "Option".to_string(),
         variant: "None".to_string(),
         fields: vec![],
+        variant_index: 0,
     }
 }

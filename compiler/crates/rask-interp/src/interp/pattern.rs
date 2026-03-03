@@ -63,6 +63,7 @@ impl Interpreter {
                     name: enum_name,
                     variant,
                     fields: enum_fields,
+                    ..
                 } = value
                 {
                     // Handle qualified: "Message.Text" → enum "Message", variant "Text"
@@ -165,8 +166,8 @@ impl Interpreter {
             (Value::Float(a), Value::Float(b)) => a == b,
             (Value::Char(a), Value::Char(b)) => a == b,
             (Value::String(a), Value::String(b)) => *a.lock().unwrap() == *b.lock().unwrap(),
-            (Value::Enum { name: n1, variant: v1, fields: f1 },
-             Value::Enum { name: n2, variant: v2, fields: f2 }) => {
+            (Value::Enum { name: n1, variant: v1, fields: f1, .. },
+             Value::Enum { name: n2, variant: v2, fields: f2, .. }) => {
                 n1 == n2 && v1 == v2 && f1.len() == f2.len()
                     && f1.iter().zip(f2.iter()).all(|(a, b)| Self::value_eq(a, b))
             }
@@ -191,7 +192,7 @@ impl Interpreter {
             Value::Uint128(n) => n.hash(&mut hasher),
             Value::Char(c) => c.hash(&mut hasher),
             Value::String(s) => s.lock().unwrap().hash(&mut hasher),
-            Value::Enum { name, variant, fields } => {
+            Value::Enum { name, variant, fields, .. } => {
                 name.hash(&mut hasher);
                 variant.hash(&mut hasher);
                 for f in fields {
@@ -215,13 +216,41 @@ impl Interpreter {
     pub(crate) fn value_cmp(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         match (a, b) {
             (Value::Int(a), Value::Int(b)) => Some(a.cmp(b)),
+            (Value::Int128(a), Value::Int128(b)) => Some(a.cmp(b)),
+            (Value::Uint128(a), Value::Uint128(b)) => Some(a.cmp(b)),
             (Value::Float(a), Value::Float(b)) => a.partial_cmp(b),
             (Value::String(a), Value::String(b)) => {
                 Some(a.lock().unwrap().cmp(&*b.lock().unwrap()))
             }
             (Value::Bool(a), Value::Bool(b)) => Some(a.cmp(b)), // false < true
             (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
-            _ => None, // Other types are not comparable
+            // CO3: structs — lexicographic by field declaration order
+            // (IndexMap preserves insertion order = declaration order)
+            (Value::Struct { fields: f1, .. }, Value::Struct { fields: f2, .. }) => {
+                for ((_, v1), (_, v2)) in f1.iter().zip(f2.iter()) {
+                    match Self::value_cmp(v1, v2) {
+                        Some(std::cmp::Ordering::Equal) => continue,
+                        other => return other,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            }
+            // CO1: enums — variant order first, then payload
+            (Value::Enum { variant_index: i1, variant: v1, fields: f1, .. },
+             Value::Enum { variant_index: i2, variant: v2, fields: f2, .. }) => {
+                if v1 != v2 {
+                    return Some(i1.cmp(i2));
+                }
+                // Same variant — compare payloads lexicographically
+                for (a, b) in f1.iter().zip(f2.iter()) {
+                    match Self::value_cmp(a, b) {
+                        Some(std::cmp::Ordering::Equal) => continue,
+                        other => return other,
+                    }
+                }
+                Some(std::cmp::Ordering::Equal)
+            }
+            _ => None,
         }
     }
 }

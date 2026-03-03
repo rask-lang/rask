@@ -177,11 +177,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -301,12 +303,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![acc],
+                            variant_index: 0,
                         })
                     }
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -349,6 +353,7 @@ impl Interpreter {
                                     name: "Option".to_string(),
                                     variant: "Some".to_string(),
                                     fields: vec![item],
+                                    variant_index: 0,
                                 });
                             }
                         }
@@ -356,6 +361,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
+                            variant_index: 0,
                         }),
                     }
                 }
@@ -424,11 +430,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -456,11 +464,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -490,11 +500,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -524,11 +536,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -558,11 +572,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -592,11 +608,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }

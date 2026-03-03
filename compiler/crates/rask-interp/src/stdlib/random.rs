@@ -158,6 +158,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
+                            variant_index: 0,
                         })
                     } else {
                         let idx = (state.next_u64() as usize) % vec.len();
@@ -165,6 +166,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![vec[idx].clone()],
+                            variant_index: 0,
                         })
                     }
                 } else {

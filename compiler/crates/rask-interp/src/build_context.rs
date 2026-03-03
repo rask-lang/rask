@@ -7,6 +7,7 @@
 //! CLI after the build script finishes.
 
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -37,7 +38,7 @@ pub struct BuildState {
 impl BuildState {
     /// Create the `Value::Struct` that gets passed to `func build(ctx)`.
     pub fn to_value(&self) -> Value {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("package_name".into(), Value::String(Arc::new(Mutex::new(self.package_name.clone()))));
         fields.insert("package_version".into(), Value::String(Arc::new(Mutex::new(self.package_version.clone()))));
         fields.insert("package_dir".into(), make_path(&self.package_dir));
@@ -57,7 +58,7 @@ impl BuildState {
 
 /// Create a Path struct value from a PathBuf.
 fn make_path(p: &PathBuf) -> Value {
-    let mut fields = HashMap::new();
+    let mut fields = IndexMap::new();
     fields.insert(
         "value".into(),
         Value::String(Arc::new(Mutex::new(p.to_string_lossy().into_owned()))),
@@ -158,11 +159,13 @@ pub fn call_method(
                     name: "Option".into(),
                     variant: "Some".into(),
                     fields: vec![Value::String(Arc::new(Mutex::new(val)))],
+                    variant_index: 0,
                 }),
                 Err(_) => Ok(Value::Enum {
                     name: "Option".into(),
                     variant: "None".into(),
                     fields: vec![],
+                    variant_index: 0,
                 }),
             }
         }
@@ -237,6 +240,7 @@ pub fn call_method(
                             name: "Option".into(),
                             variant: "Some".into(),
                             fields: vec![make_path(&candidate)],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -245,6 +249,7 @@ pub fn call_method(
                 name: "Option".into(),
                 variant: "None".into(),
                 fields: vec![],
+                variant_index: 0,
             })
         }
 
