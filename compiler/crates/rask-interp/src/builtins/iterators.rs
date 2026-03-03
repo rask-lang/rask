@@ -400,6 +400,206 @@ impl Interpreter {
                 }
                 Ok(Value::Vec(Arc::new(Mutex::new(result))))
             }
+            "min" => {
+                let mut best: Option<Value> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            best = Some(match best.take() {
+                                None => item,
+                                Some(b) => {
+                                    if Self::value_cmp(&item, &b) == Some(std::cmp::Ordering::Less) {
+                                        item
+                                    } else {
+                                        b
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some(v) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            "max" => {
+                let mut best: Option<Value> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            best = Some(match best.take() {
+                                None => item,
+                                Some(b) => {
+                                    if Self::value_cmp(&item, &b) == Some(std::cmp::Ordering::Greater) {
+                                        item
+                                    } else {
+                                        b
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some(v) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            "min_by" => {
+                let cmp_fn = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut best: Option<Value> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            best = Some(match best.take() {
+                                None => item,
+                                Some(b) => {
+                                    let ord = self.call_value(cmp_fn.clone(), vec![item.clone(), b.clone()])?;
+                                    match ord {
+                                        Value::Enum { ref name, ref variant, .. } if name == "Ordering" && variant == "Less" => item,
+                                        Value::Int(n) if n < 0 => item,
+                                        _ => b,
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some(v) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            "max_by" => {
+                let cmp_fn = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut best: Option<Value> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            best = Some(match best.take() {
+                                None => item,
+                                Some(b) => {
+                                    let ord = self.call_value(cmp_fn.clone(), vec![item.clone(), b.clone()])?;
+                                    match ord {
+                                        Value::Enum { ref name, ref variant, .. } if name == "Ordering" && variant == "Greater" => item,
+                                        Value::Int(n) if n > 0 => item,
+                                        _ => b,
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some(v) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            "min_by_key" => {
+                let key_fn = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut best: Option<(Value, Value)> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            let key = self.call_value(key_fn.clone(), vec![item.clone()])?;
+                            best = Some(match best.take() {
+                                None => (item, key),
+                                Some((bi, bk)) => {
+                                    if Self::value_cmp(&key, &bk) == Some(std::cmp::Ordering::Less) {
+                                        (item, key)
+                                    } else {
+                                        (bi, bk)
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some((v, _)) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
+            "max_by_key" => {
+                let key_fn = args.into_iter().next().unwrap_or(Value::Unit);
+                let mut best: Option<(Value, Value)> = None;
+                loop {
+                    match self.iter_next(iter)? {
+                        Some(item) => {
+                            let key = self.call_value(key_fn.clone(), vec![item.clone()])?;
+                            best = Some(match best.take() {
+                                None => (item, key),
+                                Some((bi, bk)) => {
+                                    if Self::value_cmp(&key, &bk) == Some(std::cmp::Ordering::Greater) {
+                                        (item, key)
+                                    } else {
+                                        (bi, bk)
+                                    }
+                                }
+                            });
+                        }
+                        None => break,
+                    }
+                }
+                match best {
+                    Some((v, _)) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![v],
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                    }),
+                }
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "Iterator".to_string(),
                 method: method.to_string(),

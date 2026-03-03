@@ -208,6 +208,35 @@ impl Interpreter {
                 let b = self.expect_string(&args, 0)?;
                 Ok(Value::Bool(*s.lock().unwrap() != b))
             }
+            "lt" => {
+                let b = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(*s.lock().unwrap() < b))
+            }
+            "le" => {
+                let b = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(*s.lock().unwrap() <= b))
+            }
+            "gt" => {
+                let b = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(*s.lock().unwrap() > b))
+            }
+            "ge" => {
+                let b = self.expect_string(&args, 0)?;
+                Ok(Value::Bool(*s.lock().unwrap() >= b))
+            }
+            "compare" => {
+                let b = self.expect_string(&args, 0)?;
+                let ord = s.lock().unwrap().cmp(&b);
+                Ok(Value::Enum {
+                    name: "Ordering".to_string(),
+                    variant: match ord {
+                        std::cmp::Ordering::Less => "Less".to_string(),
+                        std::cmp::Ordering::Equal => "Equal".to_string(),
+                        std::cmp::Ordering::Greater => "Greater".to_string(),
+                    },
+                    fields: vec![],
+                })
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "string".to_string(),
                 method: method.to_string(),
