@@ -142,6 +142,7 @@ pub enum TypeConstructorKind {
     Pool,
     Channel,
     Shared,
+    Mutex,
     Atomic,
     Ordering,
 }
@@ -354,6 +355,8 @@ pub enum Value {
     AtomicU64(Arc<std::sync::atomic::AtomicU64>),
     /// Shared<T> (RwLock wrapper for concurrent read-heavy access)
     Shared(Arc<RwLock<Value>>),
+    /// Mutex<T> (exclusive lock wrapper)
+    RaskMutex(Arc<Mutex<Value>>),
     /// TCP listener socket (Option allows close to invalidate)
     TcpListener(Arc<Mutex<Option<std::net::TcpListener>>>),
     /// TCP connection (Option allows close to invalidate)
@@ -553,6 +556,7 @@ impl Value {
             Value::AtomicUsize(_) => "Atomic<usize>",
             Value::AtomicU64(_) => "Atomic<u64>",
             Value::Shared(_) => "Shared",
+            Value::RaskMutex(_) => "Mutex",
             Value::TcpListener(_) => "TcpListener",
             Value::TcpConnection(_) => "TcpConnection",
             Value::SimdF32x8(_) => "f32x8",
@@ -622,6 +626,10 @@ impl Value {
                     .map(|(k, v)| (k.deep_clone(), v.deep_clone()))
                     .collect();
                 Value::Map(Arc::new(Mutex::new(deep)))
+            }
+            Value::RaskMutex(m) => {
+                let inner = m.lock().unwrap();
+                Value::RaskMutex(Arc::new(std::sync::Mutex::new(inner.deep_clone())))
             }
             // Value types — regular clone is sufficient
             other => other.clone(),
@@ -741,6 +749,7 @@ impl fmt::Display for Value {
                     TypeConstructorKind::Pool => "Pool",
                     TypeConstructorKind::Channel => "Channel",
                     TypeConstructorKind::Shared => "Shared",
+                    TypeConstructorKind::Mutex => "Mutex",
                     TypeConstructorKind::Atomic => "Atomic",
                     TypeConstructorKind::Ordering => "Ordering",
                 };
@@ -826,6 +835,10 @@ impl fmt::Display for Value {
             Value::Shared(s) => {
                 let inner = s.read().unwrap();
                 write!(f, "Shared({})", inner)
+            }
+            Value::RaskMutex(m) => {
+                let inner = m.lock().unwrap();
+                write!(f, "Mutex({})", inner)
             }
             Value::AtomicBool(a) => {
                 write!(f, "Atomic<bool>({})", a.load(std::sync::atomic::Ordering::Relaxed))

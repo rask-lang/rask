@@ -1183,6 +1183,13 @@ impl Interpreter {
                 })?;
                 Ok(Value::Shared(Arc::new(RwLock::new(value))))
             }
+            (TypeConstructorKind::Mutex, "new") => {
+                let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                Ok(Value::RaskMutex(Arc::new(Mutex::new(value))))
+            }
             (TypeConstructorKind::Atomic, "new") => {
                 let value = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
