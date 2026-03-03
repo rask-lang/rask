@@ -139,7 +139,7 @@ func is_ordered_list_start(line: string) -> i32? {
 
     const num_str = line[0..dot_pos].to_string()
     for ch in num_str.chars() {
-        if !ch.is_digit() { return None }
+        if ch < '0' || ch > '9' { return None }
     }
     const n = num_str.parse_int() is Ok(v) else { return None }
     return Some(n as i32)
