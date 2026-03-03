@@ -6,4 +6,7 @@ struct net { }
 extend net {
     /// Listen for TCP connections on the given address.
     public func tcp_listen(addr: string) -> TcpListener or Error { }
+
+    /// Connect to a remote TCP address. Returns a connection or error.
+    public func tcp_connect(addr: string) -> TcpConnection or Error { }
 }
