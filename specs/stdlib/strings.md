@@ -451,12 +451,6 @@ for (i, c) in text.char_indices() {
 
 Current interpreter behavior differs from spec in some areas:
 
-**Iterator methods return Vec:**
-- `s.chars()` returns `Vec<char>` instead of expression-scoped iterator
-- `s.lines()` returns `Vec<string>` instead of expression-scoped slices
-- `s.split(pat)` returns `Vec<string>` instead of expression-scoped slices
-- `s.split_whitespace()` returns `Vec<string>` instead of expression-scoped slices
-
 **Trimming returns owned strings:**
 - `s.trim()`, `s.trim_start()`, `s.trim_end()` return new `string` instead of expression-scoped slices
 - This causes allocation but matches common usage patterns

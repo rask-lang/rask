@@ -313,9 +313,11 @@ const result = sb.to_string()
 if line.contains("error"): handle_error(line)
 if path.starts_with("/"): treat_as_absolute(path)
 
-// Splitting
-const parts = line.split(",")
-const words = text.split_whitespace()
+// Splitting — returns iterators, collect() for random access
+const parts = line.split(",").collect()
+for word in text.split_whitespace() {
+    process(word)
+}
 
 // Trimming
 const clean = input.trim()
