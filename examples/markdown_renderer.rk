@@ -80,7 +80,7 @@ enum Block {
 // ─── HTML Utilities ─────────────────────────────────────────────────
 
 func html_escape(input: string) -> string {
-    const builder = string_builder.new()
+    let builder = string_builder.new()
     for ch in input.chars() {
         match ch {
             '&' => builder.append("&amp;"),
@@ -175,6 +175,8 @@ extend Scanner {
         return self.input.char_at(idx)
     }
 
+    // BUG: advances by one *byte*, not one *char*. Breaks on multi-byte
+    // UTF-8. The spec provides no char.byte_len() to fix this properly.
     func advance(self) -> char? {
         const c = self.peek() is Some else { return None }
         self.pos += 1
@@ -477,15 +479,17 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
         if trimmed.starts_with("```") {
             const lang = trimmed[3..].trim().to_string()
             let code = string_builder.new()
+            let first_code_line = true
             i += 1
             while i < line_count {
                 if lines[i].trim() == "```" {
                     i += 1
                     break
                 }
-                if code.len() > 0 {
+                if !first_code_line {
                     code.append("\n")
                 }
+                first_code_line = false
                 code.append(lines[i])
                 i += 1
             }
@@ -521,7 +525,6 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
 
         // Unordered list: - item or * item
         if (trimmed.starts_with("- ") || trimmed.starts_with("* ")) {
-            const marker_char = trimmed.char_at(0) is Some(c) else { c }
             let items = Vec.new()
             while i < line_count {
                 const il = lines[i]
@@ -573,7 +576,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
                 }
 
                 if is_ordered_list_start(it) is Some {
-                    const dot_pos = it.find(".") is Some(p) else { p }
+                    const dot_pos = it.find(".") is Some(pos) else { continue }
                     const item_text = it[dot_pos + 2..].to_string()
                     const item_inlines = try parse_inline(item_text)
                     items.push(ListItem {
@@ -626,7 +629,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
 }
 
 func join_lines(lines: Vec<string>) -> string {
-    const builder = string_builder.new()
+    let builder = string_builder.new()
     let first = true
     for line in lines {
         if !first { builder.append("\n") }
@@ -645,6 +648,10 @@ trait Renderable {
     func render(self, mutate builder: string_builder, refs: Map<string, string>)
 }
 
+// NOTE: `children` uses default parameter mode (borrow), not `take`.
+// This matters: the renderer's `match self` borrows enum payloads, so we
+// can't move children out. The `for child in children` loop iterates in
+// value (read-only) mode over the borrowed Vec.
 func render_children<T: Renderable>(
     children: Vec<T>,
     mutate builder: string_builder,
@@ -778,23 +785,23 @@ func render_markdown(input: string) -> string or RenderError {
     const refs = parse_references(input)
     const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
-    let builder = string_builder.new()
-    render_children(blocks, mutate builder, refs)
-    return Ok(builder.build())
+    let out = string_builder.new()
+    render_children(blocks, mutate out, refs)
+    return Ok(out.build())
 }
 
 func render_full_page(input: string) -> string or RenderError {
     const body = try render_markdown(input)
 
-    let builder = string_builder.new()
-    builder.append("<!DOCTYPE html>\n")
-    builder.append("<html>\n<head>\n")
-    builder.append("<meta charset=\"utf-8\">\n")
-    builder.append("<title>Rendered Markdown</title>\n")
-    builder.append("</head>\n<body>\n")
-    builder.append(body)
-    builder.append("</body>\n</html>\n")
-    return Ok(builder.build())
+    let out = string_builder.new()
+    out.append("<!DOCTYPE html>\n")
+    out.append("<html>\n<head>\n")
+    out.append("<meta charset=\"utf-8\">\n")
+    out.append("<title>Rendered Markdown</title>\n")
+    out.append("</head>\n<body>\n")
+    out.append(body)
+    out.append("</body>\n</html>\n")
+    return Ok(out.build())
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────
