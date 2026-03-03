@@ -80,7 +80,7 @@ enum Block {
 // ─── HTML Utilities ─────────────────────────────────────────────────
 
 func html_escape(input: string) -> string {
-    let builder = string_builder.new()
+    const builder = string_builder.new()
     for ch in input.chars() {
         match ch {
             '&' => builder.append("&amp;"),
@@ -175,11 +175,9 @@ extend Scanner {
         return self.input.char_at(idx)
     }
 
-    // BUG: advances by one *byte*, not one *char*. Breaks on multi-byte
-    // UTF-8. The spec provides no char.byte_len() to fix this properly.
     func advance(self) -> char? {
         const c = self.peek() is Some else { return None }
-        self.pos += 1
+        self.pos += c.len_utf8()
         return Some(c)
     }
 
@@ -204,7 +202,8 @@ extend Scanner {
                 self.pos += target.len()
                 return Some(result)
             }
-            self.pos += 1
+            const c = self.peek() is Some else { break }
+            self.pos += c.len_utf8()
         }
         return None
     }
@@ -214,10 +213,10 @@ extend Scanner {
         while self.peek() is Some(c) {
             if c == target {
                 const result = self.input[start..self.pos].to_string()
-                self.pos += 1
+                self.pos += target.len_utf8()
                 return Some(result)
             }
-            self.pos += 1
+            self.pos += c.len_utf8()
         }
         return None
     }
@@ -432,7 +431,7 @@ func parse_inline_until(
 // Line-by-line state machine that produces Block AST nodes.
 
 func parse_blocks(input: string) -> Vec<Block> or ParseError {
-    const lines = input.lines()
+    const lines = input.lines().collect()
     let blocks = Vec.new()
     let i = 0
     const line_count = lines.len()
@@ -478,7 +477,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
         // Fenced code block: ```
         if trimmed.starts_with("```") {
             const lang = trimmed[3..].trim().to_string()
-            let code = string_builder.new()
+            const code = string_builder.new()
             let first_code_line = true
             i += 1
             while i < line_count {
@@ -629,14 +628,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
 }
 
 func join_lines(lines: Vec<string>) -> string {
-    let builder = string_builder.new()
-    let first = true
-    for line in lines {
-        if !first { builder.append("\n") }
-        builder.append(line)
-        first = false
-    }
-    return builder.build()
+    return lines.join("\n")
 }
 
 // ─── Renderer ───────────────────────────────────────────────────────
@@ -785,7 +777,7 @@ func render_markdown(input: string) -> string or RenderError {
     const refs = parse_references(input)
     const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
-    let out = string_builder.new()
+    const out = string_builder.new()
     render_children(blocks, mutate out, refs)
     return Ok(out.build())
 }
@@ -793,7 +785,7 @@ func render_markdown(input: string) -> string or RenderError {
 func render_full_page(input: string) -> string or RenderError {
     const body = try render_markdown(input)
 
-    let out = string_builder.new()
+    const out = string_builder.new()
     out.append("<!DOCTYPE html>\n")
     out.append("<html>\n<head>\n")
     out.append("<meta charset=\"utf-8\">\n")
