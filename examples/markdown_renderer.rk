@@ -1,0 +1,1040 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Markdown-to-HTML Renderer — Stress Test Application
+//
+// Converts a subset of CommonMark to HTML. Exercises recursive ASTs via
+// Owned<T>, string_builder for output assembly, trait composition (Renderable),
+// user-defined generics, closures, iterator adapters, and layered error types.
+//
+// Complements package_manager.rk: that stress test covers Pool/Handle graphs
+// and trait-based registry dispatch; this one covers recursive data structures,
+// heavy string manipulation, and character-level parsing.
+
+import fs
+import cli
+import std
+
+// ─── Error Types ────────────────────────────────────────────────────
+
+enum ParseError {
+    UnexpectedEnd(string)
+    InvalidNesting(string)
+    InvalidLink(i32, string)
+}
+
+extend ParseError {
+    func message(self) -> string {
+        match self {
+            UnexpectedEnd(ctx) => return "unexpected end of input: {ctx}",
+            InvalidNesting(ctx) => return "invalid nesting: {ctx}",
+            InvalidLink(line, msg) => return "line {line}: invalid link: {msg}",
+        }
+    }
+}
+
+enum RenderError {
+    Parse(ParseError)
+    Io(string)
+}
+
+extend RenderError {
+    func message(self) -> string {
+        match self {
+            Parse(e) => return "parse error: {e.message()}",
+            Io(msg) => return "I/O error: {msg}",
+        }
+    }
+}
+
+// ─── AST Types ──────────────────────────────────────────────────────
+//
+// Two-level AST: blocks (line-oriented) and inlines (character-oriented).
+// Inlines are recursive — Bold contains Vec<Inline>, exercising Owned<T>
+// inside enum variants.
+
+enum Inline {
+    Text(string)
+    Bold(Vec<Inline>)
+    Italic(Vec<Inline>)
+    Code(string)
+    Link(string, Vec<Inline>)       // url, display content
+    Image(string, string)           // url, alt text
+    RefLink(string, Vec<Inline>)    // ref id, display content
+    LineBreak
+}
+
+struct ListItem {
+    content: Vec<Inline>
+    children: Vec<Block>
+}
+
+enum Block {
+    Heading(i32, Vec<Inline>)
+    Paragraph(Vec<Inline>)
+    CodeBlock(string, string)       // language, code
+    Blockquote(Vec<Block>)
+    UnorderedList(Vec<ListItem>)
+    OrderedList(i32, Vec<ListItem>) // start number, items
+    HorizontalRule
+}
+
+// ─── HTML Utilities ─────────────────────────────────────────────────
+
+func html_escape(input: string) -> string {
+    const builder = string_builder.new()
+    for ch in input.chars() {
+        match ch {
+            '&' => builder.append("&amp;"),
+            '<' => builder.append("&lt;"),
+            '>' => builder.append("&gt;"),
+            '"' => builder.append("&quot;"),
+            '\'' => builder.append("&#39;"),
+            _ => builder.append_char(ch),
+        }
+    }
+    return builder.build()
+}
+
+func count_leading(line: string, ch: char) -> i32 {
+    let count = 0
+    for c in line.chars() {
+        if c != ch { break }
+        count += 1
+    }
+    return count
+}
+
+func is_blank_line(line: string) -> bool {
+    return line.trim().is_empty()
+}
+
+func is_hr_line(line: string) -> bool {
+    const trimmed = line.trim()
+    if trimmed.len() < 3 { return false }
+
+    // All same char: '-' or '*' or '_', ignoring spaces
+    const first = trimmed.char_at(0) is Some(c) else { return false }
+    if first != '-' && first != '*' && first != '_' { return false }
+
+    let count = 0
+    for ch in trimmed.chars() {
+        if ch == first {
+            count += 1
+        } else if ch != ' ' {
+            return false
+        }
+    }
+    return count >= 3
+}
+
+func is_ordered_list_start(line: string) -> i32? {
+    // Returns start number if line matches "N. " pattern, else None
+    const dot_pos = line.find(".") is Some(p) else { return None }
+    if dot_pos == 0 { return None }
+    if dot_pos + 1 >= line.len() { return None }
+    if line.char_at(dot_pos + 1) is Some(c) {
+        if c != ' ' { return None }
+    } else {
+        return None
+    }
+
+    const num_str = line[0..dot_pos].to_string()
+    for ch in num_str.chars() {
+        if !ch.is_digit() { return None }
+    }
+    const n = num_str.parse_int() is Ok(v) else { return None }
+    return Some(n as i32)
+}
+
+// ─── Scanner ────────────────────────────────────────────────────────
+//
+// Character-level cursor for inline parsing. Similar to the Lexer in
+// cli_calculator.rk but with richer string operations.
+
+struct Scanner {
+    input: string
+    pos: usize
+}
+
+extend Scanner {
+    func new(input: string) -> Scanner {
+        return Scanner { input: input, pos: 0 as usize }
+    }
+
+    func is_done(self) -> bool {
+        return self.pos >= self.input.len()
+    }
+
+    func peek(self) -> char? {
+        if self.is_done() { return None }
+        return self.input.char_at(self.pos)
+    }
+
+    func peek_at(self, offset: usize) -> char? {
+        const idx = self.pos + offset
+        if idx >= self.input.len() { return None }
+        return self.input.char_at(idx)
+    }
+
+    func advance(self) -> char? {
+        const c = self.peek() is Some else { return None }
+        self.pos += 1
+        return Some(c)
+    }
+
+    func matches(self, s: string) -> bool {
+        if self.pos + s.len() > self.input.len() { return false }
+        return self.input[self.pos..self.pos + s.len()] == s
+    }
+
+    func consume(self, s: string) -> bool {
+        if self.matches(s) {
+            self.pos += s.len()
+            return true
+        }
+        return false
+    }
+
+    func scan_until(self, target: string) -> string? {
+        const start = self.pos
+        while !self.is_done() {
+            if self.matches(target) {
+                const result = self.input[start..self.pos].to_string()
+                self.pos += target.len()
+                return Some(result)
+            }
+            self.pos += 1
+        }
+        return None
+    }
+
+    func scan_until_char(self, target: char) -> string? {
+        const start = self.pos
+        while self.peek() is Some(c) {
+            if c == target {
+                const result = self.input[start..self.pos].to_string()
+                self.pos += 1
+                return Some(result)
+            }
+            self.pos += 1
+        }
+        return None
+    }
+
+    func remaining(self) -> string {
+        if self.is_done() { return "" }
+        return self.input[self.pos..].to_string()
+    }
+}
+
+// ─── Reference Link Parser ─────────────────────────────────────────
+//
+// First pass: extract [id]: url definitions from the input.
+// These are removed from the document and stored for later resolution.
+
+func parse_references(input: string) -> Map<string, string> {
+    let refs = Map.new()
+
+    for line in input.lines() {
+        const trimmed = line.trim()
+
+        // Match pattern: [id]: url
+        if !trimmed.starts_with("[") { continue }
+
+        const close = trimmed.find("]:") is Some(pos) else { continue }
+        const id = trimmed[1..close].to_string().to_lowercase()
+        if id.is_empty() { continue }
+
+        const url = trimmed[close + 2..].trim().to_string()
+        if url.is_empty() { continue }
+
+        refs.insert(id, url)
+    }
+
+    return refs
+}
+
+func is_reference_def(line: string) -> bool {
+    const trimmed = line.trim()
+    if !trimmed.starts_with("[") { return false }
+    const close = trimmed.find("]:") is Some else { return false }
+    return true
+}
+
+// ─── Inline Parser ──────────────────────────────────────────────────
+//
+// Character-by-character parser using Scanner. Handles nested bold/italic
+// via recursive descent. This is the most string-intensive part.
+
+func parse_inline(text: string) -> Vec<Inline> or ParseError {
+    let scanner = Scanner.new(text)
+    return parse_inline_until(mutate scanner, "")
+}
+
+func parse_inline_until(
+    mutate scanner: Scanner,
+    stop: string,
+) -> Vec<Inline> or ParseError {
+    let result = Vec.new()
+    let text_buf = string_builder.new()
+
+    const flush_text = |mutate result: Vec<Inline>, mutate text_buf: string_builder| {
+        const built = text_buf.build()
+        if !built.is_empty() {
+            result.push(Inline.Text(built))
+            text_buf = string_builder.new()
+        }
+    }
+
+    while !scanner.is_done() {
+        // Check for stop sequence
+        if !stop.is_empty() && scanner.matches(stop) {
+            scanner.consume(stop)
+            flush_text(mutate result, mutate text_buf)
+            return Ok(result)
+        }
+
+        // Escaped character
+        if scanner.matches("\\") {
+            scanner.advance()
+            if scanner.peek() is Some(c) {
+                scanner.advance()
+                text_buf.append_char(c)
+                continue
+            }
+        }
+
+        // Bold: **text**
+        if scanner.matches("**") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.consume("**")
+            const children = try parse_inline_until(mutate scanner, "**")
+            result.push(Inline.Bold(children))
+            continue
+        }
+
+        // Italic: *text*
+        if scanner.matches("*") && !scanner.matches("**") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.consume("*")
+            const children = try parse_inline_until(mutate scanner, "*")
+            result.push(Inline.Italic(children))
+            continue
+        }
+
+        // Inline code: `code`
+        if scanner.matches("`") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.advance()
+            const code = scanner.scan_until_char('`') is Some(s) else {
+                // No closing backtick — treat as literal
+                text_buf.append_char('`')
+                continue
+            }
+            result.push(Inline.Code(code))
+            continue
+        }
+
+        // Image: ![alt](url)
+        if scanner.matches("![") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.consume("![")
+            const alt = scanner.scan_until_char(']') is Some(s) else {
+                text_buf.append("![")
+                continue
+            }
+            if !scanner.consume("(") {
+                text_buf.append("![")
+                text_buf.append(alt)
+                text_buf.append_char(']')
+                continue
+            }
+            const url = scanner.scan_until_char(')') is Some(s) else {
+                text_buf.append("![")
+                text_buf.append(alt)
+                text_buf.append("](")
+                continue
+            }
+            result.push(Inline.Image(url, alt))
+            continue
+        }
+
+        // Link: [text](url) or reference link: [text][id]
+        if scanner.matches("[") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.advance()
+
+            // Save position to backtrack on failure
+            const link_start = scanner.pos
+            const text_content = scanner.scan_until_char(']') is Some(s) else {
+                text_buf.append_char('[')
+                continue
+            }
+
+            if scanner.matches("(") {
+                // Inline link: [text](url)
+                scanner.advance()
+                const url = scanner.scan_until_char(')') is Some(s) else {
+                    text_buf.append_char('[')
+                    text_buf.append(text_content)
+                    text_buf.append("](")
+                    continue
+                }
+                const link_inlines = try parse_inline(text_content)
+                result.push(Inline.Link(url, link_inlines))
+            } else if scanner.matches("[") {
+                // Reference link: [text][id]
+                scanner.advance()
+                const ref_id = scanner.scan_until_char(']') is Some(s) else {
+                    text_buf.append_char('[')
+                    text_buf.append(text_content)
+                    text_buf.append("][")
+                    continue
+                }
+                const link_inlines = try parse_inline(text_content)
+                result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
+            } else {
+                // Not a link — emit as plain text
+                text_buf.append_char('[')
+                text_buf.append(text_content)
+                text_buf.append_char(']')
+            }
+            continue
+        }
+
+        // Line break: two trailing spaces before newline
+        if scanner.matches("  \n") {
+            flush_text(mutate result, mutate text_buf)
+            scanner.consume("  \n")
+            result.push(Inline.LineBreak)
+            continue
+        }
+
+        // Regular character
+        const ch = scanner.advance() is Some else { break }
+        text_buf.append_char(ch)
+    }
+
+    flush_text(mutate result, mutate text_buf)
+
+    // If we expected a stop sequence but hit end of input, that's OK for
+    // top-level parsing (stop == ""), but an error for nested delimiters.
+    if !stop.is_empty() {
+        return Err(ParseError.UnexpectedEnd("expected closing '{stop}'"))
+    }
+
+    return Ok(result)
+}
+
+// ─── Block Parser ───────────────────────────────────────────────────
+//
+// Line-by-line state machine that produces Block AST nodes.
+
+func parse_blocks(input: string) -> Vec<Block> or ParseError {
+    const lines = input.lines()
+    let blocks = Vec.new()
+    let i = 0
+    const line_count = lines.len()
+
+    while i < line_count {
+        const line = lines[i]
+        const trimmed = line.trim()
+
+        // Skip reference definitions (already extracted)
+        if is_reference_def(line) {
+            i += 1
+            continue
+        }
+
+        // Blank lines
+        if is_blank_line(line) {
+            i += 1
+            continue
+        }
+
+        // Horizontal rule (must check before unordered list)
+        if is_hr_line(trimmed) {
+            blocks.push(Block.HorizontalRule)
+            i += 1
+            continue
+        }
+
+        // ATX heading: # through ######
+        if trimmed.starts_with("#") {
+            const level = count_leading(trimmed, '#')
+            if level >= 1 && level <= 6 {
+                const after_hashes = trimmed[level..].to_string()
+                if after_hashes.is_empty() || after_hashes.starts_with(" ") {
+                    const heading_text = after_hashes.trim()
+                    const inlines = try parse_inline(heading_text)
+                    blocks.push(Block.Heading(level, inlines))
+                    i += 1
+                    continue
+                }
+            }
+        }
+
+        // Fenced code block: ```
+        if trimmed.starts_with("```") {
+            const lang = trimmed[3..].trim().to_string()
+            let code = string_builder.new()
+            i += 1
+            while i < line_count {
+                if lines[i].trim() == "```" {
+                    i += 1
+                    break
+                }
+                if code.len() > 0 {
+                    code.append("\n")
+                }
+                code.append(lines[i])
+                i += 1
+            }
+            blocks.push(Block.CodeBlock(lang, code.build()))
+            continue
+        }
+
+        // Blockquote: > text
+        if trimmed.starts_with(">") {
+            let quote_lines = Vec.new()
+            while i < line_count {
+                const ql = lines[i].trim()
+                if !ql.starts_with(">") && !is_blank_line(lines[i]) {
+                    break
+                }
+                if is_blank_line(lines[i]) {
+                    // Blank line inside blockquote — keep it
+                    quote_lines.push("")
+                } else if ql.starts_with("> ") {
+                    quote_lines.push(ql[2..].to_string())
+                } else if ql == ">" {
+                    quote_lines.push("")
+                } else {
+                    break
+                }
+                i += 1
+            }
+            const inner = join_lines(quote_lines)
+            const inner_blocks = try parse_blocks(inner)
+            blocks.push(Block.Blockquote(inner_blocks))
+            continue
+        }
+
+        // Unordered list: - item or * item
+        if (trimmed.starts_with("- ") || trimmed.starts_with("* ")) {
+            const marker_char = trimmed.char_at(0) is Some(c) else { c }
+            let items = Vec.new()
+            while i < line_count {
+                const il = lines[i]
+                const it = il.trim()
+
+                const is_item = it.starts_with("- ") || it.starts_with("* ")
+                if !is_item && !is_blank_line(il) && !il.starts_with("  ") {
+                    break
+                }
+                if is_blank_line(il) {
+                    i += 1
+                    continue
+                }
+
+                if is_item {
+                    const item_text = it[2..].to_string()
+                    const item_inlines = try parse_inline(item_text)
+                    items.push(ListItem {
+                        content: item_inlines,
+                        children: Vec.new(),
+                    })
+                    i += 1
+                } else {
+                    // Continuation / nested content — attach to last item
+                    if !items.is_empty() {
+                        const nested_text = il.trim()
+                        const nested_inlines = try parse_inline(nested_text)
+                        with items[items.len() - 1] as last_item {
+                            last_item.children.push(Block.Paragraph(nested_inlines))
+                        }
+                    }
+                    i += 1
+                }
+            }
+            blocks.push(Block.UnorderedList(items))
+            continue
+        }
+
+        // Ordered list: 1. item
+        if is_ordered_list_start(trimmed) is Some(start_num) {
+            let items = Vec.new()
+            while i < line_count {
+                const il = lines[i]
+                const it = il.trim()
+
+                if is_blank_line(il) {
+                    i += 1
+                    continue
+                }
+
+                if is_ordered_list_start(it) is Some {
+                    const dot_pos = it.find(".") is Some(p) else { p }
+                    const item_text = it[dot_pos + 2..].to_string()
+                    const item_inlines = try parse_inline(item_text)
+                    items.push(ListItem {
+                        content: item_inlines,
+                        children: Vec.new(),
+                    })
+                    i += 1
+                } else if it.starts_with("  ") || it.starts_with("\t") {
+                    // Continuation
+                    if !items.is_empty() {
+                        const nested_inlines = try parse_inline(it.trim())
+                        with items[items.len() - 1] as last_item {
+                            last_item.children.push(Block.Paragraph(nested_inlines))
+                        }
+                    }
+                    i += 1
+                } else {
+                    break
+                }
+            }
+            blocks.push(Block.OrderedList(start_num, items))
+            continue
+        }
+
+        // Paragraph: collect consecutive non-blank, non-special lines
+        let para_lines = Vec.new()
+        while i < line_count {
+            const pl = lines[i]
+            const pt = pl.trim()
+            if is_blank_line(pl) { break }
+            if is_reference_def(pl) { break }
+            if pt.starts_with("#") { break }
+            if pt.starts_with("```") { break }
+            if pt.starts_with(">") { break }
+            if is_hr_line(pt) { break }
+            if pt.starts_with("- ") || pt.starts_with("* ") { break }
+            if is_ordered_list_start(pt) is Some { break }
+            para_lines.push(pl)
+            i += 1
+        }
+
+        if !para_lines.is_empty() {
+            const para_text = join_lines(para_lines)
+            const inlines = try parse_inline(para_text)
+            blocks.push(Block.Paragraph(inlines))
+        }
+    }
+
+    return Ok(blocks)
+}
+
+func join_lines(lines: Vec<string>) -> string {
+    const builder = string_builder.new()
+    let first = true
+    for line in lines {
+        if !first { builder.append("\n") }
+        builder.append(line)
+        first = false
+    }
+    return builder.build()
+}
+
+// ─── Renderer ───────────────────────────────────────────────────────
+//
+// Trait-based rendering: both Block and Inline implement Renderable.
+// Uses string_builder throughout for efficient HTML assembly.
+
+trait Renderable {
+    func render(self, mutate builder: string_builder, refs: Map<string, string>)
+}
+
+func render_children<T: Renderable>(
+    children: Vec<T>,
+    mutate builder: string_builder,
+    refs: Map<string, string>,
+) {
+    for child in children {
+        child.render(mutate builder, refs)
+    }
+}
+
+extend Inline with Renderable {
+    func render(self, mutate builder: string_builder, refs: Map<string, string>) {
+        match self {
+            Text(s) => builder.append(html_escape(s)),
+            Bold(children) => {
+                builder.append("<strong>")
+                render_children(children, mutate builder, refs)
+                builder.append("</strong>")
+            }
+            Italic(children) => {
+                builder.append("<em>")
+                render_children(children, mutate builder, refs)
+                builder.append("</em>")
+            }
+            Code(s) => {
+                builder.append("<code>")
+                builder.append(html_escape(s))
+                builder.append("</code>")
+            }
+            Link(url, children) => {
+                builder.append("<a href=\"")
+                builder.append(html_escape(url))
+                builder.append("\">")
+                render_children(children, mutate builder, refs)
+                builder.append("</a>")
+            }
+            Image(url, alt) => {
+                builder.append("<img src=\"")
+                builder.append(html_escape(url))
+                builder.append("\" alt=\"")
+                builder.append(html_escape(alt))
+                builder.append("\">")
+            }
+            RefLink(id, children) => {
+                const url = refs.get(id) ?? ""
+                if !url.is_empty() {
+                    builder.append("<a href=\"")
+                    builder.append(html_escape(url))
+                    builder.append("\">")
+                    render_children(children, mutate builder, refs)
+                    builder.append("</a>")
+                } else {
+                    // Unresolved ref — emit as plain text
+                    builder.append("[")
+                    render_children(children, mutate builder, refs)
+                    builder.append("]")
+                }
+            }
+            LineBreak => builder.append("<br>\n"),
+        }
+    }
+}
+
+func render_list_item(
+    item: ListItem,
+    mutate builder: string_builder,
+    refs: Map<string, string>,
+) {
+    builder.append("<li>")
+    render_children(item.content, mutate builder, refs)
+    if !item.children.is_empty() {
+        builder.append("\n")
+        render_children(item.children, mutate builder, refs)
+    }
+    builder.append("</li>\n")
+}
+
+extend Block with Renderable {
+    func render(self, mutate builder: string_builder, refs: Map<string, string>) {
+        match self {
+            Heading(level, inlines) => {
+                builder.append("<h{level}>")
+                render_children(inlines, mutate builder, refs)
+                builder.append("</h{level}>\n")
+            }
+            Paragraph(inlines) => {
+                builder.append("<p>")
+                render_children(inlines, mutate builder, refs)
+                builder.append("</p>\n")
+            }
+            CodeBlock(lang, code) => {
+                if !lang.is_empty() {
+                    builder.append("<pre><code class=\"language-{lang}\">")
+                } else {
+                    builder.append("<pre><code>")
+                }
+                builder.append(html_escape(code))
+                builder.append("</code></pre>\n")
+            }
+            Blockquote(blocks) => {
+                builder.append("<blockquote>\n")
+                render_children(blocks, mutate builder, refs)
+                builder.append("</blockquote>\n")
+            }
+            UnorderedList(items) => {
+                builder.append("<ul>\n")
+                for item in items {
+                    render_list_item(item, mutate builder, refs)
+                }
+                builder.append("</ul>\n")
+            }
+            OrderedList(start, items) => {
+                if start != 1 {
+                    builder.append("<ol start=\"{start}\">\n")
+                } else {
+                    builder.append("<ol>\n")
+                }
+                for item in items {
+                    render_list_item(item, mutate builder, refs)
+                }
+                builder.append("</ol>\n")
+            }
+            HorizontalRule => builder.append("<hr>\n"),
+        }
+    }
+}
+
+// ─── Orchestrator ───────────────────────────────────────────────────
+
+func render_markdown(input: string) -> string or RenderError {
+    const refs = parse_references(input)
+    const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
+
+    let builder = string_builder.new()
+    render_children(blocks, mutate builder, refs)
+    return Ok(builder.build())
+}
+
+func render_full_page(input: string) -> string or RenderError {
+    const body = try render_markdown(input)
+
+    let builder = string_builder.new()
+    builder.append("<!DOCTYPE html>\n")
+    builder.append("<html>\n<head>\n")
+    builder.append("<meta charset=\"utf-8\">\n")
+    builder.append("<title>Rendered Markdown</title>\n")
+    builder.append("</head>\n<body>\n")
+    builder.append(body)
+    builder.append("</body>\n</html>\n")
+    return Ok(builder.build())
+}
+
+// ─── CLI ────────────────────────────────────────────────────────────
+
+func print_usage() {
+    println("markdown_renderer: convert Markdown to HTML")
+    println("")
+    println("Usage: markdown_renderer [OPTIONS] <input.md>")
+    println("")
+    println("Options:")
+    println("  --stdout       Print to stdout instead of writing a file")
+    println("  --fragment     Output HTML fragment (no <html> wrapper)")
+    println("  -o PATH        Output file path (default: input with .html extension)")
+    println("  -h, --help     Show this help")
+}
+
+func main() {
+    const args = cli.args()
+    let input_path = ""
+    let output_path = ""
+    let use_stdout = false
+    let fragment = false
+    let i = 1
+
+    while i < args.len() {
+        const arg = args[i]
+        match arg {
+            "--stdout" => use_stdout = true,
+            "--fragment" => fragment = true,
+            "-o" => {
+                i += 1
+                if i < args.len() {
+                    output_path = args[i].to_string()
+                }
+            }
+            "-h" | "--help" => {
+                print_usage()
+                std.exit(0)
+            }
+            _ => {
+                if arg.starts_with("-") {
+                    println("Unknown option: {arg}")
+                    print_usage()
+                    std.exit(1)
+                }
+                input_path = arg.to_string()
+            }
+        }
+        i += 1
+    }
+
+    if input_path.is_empty() {
+        println("Error: no input file specified")
+        print_usage()
+        std.exit(1)
+    }
+
+    const content = match fs.read_file(input_path) {
+        Ok(c) => c,
+        Err(e) => {
+            println("Error: cannot read {input_path}: {e}")
+            std.exit(1)
+        }
+    }
+
+    const result = if fragment {
+        render_markdown(content)
+    } else {
+        render_full_page(content)
+    }
+
+    const html = match result {
+        Ok(h) => h,
+        Err(e) => {
+            println("Error: {e.message()}")
+            std.exit(1)
+        }
+    }
+
+    if use_stdout {
+        print(html)
+    } else {
+        if output_path.is_empty() {
+            // Replace .md with .html
+            if input_path.ends_with(".md") {
+                output_path = input_path[0..input_path.len() - 3].to_string() + ".html"
+            } else {
+                output_path = input_path + ".html"
+            }
+        }
+
+        match fs.write_file(output_path, html) {
+            Ok(()) => println("Written: {output_path}"),
+            Err(e) => {
+                println("Error: cannot write {output_path}: {e}")
+                std.exit(1)
+            }
+        }
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "html escaping" {
+    assert html_escape("a & b") == "a &amp; b"
+    assert html_escape("<script>") == "&lt;script&gt;"
+    assert html_escape("\"hello\"") == "&quot;hello&quot;"
+    assert html_escape("it's") == "it&#39;s"
+    assert html_escape("plain") == "plain"
+}
+
+test "headings" {
+    const result = render_markdown("# Hello").unwrap()
+    assert result.contains("<h1>Hello</h1>")
+
+    const result2 = render_markdown("## Sub\n### Third").unwrap()
+    assert result2.contains("<h2>Sub</h2>")
+    assert result2.contains("<h3>Third</h3>")
+}
+
+test "paragraphs" {
+    const result = render_markdown("Hello world").unwrap()
+    assert result.contains("<p>Hello world</p>")
+
+    const result2 = render_markdown("Line one\nLine two").unwrap()
+    assert result2.contains("<p>Line one\nLine two</p>")
+}
+
+test "bold and italic" {
+    const result = render_markdown("**bold** and *italic*").unwrap()
+    assert result.contains("<strong>bold</strong>")
+    assert result.contains("<em>italic</em>")
+}
+
+test "nested bold italic" {
+    const result = render_markdown("**bold *and italic***").unwrap()
+    assert result.contains("<strong>bold <em>and italic</em></strong>")
+}
+
+test "inline code" {
+    const result = render_markdown("use `println` here").unwrap()
+    assert result.contains("<code>println</code>")
+}
+
+test "links" {
+    const result = render_markdown("[click](http://example.com)").unwrap()
+    assert result.contains("<a href=\"http://example.com\">click</a>")
+}
+
+test "images" {
+    const result = render_markdown("![alt text](img.png)").unwrap()
+    assert result.contains("<img src=\"img.png\" alt=\"alt text\">")
+}
+
+test "code blocks" {
+    const input = "```rust\nfn main() {}\n```"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<pre><code class=\"language-rust\">")
+    assert result.contains("fn main() {}")
+}
+
+test "code block no language" {
+    const input = "```\nplain code\n```"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<pre><code>plain code</code></pre>")
+}
+
+test "blockquotes" {
+    const result = render_markdown("> quoted text").unwrap()
+    assert result.contains("<blockquote>")
+    assert result.contains("<p>quoted text</p>")
+    assert result.contains("</blockquote>")
+}
+
+test "unordered lists" {
+    const input = "- one\n- two\n- three"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<ul>")
+    assert result.contains("<li>one</li>")
+    assert result.contains("<li>two</li>")
+    assert result.contains("<li>three</li>")
+    assert result.contains("</ul>")
+}
+
+test "ordered lists" {
+    const input = "1. first\n2. second\n3. third"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<ol>")
+    assert result.contains("<li>first</li>")
+    assert result.contains("<li>second</li>")
+    assert result.contains("</ol>")
+}
+
+test "horizontal rules" {
+    assert render_markdown("---").unwrap().contains("<hr>")
+    assert render_markdown("***").unwrap().contains("<hr>")
+    assert render_markdown("___").unwrap().contains("<hr>")
+}
+
+test "reference links" {
+    const input = "See [the site][ex] for details.\n\n[ex]: http://example.com"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<a href=\"http://example.com\">the site</a>")
+}
+
+test "escaped characters" {
+    const result = render_markdown("not \\*italic\\*").unwrap()
+    assert result.contains("not *italic*")
+    assert !result.contains("<em>")
+}
+
+test "mixed content" {
+    const input = "# Title\n\nA **bold** paragraph.\n\n- item one\n- item two\n\n---\n\n> quote"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("<h1>Title</h1>")
+    assert result.contains("<strong>bold</strong>")
+    assert result.contains("<ul>")
+    assert result.contains("<hr>")
+    assert result.contains("<blockquote>")
+}
+
+test "html escape in code blocks" {
+    const input = "```\n<div class=\"x\">&</div>\n```"
+    const result = render_markdown(input).unwrap()
+    assert result.contains("&lt;div class=&quot;x&quot;&gt;&amp;&lt;/div&gt;")
+}
+
+test "link with formatted text" {
+    const result = render_markdown("[**bold link**](url)").unwrap()
+    assert result.contains("<a href=\"url\"><strong>bold link</strong></a>")
+}
+
+test "empty document" {
+    const result = render_markdown("").unwrap()
+    assert result == ""
+}
+
+test "full page output" {
+    const result = render_full_page("# Hello").unwrap()
+    assert result.contains("<!DOCTYPE html>")
+    assert result.contains("<h1>Hello</h1>")
+    assert result.contains("</body>")
+}
