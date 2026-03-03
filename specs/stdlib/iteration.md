@@ -315,7 +315,7 @@ FIX: Use index mode for structural mutation, or collect changes first:
           to_add.push(entity.split())
       }
   }
-  for item in to_add.take_all() { try entities.push(item) }
+  for item in to_add.take_all() { entities.push(item) }
 ```
 
 ```

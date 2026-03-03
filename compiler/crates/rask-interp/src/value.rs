@@ -478,6 +478,11 @@ pub enum IteratorState {
         a: Arc<Mutex<IteratorState>>,
         b: Arc<Mutex<IteratorState>>,
     },
+    /// Owned pre-computed elements (e.g. string lines/chars/split results).
+    PreComputed {
+        items: std::vec::Vec<Value>,
+        index: usize,
+    },
 }
 
 impl fmt::Debug for IteratorState {
@@ -492,6 +497,7 @@ impl fmt::Debug for IteratorState {
             Self::Range { current, end, .. } => write!(f, "RangeIter({}..{})", current, end),
             Self::FlatMap { .. } => write!(f, "FlatMapIter"),
             Self::Zip { .. } => write!(f, "ZipIter"),
+            Self::PreComputed { index, items } => write!(f, "PreComputedIter({}/{})", index, items.len()),
         }
     }
 }
