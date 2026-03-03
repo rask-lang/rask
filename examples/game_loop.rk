@@ -185,7 +185,7 @@ func cleanup_system(mutate state: GameState) {
 
     for h in state.entities {
         if !state.entities[h].active {
-            to_remove.push(h).ok()
+            to_remove.push(h)
         }
     }
 
@@ -227,7 +227,7 @@ func parallel_movement_system(mutate entities: Pool<Entity>, dt: f32, num_thread
                 entities[h].position.y += entities[h].velocity.dy * dt
             }
         })
-        thread_handles.push(task).ok()
+        thread_handles.push(task)
     }
 
     // Wait for all chunks to complete

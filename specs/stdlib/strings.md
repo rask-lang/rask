@@ -423,7 +423,7 @@ func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
 
     for (start, end, kind) in scan(pool[source_handle]) {
         const slice = try pool.slice(source_handle, start, end)
-        try tokens.push(Token { text: slice, kind })
+        tokens.push(Token { text: slice, kind })
     }
 
     return Ok((pool, tokens))
