@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //\! Expression evaluation.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
@@ -109,6 +109,7 @@ impl Interpreter {
                         name,
                         variant,
                         fields,
+                        ..
                     } = &obj_val
                     {
                         if name == "Result" {
@@ -133,6 +134,7 @@ impl Interpreter {
                                         name: "Option".to_string(),
                                         variant: "Some".to_string(),
                                         fields: vec![result],
+                                        variant_index: 0,
                                     });
                                 }
                                 "None" => {
@@ -140,6 +142,7 @@ impl Interpreter {
                                         name: "Option".to_string(),
                                         variant: "None".to_string(),
                                         fields: vec![],
+                                        variant_index: 0,
                                     });
                                 }
                                 _ => {}
@@ -180,17 +183,18 @@ impl Interpreter {
                                     expr.span
                                 ));
                             }
-                            let values: Vec<Value> = enum_decl.variants.iter().map(|v| {
+                            let values: Vec<Value> = enum_decl.variants.iter().enumerate().map(|(idx, v)| {
                                 Value::Enum {
                                     name: name.clone(),
                                     variant: v.name.clone(),
                                     fields: vec![],
+                                    variant_index: idx as u32,
                                 }
                             }).collect();
                             return Ok(Value::Vec(Arc::new(Mutex::new(values))));
                         }
 
-                        if let Some(variant) = enum_decl.variants.iter().find(|v| &v.name == method)
+                        if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == method)
                         {
                             let field_count = variant.fields.len();
                             let arg_vals: Vec<Value> = args
@@ -210,6 +214,7 @@ impl Interpreter {
                                 name: name.clone(),
                                 variant: method.clone(),
                                 fields: arg_vals,
+                                variant_index: vidx as u32,
                             });
                         }
                     }
@@ -412,7 +417,7 @@ impl Interpreter {
                     name.clone()
                 };
 
-                let mut field_values = HashMap::new();
+                let mut field_values = IndexMap::new();
 
                 if let Some(spread_expr) = spread {
                     if let Value::Struct {
@@ -445,8 +450,8 @@ impl Interpreter {
             ExprKind::Field { object, field } => {
                 if let ExprKind::Ident(enum_name) = &object.kind {
                     if let Some(enum_decl) = self.enums.get(enum_name).cloned() {
-                        if let Some(variant) =
-                            enum_decl.variants.iter().find(|v| &v.name == field)
+                        if let Some((vidx, variant)) =
+                            enum_decl.variants.iter().enumerate().find(|(_, v)| &v.name == field)
                         {
                             let field_count = variant.fields.len();
                             if field_count == 0 {
@@ -454,12 +459,14 @@ impl Interpreter {
                                     name: enum_name.clone(),
                                     variant: field.clone(),
                                     fields: vec![],
+                                    variant_index: vidx as u32,
                                 });
                             } else {
                                 return Ok(Value::EnumConstructor {
                                     enum_name: enum_name.clone(),
                                     variant_name: field.clone(),
                                     field_count,
+                                    variant_index: vidx as u32,
                                 });
                             }
                         }
@@ -560,19 +567,21 @@ impl Interpreter {
                     // lib.Color resolved to Value::Type("lib$Color").
                     Value::Type(type_name) => {
                         if let Some(enum_decl) = self.enums.get(&type_name).cloned() {
-                            if let Some(variant) = enum_decl.variants.iter().find(|v| v.name == *field) {
+                            if let Some((vidx, variant)) = enum_decl.variants.iter().enumerate().find(|(_, v)| v.name == *field) {
                                 let field_count = variant.fields.len();
                                 if field_count == 0 {
                                     return Ok(Value::Enum {
                                         name: type_name,
                                         variant: field.clone(),
                                         fields: vec![],
+                                        variant_index: vidx as u32,
                                     });
                                 } else {
                                     return Ok(Value::EnumConstructor {
                                         enum_name: type_name,
                                         variant_name: field.clone(),
                                         field_count,
+                                        variant_index: vidx as u32,
                                     });
                                 }
                             }
@@ -782,6 +791,7 @@ impl Interpreter {
                                     name: "Result".to_string(),
                                     variant: "Err".to_string(),
                                     fields: vec![transformed],
+                                    variant_index: 0,
                                 };
                                 Err(RuntimeDiagnostic::new(RuntimeError::TryError(wrapped), expr.span))
                             } else {
@@ -1474,6 +1484,7 @@ impl Interpreter {
                             fields: vec![Value::String(Arc::new(Mutex::new(
                                 "all channels closed".to_string(),
                             )))],
+                            variant_index: 0,
                         });
                     }
 

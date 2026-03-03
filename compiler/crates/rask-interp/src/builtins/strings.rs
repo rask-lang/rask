@@ -52,6 +52,10 @@ impl Interpreter {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
             }
             "to_string" => Ok(Value::String(Arc::clone(s))),
+            "debug_string" => {
+                let val = s.lock().unwrap();
+                Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
+            }
             "concat" => {
                 let other = self.expect_string(&args, 0)?;
                 let mut result = s.lock().unwrap().clone();
@@ -120,6 +124,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Int(n)],
+                        variant_index: 0,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -127,6 +132,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid integer".to_string(),
                         )))],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -137,11 +143,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Char(c)],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -152,11 +160,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Int(b as i64)],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -166,6 +176,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Float(n)],
+                        variant_index: 0,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -173,6 +184,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "invalid float".to_string(),
                         )))],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -183,11 +195,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::Int(idx as i64)],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -235,6 +249,7 @@ impl Interpreter {
                         std::cmp::Ordering::Greater => "Greater".to_string(),
                     },
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {

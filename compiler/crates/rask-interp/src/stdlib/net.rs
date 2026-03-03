@@ -3,7 +3,7 @@
 //!
 //! Layer: RUNTIME — socket operations require OS access.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +16,7 @@ fn make_result_ok(value: Value) -> Value {
         name: "Result".to_string(),
         variant: "Ok".to_string(),
         fields: vec![value],
+        variant_index: 0,
     }
 }
 
@@ -25,6 +26,7 @@ fn make_result_err(msg: &str) -> Value {
         name: "Result".to_string(),
         variant: "Err".to_string(),
         fields: vec![Value::String(Arc::new(Mutex::new(msg.to_string())))],
+        variant_index: 0,
     }
 }
 
@@ -253,7 +255,7 @@ impl Interpreter {
             })
             .collect();
 
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert(
             "method".to_string(),
             Value::String(Arc::new(Mutex::new(method))),

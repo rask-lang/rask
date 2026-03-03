@@ -10,6 +10,7 @@ rask-comptime = { path = "../rask-comptime" }
 rask-lexer = { path = "../rask-lexer" }
 rask-parser = { path = "../rask-parser" }
 rask-types = { path = "../rask-types" }
+indexmap = "2"
 thiserror.workspace = true
 
 [dev-dependencies]

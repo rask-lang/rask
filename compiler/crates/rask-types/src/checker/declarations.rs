@@ -250,7 +250,7 @@ impl TypeChecker {
     }
 
     // ------------------------------------------------------------------------
-    // Auto-Derive: inject synthetic methods for Equatable, Hashable, Default, Clone
+    // Auto-Derive: inject synthetic methods for Equal, Hashable, Default, Clone, Comparable, Debug
     // Runs after all types and impl methods are registered.
     // ------------------------------------------------------------------------
 
@@ -317,6 +317,42 @@ impl TypeChecker {
                         });
                     }
 
+                    // CO1/ORD2: auto-derive compare if all fields are Comparable
+                    // Comparable is a supertrait of Equal, so eq is implied.
+                    // CO4: f32/f64 excluded (NaN breaks totality).
+                    if !methods.iter().any(|m| m.name == "compare")
+                        && field_types.iter().all(|ty| self.type_has_method(ty, "compare"))
+                    {
+                        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+                        new_methods.push(MethodSig {
+                            name: "compare".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            ret: ordering_ty.clone(),
+                        });
+                        // ORD1: lt/le/gt/ge derived from compare
+                        for op in &["lt", "le", "gt", "ge"] {
+                            if !methods.iter().any(|m| m.name == *op) {
+                                new_methods.push(MethodSig {
+                                    name: op.to_string(),
+                                    self_param: SelfParam::Value,
+                                    params: vec![(Type::Named(id), ParamMode::Default)],
+                                    ret: Type::Bool,
+                                });
+                            }
+                        }
+                    }
+
+                    // G2: auto-derive debug_string for all types
+                    if !methods.iter().any(|m| m.name == "debug_string") {
+                        new_methods.push(MethodSig {
+                            name: "debug_string".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::String,
+                        });
+                    }
+
                     if !new_methods.is_empty() {
                         if let Some(TypeDef::Struct { methods, .. }) = self.types.get_mut(id) {
                             methods.extend(new_methods);
@@ -369,6 +405,40 @@ impl TypeChecker {
                         });
                     }
 
+                    // CO1/ORD2: auto-derive compare for enums (variant order, then payload)
+                    if !methods.iter().any(|m| m.name == "compare")
+                        && payload_types.iter().all(|ty| self.type_has_method(ty, "compare"))
+                    {
+                        let ordering_ty = Type::UnresolvedNamed("Ordering".to_string());
+                        new_methods.push(MethodSig {
+                            name: "compare".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![(Type::Named(id), ParamMode::Default)],
+                            ret: ordering_ty.clone(),
+                        });
+                        // ORD1: lt/le/gt/ge derived from compare
+                        for op in &["lt", "le", "gt", "ge"] {
+                            if !methods.iter().any(|m| m.name == *op) {
+                                new_methods.push(MethodSig {
+                                    name: op.to_string(),
+                                    self_param: SelfParam::Value,
+                                    params: vec![(Type::Named(id), ParamMode::Default)],
+                                    ret: Type::Bool,
+                                });
+                            }
+                        }
+                    }
+
+                    // G2: auto-derive debug_string for all types
+                    if !methods.iter().any(|m| m.name == "debug_string") {
+                        new_methods.push(MethodSig {
+                            name: "debug_string".to_string(),
+                            self_param: SelfParam::Value,
+                            params: vec![],
+                            ret: Type::String,
+                        });
+                    }
+
                     if !new_methods.is_empty() {
                         if let Some(TypeDef::Enum { methods, .. }) = self.types.get_mut(id) {
                             methods.extend(new_methods);
@@ -386,16 +456,20 @@ impl TypeChecker {
             // Primitives
             Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128 |
             Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128 => {
-                matches!(method, "eq" | "hash" | "clone" | "default")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
             }
+            // CO4: f32/f64 NOT Comparable (NaN breaks totality)
             Type::F32 | Type::F64 => {
-                matches!(method, "eq" | "clone" | "default")
+                matches!(method, "eq" | "clone" | "default" | "debug_string")
             }
-            Type::Bool | Type::Char | Type::Unit => {
-                matches!(method, "eq" | "hash" | "clone" | "default")
+            Type::Bool | Type::Char => {
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
+            }
+            Type::Unit => {
+                matches!(method, "eq" | "hash" | "clone" | "default" | "debug_string")
             }
             Type::String => {
-                matches!(method, "eq" | "hash" | "clone" | "default")
+                matches!(method, "eq" | "hash" | "clone" | "default" | "compare" | "debug_string")
             }
             // Named types: check registered methods
             Type::Named(id) => {

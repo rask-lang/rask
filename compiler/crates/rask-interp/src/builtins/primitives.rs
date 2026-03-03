@@ -18,6 +18,7 @@ fn ordering_value(ord: std::cmp::Ordering) -> Value {
             std::cmp::Ordering::Greater => "Greater".to_string(),
         },
         fields: vec![],
+        variant_index: 0,
     }
 }
 
@@ -59,7 +60,7 @@ impl Interpreter {
             "abs" => Ok(Value::Int(a.abs())),
             "min" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.min(b))) }
             "max" => { let b = self.expect_int(args, 0)?; Ok(Value::Int(a.max(b))) }
-            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             "to_float" => Ok(Value::Float(a as f64)),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i64".to_string(),
@@ -105,7 +106,7 @@ impl Interpreter {
             "abs" => Ok(Value::Int128(a.abs())),
             "min" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.min(b))) }
             "max" => { let b = self.expect_int128(args, 0)?; Ok(Value::Int128(a.max(b))) }
-            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "i128".to_string(),
                 method: method.to_string(),
@@ -148,7 +149,7 @@ impl Interpreter {
             "bit_not" => Ok(Value::Uint128(!a)),
             "min" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.min(b))) }
             "max" => { let b = self.expect_uint128(args, 0)?; Ok(Value::Uint128(a.max(b))) }
-            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "u128".to_string(),
                 method: method.to_string(),
@@ -185,7 +186,7 @@ impl Interpreter {
             "sqrt" => Ok(Value::Float(a.sqrt())),
             "min" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.min(b))) }
             "max" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.max(b))) }
-            "to_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(a.to_string())))),
             "to_int" => Ok(Value::Int(a as i64)),
             "pow" => { let b = self.expect_float(args, 0)?; Ok(Value::Float(a.powf(b))) }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -205,7 +206,7 @@ impl Interpreter {
         match method {
             "eq" => { let b = self.expect_bool(args, 0)?; Ok(Value::Bool(a == b)) }
             "compare" => { let b = self.expect_bool(args, 0)?; Ok(ordering_value(a.cmp(&b))) }
-            "to_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
+            "to_string" | "debug_string" => Ok(Value::String(Arc::new(Mutex::new(if a { "true" } else { "false" }.to_string())))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "bool".to_string(),
                 method: method.to_string(),
@@ -231,6 +232,7 @@ impl Interpreter {
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
+            "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "char".to_string(),
                 method: method.to_string(),

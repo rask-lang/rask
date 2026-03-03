@@ -250,7 +250,7 @@ impl Interpreter {
                     .collect();
                 format!("{} {{ {} }}", name, field_strs.join(", "))
             }
-            Value::Enum { name, variant, fields } => {
+            Value::Enum { name, variant, fields, .. } => {
                 if fields.is_empty() {
                     format!("{}.{}", name, variant)
                 } else {

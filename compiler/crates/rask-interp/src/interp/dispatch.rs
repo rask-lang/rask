@@ -28,6 +28,7 @@ impl Interpreter {
                 enum_name,
                 variant_name,
                 field_count,
+                variant_index,
             } => {
                 if args.len() != field_count {
                     return Err(RuntimeError::ArityMismatch {
@@ -39,6 +40,7 @@ impl Interpreter {
                     name: enum_name,
                     variant: variant_name,
                     fields: args,
+                    variant_index,
                 })
             }
             Value::Closure {
@@ -204,7 +206,7 @@ impl Interpreter {
                 crate::build_context::call_method(state, method, args)
                     .map_err(RuntimeError::Generic)
             }
-            Value::Enum { name, variant, fields } if name == "JsonValue" => {
+            Value::Enum { name, variant, fields, .. } if name == "JsonValue" => {
                 self.call_json_value_method(variant, fields, method)
             }
             Value::SimdF32x8(data) => match method {

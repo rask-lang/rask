@@ -42,10 +42,10 @@ impl Interpreter {
             Value::TypeConstructor { kind, type_param } => {
                 return self.call_type_constructor_method(kind, type_param.clone(), method, args);
             }
-            Value::Enum { name, variant, fields } if name == "Result" => {
+            Value::Enum { name, variant, fields, .. } if name == "Result" => {
                 return self.call_result_method(variant, fields, method, args);
             }
-            Value::Enum { name, variant, fields } if name == "Option" => {
+            Value::Enum { name, variant, fields, .. } if name == "Option" => {
                 return self.call_option_method(variant, fields, method, args);
             }
             Value::ThreadHandle(handle) => return self.call_thread_handle_method(handle, method),
@@ -64,8 +64,8 @@ impl Interpreter {
             Value::TcpConnection(c) => return self.call_tcp_stream_method(&Arc::clone(c), method, args),
             Value::Enum { .. } if method == "eq" => {
                 if let Some(other) = args.first() {
-                    if let (Value::Enum { name: n1, variant: v1, fields: f1 },
-                            Value::Enum { name: n2, variant: v2, fields: f2 }) = (&receiver, other) {
+                    if let (Value::Enum { name: n1, variant: v1, fields: f1, .. },
+                            Value::Enum { name: n2, variant: v2, fields: f2, .. }) = (&receiver, other) {
                         if n1 == n2 && v1 == v2 && f1.len() == f2.len() {
                             let all_eq = f1.iter().zip(f2.iter()).all(|(a, b)| Self::value_eq(a, b));
                             return Ok(Value::Bool(all_eq));
@@ -120,12 +120,14 @@ impl Interpreter {
                             std::cmp::Ordering::Greater => "Greater".to_string(),
                         },
                         fields: vec![],
+                        variant_index: 0,
                     });
                 }
                 return Ok(Value::Enum {
                     name: "Ordering".to_string(),
                     variant: "Equal".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 });
             }
             Value::Enum { .. } if method == "compare" => {
@@ -139,13 +141,36 @@ impl Interpreter {
                             std::cmp::Ordering::Greater => "Greater".to_string(),
                         },
                         fields: vec![],
+                        variant_index: 0,
                     });
                 }
                 return Ok(Value::Enum {
                     name: "Ordering".to_string(),
                     variant: "Equal".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 });
+            }
+            // ORD1: lt/le/gt/ge derived from compare via value_cmp
+            Value::Struct { .. } | Value::Enum { .. }
+                if matches!(method, "lt" | "le" | "gt" | "ge") =>
+            {
+                if let Some(other) = args.first() {
+                    let ord = Self::value_cmp(&receiver, other);
+                    let result = match (method, ord) {
+                        ("lt", Some(std::cmp::Ordering::Less)) => true,
+                        ("le", Some(std::cmp::Ordering::Less | std::cmp::Ordering::Equal)) => true,
+                        ("gt", Some(std::cmp::Ordering::Greater)) => true,
+                        ("ge", Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)) => true,
+                        _ => false,
+                    };
+                    return Ok(Value::Bool(result));
+                }
+                return Ok(Value::Bool(false));
+            }
+            // G2: debug_string for structs/enums — uses Display impl
+            Value::Struct { .. } | Value::Enum { .. } if method == "debug_string" => {
+                return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
             }
             Value::Struct { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),

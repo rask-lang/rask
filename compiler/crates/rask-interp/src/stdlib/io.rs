@@ -31,12 +31,14 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![Value::String(Arc::new(Mutex::new(line)))],
+                            variant_index: 0,
                         })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0,
                     }),
                 }
             }

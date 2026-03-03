@@ -182,6 +182,7 @@ impl Interpreter {
                 enum_name: "Option".to_string(),
                 variant_name: "Some".to_string(),
                 field_count: 1,
+                variant_index: 0,
             },
         );
         self.env.define(
@@ -190,6 +191,7 @@ impl Interpreter {
                 name: "Option".to_string(),
                 variant: "None".to_string(),
                 fields: vec![],
+                variant_index: 1,
             },
         );
         self.env.define(
@@ -198,6 +200,7 @@ impl Interpreter {
                 enum_name: "Result".to_string(),
                 variant_name: "Ok".to_string(),
                 field_count: 1,
+                variant_index: 0,
             },
         );
         self.env.define(
@@ -206,6 +209,7 @@ impl Interpreter {
                 enum_name: "Result".to_string(),
                 variant_name: "Err".to_string(),
                 field_count: 1,
+                variant_index: 1,
             },
         );
 

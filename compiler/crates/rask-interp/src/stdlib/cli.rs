@@ -7,6 +7,7 @@
 //! Provides argument parsing: quick API (cli.parse()) and builder (cli.Parser).
 
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
@@ -44,7 +45,7 @@ impl Interpreter {
     /// Handle methods on an Args struct returned by cli.parse().
     pub(crate) fn call_args_method(
         &self,
-        fields: &HashMap<String, Value>,
+        fields: &IndexMap<String, Value>,
         method: &str,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -66,11 +67,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(v)))],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -191,7 +194,7 @@ fn parse_args(raw_args: &[String]) -> Value {
         Value::Vec(Arc::new(Mutex::new(map_entries)))
     };
 
-    let mut struct_fields = HashMap::new();
+    let mut struct_fields = IndexMap::new();
     struct_fields.insert("_flags".to_string(), flags_value);
     struct_fields.insert("_options".to_string(), options_value);
     struct_fields.insert(
@@ -212,7 +215,7 @@ fn parse_args(raw_args: &[String]) -> Value {
 
 /// Extract a Vec<String> from a struct field that holds Vec<Value::String>.
 fn extract_vec_of_strings(
-    fields: &HashMap<String, Value>,
+    fields: &IndexMap<String, Value>,
     key: &str,
 ) -> Result<Vec<String>, RuntimeError> {
     match fields.get(key) {
@@ -232,7 +235,7 @@ fn extract_vec_of_strings(
 
 /// Extract a HashMap<String, String> from a struct field holding Vec<[key, value]>.
 fn extract_map_strings(
-    fields: &HashMap<String, Value>,
+    fields: &IndexMap<String, Value>,
     key: &str,
 ) -> Result<HashMap<String, String>, RuntimeError> {
     match fields.get(key) {

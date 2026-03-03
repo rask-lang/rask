@@ -6,6 +6,7 @@
 //! so the interpreter implements these methods on primitive types.
 
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc;
 
@@ -132,7 +133,7 @@ impl Interpreter {
 
     /// Inject `cfg` build configuration into the interpreter environment (CT11-CT16).
     pub fn inject_cfg(&mut self, cfg: &rask_comptime::CfgConfig) {
-        let mut fields = HashMap::new();
+        let mut fields = IndexMap::new();
         fields.insert("os".to_string(), Value::String(Arc::new(Mutex::new(cfg.os.clone()))));
         fields.insert("arch".to_string(), Value::String(Arc::new(Mutex::new(cfg.arch.clone()))));
         fields.insert("env".to_string(), Value::String(Arc::new(Mutex::new(cfg.env.clone()))));

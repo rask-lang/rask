@@ -6,7 +6,7 @@
 //! and calls each method. If the interpreter returns NoSuchMethod,
 //! the method is registered but not implemented — that's a bug.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use crate::interp::Interpreter;
@@ -41,16 +41,18 @@ fn dummy_value(type_name: &str) -> Value {
             name: "Result".to_string(),
             variant: "Ok".to_string(),
             fields: vec![Value::Unit],
+            variant_index: 0,
         },
         "Option" => Value::Enum {
             name: "Option".to_string(),
             variant: "Some".to_string(),
             fields: vec![Value::Unit],
+            variant_index: 0,
         },
         "File" => Value::File(Arc::new(Mutex::new(None))),
         "Metadata" => Value::Struct {
             name: "Metadata".to_string(),
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             resource_id: None,
         },
         "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(None))),
@@ -59,11 +61,12 @@ fn dummy_value(type_name: &str) -> Value {
             name: "JsonValue".to_string(),
             variant: "Null".to_string(),
             fields: vec![],
+            variant_index: 0,
         },
         "Duration" => Value::Duration(0),
         "Instant" => Value::Instant(std::time::Instant::now()),
         "Path" => {
-            let mut fields = HashMap::new();
+            let mut fields = IndexMap::new();
             fields.insert(
                 "value".to_string(),
                 Value::String(Arc::new(Mutex::new("/tmp".to_string()))),
@@ -76,7 +79,7 @@ fn dummy_value(type_name: &str) -> Value {
         }
         "Args" => Value::Struct {
             name: "Args".to_string(),
-            fields: HashMap::new(),
+            fields: IndexMap::new(),
             resource_id: None,
         },
         "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
