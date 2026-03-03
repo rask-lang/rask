@@ -150,6 +150,12 @@ pub enum BuiltinFunctionKind {
     Todo,
     /// unreachable - panic with "entered unreachable code"
     Unreachable,
+    /// min - generic minimum of two comparable values
+    Min,
+    /// max - generic maximum of two comparable values
+    Max,
+    /// clamp - constrain value between lo and hi
+    Clamp,
 }
 
 /// Built-in module kinds (stdlib modules).
