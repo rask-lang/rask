@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+extend char {
+    /// Number of bytes needed to encode this char in UTF-8 (1–4).
+    public func len_utf8(self) -> usize { }
+
+    /// True if this is an ASCII character (0x00–0x7F).
+    public func is_ascii(self) -> bool { }
+
+    /// True if this is a Unicode alphabetic character.
+    public func is_alphabetic(self) -> bool { }
+
+    /// True if this is a Unicode numeric character.
+    public func is_numeric(self) -> bool { }
+
+    /// True if this is a Unicode alphanumeric character.
+    public func is_alphanumeric(self) -> bool { }
+
+    /// True if this is a Unicode whitespace character.
+    public func is_whitespace(self) -> bool { }
+
+    /// True if this is an uppercase character.
+    public func is_uppercase(self) -> bool { }
+
+    /// True if this is a lowercase character.
+    public func is_lowercase(self) -> bool { }
+
+    /// Simple 1:1 lowercase mapping.
+    public func to_lowercase(self) -> char { }
+
+    /// Simple 1:1 uppercase mapping.
+    public func to_uppercase(self) -> char { }
+}
