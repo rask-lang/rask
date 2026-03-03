@@ -51,6 +51,13 @@ impl Interpreter {
             "trim_end" => {
                 Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().trim_end().to_string()))))
             }
+            "trim_bounds" => {
+                let guard = s.lock().unwrap();
+                let trimmed = guard.trim();
+                let start = trimmed.as_ptr() as usize - guard.as_ptr() as usize;
+                let end = start + trimmed.len();
+                Ok(Value::Vec(Arc::new(Mutex::new(vec![Value::Int(start as i64), Value::Int(end as i64)]))))
+            }
             "to_string" => Ok(Value::String(Arc::clone(s))),
             "debug_string" => {
                 let val = s.lock().unwrap();
@@ -91,6 +98,18 @@ impl Interpreter {
             "chars" => {
                 let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
                 Ok(Value::Vec(Arc::new(Mutex::new(chars))))
+            }
+            "char_indices" => {
+                let pairs: Vec<Value> = s.lock().unwrap().char_indices()
+                    .map(|(i, c)| Value::Vec(Arc::new(Mutex::new(vec![Value::Int(i as i64), Value::Char(c)]))))
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(pairs))))
+            }
+            "bytes" => {
+                let bytes: Vec<Value> = s.lock().unwrap().bytes()
+                    .map(|b| Value::Int(b as i64))
+                    .collect();
+                Ok(Value::Vec(Arc::new(Mutex::new(bytes))))
             }
             "lines" => {
                 let lines: Vec<Value> = s
@@ -188,9 +207,26 @@ impl Interpreter {
                     }),
                 }
             }
-            "index_of" => {
+            "index_of" | "find" => {
                 let pattern = self.expect_string(&args, 0)?;
                 match s.lock().unwrap().find(&pattern) {
+                    Some(idx) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "Some".to_string(),
+                        fields: vec![Value::Int(idx as i64)],
+                        variant_index: 0,
+                    }),
+                    None => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 0,
+                    }),
+                }
+            }
+            "rfind" => {
+                let pattern = self.expect_string(&args, 0)?;
+                match s.lock().unwrap().rfind(&pattern) {
                     Some(idx) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),

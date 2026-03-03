@@ -230,6 +230,8 @@ impl Interpreter {
             "is_lowercase" => Ok(Value::Bool(c.is_lowercase())),
             "to_uppercase" => Ok(Value::Char(c.to_uppercase().next().unwrap_or(c))),
             "to_lowercase" => Ok(Value::Char(c.to_lowercase().next().unwrap_or(c))),
+            "len_utf8" => Ok(Value::Int(c.len_utf8() as i64)),
+            "to_string" => Ok(Value::String(Arc::new(Mutex::new(c.to_string())))),
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
