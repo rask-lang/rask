@@ -35,16 +35,20 @@ print(d.name)   // OK: d still valid
 
 ### Mutate Mode
 
-Explicit mutable borrow. Function can modify the value; caller keeps ownership.
+Explicit mutable borrow. Function can modify the value; caller keeps ownership. This includes field mutation, method calls, **and full reassignment** of the parameter.
 
 <!-- test: skip -->
 ```rask
 func apply_damage(mutate player: Player, amount: i32) {
-    player.health -= amount
-    player.last_hit = now()
+    player.health -= amount              // field mutation
+    player.last_hit = now()              // field mutation
     if player.health <= 0 {
-        player.status = Status.Dead
+        player.status = Status.Dead      // field mutation
     }
+}
+
+func reset(mutate player: Player) {
+    player = Player.new()                // full reassignment — allowed
 }
 ```
 
@@ -213,7 +217,9 @@ ERROR [mem.parameters/PM3]: value used after being taken
 
 **PM1 (borrow default):** Borrowing is ~85% of parameters, and most borrows are read-only. I made the default read-only because mutation should be visible — if a function changes your data, you should see that in the signature.
 
-**PM2 (mutate):** `mutate` marks intent: "I will change this parameter." Like `const`/`let` for bindings, it's about communicating intent, not frequency.
+**PM2 (mutate):** `mutate` marks intent: "I will change this parameter." This includes field-level modification AND full reassignment — there's no half-mutable state. A `mutate` parameter gives you unrestricted write access to the value; the constraint is that the caller keeps ownership after the call.
+
+Note the interaction with `const` bindings: `const player = Player.new()` prevents reassigning the *name* `player`, but passing it as a `mutate` argument still works — the function modifies the *value*, not the binding. `const`/`let` controls whether a name can be rebound; `mutate` controls whether a function can modify what the name refers to.
 
 **PM3 (take):** The rare case. Ownership transfer only when you need to store, send, or consume.
 
