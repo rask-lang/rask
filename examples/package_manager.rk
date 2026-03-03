@@ -27,7 +27,7 @@ struct Version {
 
 extend Version {
     func parse(s: string) -> Version or VersionError {
-        const parts = s.split(".")
+        const parts = s.split(".").collect()
         if parts.len() != 3 {
             return Err(VersionError.InvalidFormat("expected MAJOR.MINOR.PATCH, got: {s}"))
         }

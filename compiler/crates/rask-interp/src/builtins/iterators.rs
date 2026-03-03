@@ -160,6 +160,15 @@ impl Interpreter {
                     _ => Ok(None),
                 }
             }
+            IteratorState::PreComputed { items, index } => {
+                if *index < items.len() {
+                    let item = items[*index].clone();
+                    *index += 1;
+                    Ok(Some(item))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 
@@ -186,6 +195,10 @@ impl Interpreter {
                         variant_index: 0,
                     }),
                 }
+            }
+            "iter" => {
+                // Iterator.iter() returns self — already an iterator
+                Ok(Value::Iterator(Arc::clone(iter)))
             }
             "collect" => {
                 let mut result = Vec::new();
