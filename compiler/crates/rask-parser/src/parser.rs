@@ -549,7 +549,7 @@ impl Parser {
         let kind = match self.current_kind() {
             TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs, doc)?,
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
-            TokenKind::Enum => self.parse_enum_decl(is_pub, doc)?,
+            TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
             TokenKind::Trait => self.parse_trait_decl(is_pub, is_unsafe, doc)?,
             TokenKind::Extend => self.parse_impl_decl(is_unsafe, doc)?,
@@ -608,7 +608,18 @@ impl Parser {
                     _ => {}
                 }
                 if depth > 0 {
-                    attr.push_str(&format!("{:?}", self.current_kind()));
+                    // Preserve original token text for strings, idents, etc.
+                    match self.current_kind() {
+                        TokenKind::String(s) => {
+                            attr.push('"');
+                            attr.push_str(s);
+                            attr.push('"');
+                        }
+                        TokenKind::Ident(s) => attr.push_str(s),
+                        TokenKind::Int(n, _) => attr.push_str(&n.to_string()),
+                        TokenKind::Comma => attr.push_str(", "),
+                        _ => attr.push_str(&format!("{:?}", self.current_kind())),
+                    }
                 }
                 self.advance();
             }
@@ -1185,7 +1196,7 @@ impl Parser {
         }))
     }
 
-    fn parse_enum_decl(&mut self, is_pub: bool, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_enum_decl(&mut self, is_pub: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Enum)?;
         let mut name = self.expect_ident()?;
 
@@ -1205,6 +1216,13 @@ impl Parser {
         let mut methods = Vec::new();
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
+            // Parse variant-level attributes (e.g., @message("template"))
+            let mut variant_attrs = Vec::new();
+            while self.check(&TokenKind::At) {
+                variant_attrs.push(self.parse_attribute()?);
+                self.skip_newlines();
+            }
+
             let item_doc = self.take_doc();
             if self.check(&TokenKind::Func) || (self.check(&TokenKind::Public) && matches!(self.peek(1), TokenKind::Func)) {
                 let m_pub = self.match_token(&TokenKind::Public);
@@ -1263,7 +1281,7 @@ impl Parser {
                     self.expect(&TokenKind::RBrace)?;
                 }
 
-                variants.push(Variant { name: variant_name, fields });
+                variants.push(Variant { name: variant_name, fields, attrs: variant_attrs });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1277,6 +1295,7 @@ impl Parser {
             variants,
             methods,
             is_pub,
+            attrs,
             doc,
         }))
     }

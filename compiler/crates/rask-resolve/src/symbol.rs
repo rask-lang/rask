@@ -121,6 +121,8 @@ pub enum BuiltinTypeKind {
     Atomic,
     /// Shared<T> - shared state with interior mutability
     Shared,
+    /// Mutex<T> - mutual exclusion lock
+    Mutex,
     /// Owned<T> - heap-allocated owned value
     Owned,
     /// SIMD vector types (f32x4, f32x8, i32x4, i32x8, f64x2, f64x4)

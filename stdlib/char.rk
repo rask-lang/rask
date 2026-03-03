@@ -10,8 +10,11 @@ extend char {
     /// True if this is a Unicode alphabetic character.
     public func is_alphabetic(self) -> bool { }
 
-    /// True if this is a Unicode numeric character.
+    /// True if this is a Unicode numeric character (includes ½, ³, etc.).
     public func is_numeric(self) -> bool { }
+
+    /// True if this is an ASCII digit (0-9).
+    public func is_digit(self) -> bool { }
 
     /// True if this is a Unicode alphanumeric character.
     public func is_alphanumeric(self) -> bool { }

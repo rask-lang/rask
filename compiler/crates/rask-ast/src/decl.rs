@@ -179,6 +179,8 @@ pub struct EnumDecl {
     pub variants: Vec<Variant>,
     pub methods: Vec<FnDecl>,
     pub is_pub: bool,
+    /// Attributes like `@message`, `@derive(...)`, etc.
+    pub attrs: Vec<String>,
     /// Doc comment (`/// ...`)
     pub doc: Option<String>,
 }
@@ -188,6 +190,8 @@ pub struct EnumDecl {
 pub struct Variant {
     pub name: String,
     pub fields: Vec<Field>,
+    /// Attributes like `@message("template string")`.
+    pub attrs: Vec<String>,
 }
 
 /// A union declaration.

@@ -32,7 +32,7 @@ pub fn type_layer(type_name: &str) -> StdlibLayer {
         | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
         | "JsonValue" | "Path" | "Args" | "Duration" => StdlibLayer::Pure,
 
-        "ThreadHandle" | "Sender" | "Receiver" | "Shared"
+        "ThreadHandle" | "Sender" | "Receiver" | "Shared" | "Mutex"
         | "AtomicBool" | "AtomicI8" | "AtomicU8"
         | "AtomicI16" | "AtomicU16" | "AtomicI32" | "AtomicU32"
         | "AtomicI64" | "AtomicU64" | "AtomicUsize" | "AtomicIsize"
@@ -89,8 +89,8 @@ const F64_METHODS: &[&str] = &[
 const BOOL_METHODS: &[&str] = &["eq"];
 
 const CHAR_METHODS: &[&str] = &[
-    "is_whitespace", "is_alphabetic", "is_alphanumeric",
-    "is_digit", "is_uppercase", "is_lowercase",
+    "is_whitespace", "is_ascii", "is_alphabetic", "is_numeric",
+    "is_alphanumeric", "is_digit", "is_uppercase", "is_lowercase",
     "to_uppercase", "to_lowercase", "len_utf8",
     "to_string", "eq",
 ];
@@ -175,6 +175,7 @@ const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
 const SENDER_METHODS: &[&str] = &["send"];
 const RECEIVER_METHODS: &[&str] = &["recv", "try_recv"];
 const SHARED_METHODS: &[&str] = &["read", "write", "clone"];
+const MUTEX_METHODS: &[&str] = &["lock", "try_lock", "clone"];
 const SIMD_METHODS: &[&str] = &[
     "splat", "load", "store",
     "add", "sub", "mul", "div", "scale",
@@ -248,7 +249,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "JsonValue",
     "Duration", "Instant",
     "Path", "Args",
-    "ThreadHandle", "Sender", "Receiver", "Shared",
+    "ThreadHandle", "Sender", "Receiver", "Shared", "Mutex",
     "AtomicBool", "AtomicI8", "AtomicU8",
     "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
     "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
@@ -289,6 +290,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Sender" => SENDER_METHODS,
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,
+        "Mutex" => MUTEX_METHODS,
         "AtomicBool" => ATOMIC_BOOL_METHODS,
         "AtomicI8" | "AtomicU8" | "AtomicI16" | "AtomicU16"
         | "AtomicI32" | "AtomicU32" | "AtomicI64" | "AtomicU64"

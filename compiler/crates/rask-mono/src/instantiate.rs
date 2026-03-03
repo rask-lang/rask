@@ -168,9 +168,11 @@ impl TypeSubstitutor {
                     ty: self.substitute_type_string(&f.ty),
                     is_pub: f.is_pub,
                 }).collect(),
+                attrs: v.attrs.clone(),
             }).collect(),
             methods: e.methods.iter().map(|m| self.clone_fn_decl(m)).collect(),
             is_pub: e.is_pub,
+            attrs: e.attrs.clone(),
             doc: e.doc.clone(),
         }
     }
