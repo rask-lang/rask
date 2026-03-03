@@ -139,9 +139,9 @@ false
 ### Variable Bindings
 
 ```rask
-const x = 42                  // Immutable binding
+const x = 42                  // Permanent binding — x always refers to this value
 const name = "Alice"
-let counter = 0               // Mutable binding
+let counter = 0               // Rebindable — can reassign counter later
 counter = 1                   // Reassignment
 
 let x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
@@ -149,11 +149,13 @@ let x = "shadow"              // Shadowing allowed (IDE shows ghost annotation)
 
 | Syntax | Meaning |
 |--------|---------|
-| `const x = v` | Immutable — cannot reassign |
-| `let x = v` | Mutable — can reassign |
+| `const x = v` | Permanent binding — `x` cannot be reassigned |
+| `let x = v` | Rebindable — `x` can be reassigned |
 | `x = v` | Reassignment (variable must exist) |
 
-**Why:** `const` means "constant" (won't change). `let` means "let it vary" (can change). Opposite of Rust but more intuitive.
+**`const` controls the binding, not the value.** `const v = Vec.new()` means `v` always refers to this Vec — you can't write `v = other_vec`. But `v.push(1)` works fine because the Vec itself is mutable. This is the JavaScript/Go model, not C++/Rust `const`. The name is fixed; the contents aren't.
+
+**Why `const`/`let`:** `const` means "this name is permanently bound." `let` means "let it vary." Opposite of Rust but matches the most common meaning of `const` across languages.
 
 ---
 
@@ -1097,8 +1099,8 @@ println("{sum}")
 | Multi-line blocks | `{ }` | Multiple statements |
 | Types | `: Type` | Inference reduces annotations |
 | Functions | `func name(params) -> Type` | Familiar |
-| Immutable binding | `const x = ...` | Cannot reassign |
-| Mutable binding | `let x = ...` | Can reassign |
+| Permanent binding | `const x = ...` | Cannot reassign (value still mutable) |
+| Rebindable | `let x = ...` | Can reassign |
 | Mutable | `mutate param` | Explicit mutable borrow |
 | Ownership | `take param` | Explicit when consuming |
 | Optional | `T?` | Type and chaining |
