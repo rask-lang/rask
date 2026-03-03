@@ -102,6 +102,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![value],
+                    variant_index: 0,
                 }),
             }
         } else {
@@ -155,7 +156,7 @@ impl Interpreter {
 
                 match result {
                     Ok(value) => {
-                        if let Value::Enum { name, variant, fields } = &value {
+                        if let Value::Enum { name, variant, fields, .. } = &value {
                             if name == "Result" && variant == "Err" {
                                 let err_val = fields.first().cloned().unwrap_or(Value::Unit);
                                 self.handle_ensure_error(err_val, else_handler);

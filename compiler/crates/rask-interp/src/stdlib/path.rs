@@ -4,7 +4,7 @@
 //!
 //! Layer: PURE — path manipulation via std::path, no filesystem access.
 
-use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::path::Path as StdPath;
 use std::sync::{Arc, Mutex};
 
@@ -33,7 +33,7 @@ impl Interpreter {
     /// Handle instance methods on Path structs.
     pub(crate) fn call_path_instance_method(
         &self,
-        fields: &HashMap<String, Value>,
+        fields: &IndexMap<String, Value>,
         method: &str,
         _args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
@@ -49,12 +49,14 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![make_path_value(&parent)],
+                            variant_index: 0,
                         })
                     }
                     _ => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -141,7 +143,7 @@ fn make_path_value(s: &str) -> Value {
         }
     }
 
-    let mut fields = HashMap::new();
+    let mut fields = IndexMap::new();
     fields.insert(
         "value".to_string(),
         Value::String(Arc::new(Mutex::new(result))),
@@ -154,7 +156,7 @@ fn make_path_value(s: &str) -> Value {
 }
 
 /// Extract the inner string from a Path struct.
-fn extract_path_string(fields: &HashMap<String, Value>) -> Result<String, RuntimeError> {
+fn extract_path_string(fields: &IndexMap<String, Value>) -> Result<String, RuntimeError> {
     match fields.get("value") {
         Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
         _ => Err(RuntimeError::TypeError(
@@ -170,11 +172,13 @@ fn option_string(opt: Option<String>) -> Result<Value, RuntimeError> {
             name: "Option".to_string(),
             variant: "Some".to_string(),
             fields: vec![Value::String(Arc::new(Mutex::new(s)))],
+            variant_index: 0,
         }),
         None => Ok(Value::Enum {
             name: "Option".to_string(),
             variant: "None".to_string(),
             fields: vec![],
+            variant_index: 0,
         }),
     }
 }

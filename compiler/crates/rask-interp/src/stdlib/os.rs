@@ -28,11 +28,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new(val)))],
+                        variant_index: 0,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -43,6 +45,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
 
