@@ -478,9 +478,9 @@ func build_graph() -> Pool<Node> or Error {
     const b = try nodes.insert(Node { data: "B", edges: Vec.new() })
     const c = try nodes.insert(Node { data: "C", edges: Vec.new() })
 
-    try nodes[a].edges.push(b)
-    try nodes[a].edges.push(c)
-    try nodes[b].edges.push(c)
+    nodes[a].edges.push(b)
+    nodes[a].edges.push(c)
+    nodes[b].edges.push(c)
 
     Ok(nodes)
 }

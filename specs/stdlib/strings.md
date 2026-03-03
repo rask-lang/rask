@@ -423,7 +423,7 @@ func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
 
     for (start, end, kind) in scan(pool[source_handle]) {
         const slice = try pool.slice(source_handle, start, end)
-        try tokens.push(Token { text: slice, kind })
+        tokens.push(Token { text: slice, kind })
     }
 
     return Ok((pool, tokens))
@@ -450,12 +450,6 @@ for (i, c) in text.char_indices() {
 ### Implementation Notes (Interpreter)
 
 Current interpreter behavior differs from spec in some areas:
-
-**Iterator methods return Vec:**
-- `s.chars()` returns `Vec<char>` instead of expression-scoped iterator
-- `s.lines()` returns `Vec<string>` instead of expression-scoped slices
-- `s.split(pat)` returns `Vec<string>` instead of expression-scoped slices
-- `s.split_whitespace()` returns `Vec<string>` instead of expression-scoped slices
 
 **Trimming returns owned strings:**
 - `s.trim()`, `s.trim_start()`, `s.trim_end()` return new `string` instead of expression-scoped slices

@@ -30,6 +30,11 @@ impl Interpreter {
             "push" => {
                 let item = args.into_iter().next().unwrap_or(Value::Unit);
                 v.lock().unwrap().push(item);
+                Ok(Value::Unit)
+            }
+            "try_push" => {
+                let item = args.into_iter().next().unwrap_or(Value::Unit);
+                v.lock().unwrap().push(item);
                 Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
@@ -173,12 +178,7 @@ impl Interpreter {
                     return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
                 vec.insert(idx, item);
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0,
-                })
+                Ok(Value::Unit)
             }
             "remove" => {
                 let idx = self.expect_int(&args, 0)? as usize;
@@ -848,14 +848,9 @@ impl Interpreter {
                         let old_value = v.clone();
                         *v = value;
                         return Ok(Value::Enum {
-                            name: "Result".to_string(),
-                            variant: "Ok".to_string(),
-                            fields: vec![Value::Enum {
-                                name: "Option".to_string(),
-                                variant: "Some".to_string(),
-                                fields: vec![old_value],
-                                variant_index: 0,
-                            }],
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![old_value],
                             variant_index: 0,
                         });
                     }
@@ -864,14 +859,9 @@ impl Interpreter {
                 // Key doesn't exist, insert new
                 map.push((key, value));
                 Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Enum {
-                        name: "Option".to_string(),
-                        variant: "None".to_string(),
-                        fields: vec![],
-                        variant_index: 0,
-                    }],
+                    name: "Option".to_string(),
+                    variant: "None".to_string(),
+                    fields: vec![],
                     variant_index: 0,
                 })
             }
@@ -985,25 +975,13 @@ impl Interpreter {
                     map.iter().any(|(k, _)| Self::value_eq(k, &key))
                 };
 
-                if key_exists {
-                    return Ok(Value::Enum {
-                        name: "Result".to_string(),
-                        variant: "Ok".to_string(),
-                        fields: vec![Value::Unit],
-                        variant_index: 0,
-                    });
+                if !key_exists {
+                    // Key doesn't exist, call factory and insert
+                    let new_value = self.call_closure_no_args(factory)?;
+                    m.lock().unwrap().push((key, new_value));
                 }
 
-                // Key doesn't exist, call factory and insert
-                let new_value = self.call_closure_no_args(factory)?;
-                m.lock().unwrap().push((key, new_value));
-
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Unit],
-                    variant_index: 0,
-                })
+                Ok(Value::Unit)
             }
             "ensure_modify" => {
                 let key = args.get(0).cloned().unwrap_or(Value::Unit);
@@ -1031,12 +1009,7 @@ impl Interpreter {
 
                 // Call modifier and return result
                 let result = self.call_value(modifier.clone(), vec![value_to_modify])?;
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![result],
-                    variant_index: 0,
-                })
+                Ok(result)
             }
             "take_all" => {
                 let items = std::mem::take(&mut *m.lock().unwrap());

@@ -31,11 +31,11 @@ extend Vec<T> {
     /// Total bytes allocated.
     public func allocated(self) -> usize { }
 
-    /// Push a value onto the end. Fails if bounded and full.
-    public func push(mutate self, value: T) -> () or PushError<T> { }
+    /// Push a value onto the end. Panics if bounded and full, or on OOM.
+    public func push(mutate self, value: T) { }
 
-    /// Push a value, panicking if bounded and full.
-    public func push_or_panic(mutate self, value: T) { }
+    /// Push a value onto the end. Returns error if bounded and full, or on OOM.
+    public func try_push(mutate self, value: T) -> () or PushError<T> { }
 
     /// Remove and return the last element.
     public func pop(mutate self) -> Option<T> { }
@@ -49,8 +49,11 @@ extend Vec<T> {
     /// Remove and return the element at the given index.
     public func remove(mutate self, index: usize) -> T { }
 
-    /// Reserve space for at least `additional` more elements.
-    public func reserve(mutate self, additional: usize) -> () or AllocError { }
+    /// Reserve space for at least `additional` more elements. Panics on OOM.
+    public func reserve(mutate self, additional: usize) { }
+
+    /// Reserve space for at least `additional` more elements. Returns error on OOM.
+    public func try_reserve(mutate self, additional: usize) -> () or AllocError { }
 
     /// Get element at index (borrows).
     public func get(self, index: usize) -> Option<T> { }
@@ -100,8 +103,8 @@ extend Vec<T> {
     /// Shrink allocation to at least min_capacity.
     public func shrink_to(mutate self, min_capacity: usize) { }
 
-    /// Construct an element in place via closure.
-    public func push_with(mutate self, f: func(T)) -> usize or AllocError { }
+    /// Construct an element in place via closure. Panics on alloc failure.
+    public func push_with(mutate self, f: func(T)) -> usize { }
 
     /// Raw pointer to the underlying buffer (unsafe).
     public unsafe func as_ptr(self) -> *T { }
@@ -135,8 +138,8 @@ extend Map<K, V> {
     /// True if this map has a fixed capacity.
     public func is_bounded(self) -> bool { }
 
-    /// Insert a key-value pair. Returns the old value if the key existed.
-    public func insert(mutate self, key: K, value: V) -> Option<V> or InsertError<V> { }
+    /// Insert a key-value pair. Returns the old value if the key existed. Panics on alloc failure.
+    public func insert(mutate self, key: K, value: V) -> Option<V> { }
 
     /// Remove a key and return its value.
     public func remove(mutate self, key: K) -> Option<V> { }
@@ -159,11 +162,11 @@ extend Map<K, V> {
     /// Modify value for key through a closure.
     public func modify(mutate self, key: K, f: func(V) -> R) -> Option<R> { }
 
-    /// Insert default if key absent, return nothing.
-    public func ensure(mutate self, key: K, f: func() -> V) -> () or InsertError { }
+    /// Insert default if key absent, return nothing. Panics on alloc failure.
+    public func ensure(mutate self, key: K, f: func() -> V) { }
 
-    /// Insert default if key absent, then modify the value.
-    public func ensure_modify(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R or InsertError { }
+    /// Insert default if key absent, then modify the value. Panics on alloc failure.
+    public func ensure_modify(mutate self, key: K, default: func() -> V, f: func(V) -> R) -> R { }
 
     /// Iterate over (key, value) pairs.
     public func iter(self) -> Iterator<(K, V)> { }

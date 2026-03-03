@@ -137,10 +137,10 @@ func find_rask_files(dir: Path) -> Vec<Path> or string {
         if entry.is_dir() {
             const sub = try find_rask_files(p)
             for f in sub {
-                try results.push(f)
+                results.push(f)
             }
         } else if p.has_extension("rask") {
-            try results.push(p)
+            results.push(p)
         }
     }
     return results

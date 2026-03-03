@@ -118,7 +118,7 @@ public func sort<T>(arr: Vec<T>) using Compare<T>
 ```rask
 // package: core
 extend Vec<T> {
-    public func push(mutate self, item: T) -> Result<(), PushError<T>>
+    public func push(mutate self, item: T)
 }
 ```
 → `_R4core_M3Vec4push_GT` (generic method definition)

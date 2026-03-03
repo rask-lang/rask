@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::interp::{Interpreter, RuntimeError};
-use crate::value::Value;
+use crate::value::{IteratorState, Value};
 
 impl Interpreter {
     /// Handle string method calls.
@@ -85,7 +85,8 @@ impl Interpreter {
                     .split(&delimiter)
                     .map(|p| Value::String(Arc::new(Mutex::new(p.to_string()))))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
+                let state = IteratorState::PreComputed { items: parts, index: 0 };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
             "split_whitespace" => {
                 let parts: Vec<Value> = s
@@ -93,11 +94,13 @@ impl Interpreter {
                     .split_whitespace()
                     .map(|part| Value::String(Arc::new(Mutex::new(part.to_string()))))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(parts))))
+                let state = IteratorState::PreComputed { items: parts, index: 0 };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
             "chars" => {
                 let chars: Vec<Value> = s.lock().unwrap().chars().map(Value::Char).collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(chars))))
+                let state = IteratorState::PreComputed { items: chars, index: 0 };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
             "char_indices" => {
                 let pairs: Vec<Value> = s.lock().unwrap().char_indices()
@@ -117,7 +120,8 @@ impl Interpreter {
                     .lines()
                     .map(|l| Value::String(Arc::new(Mutex::new(l.to_string()))))
                     .collect();
-                Ok(Value::Vec(Arc::new(Mutex::new(lines))))
+                let state = IteratorState::PreComputed { items: lines, index: 0 };
+                Ok(Value::Iterator(Arc::new(Mutex::new(state))))
             }
             "replace" => {
                 let from = self.expect_string(&args, 0)?;

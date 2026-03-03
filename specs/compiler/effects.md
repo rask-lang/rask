@@ -35,7 +35,7 @@ func load_config(path: string) -> Config or Error {
 
 // No IO effect — pure computation
 func parse_header(raw: string) -> Header or ParseError {
-    const parts = raw.split(":")
+    const parts = raw.split(":").collect()
     if parts.len() != 2 { return Err(ParseError.MalformedHeader) }
     return Header { key: parts[0].trim(), value: parts[1].trim() }
 }

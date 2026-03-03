@@ -12,7 +12,7 @@ Comparison of interpreter builtins implementation against spec requirements. Tra
 
 | Method | Status | Notes |
 |--------|--------|-------|
-| `push(item)` | ✓ Implemented | Returns `Result<(), PushError>` per spec |
+| `push(item)` | ✓ Implemented | Returns `()`, panics on failure. `try_push` returns Result |
 | `pop()` | ✓ Implemented | Returns `Option<T>` |
 | `len()` | ✓ Implemented | Returns count |
 | `get(i)` | ✓ Implemented | Returns `Option<T>` (copies) |
@@ -187,14 +187,19 @@ To complete value-first iteration:
 
 Current interpreter returns Rust `Result<Value, RuntimeError>` but doesn't wrap in Rask `Result<Ok, Err>` enum values consistently.
 
-### Fallible Operations
+### Growth Operations
 
-Per spec, these should return `Result<T, E>`:
-- `vec.push(x)` → `Result<(), PushError<T>>`
-- `map.insert(k, v)` → `Result<Option<V>, InsertError<V>>`
-- `vec.reserve(n)` → `Result<(), AllocError>`
+Per spec (C2), default growth operations panic on failure:
+- `vec.push(x)` → `()` (panics on OOM/full)
+- `map.insert(k, v)` → `Option<V>` (panics on OOM/full)
+- `vec.reserve(n)` → `()` (panics on OOM)
 
-Current implementation panics on allocation failure (Rust default) rather than returning error values.
+Fallible `try_` variants return Result:
+- `vec.try_push(x)` → `() or PushError<T>`
+- `map.try_insert(k, v)` → `Option<V> or InsertError<V>`
+- `vec.try_reserve(n)` → `() or AllocError`
+
+Current interpreter matches: panics on allocation failure (Rust default), `try_push` wraps in Result.
 
 ## Priority Fixes
 
