@@ -112,7 +112,7 @@ func update_entities(mutate world: GameWorld) -> () or Error {
         world.entities[h].health -= 1
         if world.entities[h].health <= 0 {
             world.entities[h].active = false
-            try doomed.push(h)
+            doomed.push(h)
         }
     }
 

@@ -1,6 +1,6 @@
 <!-- id: std.collections -->
 <!-- status: decided -->
-<!-- summary: Vec and Map with fallible allocation, inline access + `with`, optional capacity bounds -->
+<!-- summary: Vec and Map with inline access + `with`, optional capacity bounds, fallible try_ variants -->
 <!-- depends: memory/borrowing.md, memory/pools.md, memory/value-semantics.md -->
 
 # Collections (Vec and Map)
@@ -12,7 +12,7 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 | Rule | Description |
 |------|-------------|
 | **C1: Value ownership** | Collections own their data. No lifetime parameters |
-| **C2: Fallible allocation** | All growth operations return `Result` with rejected value on failure |
+| **C2: Panic on alloc failure** | Growth operations (`push`, `insert`, `extend`) panic on OOM. Fallible variants (`try_push`, `try_insert`, `try_extend`) return `Result` with rejected value |
 | **C3: Inline access** | Element access via `[]` is inline (expression-scoped). Multi-statement access via `with` |
 | **C4: No linear resources** | `Vec<Linear>` and `Map<K, Linear>` are compile errors. Use `Pool<Linear>` |
 
@@ -31,14 +31,18 @@ Vec and Map with optional capacity constraints, inline element access, fallible 
 
 ## Allocation
 
-All growth operations return `Result` with rejected value on failure (C2).
+Growth operations panic on failure (C2). Fallible `try_` variants return `Result` with the rejected value for code that needs to handle allocation failure — bounded collections, embedded, or OOM-aware paths.
 
-| Operation | Returns | Error Type |
+| Operation | Returns | On failure |
 |-----------|---------|------------|
-| `vec.push(x)` | `Result<(), PushError<T>>` | `Full(T)` or `Alloc(T)` |
-| `vec.extend(iter)` | `Result<(), ExtendError<T>>` | Contains first rejected item |
-| `vec.reserve(n)` | `Result<(), AllocError>` | No data to return |
-| `map.insert(k, v)` | `Result<Option<V>, InsertError<V>>` | `Full(V)` or `Alloc(V)` |
+| `vec.push(x)` | `()` | Panics |
+| `vec.try_push(x)` | `() or PushError<T>` | Returns `Err(Full(T))` or `Err(Alloc(T))` |
+| `vec.extend(iter)` | `()` | Panics |
+| `vec.try_extend(iter)` | `() or ExtendError<T>` | Returns first rejected item |
+| `vec.reserve(n)` | `()` | Panics |
+| `vec.try_reserve(n)` | `() or AllocError` | Returns error |
+| `map.insert(k, v)` | `Option<V>` | Panics |
+| `map.try_insert(k, v)` | `Option<V> or InsertError<V>` | Returns `Err(Full(V))` or `Err(Alloc(V))` |
 
 <!-- test: skip -->
 ```rask
@@ -47,9 +51,8 @@ enum PushError<T> {
     Alloc(T),  // Allocation failed
 }
 
-try vec.push(x)             // Propagate error
-vec.push(x)!                // Panic on error
-vec.push_or_panic(x)        // Explicit panic variant
+vec.push(x)                 // Panics on OOM or full (like Rust/Go)
+try vec.try_push(x)         // Propagate error (bounded collections, embedded)
 ```
 
 ## From Literal Constructors
@@ -85,14 +88,14 @@ const users = Map.from([
 | `vec.get(i)` | `Option<T>` | `T: Copy` | No |
 | `vec.get_clone(i)` | `Option<T>` | `T: Cloneable` | No |
 | `with vec[i] as v { ... }` | block value (mutable) | None | Yes (OOB) |
-| `vec.insert(i, x)` | `Result<(), InsertError<T>>` | None | Yes (OOB) |
+| `vec.insert(i, x)` | `()` | None | Yes (OOB or alloc) |
 | `vec.remove(i)` | `T` | None | Yes (OOB) |
 
 ### Positional Insert/Remove
 
 | Rule | Description |
 |------|-------------|
-| **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()`. Returns `Result` on alloc failure |
+| **V4: Insert at index** | `vec.insert(i, x)` inserts before position `i`, shifting later elements right. Panics on `i > len()` or alloc failure |
 | **V5: Remove at index** | `vec.remove(i)` removes and returns the element at `i`, shifting later elements left. Panics on `i >= len()` |
 
 <!-- test: skip -->
@@ -135,13 +138,13 @@ const name = with vec[i] as v { v.name.clone() }
 
 | Method | Returns | Semantics |
 |--------|---------|-----------|
-| `map.ensure(k, \|\| v)` | `Result<(), InsertError>` | Insert if missing, no-op if present |
-| `map.ensure_modify(k, \|\| v, \|v\| R)` | `Result<R, InsertError>` | Insert if missing, then mutate |
+| `map.ensure(k, \|\| v)` | `()` | Insert if missing, no-op if present. Panics on alloc failure |
+| `map.ensure_modify(k, \|\| v, \|v\| R)` | `R` | Insert if missing, then mutate. Panics on alloc failure |
 
 <!-- test: skip -->
 ```rask
-try map.ensure(user_id, || User.new(user_id))
-try map.ensure_modify(user_id, || User.new(user_id), |u| {
+map.ensure(user_id, || User.new(user_id))
+map.ensure_modify(user_id, || User.new(user_id), |u| {
     u.last_seen = now()
     u.visit_count += 1
 })
@@ -254,7 +257,7 @@ vec.shrink_to(n)         // Shrink to at least n capacity
 
 <!-- test: skip -->
 ```rask
-const idx = try vec.push_with(|slot| {
+const idx = vec.push_with(|slot| {
     slot.field1 = compute_expensive()
     slot.field2 = [0; 1000]
 })
@@ -358,17 +361,17 @@ FIX: Use Pool<File> with explicit consumption:
 ```
 
 ```
-ERROR [std.collections/C2]: push failed on bounded collection
+PANIC [std.collections/C2]: push failed — collection at capacity
    |
-5  |  try vec.push(item)
-   |       ^^^^^^^^^^^^^^ collection at capacity
+5  |  vec.push(item)
+   |       ^^^^^^^^^ bounded collection is full
 
-WHY: Bounded collections cannot exceed their capacity limit.
+FIX: Use try_push to handle capacity limits:
 
-FIX: Process existing items first, or use an unbounded collection:
-
-  vec.clear()
-  try vec.push(item)
+  match vec.try_push(item) {
+      Ok(()) => {},
+      Err(PushError.Full(item)) => process_overflow(item),
+  }
 ```
 
 ## Edge Cases
@@ -377,8 +380,8 @@ FIX: Process existing items first, or use an unbounded collection:
 |------|------|----------|
 | `vec[usize.MAX]` | V1 | Panic (bounds check) |
 | `vec.get(usize.MAX)` | V3 | Returns `None` |
-| `Vec.fixed(0).push(x)` | C2 | Returns `Err(PushError.Full(x))` |
-| OOM on unbounded `push()` | C2 | Returns `Err(PushError.Alloc(x))` |
+| `Vec.fixed(0).push(x)` | C2 | Panics (capacity 0). Use `try_push` to handle |
+| OOM on unbounded `push()` | C2 | Panics. Use `try_push` for OOM-aware code |
 | `vec.insert(n, x)` where `n > len()` | V4 | Panic (bounds check) |
 | `vec.remove(n)` where `n >= len()` | V5 | Panic (bounds check) |
 | `with vec[i] as e1, vec[i] as e2` | D1 | Panic (duplicate index) |
@@ -396,7 +399,7 @@ FIX: Process existing items first, or use an unbounded collection:
 
 ### Rationale
 
-**C2 (fallible allocation):** All allocations can fail. Returning the rejected value in the error lets callers retry or log without losing data.
+**C2 (panic on alloc failure):** I considered making all growth operations return `Result` (and did, initially). In practice, 98% of push calls ignored the error — application code can't meaningfully recover from OOM on unbounded collections. Rust's `Vec::push` and Go's `append` both panic on OOM. The `try_` variants exist for the cases that matter: bounded collections, embedded systems, and allocation-aware code. The rejected value is still returned in the error so callers can retry or log without losing data.
 
 **C3 (inline access):** Collections can grow/shrink, invalidating any held views. Inline expression access kills this bug class. Multi-statement access uses `with`. See `mem.borrowing/B2`.
 
