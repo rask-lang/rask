@@ -34,6 +34,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Unit],
+                    variant_index: 0,
                 })
             }
             "pop" => {
@@ -43,11 +44,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -81,11 +84,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -95,11 +100,13 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     None => Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -170,6 +177,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Unit],
+                    variant_index: 0,
                 })
             }
             "remove" => {
@@ -250,6 +258,7 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     });
                 }
                 let mut acc = vec[0].clone();
@@ -260,6 +269,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: vec![acc],
+                    variant_index: 0,
                 })
             }
             "enumerate" => {
@@ -381,6 +391,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![item.clone()],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -388,6 +399,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             "position" => {
@@ -400,6 +412,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![Value::Int(i as i64)],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -407,6 +420,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             "dedup" => {
@@ -457,6 +471,7 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     });
                 }
                 let mut min = vec[0].clone();
@@ -469,6 +484,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: vec![min],
+                    variant_index: 0,
                 })
             }
             "max" => {
@@ -478,6 +494,7 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     });
                 }
                 let mut max = vec[0].clone();
@@ -490,6 +507,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: vec![max],
+                    variant_index: 0,
                 })
             }
             "take_all" => {
@@ -510,12 +528,14 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![result],
+                        variant_index: 0,
                     })
                 } else {
                     Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     })
                 }
             }
@@ -533,12 +553,14 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![result],
+                        variant_index: 0,
                     })
                 } else {
                     Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     })
                 }
             }
@@ -566,6 +588,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Handle { pool_id, index, generation }],
+                    variant_index: 0,
                 })
             }
             "get" => {
@@ -578,12 +601,14 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![val],
+                                variant_index: 0,
                             })
                         }
                         Err(_) => Ok(Value::Enum {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
+                            variant_index: 0,
                         }),
                     }
                 } else {
@@ -600,12 +625,14 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![val],
+                                variant_index: 0,
                             })
                         }
                         Err(_) => Ok(Value::Enum {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
+                            variant_index: 0,
                         }),
                     }
                 } else {
@@ -622,12 +649,14 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![val],
+                                variant_index: 0,
                             })
                         }
                         Err(_) => Ok(Value::Enum {
                             name: "Option".to_string(),
                             variant: "None".to_string(),
                             fields: vec![],
+                            variant_index: 0,
                         }),
                     }
                 } else {
@@ -721,6 +750,7 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![result],
+                                variant_index: 0,
                             });
                         }
                     }
@@ -729,6 +759,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             "modify" => {
@@ -746,6 +777,7 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![result],
+                                variant_index: 0,
                             });
                         }
                     }
@@ -754,6 +786,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -821,7 +854,9 @@ impl Interpreter {
                                 name: "Option".to_string(),
                                 variant: "Some".to_string(),
                                 fields: vec![old_value],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -835,7 +870,9 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     }],
+                    variant_index: 0,
                 })
             }
             "get" => {
@@ -848,6 +885,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![v.clone()],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -856,6 +894,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             "remove" => {
@@ -876,12 +915,14 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![v],
+                        variant_index: 0,
                     })
                 } else {
                     Ok(Value::Enum {
                         name: "Option".to_string(),
                         variant: "None".to_string(),
                         fields: vec![],
+                        variant_index: 0,
                     })
                 }
             }
@@ -949,6 +990,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
+                        variant_index: 0,
                     });
                 }
 
@@ -960,6 +1002,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![Value::Unit],
+                    variant_index: 0,
                 })
             }
             "ensure_modify" => {
@@ -992,6 +1035,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: vec![result],
+                    variant_index: 0,
                 })
             }
             "take_all" => {
@@ -1017,6 +1061,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![result],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -1024,6 +1069,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             "modify" => {
@@ -1041,6 +1087,7 @@ impl Interpreter {
                             name: "Option".to_string(),
                             variant: "Some".to_string(),
                             fields: vec![result],
+                            variant_index: 0,
                         });
                     }
                 }
@@ -1048,6 +1095,7 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {
@@ -1182,6 +1230,7 @@ impl Interpreter {
                     name: "Ordering".to_string(),
                     variant: "Relaxed".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             (TypeConstructorKind::Ordering, "Acquire") => {
@@ -1189,6 +1238,7 @@ impl Interpreter {
                     name: "Ordering".to_string(),
                     variant: "Acquire".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             (TypeConstructorKind::Ordering, "Release") => {
@@ -1196,6 +1246,7 @@ impl Interpreter {
                     name: "Ordering".to_string(),
                     variant: "Release".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             (TypeConstructorKind::Ordering, "AcqRel") => {
@@ -1203,6 +1254,7 @@ impl Interpreter {
                     name: "Ordering".to_string(),
                     variant: "AcqRel".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             (TypeConstructorKind::Ordering, "SeqCst") => {
@@ -1210,6 +1262,7 @@ impl Interpreter {
                     name: "Ordering".to_string(),
                     variant: "SeqCst".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 })
             }
             _ => Err(RuntimeError::NoSuchMethod {

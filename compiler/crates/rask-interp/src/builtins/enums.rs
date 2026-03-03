@@ -21,6 +21,7 @@ impl Interpreter {
                     name: "Result".to_string(),
                     variant: "Ok".to_string(),
                     fields: fields.to_vec(),
+                    variant_index: 0,
                 }),
                 "Err" => {
                     let closure = args.into_iter().next().ok_or_else(|| {
@@ -32,6 +33,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![mapped],
+                        variant_index: 0,
                     })
                 }
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
@@ -47,12 +49,14 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![mapped],
+                        variant_index: 0,
                     })
                 }
                 "Err" => Ok(Value::Enum {
                     name: "Result".to_string(),
                     variant: "Err".to_string(),
                     fields: fields.to_vec(),
+                    variant_index: 0,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
@@ -61,11 +65,13 @@ impl Interpreter {
                     name: "Option".to_string(),
                     variant: "Some".to_string(),
                     fields: fields.to_vec(),
+                    variant_index: 0,
                 }),
                 "Err" => Ok(Value::Enum {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Result.Ok or Result.Err variant".to_string())),
             },
@@ -118,12 +124,14 @@ impl Interpreter {
                         name: "Option".to_string(),
                         variant: "Some".to_string(),
                         fields: vec![mapped],
+                        variant_index: 0,
                     })
                 }
                 "None" => Ok(Value::Enum {
                     name: "Option".to_string(),
                     variant: "None".to_string(),
                     fields: vec![],
+                    variant_index: 0,
                 }),
                 _ => Err(RuntimeError::TypeError("expected Option.Some or Option.None variant".to_string())),
             },

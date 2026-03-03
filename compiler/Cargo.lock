@@ -1325,6 +1325,7 @@ dependencies = [
 name = "rask-interp"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "rask-ast",
  "rask-comptime",
  "rask-lexer",

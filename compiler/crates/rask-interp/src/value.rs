@@ -2,6 +2,7 @@
 //! Runtime values.
 
 use std::collections::HashMap;
+use indexmap::IndexMap;
 use std::fmt;
 use std::fs::File as StdFile;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -264,10 +265,10 @@ pub enum Value {
     Char(char),
     /// String (mutable, like Vec)
     String(Arc<Mutex<String>>),
-    /// Struct instance
+    /// Struct instance (IndexMap preserves field declaration order for CO3)
     Struct {
         name: String,
-        fields: HashMap<String, Value>,
+        fields: IndexMap<String, Value>,
         /// Resource tracking ID (Some for @resource types).
         resource_id: Option<u64>,
     },
@@ -276,6 +277,8 @@ pub enum Value {
         name: String,
         variant: String,
         fields: Vec<Value>,
+        /// Variant index in declaration order (for Comparable ordering).
+        variant_index: u32,
     },
     /// Function reference
     Function {
@@ -301,6 +304,7 @@ pub enum Value {
         enum_name: String,
         variant_name: String,
         field_count: usize,
+        variant_index: u32,
     },
     /// Module (fs, io, cli, std, env)
     Module(ModuleKind),
@@ -493,6 +497,17 @@ impl fmt::Debug for IteratorState {
 }
 
 impl Value {
+    /// Create an enum value. variant_index defaults to 0 (builtin enums).
+    /// User-defined enums should use `enum_with_index` for correct ordering.
+    pub fn enum_val(name: String, variant: String, fields: Vec<Value>) -> Self {
+        Value::Enum { name, variant, fields, variant_index: 0 }
+    }
+
+    /// Create an enum value with an explicit variant index for ordering.
+    pub fn enum_with_index(name: String, variant: String, fields: Vec<Value>, variant_index: u32) -> Self {
+        Value::Enum { name, variant, fields, variant_index }
+    }
+
     /// Get the type name for error messages.
     pub fn type_name(&self) -> &'static str {
         match self {
@@ -565,16 +580,17 @@ impl Value {
                 Value::Vec(Arc::new(Mutex::new(deep)))
             }
             Value::Struct { name, fields, resource_id } => {
-                let deep_fields: HashMap<String, Value> = fields.iter()
+                let deep_fields: IndexMap<String, Value> = fields.iter()
                     .map(|(k, v)| (k.clone(), v.deep_clone()))
                     .collect();
                 Value::Struct { name: name.clone(), fields: deep_fields, resource_id: *resource_id }
             }
-            Value::Enum { name, variant, fields } => {
+            Value::Enum { name, variant, fields, variant_index } => {
                 Value::Enum {
                     name: name.clone(),
                     variant: variant.clone(),
                     fields: fields.iter().map(|f| f.deep_clone()).collect(),
+                    variant_index: *variant_index,
                 }
             }
             Value::Pool(p) => {
@@ -677,7 +693,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, " }}")
             }
-            Value::Enum { name, variant, fields } => {
+            Value::Enum { name, variant, fields, .. } => {
                 write!(f, "{}.{}", name, variant)?;
                 if !fields.is_empty() {
                     write!(f, "(")?;

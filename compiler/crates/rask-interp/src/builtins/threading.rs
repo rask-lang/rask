@@ -34,6 +34,7 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![val],
+                            variant_index: 0,
                         }),
                         // Thread returned error - wrap in JoinError::Panicked
                         Ok(Err(msg)) => Ok(Value::Enum {
@@ -43,7 +44,9 @@ impl Interpreter {
                                 name: "JoinError".to_string(),
                                 variant: "Panicked".to_string(),
                                 fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                         // Thread panicked - return Err(JoinError::Panicked)
                         Err(_) => Ok(Value::Enum {
@@ -55,7 +58,9 @@ impl Interpreter {
                                 fields: vec![Value::String(Arc::new(Mutex::new(
                                     "thread panicked".to_string(),
                                 )))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                     },
                     // Handle already consumed - return Err(JoinError::Panicked) with message
@@ -68,7 +73,9 @@ impl Interpreter {
                             fields: vec![Value::String(Arc::new(Mutex::new(
                                 "handle already joined".to_string(),
                             )))],
+                            variant_index: 0,
                         }],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -102,6 +109,7 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![val],
+                            variant_index: 0,
                         }),
                         Ok(Err(msg)) => Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -110,7 +118,9 @@ impl Interpreter {
                                 name: "JoinError".to_string(),
                                 variant: "Panicked".to_string(),
                                 fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                         Err(_) => Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -121,7 +131,9 @@ impl Interpreter {
                                 fields: vec![Value::String(Arc::new(Mutex::new(
                                     "task channel closed".to_string(),
                                 )))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                     };
                 }
@@ -133,6 +145,7 @@ impl Interpreter {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
                             fields: vec![val],
+                            variant_index: 0,
                         }),
                         Ok(Err(msg)) => Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -141,7 +154,9 @@ impl Interpreter {
                                 name: "JoinError".to_string(),
                                 variant: "Panicked".to_string(),
                                 fields: vec![Value::String(Arc::new(Mutex::new(msg)))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                         Err(_) => Ok(Value::Enum {
                             name: "Result".to_string(),
@@ -152,7 +167,9 @@ impl Interpreter {
                                 fields: vec![Value::String(Arc::new(Mutex::new(
                                     "task panicked".to_string(),
                                 )))],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         }),
                     },
                     None => Ok(Value::Enum {
@@ -164,7 +181,9 @@ impl Interpreter {
                             fields: vec![Value::String(Arc::new(Mutex::new(
                                 "handle already joined".to_string(),
                             )))],
+                            variant_index: 0,
                         }],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -190,7 +209,9 @@ impl Interpreter {
                                 name: "JoinError".to_string(),
                                 variant: "Cancelled".to_string(),
                                 fields: vec![],
+                                variant_index: 0,
                             }],
+                            variant_index: 0,
                         })
                     }
                     None => Ok(Value::Enum {
@@ -202,7 +223,9 @@ impl Interpreter {
                             fields: vec![Value::String(Arc::new(Mutex::new(
                                 "handle already consumed".to_string(),
                             )))],
+                            variant_index: 0,
                         }],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -229,6 +252,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![Value::Unit],
+                        variant_index: 0,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -236,6 +260,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "channel closed".to_string(),
                         )))],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -260,6 +285,7 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     Err(_) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -267,6 +293,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "channel closed".to_string(),
                         )))],
+                        variant_index: 0,
                     }),
                 }
             }
@@ -277,11 +304,13 @@ impl Interpreter {
                         name: "Result".to_string(),
                         variant: "Ok".to_string(),
                         fields: vec![val],
+                        variant_index: 0,
                     }),
                     Err(mpsc::TryRecvError::Empty) => Ok(Value::Enum {
                         name: "Result".to_string(),
                         variant: "Err".to_string(),
                         fields: vec![Value::String(Arc::new(Mutex::new("empty".to_string())))],
+                        variant_index: 0,
                     }),
                     Err(mpsc::TryRecvError::Disconnected) => Ok(Value::Enum {
                         name: "Result".to_string(),
@@ -289,6 +318,7 @@ impl Interpreter {
                         fields: vec![Value::String(Arc::new(Mutex::new(
                             "channel closed".to_string(),
                         )))],
+                        variant_index: 0,
                     }),
                 }
             }
