@@ -341,6 +341,7 @@ RaskVec *rask_file_lines(int64_t file) {
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 
 int64_t rask_net_tcp_listen(const RaskString *addr) {
     const char *a = addr ? rask_string_ptr(addr) : "0.0.0.0:0";
@@ -386,6 +387,50 @@ int64_t rask_net_tcp_accept(int64_t listen_fd) {
     return (int64_t)client;
 }
 
+int64_t rask_net_tcp_connect(const RaskString *addr) {
+    const char *a = addr ? rask_string_ptr(addr) : "127.0.0.1:80";
+
+    // Parse "host:port"
+    char host[256] = "127.0.0.1";
+    char port_str[16] = "80";
+    const char *colon = strrchr(a, ':');
+    if (colon) {
+        size_t hlen = (size_t)(colon - a);
+        if (hlen > 0 && hlen < sizeof(host)) {
+            memcpy(host, a, hlen);
+            host[hlen] = '\0';
+        }
+        size_t plen = strlen(colon + 1);
+        if (plen > 0 && plen < sizeof(port_str)) {
+            memcpy(port_str, colon + 1, plen + 1);
+        }
+    }
+
+    // Resolve hostname via getaddrinfo (handles both IPs and DNS names)
+    struct addrinfo hints, *result;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    int err = getaddrinfo(host, port_str, &hints, &result);
+    if (err != 0) return -1;
+
+    int fd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
+    if (fd < 0) {
+        freeaddrinfo(result);
+        return -1;
+    }
+
+    if (connect(fd, result->ai_addr, result->ai_addrlen) < 0) {
+        close(fd);
+        freeaddrinfo(result);
+        return -1;
+    }
+
+    freeaddrinfo(result);
+    return (int64_t)fd;
+}
+
 // ─── String-based socket I/O (used by Rask stdlib HTTP parser) ────
 
 // Read up to max_len bytes from fd, return as RaskString.
@@ -413,6 +458,22 @@ RaskString *rask_io_read_string(int64_t fd, int64_t max_len) {
         }
     }
 done:;
+    RaskString *s = rask_string_from_bytes(buf, total);
+    rask_free(buf);
+    return s;
+}
+
+// Read until connection closes or max_len reached. For HTTP client responses
+// where Connection: close is used.
+RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len) {
+    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 1048576;
+    char *buf = (char *)rask_alloc(max_len);
+    int64_t total = 0;
+    while (total < max_len) {
+        ssize_t n = read((int)fd, buf + total, (size_t)(max_len - total));
+        if (n <= 0) break;
+        total += n;
+    }
     RaskString *s = rask_string_from_bytes(buf, total);
     rask_free(buf);
     return s;
