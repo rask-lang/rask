@@ -52,40 +52,6 @@ extend Version {
     func to_string(self) -> string {
         return "{self.major}.{self.minor}.{self.patch}"
     }
-
-    // -1, 0, or 1 for ordering
-    func compare(self, other: Version) -> i32 {
-        if self.major != other.major {
-            return if self.major < other.major: -1 else: 1
-        }
-        if self.minor != other.minor {
-            return if self.minor < other.minor: -1 else: 1
-        }
-        if self.patch != other.patch {
-            return if self.patch < other.patch: -1 else: 1
-        }
-        return 0
-    }
-
-    func lt(self, other: Version) -> bool {
-        return self.compare(other) < 0
-    }
-
-    func le(self, other: Version) -> bool {
-        return self.compare(other) <= 0
-    }
-
-    func gt(self, other: Version) -> bool {
-        return self.compare(other) > 0
-    }
-
-    func ge(self, other: Version) -> bool {
-        return self.compare(other) >= 0
-    }
-
-    func eq(self, other: Version) -> bool {
-        return self.compare(other) == 0
-    }
 }
 
 // ─── Version Constraints ────────────────────────────────────────────
