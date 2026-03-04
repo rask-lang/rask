@@ -176,6 +176,40 @@ void rask_shared_drop_i64(int64_t shared) {
     rask_shared_free((RaskShared *)(intptr_t)shared);
 }
 
+// ─── Mutex i64/ptr codegen wrappers ──────────────────────
+
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size) {
+    RaskMutex *m = rask_mutex_new((const void *)(intptr_t)data_ptr, data_size);
+    return (int64_t)(intptr_t)m;
+}
+
+int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+    int64_t env = CLOSURE_ENV(closure);
+
+    pthread_mutex_lock(&m->lock);
+    int64_t result = fn(env, (int64_t)(intptr_t)m->data);
+    pthread_mutex_unlock(&m->lock);
+    return result;
+}
+
+int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    if (pthread_mutex_trylock(&m->lock) == 0) {
+        RaskClosureFn1 fn = (RaskClosureFn1)(intptr_t)CLOSURE_FUNC(closure);
+        int64_t env = CLOSURE_ENV(closure);
+        int64_t result = fn(env, (int64_t)(intptr_t)m->data);
+        pthread_mutex_unlock(&m->lock);
+        return result;
+    }
+    return 0; // lock not acquired
+}
+
+void rask_mutex_drop(int64_t mutex) {
+    rask_mutex_free((RaskMutex *)(intptr_t)mutex);
+}
+
 // ─── Pointer-based wrappers for aggregate types ──────────
 //
 // These work with any data size. The closure receives a pointer to

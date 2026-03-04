@@ -219,6 +219,63 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
 
+        // rask_vec_sort(v: RaskVec*) → void
+        StdlibEntry {
+            mir_name: "Vec_sort",
+            c_name: "rask_vec_sort",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_vec_sort_by(v: RaskVec*, comparator: fn_ptr) → void
+        StdlibEntry {
+            mir_name: "Vec_sort_by",
+            c_name: "rask_vec_sort_by",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_vec_reverse(v: RaskVec*) → void
+        StdlibEntry {
+            mir_name: "Vec_reverse",
+            c_name: "rask_vec_reverse",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_vec_contains(v: RaskVec*, elem: const void*) → i64 (bool)
+        StdlibEntry {
+            mir_name: "Vec_contains",
+            c_name: "rask_vec_contains",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // rask_vec_dedup(v: RaskVec*) → void
+        StdlibEntry {
+            mir_name: "Vec_dedup",
+            c_name: "rask_vec_dedup",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_vec_first(v: RaskVec*) → void* (dereferenced to i64 by builder)
+        StdlibEntry {
+            mir_name: "Vec_first",
+            c_name: "rask_vec_first",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: true,
+        },
+        // rask_vec_last(v: RaskVec*) → void*
+        StdlibEntry {
+            mir_name: "Vec_last",
+            c_name: "rask_vec_last",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: true,
+        },
+
         // ── Iterator runtime support ──────────────────────────────
         // Vec_iter is not needed — iterator chains are fused at MIR level.
         // rask_iter_skip(src: const RaskVec*, n: i64) → RaskVec*
@@ -331,6 +388,76 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── String methods ────────────────────────────────────
+        StdlibEntry {
+            mir_name: "string_is_empty",
+            c_name: "rask_string_is_empty",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_to_uppercase",
+            c_name: "rask_string_to_uppercase",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_find",
+            c_name: "rask_string_find",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_index_of",
+            c_name: "rask_string_find",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_rfind",
+            c_name: "rask_string_rfind",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_char_at",
+            c_name: "rask_string_char_at",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_repeat",
+            c_name: "rask_string_repeat",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_reverse",
+            c_name: "rask_string_reverse",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_trim_start",
+            c_name: "rask_string_trim_start",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_trim_end",
+            c_name: "rask_string_trim_end",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         StdlibEntry {
             mir_name: "string_to_lowercase",
             c_name: "rask_string_to_lowercase",
@@ -1666,6 +1793,122 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             c_name: "rask_shared_drop_i64",
             params: &[types::I64],
             ret_ty: None,
+            can_panic: false,
+        },
+
+        // ── Concurrency: Mutex<T> ──────────────────────────────────
+        StdlibEntry {
+            mir_name: "Mutex_new",
+            c_name: "rask_mutex_new_ptr",
+            params: &[types::I64, types::I64],  // data_ptr, data_size
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_lock",
+            c_name: "rask_mutex_lock_ptr",
+            params: &[types::I64, types::I64],  // mutex, closure
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_try_lock",
+            c_name: "rask_mutex_try_lock_ptr",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "Mutex_drop",
+            c_name: "rask_mutex_drop",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+
+        // ── Char predicates ───────────────────────────────────
+        StdlibEntry {
+            mir_name: "char_is_digit",
+            c_name: "rask_char_is_digit",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_ascii",
+            c_name: "rask_char_is_ascii",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_alphabetic",
+            c_name: "rask_char_is_alphabetic",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_numeric",
+            c_name: "rask_char_is_numeric",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_alphanumeric",
+            c_name: "rask_char_is_alphanumeric",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_whitespace",
+            c_name: "rask_char_is_whitespace",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_uppercase",
+            c_name: "rask_char_is_uppercase",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_is_lowercase",
+            c_name: "rask_char_is_lowercase",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_to_uppercase",
+            c_name: "rask_char_to_uppercase",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_to_lowercase",
+            c_name: "rask_char_to_lowercase",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_len_utf8",
+            c_name: "rask_char_len_utf8",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_eq",
+            c_name: "rask_char_eq",
+            params: &[types::I32, types::I32],
+            ret_ty: Some(types::I64),
             can_panic: false,
         },
 
