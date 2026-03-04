@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // KeyValue — core record type with tab-delimited encoding.
+//
+// Public because scan() returns Vec<KeyValue> to callers.
 
-struct KeyValue {
-    key: string
-    value: string
-    seq: i64
-    deleted: bool
+public struct KeyValue {
+    public key: string
+    public value: string
+    public seq: i64
+    public deleted: bool
 }
 
 extend KeyValue {
-    func new(key: string, value: string, seq: i64) -> KeyValue {
+    public func new(key: string, value: string, seq: i64) -> KeyValue {
         return KeyValue { key: key, value: value, seq: seq, deleted: false }
     }
 
-    func tombstone(key: string, seq: i64) -> KeyValue {
+    public func tombstone(key: string, seq: i64) -> KeyValue {
         return KeyValue { key: key, value: "", seq: seq, deleted: true }
     }
 }

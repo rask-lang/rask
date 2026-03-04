@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Database — top-level orchestrator tying all layers together.
 //
-// Coordinates WAL, memtable, SSTables, cache, and compaction into
-// a single get/put/delete/scan interface with crash recovery.
+// Public API surface: Db, DbConfig, DbStats, BatchEntry, execute_batch,
+// print_stats. Internal fields use package-private types (Wal, Memtable,
+// BlockCache, etc.) so callers can't construct Db directly — they must
+// use Db.open().
 
 import fs
 
-struct DbConfig {
-    dir: string
+public struct DbConfig {
+    public dir: string
     wal_path: string
     flush_threshold: usize
 }
 
 extend DbConfig {
-    func default_for(dir: string) -> DbConfig {
+    public func default_for(dir: string) -> DbConfig {
         return DbConfig {
             dir: dir,
             wal_path: "{dir}/wal.log",
@@ -22,7 +24,8 @@ extend DbConfig {
     }
 }
 
-struct Db {
+// Non-public fields force callers through Db.open()
+public struct Db {
     config: DbConfig
     memtable: Memtable
     wal: Wal
@@ -34,7 +37,7 @@ struct Db {
 }
 
 extend Db {
-    func open(config: DbConfig) -> Db or DbError {
+    public func open(config: DbConfig) -> Db or DbError {
         try fs.create_dir_all(config.dir)
             else |e| DbError.Io("cannot create directory: {config.dir}: {e}")
 
@@ -82,7 +85,7 @@ extend Db {
         })
     }
 
-    func put(mutate self, key: string, value: string) -> () or DbError {
+    public func put(mutate self, key: string, value: string) -> () or DbError {
         const seq = self.next_seq
         self.next_seq += 1
 
@@ -100,7 +103,7 @@ extend Db {
         return Ok(())
     }
 
-    func get(mutate self, key: string) -> string or DbError {
+    public func get(mutate self, key: string) -> string or DbError {
         // Memtable first (newest data)
         if self.memtable.get(key) is Some(kv) {
             if kv.deleted {
@@ -136,7 +139,7 @@ extend Db {
         return Err(DbError.KeyNotFound(key))
     }
 
-    func delete(mutate self, key: string) -> () or DbError {
+    public func delete(mutate self, key: string) -> () or DbError {
         const seq = self.next_seq
         self.next_seq += 1
 
@@ -154,7 +157,7 @@ extend Db {
         return Ok(())
     }
 
-    func scan(mutate self, start: string, end: string) -> Vec<KeyValue> or DbError {
+    public func scan(mutate self, start: string, end: string) -> Vec<KeyValue> or DbError {
         let all_entries = self.memtable.scan(start, end)
 
         let level_idx: usize = 0
@@ -196,7 +199,7 @@ extend Db {
         return Ok(deduped)
     }
 
-    func flush(mutate self) -> () or DbError {
+    public func flush(mutate self) -> () or DbError {
         if self.memtable.is_empty() { return Ok(()) }
 
         const id = self.next_sst_id
@@ -223,7 +226,7 @@ extend Db {
         return Ok(())
     }
 
-    func compact_level(mutate self, level: i32) -> () or DbError {
+    public func compact_level(mutate self, level: i32) -> () or DbError {
         const level_idx = level as usize
         if self.levels[level_idx].len() < 2 { return Ok(()) }
         if level >= MAX_LEVELS - 1 { return Ok(()) }
@@ -253,7 +256,7 @@ extend Db {
         return Ok(())
     }
 
-    func stats(self) -> DbStats {
+    public func stats(self) -> DbStats {
         let total_sst = 0
         let level_counts = Vec.new()
         for level in self.levels {
@@ -274,7 +277,17 @@ extend Db {
         }
     }
 
-    func close(take self) -> () or DbError {
+    public func compact_all(mutate self) -> () or DbError {
+        try self.flush()
+        let level = 0
+        while level < MAX_LEVELS - 1 {
+            try self.compact_level(level)
+            level += 1
+        }
+        return Ok(())
+    }
+
+    public func close(take self) -> () or DbError {
         if !self.memtable.is_empty() {
             const id = self.next_sst_id
             const entries = self.memtable.take_sorted()
@@ -288,17 +301,17 @@ extend Db {
 
 // ─── Stats ──────────────────────────────────────────────────────────
 
-struct DbStats {
-    memtable_entries: i32
-    memtable_bytes: usize
-    sst_count: i32
-    level_counts: Vec<i32>
-    cache_entries: i32
-    cache_accesses: i64
-    next_seq: i64
+public struct DbStats {
+    public memtable_entries: i32
+    public memtable_bytes: usize
+    public sst_count: i32
+    public level_counts: Vec<i32>
+    public cache_entries: i32
+    public cache_accesses: i64
+    public next_seq: i64
 }
 
-func print_stats(stats: DbStats) {
+public func print_stats(stats: DbStats) {
     println("Database statistics:")
     println("  Memtable:  {stats.memtable_entries} entries, {stats.memtable_bytes} bytes")
     println("  SSTables:  {stats.sst_count} total")
@@ -317,13 +330,13 @@ func print_stats(stats: DbStats) {
 
 // ─── Batch Operations ───────────────────────────────────────────────
 
-struct BatchEntry {
-    key: string
-    value: string
-    is_delete: bool
+public struct BatchEntry {
+    public key: string
+    public value: string
+    public is_delete: bool
 }
 
-func execute_batch(mutate db: Db, entries: Vec<BatchEntry>) -> i32 or DbError {
+public func execute_batch(mutate db: Db, entries: Vec<BatchEntry>) -> i32 or DbError {
     let success_count = 0
     for entry in entries {
         if entry.is_delete {
