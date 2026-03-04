@@ -645,7 +645,7 @@ impl<'a> MirLowerer<'a> {
                             // The C runtime needs actual sizes for struct types;
                             // the dispatch table expects these as extra arguments.
                             if (base_name == "Channel" && (method == "buffered" || method == "unbuffered"))
-                                || (base_name == "Shared" && method == "new")
+                                || ((base_name == "Shared" || base_name == "Mutex") && method == "new")
                             {
                                 let elem_size = self.generic_inner_struct_size(name);
                                 let size_op = MirOperand::Constant(MirConst::Int(elem_size));
@@ -680,11 +680,11 @@ impl<'a> MirLowerer<'a> {
                 // Skip for smart pointer types (Shared, Channel, etc.) that also use MirType::Ptr.
                 let is_smart_ptr = self.ctx.lookup_raw_type(object.id)
                     .and_then(|ty| super::MirContext::stdlib_type_prefix(ty))
-                    .map(|prefix| matches!(prefix, "Shared" | "Channel" | "Sender" | "Receiver"))
+                    .map(|prefix| matches!(prefix, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
                     .unwrap_or(false)
                     || if let ExprKind::Ident(var_name) = &object.kind {
                         self.local_type_prefix.get(var_name)
-                            .map(|p| matches!(p.as_str(), "Shared" | "Channel" | "Sender" | "Receiver"))
+                            .map(|p| matches!(p.as_str(), "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
                             .unwrap_or(false)
                     } else {
                         false
@@ -1859,7 +1859,31 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // Default: simple alias binding (Pool, Cell, Mutex, etc.)
+                // Detect Mutex pattern: with mutex as v { body }
+                // Source is a plain Ident referring to a Mutex variable.
+                if bindings.len() == 1 {
+                    let binding = &bindings[0];
+                    let is_mutex = if let ExprKind::Ident(var_name) = &binding.source.kind {
+                        let from_type = self.ctx.lookup_raw_type(binding.source.id)
+                            .map(|ty| matches!(ty,
+                                rask_types::Type::UnresolvedGeneric { name, .. }
+                                | rask_types::Type::UnresolvedNamed(name)
+                                if name == "Mutex"
+                            ))
+                            .unwrap_or(false);
+                        let from_prefix = self.local_type_prefix.get(var_name)
+                            .map(|p| p == "Mutex")
+                            .unwrap_or(false);
+                        from_type || from_prefix
+                    } else {
+                        false
+                    };
+                    if is_mutex {
+                        return self.lower_mutex_with_block(&binding.source, &binding.name, body);
+                    }
+                }
+
+                // Default: simple alias binding (Pool, Cell, etc.)
                 for binding in bindings {
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
                     let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
@@ -2969,6 +2993,114 @@ impl<'a> MirLowerer<'a> {
             dst: Some(result_local),
             func: FunctionRef::internal(func_name),
             args: vec![shared_op, MirOperand::Local(closure_local)],
+        });
+
+        Ok((MirOperand::Local(result_local), MirType::I64))
+    }
+
+    /// Lower `with mutex as v { body }`.
+    ///
+    /// Synthesizes a closure from the body and calls Mutex_lock(handle, closure).
+    /// The C runtime acquires the lock, passes data to the closure, and releases.
+    fn lower_mutex_with_block(
+        &mut self,
+        object: &Expr,
+        binding_name: &str,
+        body: &[rask_ast::stmt::Stmt],
+    ) -> Result<TypedOperand, LoweringError> {
+        let (mutex_op, _) = self.lower_expr(object)?;
+
+        let mut free_vars = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut bound = std::collections::HashSet::new();
+        bound.insert(binding_name.to_string());
+        self.walk_free_vars_block(body, &bound, &mut seen, &mut free_vars);
+
+        let closure_name = format!("{}__with_{}", self.parent_name, self.closure_counter);
+        self.closure_counter += 1;
+
+        let mut captures = Vec::new();
+        let mut env_offset = 0u32;
+        for (_name, local_id, ty) in &free_vars {
+            let size = ty.size();
+            let aligned_offset = (env_offset + 7) & !7;
+            captures.push(ClosureCapture {
+                local_id: *local_id,
+                offset: aligned_offset,
+                size,
+            });
+            env_offset = aligned_offset + size;
+        }
+
+        let mut closure_builder = BlockBuilder::new(closure_name.clone(), MirType::I64);
+        let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
+
+        // Resolve inner type — reuse Shared's resolver since Mutex<T> has the same shape
+        let mut data_param_ty = MirType::I64;
+        let inner_type_name = self.resolve_shared_inner_type_name(object);
+        if let Some(ref type_name) = inner_type_name {
+            if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
+                data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
+            }
+            self.local_type_prefix.insert(binding_name.to_string(), type_name.clone());
+        }
+
+        let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());
+
+        let mut closure_locals = std::collections::HashMap::new();
+        closure_locals.insert(binding_name.to_string(), (data_param_id, data_param_ty));
+
+        for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
+            let cap = &captures[i];
+            let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
+            closure_builder.push_stmt(MirStmt::LoadCapture {
+                dst: local_id,
+                env_ptr: env_param_id,
+                offset: cap.offset,
+            });
+            closure_locals.insert(name.clone(), (local_id, ty.clone()));
+        }
+
+        let body_result;
+        {
+            let saved_builder = std::mem::replace(&mut self.builder, closure_builder);
+            let saved_locals = std::mem::replace(&mut self.locals, closure_locals);
+            let saved_loop_stack = std::mem::take(&mut self.loop_stack);
+
+            body_result = self.lower_block(body);
+
+            closure_builder = std::mem::replace(&mut self.builder, saved_builder);
+            self.locals = saved_locals;
+            self.loop_stack = saved_loop_stack;
+        }
+
+        let (body_val, _) = body_result?;
+
+        if closure_builder.current_block_unterminated() {
+            closure_builder.terminate(MirTerminator::Return {
+                value: Some(body_val),
+            });
+        }
+
+        let closure_fn = closure_builder.finish();
+        self.func_sigs.insert(closure_name.clone(), super::FuncSig {
+            ret_ty: MirType::I64,
+        });
+        self.synthesized_functions.push(closure_fn);
+
+        let closure_local = self.builder.alloc_temp(MirType::Ptr);
+        self.builder.push_stmt(MirStmt::ClosureCreate {
+            dst: closure_local,
+            func_name: closure_name,
+            captures,
+            heap: false,
+        });
+
+        let result_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(result_local),
+            func: FunctionRef::internal("Mutex_lock".to_string()),
+            args: vec![mutex_op, MirOperand::Local(closure_local)],
         });
 
         Ok((MirOperand::Local(result_local), MirType::I64))
