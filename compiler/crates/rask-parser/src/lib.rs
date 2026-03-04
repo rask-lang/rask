@@ -12,11 +12,35 @@ pub use parser::{ParseError, ParseResult, Parser};
 mod tests {
     use super::*;
     use rask_ast::decl::DeclKind;
+    use rask_ast::expr::{BinOp, ExprKind, UnaryOp};
+    use rask_ast::stmt::StmtKind;
 
     fn parse(src: &str) -> ParseResult {
         let lex_result = rask_lexer::Lexer::new(src).tokenize();
         assert!(lex_result.is_ok(), "Lex errors: {:?}", lex_result.errors);
         Parser::new(lex_result.tokens).parse()
+    }
+
+    /// Parse source and return the statements from the first function body.
+    fn parse_body(src: &str) -> Vec<rask_ast::stmt::Stmt> {
+        let wrapped = format!("func __test__() {{\n{}\n}}", src);
+        let result = parse(&wrapped);
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            f.body.clone()
+        } else {
+            panic!("Expected function");
+        }
+    }
+
+    /// Parse source wrapped in a function, expecting errors.
+    fn parse_body_err(src: &str) -> ParseResult {
+        let wrapped = format!("func __test__() {{\n{}\n}}", src);
+        let lex_result = rask_lexer::Lexer::new(&wrapped).tokenize();
+        assert!(lex_result.is_ok(), "Lex errors: {:?}", lex_result.errors);
+        let result = Parser::new(lex_result.tokens).parse();
+        assert!(!result.is_ok(), "Expected parse error but got success");
+        result
     }
 
     #[test]
@@ -394,6 +418,750 @@ mod tests {
             assert_eq!(p.deps[0].name, "serde");
         } else {
             panic!("Expected package declaration");
+        }
+    }
+
+    // ================================================================
+    // A. Newline-as-terminator edge cases
+    // ================================================================
+
+    #[test]
+    fn newline_unary_minus_on_next_line() {
+        // `a` then `-b` on next line = two separate statements
+        let stmts = parse_body("const x = a\n-b");
+        assert_eq!(stmts.len(), 2, "should be two statements");
+        assert!(matches!(stmts[0].kind, StmtKind::Const { .. }));
+        if let StmtKind::Expr(ref e) = stmts[1].kind {
+            assert!(matches!(e.kind, ExprKind::Unary { op: UnaryOp::Neg, .. }));
+        } else {
+            panic!("second statement should be unary negation expression");
+        }
+    }
+
+    #[test]
+    fn newline_binary_op_at_end_of_line() {
+        // Operator at end of line continues expression
+        let stmts = parse_body("const x = 1 +\n2");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Add, .. }));
+        } else {
+            panic!("expected const with binary add");
+        }
+    }
+
+    #[test]
+    fn newline_binary_op_at_start_of_next_line() {
+        // Operator at start of next line does NOT continue — `+ 2` is a new statement
+        // `+` is not a valid prefix operator, so this errors
+        let stmts = parse_body("const x = 1\n2 + 3");
+        // First statement: const x = 1, second: 2 + 3
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn newline_method_chain_across_lines() {
+        // `.` is in postfix-across-newline check, so this chains
+        let stmts = parse_body("foo\n.bar()\n.baz()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::MethodCall { .. }));
+        } else {
+            panic!("expected method call chain");
+        }
+    }
+
+    #[test]
+    fn newline_bracket_on_next_line_is_index() {
+        // `[` IS in postfix check, so arr\n[0] = arr[0]
+        let stmts = parse_body("arr\n[0]");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::Index { .. }));
+        } else {
+            panic!("expected index expression");
+        }
+    }
+
+    #[test]
+    fn newline_paren_on_next_line_is_new_statement() {
+        // `(` is NOT in postfix check, so foo\n(bar) = two statements
+        let stmts = parse_body("foo\n(bar)");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn newline_return_then_expr_is_void_return() {
+        // return\nfoo() = void return, then foo() as new statement
+        let stmts = parse_body("return\nfoo()");
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(stmts[0].kind, StmtKind::Return(None)));
+        if let StmtKind::Expr(ref e) = stmts[1].kind {
+            assert!(matches!(e.kind, ExprKind::Call { .. }));
+        } else {
+            panic!("expected call expression after return");
+        }
+    }
+
+    #[test]
+    fn newline_optional_chain_across_lines() {
+        // `?.` is in postfix check
+        let stmts = parse_body("x\n?.field");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::OptionalField { .. }));
+        } else {
+            panic!("expected optional field access");
+        }
+    }
+
+    #[test]
+    fn newline_in_grouping_parens_does_not_continue() {
+        // Grouping parens (expr) do NOT skip newlines — unlike call parens f(args)
+        // (1\n+ 2) fails: after parsing `1`, newline terminates, then expects `)`
+        parse_body_err("const x = (1\n+ 2)");
+    }
+
+    #[test]
+    fn newline_in_call_parens_continues() {
+        // Call parens DO skip newlines (parse_args calls skip_newlines)
+        let stmts = parse_body("const x = foo(\n1,\n2\n)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Call { .. }));
+        } else {
+            panic!("expected call");
+        }
+    }
+
+    #[test]
+    fn newline_chained_logical_across_lines_breaks() {
+        // `&&` at start of next line does NOT continue the expression
+        // `a > b` is complete, then `&& b > c` starts new stmt
+        let stmts = parse_body("const ok = a > b\nb > c");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn newline_logical_op_at_end_of_line_continues() {
+        // Operator at end of line continues
+        let stmts = parse_body("const ok = a > b &&\nb > c");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::And, .. }));
+        } else {
+            panic!("expected const with logical and");
+        }
+    }
+
+    #[test]
+    fn newline_deeply_chained_optional() {
+        // All `?.` continue across newlines
+        let stmts = parse_body("a\n?.b\n?.c\n?.d");
+        assert_eq!(stmts.len(), 1);
+    }
+
+    // ================================================================
+    // B. Generic vs comparison disambiguation
+    // ================================================================
+
+    #[test]
+    fn generic_method_call() {
+        let stmts = parse_body("obj.method<i32>(x)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::MethodCall { ref type_args, .. } = e.kind {
+                assert!(type_args.is_some(), "should have type args");
+                assert_eq!(type_args.as_ref().unwrap(), &vec!["i32".to_string()]);
+            } else {
+                panic!("expected method call");
+            }
+        } else {
+            panic!("expected expression statement");
+        }
+    }
+
+    #[test]
+    fn plain_comparison_lt() {
+        let stmts = parse_body("a < b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
+        } else {
+            panic!("expected comparison");
+        }
+    }
+
+    #[test]
+    fn comparison_not_generic() {
+        // a < b && b > c — two comparisons joined by &&
+        let stmts = parse_body("a < b && b > c");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::Binary { op: BinOp::And, .. }));
+        } else {
+            panic!("expected logical and");
+        }
+    }
+
+    #[test]
+    fn nested_generics_double_gt_in_type() {
+        let result = parse("func f(x: Vec<Vec<i32>>) { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.params[0].ty, "Vec<Vec<i32>>");
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn triple_nested_generics_gt_splitting() {
+        let result = parse("func f(x: A<B<C<i32>>>) { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.params[0].ty, "A<B<C<i32>>>");
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn generic_struct_literal() {
+        let stmts = parse_body("const p = Point<f64> { x: 1.0, y: 2.0 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::StructLit { ref name, .. } = init.kind {
+                assert_eq!(name, "Point<f64>");
+            } else {
+                panic!("expected struct literal, got {:?}", init.kind);
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn generic_static_method() {
+        let stmts = parse_body("Vec<i32>.new()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::MethodCall { .. }));
+        } else {
+            panic!("expected method call");
+        }
+    }
+
+    #[test]
+    fn type_name_in_comparison_not_generic() {
+        // Size < limit — no `.` or `{` after `>`, so it's comparison
+        let stmts = parse_body("const ok = Size < limit");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
+        } else {
+            panic!("expected comparison");
+        }
+    }
+
+    #[test]
+    fn nested_generic_in_param() {
+        let result = parse("func f(x: Map<string, Vec<i32>>) { }");
+        assert!(result.is_ok(), "Parse errors: {:?}", result.errors);
+        if let DeclKind::Fn(ref f) = result.decls[0].kind {
+            assert_eq!(f.params[0].ty, "Map<string, Vec<i32>>");
+        } else {
+            panic!("expected function");
+        }
+    }
+
+    #[test]
+    fn right_shift_not_generic() {
+        let stmts = parse_body("const x = a >> b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Shr, .. }));
+        } else {
+            panic!("expected right shift");
+        }
+    }
+
+    // ================================================================
+    // C. Generic function calls (spec-parser alignment)
+    //
+    // The spec says `sort<i32>(items)` should parse as a generic call.
+    // These tests verify the parser handles this correctly.
+    // ================================================================
+
+    #[test]
+    fn generic_call_lowercase_func() {
+        // sort<i32>(items) — generic function call
+        let stmts = parse_body("sort<i32>(items)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref func, .. } = e.kind {
+                // The function ident should include generic args
+                if let ExprKind::Ident(ref name) = func.kind {
+                    assert_eq!(name, "sort<i32>");
+                } else {
+                    panic!("expected ident with generics, got {:?}", func.kind);
+                }
+            } else {
+                panic!("expected call expression, got {:?}", e.kind);
+            }
+        } else {
+            panic!("expected expression statement");
+        }
+    }
+
+    #[test]
+    fn generic_call_uppercase_with_paren() {
+        // Vec<i32>(items) — uppercase generic call
+        let stmts = parse_body("Vec<i32>(items)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref func, .. } = e.kind {
+                if let ExprKind::Ident(ref name) = func.kind {
+                    assert_eq!(name, "Vec<i32>");
+                } else {
+                    panic!("expected ident, got {:?}", func.kind);
+                }
+            } else {
+                panic!("expected call, got {:?}", e.kind);
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn generic_call_multiple_type_args() {
+        // convert<i32, f64>(x) — multiple type args
+        let stmts = parse_body("convert<i32, f64>(x)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref func, .. } = e.kind {
+                if let ExprKind::Ident(ref name) = func.kind {
+                    assert_eq!(name, "convert<i32, f64>");
+                } else {
+                    panic!("expected ident with generics");
+                }
+            } else {
+                panic!("expected call");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn generic_call_nested_type_arg() {
+        // process<Vec<i32>>(items) — nested generic in type arg
+        let stmts = parse_body("process<Vec<i32>>(items)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref func, .. } = e.kind {
+                if let ExprKind::Ident(ref name) = func.kind {
+                    assert_eq!(name, "process<Vec<i32>>");
+                } else {
+                    panic!("expected ident with nested generics");
+                }
+            } else {
+                panic!("expected call");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn comparison_not_generic_call_no_paren() {
+        // a < b > c — no `(` after `>`, so it's comparison
+        let stmts = parse_body("a < b > c");
+        assert_eq!(stmts.len(), 1);
+        // Should parse as (a < b) > c (two comparisons chained by precedence)
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::Binary { op: BinOp::Gt, .. }));
+        } else {
+            panic!("expected comparison");
+        }
+    }
+
+    // ================================================================
+    // D. Expression vs statement context
+    // ================================================================
+
+    #[test]
+    fn if_as_expression() {
+        let stmts = parse_body("const x = if true { 1 } else { 2 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::If { .. }));
+        } else {
+            panic!("expected const with if expression");
+        }
+    }
+
+    #[test]
+    fn match_as_expression() {
+        let stmts = parse_body("const x = match y {\n    1 => \"a\",\n    _ => \"b\"\n}");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Match { .. }));
+        } else {
+            panic!("expected const with match expression");
+        }
+    }
+
+    #[test]
+    fn nested_if_expression() {
+        let stmts = parse_body("const x = if a { if b { 1 } else { 2 } } else { 3 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::If { ref then_branch, .. } = init.kind {
+                assert!(matches!(then_branch.kind, ExprKind::Block(_)));
+            } else {
+                panic!("expected if expression");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn block_as_expression() {
+        let stmts = parse_body("const x = {\n    const y = 1\n    y + 1\n}");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Block(ref block_stmts) = init.kind {
+                assert_eq!(block_stmts.len(), 2);
+            } else {
+                panic!("expected block expression");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    // ================================================================
+    // E. Closure edge cases
+    // ================================================================
+
+    #[test]
+    fn closure_in_function_arg() {
+        let stmts = parse_body("foo(|x| x + 1)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref args, .. } = e.kind {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0].expr.kind, ExprKind::Closure { .. }));
+            } else {
+                panic!("expected call");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn multiple_closures_as_args() {
+        let stmts = parse_body("foo(|x| x, |y| y)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref args, .. } = e.kind {
+                assert_eq!(args.len(), 2);
+                assert!(matches!(args[0].expr.kind, ExprKind::Closure { .. }));
+                assert!(matches!(args[1].expr.kind, ExprKind::Closure { .. }));
+            } else {
+                panic!("expected call with two closure args");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn empty_closure() {
+        let stmts = parse_body("const f = || { 42 }");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Closure { ref params, .. } = init.kind {
+                assert!(params.is_empty());
+            } else {
+                panic!("expected closure");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn bitwise_or_not_confused_with_closure() {
+        let stmts = parse_body("const x = a | b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::BitOr, .. }));
+        } else {
+            panic!("expected bitwise or");
+        }
+    }
+
+    // ================================================================
+    // F. Operator interaction edge cases
+    // ================================================================
+
+    #[test]
+    fn range_in_array_index() {
+        let stmts = parse_body("const x = arr[1..3]");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Index { ref index, .. } = init.kind {
+                assert!(matches!(index.kind, ExprKind::Range { .. }));
+            } else {
+                panic!("expected index expression");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn try_with_method_chain() {
+        // try binds at PREFIX_BP (23), `.` at 25, so `.bar()` chains inside try
+        let stmts = parse_body("const x = try foo().bar()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Try { ref expr, .. } = init.kind {
+                // The inner expression should be the method chain foo().bar()
+                assert!(matches!(expr.kind, ExprKind::MethodCall { .. }));
+            } else {
+                panic!("expected try expression, got {:?}", init.kind);
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn optional_chaining_multiple() {
+        let stmts = parse_body("const x = a?.b?.c");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            // The outer should be ?.c on something
+            if let ExprKind::OptionalField { ref object, field: ref f, .. } = init.kind {
+                assert_eq!(f, "c");
+                assert!(matches!(object.kind, ExprKind::OptionalField { .. }));
+            } else {
+                panic!("expected optional field chain");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn null_coalescing_chain() {
+        let stmts = parse_body("const x = a ?? b ?? c");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::NullCoalesce { .. }));
+        } else {
+            panic!("expected null coalescing");
+        }
+    }
+
+    #[test]
+    fn cast_binds_tighter_than_add() {
+        // `as` has bp=21, `+` has (19,20), so (a as i32) + b
+        let stmts = parse_body("const x = a as i32 + b");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Binary { op: BinOp::Add, ref left, .. } = init.kind {
+                assert!(matches!(left.kind, ExprKind::Cast { .. }));
+            } else {
+                panic!("expected add with cast on left");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    #[test]
+    fn negation_of_method_call() {
+        // PREFIX_BP (23) < postfix (25), so `-` applies to result of foo.bar()
+        let stmts = parse_body("const x = -foo.bar()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            if let ExprKind::Unary { op: UnaryOp::Neg, ref operand, .. } = init.kind {
+                assert!(matches!(operand.kind, ExprKind::MethodCall { .. }));
+            } else {
+                panic!("expected negation of method call");
+            }
+        } else {
+            panic!("expected const");
+        }
+    }
+
+    // ================================================================
+    // G. Multi-line construct edge cases
+    // ================================================================
+
+    #[test]
+    fn multiline_function_call() {
+        let stmts = parse_body("foo(\n    a,\n    b,\n    c\n)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref args, .. } = e.kind {
+                assert_eq!(args.len(), 3);
+            } else {
+                panic!("expected call");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn if_else_across_newlines() {
+        let stmts = parse_body("if x > 0 {\n    a\n}\nelse {\n    b\n}");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::If { ref else_branch, .. } = e.kind {
+                assert!(else_branch.is_some(), "should have else branch");
+            } else {
+                panic!("expected if expression");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn match_with_multiline_block_arm() {
+        let stmts = parse_body("match x {\n    1 => {\n        foo()\n        bar()\n    },\n    _ => baz()\n}");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Match { ref arms, .. } = e.kind {
+                assert_eq!(arms.len(), 2);
+            } else {
+                panic!("expected match");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn chained_methods_with_generic_across_lines() {
+        let stmts = parse_body("obj\n.method<T>()\n.other()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::MethodCall { ref method, .. } = e.kind {
+                assert_eq!(method, "other");
+            } else {
+                panic!("expected method call chain");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    // ================================================================
+    // H. Additional stress tests for combined edge cases
+    // ================================================================
+
+    #[test]
+    fn generic_call_inside_method_chain() {
+        // sort<i32>(items).len() — generic call then method chain
+        let stmts = parse_body("sort<i32>(items).len()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::MethodCall { ref method, ref object, .. } = e.kind {
+                assert_eq!(method, "len");
+                assert!(matches!(object.kind, ExprKind::Call { .. }));
+            } else {
+                panic!("expected method call on generic call result");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn generic_in_if_condition() {
+        // Generic call in a condition context (no brace exprs allowed)
+        let stmts = parse_body("if is_valid<i32>(x) {\n    ok()\n}");
+        assert_eq!(stmts.len(), 1);
+    }
+
+    #[test]
+    fn comparison_with_parens_disambiguated() {
+        // (a < b) > (c) — parenthesized comparison, not generic
+        let stmts = parse_body("const x = (a < b) > (c)");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Const { ref init, .. } = stmts[0].kind {
+            assert!(matches!(init.kind, ExprKind::Binary { op: BinOp::Gt, .. }));
+        } else {
+            panic!("expected comparison");
+        }
+    }
+
+    #[test]
+    fn nested_function_call_with_comparison_not_generic() {
+        // f(g(x < y)) — the `)` from g() should prevent generic scan
+        // x < y is a comparison passed to g(), result passed to f()
+        let stmts = parse_body("f(g(x < y))");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref args, .. } = e.kind {
+                assert_eq!(args.len(), 1);
+                // The arg should be g(...), itself a call
+                if let ExprKind::Call { args: ref inner_args, .. } = args[0].expr.kind {
+                    assert_eq!(inner_args.len(), 1);
+                    // Inner arg: x < y (comparison)
+                    assert!(matches!(inner_args[0].expr.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
+                } else {
+                    panic!("expected inner call");
+                }
+            } else {
+                panic!("expected outer call");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn multiline_closure_in_arg() {
+        let stmts = parse_body("foo(|x| {\n    const y = x + 1\n    y\n})");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Expr(ref e) = stmts[0].kind {
+            if let ExprKind::Call { ref args, .. } = e.kind {
+                assert_eq!(args.len(), 1);
+                assert!(matches!(args[0].expr.kind, ExprKind::Closure { .. }));
+            } else {
+                panic!("expected call with closure");
+            }
+        } else {
+            panic!("expected expression");
+        }
+    }
+
+    #[test]
+    fn question_mark_on_next_line_chains() {
+        // `?` is in postfix-across-newline check
+        let stmts = parse_body("const x = try foo()\nconst y = bar()");
+        assert_eq!(stmts.len(), 2);
+    }
+
+    #[test]
+    fn return_with_value_same_line() {
+        let stmts = parse_body("return foo()");
+        assert_eq!(stmts.len(), 1);
+        if let StmtKind::Return(Some(ref e)) = stmts[0].kind {
+            assert!(matches!(e.kind, ExprKind::Call { .. }));
+        } else {
+            panic!("expected return with value");
         }
     }
 }
