@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// CLI entry point — command dispatch and benchmark harness.
+
+import cli
+import std
+
+struct CliArgs {
+    command: string
+    db_dir: string
+    key: string
+    value: string
+    end_key: string
+    count: i32
+    prefix: string
+}
+
+func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
+    let result = CliArgs {
+        command: "",
+        db_dir: "./rask-db",
+        key: "",
+        value: "",
+        end_key: "",
+        count: 100,
+        prefix: "key",
+    }
+
+    let positional = Vec.new()
+    let i = 1
+
+    while i < args.len() {
+        const arg = args[i]
+        match arg {
+            "--dir" => {
+                i += 1
+                if i < args.len() {
+                    result.db_dir = args[i].to_string()
+                }
+            }
+            "--count" => {
+                i += 1
+                if i < args.len() {
+                    const n = args[i].parse_int() is Ok(v) else {
+                        return Err(DbError.Io("invalid count: {args[i]}"))
+                    }
+                    result.count = n as i32
+                }
+            }
+            "--prefix" => {
+                i += 1
+                if i < args.len() {
+                    result.prefix = args[i].to_string()
+                }
+            }
+            "-h" | "--help" => {
+                print_usage()
+                std.exit(0)
+            }
+            _ => positional.push(arg.to_string()),
+        }
+        i += 1
+    }
+
+    if positional.is_empty() {
+        return Err(DbError.Io("no command specified"))
+    }
+    result.command = positional[0].to_string()
+    if positional.len() > 1 { result.key = positional[1].to_string() }
+    if positional.len() > 2 { result.value = positional[2].to_string() }
+    if positional.len() > 3 { result.end_key = positional[3].to_string() }
+
+    return Ok(result)
+}
+
+func print_usage() {
+    println("rask-db: LSM-tree key-value store")
+    println("")
+    println("Usage: lsm_database [OPTIONS] <command> [args...]")
+    println("")
+    println("Commands:")
+    println("  put <key> <value>     Insert or update a key")
+    println("  get <key>             Look up a key")
+    println("  delete <key>          Delete a key")
+    println("  scan <start> <end>    Range scan (inclusive)")
+    println("  bench                 Run write/read benchmark")
+    println("  compact               Force compaction")
+    println("  stats                 Show database statistics")
+    println("  dump                  Dump all key-value pairs")
+    println("")
+    println("Options:")
+    println("  --dir PATH            Database directory (default: ./rask-db)")
+    println("  --count N             Number of ops for bench (default: 100)")
+    println("  --prefix STR          Key prefix for bench (default: key)")
+    println("  -h, --help            Show this help")
+}
+
+// ─── Benchmark ──────────────────────────────────────────────────────
+
+func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
+    println("Running benchmark with {count} operations...")
+    println("")
+
+    // Sequential writes
+    println("Writing {count} keys...")
+    let i = 0
+    while i < count {
+        const key = "{prefix}_{i:06}"
+        const value = "value_{i}_" + "x".repeat(64)
+        try db.put(key, value)
+        i += 1
+    }
+    println("  Wrote {count} keys")
+
+    // Point reads
+    println("Reading {count} keys...")
+    let found = 0
+    let missing = 0
+    i = 0
+    while i < count {
+        const key = "{prefix}_{i:06}"
+        match db.get(key) {
+            Ok(_) => found += 1,
+            Err(_) => missing += 1,
+        }
+        i += 1
+    }
+    println("  Found {found}, missing {missing}")
+
+    // Range scan
+    const scan_start = "{prefix}_000000"
+    const scan_end = "{prefix}_{count / 2:06}"
+    println("Scanning {scan_start} to {scan_end}...")
+    const results = try db.scan(scan_start, scan_end)
+    println("  Scan returned {results.len()} entries")
+
+    // Delete every other key
+    println("Deleting {count / 2} keys...")
+    let deleted = 0
+    i = 0
+    while i < count {
+        if i % 2 == 0 {
+            try db.delete("{prefix}_{i:06}")
+            deleted += 1
+        }
+        i += 1
+    }
+    println("  Deleted {deleted} keys")
+
+    // Verify deletes
+    println("Verifying deletes...")
+    let still_found = 0
+    let correctly_deleted = 0
+    i = 0
+    while i < count {
+        const key = "{prefix}_{i:06}"
+        match db.get(key) {
+            Ok(_) => still_found += 1,
+            Err(_) => correctly_deleted += 1,
+        }
+        i += 1
+    }
+    println("  Found {still_found}, deleted {correctly_deleted}")
+
+    try db.flush()
+
+    println("")
+    print_stats(db.stats())
+    println("")
+    println("Benchmark complete.")
+
+    return Ok(())
+}
+
+// ─── Main ───────────────────────────────────────────────────────────
+
+func run(args: CliArgs) -> () or DbError {
+    const config = DbConfig.default_for(args.db_dir)
+    let db = try Db.open(config)
+    ensure db.close() else |_| {}
+
+    match args.command {
+        "put" => {
+            if args.key.is_empty() || args.value.is_empty() {
+                return Err(DbError.Io("put requires <key> <value>"))
+            }
+            try db.put(args.key, args.value)
+            println("OK")
+        }
+        "get" => {
+            if args.key.is_empty() {
+                return Err(DbError.Io("get requires <key>"))
+            }
+            const value = try db.get(args.key)
+            println("{value}")
+        }
+        "delete" => {
+            if args.key.is_empty() {
+                return Err(DbError.Io("delete requires <key>"))
+            }
+            try db.delete(args.key)
+            println("OK")
+        }
+        "scan" => {
+            if args.key.is_empty() {
+                return Err(DbError.Io("scan requires <start> <end>"))
+            }
+            const end = if args.value.is_empty(): args.key + "\xff" else: args.value
+            const results = try db.scan(args.key, end)
+            for kv in results {
+                println("{kv.key}\t{kv.value}")
+            }
+            println("({results.len()} entries)")
+        }
+        "bench" => {
+            try run_benchmark(mutate db, args.count, args.prefix)
+        }
+        "compact" => {
+            println("Forcing compaction...")
+            try db.flush()
+            let level = 0
+            while level < MAX_LEVELS - 1 {
+                try db.compact_level(level)
+                level += 1
+            }
+            println("Compaction complete.")
+            print_stats(db.stats())
+        }
+        "stats" => {
+            print_stats(db.stats())
+        }
+        "dump" => {
+            const results = try db.scan("\x00", "\xff".repeat(16))
+            for kv in results {
+                println("{kv.key}\t{kv.value}")
+            }
+            println("({results.len()} entries)")
+        }
+        _ => {
+            println("Unknown command: {args.command}")
+            print_usage()
+            std.exit(1)
+        }
+    }
+
+    return Ok(())
+}
+
+func main() {
+    const args = cli.args()
+    const cli_args = match parse_cli_args(args) {
+        Ok(a) => a,
+        Err(e) => {
+            println("rask-db: {e.message()}")
+            print_usage()
+            std.exit(1)
+        }
+    }
+
+    match run(cli_args) {
+        Ok(()) => {}
+        Err(e) => {
+            println("error: {e.message()}")
+            std.exit(1)
+        }
+    }
+}
