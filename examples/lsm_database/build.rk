@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
 package "lsm-database" "0.1.0" {
-    description: "LSM-tree key-value store stress test"
+    description: "LSM-tree key-value store — workspace root"
     license: "MIT OR Apache-2.0"
+
+    members: ["lsm", "lsm-cli"]
 }
