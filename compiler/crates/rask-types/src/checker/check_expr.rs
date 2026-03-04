@@ -1133,7 +1133,7 @@ impl TypeChecker {
         // emit UnresolvedNamed directly instead of calling infer_expr
         // (which would return Type::Error for unregistered type names).
         if let ExprKind::Ident(name) = &object.kind {
-            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool") {
+            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool" | "Mutex") {
                 let obj_ty = Type::UnresolvedNamed(name.clone());
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret_ty = self.ctx.fresh_var();

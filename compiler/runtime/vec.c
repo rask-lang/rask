@@ -275,6 +275,100 @@ int64_t rask_vec_as_ptr(const RaskVec *v) {
     return v ? (int64_t)(uintptr_t)v->data : 0;
 }
 
+// sort(vec) — in-place sort using default i64 comparison.
+static int rask_i64_compare(const void *a, const void *b) {
+    int64_t va = *(const int64_t *)a;
+    int64_t vb = *(const int64_t *)b;
+    if (va < vb) return -1;
+    if (va > vb) return 1;
+    return 0;
+}
+
+void rask_vec_sort(RaskVec *v) {
+    if (!v || v->len <= 1) return;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_i64_compare);
+}
+
+// sort_by(vec, comparator_fn) — in-place sort with closure comparator.
+// The comparator is a function pointer: fn(a: i64, b: i64) -> i64
+// Returns negative for a<b, 0 for a==b, positive for a>b.
+static __thread int64_t rask_sort_comparator_fn;
+
+static int rask_sort_by_adapter(const void *a, const void *b) {
+    typedef int64_t (*CmpFn)(int64_t, int64_t);
+    CmpFn fn = (CmpFn)(uintptr_t)rask_sort_comparator_fn;
+    int64_t va = *(const int64_t *)a;
+    int64_t vb = *(const int64_t *)b;
+    int64_t result = fn(va, vb);
+    if (result < 0) return -1;
+    if (result > 0) return 1;
+    return 0;
+}
+
+void rask_vec_sort_by(RaskVec *v, int64_t comparator) {
+    if (!v || v->len <= 1) return;
+    rask_sort_comparator_fn = comparator;
+    qsort(v->data, (size_t)v->len, (size_t)v->elem_size, rask_sort_by_adapter);
+}
+
+// reverse(vec) — in-place reversal.
+void rask_vec_reverse(RaskVec *v) {
+    if (!v || v->len <= 1) return;
+    char tmp[16]; // max elem_size we support for stack swap
+    int64_t es = v->elem_size;
+    char *lo = v->data;
+    char *hi = v->data + (v->len - 1) * es;
+    while (lo < hi) {
+        memcpy(tmp, lo, (size_t)es);
+        memcpy(lo, hi, (size_t)es);
+        memcpy(hi, tmp, (size_t)es);
+        lo += es;
+        hi -= es;
+    }
+}
+
+// contains(vec, value) — returns 1 if any element equals value.
+int64_t rask_vec_contains(const RaskVec *v, const void *elem) {
+    if (!v) return 0;
+    for (int64_t i = 0; i < v->len; i++) {
+        if (memcmp(v->data + i * v->elem_size, elem, (size_t)v->elem_size) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// dedup(vec) — remove consecutive duplicates in-place.
+void rask_vec_dedup(RaskVec *v) {
+    if (!v || v->len <= 1) return;
+    int64_t write = 1;
+    for (int64_t read = 1; read < v->len; read++) {
+        if (memcmp(v->data + read * v->elem_size,
+                   v->data + (write - 1) * v->elem_size,
+                   (size_t)v->elem_size) != 0) {
+            if (write != read) {
+                memcpy(v->data + write * v->elem_size,
+                       v->data + read * v->elem_size,
+                       (size_t)v->elem_size);
+            }
+            write++;
+        }
+    }
+    v->len = write;
+}
+
+// first(vec) — returns pointer to first element, or panics if empty.
+void *rask_vec_first(const RaskVec *v) {
+    if (!v || v->len == 0) rask_panic("first on empty Vec");
+    return v->data;
+}
+
+// last(vec) — returns pointer to last element, or panics if empty.
+void *rask_vec_last(const RaskVec *v) {
+    if (!v || v->len == 0) rask_panic("last on empty Vec");
+    return v->data + (v->len - 1) * v->elem_size;
+}
+
 // skip(vec, n) — returns a new Vec with the first n elements removed.
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n) {
     if (!src) return rask_vec_new(8);

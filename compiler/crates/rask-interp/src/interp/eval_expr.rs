@@ -2,7 +2,7 @@
 //\! Expression evaluation.
 
 use indexmap::IndexMap;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, RwLock, mpsc};
 
 use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
@@ -77,6 +77,10 @@ impl Interpreter {
                     }),
                     "Shared" => return Ok(Value::TypeConstructor {
                         kind: TypeConstructorKind::Shared,
+                        type_param,
+                    }),
+                    "Mutex" => return Ok(Value::TypeConstructor {
+                        kind: TypeConstructorKind::Mutex,
                         type_param,
                     }),
                     "Atomic" => return Ok(Value::TypeConstructor {
@@ -1241,57 +1245,131 @@ impl Interpreter {
             }
 
             ExprKind::WithAs { bindings, body } => {
-                struct BindingInfo {
-                    collection: Value,
-                    key: Value,
+                // Classify each binding source
+                enum WithSource {
+                    /// pool[handle] — index-based collection access
+                    Index { collection: Value, key: Value },
+                    /// Mutex — exclusive lock
+                    Mutex(Arc<Mutex<Value>>),
+                    /// Shared.read() — shared read lock
+                    SharedRead(Arc<RwLock<Value>>),
+                    /// Shared.write() — exclusive write lock
+                    SharedWrite(Arc<RwLock<Value>>),
+                }
+
+                struct WithInfo {
+                    source: WithSource,
                     name: String,
                     mutable: bool,
                 }
-                let mut infos: Vec<BindingInfo> = Vec::new();
+
+                let mut infos: Vec<WithInfo> = Vec::new();
 
                 for binding in bindings {
-                    // Source must be an Index expression: collection[key]
-                    if let ExprKind::Index { object, index } = &binding.source.kind {
+                    let source = if let ExprKind::Index { object, index } = &binding.source.kind {
+                        // pool[handle] pattern
                         let collection = self.eval_expr(object)?;
                         let key = self.eval_expr(index)?;
-                        infos.push(BindingInfo {
-                            collection,
-                            key,
-                            name: binding.name.clone(),
-                            mutable: binding.mutable,
-                        });
+                        WithSource::Index { collection, key }
+                    } else if let ExprKind::MethodCall { object, method, .. } = &binding.source.kind {
+                        // shared.read() or shared.write()
+                        let obj = self.eval_expr(object)?;
+                        match (&obj, method.as_str()) {
+                            (Value::Shared(s), "read") => WithSource::SharedRead(Arc::clone(s)),
+                            (Value::Shared(s), "write") => WithSource::SharedWrite(Arc::clone(s)),
+                            _ => {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "with...as: unsupported method call .{}() on {}",
+                                        method, obj.type_name()
+                                    )),
+                                    expr.span,
+                                ));
+                            }
+                        }
                     } else {
-                        return Err(RuntimeDiagnostic::new(
-                            RuntimeError::TypeError(
-                                "with...as source must be a collection index (e.g., pool[h])".to_string(),
-                            ),
-                            expr.span
-                        ));
-                    }
+                        // Plain expression — evaluate and check type
+                        let val = self.eval_expr(&binding.source)?;
+                        match val {
+                            Value::RaskMutex(m) => WithSource::Mutex(m),
+                            _ => {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::TypeError(format!(
+                                        "with...as: expected Mutex, Shared, or collection index, got {}",
+                                        val.type_name()
+                                    )),
+                                    expr.span,
+                                ));
+                            }
+                        }
+                    };
+
+                    infos.push(WithInfo {
+                        source,
+                        name: binding.name.clone(),
+                        mutable: binding.mutable,
+                    });
                 }
 
-                // Check aliasing: same-collection bindings must have different keys
+                // Check aliasing for index-based bindings
                 for i in 0..infos.len() {
                     for j in (i + 1)..infos.len() {
-                        if Self::value_eq(&infos[i].collection, &infos[j].collection)
-                            && Self::value_eq(&infos[i].key, &infos[j].key)
-                        {
-                            return Err(RuntimeDiagnostic::new(
-                                RuntimeError::Panic(
-                                    "with...as: duplicate key in same collection (aliasing)".to_string(),
-                                ),
-                                expr.span
-                            ));
+                        if let (
+                            WithSource::Index { collection: c1, key: k1 },
+                            WithSource::Index { collection: c2, key: k2 },
+                        ) = (&infos[i].source, &infos[j].source) {
+                            if Self::value_eq(c1, c2) && Self::value_eq(k1, k2) {
+                                return Err(RuntimeDiagnostic::new(
+                                    RuntimeError::Panic(
+                                        "with...as: duplicate key in same collection (aliasing)".to_string(),
+                                    ),
+                                    expr.span,
+                                ));
+                            }
                         }
                     }
                 }
 
-                // Read current values and push scope with bindings
+                // Acquire locks and bind values
                 self.env.push_scope();
+
+                // Hold lock guards in scope for Mutex/Shared
+                let mut mutex_guards: Vec<(String, std::sync::MutexGuard<'_, Value>)> = Vec::new();
+                let mut rw_read_guards: Vec<std::sync::RwLockReadGuard<'_, Value>> = Vec::new();
+                let mut rw_write_guards: Vec<(String, std::sync::RwLockWriteGuard<'_, Value>)> = Vec::new();
+
                 for info in &infos {
-                    let elem = self.index_into(&info.collection, &info.key)
-                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
-                    self.env.define(info.name.clone(), elem);
+                    match &info.source {
+                        WithSource::Index { collection, key } => {
+                            let elem = self.index_into(collection, key)
+                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                            self.env.define(info.name.clone(), elem);
+                        }
+                        WithSource::Mutex(m) => {
+                            let guard = m.lock().map_err(|e| RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!("Mutex.lock: poisoned: {}", e)),
+                                expr.span,
+                            ))?;
+                            self.env.define(info.name.clone(), guard.clone());
+                            mutex_guards.push((info.name.clone(), guard));
+                        }
+                        WithSource::SharedRead(s) => {
+                            let guard = s.read().map_err(|e| RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!("Shared.read: poisoned: {}", e)),
+                                expr.span,
+                            ))?;
+                            self.env.define(info.name.clone(), guard.clone());
+                            rw_read_guards.push(guard);
+                        }
+                        WithSource::SharedWrite(s) => {
+                            let guard = s.write().map_err(|e| RuntimeDiagnostic::new(
+                                RuntimeError::Panic(format!("Shared.write: poisoned: {}", e)),
+                                expr.span,
+                            ))?;
+                            self.env.define(info.name.clone(), guard.clone());
+                            rw_write_guards.push((info.name.clone(), guard));
+                        }
+                    }
                 }
 
                 // Execute body
@@ -1300,15 +1378,42 @@ impl Interpreter {
                     result = self.exec_stmt(stmt)?;
                 }
 
-                // Writeback: only for mutable bindings
+                // Writeback for mutable bindings
                 for info in &infos {
                     if info.mutable {
                         if let Some(updated) = self.env.get(&info.name).cloned() {
-                            self.write_back_index(&info.collection, &info.key, updated)
-                                .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                            match &info.source {
+                                WithSource::Index { collection, key } => {
+                                    self.write_back_index(collection, key, updated)
+                                        .map_err(|e| RuntimeDiagnostic::new(e, expr.span))?;
+                                }
+                                WithSource::Mutex(_) | WithSource::SharedWrite(_) => {
+                                    // Writeback handled via guards below
+                                }
+                                WithSource::SharedRead(_) => {
+                                    // Read-only, no writeback
+                                }
+                            }
                         }
                     }
                 }
+
+                // Write back to Mutex guards
+                for (name, mut guard) in mutex_guards {
+                    if let Some(updated) = self.env.get(&name) {
+                        *guard = updated.clone();
+                    }
+                }
+
+                // Write back to Shared write guards
+                for (name, mut guard) in rw_write_guards {
+                    if let Some(updated) = self.env.get(&name) {
+                        *guard = updated.clone();
+                    }
+                }
+
+                // Read guards dropped automatically
+                drop(rw_read_guards);
 
                 self.env.pop_scope();
                 Ok(result)
