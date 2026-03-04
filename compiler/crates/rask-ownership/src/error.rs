@@ -90,6 +90,29 @@ pub enum OwnershipErrorKind {
         context_ty: String,
         operation: String,
     },
+
+    /// Structural mutation inside `with` block on non-pool collection (W2).
+    #[error("cannot {operation} `{collection}` inside `with` block — {collection} can reallocate")]
+    WithBlockStructuralMutation {
+        collection: String,
+        operation: String,
+        binding_span: Span,
+    },
+
+    /// Removing the bound handle inside `with` block (W2c).
+    #[error("cannot remove `{handle}` inside `with` block — it's the bound element")]
+    WithBlockBoundHandleRemoved {
+        handle: String,
+        collection: String,
+        binding_span: Span,
+    },
+
+    /// Clearing pool inside `with` block (W2d).
+    #[error("cannot clear `{collection}` inside `with` block — invalidates all elements")]
+    WithBlockClear {
+        collection: String,
+        binding_span: Span,
+    },
 }
 
 /// User-friendly access kind for error messages.

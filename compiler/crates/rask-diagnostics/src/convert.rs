@@ -713,6 +713,49 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_help("remove `frozen` from the context clause, or remove the mutation")
                 .with_why("frozen contexts guarantee no structural mutations — this enables safe iteration without generation checks")
             }
+
+            WithBlockStructuralMutation { collection, operation, binding_span } => {
+                Diagnostic::error(format!(
+                    "cannot {} `{}` inside `with` block",
+                    operation, collection
+                ))
+                .with_code("E0808")
+                .with_primary(self.span, format!("{} not allowed inside with block", operation))
+                .with_secondary(*binding_span, "element borrowed here")
+                .with_help("move the structural mutation outside the with block")
+                .with_fix("move the structural mutation outside the with block")
+                .with_why(format!(
+                    "{} can reallocate, invalidating the borrowed element. \
+                     Pool handles survive reallocation — use Pool if you need insert/remove inside with",
+                    collection
+                ))
+            }
+
+            WithBlockBoundHandleRemoved { handle, collection: _, binding_span } => {
+                Diagnostic::error(format!(
+                    "cannot remove `{}` inside `with` block — it's the bound element",
+                    handle
+                ))
+                .with_code("E0809")
+                .with_primary(self.span, "removing the element you're borrowing")
+                .with_secondary(*binding_span, "element borrowed here")
+                .with_help("move the removal outside the with block")
+                .with_fix("move the removal outside the with block")
+                .with_why("removing the bound element frees its memory — the binding would dangle")
+            }
+
+            WithBlockClear { collection, binding_span } => {
+                Diagnostic::error(format!(
+                    "cannot clear `{}` inside `with` block",
+                    collection
+                ))
+                .with_code("E0810")
+                .with_primary(self.span, "clear invalidates all elements")
+                .with_secondary(*binding_span, "element borrowed here")
+                .with_help("move the clear outside the with block")
+                .with_fix("move the clear outside the with block")
+                .with_why("clearing the collection frees all elements — the binding would dangle")
+            }
         }
     }
 }

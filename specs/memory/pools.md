@@ -111,12 +111,22 @@ with pool[h] as entity {
 with pool[h] as e: e.health -= damage
 ```
 
-Structural mutations are forbidden inside the `with` block — but reading and writing other elements is fine (`mem.borrowing/W2`):
-<!-- test: compile-fail -->
+Pool handles survive reallocation (PL9), so `insert` and `remove(other)` are allowed inside `with` blocks — the compiler re-resolves bindings after each structural mutation (`mem.borrowing/W2a`, `W2b`). Removing the bound handle or clearing the pool remain compile errors (`W2c`, `W2d`):
+
+<!-- test: skip -->
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: read other element
-    pool.remove(h)    // ERROR: structural mutation inside with block
+    const ally = try pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
+    entity.allies.push(ally)                // entity still valid
+    pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
+}
+```
+
+<!-- test: compile-fail -->
+```rask
+with pool[h] as entity {
+    pool.remove(h)    // ERROR: removing the bound element (W2c)
 }
 ```
 
@@ -519,7 +529,7 @@ func render_entities() using frozen entities: Pool<Entity> {
 
 **PF5 (frozen context):** I considered making FrozenPool a separate type with freeze/thaw ownership ceremonies. That's the Rust approach — explicit state transitions. But it adds a whole type to learn, and `using frozen Pool<T>` already provides the compile-time guarantee. The `frozen` modifier is a context property, not a type.
 
-**PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. Pointers would become dangling; handles never do.
+**PL9 (handle stability):** This is why handles exist — stable identifiers that don't break when memory moves. Pointers would become dangling; handles never do. This stability is what allows `insert` and `remove(other)` inside `with` blocks (W2a/W2b) — the compiler re-resolves the binding via the still-valid handle after each structural mutation. Vec/Map can't do this (indices shift, keys rehash), but pools can because handle stability is a structural guarantee.
 
 ### Patterns & Guidance
 
@@ -546,13 +556,20 @@ with entities[h] as e {
     events.insert(Event.Died(h))    // OK: different collection
 }
 
-// Pattern 2: Restructure logic
+// Pattern 2: Insert/remove other inside with (W2a/W2b)
+with pool[h] as entity {
+    const ally = try pool.insert(new_ally)   // OK: re-resolves
+    entity.allies.push(ally)
+    pool.remove(expired_h)                   // OK: re-resolves
+}
+
+// Pattern 3: Remove bound handle — restructure outside with
 const should_remove = pool[h].health <= 0
 if should_remove {
     pool.remove(h)    // OK: not inside with block
 }
 
-// Pattern 3: Multi-element access
+// Pattern 4: Multi-element access
 with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack
 }

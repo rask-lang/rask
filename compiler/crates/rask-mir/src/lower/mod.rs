@@ -461,6 +461,9 @@ pub struct MirLowerer<'a> {
     /// Full type annotation string: variable name → type annotation (e.g. "Shared<Database>").
     /// Used to resolve generic inner types when the type checker leaves types unresolved.
     local_full_type: HashMap<String, String>,
+    /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
+    /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
+    with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -646,6 +649,7 @@ impl<'a> MirLowerer<'a> {
             local_type_prefix: HashMap::new(),
             channel_elem_sizes: HashMap::new(),
             local_full_type: HashMap::new(),
+            with_pool_bindings: HashMap::new(),
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
