@@ -1065,9 +1065,27 @@ impl<'a> MirLowerer<'a> {
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal(qualified_name),
+                    func: FunctionRef::internal(qualified_name.clone()),
                     args: all_args,
                 });
+
+                // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
+                if matches!(qualified_name.as_str(),
+                    "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"
+                ) {
+                    if let ExprKind::Ident(pool_var) = &object.kind {
+                        if let Some(bindings) = self.with_pool_bindings.get(pool_var) {
+                            for &(handle_local, binding_local, pool_local) in bindings {
+                                self.builder.push_stmt(MirStmt::PoolCheckedAccess {
+                                    dst: binding_local,
+                                    pool: pool_local,
+                                    handle: handle_local,
+                                });
+                            }
+                        }
+                    }
+                }
+
                 Ok((MirOperand::Local(result_local), ret_ty))
             }
 
@@ -1884,7 +1902,33 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 // Default: simple alias binding (Pool, Cell, etc.)
+                // W2a/W2b: Track pool bindings for re-resolution after pool mutators
+                let mut pool_binding_keys: Vec<String> = Vec::new();
                 for binding in bindings {
+                    // Before lowering, extract pool/handle info for re-resolution tracking
+                    let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
+                        if let ExprKind::Ident(coll_name) = &object.kind {
+                            let is_pool = self.local_type_prefix.get(coll_name)
+                                .map(|p| p == "Pool")
+                                .unwrap_or(false);
+                            if is_pool {
+                                let pool_local = self.locals.get(coll_name).map(|(id, _)| *id);
+                                let handle_local = if let ExprKind::Ident(h) = &index.kind {
+                                    self.locals.get(h).map(|(id, _)| *id)
+                                } else {
+                                    None
+                                };
+                                pool_local.zip(handle_local).map(|(p, h)| (coll_name.clone(), p, h))
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+
                     let (val, val_ty) = self.lower_expr(&binding.source)?;
                     let local = self.builder.alloc_local(binding.name.clone(), val_ty.clone());
                     self.locals.insert(binding.name.clone(), (local, val_ty));
@@ -1892,8 +1936,26 @@ impl<'a> MirLowerer<'a> {
                         dst: local,
                         rvalue: MirRValue::Use(val),
                     });
+
+                    // Register pool binding for re-resolution
+                    if let Some((pool_name, pool_local, handle_local)) = pool_info {
+                        self.with_pool_bindings.entry(pool_name.clone())
+                            .or_default()
+                            .push((handle_local, local, pool_local));
+                        pool_binding_keys.push(pool_name);
+                    }
                 }
-                self.lower_block(body)
+                let result = self.lower_block(body);
+                // Clean up pool binding registrations
+                for key in &pool_binding_keys {
+                    if let Some(entries) = self.with_pool_bindings.get_mut(key) {
+                        entries.pop();
+                        if entries.is_empty() {
+                            self.with_pool_bindings.remove(key);
+                        }
+                    }
+                }
+                result
             }
 
             // Spawn — synthesize a closure function and call rask_closure_spawn
