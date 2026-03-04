@@ -632,21 +632,11 @@ func resolve_one(
     const versions = try registry.available(name)
         else |e| FetchError.Registry(e)
 
-    // Pick newest version satisfying constraint
-    let best: PackageMeta? = None
-    for meta in versions {
-        if constraint.satisfies(meta.version) {
-            if best is Some(current) {
-                if meta.version > current.version {
-                    best = Some(meta)
-                }
-            } else {
-                best = Some(meta)
-            }
-        }
-    }
+    // Filter to satisfying versions, pick newest via sort_by
+    let candidates = versions.filter(|m| constraint.satisfies(m.version))
+    candidates.sort_by(|a, b| b.version.compare(a.version))
 
-    const meta = best is Some else {
+    const meta = candidates.first() is Some else {
         const con_str = constraint.to_string()
         return Err(FetchError.Resolve(ResolveError.NoMatch(name.clone(), con_str)))
     }
@@ -677,13 +667,9 @@ func resolve_one(
 }
 
 func format_cycle(chain: Vec<string>, name: string) -> string {
-    let out = string.new()
-    for pkg in chain {
-        out.push_str(pkg)
-        out.push_str(" -> ")
-    }
-    out.push_str(name)
-    return out
+    let parts = chain.clone()
+    parts.push(name)
+    return parts.join(" -> ")
 }
 
 // ─── Fetch Packages ─────────────────────────────────────────────────
@@ -754,10 +740,10 @@ func fetch_packages(
     println("Fetching {items.len()} packages...")
 
     // Concurrent fetch: spawn a task per package, collect results via channel.
-    // Shared<i32> tracks fetch count across tasks (conc.sync/SY1).
+    // Mutex<i32> tracks fetch count across tasks (conc.sync/MX1).
     using Multitasking {
         let (tx, rx) = Channel.buffered(items.len())
-        const counter = Shared.new(0)
+        const counter = Mutex.new(0)
 
         for item in items {
             const item_tx = tx.clone()
@@ -766,7 +752,7 @@ func fetch_packages(
                 const result = fetch_one(item, registry)
                 match result {
                     Ok(msg) => {
-                        item_counter.write(|c| c + 1)
+                        with item_counter as c { c += 1 }
                         item_tx.send(Ok(msg))
                     }
                     Err(e) => item_tx.send(Err(e)),
@@ -795,7 +781,7 @@ func fetch_packages(
             return Err(e)
         }
 
-        const fetched = counter.read(|c| c)
+        const fetched = with counter as c { c }
         println("Fetched {fetched} packages")
     }
 
@@ -852,15 +838,14 @@ func write_lockfile(graph: DepGraph, path: string) -> () or FetchError {
             out.push_str("checksum = \"{pkg.meta.checksum}\"\n")
 
             if !pkg.deps.is_empty() {
-                out.push_str("deps = [")
-                let first = true
+                let dep_names = Vec.new()
                 for dep_handle in pkg.deps {
                     with graph.packages[dep_handle] as dep_pkg {
-                        if !first { out.push_str(", ") }
-                        out.push_str("\"{dep_pkg.meta.name}\"")
-                        first = false
+                        dep_names.push("\"{dep_pkg.meta.name}\"")
                     }
                 }
+                out.push_str("deps = [")
+                out.push_str(dep_names.join(", "))
                 out.push_str("]\n")
             }
 
