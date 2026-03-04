@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Shared<T> methods — closure-based RwLock wrapper.
+//! Shared<T> and Mutex<T> methods — sync primitive wrappers.
 //!
-//! Layer: RUNTIME — RwLock requires OS synchronization primitives.
+//! Layer: RUNTIME — RwLock/Mutex require OS synchronization primitives.
 
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::Value;
@@ -147,6 +147,112 @@ impl Interpreter {
 
                 // Write back: use closure return value if available,
                 // fall back to checking environment mutations
+                match &result {
+                    Err(RuntimeError::Return(v)) => {
+                        *guard = v.clone();
+                    }
+                    Ok(v) if !matches!(v, Value::Unit) => {
+                        *guard = v.clone();
+                    }
+                    _ => {
+                        if let Some(updated) = self.env.get(&param_name) {
+                            *guard = updated.clone();
+                        }
+                    }
+                }
+
+                self.env.pop_scope();
+                match result {
+                    Ok(v) => Ok(v),
+                    Err(RuntimeError::Return(v)) => Ok(v),
+                    Err(e) => Err(e),
+                }
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "expected closure, found {}",
+                closure.type_name()
+            ))),
+        }
+    }
+
+    /// Handle Mutex<T> instance methods.
+    pub(crate) fn call_mutex_method(
+        &mut self,
+        mutex: &Arc<Mutex<Value>>,
+        method: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        match method {
+            "lock" => {
+                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                self.call_mutex_lock_closure(mutex, &closure)
+            }
+            "try_lock" => {
+                let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
+                    expected: 1,
+                    got: 0,
+                })?;
+                match mutex.try_lock() {
+                    Ok(guard) => {
+                        let snapshot = guard.clone();
+                        drop(guard);
+                        let result = self.call_closure_with_arg(&closure, snapshot)?;
+                        Ok(Value::Enum {
+                            name: "Option".to_string(),
+                            variant: "Some".to_string(),
+                            fields: vec![result],
+                            variant_index: 0,
+                        })
+                    }
+                    Err(_) => Ok(Value::Enum {
+                        name: "Option".to_string(),
+                        variant: "None".to_string(),
+                        fields: vec![],
+                        variant_index: 1,
+                    }),
+                }
+            }
+            "clone" => Ok(Value::RaskMutex(Arc::clone(mutex))),
+            _ => Err(RuntimeError::NoSuchMethod {
+                ty: "Mutex".to_string(),
+                method: method.to_string(),
+            }),
+        }
+    }
+
+    /// Execute a closure under a Mutex lock — locks, runs the closure with the
+    /// inner value, writes back mutations, then unlocks.
+    fn call_mutex_lock_closure(
+        &mut self,
+        mutex: &Arc<Mutex<Value>>,
+        closure: &Value,
+    ) -> Result<Value, RuntimeError> {
+        match closure {
+            Value::Closure {
+                params,
+                body,
+                captured_env,
+            } => {
+                let mut guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
+                })?;
+
+                self.env.push_scope();
+                for (k, v) in captured_env {
+                    self.env.define(k.clone(), v.clone());
+                }
+                let param_name = params
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "_".to_string());
+                self.env.define(param_name.clone(), guard.clone());
+
+                let result = self.eval_expr(body).map_err(|diag| diag.error);
+
+                // Write back
                 match &result {
                     Err(RuntimeError::Return(v)) => {
                         *guard = v.clone();

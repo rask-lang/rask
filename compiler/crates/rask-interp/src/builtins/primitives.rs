@@ -223,7 +223,9 @@ impl Interpreter {
     ) -> Result<Value, RuntimeError> {
         match method {
             "is_whitespace" => Ok(Value::Bool(c.is_whitespace())),
+            "is_ascii" => Ok(Value::Bool(c.is_ascii())),
             "is_alphabetic" => Ok(Value::Bool(c.is_alphabetic())),
+            "is_numeric" => Ok(Value::Bool(c.is_numeric())),
             "is_alphanumeric" => Ok(Value::Bool(c.is_alphanumeric())),
             "is_digit" => Ok(Value::Bool(c.is_ascii_digit())),
             "is_uppercase" => Ok(Value::Bool(c.is_uppercase())),

@@ -357,6 +357,7 @@ impl<'a> MirContext<'a> {
                 "i32x4" => Some("i32x4"),
                 "i32x8" => Some("i32x8"),
                 "Shared" => Some("Shared"),
+                "Mutex" => Some("Mutex"),
                 "Channel" => Some("Channel"),
                 "Sender" => Some("Sender"),
                 "Receiver" => Some("Receiver"),
@@ -370,6 +371,7 @@ impl<'a> MirContext<'a> {
                 "Rng" => Some("Rng"),
                 "File" => Some("File"),
                 "Shared" => Some("Shared"),
+                "Mutex" => Some("Mutex"),
                 "Channel" => Some("Channel"),
                 "Sender" => Some("Sender"),
                 "Receiver" => Some("Receiver"),
@@ -1353,6 +1355,7 @@ fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
         | "Map_keys" | "Map_values" => Some("Vec"),
         "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
         "Shared_clone" => Some("Shared"),
+        "Mutex_new" => Some("Mutex"),
         "Sender_clone" => Some("Sender"),
         "Receiver_clone" => Some("Receiver"),
         _ if func_name.starts_with("AtomicBool_") => Some("AtomicBool"),
@@ -1425,6 +1428,10 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
     if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
         || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
     {
+        return MirType::Bool;
+    }
+    // Char predicates return bool
+    if func_name.starts_with("char_is_") || func_name == "char_eq" {
         return MirType::Bool;
     }
     MirType::I64

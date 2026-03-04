@@ -389,7 +389,7 @@ impl CodeGenerator {
     /// parameter and return types. The linker resolves these to actual symbols.
     pub fn declare_extern_functions(&mut self, extern_decls: &[crate::ExternFuncSig]) -> CodegenResult<()> {
         for decl in extern_decls {
-            // Skip if already declared (e.g. a runtime function with the same name)
+            // Skip if already declared (e.g. a runtime or stdlib function with the same name)
             if self.func_ids.contains_key(&decl.name) {
                 continue;
             }
@@ -401,8 +401,10 @@ impl CodeGenerator {
             }
             if let Some(ret) = &decl.ret_ty {
                 let mir_ty = type_string_to_mir(ret);
-                let cl_ty = mir_to_cranelift_type(&mir_ty)?;
-                sig.returns.push(AbiParam::new(cl_ty));
+                if !matches!(mir_ty, rask_mir::MirType::Void) {
+                    let cl_ty = mir_to_cranelift_type(&mir_ty)?;
+                    sig.returns.push(AbiParam::new(cl_ty));
+                }
             }
             let func_id = self.module
                 .declare_function(&decl.name, Linkage::Import, &sig)

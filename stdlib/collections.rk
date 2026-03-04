@@ -97,6 +97,81 @@ extend Vec<T> {
     /// Remove and return elements where f returns true.
     public func drain_where(mutate self, f: func(T) -> bool) -> Vec<T> { }
 
+    /// True if the vector contains the given value.
+    public func contains(self, value: T) -> bool { }
+
+    /// Reverse elements in place.
+    public func reverse(mutate self) { }
+
+    /// Join elements into a string with a separator.
+    public func join(self, sep: string) -> string { }
+
+    /// Sort elements in ascending order.
+    public func sort(mutate self) { }
+
+    /// Sort using a custom comparator. Closure returns Ordering or int (<0, 0, >0).
+    public func sort_by(mutate self, f: func(T, T) -> Ordering) { }
+
+    /// Sort by a key extracted from each element.
+    public func sort_by_key(mutate self, f: func(T) -> K) { }
+
+    /// Remove consecutive duplicate elements.
+    public func dedup(mutate self) { }
+
+    /// Keep only elements where f returns true.
+    public func filter(self, f: func(T) -> bool) -> Vec<T> { }
+
+    /// Transform each element.
+    public func map(self, f: func(T) -> U) -> Vec<U> { }
+
+    /// Map then flatten results.
+    public func flat_map(self, f: func(T) -> Vec<U>) -> Vec<U> { }
+
+    /// Flatten a Vec of Vecs into a single Vec.
+    public func flatten(self) -> Vec<T> { }
+
+    /// Reduce to a single value using an accumulator.
+    public func fold(self, init: U, f: func(U, T) -> U) -> U { }
+
+    /// Reduce without initial value. Returns None if empty.
+    public func reduce(self, f: func(T, T) -> T) -> Option<T> { }
+
+    /// Yield (index, element) pairs.
+    public func enumerate(self) -> Vec<(usize, T)> { }
+
+    /// Zip with another vector into pairs.
+    public func zip(self, other: Vec<U>) -> Vec<(T, U)> { }
+
+    /// Split into chunks of the given size.
+    public func chunks(self, size: usize) -> Vec<Vec<T>> { }
+
+    /// True if any element satisfies the predicate.
+    public func any(self, f: func(T) -> bool) -> bool { }
+
+    /// True if all elements satisfy the predicate.
+    public func all(self, f: func(T) -> bool) -> bool { }
+
+    /// Find the first element matching the predicate.
+    public func find(self, f: func(T) -> bool) -> Option<T> { }
+
+    /// Find the index of the first element matching the predicate.
+    public func position(self, f: func(T) -> bool) -> Option<usize> { }
+
+    /// Sum all elements.
+    public func sum(self) -> T { }
+
+    /// Minimum element.
+    public func min(self) -> Option<T> { }
+
+    /// Maximum element.
+    public func max(self) -> Option<T> { }
+
+    /// Clone the vector.
+    public func clone(self) -> Vec<T> { }
+
+    /// Set element at index. Panics if out of bounds.
+    public func set(mutate self, index: usize, value: T) { }
+
     /// Shrink allocation to fit current length.
     public func shrink_to_fit(mutate self) { }
 
