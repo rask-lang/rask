@@ -551,10 +551,12 @@ mod tests {
                                 is_pub: false,
                             })
                             .collect(),
+                        attrs: vec![],
                     })
                     .collect(),
                 methods: vec![],
                 is_pub: false,
+                attrs: vec![],
                 doc: None,
             }),
             span: dummy_span(),

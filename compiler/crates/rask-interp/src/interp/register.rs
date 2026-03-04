@@ -78,6 +78,13 @@ impl Interpreter {
                 }
                 DeclKind::Enum(e) => {
                     self.enums.insert(e.name.clone(), e.clone());
+                    // Register enum methods (e.g., @message-generated message())
+                    if !e.methods.is_empty() {
+                        let type_methods = self.methods.entry(e.name.clone()).or_default();
+                        for method in &e.methods {
+                            type_methods.insert(method.name.clone(), method.clone());
+                        }
+                    }
                 }
                 DeclKind::Impl(impl_decl) => {
                     let base_name = strip_generics(&impl_decl.target_ty).to_string();
@@ -227,14 +234,17 @@ impl Interpreter {
                             ty: "T".to_string(),
                             is_pub: false,
                         }],
+                        attrs: vec![],
                     },
                     Variant {
                         name: "None".to_string(),
                         fields: vec![],
+                        attrs: vec![],
                     },
                 ],
                 methods: vec![],
                 is_pub: true,
+                attrs: vec![],
                 doc: None,
             },
         );
@@ -252,6 +262,7 @@ impl Interpreter {
                             ty: "T".to_string(),
                             is_pub: false,
                         }],
+                        attrs: vec![],
                     },
                     Variant {
                         name: "Err".to_string(),
@@ -261,10 +272,12 @@ impl Interpreter {
                             ty: "E".to_string(),
                             is_pub: false,
                         }],
+                        attrs: vec![],
                     },
                 ],
                 methods: vec![],
                 is_pub: true,
+                attrs: vec![],
                 doc: None,
             },
         );
@@ -274,41 +287,18 @@ impl Interpreter {
                 name: "Ordering".to_string(),
                 type_params: vec![],
                 variants: vec![
-                    Variant {
-                        name: "Less".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "Equal".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "Greater".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "Relaxed".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "Acquire".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "Release".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "AcqRel".to_string(),
-                        fields: vec![],
-                    },
-                    Variant {
-                        name: "SeqCst".to_string(),
-                        fields: vec![],
-                    },
+                    Variant { name: "Less".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "Equal".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "Greater".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "Relaxed".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "Acquire".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "Release".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "AcqRel".to_string(), fields: vec![], attrs: vec![] },
+                    Variant { name: "SeqCst".to_string(), fields: vec![], attrs: vec![] },
                 ],
                 methods: vec![],
                 is_pub: true,
+                attrs: vec![],
                 doc: None,
             },
         );

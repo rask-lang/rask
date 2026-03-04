@@ -15,10 +15,10 @@
 mod defaults;
 pub use defaults::{desugar_default_args, is_valid_default_expr};
 
-use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl};
-use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, UnaryOp};
+use rask_ast::decl::{Decl, DeclKind, FnDecl, Param, StructDecl, EnumDecl, TraitDecl, ImplDecl};
+use rask_ast::expr::{ArgMode, BinOp, CallArg, Expr, ExprKind, MatchArm, Pattern, UnaryOp};
 use rask_ast::stmt::{Stmt, StmtKind};
-use rask_ast::NodeId;
+use rask_ast::{NodeId, Span};
 
 /// Desugar all operators in a list of declarations.
 pub fn desugar(decls: &mut [Decl]) {
@@ -87,9 +87,131 @@ impl Desugarer {
     }
 
     fn desugar_enum(&mut self, e: &mut EnumDecl) {
+        // Generate message() method if @message attribute is present
+        if e.attrs.iter().any(|a| a == "message") {
+            if let Some(method) = self.generate_message_method(e) {
+                e.methods.push(method);
+            }
+        }
         for method in &mut e.methods {
             self.desugar_fn(method);
         }
+    }
+
+    /// Generate `func message(self) -> string` from @message annotations.
+    fn generate_message_method(&mut self, e: &EnumDecl) -> Option<FnDecl> {
+        let sp = Span::new(0, 0);
+        let mut arms = Vec::new();
+
+        for variant in &e.variants {
+            let template = self.extract_message_template(variant);
+
+            // Build pattern bindings for this variant
+            let field_patterns: Vec<Pattern> = if variant.fields.is_empty() {
+                vec![]
+            } else {
+                variant.fields.iter().map(|f| {
+                    Pattern::Ident(f.name.clone())
+                }).collect()
+            };
+
+            let pattern = if variant.fields.is_empty() {
+                Pattern::Ident(variant.name.clone())
+            } else {
+                Pattern::Constructor {
+                    name: variant.name.clone(),
+                    fields: field_patterns,
+                }
+            };
+
+            let body_expr = match template {
+                MessageTemplate::Format(tmpl) => {
+                    // String with interpolation — desugaring pass handles {name}
+                    Expr { id: self.fresh_id(), kind: ExprKind::String(tmpl), span: sp }
+                }
+                MessageTemplate::Delegate(binding) => {
+                    // e.message() — delegate to inner error
+                    Expr {
+                        id: self.fresh_id(),
+                        kind: ExprKind::MethodCall {
+                            object: Box::new(Expr {
+                                id: self.fresh_id(),
+                                kind: ExprKind::Ident(binding),
+                                span: sp,
+                            }),
+                            method: "message".to_string(),
+                            type_args: None,
+                            args: vec![],
+                        },
+                        span: sp,
+                    }
+                }
+            };
+
+            arms.push(MatchArm {
+                pattern,
+                guard: None,
+                body: Box::new(body_expr),
+            });
+        }
+
+        let match_expr = Expr {
+            id: self.fresh_id(),
+            kind: ExprKind::Match {
+                scrutinee: Box::new(Expr {
+                    id: self.fresh_id(),
+                    kind: ExprKind::Ident("self".to_string()),
+                    span: sp,
+                }),
+                arms,
+            },
+            span: sp,
+        };
+
+        let return_stmt = Stmt {
+            id: self.fresh_id(),
+            kind: StmtKind::Return(Some(match_expr)),
+            span: sp,
+        };
+
+        Some(FnDecl {
+            name: "message".to_string(),
+            type_params: vec![],
+            params: vec![Param {
+                name: "self".to_string(),
+                name_span: sp,
+                ty: "Self".to_string(),
+                is_take: false,
+                is_mutate: false,
+                default: None,
+            }],
+            ret_ty: Some("string".to_string()),
+            context_clauses: vec![],
+            body: vec![return_stmt],
+            is_pub: true,
+            is_comptime: false,
+            is_unsafe: false,
+            abi: None,
+            attrs: vec![],
+            doc: None,
+            span: sp,
+        })
+    }
+
+    /// Extract the message template for a variant.
+    fn extract_message_template(&self, variant: &rask_ast::decl::Variant) -> MessageTemplate {
+        // Check for @message("template") on the variant
+        for attr in &variant.attrs {
+            if let Some(tmpl) = extract_message_attr_template(attr) {
+                return MessageTemplate::Format(tmpl);
+            }
+        }
+        // Auto-delegate: single payload field → delegate to inner.message()
+        if variant.fields.len() == 1 {
+            return MessageTemplate::Delegate(variant.fields[0].name.clone());
+        }
+        // Fallback: variant name as message
+        MessageTemplate::Format(variant.name.clone())
     }
 
     fn desugar_trait(&mut self, t: &mut TraitDecl) {
@@ -473,6 +595,25 @@ impl Desugarer {
         }
         self.desugar_expr(&mut arm.body);
     }
+}
+
+/// What a variant's @message resolves to.
+enum MessageTemplate {
+    /// Format string with interpolation: `"error: {name}"`
+    Format(String),
+    /// Delegate to inner value: `inner.message()`
+    Delegate(String),
+}
+
+/// Extract the template from a `message("template")` attribute string.
+fn extract_message_attr_template(attr: &str) -> Option<String> {
+    let stripped = attr.strip_prefix("message(")?;
+    let stripped = stripped.strip_suffix(')')?;
+    // Remove surrounding quotes
+    let stripped = stripped.trim();
+    let stripped = stripped.strip_prefix('"')?;
+    let stripped = stripped.strip_suffix('"')?;
+    Some(stripped.to_string())
 }
 
 /// Map binary operators to method names (if they should be desugared).

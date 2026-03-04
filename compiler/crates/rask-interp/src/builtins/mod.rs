@@ -56,6 +56,7 @@ impl Interpreter {
             Value::AtomicUsize(atomic) => return self.call_atomic_usize_method(atomic, method, args),
             Value::AtomicU64(atomic) => return self.call_atomic_u64_method(atomic, method, args),
             Value::Shared(s) => return self.call_shared_method(&Arc::clone(s), method, args),
+            Value::RaskMutex(m) => return self.call_mutex_method(&Arc::clone(m), method, args),
             Value::Rng(rng) => return self.call_rng_instance_method(&Arc::clone(rng), method, args),
             Value::Iterator(iter) => return self.call_iterator_method(&Arc::clone(iter), method, args),
             #[cfg(not(target_arch = "wasm32"))]
