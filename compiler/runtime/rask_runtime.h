@@ -73,6 +73,13 @@ int64_t  rask_vec_insert_at(RaskVec *v, int64_t index, const void *elem);
 int64_t  rask_vec_remove_at(RaskVec *v, int64_t index, void *out);
 RaskVec *rask_iter_skip(const RaskVec *src, int64_t n);
 RaskVec *rask_vec_clone(const RaskVec *v);
+void     rask_vec_sort(RaskVec *v);
+void     rask_vec_sort_by(RaskVec *v, int64_t comparator);
+void     rask_vec_reverse(RaskVec *v);
+int64_t  rask_vec_contains(const RaskVec *v, const void *elem);
+void     rask_vec_dedup(RaskVec *v);
+void    *rask_vec_first(const RaskVec *v);
+void    *rask_vec_last(const RaskVec *v);
 
 // ─── String ─────────────────────────────────────────────────
 // UTF-8 owned string, always null-terminated.
@@ -105,10 +112,33 @@ RaskVec    *rask_string_split_whitespace(const RaskString *s);
 RaskString *rask_string_replace(const RaskString *s, const RaskString *from, const RaskString *to);
 int64_t     rask_string_parse_int(const RaskString *s);
 double      rask_string_parse_float(const RaskString *s);
+int64_t     rask_string_is_empty(const RaskString *s);
+RaskString *rask_string_to_uppercase(const RaskString *s);
+int64_t     rask_string_find(const RaskString *haystack, const RaskString *needle);
+int64_t     rask_string_rfind(const RaskString *haystack, const RaskString *needle);
+int64_t     rask_string_char_at(const RaskString *s, int64_t index);
+RaskString *rask_string_repeat(const RaskString *s, int64_t count);
+RaskString *rask_string_reverse(const RaskString *s);
+RaskString *rask_string_trim_start(const RaskString *s);
+RaskString *rask_string_trim_end(const RaskString *s);
 RaskString *rask_i64_to_string(int64_t val);
 RaskString *rask_bool_to_string(int64_t val);
 RaskString *rask_f64_to_string(double val);
 RaskString *rask_char_to_string(int32_t codepoint);
+
+// Char predicates — operate on Unicode codepoints (i32).
+int64_t rask_char_is_digit(int32_t c);
+int64_t rask_char_is_ascii(int32_t c);
+int64_t rask_char_is_alphabetic(int32_t c);
+int64_t rask_char_is_numeric(int32_t c);
+int64_t rask_char_is_alphanumeric(int32_t c);
+int64_t rask_char_is_whitespace(int32_t c);
+int64_t rask_char_is_uppercase(int32_t c);
+int64_t rask_char_is_lowercase(int32_t c);
+int64_t rask_char_to_uppercase(int32_t c);
+int64_t rask_char_to_lowercase(int32_t c);
+int64_t rask_char_len_utf8(int32_t c);
+int64_t rask_char_eq(int32_t a, int32_t b);
 
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
@@ -472,6 +502,12 @@ void rask_mutex_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 
 // Non-blocking. Returns 1 if lock acquired (and f was called), 0 otherwise.
 int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
+
+// Pointer-based codegen wrappers for Mutex.
+int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
+int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
+int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
+void    rask_mutex_drop(int64_t mutex);
 
 // ─── Shared (RwLock) ───────────────────────────────────────
 // Multiple-reader / exclusive-writer wrapper (conc.sync/SY1, R1-R3).

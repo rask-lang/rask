@@ -366,3 +366,178 @@ RaskString *rask_char_to_string(int32_t codepoint) {
     rask_string_push_char(s, codepoint);
     return s;
 }
+
+// ─── Char predicates ────────────────────────────────────────
+
+int64_t rask_char_is_digit(int32_t c) {
+    return (c >= '0' && c <= '9') ? 1 : 0;
+}
+
+int64_t rask_char_is_ascii(int32_t c) {
+    return (c >= 0 && c <= 127) ? 1 : 0;
+}
+
+int64_t rask_char_is_alphabetic(int32_t c) {
+    // ASCII letters + basic Unicode letter detection
+    if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) return 1;
+    if (c > 127) return 1; // conservative: treat non-ASCII as alphabetic
+    return 0;
+}
+
+int64_t rask_char_is_numeric(int32_t c) {
+    if (c >= '0' && c <= '9') return 1;
+    // Unicode numeric characters (superscripts, fractions, etc.)
+    if (c >= 0x00B2 && c <= 0x00B3) return 1; // ², ³
+    if (c == 0x00B9) return 1; // ¹
+    if (c >= 0x00BC && c <= 0x00BE) return 1; // ¼, ½, ¾
+    return 0;
+}
+
+int64_t rask_char_is_alphanumeric(int32_t c) {
+    return (rask_char_is_alphabetic(c) || rask_char_is_numeric(c)) ? 1 : 0;
+}
+
+int64_t rask_char_is_whitespace(int32_t c) {
+    return (c == ' ' || c == '\t' || c == '\n' || c == '\r'
+         || c == 0x0B || c == 0x0C) ? 1 : 0;
+}
+
+int64_t rask_char_is_uppercase(int32_t c) {
+    return (c >= 'A' && c <= 'Z') ? 1 : 0;
+}
+
+int64_t rask_char_is_lowercase(int32_t c) {
+    return (c >= 'a' && c <= 'z') ? 1 : 0;
+}
+
+int64_t rask_char_to_uppercase(int32_t c) {
+    if (c >= 'a' && c <= 'z') return c - 32;
+    return c;
+}
+
+int64_t rask_char_to_lowercase(int32_t c) {
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return c;
+}
+
+int64_t rask_char_len_utf8(int32_t c) {
+    if (c < 0x80) return 1;
+    if (c < 0x800) return 2;
+    if (c < 0x10000) return 3;
+    return 4;
+}
+
+int64_t rask_char_eq(int32_t a, int32_t b) {
+    return a == b ? 1 : 0;
+}
+
+// ─── Additional string methods ──────────────────────────────
+
+int64_t rask_string_is_empty(const RaskString *s) {
+    return (!s || s->len == 0) ? 1 : 0;
+}
+
+RaskString *rask_string_to_uppercase(const RaskString *s) {
+    if (!s) return rask_string_new();
+    RaskString *r = rask_string_from_bytes(s->data, s->len);
+    for (int64_t i = 0; i < r->len; i++) {
+        unsigned char c = (unsigned char)r->data[i];
+        if (c >= 'a' && c <= 'z') r->data[i] = (char)(c - 32);
+    }
+    return r;
+}
+
+// find(haystack, needle) — byte offset of first occurrence, -1 if not found.
+int64_t rask_string_find(const RaskString *haystack, const RaskString *needle) {
+    if (!haystack || !needle) return -1;
+    if (needle->len == 0) return 0;
+    const char *p = strstr(haystack->data, needle->data);
+    if (!p) return -1;
+    return (int64_t)(p - haystack->data);
+}
+
+// rfind(haystack, needle) — byte offset of last occurrence, -1 if not found.
+int64_t rask_string_rfind(const RaskString *haystack, const RaskString *needle) {
+    if (!haystack || !needle) return -1;
+    if (needle->len == 0) return haystack->len;
+    int64_t last = -1;
+    const char *start = haystack->data;
+    while (1) {
+        const char *p = strstr(start, needle->data);
+        if (!p) break;
+        last = (int64_t)(p - haystack->data);
+        start = p + 1;
+    }
+    return last;
+}
+
+// char_at(s, byte_index) — returns the UTF-8 codepoint at byte index.
+int64_t rask_string_char_at(const RaskString *s, int64_t index) {
+    if (!s || index < 0 || index >= s->len) return -1;
+    unsigned char c = (unsigned char)s->data[index];
+    if (c < 0x80) return c;
+    // Simplified UTF-8 decode
+    if ((c & 0xE0) == 0xC0 && index + 1 < s->len) {
+        return ((c & 0x1F) << 6) | (s->data[index + 1] & 0x3F);
+    }
+    if ((c & 0xF0) == 0xE0 && index + 2 < s->len) {
+        return ((c & 0x0F) << 12) | ((s->data[index + 1] & 0x3F) << 6)
+             | (s->data[index + 2] & 0x3F);
+    }
+    if ((c & 0xF8) == 0xF0 && index + 3 < s->len) {
+        return ((c & 0x07) << 18) | ((s->data[index + 1] & 0x3F) << 12)
+             | ((s->data[index + 2] & 0x3F) << 6) | (s->data[index + 3] & 0x3F);
+    }
+    return c;
+}
+
+// repeat(s, count) — returns string repeated count times.
+RaskString *rask_string_repeat(const RaskString *s, int64_t count) {
+    if (!s || count <= 0) return rask_string_new();
+    int64_t total = s->len * count;
+    RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->data = (char *)rask_alloc(total + 1);
+    r->cap = total + 1;
+    r->len = total;
+    for (int64_t i = 0; i < count; i++) {
+        memcpy(r->data + i * s->len, s->data, (size_t)s->len);
+    }
+    r->data[total] = '\0';
+    return r;
+}
+
+// string_reverse(s) — byte-reversed copy (correct for ASCII; multi-byte aware).
+RaskString *rask_string_reverse(const RaskString *s) {
+    if (!s) return rask_string_new();
+    RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->data = (char *)rask_alloc(s->len + 1);
+    r->cap = s->len + 1;
+    r->len = s->len;
+    for (int64_t i = 0; i < s->len; i++) {
+        r->data[i] = s->data[s->len - 1 - i];
+    }
+    r->data[s->len] = '\0';
+    return r;
+}
+
+// trim_start(s) — trim leading whitespace.
+RaskString *rask_string_trim_start(const RaskString *s) {
+    if (!s) return rask_string_new();
+    int64_t start = 0;
+    while (start < s->len && (s->data[start] == ' ' || s->data[start] == '\t'
+           || s->data[start] == '\n' || s->data[start] == '\r')) {
+        start++;
+    }
+    return rask_string_from_bytes(s->data + start, s->len - start);
+}
+
+// trim_end(s) — trim trailing whitespace.
+RaskString *rask_string_trim_end(const RaskString *s) {
+    if (!s) return rask_string_new();
+    int64_t end = s->len;
+    while (end > 0 && (s->data[end - 1] == ' ' || s->data[end - 1] == '\t'
+           || s->data[end - 1] == '\n' || s->data[end - 1] == '\r')) {
+        end--;
+    }
+    return rask_string_from_bytes(s->data, end);
+}
