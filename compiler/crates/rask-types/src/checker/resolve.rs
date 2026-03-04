@@ -358,11 +358,11 @@ impl TypeChecker {
                 self.resolve_simd_method(name, &method, &args, &ret, span)
             }
             // Shared<T>, Sender<T>, Receiver<T>, Channel<T>
-            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Sender" | "Receiver" | "Channel") => {
+            Type::UnresolvedGeneric { name, args: type_args } if matches!(name.as_str(), "Shared" | "Mutex" | "Sender" | "Receiver" | "Channel") => {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
-            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared") => {
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex") => {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
@@ -864,6 +864,15 @@ impl TypeChecker {
                 };
                 self.unify(ret, &shared_ty, span)
             }
+            // Mutex static constructor: Mutex.new(value) -> Mutex<T>
+            ("Mutex", "new") if args.len() == 1 => {
+                let inner = args[0].clone();
+                let mutex_ty = Type::UnresolvedGeneric {
+                    name: "Mutex".to_string(),
+                    args: vec![GenericArg::Type(Box::new(inner))],
+                };
+                self.unify(ret, &mutex_ty, span)
+            }
             _ => {
                 // Fall through to constraint system for unknown methods
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
@@ -912,6 +921,25 @@ impl TypeChecker {
                     args: type_args.to_vec(),
                 };
                 self.unify(ret, &shared_ty, span)
+            }
+            // Mutex<T>.lock(|T| -> R) -> R
+            ("Mutex", "lock") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                self.unify(ret, &result_var, span)
+            }
+            // Mutex<T>.try_lock(|T| -> R) -> Option<R>
+            ("Mutex", "try_lock") if args.len() == 1 => {
+                let result_var = self.ctx.fresh_var();
+                let opt_ty = Type::Option(Box::new(result_var));
+                self.unify(ret, &opt_ty, span)
+            }
+            // Mutex<T>.clone() -> Mutex<T>
+            ("Mutex", "clone") if args.is_empty() => {
+                let mutex_ty = Type::UnresolvedGeneric {
+                    name: "Mutex".to_string(),
+                    args: type_args.to_vec(),
+                };
+                self.unify(ret, &mutex_ty, span)
             }
             // Sender<T>.send(value: T) -> () or string
             ("Sender", "send") if args.len() == 1 => {
@@ -1203,8 +1231,156 @@ impl TypeChecker {
                 let _ = self.unify(&args[0], &Type::I64, span);
                 self.unify(ret, &self_ty, span)
             }
+            "take" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &self_ty, span)
+            }
+            "limit" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::I64, span);
+                self.unify(ret, &self_ty, span)
+            }
             "collect" if args.is_empty() => {
                 self.unify(ret, &self_ty, span)
+            }
+            // vec.first() -> Option<T>
+            "first" if args.is_empty() => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.last() -> Option<T>
+            "last" if args.is_empty() => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.contains(value) -> bool
+            "contains" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &inner_type, span);
+                self.unify(ret, &Type::Bool, span)
+            }
+            // vec.reverse() -> ()
+            "reverse" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.join(sep) -> string
+            "join" if args.len() == 1 => {
+                let _ = self.unify(&args[0], &Type::String, span);
+                self.unify(ret, &Type::String, span)
+            }
+            // vec.sort() -> ()
+            "sort" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.sort_by(comparator) -> ()
+            "sort_by" if args.len() == 1 => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.sort_by_key(key_fn) -> ()
+            "sort_by_key" if args.len() == 1 => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.dedup() -> ()
+            "dedup" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            // vec.filter(predicate) -> Vec<T>
+            "filter" if args.len() == 1 => {
+                self.unify(ret, &self_ty, span)
+            }
+            // vec.map(transform) -> Vec<U>
+            "map" if args.len() == 1 => {
+                let fresh = self.ctx.fresh_var();
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.flat_map(transform) -> Vec<U>
+            "flat_map" if args.len() == 1 => {
+                let fresh = self.ctx.fresh_var();
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.flatten() -> Vec<T>
+            "flatten" if args.is_empty() => {
+                let fresh = self.ctx.fresh_var();
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(fresh))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.fold(init, f) -> U
+            "fold" if args.len() == 2 => {
+                let _ = self.unify(ret, &args[0], span);
+                Ok(true)
+            }
+            // vec.reduce(f) -> Option<T>
+            "reduce" if args.len() == 1 => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.enumerate() -> Vec<(i64, T)>
+            "enumerate" if args.is_empty() => {
+                let pair_ty = Type::Tuple(vec![Type::I64, inner_type]);
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(pair_ty))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.zip(other) -> Vec<(T, U)>
+            "zip" if args.len() == 1 => {
+                let fresh = self.ctx.fresh_var();
+                let pair_ty = Type::Tuple(vec![inner_type, fresh]);
+                let result_ty = Type::UnresolvedGeneric {
+                    name: "Vec".to_string(),
+                    args: vec![GenericArg::Type(Box::new(pair_ty))],
+                };
+                self.unify(ret, &result_ty, span)
+            }
+            // vec.any(predicate) -> bool
+            "any" if args.len() == 1 => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            // vec.all(predicate) -> bool
+            "all" if args.len() == 1 => {
+                self.unify(ret, &Type::Bool, span)
+            }
+            // vec.find(predicate) -> Option<T>
+            "find" if args.len() == 1 => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.position(predicate) -> Option<i64>
+            "position" if args.len() == 1 => {
+                let opt_ty = Type::Option(Box::new(Type::I64));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.sum() -> T
+            "sum" if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // vec.min() -> Option<T>
+            "min" if args.is_empty() => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.max() -> Option<T>
+            "max" if args.is_empty() => {
+                let opt_ty = Type::Option(Box::new(inner_type));
+                self.unify(ret, &opt_ty, span)
+            }
+            // vec.clone() -> Vec<T>
+            "clone" if args.is_empty() => {
+                self.unify(ret, &self_ty, span)
+            }
+            // vec.eq(other) -> bool
+            "eq" | "ne" if args.len() == 1 => {
+                self.unify(ret, &Type::Bool, span)
             }
             _ => Err(TypeError::NoSuchMethod {
                 ty: self_ty,
