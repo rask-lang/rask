@@ -2307,6 +2307,11 @@ pub fn declare_stdlib<M: Module>(
             .declare_function(entry.c_name, Linkage::Import, &sig)
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
         func_ids.insert(entry.mir_name.to_string(), id);
+        // Also register under c_name so declare_extern_functions can
+        // detect that this function was already declared by the stdlib.
+        if entry.c_name != entry.mir_name {
+            func_ids.insert(entry.c_name.to_string(), id);
+        }
     }
     Ok(())
 }
