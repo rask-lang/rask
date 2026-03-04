@@ -326,7 +326,9 @@ impl Parser {
 
     fn looks_like_generic_followed_by(&self, expected: &TokenKind) -> bool {
         let mut pos = self.pos + 1;
-        let mut depth = 1;
+        let mut depth: i32 = 1;
+        let mut paren_depth: i32 = 0;
+        let mut bracket_depth: i32 = 0;
 
         while pos < self.tokens.len() && depth > 0 {
             match &self.tokens[pos].kind {
@@ -340,6 +342,18 @@ impl Parser {
                         }
                         return false;
                     }
+                }
+                // Track parens/brackets so we don't scan past enclosing groups.
+                // f(g(x < y)) — the `)` closing g() should stop the scan.
+                TokenKind::LParen => paren_depth += 1,
+                TokenKind::RParen => {
+                    paren_depth -= 1;
+                    if paren_depth < 0 { return false; }
+                }
+                TokenKind::LBracket => bracket_depth += 1,
+                TokenKind::RBracket => {
+                    bracket_depth -= 1;
+                    if bracket_depth < 0 { return false; }
                 }
                 TokenKind::Eof | TokenKind::Newline | TokenKind::Semi => {
                     return false;
@@ -2578,24 +2592,25 @@ impl Parser {
                 self.advance();
                 let mut full_name = name.clone();
 
-                // Parse generic arguments for type names (for static methods or struct literals)
-                if Self::is_type_name(&name) && self.check(&TokenKind::Lt) {
-                    // Check if this looks like a generic instantiation
-                    let is_static_method = self.looks_like_generic_type_with_static_method();
-                    let is_struct_literal = {
-                        // Look ahead to see if this could be a struct literal: Name<Args> {
-                        let mut lookahead_pos = self.pos + 1; // Skip the '<'
+                // Parse generic arguments: ident<T>(...), Type<T>.method(), Type<T> { ... }
+                if self.check(&TokenKind::Lt) {
+                    // Any identifier can have generic args when followed by `(`
+                    let is_generic_call = self.looks_like_generic_method_call();
+                    // Only type names (uppercase) can have static methods or struct literals
+                    let is_static_method = Self::is_type_name(&name)
+                        && self.looks_like_generic_type_with_static_method();
+                    let is_struct_literal = Self::is_type_name(&name) && {
+                        // Look ahead: Name<Args> {
+                        let mut lookahead_pos = self.pos + 1;
                         let mut depth = 1;
                         let mut found_brace = false;
 
-                        // Scan through the generic args to find the closing '>'
                         while lookahead_pos < self.tokens.len() && depth > 0 {
                             match &self.tokens[lookahead_pos].kind {
                                 TokenKind::Lt => depth += 1,
                                 TokenKind::Gt => {
                                     depth -= 1;
                                     if depth == 0 {
-                                        // Check if the next token after '>' is '{'
                                         if lookahead_pos + 1 < self.tokens.len() {
                                             found_brace = matches!(self.tokens[lookahead_pos + 1].kind, TokenKind::LBrace);
                                         }
@@ -2608,7 +2623,7 @@ impl Parser {
                         found_brace
                     };
 
-                    if is_static_method || is_struct_literal {
+                    if is_generic_call || is_static_method || is_struct_literal {
                         self.advance(); // consume '<'
                         full_name.push('<');
                         loop {
