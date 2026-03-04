@@ -139,7 +139,7 @@ func is_ordered_list_start(line: string) -> i32? {
 
     const num_str = line[0..dot_pos].to_string()
     for ch in num_str.chars() {
-        if ch < '0' || ch > '9' { return None }
+        if !ch.is_digit() { return None }
     }
     const n = num_str.parse_int() is Ok(v) else { return None }
     return Some(n as i32)
@@ -786,11 +786,15 @@ func render_full_page(input: string) -> string or RenderError {
     const body = try render_markdown(input)
 
     const out = string_builder.new()
-    out.append("<!DOCTYPE html>\n")
-    out.append("<html>\n<head>\n")
-    out.append("<meta charset=\"utf-8\">\n")
-    out.append("<title>Rendered Markdown</title>\n")
-    out.append("</head>\n<body>\n")
+    out.append("""
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Rendered Markdown</title>
+</head>
+<body>
+""")
     out.append(body)
     out.append("</body>\n</html>\n")
     return Ok(out.build())
@@ -909,7 +913,10 @@ test "headings" {
     const result = render_markdown("# Hello").unwrap()
     assert result.contains("<h1>Hello</h1>")
 
-    const result2 = render_markdown("## Sub\n### Third").unwrap()
+    const result2 = render_markdown("""
+## Sub
+### Third
+""").unwrap()
     assert result2.contains("<h2>Sub</h2>")
     assert result2.contains("<h3>Third</h3>")
 }
@@ -918,7 +925,10 @@ test "paragraphs" {
     const result = render_markdown("Hello world").unwrap()
     assert result.contains("<p>Hello world</p>")
 
-    const result2 = render_markdown("Line one\nLine two").unwrap()
+    const result2 = render_markdown("""
+Line one
+Line two
+""").unwrap()
     assert result2.contains("<p>Line one\nLine two</p>")
 }
 
@@ -949,14 +959,22 @@ test "images" {
 }
 
 test "code blocks" {
-    const input = "```rust\nfn main() {}\n```"
+    const input = """
+```rust
+fn main() {}
+```
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<pre><code class=\"language-rust\">")
     assert result.contains("fn main() {}")
 }
 
 test "code block no language" {
-    const input = "```\nplain code\n```"
+    const input = """
+```
+plain code
+```
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<pre><code>plain code</code></pre>")
 }
@@ -969,7 +987,11 @@ test "blockquotes" {
 }
 
 test "unordered lists" {
-    const input = "- one\n- two\n- three"
+    const input = """
+- one
+- two
+- three
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<ul>")
     assert result.contains("<li>one</li>")
@@ -979,7 +1001,11 @@ test "unordered lists" {
 }
 
 test "ordered lists" {
-    const input = "1. first\n2. second\n3. third"
+    const input = """
+1. first
+2. second
+3. third
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<ol>")
     assert result.contains("<li>first</li>")
@@ -994,7 +1020,11 @@ test "horizontal rules" {
 }
 
 test "reference links" {
-    const input = "See [the site][ex] for details.\n\n[ex]: http://example.com"
+    const input = """
+See [the site][ex] for details.
+
+[ex]: http://example.com
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<a href=\"http://example.com\">the site</a>")
 }
@@ -1006,7 +1036,18 @@ test "escaped characters" {
 }
 
 test "mixed content" {
-    const input = "# Title\n\nA **bold** paragraph.\n\n- item one\n- item two\n\n---\n\n> quote"
+    const input = """
+# Title
+
+A **bold** paragraph.
+
+- item one
+- item two
+
+---
+
+> quote
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("<h1>Title</h1>")
     assert result.contains("<strong>bold</strong>")
@@ -1016,7 +1057,11 @@ test "mixed content" {
 }
 
 test "html escape in code blocks" {
-    const input = "```\n<div class=\"x\">&</div>\n```"
+    const input = """
+```
+<div class="x">&</div>
+```
+"""
     const result = render_markdown(input).unwrap()
     assert result.contains("&lt;div class=&quot;x&quot;&gt;&amp;&lt;/div&gt;")
 }
