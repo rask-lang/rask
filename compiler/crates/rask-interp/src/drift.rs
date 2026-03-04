@@ -95,6 +95,7 @@ fn dummy_value(type_name: &str) -> Value {
             Value::Receiver(Arc::new(Mutex::new(rx)))
         }
         "Shared" => Value::Shared(Arc::new(RwLock::new(Value::Unit))),
+        "Mutex" => Value::RaskMutex(Arc::new(Mutex::new(Value::Unit))),
         "AtomicBool" => {
             Value::AtomicBool(Arc::new(std::sync::atomic::AtomicBool::new(false)))
         }
