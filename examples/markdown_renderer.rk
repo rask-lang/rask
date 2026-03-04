@@ -137,11 +137,11 @@ func is_ordered_list_start(line: string) -> i32? {
         return None
     }
 
-    const num_str = line[0..dot_pos].to_string()
-    for ch in num_str.chars() {
+    const num_slice = line[0..dot_pos]
+    for ch in num_slice.chars() {
         if !ch.is_digit() { return None }
     }
-    const n = num_str.parse_int() is Ok(v) else { return None }
+    const n = num_slice.parse_int() is Ok(v) else { return None }
     return Some(n as i32)
 }
 
@@ -463,7 +463,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
         if trimmed.starts_with("#") {
             const level = count_leading(trimmed, '#')
             if level >= 1 && level <= 6 {
-                const after_hashes = trimmed[level..].to_string()
+                const after_hashes = trimmed[level..]
                 if after_hashes.is_empty() || after_hashes.starts_with(" ") {
                     const heading_text = after_hashes.trim()
                     const inlines = try parse_inline(heading_text)
