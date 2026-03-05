@@ -60,9 +60,9 @@ func encode_bloom(filter: BloomFilter) -> string {
     let out = ""
     let first = true
     for b in filter.bits {
-        if !first { out = out + "," }
+        if !first { out.push_str(",") }
         first = false
-        out = out + if b: "1" else: "0"
+        out.push_str(if b: "1" else: "0")
     }
     return out
 }

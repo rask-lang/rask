@@ -834,8 +834,8 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
 
-                // concat()/add(): string concatenation from interpolation or + operator
-                if (method == "concat" || method == "add") && args.len() == 1 && matches!(obj_ty, MirType::String) {
+                // concat(): string concatenation from interpolation
+                if method == "concat" && args.len() == 1 && matches!(obj_ty, MirType::String) {
                     let (arg_op, _) = self.lower_expr(&args[0].expr)?;
                     let result_local = self.builder.alloc_temp(MirType::String);
                     self.builder.push_stmt(MirStmt::Call {

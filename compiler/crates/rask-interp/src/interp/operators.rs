@@ -67,10 +67,6 @@ impl Interpreter {
                 for i in 0..8 { r[i] = a[i] / b[i]; }
                 Ok(Value::SimdF32x8(r))
             }
-            (BinOp::Add, Value::String(a), Value::String(b)) => {
-                let s = format!("{}{}", a.lock().unwrap(), b.lock().unwrap());
-                Ok(Value::String(std::sync::Arc::new(std::sync::Mutex::new(s))))
-            }
             (BinOp::Eq, _, _) => Ok(Value::Bool(Self::value_eq(&l, &r))),
             (BinOp::Ne, _, _) => Ok(Value::Bool(!Self::value_eq(&l, &r))),
             (BinOp::Lt, Value::Int(a), Value::Int(b)) => Ok(Value::Bool(a < b)),

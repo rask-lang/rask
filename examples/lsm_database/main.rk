@@ -105,7 +105,8 @@ func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     let i = 0
     while i < count {
         const key = "{prefix}_{i:06}"
-        const value = "value_{i}_" + "x".repeat(64)
+        const padding = "x".repeat(64)
+        const value = "value_{i}_{padding}"
         try db.put(key, value)
         i += 1
     }
@@ -204,7 +205,7 @@ func run(args: CliArgs) -> () or DbError {
             if args.key.is_empty() {
                 return Err(DbError.Io("scan requires <start> <end>"))
             }
-            const end = if args.value.is_empty(): args.key + "\u{FF}" else: args.value
+            const end = if args.value.is_empty(): "{args.key}\u{FF}" else: args.value
             const results = try db.scan(args.key, end)
             for kv in results {
                 println("{kv.key}\t{kv.value}")
