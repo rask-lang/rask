@@ -1,0 +1,109 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Bloom filter — probabilistic membership test for SSTable key lookups.
+//
+// False positives are acceptable; false negatives are not. Uses FNV-1a
+// inspired hashing with seed mixing to set bits in a fixed-size array.
+
+const BLOOM_BITS: usize = 1024
+const BLOOM_HASH_COUNT: i32 = 3
+
+struct BloomFilter {
+    bits: Vec<bool>
+    count: i32
+}
+
+extend BloomFilter {
+    func new() -> BloomFilter {
+        let bits = Vec.new()
+        for _ in 0..BLOOM_BITS {
+            bits.push(false)
+        }
+        return BloomFilter { bits: bits, count: 0 }
+    }
+
+    func insert(mutate self, key: string) {
+        for i in 0..BLOOM_HASH_COUNT {
+            const idx = bloom_hash(key, i) % BLOOM_BITS
+            self.bits[idx] = true
+        }
+        self.count += 1
+    }
+
+    func may_contain(self, key: string) -> bool {
+        for i in 0..BLOOM_HASH_COUNT {
+            const idx = bloom_hash(key, i) % BLOOM_BITS
+            if !self.bits[idx] { return false }
+        }
+        return true
+    }
+
+    func false_positive_rate(self) -> f64 {
+        let set_bits = 0
+        for b in self.bits {
+            if b { set_bits += 1 }
+        }
+        const ratio = (set_bits as f64) / (BLOOM_BITS as f64)
+        return ratio * ratio * ratio
+    }
+}
+
+func bloom_hash(key: string, seed: i32) -> usize {
+    let hash: i64 = 2166136261 + (seed as i64) * 16777619
+    for ch in key.chars() {
+        hash = hash ^ (ch.to_int() as i64)
+        hash = (hash * 16777619) % 4294967296
+    }
+    return (hash.abs()) as usize
+}
+
+func encode_bloom(filter: BloomFilter) -> string {
+    let out = ""
+    let first = true
+    for b in filter.bits {
+        if !first { out.push_str(",") }
+        first = false
+        out.push_str(if b: "1" else: "0")
+    }
+    return out
+}
+
+func decode_bloom(data: string) -> BloomFilter or SstError {
+    const parts = data.split(",").collect()
+    if parts.len() != BLOOM_BITS {
+        return Err(SstError.BloomFilterCorrupt(
+            "expected {BLOOM_BITS} bits, got {parts.len()}"
+        ))
+    }
+    let bits = Vec.new()
+    let count = 0
+    for p in parts {
+        const val = p.trim() == "1"
+        bits.push(val)
+        if val { count += 1 }
+    }
+    return Ok(BloomFilter { bits: bits, count: count })
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "bloom filter basic" {
+    let bloom = BloomFilter.new()
+    bloom.insert("hello")
+    bloom.insert("world")
+
+    assert bloom.may_contain("hello")
+    assert bloom.may_contain("world")
+}
+
+test "bloom filter encode/decode roundtrip" {
+    let bloom = BloomFilter.new()
+    bloom.insert("key1")
+    bloom.insert("key2")
+    bloom.insert("key3")
+
+    const encoded = encode_bloom(bloom)
+    const decoded = decode_bloom(encoded).unwrap()
+    assert decoded.may_contain("key1")
+    assert decoded.may_contain("key2")
+    assert decoded.may_contain("key3")
+}

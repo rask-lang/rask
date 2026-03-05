@@ -614,14 +614,12 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
             rask_desugar::desugar(&mut all_decls);
 
-            // Inject compilable stdlib functions (those with non-empty bodies)
+            // Resolve with stdlib decls in stdlib_mode (bypasses shadow checks)
             let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
-            if !stdlib_decls.is_empty() {
-                all_decls.extend(stdlib_decls);
-            }
 
-            match rask_resolve::resolve_package(&all_decls, &registry, root_id) {
+            match rask_resolve::resolve_package_with_stdlib(&all_decls, &registry, root_id, &stdlib_decls) {
                 Ok(resolved) => {
+                    // Typecheck user decls only (stdlib bodies aren't fully type-checkable)
                     match rask_types::typecheck(resolved, &all_decls) {
                         Ok(typed) => {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
@@ -631,17 +629,9 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                 }
                                 total_errors += ownership_result.errors.len();
                             } else {
+                                // Merge stdlib decls for mono/codegen
+                                all_decls.extend(stdlib_decls);
                                 rask_hidden_params::desugar_hidden_params(&mut all_decls);
-
-                                // Inject compiled stdlib functions + struct defs for mono/codegen
-                                let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
-                                let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
-                                if !stdlib_fn_decls.is_empty() {
-                                    all_decls.extend(stdlib_fn_decls);
-                                }
-                                if !stdlib_struct_defs.is_empty() {
-                                    all_decls.extend(stdlib_struct_defs);
-                                }
 
                                 match rask_mono::monomorphize(&typed, &all_decls) {
                                     Ok(mono) => {

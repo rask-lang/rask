@@ -1,0 +1,351 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Database — top-level orchestrator tying all layers together.
+//
+// Public API surface: Db, DbConfig, DbStats, BatchEntry, execute_batch,
+// print_stats. Internal fields use package-private types (Wal, Memtable,
+// BlockCache, etc.) so callers can't construct Db directly — they must
+// use Db.open().
+
+import fs
+
+struct DbConfig {
+    dir: string
+    wal_path: string
+    flush_threshold: usize
+}
+
+extend DbConfig {
+    func default_for(dir: string) -> DbConfig {
+        return DbConfig {
+            dir: dir,
+            wal_path: "{dir}/wal.log",
+            flush_threshold: MEMTABLE_FLUSH_THRESHOLD,
+        }
+    }
+}
+
+// Non-public fields force callers through Db.open()
+struct Db {
+    config: DbConfig
+    memtable: Memtable
+    wal: Wal
+    levels: Vec<Vec<SstMeta>>
+    cache: BlockCache
+    next_sst_id: i32
+    next_seq: i64
+    lookup: DefaultLookup
+}
+
+extend Db {
+    func open(config: DbConfig) -> Db or DbError {
+        try fs.create_dir_all(config.dir)
+            else |e| DbError.Io("cannot create directory: {config.dir}: {e}")
+
+        let wal = try Wal.open(config.wal_path)
+            else |e| DbError.Wal(e)
+        ensure wal.close() else |_| {}
+
+        // Recover memtable from WAL
+        let memtable = Memtable.new()
+        let max_seq: i64 = 0
+        const recovered = try recover_wal(config.wal_path)
+            else |e| DbError.Wal(e)
+
+        for kv in recovered {
+            if kv.seq > max_seq { max_seq = kv.seq }
+            memtable.put(own kv)
+        }
+
+        // Discover existing SSTables
+        let levels = Vec.new()
+        for _ in 0..MAX_LEVELS {
+            levels.push(Vec.new())
+        }
+        let next_sst_id = 0
+
+        const discovered = discover_sstables(config.dir)
+        for meta in discovered {
+            if meta.id >= next_sst_id { next_sst_id = meta.id + 1 }
+            if meta.level < MAX_LEVELS {
+                with levels[meta.level as usize] as level_ssts {
+                    level_ssts.push(meta)
+                }
+            }
+        }
+
+        return Ok(Db {
+            config: config,
+            memtable: memtable,
+            wal: wal,
+            levels: levels,
+            cache: BlockCache.new(),
+            next_sst_id: next_sst_id,
+            next_seq: max_seq + 1,
+            lookup: DefaultLookup {},
+        })
+    }
+
+    func put(mutate self, key: string, value: string) -> () or DbError {
+        const seq = self.next_seq
+        self.next_seq += 1
+
+        const kv = KeyValue.new(key, value, seq)
+
+        try self.wal.append(kv.clone())
+            else |e| DbError.Wal(e)
+
+        self.memtable.put(own kv)
+
+        if self.memtable.should_flush() {
+            try self.flush()
+        }
+
+        return Ok(())
+    }
+
+    func get(mutate self, key: string) -> string or DbError {
+        // Memtable first (newest data)
+        if self.memtable.get(key) is Some(kv) {
+            if kv.deleted {
+                return Err(DbError.KeyNotFound(key))
+            }
+            return Ok(kv.value)
+        }
+
+        // Search levels from newest to oldest
+        let level_idx: usize = 0
+        while level_idx < self.levels.len() {
+            const level = self.levels[level_idx].clone()
+            let sst_idx = level.len()
+            while sst_idx > 0 {
+                sst_idx -= 1
+                const meta = level[sst_idx].clone()
+
+                if key < meta.min_key || key > meta.max_key { continue }
+
+                const result = try self.lookup.lookup(meta, key, mutate self.cache)
+                    else |e| DbError.Sst(e)
+
+                if result is Some(kv) {
+                    if kv.deleted {
+                        return Err(DbError.KeyNotFound(key))
+                    }
+                    return Ok(kv.value)
+                }
+            }
+            level_idx += 1
+        }
+
+        return Err(DbError.KeyNotFound(key))
+    }
+
+    func delete(mutate self, key: string) -> () or DbError {
+        const seq = self.next_seq
+        self.next_seq += 1
+
+        const kv = KeyValue.tombstone(key, seq)
+
+        try self.wal.append(kv.clone())
+            else |e| DbError.Wal(e)
+
+        self.memtable.put(own kv)
+
+        if self.memtable.should_flush() {
+            try self.flush()
+        }
+
+        return Ok(())
+    }
+
+    func scan(mutate self, start: string, end: string) -> Vec<KeyValue> or DbError {
+        let all_entries = self.memtable.scan(start, end)
+
+        let level_idx: usize = 0
+        while level_idx < self.levels.len() {
+            const level = self.levels[level_idx].clone()
+            for meta in level {
+                if meta.max_key < start || meta.min_key > end { continue }
+
+                const entries = try read_all_sstable_entries(meta.path)
+                    else |e| DbError.Sst(e)
+
+                const in_range = entries
+                    .filter(|kv| kv.key >= start && kv.key <= end)
+                for kv in in_range {
+                    all_entries.push(kv)
+                }
+            }
+            level_idx += 1
+        }
+
+        // Deduplicate: sort by key then by seq desc, keep first per key
+        all_entries.sort_by(|a, b| {
+            if a.key != b.key {
+                return a.key.compare(b.key)
+            }
+            return b.seq.compare(a.seq)
+        })
+
+        let deduped = Vec.new()
+        let last_key = ""
+        for entry in all_entries {
+            if entry.key == last_key { continue }
+            last_key = entry.key.clone()
+            if !entry.deleted {
+                deduped.push(entry)
+            }
+        }
+
+        return Ok(deduped)
+    }
+
+    func flush(mutate self) -> () or DbError {
+        if self.memtable.is_empty() { return Ok(()) }
+
+        const id = self.next_sst_id
+        self.next_sst_id += 1
+
+        const old_memtable = self.memtable
+        self.memtable = Memtable.new()
+
+        const entries = old_memtable.take_sorted()
+        const meta = try write_sstable(id, 0, self.config.dir, entries)
+            else |e| DbError.Sst(e)
+
+        with self.levels[0] as l0 {
+            l0.push(meta)
+        }
+
+        try self.wal.truncate()
+            else |e| DbError.Wal(e)
+
+        if self.levels[0].len() > 4 {
+            try self.compact_level(0)
+        }
+
+        return Ok(())
+    }
+
+    func compact_level(mutate self, level: i32) -> () or DbError {
+        const level_idx = level as usize
+        if self.levels[level_idx].len() < 2 { return Ok(()) }
+        if level >= MAX_LEVELS - 1 { return Ok(()) }
+
+        const a = self.levels[level_idx][0].clone()
+        const b = self.levels[level_idx][1].clone()
+
+        const new_id = self.next_sst_id
+        self.next_sst_id += 1
+
+        const merged = try compact_sstables(a.clone(), b.clone(), new_id, level + 1, self.config.dir)
+            else |e| DbError.Compaction(e)
+
+        self.cache.invalidate(a.id)
+        self.cache.invalidate(b.id)
+
+        with self.levels[level_idx] as ssts {
+            ssts.remove_at(0)
+            ssts.remove_at(0)
+        }
+
+        const next_level_idx = (level + 1) as usize
+        with self.levels[next_level_idx] as ssts {
+            ssts.push(merged)
+        }
+
+        return Ok(())
+    }
+
+    func stats(self) -> DbStats {
+        let total_sst = 0
+        let level_counts = Vec.new()
+        for level in self.levels {
+            level_counts.push(level.len() as i32)
+            total_sst += level.len()
+        }
+
+        return DbStats {
+            memtable_entries: self.memtable.entries.len() as i32,
+            memtable_bytes: self.memtable.size_bytes,
+            sst_count: total_sst as i32,
+            level_counts: level_counts,
+            cache_entries: self.cache.count() as i32,
+            cache_accesses: self.cache.access_counter,
+            next_seq: self.next_seq,
+        }
+    }
+
+    func compact_all(mutate self) -> () or DbError {
+        try self.flush()
+        let level = 0
+        while level < MAX_LEVELS - 1 {
+            try self.compact_level(level)
+            level += 1
+        }
+        return Ok(())
+    }
+
+    func close(take self) -> () or DbError {
+        if !self.memtable.is_empty() {
+            const id = self.next_sst_id
+            const entries = self.memtable.take_sorted()
+            match write_sstable(id, 0, self.config.dir, entries) {
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        try self.wal.close()
+            else |e| DbError.Wal(e)
+        return Ok(())
+    }
+}
+
+// ─── Stats ──────────────────────────────────────────────────────────
+
+struct DbStats {
+    memtable_entries: i32
+    memtable_bytes: usize
+    sst_count: i32
+    level_counts: Vec<i32>
+    cache_entries: i32
+    cache_accesses: i64
+    next_seq: i64
+}
+
+func print_stats(stats: DbStats) {
+    println("Database statistics:")
+    println("  Memtable:  {stats.memtable_entries} entries, {stats.memtable_bytes} bytes")
+    println("  SSTables:  {stats.sst_count} total")
+
+    let level = 0
+    for count in stats.level_counts {
+        if count > 0 {
+            println("    L{level}: {count} files")
+        }
+        level += 1
+    }
+
+    println("  Cache:     {stats.cache_entries} blocks, {stats.cache_accesses} accesses")
+    println("  Sequence:  {stats.next_seq}")
+}
+
+// ─── Batch Operations ───────────────────────────────────────────────
+
+struct BatchEntry {
+    key: string
+    value: string
+    is_delete: bool
+}
+
+func execute_batch(mutate db: Db, entries: Vec<BatchEntry>) -> i32 or DbError {
+    let success_count = 0
+    for entry in entries {
+        if entry.is_delete {
+            try db.delete(entry.key)
+        } else {
+            try db.put(entry.key, entry.value)
+        }
+        success_count += 1
+    }
+    return Ok(success_count)
+}

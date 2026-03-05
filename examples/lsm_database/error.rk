@@ -1,0 +1,96 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Error types — one per layer, DbError wraps them all.
+//
+// All error types are public so callers can pattern match on specific
+// failure modes (e.g., retry on WalError.SyncFailure, report on
+// DbError.KeyNotFound).
+
+enum WalError {
+    CorruptEntry(i64, string)
+    WriteFailure(string)
+    SyncFailure(string)
+    RecoveryFailure(string)
+}
+
+extend WalError {
+    func message(self) -> string {
+        match self {
+            CorruptEntry(seq, msg) => return "WAL entry {seq} corrupt: {msg}",
+            WriteFailure(msg) => return "WAL write failed: {msg}",
+            SyncFailure(msg) => return "WAL sync failed: {msg}",
+            RecoveryFailure(msg) => return "WAL recovery failed: {msg}",
+        }
+    }
+}
+
+enum SstError {
+    BlockCorrupt(i32, string)
+    IndexCorrupt(string)
+    BloomFilterCorrupt(string)
+    ReadFailure(string)
+    WriteFailure(string)
+}
+
+extend SstError {
+    func message(self) -> string {
+        match self {
+            BlockCorrupt(id, msg) => return "SSTable block {id} corrupt: {msg}",
+            IndexCorrupt(msg) => return "SSTable index corrupt: {msg}",
+            BloomFilterCorrupt(msg) => return "bloom filter corrupt: {msg}",
+            ReadFailure(msg) => return "SSTable read failed: {msg}",
+            WriteFailure(msg) => return "SSTable write failed: {msg}",
+        }
+    }
+}
+
+enum CompactionError {
+    MergeConflict(string)
+    OutputFailure(string)
+    LevelFull(i32)
+}
+
+extend CompactionError {
+    func message(self) -> string {
+        match self {
+            MergeConflict(msg) => return "merge conflict: {msg}",
+            OutputFailure(msg) => return "compaction output failed: {msg}",
+            LevelFull(level) => return "level {level} is full",
+        }
+    }
+}
+
+enum CacheError {
+    Eviction(string)
+    CapacityExceeded(usize, usize)
+}
+
+extend CacheError {
+    func message(self) -> string {
+        match self {
+            Eviction(msg) => return "cache eviction failed: {msg}",
+            CapacityExceeded(used, cap) => return "cache full: {used}/{cap} bytes",
+        }
+    }
+}
+
+enum DbError {
+    Wal(WalError)
+    Sst(SstError)
+    Compaction(CompactionError)
+    Cache(CacheError)
+    Io(string)
+    KeyNotFound(string)
+}
+
+extend DbError {
+    func message(self) -> string {
+        match self {
+            Wal(e) => return e.message(),
+            Sst(e) => return e.message(),
+            Compaction(e) => return e.message(),
+            Cache(e) => return e.message(),
+            Io(msg) => return "I/O error: {msg}",
+            KeyNotFound(key) => return "key not found: {key}",
+        }
+    }
+}

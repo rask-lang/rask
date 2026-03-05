@@ -297,6 +297,18 @@ impl Resolver {
         registry: &crate::PackageRegistry,
         current_package: crate::PackageId,
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_package_with_stdlib(decls, registry, current_package, &[])
+    }
+
+    /// Resolve a package with separate stdlib declarations processed in
+    /// stdlib_mode (bypasses builtin-shadowing checks). Stdlib decls are
+    /// collected and resolved first, then user decls on top.
+    pub fn resolve_package_with_stdlib(
+        decls: &[Decl],
+        registry: &crate::PackageRegistry,
+        current_package: crate::PackageId,
+        stdlib_decls: &[Decl],
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
 
         resolver.current_package = Some(current_package);
@@ -312,7 +324,22 @@ impl Resolver {
             }
         }
 
+        // Collect stdlib declarations in stdlib_mode (skip shadow checks)
+        if !stdlib_decls.is_empty() {
+            resolver.stdlib_mode = true;
+            resolver.collect_declarations(stdlib_decls);
+            resolver.stdlib_mode = false;
+        }
+
+        // Collect and resolve user declarations
         resolver.collect_declarations(decls);
+
+        // Resolve bodies for both stdlib and user decls
+        if !stdlib_decls.is_empty() {
+            resolver.stdlib_mode = true;
+            resolver.resolve_bodies(stdlib_decls);
+            resolver.stdlib_mode = false;
+        }
         resolver.resolve_bodies(decls);
 
         if resolver.errors.is_empty() {

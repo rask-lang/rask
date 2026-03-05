@@ -237,6 +237,22 @@ RaskVec *rask_map_values(const RaskMap *m) {
     return v;
 }
 
+// entries: return Vec of (key, value) pairs for iteration.
+// Each entry is a 16-byte struct { key: i64, value: i64 }.
+RaskVec *rask_map_entries(const RaskMap *m) {
+    RaskVec *v = rask_vec_new(16); // 16 bytes per (key, value) pair
+    if (!m) return v;
+    for (int64_t i = 0; i < m->cap; i++) {
+        if (m->states[i] == MAP_OCCUPIED) {
+            struct { int64_t key; int64_t val; } pair;
+            memcpy(&pair.key, m->keys + i * m->key_size, m->key_size < 8 ? m->key_size : 8);
+            memcpy(&pair.val, m->vals + i * m->val_size, m->val_size < 8 ? m->val_size : 8);
+            rask_vec_push(v, &pair);
+        }
+    }
+    return v;
+}
+
 RaskMap *rask_map_clone(const RaskMap *m) {
     if (!m) return rask_map_new(8, 8);
     RaskMap *dst = rask_map_new_custom(m->key_size, m->val_size, m->hash_fn, m->eq_fn);

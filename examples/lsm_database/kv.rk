@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// KeyValue — core record type with tab-delimited encoding.
+//
+// Public because scan() returns Vec<KeyValue> to callers.
+
+struct KeyValue {
+    key: string
+    value: string
+    seq: i64
+    deleted: bool
+}
+
+extend KeyValue {
+    func new(key: string, value: string, seq: i64) -> KeyValue {
+        return KeyValue { key: key, value: value, seq: seq, deleted: false }
+    }
+
+    func tombstone(key: string, seq: i64) -> KeyValue {
+        return KeyValue { key: key, value: "", seq: seq, deleted: true }
+    }
+}
+
+// Encode a single KV pair as "key\tvalue\tseq\tdeleted\n"
+func encode_kv(kv: KeyValue) -> string {
+    const del = if kv.deleted: "1" else: "0"
+    return "{kv.key}\t{kv.value}\t{kv.seq}\t{del}\n"
+}
+
+func decode_kv(line: string) -> KeyValue or WalError {
+    const parts = line.split("\t").collect()
+    if parts.len() < 4 {
+        return Err(WalError.CorruptEntry(0, "expected 4 tab-separated fields"))
+    }
+    const seq = parts[2].parse_int() is Ok(v) else {
+        return Err(WalError.CorruptEntry(0, "invalid sequence number: {parts[2]}"))
+    }
+    const deleted = parts[3].trim() == "1"
+    return Ok(KeyValue {
+        key: parts[0].to_string(),
+        value: parts[1].to_string(),
+        seq: seq as i64,
+        deleted: deleted,
+    })
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "kv encode/decode roundtrip" {
+    const kv = KeyValue.new("test_key", "test_value", 42)
+    const encoded = encode_kv(kv)
+    const decoded = decode_kv(encoded).unwrap()
+
+    assert decoded.key == "test_key"
+    assert decoded.value == "test_value"
+    assert decoded.seq == 42
+    assert !decoded.deleted
+}
+
+test "kv tombstone encode/decode" {
+    const kv = KeyValue.tombstone("deleted_key", 99)
+    const encoded = encode_kv(kv)
+    const decoded = decode_kv(encoded).unwrap()
+
+    assert decoded.key == "deleted_key"
+    assert decoded.deleted
+    assert decoded.seq == 99
+}

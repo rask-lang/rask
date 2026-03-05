@@ -1,0 +1,302 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// SSTable — on-disk sorted string table.
+//
+// Format:
+//   [bloom filter line]
+//   [index: key\toffset per block]
+//   ---
+//   [data blocks: sorted KV pairs separated by ===]
+//
+// Each block holds BLOCK_SIZE entries. The index maps first-key to block
+// offset for binary search during reads.
+
+import fs
+
+const BLOCK_SIZE: i32 = 64
+
+struct SstMeta {
+    id: i32
+    level: i32
+    path: string
+    min_key: string
+    max_key: string
+    entry_count: i32
+    bloom: BloomFilter
+}
+
+struct BlockIndex {
+    first_key: string
+    offset: i32
+    count: i32
+}
+
+// ─── Write ──────────────────────────────────────────────────────────
+
+func write_sstable(
+    id: i32,
+    level: i32,
+    dir: string,
+    entries: Vec<KeyValue>,
+) -> SstMeta or SstError {
+    if entries.is_empty() {
+        return Err(SstError.WriteFailure("cannot write empty SSTable"))
+    }
+
+    const path = "{dir}/L{level}_{id}.sst"
+
+    let bloom = BloomFilter.new()
+    for entry in entries {
+        bloom.insert(entry.key)
+    }
+
+    let index = Vec.new()
+    let blocks = Vec.new()
+    let block_entries = Vec.new()
+    let block_id = 0
+
+    for entry in entries {
+        if block_entries.len() >= BLOCK_SIZE {
+            index.push(BlockIndex {
+                first_key: block_entries[0].key.clone(),
+                offset: block_id,
+                count: block_entries.len() as i32,
+            })
+            blocks.push(block_entries)
+            block_entries = Vec.new()
+            block_id += 1
+        }
+        block_entries.push(entry)
+    }
+
+    if !block_entries.is_empty() {
+        index.push(BlockIndex {
+            first_key: block_entries[0].key.clone(),
+            offset: block_id,
+            count: block_entries.len() as i32,
+        })
+        blocks.push(block_entries)
+    }
+
+    let out = "BLOOM:{encode_bloom(bloom)}\n"
+
+    for idx_entry in index {
+        out.push_str("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
+    }
+
+    out.push_str("---\n")
+
+    for block in blocks {
+        for kv in block {
+            out.push_str(encode_kv(kv))
+        }
+        out.push_str("===\n")
+    }
+
+    try fs.write_file(path, out)
+        else |e| SstError.WriteFailure("cannot write {path}: {e}")
+
+    const min_key = entries[0].key.clone()
+    const max_key = entries[entries.len() - 1].key.clone()
+
+    return Ok(SstMeta {
+        id: id,
+        level: level,
+        path: path,
+        min_key: min_key,
+        max_key: max_key,
+        entry_count: entries.len() as i32,
+        bloom: bloom,
+    })
+}
+
+// ─── Read ───────────────────────────────────────────────────────────
+
+func read_sstable_block(path: string, block_offset: i32) -> Vec<KeyValue> or SstError {
+    const content = try fs.read_file(path)
+        else |e| SstError.ReadFailure("cannot read {path}: {e}")
+
+    const sep_pos = content.find("---\n") is Some(pos) else {
+        return Err(SstError.IndexCorrupt("missing data separator in {path}"))
+    }
+    const data = content[sep_pos + 4..].to_string()
+
+    let current_block = 0
+    let block_lines = Vec.new()
+
+    for line in data.lines() {
+        const trimmed = line.trim()
+        if trimmed == "===" {
+            if current_block == block_offset {
+                return parse_block_lines(block_lines, block_offset)
+            }
+            current_block += 1
+            block_lines = Vec.new()
+            continue
+        }
+        if trimmed.is_empty() { continue }
+        block_lines.push(trimmed.to_string())
+    }
+
+    if current_block == block_offset && !block_lines.is_empty() {
+        return parse_block_lines(block_lines, block_offset)
+    }
+
+    return Err(SstError.BlockCorrupt(block_offset, "block not found in {path}"))
+}
+
+func parse_block_lines(lines: Vec<string>, block_id: i32) -> Vec<KeyValue> or SstError {
+    let entries = Vec.new()
+    for line in lines {
+        const kv = decode_kv(line) is Ok(entry) else {
+            return Err(SstError.BlockCorrupt(block_id, "corrupt entry"))
+        }
+        entries.push(kv)
+    }
+    return Ok(entries)
+}
+
+func read_sstable_index(path: string) -> Vec<BlockIndex> or SstError {
+    const content = try fs.read_file(path)
+        else |e| SstError.ReadFailure("cannot read index: {path}: {e}")
+
+    let index = Vec.new()
+    for line in content.lines() {
+        const trimmed = line.trim()
+        if trimmed == "---" { break }
+        if !trimmed.starts_with("INDEX:") { continue }
+
+        const entry = trimmed[6..].to_string()
+        const parts = entry.split("\t").collect()
+        if parts.len() < 3 { continue }
+
+        const offset = parts[1].trim().parse_int() is Ok(v) else { continue }
+        const count = parts[2].trim().parse_int() is Ok(v) else { continue }
+
+        index.push(BlockIndex {
+            first_key: parts[0].to_string(),
+            offset: offset as i32,
+            count: count as i32,
+        })
+    }
+    return Ok(index)
+}
+
+func read_sstable_bloom(path: string) -> BloomFilter or SstError {
+    const content = try fs.read_file(path)
+        else |e| SstError.ReadFailure("cannot read bloom: {path}: {e}")
+
+    for line in content.lines() {
+        const trimmed = line.trim()
+        if trimmed.starts_with("BLOOM:") {
+            const data = trimmed[6..].to_string()
+            return decode_bloom(data)
+        }
+        if trimmed == "---" { break }
+    }
+    return Err(SstError.BloomFilterCorrupt("no bloom filter in {path}"))
+}
+
+func read_all_sstable_entries(path: string) -> Vec<KeyValue> or SstError {
+    const content = try fs.read_file(path)
+        else |e| SstError.ReadFailure("cannot read {path}: {e}")
+
+    const sep_pos = content.find("---\n") is Some(pos) else {
+        return Err(SstError.IndexCorrupt("missing data separator in {path}"))
+    }
+    const data = content[sep_pos + 4..].to_string()
+
+    let entries = Vec.new()
+    for line in data.lines() {
+        const trimmed = line.trim()
+        if trimmed.is_empty() { continue }
+        if trimmed == "===" { continue }
+        const kv = decode_kv(trimmed) is Ok(entry) else { continue }
+        entries.push(kv)
+    }
+    return Ok(entries)
+}
+
+// ─── Index Lookup ───────────────────────────────────────────────────
+
+func find_block_for_key(index: Vec<BlockIndex>, key: string) -> i32? {
+    let lo: usize = 0
+    let hi: usize = index.len()
+    let result: i32? = None
+
+    while lo < hi {
+        const mid = lo + (hi - lo) / 2
+        if index[mid].first_key <= key {
+            result = Some(index[mid].offset)
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return result
+}
+
+// ─── Discovery ──────────────────────────────────────────────────────
+
+func discover_sstables(dir: string) -> Vec<SstMeta> {
+    let metas = Vec.new()
+
+    const files = fs.list_dir(dir) is Ok(f) else { return metas }
+
+    for file in files {
+        if !file.ends_with(".sst") { continue }
+
+        const stem = file[0..file.len() - 4].to_string()
+        if !stem.starts_with("L") { continue }
+
+        const underscore = stem.find("_") is Some(pos) else { continue }
+        const level = stem[1..underscore].parse_int() is Ok(v) else { continue }
+        const id = stem[underscore + 1..].parse_int() is Ok(v) else { continue }
+
+        const path = "{dir}/{file}"
+
+        const bloom = read_sstable_bloom(path) is Ok(b) else { continue }
+        const index = read_sstable_index(path) is Ok(idx) else { continue }
+        if index.is_empty() { continue }
+
+        const min_key = index[0].first_key.clone()
+
+        const last_block_offset = index[index.len() - 1].offset
+        const last_entries = read_sstable_block(path, last_block_offset) is Ok(e) else {
+            continue
+        }
+        if last_entries.is_empty() { continue }
+        const max_key = last_entries[last_entries.len() - 1].key.clone()
+
+        let entry_count = 0
+        for idx_entry in index {
+            entry_count += idx_entry.count
+        }
+
+        metas.push(SstMeta {
+            id: id as i32,
+            level: level as i32,
+            path: path,
+            min_key: min_key,
+            max_key: max_key,
+            entry_count: entry_count,
+            bloom: bloom,
+        })
+    }
+
+    return metas
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "find block for key" {
+    const index = Vec.from([
+        BlockIndex { first_key: "aaa", offset: 0, count: 64 },
+        BlockIndex { first_key: "mmm", offset: 1, count: 64 },
+        BlockIndex { first_key: "zzz", offset: 2, count: 32 },
+    ])
+
+    assert find_block_for_key(index, "abc") == Some(0)
+    assert find_block_for_key(index, "nnn") == Some(1)
+    assert find_block_for_key(index, "zzz") == Some(2)
+    assert find_block_for_key(index, "000") is None
+}

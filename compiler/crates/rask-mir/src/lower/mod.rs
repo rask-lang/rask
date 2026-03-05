@@ -685,6 +685,23 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
+        // Inject module-level constants as locals so functions can reference them
+        for d in all_decls {
+            if let DeclKind::Const(c) = &d.kind {
+                if lowerer.locals.contains_key(&c.name) {
+                    continue;
+                }
+                if let Some((op, ty)) = lowerer.try_eval_const_init(&c.init, c.ty.as_deref()) {
+                    let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
+                    lowerer.builder.push_stmt(MirStmt::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Use(op),
+                    });
+                    lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                }
+            }
+        }
+
         // Lower function body
         for stmt in &fn_decl.body {
             lowerer.lower_stmt(stmt)?;
@@ -710,6 +727,41 @@ impl<'a> MirLowerer<'a> {
         }
         result.extend(lowerer.synthesized_functions);
         Ok(result)
+    }
+
+    /// Evaluate a module-level constant initializer to a MIR constant.
+    /// Only handles simple literals; complex expressions fall through.
+    fn try_eval_const_init(&self, expr: &Expr, ty_hint: Option<&str>) -> Option<(MirOperand, MirType)> {
+        match &expr.kind {
+            ExprKind::Int(val, suffix) => {
+                let ty = if let Some(hint) = ty_hint {
+                    self.ctx.resolve_type_str(hint)
+                } else {
+                    match suffix {
+                        Some(rask_ast::token::IntSuffix::I8) => MirType::I8,
+                        Some(rask_ast::token::IntSuffix::I16) => MirType::I16,
+                        Some(rask_ast::token::IntSuffix::I32) => MirType::I32,
+                        Some(rask_ast::token::IntSuffix::U8) => MirType::U8,
+                        Some(rask_ast::token::IntSuffix::U16) => MirType::U16,
+                        Some(rask_ast::token::IntSuffix::U32) => MirType::U32,
+                        Some(rask_ast::token::IntSuffix::U64) => MirType::U64,
+                        _ => MirType::I64,
+                    }
+                };
+                Some((MirOperand::Constant(MirConst::Int(*val)), ty))
+            }
+            ExprKind::Float(val, _) => {
+                let ty = if let Some(hint) = ty_hint {
+                    self.ctx.resolve_type_str(hint)
+                } else {
+                    MirType::F64
+                };
+                Some((MirOperand::Constant(MirConst::Float(*val)), ty))
+            }
+            ExprKind::String(s) => Some((MirOperand::Constant(MirConst::String(s.clone())), MirType::String)),
+            ExprKind::Bool(b) => Some((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
+            _ => None,
+        }
     }
 
     /// Emit a SourceLocation statement for the given span (if line_map is available).
