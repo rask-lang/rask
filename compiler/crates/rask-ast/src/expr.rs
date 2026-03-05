@@ -238,6 +238,8 @@ pub struct WithBinding {
 pub struct ClosureParam {
     pub name: String,
     pub ty: Option<String>,
+    pub is_mutate: bool,
+    pub is_take: bool,
 }
 
 /// Binary operators.

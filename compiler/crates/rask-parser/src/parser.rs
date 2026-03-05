@@ -2943,13 +2943,15 @@ impl Parser {
 
         let mut params = Vec::new();
         while !self.check(&TokenKind::Pipe) && !self.at_end() {
+            let is_take = self.match_token(&TokenKind::Take);
+            let is_mutate = if !is_take { self.match_token(&TokenKind::MutateKw) } else { false };
             let name = self.expect_ident()?;
             let ty = if self.match_token(&TokenKind::Colon) {
                 Some(self.parse_type_name()?)
             } else {
                 None
             };
-            params.push(ClosureParam { name, ty });
+            params.push(ClosureParam { name, ty, is_mutate, is_take });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 
