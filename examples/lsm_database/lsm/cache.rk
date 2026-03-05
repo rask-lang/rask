@@ -65,32 +65,33 @@ extend BlockCache {
 
     func evict_one(mutate self) {
         let min_access: i64 = i64.MAX
-        let victim_key = ""
-        let victim_handle: Handle<CacheBlock>? = None
+        let victim: Handle<CacheBlock>? = None
 
         for handle in self.blocks {
-            with self.blocks[handle] as block {
-                if block.access_count < min_access {
-                    min_access = block.access_count
-                    victim_key = BlockCache.cache_key(block.sst_id, block.block_id)
-                    victim_handle = Some(handle)
-                }
+            if self.blocks[handle].access_count < min_access {
+                min_access = self.blocks[handle].access_count
+                victim = Some(handle)
             }
         }
 
-        if victim_handle is Some(h) {
+        if victim is Some(h) {
+            const key = with self.blocks[h] as block {
+                BlockCache.cache_key(block.sst_id, block.block_id)
+            }
             self.blocks.remove(h)
-            self.by_key.remove(victim_key)
+            self.by_key.remove(key)
         }
     }
 
     func invalidate(mutate self, sst_id: i32) {
         let to_remove = Vec.new()
         for handle in self.blocks {
-            with self.blocks[handle] as block {
-                if block.sst_id == sst_id {
-                    to_remove.push((handle, BlockCache.cache_key(block.sst_id, block.block_id)))
-                }
+            if self.blocks[handle].sst_id == sst_id {
+                const key = BlockCache.cache_key(
+                    self.blocks[handle].sst_id,
+                    self.blocks[handle].block_id,
+                )
+                to_remove.push((handle, key))
             }
         }
         for (handle, key) in to_remove {
