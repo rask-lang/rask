@@ -2,7 +2,7 @@
 // Markdown-to-HTML Renderer — Stress Test Application
 //
 // Converts a subset of CommonMark to HTML. Exercises recursive ASTs via
-// Owned<T>, string_builder for output assembly, trait composition (Renderable),
+// Owned<T>, string for output assembly, trait composition (Renderable),
 // user-defined generics, closures, iterator adapters, and layered error types.
 //
 // Complements package_manager.rk: that stress test covers Pool/Handle graphs
@@ -15,13 +15,13 @@ import std
 
 // ─── Error Types ────────────────────────────────────────────────────
 
-enum ParseError {
+enum MarkdownError {
     UnexpectedEnd(string)
     InvalidNesting(string)
     InvalidLink(i32, string)
 }
 
-extend ParseError {
+extend MarkdownError {
     func message(self) -> string {
         match self {
             UnexpectedEnd(ctx) => return "unexpected end of input: {ctx}",
@@ -32,7 +32,7 @@ extend ParseError {
 }
 
 enum RenderError {
-    Parse(ParseError)
+    Parse(MarkdownError)
     Io(string)
 }
 
@@ -80,18 +80,18 @@ enum Block {
 // ─── HTML Utilities ─────────────────────────────────────────────────
 
 func html_escape(input: string) -> string {
-    const builder = string_builder.new()
+    let builder = string.new()
     for ch in input.chars() {
         match ch {
-            '&' => builder.append("&amp;"),
-            '<' => builder.append("&lt;"),
-            '>' => builder.append("&gt;"),
-            '"' => builder.append("&quot;"),
-            '\'' => builder.append("&#39;"),
-            _ => builder.append_char(ch),
+            '&' => builder.push_str("&amp;"),
+            '<' => builder.push_str("&lt;"),
+            '>' => builder.push_str("&gt;"),
+            '"' => builder.push_str("&quot;"),
+            '\'' => builder.push_str("&#39;"),
+            _ => builder.push_char(ch),
         }
     }
-    return builder.build()
+    return builder
 }
 
 func count_leading(line: string, ch: char) -> i32 {
@@ -126,7 +126,7 @@ func is_hr_line(line: string) -> bool {
     return count >= 3
 }
 
-func is_ordered_list_start(line: string) -> i32? {
+func ordered_list_start(line: string) -> i32? {
     // Returns start number if line matches "N. " pattern, else None
     const dot_pos = line.find(".") is Some(p) else { return None }
     if dot_pos == 0 { return None }
@@ -266,25 +266,24 @@ func is_reference_def(line: string) -> bool {
 // Character-by-character parser using Scanner. Handles nested bold/italic
 // via recursive descent. This is the most string-intensive part.
 
-func parse_inline(text: string) -> Vec<Inline> or ParseError {
+func parse_inline(text: string) -> Vec<Inline> or MarkdownError {
     let scanner = Scanner.new(text)
     return parse_inline_until(mutate scanner, "")
+}
+
+func flush_text(mutate result: Vec<Inline>, mutate text_buf: string) {
+    if !text_buf.is_empty() {
+        result.push(Inline.Text(text_buf.clone()))
+        text_buf = string.new()
+    }
 }
 
 func parse_inline_until(
     mutate scanner: Scanner,
     stop: string,
-) -> Vec<Inline> or ParseError {
+) -> Vec<Inline> or MarkdownError {
     let result = Vec.new()
-    let text_buf = string_builder.new()
-
-    const flush_text = |mutate result: Vec<Inline>, mutate text_buf: string_builder| {
-        const built = text_buf.build()
-        if !built.is_empty() {
-            result.push(Inline.Text(built))
-            text_buf = string_builder.new()
-        }
-    }
+    let text_buf = string.new()
 
     while !scanner.is_done() {
         // Check for stop sequence
@@ -299,7 +298,7 @@ func parse_inline_until(
             scanner.advance()
             if scanner.peek() is Some(c) {
                 scanner.advance()
-                text_buf.append_char(c)
+                text_buf.push_char(c)
                 continue
             }
         }
@@ -328,7 +327,7 @@ func parse_inline_until(
             scanner.advance()
             const code = scanner.scan_until_char('`') is Some(s) else {
                 // No closing backtick — treat as literal
-                text_buf.append_char('`')
+                text_buf.push_char('`')
                 continue
             }
             result.push(Inline.Code(code))
@@ -340,19 +339,19 @@ func parse_inline_until(
             flush_text(mutate result, mutate text_buf)
             scanner.consume("![")
             const alt = scanner.scan_until_char(']') is Some(s) else {
-                text_buf.append("![")
+                text_buf.push_str("![")
                 continue
             }
             if !scanner.consume("(") {
-                text_buf.append("![")
-                text_buf.append(alt)
-                text_buf.append_char(']')
+                text_buf.push_str("![")
+                text_buf.push_str(alt)
+                text_buf.push_char(']')
                 continue
             }
             const url = scanner.scan_until_char(')') is Some(s) else {
-                text_buf.append("![")
-                text_buf.append(alt)
-                text_buf.append("](")
+                text_buf.push_str("![")
+                text_buf.push_str(alt)
+                text_buf.push_str("](")
                 continue
             }
             result.push(Inline.Image(url, alt))
@@ -367,7 +366,7 @@ func parse_inline_until(
             // Save position to backtrack on failure
             const link_start = scanner.pos
             const text_content = scanner.scan_until_char(']') is Some(s) else {
-                text_buf.append_char('[')
+                text_buf.push_char('[')
                 continue
             }
 
@@ -375,9 +374,9 @@ func parse_inline_until(
                 // Inline link: [text](url)
                 scanner.advance()
                 const url = scanner.scan_until_char(')') is Some(s) else {
-                    text_buf.append_char('[')
-                    text_buf.append(text_content)
-                    text_buf.append("](")
+                    text_buf.push_char('[')
+                    text_buf.push_str(text_content)
+                    text_buf.push_str("](")
                     continue
                 }
                 const link_inlines = try parse_inline(text_content)
@@ -386,18 +385,18 @@ func parse_inline_until(
                 // Reference link: [text][id]
                 scanner.advance()
                 const ref_id = scanner.scan_until_char(']') is Some(s) else {
-                    text_buf.append_char('[')
-                    text_buf.append(text_content)
-                    text_buf.append("][")
+                    text_buf.push_char('[')
+                    text_buf.push_str(text_content)
+                    text_buf.push_str("][")
                     continue
                 }
                 const link_inlines = try parse_inline(text_content)
                 result.push(Inline.RefLink(ref_id.to_lowercase(), link_inlines))
             } else {
                 // Not a link — emit as plain text
-                text_buf.append_char('[')
-                text_buf.append(text_content)
-                text_buf.append_char(']')
+                text_buf.push_char('[')
+                text_buf.push_str(text_content)
+                text_buf.push_char(']')
             }
             continue
         }
@@ -412,7 +411,7 @@ func parse_inline_until(
 
         // Regular character
         const ch = scanner.advance() is Some else { break }
-        text_buf.append_char(ch)
+        text_buf.push_char(ch)
     }
 
     flush_text(mutate result, mutate text_buf)
@@ -420,7 +419,7 @@ func parse_inline_until(
     // If we expected a stop sequence but hit end of input, that's OK for
     // top-level parsing (stop == ""), but an error for nested delimiters.
     if !stop.is_empty() {
-        return Err(ParseError.UnexpectedEnd("expected closing '{stop}'"))
+        return Err(MarkdownError.UnexpectedEnd("expected closing '{stop}'"))
     }
 
     return Ok(result)
@@ -430,7 +429,7 @@ func parse_inline_until(
 //
 // Line-by-line state machine that produces Block AST nodes.
 
-func parse_blocks(input: string) -> Vec<Block> or ParseError {
+func parse_blocks(input: string) -> Vec<Block> or MarkdownError {
     const lines = input.lines().collect()
     let blocks = Vec.new()
     let i = 0
@@ -477,7 +476,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
         // Fenced code block: ```
         if trimmed.starts_with("```") {
             const lang = trimmed[3..].trim().to_string()
-            const code = string_builder.new()
+            let code = string.new()
             let first_code_line = true
             i += 1
             while i < line_count {
@@ -486,13 +485,13 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
                     break
                 }
                 if !first_code_line {
-                    code.append("\n")
+                    code.push_str("\n")
                 }
                 first_code_line = false
-                code.append(lines[i])
+                code.push_str(lines[i])
                 i += 1
             }
-            blocks.push(Block.CodeBlock(lang, code.build()))
+            blocks.push(Block.CodeBlock(lang, code))
             continue
         }
 
@@ -563,7 +562,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
         }
 
         // Ordered list: 1. item
-        if is_ordered_list_start(trimmed) is Some(start_num) {
+        if ordered_list_start(trimmed) is Some(start_num) {
             let items = Vec.new()
             while i < line_count {
                 const il = lines[i]
@@ -574,7 +573,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
                     continue
                 }
 
-                if is_ordered_list_start(it) is Some {
+                if ordered_list_start(it) is Some {
                     const dot_pos = it.find(".") is Some(pos) else { continue }
                     const item_text = it[dot_pos + 2..].to_string()
                     const item_inlines = try parse_inline(item_text)
@@ -612,7 +611,7 @@ func parse_blocks(input: string) -> Vec<Block> or ParseError {
             if pt.starts_with(">") { break }
             if is_hr_line(pt) { break }
             if pt.starts_with("- ") || pt.starts_with("* ") { break }
-            if is_ordered_list_start(pt) is Some { break }
+            if ordered_list_start(pt) is Some { break }
             para_lines.push(pl)
             i += 1
         }
@@ -634,10 +633,10 @@ func join_lines(lines: Vec<string>) -> string {
 // ─── Renderer ───────────────────────────────────────────────────────
 //
 // Trait-based rendering: both Block and Inline implement Renderable.
-// Uses string_builder throughout for efficient HTML assembly.
+// Uses string throughout for efficient HTML assembly.
 
 trait Renderable {
-    func render(self, mutate builder: string_builder, refs: Map<string, string>)
+    func render(self, mutate builder: string, refs: Map<string, string>)
 }
 
 // NOTE: `children` uses default parameter mode (borrow), not `take`.
@@ -646,7 +645,7 @@ trait Renderable {
 // value (read-only) mode over the borrowed Vec.
 func render_children<T: Renderable>(
     children: Vec<T>,
-    mutate builder: string_builder,
+    mutate builder: string,
     refs: Map<string, string>,
 ) {
     for child in children {
@@ -655,118 +654,118 @@ func render_children<T: Renderable>(
 }
 
 extend Inline with Renderable {
-    func render(self, mutate builder: string_builder, refs: Map<string, string>) {
+    func render(self, mutate builder: string, refs: Map<string, string>) {
         match self {
-            Text(s) => builder.append(html_escape(s)),
+            Text(s) => builder.push_str(html_escape(s)),
             Bold(children) => {
-                builder.append("<strong>")
+                builder.push_str("<strong>")
                 render_children(children, mutate builder, refs)
-                builder.append("</strong>")
+                builder.push_str("</strong>")
             }
             Italic(children) => {
-                builder.append("<em>")
+                builder.push_str("<em>")
                 render_children(children, mutate builder, refs)
-                builder.append("</em>")
+                builder.push_str("</em>")
             }
             Code(s) => {
-                builder.append("<code>")
-                builder.append(html_escape(s))
-                builder.append("</code>")
+                builder.push_str("<code>")
+                builder.push_str(html_escape(s))
+                builder.push_str("</code>")
             }
             Link(url, children) => {
-                builder.append("<a href=\"")
-                builder.append(html_escape(url))
-                builder.append("\">")
+                builder.push_str("<a href=\"")
+                builder.push_str(html_escape(url))
+                builder.push_str("\">")
                 render_children(children, mutate builder, refs)
-                builder.append("</a>")
+                builder.push_str("</a>")
             }
             Image(url, alt) => {
-                builder.append("<img src=\"")
-                builder.append(html_escape(url))
-                builder.append("\" alt=\"")
-                builder.append(html_escape(alt))
-                builder.append("\">")
+                builder.push_str("<img src=\"")
+                builder.push_str(html_escape(url))
+                builder.push_str("\" alt=\"")
+                builder.push_str(html_escape(alt))
+                builder.push_str("\">")
             }
             RefLink(id, children) => {
                 const url = refs.get(id) ?? ""
                 if !url.is_empty() {
-                    builder.append("<a href=\"")
-                    builder.append(html_escape(url))
-                    builder.append("\">")
+                    builder.push_str("<a href=\"")
+                    builder.push_str(html_escape(url))
+                    builder.push_str("\">")
                     render_children(children, mutate builder, refs)
-                    builder.append("</a>")
+                    builder.push_str("</a>")
                 } else {
                     // Unresolved ref — emit as plain text
-                    builder.append("[")
+                    builder.push_str("[")
                     render_children(children, mutate builder, refs)
-                    builder.append("]")
+                    builder.push_str("]")
                 }
             }
-            LineBreak => builder.append("<br>\n"),
+            LineBreak => builder.push_str("<br>\n"),
         }
     }
 }
 
 func render_list_item(
     item: ListItem,
-    mutate builder: string_builder,
+    mutate builder: string,
     refs: Map<string, string>,
 ) {
-    builder.append("<li>")
+    builder.push_str("<li>")
     render_children(item.content, mutate builder, refs)
     if !item.children.is_empty() {
-        builder.append("\n")
+        builder.push_str("\n")
         render_children(item.children, mutate builder, refs)
     }
-    builder.append("</li>\n")
+    builder.push_str("</li>\n")
 }
 
 extend Block with Renderable {
-    func render(self, mutate builder: string_builder, refs: Map<string, string>) {
+    func render(self, mutate builder: string, refs: Map<string, string>) {
         match self {
             Heading(level, inlines) => {
-                builder.append("<h{level}>")
+                builder.push_str("<h{level}>")
                 render_children(inlines, mutate builder, refs)
-                builder.append("</h{level}>\n")
+                builder.push_str("</h{level}>\n")
             }
             Paragraph(inlines) => {
-                builder.append("<p>")
+                builder.push_str("<p>")
                 render_children(inlines, mutate builder, refs)
-                builder.append("</p>\n")
+                builder.push_str("</p>\n")
             }
             CodeBlock(lang, code) => {
                 if !lang.is_empty() {
-                    builder.append("<pre><code class=\"language-{lang}\">")
+                    builder.push_str("<pre><code class=\"language-{lang}\">")
                 } else {
-                    builder.append("<pre><code>")
+                    builder.push_str("<pre><code>")
                 }
-                builder.append(html_escape(code))
-                builder.append("</code></pre>\n")
+                builder.push_str(html_escape(code))
+                builder.push_str("</code></pre>\n")
             }
             Blockquote(blocks) => {
-                builder.append("<blockquote>\n")
+                builder.push_str("<blockquote>\n")
                 render_children(blocks, mutate builder, refs)
-                builder.append("</blockquote>\n")
+                builder.push_str("</blockquote>\n")
             }
             UnorderedList(items) => {
-                builder.append("<ul>\n")
+                builder.push_str("<ul>\n")
                 for item in items {
                     render_list_item(item, mutate builder, refs)
                 }
-                builder.append("</ul>\n")
+                builder.push_str("</ul>\n")
             }
             OrderedList(start, items) => {
                 if start != 1 {
-                    builder.append("<ol start=\"{start}\">\n")
+                    builder.push_str("<ol start=\"{start}\">\n")
                 } else {
-                    builder.append("<ol>\n")
+                    builder.push_str("<ol>\n")
                 }
                 for item in items {
                     render_list_item(item, mutate builder, refs)
                 }
-                builder.append("</ol>\n")
+                builder.push_str("</ol>\n")
             }
-            HorizontalRule => builder.append("<hr>\n"),
+            HorizontalRule => builder.push_str("<hr>\n"),
         }
     }
 }
@@ -777,16 +776,16 @@ func render_markdown(input: string) -> string or RenderError {
     const refs = parse_references(input)
     const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
-    const out = string_builder.new()
+    let out = string.new()
     render_children(blocks, mutate out, refs)
-    return Ok(out.build())
+    return Ok(out)
 }
 
 func render_full_page(input: string) -> string or RenderError {
     const body = try render_markdown(input)
 
-    const out = string_builder.new()
-    out.append("""
+    let out = string.new()
+    out.push_str("""
 <!DOCTYPE html>
 <html>
 <head>
@@ -795,9 +794,9 @@ func render_full_page(input: string) -> string or RenderError {
 </head>
 <body>
 """)
-    out.append(body)
-    out.append("</body>\n</html>\n")
-    return Ok(out.build())
+    out.push_str(body)
+    out.push_str("</body>\n</html>\n")
+    return Ok(out)
 }
 
 // ─── CLI ────────────────────────────────────────────────────────────
