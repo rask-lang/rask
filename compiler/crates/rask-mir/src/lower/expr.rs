@@ -750,7 +750,19 @@ impl<'a> MirLowerer<'a> {
                 // Skip native binop for types that need C runtime calls (strings,
                 // SIMD vectors) or special method dispatch (raw pointers:
                 // ptr.add != arithmetic add).
-                let skip_binop = matches!(obj_ty, MirType::String)
+                // When obj_ty is Ptr (type info lost), check the type checker to
+                // see if the actual type is numeric — if so, use native binop.
+                let raw_type_is_numeric = self.ctx.lookup_raw_type(object.id)
+                    .map(|ty| matches!(ty,
+                        rask_types::Type::I8 | rask_types::Type::I16 | rask_types::Type::I32 | rask_types::Type::I64
+                        | rask_types::Type::U8 | rask_types::Type::U16 | rask_types::Type::U32 | rask_types::Type::U64
+                        | rask_types::Type::F32 | rask_types::Type::F64 | rask_types::Type::Bool
+                    ))
+                    .unwrap_or(false);
+                let skip_binop = if raw_type_is_numeric {
+                    false
+                } else {
+                    matches!(obj_ty, MirType::String)
                     || if let ExprKind::Ident(var_name) = &object.kind {
                         self.local_type_prefix.get(var_name)
                             .map(|p| matches!(p.as_str(), "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
@@ -758,7 +770,8 @@ impl<'a> MirLowerer<'a> {
                         || matches!(obj_ty, MirType::Ptr)
                     } else {
                         matches!(obj_ty, MirType::Ptr)
-                    };
+                    }
+                };
 
                 // Detect binary operator methods (desugared from a + b → a.add(b))
                 // Skip for SIMD types and raw pointers — they use method dispatch.
@@ -795,6 +808,31 @@ impl<'a> MirLowerer<'a> {
                     }
                 }
                 } // end if !skip_binop
+
+                // String comparison operators: route to string_lt, string_ge, etc.
+                let is_string_obj = matches!(obj_ty, MirType::String) || self.ctx.lookup_raw_type(object.id)
+                    .map(|ty| matches!(ty, rask_types::Type::String))
+                    .unwrap_or(false);
+                if is_string_obj && args.len() == 1 {
+                    let string_cmp_fn = match method.as_str() {
+                        "lt" => Some("string_lt"),
+                        "gt" => Some("string_gt"),
+                        "le" => Some("string_le"),
+                        "ge" => Some("string_ge"),
+                        "compare" => Some("string_compare"),
+                        _ => None,
+                    };
+                    if let Some(func_name) = string_cmp_fn {
+                        let (rhs, _) = self.lower_expr(&args[0].expr)?;
+                        let result_local = self.builder.alloc_temp(MirType::Bool);
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: Some(result_local),
+                            func: FunctionRef::internal(func_name.to_string()),
+                            args: vec![obj_op, rhs],
+                        });
+                        return Ok((MirOperand::Local(result_local), MirType::Bool));
+                    }
+                }
 
                 // concat()/add(): string concatenation from interpolation or + operator
                 if (method == "concat" || method == "add") && args.len() == 1 && matches!(obj_ty, MirType::String) {
@@ -998,7 +1036,8 @@ impl<'a> MirLowerer<'a> {
                         | "to_lowercase" | "to_uppercase" | "replace"
                         | "substr" | "substring" | "repeat" | "reverse"
                         | "lines" | "split" | "split_whitespace"
-                        | "char_at" | "index_of" => Some("string".to_string()),
+                        | "char_at" | "index_of"
+                        | "chars" | "push_str" => Some("string".to_string()),
                         // Vec / iterator (no other Rask type has these)
                         "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
@@ -1030,6 +1069,15 @@ impl<'a> MirLowerer<'a> {
                         .find(|k| k.ends_with(&suffix))
                         .cloned()
                         .unwrap_or(qualified_name)
+                } else {
+                    qualified_name
+                };
+
+                // Last resort: unqualified operator methods on strings.
+                // When qualification fails for lt/gt/le/ge/compare/push/push_str
+                // and the obj_ty is String, prefix with "string_".
+                let qualified_name = if qualified_name == method && matches!(obj_ty, MirType::String) {
+                    format!("string_{}", method)
                 } else {
                     qualified_name
                 };

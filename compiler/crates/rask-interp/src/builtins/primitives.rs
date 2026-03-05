@@ -237,6 +237,7 @@ impl Interpreter {
             "eq" => { let other = self.expect_char(args, 0)?; Ok(Value::Bool(c == other)) }
             "compare" => { let other = self.expect_char(args, 0)?; Ok(ordering_value(c.cmp(&other))) }
             "debug_string" => Ok(Value::String(Arc::new(Mutex::new(format!("'{}'", c))))),
+            "to_int" => Ok(Value::Int(c as i64)),
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "char".to_string(),
                 method: method.to_string(),

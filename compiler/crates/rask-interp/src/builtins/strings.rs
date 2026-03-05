@@ -63,7 +63,7 @@ impl Interpreter {
                 let val = s.lock().unwrap();
                 Ok(Value::String(Arc::new(Mutex::new(format!("\"{}\"", val)))))
             }
-            "concat" => {
+            "concat" | "add" => {
                 let other = self.expect_string(&args, 0)?;
                 let mut result = s.lock().unwrap().clone();
                 result.push_str(&other);
