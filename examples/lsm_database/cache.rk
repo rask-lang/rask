@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Block cache — Pool-based LRU cache for SSTable blocks.
+//
+// Handles give stable references to cached blocks. Eviction removes
+// the least-accessed entry when capacity is hit. Demonstrates Pool<T>
+// and Handle<T> for non-graph use cases.
+
+const MAX_CACHE_ENTRIES: usize = 128
+
+struct CacheBlock {
+    sst_id: i32
+    block_id: i32
+    entries: Vec<KeyValue>
+    access_count: i64
+}
+
+struct BlockCache {
+    blocks: Pool<CacheBlock>
+    by_key: Map<string, Handle<CacheBlock>>
+    access_counter: i64
+}
+
+extend BlockCache {
+    func new() -> BlockCache {
+        return BlockCache {
+            blocks: Pool.new(),
+            by_key: Map.new(),
+            access_counter: 0,
+        }
+    }
+
+    func cache_key(sst_id: i32, block_id: i32) -> string {
+        return "{sst_id}:{block_id}"
+    }
+
+    func get(mutate self, sst_id: i32, block_id: i32) -> Vec<KeyValue>? {
+        const key = BlockCache.cache_key(sst_id, block_id)
+        const handle = self.by_key.get(key) is Some(h) else { return None }
+        const handle = handle.clone()
+
+        self.access_counter += 1
+        with self.blocks[handle] as block {
+            block.access_count = self.access_counter
+            return Some(block.entries.clone())
+        }
+    }
+
+    func put(mutate self, sst_id: i32, block_id: i32, entries: Vec<KeyValue>) {
+        const key = BlockCache.cache_key(sst_id, block_id)
+        if self.by_key.contains_key(key) { return }
+
+        if self.blocks.len() >= MAX_CACHE_ENTRIES {
+            self.evict_one()
+        }
+
+        self.access_counter += 1
+        const handle = self.blocks.insert(CacheBlock {
+            sst_id: sst_id,
+            block_id: block_id,
+            entries: entries,
+            access_count: self.access_counter,
+        })
+        self.by_key.insert(key, handle)
+    }
+
+    func evict_one(mutate self) {
+        let min_access: i64 = i64.MAX
+        let victim: Handle<CacheBlock>? = None
+
+        for handle in self.blocks {
+            if self.blocks[handle].access_count < min_access {
+                min_access = self.blocks[handle].access_count
+                victim = Some(handle)
+            }
+        }
+
+        if victim is Some(h) {
+            const key = with self.blocks[h] as block {
+                BlockCache.cache_key(block.sst_id, block.block_id)
+            }
+            self.blocks.remove(h)
+            self.by_key.remove(key)
+        }
+    }
+
+    func invalidate(mutate self, sst_id: i32) {
+        let to_remove = Vec.new()
+        for handle in self.blocks {
+            if self.blocks[handle].sst_id == sst_id {
+                const key = BlockCache.cache_key(
+                    self.blocks[handle].sst_id,
+                    self.blocks[handle].block_id,
+                )
+                to_remove.push((handle, key))
+            }
+        }
+        for (handle, key) in to_remove {
+            self.blocks.remove(handle)
+            self.by_key.remove(key)
+        }
+    }
+
+    func count(self) -> usize {
+        return self.blocks.len()
+    }
+}
+
+// ─── Trait-based Lookup Strategy ────────────────────────────────────
+
+trait SstLookup {
+    func lookup(self, meta: SstMeta, key: string, mutate cache: BlockCache) -> KeyValue? or SstError
+}
+
+struct DefaultLookup {}
+
+extend DefaultLookup with SstLookup {
+    func lookup(self, meta: SstMeta, key: string, mutate cache: BlockCache) -> KeyValue? or SstError {
+        return sst_point_lookup(meta, key, mutate cache)
+    }
+}
+
+func sst_point_lookup(
+    meta: SstMeta,
+    key: string,
+    mutate cache: BlockCache,
+) -> KeyValue? or SstError {
+    if !meta.bloom.may_contain(key) {
+        return Ok(None)
+    }
+
+    const index = try read_sstable_index(meta.path)
+    const target_block = find_block_for_key(index, key) is Some(idx) else {
+        return Ok(None)
+    }
+
+    // Cache hit path
+    if cache.get(meta.id, target_block) is Some(entries) {
+        for entry in entries {
+            if entry.key == key {
+                return Ok(Some(entry))
+            }
+        }
+        return Ok(None)
+    }
+
+    // Cache miss — read from disk, populate cache
+    const entries = try read_sstable_block(meta.path, target_block)
+    cache.put(meta.id, target_block, entries.clone())
+
+    for entry in entries {
+        if entry.key == key {
+            return Ok(Some(entry))
+        }
+    }
+    return Ok(None)
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "block cache put and get" {
+    let cache = BlockCache.new()
+    const entries = Vec.from([
+        KeyValue.new("k1", "v1", 1),
+        KeyValue.new("k2", "v2", 2),
+    ])
+
+    cache.put(1, 0, entries.clone())
+
+    const result = cache.get(1, 0) is Some else { panic("expected Some") }
+    assert result.len() == 2
+    assert result[0].key == "k1"
+
+    assert cache.get(1, 99) is None
+    assert cache.get(99, 0) is None
+}
+
+test "block cache eviction" {
+    let cache = BlockCache.new()
+
+    let i = 0
+    while i < MAX_CACHE_ENTRIES + 10 {
+        let entries = Vec.new()
+        entries.push(KeyValue.new("k", "v", i as i64))
+        cache.put(i as i32, 0, entries)
+        i += 1
+    }
+
+    assert cache.count() <= MAX_CACHE_ENTRIES
+}
+
+test "block cache invalidate" {
+    let cache = BlockCache.new()
+    let e1 = Vec.new(); e1.push(KeyValue.new("a", "1", 1))
+    let e2 = Vec.new(); e2.push(KeyValue.new("b", "2", 2))
+    let e3 = Vec.new(); e3.push(KeyValue.new("c", "3", 3))
+    cache.put(1, 0, e1)
+    cache.put(1, 1, e2)
+    cache.put(2, 0, e3)
+
+    cache.invalidate(1)
+
+    assert cache.get(1, 0) is None
+    assert cache.get(1, 1) is None
+    assert cache.get(2, 0) is Some
+}

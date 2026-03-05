@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Memtable — in-memory sorted key-value store.
+//
+// Backed by a sorted Vec with binary search. Entries are kept sorted
+// by key; duplicate keys are resolved by sequence number (newest wins).
+// Flushes to SSTable when size threshold is reached.
+
+const MEMTABLE_FLUSH_THRESHOLD: usize = 1000
+
+struct Memtable {
+    entries: Vec<KeyValue>
+    size_bytes: usize
+}
+
+extend Memtable {
+    func new() -> Memtable {
+        return Memtable { entries: Vec.new(), size_bytes: 0 }
+    }
+
+    func put(mutate self, take kv: KeyValue) {
+        const key_len = kv.key.len()
+        const val_len = kv.value.len()
+        const key = kv.key.clone()
+        self.size_bytes += key_len + val_len
+        const pos = self.find_pos(key.clone())
+
+        if pos < self.entries.len() && self.entries[pos].key == key {
+            self.entries[pos] = kv
+        } else {
+            // Manual insert at position: append then bubble into place
+            self.entries.push(kv)
+            let i = self.entries.len() - 1
+            while i > pos {
+                const tmp = self.entries[i].clone()
+                self.entries[i] = self.entries[i - 1].clone()
+                self.entries[i - 1] = tmp
+                i -= 1
+            }
+        }
+    }
+
+    func get(self, key: string) -> KeyValue? {
+        const pos = self.find_pos(key)
+        if pos < self.entries.len() && self.entries[pos].key == key {
+            return Some(self.entries[pos].clone())
+        }
+        return None
+    }
+
+    func should_flush(self) -> bool {
+        return self.entries.len() >= MEMTABLE_FLUSH_THRESHOLD
+    }
+
+    func is_empty(self) -> bool {
+        return self.entries.is_empty()
+    }
+
+    func take_sorted(take self) -> Vec<KeyValue> {
+        return self.entries
+    }
+
+    func find_pos(self, key: string) -> usize {
+        let lo: usize = 0
+        let hi: usize = self.entries.len()
+        while lo < hi {
+            const mid = lo + (hi - lo) / 2
+            if self.entries[mid].key < key {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return lo
+    }
+
+    func scan(self, start: string, end: string) -> Vec<KeyValue> {
+        let result = Vec.new()
+        const start_pos = self.find_pos(start)
+        let i = start_pos
+        while i < self.entries.len() {
+            if self.entries[i].key > end { break }
+            result.push(self.entries[i].clone())
+            i += 1
+        }
+        return result
+    }
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "memtable put and get" {
+    let mt = Memtable.new()
+    mt.put(KeyValue.new("b", "2", 1))
+    mt.put(KeyValue.new("a", "1", 2))
+    mt.put(KeyValue.new("c", "3", 3))
+
+    const a = mt.get("a") is Some else { panic("expected Some") }
+    assert a.value == "1"
+
+    const b = mt.get("b") is Some else { panic("expected Some") }
+    assert b.value == "2"
+
+    assert mt.get("z") is None
+}
+
+test "memtable overwrites by key" {
+    let mt = Memtable.new()
+    mt.put(KeyValue.new("k", "old", 1))
+    mt.put(KeyValue.new("k", "new", 2))
+
+    const kv = mt.get("k") is Some else { panic("expected Some") }
+    assert kv.value == "new"
+    assert kv.seq == 2
+    assert mt.entries.len() == 1
+}
+
+test "memtable maintains sort order" {
+    let mt = Memtable.new()
+    mt.put(KeyValue.new("delta", "4", 1))
+    mt.put(KeyValue.new("alpha", "1", 2))
+    mt.put(KeyValue.new("charlie", "3", 3))
+    mt.put(KeyValue.new("bravo", "2", 4))
+
+    assert mt.entries[0].key == "alpha"
+    assert mt.entries[1].key == "bravo"
+    assert mt.entries[2].key == "charlie"
+    assert mt.entries[3].key == "delta"
+}
+
+test "memtable range scan" {
+    let mt = Memtable.new()
+    mt.put(KeyValue.new("a", "1", 1))
+    mt.put(KeyValue.new("b", "2", 2))
+    mt.put(KeyValue.new("c", "3", 3))
+    mt.put(KeyValue.new("d", "4", 4))
+    mt.put(KeyValue.new("e", "5", 5))
+
+    const results = mt.scan("b", "d")
+    assert results.len() == 3
+    assert results[0].key == "b"
+    assert results[1].key == "c"
+    assert results[2].key == "d"
+}

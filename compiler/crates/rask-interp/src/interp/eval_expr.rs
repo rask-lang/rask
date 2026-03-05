@@ -782,6 +782,28 @@ impl Interpreter {
                 Ok(Value::Bool(matched))
             }
 
+            // Guard pattern: const v = expr is Ok(v) else { diverge }
+            ExprKind::GuardPattern { expr: inner, pattern, else_branch } => {
+                let value = self.eval_expr(inner)?;
+                if let Some(bindings) = self.match_pattern(pattern, &value) {
+                    // Pattern matched — bind variables in the current scope
+                    for (name, val) in &bindings {
+                        self.env.define(name.clone(), val.clone());
+                    }
+                    // Return the payload (first field of Ok/Some variant)
+                    match &value {
+                        Value::Enum { fields, .. } => {
+                            Ok(fields.first().cloned().unwrap_or(Value::Unit))
+                        }
+                        _ => Ok(value),
+                    }
+                } else {
+                    // Pattern didn't match — execute else branch (should diverge)
+                    self.eval_expr(else_branch)?;
+                    Ok(Value::Unit)
+                }
+            }
+
             ExprKind::Try { expr: inner, ref else_clause } => {
                 let val = self.eval_expr(inner)?;
                 match &val {

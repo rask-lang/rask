@@ -129,12 +129,14 @@ impl TypeChecker {
             ExprKind::Field { object, field } => self.check_field_access(object, field, expr.span),
 
             ExprKind::Index { object, index } => {
-                let obj_ty = self.infer_expr(object);
+                let raw_obj_ty = self.infer_expr(object);
                 let _idx_ty = self.infer_expr(index);
 
                 // Check if indexing with a range (slicing)
                 let is_range = matches!(index.kind, rask_ast::expr::ExprKind::Range { .. });
 
+                // Resolve type variables so Generic{} is visible
+                let obj_ty = self.ctx.apply(&raw_obj_ty);
                 match &obj_ty {
                     Type::Array { elem, .. } | Type::Slice(elem) => {
                         if is_range {
@@ -148,6 +150,18 @@ impl TypeChecker {
                             Type::String
                         } else {
                             Type::Char
+                        }
+                    }
+                    // Vec<T>, Map<K,V>, Pool<T> — extract element type from first type arg
+                    Type::Generic { args, .. } | Type::UnresolvedGeneric { args, .. } => {
+                        if let Some(GenericArg::Type(elem)) = args.first() {
+                            if is_range {
+                                Type::Slice(elem.clone())
+                            } else {
+                                *elem.clone()
+                            }
+                        } else {
+                            self.ctx.fresh_var()
                         }
                     }
                     _ => self.ctx.fresh_var(),

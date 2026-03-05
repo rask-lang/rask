@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Compaction — merge two SSTables into one.
+//
+// Deduplicates by key (newest seq wins). Tombstones survive until
+// the bottom level. Background compaction uses spawn + channel.
+
+import fs
+import async.spawn
+import async.Channel
+
+const MAX_LEVELS: i32 = 4
+const LEVEL_SIZE_MULTIPLIER: i32 = 10
+
+func merge_entries(a: Vec<KeyValue>, b: Vec<KeyValue>) -> Vec<KeyValue> {
+    let result = Vec.new()
+    let i: usize = 0
+    let j: usize = 0
+
+    while i < a.len() && j < b.len() {
+        if a[i].key < b[j].key {
+            result.push(a[i].clone())
+            i += 1
+        } else if a[i].key > b[j].key {
+            result.push(b[j].clone())
+            j += 1
+        } else {
+            if a[i].seq >= b[j].seq {
+                result.push(a[i].clone())
+            } else {
+                result.push(b[j].clone())
+            }
+            i += 1
+            j += 1
+        }
+    }
+
+    while i < a.len() {
+        result.push(a[i].clone())
+        i += 1
+    }
+    while j < b.len() {
+        result.push(b[j].clone())
+        j += 1
+    }
+
+    return result
+}
+
+func compact_sstables(
+    a: SstMeta,
+    b: SstMeta,
+    new_id: i32,
+    target_level: i32,
+    dir: string,
+) -> SstMeta or CompactionError {
+    const entries_a = read_all_sstable_entries(a.path) is Ok(e) else {
+        return Err(CompactionError.MergeConflict("cannot read SSTable {a.id}"))
+    }
+    const entries_b = read_all_sstable_entries(b.path) is Ok(e) else {
+        return Err(CompactionError.MergeConflict("cannot read SSTable {b.id}"))
+    }
+
+    let merged = merge_entries(entries_a, entries_b)
+
+    // Strip tombstones at bottom level
+    if target_level == MAX_LEVELS - 1 {
+        merged = merged.filter(|kv| !kv.deleted)
+    }
+
+    if merged.is_empty() {
+        return Err(CompactionError.MergeConflict("merge produced empty result"))
+    }
+
+    const meta = write_sstable(new_id, target_level, dir, merged) is Ok(m) else {
+        return Err(CompactionError.OutputFailure("failed to write merged SSTable"))
+    }
+
+    fs.remove(a.path)
+    fs.remove(b.path)
+
+    return Ok(meta)
+}
+
+// ─── Background Compaction ──────────────────────────────────────────
+
+enum CompactionMsg {
+    Started(i32, i32)
+    Completed(SstMeta, i32, i32)
+    Failed(CompactionError)
+}
+
+func spawn_background_compaction(
+    a: SstMeta,
+    b: SstMeta,
+    new_id: i32,
+    target_level: i32,
+    dir: string,
+    tx: Channel.Sender<CompactionMsg>,
+) {
+    spawn(|| {
+        tx.send(CompactionMsg.Started(a.id, b.id))
+
+        match compact_sstables(a.clone(), b.clone(), new_id, target_level, dir) {
+            Ok(meta) => tx.send(CompactionMsg.Completed(meta, a.id, b.id)),
+            Err(e) => tx.send(CompactionMsg.Failed(e)),
+        }
+    }).detach()
+}
+
+// ─── Tests ──────────────────────────────────────────────────────────
+
+test "merge entries deduplicates by seq" {
+    const a = Vec.from([
+        KeyValue.new("a", "old_a", 1),
+        KeyValue.new("c", "old_c", 2),
+    ])
+    const b = Vec.from([
+        KeyValue.new("a", "new_a", 3),
+        KeyValue.new("b", "b", 4),
+    ])
+
+    const merged = merge_entries(a, b)
+    assert merged.len() == 3
+    const m0 = merged[0]
+    const m1 = merged[1]
+    const m2 = merged[2]
+    assert m0.key == "a"
+    assert m0.value == "new_a"
+    assert m1.key == "b"
+    assert m2.key == "c"
+}
+
+test "merge preserves tombstones" {
+    let a = Vec.new(); a.push(KeyValue.new("x", "alive", 1))
+    let b = Vec.new(); b.push(KeyValue.tombstone("x", 5))
+
+    const merged = merge_entries(a, b)
+    assert merged.len() == 1
+    const first = merged[0]
+    assert first.deleted
+    assert first.seq == 5
+}

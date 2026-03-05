@@ -540,15 +540,22 @@ impl TypeChecker {
                 self.current_self_type = None;
             }
             DeclKind::Const(c) => {
-                let init_ty = self.infer_expr(&c.init);
-                if let Some(ty_str) = &c.ty {
+                let (init_ty, declared_ty) = if let Some(ty_str) = &c.ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
-                        self.ctx.add_constraint(TypeConstraint::Equal(
-                            declared,
-                            init_ty,
-                            decl.span,
-                        ));
+                        let init_ty = self.infer_expr_expecting(&c.init, &declared);
+                        (init_ty, Some(declared))
+                    } else {
+                        (self.infer_expr(&c.init), None)
                     }
+                } else {
+                    (self.infer_expr(&c.init), None)
+                };
+                if let Some(declared) = declared_ty {
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        declared,
+                        init_ty,
+                        decl.span,
+                    ));
                 }
             }
             DeclKind::Test(t) => {

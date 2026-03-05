@@ -180,7 +180,7 @@ impl Interpreter {
                 vec.insert(idx, item);
                 Ok(Value::Unit)
             }
-            "remove" => {
+            "remove" | "remove_at" => {
                 let idx = self.expect_int(&args, 0)? as usize;
                 let mut vec = v.lock().unwrap();
                 if idx >= vec.len() {

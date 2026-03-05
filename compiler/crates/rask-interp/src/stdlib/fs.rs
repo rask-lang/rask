@@ -315,6 +315,33 @@ impl Interpreter {
                     }),
                 }
             }
+            "list_dir" => {
+                let path = self.expect_string(&args, 0)?;
+                match std::fs::read_dir(&path) {
+                    Ok(entries) => {
+                        let mut names = Vec::new();
+                        for entry in entries {
+                            if let Ok(e) = entry {
+                                names.push(Value::String(Arc::new(Mutex::new(
+                                    e.file_name().to_string_lossy().to_string(),
+                                ))));
+                            }
+                        }
+                        Ok(Value::Enum {
+                            name: "Result".to_string(),
+                            variant: "Ok".to_string(),
+                            fields: vec![Value::Vec(Arc::new(Mutex::new(names)))],
+                            variant_index: 0,
+                        })
+                    }
+                    Err(e) => Ok(Value::Enum {
+                        name: "Result".to_string(),
+                        variant: "Err".to_string(),
+                        fields: vec![Value::String(Arc::new(Mutex::new(e.to_string())))],
+                        variant_index: 0,
+                    }),
+                }
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "fs".to_string(),
                 method: method.to_string(),

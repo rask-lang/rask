@@ -649,7 +649,7 @@ impl<'a> MirLowerer<'a> {
         // Iterator chain: for x in vec.iter().filter(...).map(...) { ... }
         // Fuse into index loop with inlined adapter closures.
         if let Some(chain) = self.try_parse_iter_chain(iter_expr) {
-            return self.lower_for_iter_chain(label, single_name, &chain, body);
+            return self.lower_for_iter_chain(label, single_name, &chain, body, binding);
         }
 
         // pool.entries(): for (h, val) in pool.entries() { ... }
@@ -799,6 +799,40 @@ impl<'a> MirLowerer<'a> {
                 dst: Some(binding_local),
                 func: FunctionRef::internal("Vec_get".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
+            });
+        }
+
+        // Tuple destructuring: for (a, b) in collection { ... }
+        // Extract fields from the loaded element into each binding.
+        if let ForBinding::Tuple(names) = binding {
+            for (i, name) in names.iter().enumerate() {
+                if i == 0 { continue; }
+                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
+                self.locals.insert(name.clone(), (field_local, MirType::I64));
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: field_local,
+                    rvalue: MirRValue::Field {
+                        base: MirOperand::Local(binding_local),
+                        field_index: i as u32,
+                        byte_offset: None,
+                        field_size: None,
+                    },
+                });
+            }
+            // Re-extract field 0 into the first binding (was whole tuple)
+            let first_field = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: first_field,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(binding_local),
+                    field_index: 0,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            });
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: binding_local,
+                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
             });
         }
 
@@ -1150,9 +1184,10 @@ impl<'a> MirLowerer<'a> {
     fn lower_for_iter_chain(
         &mut self,
         label: Option<&str>,
-        binding: &str,
+        binding_name: &str,
         chain: &super::IterChain<'_>,
         body: &[Stmt],
+        for_binding: &ForBinding,
     ) -> Result<(), LoweringError> {
         let setup = self.setup_iter_chain_loop(chain)?;
         let (final_op, final_ty) = self.apply_iter_adapters(
@@ -1161,15 +1196,48 @@ impl<'a> MirLowerer<'a> {
         )?;
 
         // Bind final value to the loop variable
-        let binding_local = self.builder.alloc_local(binding.to_string(), final_ty.clone());
+        let binding_local = self.builder.alloc_local(binding_name.to_string(), final_ty.clone());
         if let Some(prefix) = self.mir_type_name(&final_ty) {
-            self.local_type_prefix.insert(binding.to_string(), prefix);
+            self.local_type_prefix.insert(binding_name.to_string(), prefix);
         }
-        self.locals.insert(binding.to_string(), (binding_local, final_ty));
+        self.locals.insert(binding_name.to_string(), (binding_local, final_ty));
         self.builder.push_stmt(MirStmt::Assign {
             dst: binding_local,
             rvalue: MirRValue::Use(final_op),
         });
+
+        // Tuple destructuring for iter chains
+        if let ForBinding::Tuple(names) = for_binding {
+            for (i, name) in names.iter().enumerate() {
+                if i == 0 { continue; }
+                let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
+                self.locals.insert(name.clone(), (field_local, MirType::I64));
+                self.builder.push_stmt(MirStmt::Assign {
+                    dst: field_local,
+                    rvalue: MirRValue::Field {
+                        base: MirOperand::Local(binding_local),
+                        field_index: i as u32,
+                        byte_offset: None,
+                        field_size: None,
+                    },
+                });
+            }
+            // Re-extract field 0 into the first binding
+            let first_field = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: first_field,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(binding_local),
+                    field_index: 0,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            });
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: binding_local,
+                rvalue: MirRValue::Use(MirOperand::Local(first_field)),
+            });
+        }
 
         self.loop_stack.push(super::LoopContext {
             label: label.map(|s| s.to_string()),
