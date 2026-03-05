@@ -1498,8 +1498,8 @@ impl Resolver {
                     let sym_id = self.symbols.insert(
                         param.name.clone(),
                         SymbolKind::Parameter {
-                            is_take: param.is_take,
-                            is_mutate: param.is_mutate,
+                            is_take: false,
+                            is_mutate: false,
                         },
                         param.ty.clone(),
                         expr.span,

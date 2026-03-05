@@ -1349,11 +1349,6 @@ impl<'a> Printer<'a> {
                     if i > 0 {
                         self.emit(", ");
                     }
-                    if param.is_take {
-                        self.emit("take ");
-                    } else if param.is_mutate {
-                        self.emit("mutate ");
-                    }
                     self.emit(&param.name);
                     if let Some(ref ty) = param.ty {
                         self.emit(": ");

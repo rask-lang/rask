@@ -876,8 +876,6 @@ impl Hasher {
     }
 
     fn hash_closure_param(&mut self, cp: &ClosureParam) {
-        self.feed_bool(cp.is_mutate);
-        self.feed_bool(cp.is_take);
         self.feed_var(&cp.name);
         if let Some(ty) = &cp.ty {
             self.feed_bool(true);

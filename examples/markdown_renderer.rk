@@ -318,46 +318,21 @@ func is_reference_def(line: string) -> bool {
 func parse_inline(text: string) -> Vec<Inline> or MarkdownError {
     let scanner = Scanner.new(text)
     return parse_inline_until(mutate scanner, "")
-    // Check for stop sequence
+}
 
-    // Escaped character
-
-    // Bold: **text**
-
-    // Italic: *text*
-
-    // Inline code: `code`
-    // No closing backtick — treat as literal
-
-    // Image: ![alt](url)
-
-    // Link: [text](url) or reference link: [text][id]
-
-    // Save position to backtrack on failure
-    // Inline link: [text](url)
-    // Reference link: [text][id]
-    // Not a link — emit as plain text
-
-    // Line break: two trailing spaces before newline
-
-    // Regular character
-
-    // If we expected a stop sequence but hit end of input, that's OK for
-    // top-level parsing (stop == ""), but an error for nested delimiters.
+func flush_text(mutate result: Vec<Inline>, mutate text_buf: string) {
+    if !text_buf.is_empty() {
+        result.push(Inline.Text(text_buf.clone()))
+        text_buf = string.new()
+    }
 }
 
 func parse_inline_until(mutate scanner: Scanner, stop: string) -> Vec<Inline> or MarkdownError {
     let result = Vec.new()
     let text_buf = string.new()
 
-    const flush_text = |mutate result: Vec<Inline>, mutate text_buf: string| {
-        if !text_buf.is_empty() {
-            result.push(Inline.Text(text_buf.clone()))
-            text_buf = string.new()
-        }
-    }
-
     while !scanner.is_done() {
+        // Check for stop sequence
         if !stop.is_empty() && scanner.matches(stop) {
             scanner.consume(stop)
             flush_text(mutate result, mutate text_buf)

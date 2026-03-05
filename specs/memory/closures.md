@@ -51,41 +51,7 @@ const double = |x| x * 2
 const result = double(5)  // 10
 ```
 
-### Parameter Modes
-
-Closure parameters support the same modes as function parameters (`mem.parameters`): **borrow** (default), **mutate**, and **take**.
-
-| Rule | Description |
-|------|-------------|
-| **CP1: Mode parity** | Closure parameters support `mutate` and `take` with the same semantics as function parameters |
-| **CP2: Call-site annotation** | Callers use `mutate`/`own` at call sites, same as function calls |
-
-<!-- test: skip -->
-```rask
-// Closure with mutate parameter — useful for reusable helpers
-const flush = |mutate buf: string, mutate out: Vec<string>| {
-    if !buf.is_empty() {
-        out.push(buf.clone())
-        buf = string.new()
-    }
-}
-
-let buffer = string.new()
-let results = Vec.new()
-buffer.push_str("hello")
-flush(mutate buffer, mutate results)
-```
-
-This is distinct from mutable *capture* — `mutate` in a capture list borrows an outer variable, while `mutate` on a parameter declares that the closure's caller passes a mutable borrow as an argument.
-
-<!-- test: skip -->
-```rask
-// Mutable capture: borrows `count` from outer scope
-const inc = |mutate count| { count += 1 }
-
-// Mutate parameter: caller passes a mutable borrow
-const reset = |mutate v: i32| { v = 0 }
-```
+Closure parameters use borrow mode only — no `mutate` or `take`. The `||` list already serves double duty for captures and parameters (e.g., `|item, mutate total|` where `item` is a parameter and `mutate total` is a capture). Adding parameter modes would create ambiguity: `|mutate x|` could mean either "mutable capture of outer `x`" or "parameter `x` by mutable borrow." If a closure needs `mutate` parameters, extract it to a standalone function.
 
 ## Mutable Capture
 
