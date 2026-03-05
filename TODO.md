@@ -35,6 +35,10 @@
 - [x] **Vendoring** — `rask vendor` copies registry deps to `vendor/` with checksums. `vendor_dir: "vendor"` in build.rk enables vendor-first resolution. Offline builds supported (VD1-VD5).
 - [x] **Dependency auditing** — `rask audit` checks locked versions against advisory database. Supports `--db` for offline JSON, `--ignore` for known risks, non-zero exit for CI gates (AU1-AU5).
 - [x] **Workspace support** — `members: ["app", "lib"]` in root build.rk. Single `rask.lock` at workspace root. Members discovered independently, path deps between them (WS1-WS3).
+- [ ] **Cross-package public symbol export** — `public` types/funcs not visible via `import pkg` in workspace path deps. `lsm.DbError` resolves to `no such field on __module_lsm`. Blocks multi-package examples.
+- [ ] **Parser: empty guard else block** — `expr is Ok else {}` with empty braces causes brace mismatch. Parser loses track of enclosing scope, reports `Expected 'func', found 'try'` on the next statement. Non-empty body `else { return }` works fine.
+- [ ] **`string_builder` not defined** — `string_builder.new()` used in examples (markdown_renderer, lsm_database) resolves to `undefined symbol: string_builder`. Not in stdlib or compiler builtins. Needs implementation or stdlib definition.
+- [ ] **`JsonParser` not resolved in multi-file builds** — `rask build` on packages reports `undefined symbol: JsonParser` even though `stdlib/json.rk` defines it. Stdlib types not properly injected into multi-file package compilation.
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
 - [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).

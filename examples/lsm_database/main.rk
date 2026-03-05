@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-// CLI entry point — imports the lsm library and provides command
-// dispatch + benchmark harness. Demonstrates cross-package usage:
-// all types are accessed via `lsm.` prefix.
+// CLI entry point — command dispatch and benchmark harness.
 
-import lsm
 import cli
 import std
 
@@ -17,7 +14,7 @@ struct CliArgs {
     prefix: string
 }
 
-func parse_cli_args(args: Vec<string>) -> CliArgs or lsm.DbError {
+func parse_cli_args(args: Vec<string>) -> CliArgs or DbError {
     let result = CliArgs {
         command: "",
         db_dir: "./rask-db",
@@ -44,7 +41,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or lsm.DbError {
                 i += 1
                 if i < args.len() {
                     const n = args[i].parse_int() is Ok(v) else {
-                        return Err(lsm.DbError.Io("invalid count: {args[i]}"))
+                        return Err(DbError.Io("invalid count: {args[i]}"))
                     }
                     result.count = n as i32
                 }
@@ -65,7 +62,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or lsm.DbError {
     }
 
     if positional.is_empty() {
-        return Err(lsm.DbError.Io("no command specified"))
+        return Err(DbError.Io("no command specified"))
     }
     result.command = positional[0].to_string()
     if positional.len() > 1 { result.key = positional[1].to_string() }
@@ -78,7 +75,7 @@ func parse_cli_args(args: Vec<string>) -> CliArgs or lsm.DbError {
 func print_usage() {
     println("rask-db: LSM-tree key-value store")
     println("")
-    println("Usage: lsm-cli [OPTIONS] <command> [args...]")
+    println("Usage: lsm_database [OPTIONS] <command> [args...]")
     println("")
     println("Commands:")
     println("  put <key> <value>     Insert or update a key")
@@ -99,7 +96,7 @@ func print_usage() {
 
 // ─── Benchmark ──────────────────────────────────────────────────────
 
-func run_benchmark(mutate db: lsm.Db, count: i32, prefix: string) -> () or lsm.DbError {
+func run_benchmark(mutate db: Db, count: i32, prefix: string) -> () or DbError {
     println("Running benchmark with {count} operations...")
     println("")
 
@@ -167,7 +164,7 @@ func run_benchmark(mutate db: lsm.Db, count: i32, prefix: string) -> () or lsm.D
     try db.flush()
 
     println("")
-    lsm.print_stats(db.stats())
+    print_stats(db.stats())
     println("")
     println("Benchmark complete.")
 
@@ -176,38 +173,38 @@ func run_benchmark(mutate db: lsm.Db, count: i32, prefix: string) -> () or lsm.D
 
 // ─── Main ───────────────────────────────────────────────────────────
 
-func run(args: CliArgs) -> () or lsm.DbError {
-    const config = lsm.DbConfig.default_for(args.db_dir)
-    let db = try lsm.Db.open(config)
+func run(args: CliArgs) -> () or DbError {
+    const config = DbConfig.default_for(args.db_dir)
+    let db = try Db.open(config)
     ensure db.close() else |_| {}
 
     match args.command {
         "put" => {
             if args.key.is_empty() || args.value.is_empty() {
-                return Err(lsm.DbError.Io("put requires <key> <value>"))
+                return Err(DbError.Io("put requires <key> <value>"))
             }
             try db.put(args.key, args.value)
             println("OK")
         }
         "get" => {
             if args.key.is_empty() {
-                return Err(lsm.DbError.Io("get requires <key>"))
+                return Err(DbError.Io("get requires <key>"))
             }
             const value = try db.get(args.key)
             println("{value}")
         }
         "delete" => {
             if args.key.is_empty() {
-                return Err(lsm.DbError.Io("delete requires <key>"))
+                return Err(DbError.Io("delete requires <key>"))
             }
             try db.delete(args.key)
             println("OK")
         }
         "scan" => {
             if args.key.is_empty() {
-                return Err(lsm.DbError.Io("scan requires <start> <end>"))
+                return Err(DbError.Io("scan requires <start> <end>"))
             }
-            const end = if args.value.is_empty(): args.key + "\xff" else: args.value
+            const end = if args.value.is_empty(): args.key + "\u{FF}" else: args.value
             const results = try db.scan(args.key, end)
             for kv in results {
                 println("{kv.key}\t{kv.value}")
@@ -221,13 +218,13 @@ func run(args: CliArgs) -> () or lsm.DbError {
             println("Forcing compaction...")
             try db.compact_all()
             println("Compaction complete.")
-            lsm.print_stats(db.stats())
+            print_stats(db.stats())
         }
         "stats" => {
-            lsm.print_stats(db.stats())
+            print_stats(db.stats())
         }
         "dump" => {
-            const results = try db.scan("\x00", "\xff".repeat(16))
+            const results = try db.scan("\u{00}", "\u{FF}".repeat(16))
             for kv in results {
                 println("{kv.key}\t{kv.value}")
             }
