@@ -805,9 +805,10 @@ impl<'a> MirLowerer<'a> {
         // After mono, node IDs are fresh — use AST structure heuristics.
         // Functions known to return Vec<string>:
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
-            // String methods that return Vec<string>
+            // String methods that produce iterators
             match method.as_str() {
                 "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "chars" => return Some(MirType::Char),
                 _ => {}
             }
             if let ExprKind::Ident(name) = &object.kind {
@@ -1468,9 +1469,13 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         }
     }
     // String-returning functions
-    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
+    if func_name == "string_new" || func_name == "string_from"
+        || func_name == "string_clone"
+        || func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
+        || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
         || func_name.ends_with("_replace") || func_name.ends_with("_substring")
+        || func_name.ends_with("_substr")
         || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
     {
         return MirType::String;
