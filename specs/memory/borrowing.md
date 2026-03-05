@@ -136,7 +136,11 @@ For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone(
 | Rule | Description |
 |------|-------------|
 | **W1: First-class block** | `with` is a real scope — `return` exits the function, `try` propagates to the enclosing function, `break`/`continue` work for surrounding loops |
-| **W2: No structural mutation** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, clear). Reading and writing other elements via inline access is allowed |
+| **W2: No structural mutation (Vec/Map/string)** | Source collection cannot be structurally mutated inside the `with` block (no insert, remove, push, pop, clear). Reading and writing other elements via inline access is allowed |
+| **W2a: Pool insert allowed** | `pool.insert()` is allowed inside `with pool[h]` — compiler re-resolves bindings after insert (handles survive reallocation per `mem.pools/PL9`) |
+| **W2b: Pool remove(other) allowed** | `pool.remove(other_h)` is allowed if `other_h` is not the bound handle variable — compiler re-resolves; runtime panic if aliased (same semantics as W3) |
+| **W2c: Pool remove(bound) forbidden** | `pool.remove(h)` where `h` is the bound handle is a compile error — you can't remove the element you're borrowing |
+| **W2d: Pool clear forbidden** | `pool.clear()` is always a compile error inside `with` — invalidates everything |
 | **W3: Aliasing check** | Multiple bindings from same collection: runtime panic if same key/handle |
 | **W4: Error semantics** | Panics on invalid handle/OOB (matches direct indexing) |
 | **W5: Mutable binding** | `with` bindings are always mutable. Read-only access is enforced by the source (e.g., `shared.read()` prevents mutation). Compiler warns when binding is never mutated |
@@ -190,26 +194,49 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 ### Structural mutation restriction (W2)
 
-Structural mutations on the source collection are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally.
+For Vec, Map, and string: structural mutations are forbidden inside the `with` block — operations that add, remove, or reallocate elements (insert, remove, push, pop, clear). Reading and writing other elements via inline access works normally.
 
 <!-- test: compile-fail -->
 ```rask
-with pool[h] as entity {
-    entity.health -= 10
-    pool.remove(other_h)     // ERROR: structural mutation inside with block
+with vec[i] as item {
+    item.count += 1
+    vec.push(new_item)       // ERROR: structural mutation inside with block
 }
 ```
 
-Reading and writing other elements is allowed:
+**Pool exception (W2a–W2d):** Pool handles survive reallocation (`mem.pools/PL9`). The compiler exploits this — `insert` and `remove(other)` are allowed inside `with pool[h]` blocks. After each structural mutation, the compiler re-resolves the binding by re-validating the handle (~1ns generation check).
 
 <!-- test: skip -->
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: inline read of other element
     pool[other_h].last_attacker = Some(h)   // OK: inline write to other element
-    pool.insert(new_entity)                 // ERROR: structural mutation (insert)
+
+    // Pool-specific: insert and remove(other) are allowed
+    const ally = try pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
+    entity.allies.push(ally)                // entity still valid after insert
+    pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
 }
 ```
+
+Removing the bound handle or clearing the pool remain compile errors:
+
+<!-- test: compile-fail -->
+```rask
+with pool[h] as entity {
+    entity.health -= 10
+    pool.remove(h)           // ERROR: removing the bound element (W2c)
+}
+```
+
+<!-- test: compile-fail -->
+```rask
+with pool[h] as entity {
+    pool.clear()             // ERROR: clears everything (W2d)
+}
+```
+
+If `remove(other_h)` happens to alias the bound handle at runtime, the re-resolution panics with "stale handle" — same aliasing semantics as W3.
 
 For multi-statement access to multiple elements, the comma syntax is still preferred:
 <!-- test: skip -->
@@ -376,25 +403,41 @@ FIX 2: Store indices:
   process(line[view])
 ```
 
-**Structural mutation inside with [W2]:**
+**Structural mutation inside with — Vec/Map/string [W2]:**
 ```
-ERROR [mem.borrowing/W2]: cannot structurally mutate collection inside with block
+ERROR [mem.borrowing/W2]: cannot push to `vec` inside with block — vec can reallocate
+   |
+5  |  with vec[i] as item {
+   |  ---- element borrowed here
+6  |      item.count += 1
+7  |      vec.push(new_item)
+   |      ^^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
+
+WHY: Vec/Map/string can reallocate, invalidating the borrowed element.
+     Pool handles survive reallocation — use Pool if you need insert/remove inside with.
+
+FIX: Move the structural mutation outside the with block:
+
+  with vec[i] as item { item.count += 1 }
+  vec.push(new_item)
+```
+
+**Removing bound handle inside with — Pool [W2c]:**
+```
+ERROR [mem.borrowing/W2c]: cannot remove `h` inside with block — it's the bound element
    |
 5  |  with pool[h] as entity {
    |  ---- element borrowed here
 6  |      entity.health -= 10
-7  |      pool.remove(other)
-   |      ^^^^^^^^^^^^^^^^^ structural mutation not allowed inside with block
+7  |      pool.remove(h)
+   |      ^^^^^^^^^^^^^^ removing the element you're borrowing
 
-WHY: insert, remove, and clear can invalidate the borrowed element.
-     Reading and writing other elements is fine.
+WHY: Removing the bound element frees its memory. The binding would dangle.
 
-FIX: Move the structural mutation outside the with block:
+FIX: Move the removal outside the with block:
 
-  const should_remove = pool[h].health <= 0
-  if should_remove {
-      pool.remove(other)
-  }
+  const should_remove = with pool[h] as e { e.health -= 10; e.health <= 0 }
+  if should_remove { pool.remove(h) }
 ```
 
 ## Edge Cases
@@ -417,7 +460,11 @@ FIX: Move the structural mutation outside the with block:
 | Nested `with` same collection | W2 | Compile error (use comma syntax) |
 | Inline read of other element inside `with` | W2 | Allowed |
 | Inline write of other element inside `with` | W2 | Allowed (runtime panic if same handle) |
-| Structural mutation inside `with` | W2 | Compile error |
+| Structural mutation inside `with` (Vec/Map/string) | W2 | Compile error |
+| `pool.insert()` inside `with pool[h]` | W2a | Allowed — re-resolves binding |
+| `pool.remove(other_h)` inside `with pool[h]` | W2b | Allowed — re-resolves; runtime panic if aliased |
+| `pool.remove(h)` inside `with pool[h]` (bound handle) | W2c | Compile error |
+| `pool.clear()` inside `with pool[h]` | W2d | Compile error |
 | Disjoint field borrows | F2 | Non-overlapping fields can be borrowed simultaneously |
 | Field borrow + whole-struct borrow | F3 | Compile error: struct already borrowed |
 | Same field borrowed twice | F2 | Compile error: field already borrowed |
@@ -486,7 +533,9 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 
 **W1 (with as first-class block):** The biggest concrete win over the old closure-based `modify()`. Closures can't propagate `return`/`try`/`break` to the enclosing function — `with` can. One access pattern for every container type.
 
-**W2 (no structural mutation):** The compiler categorizes each collection method as structural (changes element count or triggers reallocation: insert, remove, push, pop, clear) or non-structural (reads/writes existing elements). Structural mutations are forbidden inside `with` — they could invalidate the borrowed element. Non-structural access to other elements is allowed because it doesn't affect the held element's memory. This pushes complexity into the compiler (method categorization) to give the user natural access patterns.
+**W2 (structural mutation):** The compiler categorizes each collection method as structural (changes element count or triggers reallocation: insert, remove, push, pop, clear) or non-structural (reads/writes existing elements). For Vec/Map/string, structural mutations are forbidden inside `with` — they could invalidate the borrowed element.
+
+**W2a–W2d (pool exception):** Pool handles survive reallocation (PL9) — that's the entire point of handles. I decided to exploit this inside `with` blocks rather than apply the same restriction as Vec/Map. After `pool.insert()` or `pool.remove(other)`, the compiler re-resolves the binding by re-validating the handle (~1ns generation check). If a `remove(other_h)` aliased the bound handle at runtime, the re-resolution panics "stale handle" — same aliasing semantics as W3. The cost is per-type rules in the compiler, but pools already have their own rules (context clauses, generation coalescing, frozen modifiers). One more isn't conceptual overhead — it's the handle abstraction doing what it was designed for.
 
 **W5 (always mutable):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access often suffices. Making bindings always mutable eliminates the `const` keyword from `with` entirely, removing a concept that caused confusion: for `Shared<T>`, `const` previously changed the lock type (shared vs exclusive), while for everything else it only controlled binding mutability. With explicit `.read()`/`.write()` on Shared, there's no need for `const` on `with` bindings. The compiler warns when a `with` binding is never mutated.
 
@@ -559,6 +608,7 @@ The IDE makes access patterns visible through ghost annotations.
 | Inline access | `[inline access]` |
 | `with` block | `[bound: lines N-M]` |
 | Conflict site | `[conflict: viewed on line N]` |
+| Pool re-resolution (W2a/W2b) | `[re-resolved]` |
 
 <!-- test: skip -->
 ```rask
