@@ -682,12 +682,17 @@ trait Renderable {
 
 // NOTE: `children` uses default parameter mode (borrow), not `take`.
 // This matters: the renderer's `match self` borrows enum payloads, so we
-// can't move children out. The `for child in children` loop iterates in
-// value (read-only) mode over the borrowed Vec.
-func render_children<T: Renderable>(children: Vec<T>, mutate builder: string, refs: Map<string, string>) {
+// Devirtualized render helpers — one per AST level.
+// (User-defined generic monomorphization not yet implemented in codegen.)
+func render_inlines(children: Vec<Inline>, mutate builder: string, refs: Map<string, string>) {
     for child in children {
         child.render(mutate builder, refs)
-        // Unresolved ref — emit as plain text
+    }
+}
+
+func render_blocks(children: Vec<Block>, mutate builder: string, refs: Map<string, string>) {
+    for child in children {
+        child.render(mutate builder, refs)
     }
 }
 
@@ -697,12 +702,12 @@ extend Inline with Renderable {
             Text(s) => builder.push_str(html_escape(s))
             Bold(children) => {
                 builder.push_str("<strong>")
-                render_children(children, mutate builder, refs)
+                render_inlines(children, mutate builder, refs)
                 builder.push_str("</strong>")
             }
             Italic(children) => {
                 builder.push_str("<em>")
-                render_children(children, mutate builder, refs)
+                render_inlines(children, mutate builder, refs)
                 builder.push_str("</em>")
             }
             Code(s) => {
@@ -714,7 +719,7 @@ extend Inline with Renderable {
                 builder.push_str("<a href=\"")
                 builder.push_str(html_escape(url))
                 builder.push_str("\">")
-                render_children(children, mutate builder, refs)
+                render_inlines(children, mutate builder, refs)
                 builder.push_str("</a>")
             }
             Image(url, alt) => {
@@ -730,11 +735,11 @@ extend Inline with Renderable {
                     builder.push_str("<a href=\"")
                     builder.push_str(html_escape(url))
                     builder.push_str("\">")
-                    render_children(children, mutate builder, refs)
+                    render_inlines(children, mutate builder, refs)
                     builder.push_str("</a>")
                 } else {
                     builder.push_str("[")
-                    render_children(children, mutate builder, refs)
+                    render_inlines(children, mutate builder, refs)
                     builder.push_str("]")
                 }
             }
@@ -745,10 +750,10 @@ extend Inline with Renderable {
 
 func render_list_item(item: ListItem, mutate builder: string, refs: Map<string, string>) {
     builder.push_str("<li>")
-    render_children(item.content, mutate builder, refs)
+    render_inlines(item.content, mutate builder, refs)
     if !item.children.is_empty() {
         builder.push_str("\n")
-        render_children(item.children, mutate builder, refs)
+        render_blocks(item.children, mutate builder, refs)
     }
     builder.push_str("</li>\n")
 }
@@ -758,12 +763,12 @@ extend Block with Renderable {
         match self {
             Heading(level, inlines) => {
                 builder.push_str("<h{level}>")
-                render_children(inlines, mutate builder, refs)
+                render_inlines(inlines, mutate builder, refs)
                 builder.push_str("</h{level}>\n")
             }
             Paragraph(inlines) => {
                 builder.push_str("<p>")
-                render_children(inlines, mutate builder, refs)
+                render_inlines(inlines, mutate builder, refs)
                 builder.push_str("</p>\n")
             }
             CodeBlock(lang, code) => {
@@ -777,7 +782,7 @@ extend Block with Renderable {
             }
             Blockquote(blocks) => {
                 builder.push_str("<blockquote>\n")
-                render_children(blocks, mutate builder, refs)
+                render_blocks(blocks, mutate builder, refs)
                 builder.push_str("</blockquote>\n")
             }
             UnorderedList(items) => {
@@ -810,7 +815,7 @@ func render_markdown(input: string) -> string or RenderError {
     const blocks = try parse_blocks(input) else |e| RenderError.Parse(e)
 
     let out = string.new()
-    render_children(blocks, mutate out, refs)
+    render_blocks(blocks, mutate out, refs)
     return Ok(out)
 }
 
