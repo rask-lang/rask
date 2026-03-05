@@ -17,14 +17,25 @@ extend Memtable {
         return Memtable { entries: Vec.new(), size_bytes: 0 }
     }
 
-    func put(mutate self, kv: KeyValue) {
-        self.size_bytes += kv.key.len() + kv.value.len()
-        const pos = self.find_pos(kv.key)
+    func put(mutate self, take kv: KeyValue) {
+        const key_len = kv.key.len()
+        const val_len = kv.value.len()
+        const key = kv.key.clone()
+        self.size_bytes += key_len + val_len
+        const pos = self.find_pos(key.clone())
 
-        if pos < self.entries.len() && self.entries[pos].key == kv.key {
+        if pos < self.entries.len() && self.entries[pos].key == key {
             self.entries[pos] = kv
         } else {
-            self.entries.insert_at(pos, kv)
+            // Manual insert at position: append then bubble into place
+            self.entries.push(kv)
+            let i = self.entries.len() - 1
+            while i > pos {
+                const tmp = self.entries[i].clone()
+                self.entries[i] = self.entries[i - 1].clone()
+                self.entries[i - 1] = tmp
+                i -= 1
+            }
         }
     }
 
@@ -83,10 +94,10 @@ test "memtable put and get" {
     mt.put(KeyValue.new("a", "1", 2))
     mt.put(KeyValue.new("c", "3", 3))
 
-    const a = mt.get("a") is Some else { assert false }
+    const a = mt.get("a") is Some else { panic("expected Some") }
     assert a.value == "1"
 
-    const b = mt.get("b") is Some else { assert false }
+    const b = mt.get("b") is Some else { panic("expected Some") }
     assert b.value == "2"
 
     assert mt.get("z") is None
@@ -97,7 +108,7 @@ test "memtable overwrites by key" {
     mt.put(KeyValue.new("k", "old", 1))
     mt.put(KeyValue.new("k", "new", 2))
 
-    const kv = mt.get("k") is Some else { assert false }
+    const kv = mt.get("k") is Some else { panic("expected Some") }
     assert kv.value == "new"
     assert kv.seq == 2
     assert mt.entries.len() == 1

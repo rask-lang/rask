@@ -62,3 +62,14 @@ pub fn resolve_package(
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve_package(decls, registry, current_package)
 }
+
+/// Resolve a package with separate stdlib declarations. Stdlib decls are
+/// processed in stdlib_mode (bypasses builtin-shadowing checks).
+pub fn resolve_package_with_stdlib(
+    decls: &[Decl],
+    registry: &PackageRegistry,
+    current_package: PackageId,
+    stdlib_decls: &[Decl],
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
+}

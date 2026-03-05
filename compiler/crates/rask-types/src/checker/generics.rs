@@ -56,6 +56,13 @@ impl TypeChecker {
                 }
                 ty.clone()
             }
+            Type::UnresolvedGeneric { name, args } => {
+                if let Some(type_id) = self.types.get_type_id(name) {
+                    Type::Generic { base: type_id, args: args.clone() }
+                } else {
+                    ty.clone()
+                }
+            }
             _ => ty.clone(),
         }
     }

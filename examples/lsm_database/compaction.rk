@@ -121,18 +121,22 @@ test "merge entries deduplicates by seq" {
 
     const merged = merge_entries(a, b)
     assert merged.len() == 3
-    assert merged[0].key == "a"
-    assert merged[0].value == "new_a"
-    assert merged[1].key == "b"
-    assert merged[2].key == "c"
+    const m0 = merged[0]
+    const m1 = merged[1]
+    const m2 = merged[2]
+    assert m0.key == "a"
+    assert m0.value == "new_a"
+    assert m1.key == "b"
+    assert m2.key == "c"
 }
 
 test "merge preserves tombstones" {
-    const a = Vec.from([KeyValue.new("x", "alive", 1)])
-    const b = Vec.from([KeyValue.tombstone("x", 5)])
+    let a = Vec.new(); a.push(KeyValue.new("x", "alive", 1))
+    let b = Vec.new(); b.push(KeyValue.tombstone("x", 5))
 
     const merged = merge_entries(a, b)
     assert merged.len() == 1
-    assert merged[0].deleted
-    assert merged[0].seq == 5
+    const first = merged[0]
+    assert first.deleted
+    assert first.seq == 5
 }
