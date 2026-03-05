@@ -18,6 +18,27 @@ use rask_ast::{
 };
 use rask_mono::StructLayout;
 
+/// Resolve primitive type associated constants (e.g. i64.MAX, i32.MIN).
+fn primitive_type_constant(type_name: &str, field: &str) -> Option<TypedOperand> {
+    let (val, ty) = match (type_name, field) {
+        ("i8", "MAX") => (i8::MAX as i64, MirType::I8),
+        ("i8", "MIN") => (i8::MIN as i64, MirType::I8),
+        ("i16", "MAX") => (i16::MAX as i64, MirType::I16),
+        ("i16", "MIN") => (i16::MIN as i64, MirType::I16),
+        ("i32", "MAX") => (i32::MAX as i64, MirType::I32),
+        ("i32", "MIN") => (i32::MIN as i64, MirType::I32),
+        ("i64", "MAX") => (i64::MAX, MirType::I64),
+        ("i64", "MIN") => (i64::MIN, MirType::I64),
+        ("u8", "MAX") => (u8::MAX as i64, MirType::U8),
+        ("u16", "MAX") => (u16::MAX as i64, MirType::U16),
+        ("u32", "MAX") => (u32::MAX as i64, MirType::U32),
+        ("u64", "MAX") => (u64::MAX as i64, MirType::U64),
+        ("u8" | "u16" | "u32" | "u64", "MIN") => (0, MirType::U64),
+        _ => return None,
+    };
+    Some((MirOperand::Constant(MirConst::Int(val)), ty))
+}
+
 impl<'a> MirLowerer<'a> {
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
@@ -1091,6 +1112,13 @@ impl<'a> MirLowerer<'a> {
 
             // Field access
             ExprKind::Field { object, field } => {
+                // Primitive type constants: i64.MAX, i32.MIN, etc.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if let Some(val) = primitive_type_constant(name, field) {
+                        return Ok(val);
+                    }
+                }
+
                 // Enum variant access: Color.Red (no parens, fieldless variant)
                 if let ExprKind::Ident(name) = &object.kind {
                     if !self.locals.contains_key(name) {
