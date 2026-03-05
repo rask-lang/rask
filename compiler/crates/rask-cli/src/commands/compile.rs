@@ -37,7 +37,7 @@ pub fn compile_to_object(
     }).collect();
     all_mono_decls.extend(
         decls.iter()
-            .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_)))
+            .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_) | rask_ast::decl::DeclKind::Const(_)))
             .cloned()
     );
 
