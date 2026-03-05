@@ -575,6 +575,7 @@ impl TypeChecker {
         }
 
         match method {
+            "add" => return Err(TypeError::StringAddForbidden { span }),
             "len" if args.is_empty() => self.unify(ret, &Type::U64, span),
             "is_empty" if args.is_empty() => self.unify(ret, &Type::Bool, span),
             "contains" if args.len() == 1 => {

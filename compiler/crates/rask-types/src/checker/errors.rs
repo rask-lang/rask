@@ -128,6 +128,11 @@ pub enum TypeError {
         span: Span,
     },
 
+    #[error("the `+` operator cannot be used on strings")]
+    StringAddForbidden {
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {

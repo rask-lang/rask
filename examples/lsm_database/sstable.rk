@@ -77,19 +77,19 @@ func write_sstable(
         blocks.push(block_entries)
     }
 
-    let out = "BLOOM:" + encode_bloom(bloom) + "\n"
+    let out = "BLOOM:{encode_bloom(bloom)}\n"
 
     for idx_entry in index {
-        out = out + "INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n"
+        out.push_str("INDEX:{idx_entry.first_key}\t{idx_entry.offset}\t{idx_entry.count}\n")
     }
 
-    out = out + "---\n"
+    out.push_str("---\n")
 
     for block in blocks {
         for kv in block {
-            out = out + encode_kv(kv)
+            out.push_str(encode_kv(kv))
         }
-        out = out + "===\n"
+        out.push_str("===\n")
     }
 
     try fs.write_file(path, out)

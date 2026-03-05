@@ -445,6 +445,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("casting to a trait object requires the concrete type to implement all trait methods")
             }
 
+            StringAddForbidden { span } => {
+                Diagnostic::error("the `+` operator cannot be used on strings")
+                    .with_code("E0335")
+                    .with_primary(*span, "strings don't support `+`")
+                    .with_help("use `string.concat(a, b)` or interpolation `\"{a}{b}\"`")
+                    .with_fix("replace `a + b` with `string.concat(a, b)` or `\"{a}{b}\"`")
+                    .with_why("string concatenation allocates — Rask requires the allocation to be visible through the method name or interpolation syntax")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {
