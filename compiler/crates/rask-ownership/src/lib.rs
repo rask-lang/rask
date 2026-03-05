@@ -33,6 +33,19 @@ impl OwnershipResult {
     }
 }
 
+/// W2 tracking: active `with` block binding info.
+#[derive(Debug, Clone)]
+struct WithBindingInfo {
+    /// Collection variable name (e.g. "pool" from `with pool[h] as entity`)
+    collection_name: String,
+    /// Handle/key variable name (e.g. "h")
+    handle_name: String,
+    /// Whether the collection is a Pool (relaxed W2 rules) vs Vec/Map/string
+    is_pool: bool,
+    /// Span of the `with` binding for error messages
+    span: Span,
+}
+
 /// Ownership and borrow checker.
 pub struct OwnershipChecker<'a> {
     /// The typed program from type checking.
@@ -56,6 +69,10 @@ pub struct OwnershipChecker<'a> {
     in_ensure: bool,
     /// Pool type names with frozen context (CC3/PF5: no writes, inserts, removes, clears).
     frozen_contexts: HashSet<String>,
+    /// Active `with` block bindings for W2 checking.
+    active_with_bindings: Vec<WithBindingInfo>,
+    /// Parameter type strings: param name → type annotation (e.g. "Pool<Entity>").
+    param_type_strings: HashMap<String, String>,
     /// Errors accumulated during analysis.
     errors: Vec<OwnershipError>,
 }
@@ -73,6 +90,8 @@ impl<'a> OwnershipChecker<'a> {
             ensure_registered: HashSet::new(),
             in_ensure: false,
             frozen_contexts: HashSet::new(),
+            active_with_bindings: Vec::new(),
+            param_type_strings: HashMap::new(),
             errors: Vec::new(),
         }
     }
@@ -147,6 +166,12 @@ impl<'a> OwnershipChecker<'a> {
                     self.frozen_contexts.insert(name.clone());
                 }
             }
+        }
+
+        // Register parameter type strings for W2 pool detection
+        self.param_type_strings.clear();
+        for param in &fn_decl.params {
+            self.param_type_strings.insert(param.name.clone(), param.ty.clone());
         }
 
         // Register parameters as owned or borrowed bindings
@@ -374,6 +399,56 @@ impl<'a> OwnershipChecker<'a> {
                         }
                     }
                 }
+                // W2: Check structural mutations inside `with` blocks
+                if matches!(method.as_str(), "insert" | "remove" | "clear" | "push" | "pop") {
+                    if let ExprKind::Ident(coll_name) = &object.kind {
+                        for wb in &self.active_with_bindings {
+                            if wb.collection_name == *coll_name {
+                                if wb.is_pool {
+                                    // W2d: clear is always forbidden
+                                    if method == "clear" {
+                                        self.errors.push(OwnershipError {
+                                            kind: OwnershipErrorKind::WithBlockClear {
+                                                collection: coll_name.clone(),
+                                                binding_span: wb.span,
+                                            },
+                                            span: expr.span,
+                                        });
+                                    }
+                                    // W2c: remove(bound_handle) is forbidden
+                                    else if method == "remove" {
+                                        if let Some(first_arg) = args.first() {
+                                            if let ExprKind::Ident(arg_name) = &first_arg.expr.kind {
+                                                if *arg_name == wb.handle_name {
+                                                    self.errors.push(OwnershipError {
+                                                        kind: OwnershipErrorKind::WithBlockBoundHandleRemoved {
+                                                            handle: arg_name.clone(),
+                                                            collection: coll_name.clone(),
+                                                            binding_span: wb.span,
+                                                        },
+                                                        span: expr.span,
+                                                    });
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // W2a/W2b: insert and remove(other) are allowed for Pool
+                                } else {
+                                    // W2: non-pool collections — all structural mutations forbidden
+                                    self.errors.push(OwnershipError {
+                                        kind: OwnershipErrorKind::WithBlockStructuralMutation {
+                                            collection: coll_name.clone(),
+                                            operation: method.clone(),
+                                            binding_span: wb.span,
+                                        },
+                                        span: expr.span,
+                                    });
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
                 // If this is a `take self` method, mark the object as moved
                 // (skip in ensure bodies — ensure defers execution)
                 if !self.in_ensure && self.is_take_self_method(object, method) {
@@ -510,10 +585,28 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_block(body);
             }
             ExprKind::WithAs { bindings, body } => {
+                let prev_count = self.active_with_bindings.len();
                 for binding in bindings {
                     self.check_expr(&binding.source);
+                    // W2: Track binding info for structural mutation checking
+                    if let ExprKind::Index { object, index } = &binding.source.kind {
+                        if let ExprKind::Ident(coll_name) = &object.kind {
+                            let handle_name = if let ExprKind::Ident(h) = &index.kind {
+                                h.clone()
+                            } else {
+                                String::new()
+                            };
+                            self.active_with_bindings.push(WithBindingInfo {
+                                collection_name: coll_name.clone(),
+                                handle_name,
+                                is_pool: self.is_pool_type(coll_name),
+                                span: binding.source.span,
+                            });
+                        }
+                    }
                 }
                 self.check_block(body);
+                self.active_with_bindings.truncate(prev_count);
             }
             ExprKind::Spawn { body } => {
                 self.check_block(body);
@@ -888,6 +981,27 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
         }
+    }
+
+    /// Check if a binding's type is Pool (for W2 pool-aware rules).
+    fn is_pool_type(&self, name: &str) -> bool {
+        // Check resolved types from type checker
+        if let Some(ty) = self.binding_types.get(name) {
+            if let Type::Generic { base, .. } = ty {
+                if let Some(def) = self.program.types.get(*base) {
+                    return matches!(def,
+                        rask_types::TypeDef::Struct { name, .. }
+                        | rask_types::TypeDef::Enum { name, .. }
+                        if name == "Pool"
+                    );
+                }
+            }
+        }
+        // Fallback: check parameter type strings (e.g. "Pool<Entity>")
+        if let Some(ty_str) = self.param_type_strings.get(name) {
+            return ty_str.starts_with("Pool<") || ty_str == "Pool";
+        }
+        false
     }
 
     /// Look up the move reason for a binding by name.
