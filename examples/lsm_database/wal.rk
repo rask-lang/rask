@@ -47,11 +47,12 @@ extend Wal {
     func truncate(mutate self) -> () or WalError {
         try self.file.close()
             else |e| WalError.WriteFailure("close for truncate failed: {e}")
-        self.file = fs.open_with(self.path,
+        const reopened = fs.open_with(self.path,
             fs.OpenOptions.new().write(true).truncate(true).create(true)
-        ) is Ok(f) else {
+        ) is Ok else {
             return Err(WalError.WriteFailure("cannot reopen WAL"))
         }
+        self.file = reopened
         self.entry_count = 0
         return Ok(())
     }

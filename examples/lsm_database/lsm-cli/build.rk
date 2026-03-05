@@ -1,8 +1,0 @@
-// SPDX-License-Identifier: (MIT OR Apache-2.0)
-
-package "lsm-cli" "0.1.0" {
-    description: "CLI for the LSM-tree key-value store"
-    license: "MIT OR Apache-2.0"
-
-    dep "lsm" { path: "../lsm" }
-}

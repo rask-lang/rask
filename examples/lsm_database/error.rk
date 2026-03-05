@@ -5,7 +5,7 @@
 // failure modes (e.g., retry on WalError.SyncFailure, report on
 // DbError.KeyNotFound).
 
-public enum WalError {
+enum WalError {
     CorruptEntry(i64, string)
     WriteFailure(string)
     SyncFailure(string)
@@ -13,7 +13,7 @@ public enum WalError {
 }
 
 extend WalError {
-    public func message(self) -> string {
+    func message(self) -> string {
         match self {
             CorruptEntry(seq, msg) => return "WAL entry {seq} corrupt: {msg}",
             WriteFailure(msg) => return "WAL write failed: {msg}",
@@ -23,7 +23,7 @@ extend WalError {
     }
 }
 
-public enum SstError {
+enum SstError {
     BlockCorrupt(i32, string)
     IndexCorrupt(string)
     BloomFilterCorrupt(string)
@@ -32,7 +32,7 @@ public enum SstError {
 }
 
 extend SstError {
-    public func message(self) -> string {
+    func message(self) -> string {
         match self {
             BlockCorrupt(id, msg) => return "SSTable block {id} corrupt: {msg}",
             IndexCorrupt(msg) => return "SSTable index corrupt: {msg}",
@@ -43,14 +43,14 @@ extend SstError {
     }
 }
 
-public enum CompactionError {
+enum CompactionError {
     MergeConflict(string)
     OutputFailure(string)
     LevelFull(i32)
 }
 
 extend CompactionError {
-    public func message(self) -> string {
+    func message(self) -> string {
         match self {
             MergeConflict(msg) => return "merge conflict: {msg}",
             OutputFailure(msg) => return "compaction output failed: {msg}",
@@ -59,13 +59,13 @@ extend CompactionError {
     }
 }
 
-public enum CacheError {
+enum CacheError {
     Eviction(string)
     CapacityExceeded(usize, usize)
 }
 
 extend CacheError {
-    public func message(self) -> string {
+    func message(self) -> string {
         match self {
             Eviction(msg) => return "cache eviction failed: {msg}",
             CapacityExceeded(used, cap) => return "cache full: {used}/{cap} bytes",
@@ -73,7 +73,7 @@ extend CacheError {
     }
 }
 
-public enum DbError {
+enum DbError {
     Wal(WalError)
     Sst(SstError)
     Compaction(CompactionError)
@@ -83,7 +83,7 @@ public enum DbError {
 }
 
 extend DbError {
-    public func message(self) -> string {
+    func message(self) -> string {
         match self {
             Wal(e) => return e.message(),
             Sst(e) => return e.message(),

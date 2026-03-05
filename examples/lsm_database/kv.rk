@@ -3,19 +3,19 @@
 //
 // Public because scan() returns Vec<KeyValue> to callers.
 
-public struct KeyValue {
-    public key: string
-    public value: string
-    public seq: i64
-    public deleted: bool
+struct KeyValue {
+    key: string
+    value: string
+    seq: i64
+    deleted: bool
 }
 
 extend KeyValue {
-    public func new(key: string, value: string, seq: i64) -> KeyValue {
+    func new(key: string, value: string, seq: i64) -> KeyValue {
         return KeyValue { key: key, value: value, seq: seq, deleted: false }
     }
 
-    public func tombstone(key: string, seq: i64) -> KeyValue {
+    func tombstone(key: string, seq: i64) -> KeyValue {
         return KeyValue { key: key, value: "", seq: seq, deleted: true }
     }
 }
