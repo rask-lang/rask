@@ -111,13 +111,12 @@ with pool[h] as entity {
 with pool[h] as e: e.health -= damage
 ```
 
-Destructive mutations (remove, clear) are forbidden inside the `with` block. Reading/writing other elements and **inserting new elements** are fine — pools guarantee stable element addresses (`PL10`, `mem.borrowing/W2`):
+Structural mutations are forbidden inside the `with` block — but reading and writing other elements is fine (`mem.borrowing/W2`):
 <!-- test: compile-fail -->
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: read other element
-    pool.insert(new_entity)                 // OK: addresses are stable
-    pool.remove(h)    // ERROR: removal inside with block
+    pool.remove(h)    // ERROR: structural mutation inside with block
 }
 ```
 
@@ -333,7 +332,6 @@ ensure files.take_all_with(|f| { f.close(); })
 |------|-------------|
 | **PL8: All inserts fallible** | `insert()` returns `Result<Handle<T>, InsertError<T>>` |
 | **PL9: Handle stability** | Handles remain valid when pools grow (index-based, not pointer-based) |
-| **PL10: Address stability** | Existing element addresses are stable across `insert()`. Pools use chunked storage — growth appends new chunks without moving existing elements. This is why `pool.insert()` is allowed inside `with pool[h]` blocks (`mem.borrowing/W2`) |
 
 ```rask
 try pool.insert(x)   // Result<Handle<T>, InsertError<T>>
@@ -396,17 +394,17 @@ FIX: Check validity before access:
   }
 ```
 
-**Destructive mutation inside with block [W2]:**
+**Structural mutation inside with block [W2]:**
 ```
-ERROR [mem.borrowing/W2]: cannot remove from pool inside with block
+ERROR [mem.borrowing/W2]: cannot structurally mutate collection inside with block
    |
 2  |  with pool[h] as entity {
    |  ---- element borrowed here
 3  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ removal not allowed inside with block
+   |      ^^^^^^^^^^^^^^ structural mutation not allowed inside with block
 
-WHY: remove and clear can invalidate the borrowed element.
-     pool.insert() is allowed — addresses are stable (PL10).
+WHY: insert, remove, and clear can invalidate the borrowed element.
+     Reading and writing other elements is fine.
 
 FIX: Separate the check from the mutation:
 
@@ -439,8 +437,6 @@ FIX: Remove the frozen annotation if mutation is needed:
 | `with pool[h] as e1, pool[h] as e2` | W3 | Panic (duplicate handle) |
 | Generation overflow | PH1 | Slot becomes permanently dead |
 | Pool ID overflow | PH1 | Panic (runtime error) |
-| `pool.insert()` inside `with pool[h]` | PL10 | Allowed — addresses are stable |
-| `pool.remove()` inside `with pool[h]` | W2 | Compile error |
 | Panic inside `with` | — | Pool left in valid state |
 | Empty pool cursor | PF1 | `next()` returns None immediately |
 | Nested cursors | — | Compile error (pool already borrowed) |
@@ -545,26 +541,18 @@ Pool reuse: clear and reuse instead of drop and recreate.
 
 **Aliasing prevention patterns:**
 ```rask
-// Pattern 1: Insert inside with — allowed (PL10)
-with pool[h] as entity {
-    if entity.should_split() {
-        pool.insert(entity.spawn_child())    // OK: addresses are stable
-    }
-    entity.energy -= split_cost
-}
-
-// Pattern 2: Separate pools for different operations
+// Pattern 1: Separate pools for different operations
 with entities[h] as e {
     events.insert(Event.Died(h))    // OK: different collection
 }
 
-// Pattern 3: Restructure removal logic
+// Pattern 2: Restructure logic
 const should_remove = pool[h].health <= 0
 if should_remove {
     pool.remove(h)    // OK: not inside with block
 }
 
-// Pattern 4: Multi-element access
+// Pattern 3: Multi-element access
 with pool[h1] as e1, pool[h2] as e2 {
     e1.health -= e2.attack
 }

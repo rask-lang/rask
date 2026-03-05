@@ -6,7 +6,7 @@
 
 # Aliasing Detection
 
-Compile-time analysis that prevents destructive mutations on collections with active element borrows, and prevents closures from violating borrow invariants. Local to each function, O(function size).
+Compile-time analysis that prevents structural mutations on collections with active element borrows, and prevents closures from violating borrow invariants. Local to each function, O(function size).
 
 ## Borrow Stack
 
@@ -58,17 +58,17 @@ Method signatures declare borrow modes. The compiler infers from each method bod
 
 ## Error Messages
 
-**Destructive mutation during element borrow [AL5]:**
+**Structural mutation during element borrow [AL5]:**
 ```
-ERROR [mem.aliasing/AL5]: cannot remove from `pool` inside with block
+ERROR [mem.aliasing/AL5]: cannot structurally mutate `pool` inside with block
    |
 1  |  with pool[h] as e {
    |  ---- element borrowed here
 2  |      pool.remove(h)
-   |      ^^^^^^^^^^^^^^ removal not allowed inside with block
+   |      ^^^^^^^^^^^^^^ structural mutation not allowed
 
-WHY: remove and clear can invalidate the borrowed element.
-     pool.insert() is allowed — addresses are stable (mem.pools/PL10).
+WHY: insert, remove, and clear can invalidate the borrowed element.
+     Reading and writing other elements is fine.
 
 FIX: Separate the check from the mutation:
 
@@ -78,18 +78,18 @@ FIX: Separate the check from the mutation:
   }
 ```
 
-**Destructive mutation during element borrow (different handle) [AL4]:**
+**Structural mutation during element borrow (different handle) [AL4]:**
 ```
-ERROR [mem.aliasing/AL4]: cannot remove from `pool` inside with block
+ERROR [mem.aliasing/AL4]: cannot structurally mutate `pool` inside with block
    |
 1  |  with pool[h] as e {
    |  ---- element borrowed here
 2  |      pool.remove(other_h)
-   |      ^^^^^^^^^^^^^^^^^^^^ removal not allowed inside with block
+   |      ^^^^^^^^^^^^^^^^^^^^ structural mutation not allowed
 
-WHY: remove can invalidate internal state the borrowed element depends on.
+WHY: remove can trigger reallocation, invalidating the borrowed element.
 
-FIX: Move the removal outside the with block:
+FIX: Move the mutation outside the with block:
 
   const should_remove = with pool[h] as e { e.health <= 0 }
   if should_remove {
@@ -97,12 +97,11 @@ FIX: Move the removal outside the with block:
   }
 ```
 
-Non-destructive access to other elements is allowed — including `pool.insert()`:
+Non-structural access to other elements is allowed:
 ```rask
 with pool[h] as e {
     e.health -= pool[other_h].bonus    // OK: inline read of other element
     pool[other_h].hit_count += 1       // OK: inline write to other element
-    pool.insert(new_entity)            // OK: pool addresses are stable (PL10)
 }
 ```
 
@@ -123,7 +122,7 @@ with pool[h] as e {
 
 ### Rationale
 
-**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/EC4`) access outer scope directly. Without detection, a closure could destructively mutate a collection while the calling method holds an element borrow — causing handle invalidation or panics. Compile-time detection kills this bug class with zero runtime cost. Non-destructive access (reading/writing other elements, pool inserts) is safe because element borrows don't conflict with access to different slots, and pool addresses are stable across growth (`mem.pools/PL10`).
+**AL1-AL2 (borrow stack + closure scan):** Expression-scoped closures (`mem.closures/EC4`) access outer scope directly. Without detection, a closure could structurally mutate a collection while the calling method holds an element borrow — causing reallocation, handle invalidation, or panics. Compile-time detection kills this bug class with zero runtime cost. Non-structural access (reading/writing other elements) is safe because element borrows don't conflict with access to different slots.
 
 **AL7 (local analysis):** Method signatures provide borrow requirements without examining method bodies. Same cost as existing type checking.
 
@@ -131,34 +130,24 @@ with pool[h] as e {
 
 ### Patterns & Guidance
 
-**Basic conflict — destructive mutations are forbidden:**
+**Basic conflict — structural mutations are forbidden:**
 <!-- test: skip -->
 ```rask
 with pool[h] as e {
-    pool.remove(h)    // ERROR: removal inside with block
+    pool.remove(h)    // ERROR: structural mutation inside with block
 }
 // Borrow stack: [ElementBorrow(pool, h)]
-// with body accesses: [Call(pool.remove)] — destructive mutation conflicts with ElementBorrow
+// with body accesses: [Call(pool.remove)] — structural mutation conflicts with ElementBorrow
 ```
 
-**Insert is allowed — pool addresses are stable (PL10):**
-<!-- test: skip -->
-```rask
-with pool[h] as e {
-    pool.insert(new_entity)    // OK: addresses are stable
-}
-// Borrow stack: [ElementBorrow(pool, h)]
-// with body accesses: [Call(pool.insert)] — growth-only, no address invalidation
-```
-
-**Non-destructive access — reading/writing other elements is fine:**
+**Non-structural access — reading/writing other elements is fine:**
 <!-- test: skip -->
 ```rask
 with pool[h] as e {
     e.health -= pool[other_h].attack    // OK: inline read of different element
 }
 // Borrow stack: [ElementBorrow(pool, h)]
-// with body accesses: [Read(pool[other_h])] — non-destructive, different element, OK
+// with body accesses: [Read(pool[other_h])] — non-structural, different element, OK
 ```
 
 **Disjoint variables — different collections never conflict:**
