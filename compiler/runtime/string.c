@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 
 struct RaskString {
     char   *data;
@@ -540,4 +541,85 @@ RaskString *rask_string_trim_end(const RaskString *s) {
         end--;
     }
     return rask_string_from_bytes(s->data, end);
+}
+
+// ── String comparison ──────────────────────────────────────────────
+// Lexicographic compare: returns -1, 0, +1
+int64_t rask_string_compare(const RaskString *a, const RaskString *b) {
+    if (a == b) return 0;
+    const char *ad = a ? a->data : "";
+    int64_t alen = a ? a->len : 0;
+    const char *bd = b ? b->data : "";
+    int64_t blen = b ? b->len : 0;
+    int64_t min_len = alen < blen ? alen : blen;
+    int cmp = memcmp(ad, bd, (size_t)min_len);
+    if (cmp != 0) return cmp < 0 ? -1 : 1;
+    if (alen < blen) return -1;
+    if (alen > blen) return 1;
+    return 0;
+}
+
+int64_t rask_string_lt(const RaskString *a, const RaskString *b) {
+    return rask_string_compare(a, b) < 0;
+}
+int64_t rask_string_gt(const RaskString *a, const RaskString *b) {
+    return rask_string_compare(a, b) > 0;
+}
+int64_t rask_string_le(const RaskString *a, const RaskString *b) {
+    return rask_string_compare(a, b) <= 0;
+}
+int64_t rask_string_ge(const RaskString *a, const RaskString *b) {
+    return rask_string_compare(a, b) >= 0;
+}
+
+// push_str: append another string (mutates in place)
+void rask_string_push_str(RaskString *s, const RaskString *other) {
+    if (!s || !other || other->len == 0) return;
+    rask_string_append(s, other);
+}
+
+// chars: return Vec of char codepoints (as i64)
+RaskVec *rask_string_chars(const RaskString *s) {
+    RaskVec *v = rask_vec_new(8);
+    if (!s) return v;
+    for (int64_t i = 0; i < s->len; i++) {
+        int64_t ch = (int64_t)(uint8_t)s->data[i];
+        rask_vec_push(v, &ch);
+    }
+    return v;
+}
+
+// ── Filesystem ─────────────────────────────────────────────────────
+// list_dir: return Vec of filenames in a directory
+RaskVec *rask_fs_list_dir(const RaskString *path) {
+    RaskVec *v = rask_vec_new(8);
+    if (!path) return v;
+
+    // Null-terminate the path
+    char *cpath = (char *)malloc((size_t)(path->len + 1));
+    memcpy(cpath, path->data, (size_t)path->len);
+    cpath[path->len] = '\0';
+
+    DIR *d = opendir(cpath);
+    free(cpath);
+    if (!d) return v;
+
+    struct dirent *entry;
+    while ((entry = readdir(d)) != NULL) {
+        if (entry->d_name[0] == '.' && (entry->d_name[1] == '\0' ||
+            (entry->d_name[1] == '.' && entry->d_name[2] == '\0')))
+            continue;
+        RaskString *name = rask_string_from(entry->d_name);
+        rask_vec_push(v, &name);
+    }
+    closedir(d);
+    return v;
+}
+
+// ── Map iteration ──────────────────────────────────────────────────
+// Map_iter: return Vec of (key, value) pairs for iteration
+// Delegates to the map's internal iteration.
+extern RaskVec *rask_map_entries(const void *map);
+RaskVec *rask_map_iter(const void *map) {
+    return rask_map_entries(map);
 }

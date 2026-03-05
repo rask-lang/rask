@@ -612,6 +612,66 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
 
+        // String comparison: lexicographic ordering
+        StdlibEntry {
+            mir_name: "string_compare",
+            c_name: "rask_string_compare",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_lt",
+            c_name: "rask_string_lt",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_gt",
+            c_name: "rask_string_gt",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_le",
+            c_name: "rask_string_le",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_ge",
+            c_name: "rask_string_ge",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_push_str",
+            c_name: "rask_string_push_str",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_chars",
+            c_name: "rask_string_chars",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+
+        // Filesystem: directory listing
+        StdlibEntry {
+            mir_name: "fs_list_dir",
+            c_name: "rask_fs_list_dir",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+
         // ── Map operations ─────────────────────────────────────
         // rask_map_free(m: RaskMap*) → void
         StdlibEntry {
@@ -700,6 +760,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "Map_values",
             c_name: "rask_map_values",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+
+        StdlibEntry {
+            mir_name: "Map_iter",
+            c_name: "rask_map_entries",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "Map_entries",
+            c_name: "rask_map_entries",
             params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
