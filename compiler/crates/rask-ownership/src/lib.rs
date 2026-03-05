@@ -183,19 +183,23 @@ impl<'a> OwnershipChecker<'a> {
                 if self.is_resource_type_name(&param.ty) {
                     self.resource_bindings.insert(param.name.clone());
                 }
+            } else if param.is_mutate {
+                // Mutate parameters: treat as owned within the body.
+                // The caller holds the exclusive borrow; within the function
+                // we can freely read and write the parameter.
+                self.bindings.insert(param.name.clone(), BindingState::Owned);
             } else {
-                let mode = if param.is_mutate { BorrowMode::Exclusive } else { BorrowMode::Shared };
-                // Default: borrowed (persistent for call duration)
+                // Shared (non-mutate, non-take): borrowed for call duration
                 self.bindings.insert(
                     param.name.clone(),
                     BindingState::Borrowed {
-                        mode,
+                        mode: BorrowMode::Shared,
                         scope: BorrowScope::Persistent { block_id: 0 },
                     },
                 );
                 let borrow = ActiveBorrow::new(
                     param.name.clone(),
-                    mode,
+                    BorrowMode::Shared,
                     BorrowScope::Persistent { block_id: 0 },
                     Span::new(0, 0),
                 );
@@ -529,17 +533,25 @@ impl<'a> OwnershipChecker<'a> {
             }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.check_expr(cond);
+                let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
                 if let Some(else_branch) = else_branch {
+                    let after_then = self.bindings.clone();
+                    self.bindings = pre_branch;
                     self.check_expr(else_branch);
+                    self.merge_branch_bindings(&after_then);
                 }
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
                 self.check_expr(scrutinee);
+                let pre_branch = self.bindings.clone();
                 self.register_pattern_bindings(pattern);
                 self.check_expr(then_branch);
                 if let Some(else_branch) = else_branch {
+                    let after_then = self.bindings.clone();
+                    self.bindings = pre_branch;
                     self.check_expr(else_branch);
+                    self.merge_branch_bindings(&after_then);
                 }
             }
             ExprKind::Block(stmts) => {
@@ -640,6 +652,26 @@ impl<'a> OwnershipChecker<'a> {
                     }
                     self.check_expr(&arm.body);
                 }
+            }
+        }
+    }
+
+    /// Merge binding states after if/else branches.
+    /// `other` is the state after the then-branch; `self.bindings` is after the else-branch.
+    /// A binding is Moved only if moved in both branches.
+    fn merge_branch_bindings(&mut self, other: &HashMap<String, BindingState>) {
+        for (name, then_state) in other {
+            if let BindingState::Moved { at } = then_state {
+                if let Some(else_state) = self.bindings.get(name) {
+                    if matches!(else_state, BindingState::Moved { .. }) {
+                        // Moved in both branches — stays moved
+                        continue;
+                    }
+                }
+                // Moved in then but not else — keep else state (not moved)
+            } else if let Some(BindingState::Moved { .. }) = self.bindings.get(name) {
+                // Moved in else but not then — restore to not-moved
+                self.bindings.insert(name.clone(), then_state.clone());
             }
         }
     }

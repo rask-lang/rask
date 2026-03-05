@@ -14,7 +14,7 @@ struct BloomFilter {
 
 extend BloomFilter {
     func new() -> BloomFilter {
-        let bits = Vec.with_capacity(BLOOM_BITS)
+        let bits = Vec.new()
         for _ in 0..BLOOM_BITS {
             bits.push(false)
         }
@@ -57,14 +57,14 @@ func bloom_hash(key: string, seed: i32) -> usize {
 }
 
 func encode_bloom(filter: BloomFilter) -> string {
-    const out = string_builder.new()
+    let out = ""
     let first = true
     for b in filter.bits {
-        if !first { out.append(",") }
+        if !first { out = out + "," }
         first = false
-        out.append(if b: "1" else: "0")
+        out = out + if b: "1" else: "0"
     }
-    return out.build()
+    return out
 }
 
 func decode_bloom(data: string) -> BloomFilter or SstError {
@@ -74,7 +74,7 @@ func decode_bloom(data: string) -> BloomFilter or SstError {
             "expected {BLOOM_BITS} bits, got {parts.len()}"
         ))
     }
-    let bits = Vec.with_capacity(BLOOM_BITS)
+    let bits = Vec.new()
     let count = 0
     for p in parts {
         const val = p.trim() == "1"

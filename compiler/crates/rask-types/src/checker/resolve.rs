@@ -121,6 +121,17 @@ impl TypeChecker {
                     })
                 }
             }
+            // UnresolvedGeneric: resolve element field access through first
+            // type arg. Handles vec[i].field where vec type wasn't fully
+            // resolved during inference.
+            Type::UnresolvedGeneric { args, .. } => {
+                if let Some(GenericArg::Type(elem)) = args.first() {
+                    let elem_ty = self.resolve_named(elem);
+                    self.resolve_field(elem_ty, field, expected, span)
+                } else {
+                    Err(TypeError::NoSuchField { ty, field, span })
+                }
+            }
             // Builtin struct field resolution for runtime/stdlib types
             Type::UnresolvedNamed(name) => {
                 let field_ty = match (name.as_str(), field.as_str()) {
@@ -1175,7 +1186,7 @@ impl TypeChecker {
                 self.unify(ret, &opt_ty, span)
             }
             "len" if args.is_empty() => {
-                self.unify(ret, &Type::I64, span)
+                self.unify(ret, &Type::U64, span)
             }
             "get" if args.len() == 1 => {
                 let _ = self.unify(&args[0], &Type::I64, span);
@@ -1194,7 +1205,7 @@ impl TypeChecker {
                 self.unify(ret, &Type::Bool, span)
             }
             "capacity" if args.is_empty() => {
-                self.unify(ret, &Type::I64, span)
+                self.unify(ret, &Type::U64, span)
             }
             // vec.insert(index, value) -> ()
             "insert" if args.len() == 2 => {

@@ -2,57 +2,47 @@
 // Write-ahead log — append-only log for crash recovery.
 //
 // Each entry is a KV pair encoded as a single line. The WAL is
-// truncated on successful memtable flush. Marked @resource to
-// enforce file handle cleanup.
+// truncated on successful memtable flush. Uses string-based file I/O
+// since the fs module doesn't expose file handles yet.
 
 import fs
 
-@resource
 struct Wal {
     path: string
-    file: fs.File
     entry_count: i64
 }
 
 extend Wal {
     func open(path: string) -> Wal or WalError {
-        const file = fs.open_with(path,
-            fs.OpenOptions.new().write(true).append(true).create(true)
-        ) is Ok(f) else {
-            return Err(WalError.WriteFailure("cannot open WAL: {path}"))
+        // Create the file if it doesn't exist
+        if !fs.exists(path) {
+            try fs.write_file(path, "")
+                else |e| WalError.WriteFailure("cannot create WAL: {path}: {e}")
         }
-        return Ok(Wal { path: path, file: file, entry_count: 0 })
+        return Ok(Wal { path: path, entry_count: 0 })
     }
 
     func append(mutate self, kv: KeyValue) -> () or WalError {
         const line = encode_kv(kv)
-        try self.file.write_all(line)
+        try fs.append_file(self.path, line)
             else |e| WalError.WriteFailure("write failed: {e}")
         self.entry_count += 1
         return Ok(())
     }
 
     func sync(mutate self) -> () or WalError {
-        try self.file.sync()
-            else |e| WalError.SyncFailure("sync failed: {e}")
+        // No-op: string-based I/O flushes on each write
         return Ok(())
     }
 
     func close(take self) -> () or WalError {
-        try self.file.close()
-            else |e| WalError.WriteFailure("close failed: {e}")
+        // No file handle to close with string-based I/O
         return Ok(())
     }
 
     func truncate(mutate self) -> () or WalError {
-        try self.file.close()
-            else |e| WalError.WriteFailure("close for truncate failed: {e}")
-        const reopened = fs.open_with(self.path,
-            fs.OpenOptions.new().write(true).truncate(true).create(true)
-        ) is Ok else {
-            return Err(WalError.WriteFailure("cannot reopen WAL"))
-        }
-        self.file = reopened
+        try fs.write_file(self.path, "")
+            else |e| WalError.WriteFailure("cannot truncate WAL: {e}")
         self.entry_count = 0
         return Ok(())
     }
@@ -70,7 +60,7 @@ func recover_wal(path: string) -> Vec<KeyValue> or WalError {
         const trimmed = line.trim()
         if trimmed.is_empty() { continue }
         // Skip corrupt tail entries — partial writes from crash
-        const kv = decode_kv(trimmed) is Ok(entry) else { break }
+        const kv = decode_kv(trimmed) is Ok(entry) else { continue }
         entries.push(kv)
     }
     return Ok(entries)

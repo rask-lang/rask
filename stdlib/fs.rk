@@ -42,4 +42,7 @@ extend fs {
 
     /// Append a string to a file.
     public func append_file(path: string, content: string) -> () or IoError { }
+
+    /// List entries in a directory.
+    public func list_dir(path: string) -> Vec<string> or IoError { }
 }

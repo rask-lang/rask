@@ -100,8 +100,8 @@ extend BlockCache {
         }
     }
 
-    func stats(self) -> (usize, i64) {
-        return (self.blocks.len(), self.access_counter)
+    func count(self) -> usize {
+        return self.blocks.len()
     }
 }
 
@@ -166,7 +166,7 @@ test "block cache put and get" {
 
     cache.put(1, 0, entries.clone())
 
-    const result = cache.get(1, 0) is Some else { assert false }
+    const result = cache.get(1, 0) is Some else { panic("expected Some") }
     assert result.len() == 2
     assert result[0].key == "k1"
 
@@ -179,20 +179,23 @@ test "block cache eviction" {
 
     let i = 0
     while i < MAX_CACHE_ENTRIES + 10 {
-        const entries = Vec.from([KeyValue.new("k", "v", i as i64)])
+        let entries = Vec.new()
+        entries.push(KeyValue.new("k", "v", i as i64))
         cache.put(i as i32, 0, entries)
         i += 1
     }
 
-    const (count, _) = cache.stats()
-    assert count <= MAX_CACHE_ENTRIES
+    assert cache.count() <= MAX_CACHE_ENTRIES
 }
 
 test "block cache invalidate" {
     let cache = BlockCache.new()
-    cache.put(1, 0, Vec.from([KeyValue.new("a", "1", 1)]))
-    cache.put(1, 1, Vec.from([KeyValue.new("b", "2", 2)]))
-    cache.put(2, 0, Vec.from([KeyValue.new("c", "3", 3)]))
+    let e1 = Vec.new(); e1.push(KeyValue.new("a", "1", 1))
+    let e2 = Vec.new(); e2.push(KeyValue.new("b", "2", 2))
+    let e3 = Vec.new(); e3.push(KeyValue.new("c", "3", 3))
+    cache.put(1, 0, e1)
+    cache.put(1, 1, e2)
+    cache.put(2, 0, e3)
 
     cache.invalidate(1)
 

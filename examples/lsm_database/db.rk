@@ -53,7 +53,7 @@ extend Db {
 
         for kv in recovered {
             if kv.seq > max_seq { max_seq = kv.seq }
-            memtable.put(kv)
+            memtable.put(own kv)
         }
 
         // Discover existing SSTables
@@ -94,7 +94,7 @@ extend Db {
         try self.wal.append(kv.clone())
             else |e| DbError.Wal(e)
 
-        self.memtable.put(kv)
+        self.memtable.put(own kv)
 
         if self.memtable.should_flush() {
             try self.flush()
@@ -148,7 +148,7 @@ extend Db {
         try self.wal.append(kv.clone())
             else |e| DbError.Wal(e)
 
-        self.memtable.put(kv)
+        self.memtable.put(own kv)
 
         if self.memtable.should_flush() {
             try self.flush()
@@ -264,15 +264,13 @@ extend Db {
             total_sst += level.len()
         }
 
-        const (cache_entries, cache_accesses) = self.cache.stats()
-
         return DbStats {
             memtable_entries: self.memtable.entries.len() as i32,
             memtable_bytes: self.memtable.size_bytes,
             sst_count: total_sst as i32,
             level_counts: level_counts,
-            cache_entries: cache_entries as i32,
-            cache_accesses: cache_accesses,
+            cache_entries: self.cache.count() as i32,
+            cache_accesses: self.cache.access_counter,
             next_seq: self.next_seq,
         }
     }

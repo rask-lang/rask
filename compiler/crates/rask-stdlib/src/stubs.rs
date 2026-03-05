@@ -102,10 +102,9 @@ impl StubRegistry {
         })
     }
 
-    /// Return function declarations and their extern dependencies from stdlib
-    /// .rk files. Excludes struct/enum definitions to avoid polluting the
-    /// resolver/typechecker. Struct defs are injected later via
-    /// `compilable_struct_defs()`.
+    /// Return declarations from stdlib .rk files that have compilable function
+    /// bodies. Includes struct/enum definitions so the resolver can find types
+    /// referenced by impl blocks and function bodies.
     pub fn compilable_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
 
@@ -121,13 +120,15 @@ impl StubRegistry {
                 _ => false,
             });
             if has_fn_body {
-                // Include functions with bodies + extern blocks (needed for
-                // resolving C symbol references). Skip struct/enum definitions.
+                // Include all declarations: functions with bodies, extern blocks,
+                // and struct/enum definitions. The resolver processes these in
+                // stdlib_mode to avoid builtin-shadowing errors.
                 for decl in parse_result.decls {
                     let dominated = match &decl.kind {
                         DeclKind::Fn(f) => !f.body.is_empty(),
                         DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                         DeclKind::Extern(_) => true,
+                        DeclKind::Struct(_) | DeclKind::Enum(_) => true,
                         _ => false,
                     };
                     if dominated {
