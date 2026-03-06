@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
+use rask_types::Type as RaskType;
 use crate::types::mir_to_cranelift_type;
 use crate::{BuildMode, CodegenError, CodegenResult};
 
@@ -1447,7 +1448,7 @@ impl<'a> FunctionBuilder<'a> {
             MirRValue::Field { base, field_index, byte_offset, field_size } => {
                 let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
                 let base_ty = Self::operand_mir_type(base, locals);
-                let load_ty = expected_ty.unwrap_or(types::I64);
+                let mut load_ty = expected_ty.unwrap_or(types::I64);
 
                 let offset = match &base_ty {
                     Some(MirType::Struct(id)) => {
@@ -1458,6 +1459,16 @@ impl<'a> FunctionBuilder<'a> {
                                     let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                                     return Ok(addr);
                                 }
+                                // Derive Cranelift load type from field's declared type
+                                load_ty = match &field.ty {
+                                    RaskType::F64 => types::F64,
+                                    RaskType::F32 => types::F32,
+                                    RaskType::Bool => types::I8,
+                                    RaskType::I8 | RaskType::U8 => types::I8,
+                                    RaskType::I16 | RaskType::U16 => types::I16,
+                                    RaskType::I32 | RaskType::U32 | RaskType::Char => types::I32,
+                                    _ => load_ty,
+                                };
                                 field.offset as i32
                             } else {
                                 0

@@ -124,6 +124,10 @@ int64_t rask_pool_len(const RaskPool *p) {
     return p ? p->len : 0;
 }
 
+int64_t rask_pool_is_empty(const RaskPool *p) {
+    return !p || p->len == 0;
+}
+
 RaskHandle rask_pool_insert(RaskPool *p, const void *elem) {
     RaskHandle h = RASK_HANDLE_INVALID;
 #ifdef RASK_DEBUG

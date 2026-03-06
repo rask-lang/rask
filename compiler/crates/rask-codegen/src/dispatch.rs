@@ -502,6 +502,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // Fallback: unresolved .parse() defaults to parse_float (f64-returning)
+        StdlibEntry {
+            mir_name: "string_parse",
+            c_name: "rask_string_parse_float",
+            params: &[types::I64],
+            ret_ty: Some(types::F64),
+            can_panic: false,
+        },
         StdlibEntry {
             mir_name: "string_parse_int",
             c_name: "rask_string_parse_int",
@@ -608,6 +616,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "abs",
             c_name: "fabs",
             params: &[types::F64],
+            ret_ty: Some(types::F64),
+            can_panic: false,
+        },
+        // f64.powf(exp) → f64
+        StdlibEntry {
+            mir_name: "f64_powf",
+            c_name: "pow",
+            params: &[types::F64, types::F64],
+            ret_ty: Some(types::F64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "f64_powi",
+            c_name: "pow",
+            params: &[types::F64, types::F64],
             ret_ty: Some(types::F64),
             can_panic: false,
         },
@@ -866,6 +889,30 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             mir_name: "Pool_len",
             c_name: "rask_pool_len",
             params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // rask_pool_is_empty(p: const RaskPool*) → i64
+        StdlibEntry {
+            mir_name: "Pool_is_empty",
+            c_name: "rask_pool_is_empty",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // Pool.cursor() → Vec of packed handles (same as handles)
+        StdlibEntry {
+            mir_name: "Pool_cursor",
+            c_name: "rask_pool_handles_packed",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // rask_pool_is_valid_packed(p, packed) — aliased as Pool_contains
+        StdlibEntry {
+            mir_name: "Pool_contains",
+            c_name: "rask_pool_is_valid_packed",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
@@ -1534,6 +1581,21 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: true,
+        },
+        // Thread.detach() — fire-and-forget
+        StdlibEntry {
+            mir_name: "ThreadHandle_detach",
+            c_name: "rask_task_detach",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "Thread_detach",
+            c_name: "rask_task_detach",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
         },
         // time.sleep(duration) — Duration is nanoseconds internally
         StdlibEntry {

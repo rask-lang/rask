@@ -7,6 +7,7 @@ edition = "2021"
 rask-ast = { path = "../rask-ast" }
 rask-mir = { path = "../rask-mir" }
 rask-mono = { path = "../rask-mono" }
+rask-types = { path = "../rask-types" }
 
 cranelift = "0.114"
 cranelift-module = "0.114"
@@ -18,5 +19,3 @@ cranelift-frontend = "0.114"
 target-lexicon = "0.12"
 object = "0.36"
 
-[dev-dependencies]
-rask-types = { path = "../rask-types" }

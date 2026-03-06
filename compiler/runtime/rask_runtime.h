@@ -185,6 +185,7 @@ RaskPool   *rask_pool_new(int64_t elem_size);
 RaskPool   *rask_pool_with_capacity(int64_t elem_size, int64_t cap);
 void        rask_pool_free(RaskPool *p);
 int64_t     rask_pool_len(const RaskPool *p);
+int64_t     rask_pool_is_empty(const RaskPool *p);
 RaskHandle  rask_pool_insert(RaskPool *p, const void *elem);
 void       *rask_pool_get(const RaskPool *p, RaskHandle h);
 int64_t     rask_pool_remove(RaskPool *p, RaskHandle h, void *out);
