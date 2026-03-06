@@ -152,12 +152,14 @@ typedef uint64_t (*RaskHashFn)(const void *key, int64_t key_size);
 typedef int      (*RaskEqFn)(const void *a, const void *b, int64_t key_size);
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size);
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size);
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
                              RaskHashFn hash, RaskEqFn eq);
 void     rask_map_free(RaskMap *m);
 int64_t  rask_map_len(const RaskMap *m);
 int64_t  rask_map_insert(RaskMap *m, const void *key, const void *val);
 void    *rask_map_get(const RaskMap *m, const void *key);
+void    *rask_map_get_unwrap(const RaskMap *m, const void *key);
 int64_t  rask_map_remove(RaskMap *m, const void *key);
 int64_t  rask_map_contains(const RaskMap *m, const void *key);
 int64_t  rask_map_is_empty(const RaskMap *m);
