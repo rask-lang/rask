@@ -918,6 +918,15 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
+                // Special case: .get(i).unwrap() on collections that already panic on OOB.
+                // The C runtime Vec_get/Map_get already panic, so unwrap is a no-op.
+                if method == "unwrap" && args.is_empty() {
+                    if let ExprKind::MethodCall { method: inner_method, .. } = &object.kind {
+                        if inner_method == "get" {
+                            return Ok((obj_op, obj_ty));
+                        }
+                    }
+                }
                 if method == "unwrap" && args.is_empty() {
                     let is_niche = self.is_niche_option_expr(object);
                     let tag_local = self.emit_option_tag(&obj_op, is_niche);
