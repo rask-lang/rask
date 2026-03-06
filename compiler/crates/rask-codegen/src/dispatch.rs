@@ -727,6 +727,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        StdlibEntry {
+            mir_name: "Map_new_string_keys",
+            c_name: "rask_map_new_string_keys",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         // Map.from(source) → clone a map
         StdlibEntry {
             mir_name: "Map_from",
@@ -758,6 +765,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
+        },
+        // rask_map_get_unwrap — panics on missing key
+        StdlibEntry {
+            mir_name: "Map_get_unwrap",
+            c_name: "rask_map_get_unwrap",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: true,
         },
         // rask_map_remove(m: RaskMap*, key: const void*) → i64
         StdlibEntry {

@@ -1899,7 +1899,7 @@ impl<'a> FunctionBuilder<'a> {
                 args.insert(0, elem_size);
                 CallAdapt::None
             }
-            "Map_new" => {
+            "Map_new" | "Map_new_string_keys" => {
                 let key_size = builder.ins().iconst(types::I64, 8);
                 let val_size = builder.ins().iconst(types::I64, 8);
                 args.insert(0, key_size);
@@ -1977,7 +1977,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Map get: wrap key as pointer, deref result
-            "Map_get" => {
+            "Map_get" | "Map_get_unwrap" => {
                 if args.len() >= 2 {
                     let key = args[1];
                     args[1] = Self::value_to_ptr(builder, key);

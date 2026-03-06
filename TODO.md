@@ -3,7 +3,7 @@
 ## Codegen
 
 - [x] **ThreadPool.spawn / Thread.spawn MIR routing** — Already handled via `is_type_constructor_name` detecting uppercase type names and routing through dispatch table.
-- [ ] **Sensor processor native compilation** — Cranelift f64 struct field access generates loads with wrong address type (uses f64 value as pointer). Blocks `compute_averages`.
+- [x] **Sensor processor native compilation** — f64 struct field access fixed. `compute_averages` works, full example runs end-to-end.
 - [x] CleanupReturn deduplication — shared Cranelift blocks per unique cleanup chain
 - [x] Non-closure `map_err` variant constructors — handles both bare (`MyError`) and qualified (`ConfigError.Io`) names
 - [x] **Unsafe block codegen** — Unsafe context enforced by type checker. Raw pointer primitives (read, write, add, sub, offset, etc.) fully implemented with dispatch and C runtime.
@@ -52,13 +52,15 @@
 - [x] **Codegen: None lowering** — Bare `None` was lowered as integer constant 1, causing segfault when tag-checked. Fixed: allocates proper tagged union.
 - [x] **Codegen: Vec.from([...])** — Was calling `rask_vec_clone` with stack array pointer. Fixed: `lower_vec_from_array` uses `rask_vec_from_static`.
 - [x] **Codegen: dispatch gaps** — Added Pool_is_empty, Pool_contains, Pool_cursor, Thread_detach, f64_powf, f64_powi, string_parse.
+- [x] **Codegen: Map string key comparison** — Map.new() used byte-level hash/eq (memcmp on RaskString pointers). Different string literals with same content produced different pointers → lookup always failed. Fix: `rask_map_new_string_keys` uses content-based FNV hash and strcmp. MIR detects string key type from type checker.
+- [x] **Codegen: Map.get().unwrap() crash** — Map_get returns NULL on missing key, but DerefResult dereferences unconditionally → segfault. Fix: `rask_map_get_unwrap` panics with clear message. MIR rewrites Map_get → Map_get_unwrap when followed by .unwrap().
 - [ ] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
-- [ ] **Codegen: f64 chained struct field access** — Loading an f64 field produces an f64 Cranelift value which then gets used as a base address for the next field load. Root cause: MIR field chains where intermediate loads return typed values instead of addresses. Blocks sensor_processor `compute_averages`.
+- [x] **Codegen: f64 chained struct field access** — Fixed in builder.rs: field loads on structs with f64 fields now produce correct Cranelift types. sensor_processor compiles and runs.
 - [ ] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
 - [ ] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
 - [ ] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
 - [ ] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
-- [ ] **Runtime: silent crashes in collection iteration** — 03_collections, 12_iterators, 13_string_operations compile+link but exit(1) with no output. Likely Vec for-each iterator codegen producing wrong loop bounds or element access.
+- [ ] **Runtime: silent crashes in collection iteration** — 03_collections (needs `.join()` and `is Some(score)`), 12_iterators (needs `.iter().map().collect()`), 13_string_operations (unknown crash). 04_pattern_matching fixed by Map string key support. pool_test still crashes silently.
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
 - [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).

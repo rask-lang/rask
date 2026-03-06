@@ -702,6 +702,23 @@ impl<'a> MirLowerer<'a> {
                                 }
                             }
 
+                            // Map.new() with string keys → use string hash/eq
+                            let func_name = if func_name == "Map_new" {
+                                let has_string_keys = self.ctx.lookup_raw_type(expr.id)
+                                    .map(|ty| {
+                                        let s = format!("{:?}", ty);
+                                        s.contains("Map") && s.contains("String")
+                                    })
+                                    .unwrap_or(false);
+                                if has_string_keys {
+                                    "Map_new_string_keys".to_string()
+                                } else {
+                                    func_name
+                                }
+                            } else {
+                                func_name
+                            };
+
                             let ret_ty = self
                                 .func_sigs
                                 .get(&func_name)
@@ -918,11 +935,13 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
-                // Special case: .get(i).unwrap() on collections that already panic on OOB.
-                // The C runtime Vec_get/Map_get already panic, so unwrap is a no-op.
+                // Special case: .get(i).unwrap() on collections.
+                // Vec_get panics on OOB → unwrap is a no-op.
+                // Map_get returns NULL on missing key → rewrite to Map_get_unwrap.
                 if method == "unwrap" && args.is_empty() {
                     if let ExprKind::MethodCall { method: inner_method, .. } = &object.kind {
                         if inner_method == "get" {
+                            self.builder.rewrite_last_call("Map_get", "Map_get_unwrap");
                             return Ok((obj_op, obj_ty));
                         }
                     }
@@ -3900,11 +3919,22 @@ impl<'a> MirLowerer<'a> {
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
-        // Create new map
+        // Detect string keys from first pair
+        let has_string_keys = elems.first()
+            .and_then(|e| match &e.kind {
+                ExprKind::Tuple(parts) if parts.len() == 2 => {
+                    self.ctx.lookup_raw_type(parts[0].id)
+                        .map(|ty| matches!(ty, rask_types::Type::String))
+                },
+                _ => None,
+            })
+            .unwrap_or(false);
+
+        let ctor = if has_string_keys { "Map_new_string_keys" } else { "Map_new" };
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::Call {
             dst: Some(map_local),
-            func: FunctionRef::internal("Map_new".to_string()),
+            func: FunctionRef::internal(ctor.to_string()),
             args: vec![],
         });
 
