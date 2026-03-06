@@ -241,13 +241,6 @@ impl<'a> MirLowerer<'a> {
 
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {
-                // format("template {}", arg1, arg2) — desugar to string concatenation
-                if let ExprKind::Ident(name) = &func.kind {
-                    if name == "format" {
-                        return self.lower_format_call(args);
-                    }
-                }
-
                 let mut arg_operands = Vec::new();
                 for a in args {
                     let (op, mir_ty) = self.lower_expr(&a.expr)?;
@@ -3849,113 +3842,6 @@ impl<'a> MirLowerer<'a> {
 
         self.builder.switch_to_block(merge_block);
         Ok((MirOperand::Local(out), out_ty))
-    }
-
-    /// Desugar `format("template {}", arg1, arg2)` into string concatenation.
-    /// Creates a new string, appends literal segments and to_string'd args.
-    fn lower_format_call(
-        &mut self,
-        args: &[rask_ast::expr::CallArg],
-    ) -> Result<TypedOperand, LoweringError> {
-        // First arg must be a string literal template
-        let template = if let Some(first) = args.first() {
-            if let ExprKind::String(s) = &first.expr.kind {
-                s.clone()
-            } else {
-                // Non-literal template — fall back to runtime call
-                return Err(LoweringError::InvalidConstruct(
-                    "format() requires a string literal template".into(),
-                ));
-            }
-        } else {
-            return Err(LoweringError::InvalidConstruct(
-                "format() requires at least one argument".into(),
-            ));
-        };
-
-        // Split template at {} placeholders
-        let segments: Vec<&str> = template.split("{}").collect();
-        let format_args = &args[1..];
-
-        // Create result string: rask_string_new()
-        let result = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
-            dst: Some(result),
-            func: FunctionRef::internal("string_new".to_string()),
-            args: vec![],
-        });
-
-        for (i, segment) in segments.iter().enumerate() {
-            // Append literal segment if non-empty
-            if !segment.is_empty() {
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: None,
-                    func: FunctionRef::internal("string_append_cstr".to_string()),
-                    args: vec![
-                        MirOperand::Local(result),
-                        MirOperand::Constant(MirConst::String(segment.to_string())),
-                    ],
-                });
-            }
-
-            // Append the format argument (if there is one for this slot)
-            if i < format_args.len() {
-                let (op, mir_ty) = self.lower_expr(&format_args[i].expr)?;
-
-                // Convert to string based on type
-                let str_op = match &mir_ty {
-                    MirType::String | MirType::Ptr => {
-                        // Already a string pointer — clone it for append
-                        op
-                    }
-                    MirType::F64 | MirType::F32 => {
-                        let tmp = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Call {
-                            dst: Some(tmp),
-                            func: FunctionRef::internal("f64_to_string".to_string()),
-                            args: vec![op],
-                        });
-                        MirOperand::Local(tmp)
-                    }
-                    MirType::Bool => {
-                        let tmp = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Call {
-                            dst: Some(tmp),
-                            func: FunctionRef::internal("bool_to_string".to_string()),
-                            args: vec![op],
-                        });
-                        MirOperand::Local(tmp)
-                    }
-                    MirType::Char => {
-                        let tmp = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Call {
-                            dst: Some(tmp),
-                            func: FunctionRef::internal("char_to_string".to_string()),
-                            args: vec![op],
-                        });
-                        MirOperand::Local(tmp)
-                    }
-                    _ => {
-                        // Default: i64_to_string (covers I64, I32, U64, etc.)
-                        let tmp = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Call {
-                            dst: Some(tmp),
-                            func: FunctionRef::internal("i64_to_string".to_string()),
-                            args: vec![op],
-                        });
-                        MirOperand::Local(tmp)
-                    }
-                };
-
-                self.builder.push_stmt(MirStmt::Call {
-                    dst: None,
-                    func: FunctionRef::internal("string_push_str".to_string()),
-                    args: vec![MirOperand::Local(result), str_op],
-                });
-            }
-        }
-
-        Ok((MirOperand::Local(result), MirType::String))
     }
 
     /// Expand `Map.from([(k, v), ...])` into `Map.new()` + `Map.insert()` per pair.
