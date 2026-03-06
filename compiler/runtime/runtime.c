@@ -310,6 +310,20 @@ void rask_file_write(int64_t file, const RaskString *content) {
     fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
 }
 
+void rask_file_write_all(int64_t file, const RaskString *content) {
+    FILE *f = (FILE *)(uintptr_t)file;
+    if (!f || !content) return;
+    const char *ptr = rask_string_ptr(content);
+    size_t remaining = (size_t)rask_string_len(content);
+    while (remaining > 0) {
+        size_t written = fwrite(ptr, 1, remaining, f);
+        if (written == 0) break;
+        ptr += written;
+        remaining -= written;
+    }
+    fflush(f);
+}
+
 void rask_file_write_line(int64_t file, const RaskString *content) {
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return;
