@@ -16,6 +16,9 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
     // Hidden parameter pass — desugar `using` clauses into explicit params
     rask_hidden_params::desugar_hidden_params(&mut result.decls);
 
+    // Generate synthetic function bodies for auto-derived methods (compare, etc.)
+    super::derive::generate_derived_methods(&mut result.decls, &result.typed);
+
     // Inject compiled stdlib functions + struct defs AFTER typechecking.
     // Type signatures come from BuiltinModule stubs during resolve/typecheck.
     // Function bodies and struct layouts are only needed at mono/codegen time.
