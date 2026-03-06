@@ -22,17 +22,18 @@ impl Interpreter {
                     self.env.define(name.clone(), val.clone());
                 }
             }
-            Value::Struct { fields, .. } => {
+            Value::Struct(ref s) => {
+                let guard = s.lock().unwrap();
                 // Try named destructuring first, fall back to positional
-                let has_named = names.iter().any(|n| fields.contains_key(n));
+                let has_named = names.iter().any(|n| guard.fields.contains_key(n));
                 if has_named {
                     for name in names {
-                        let val = fields.get(name).cloned().unwrap_or(Value::Unit);
+                        let val = guard.fields.get(name).cloned().unwrap_or(Value::Unit);
                         self.env.define(name.clone(), val);
                     }
                 } else {
                     // Positional: iterate field values in insertion order
-                    let vals: Vec<_> = fields.values().cloned().collect();
+                    let vals: Vec<_> = guard.fields.values().cloned().collect();
                     if vals.len() != names.len() {
                         return Err(RuntimeError::TypeError(format!(
                             "tuple destructuring: expected {} elements, got {}",
@@ -53,46 +54,50 @@ impl Interpreter {
         Ok(())
     }
 
-    fn assign_nested_field(obj: &mut Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
+    fn assign_nested_field(obj: &Value, field_chain: &[String], value: Value) -> Result<(), RuntimeError> {
         if field_chain.is_empty() {
-            *obj = value;
-            return Ok(());
+            return Err(RuntimeError::TypeError(
+                "cannot assign to a value directly through nested field chain".to_string(),
+            ));
         }
-        let mut current = obj;
-        for (i, field) in field_chain.iter().enumerate() {
-            if i == field_chain.len() - 1 {
-                match current {
-                    Value::Struct { fields, .. } => {
-                        fields.insert(field.clone(), value);
+
+        if field_chain.len() == 1 {
+            let field = &field_chain[0];
+            match obj {
+                Value::Struct(s) => {
+                    s.lock().unwrap().fields.insert(field.clone(), value);
+                    return Ok(());
+                }
+                Value::Vec(v) if field.parse::<usize>().is_ok() => {
+                    let idx = field.parse::<usize>().unwrap();
+                    let mut vec = v.lock().unwrap();
+                    if idx < vec.len() {
+                        vec[idx] = value;
                         return Ok(());
                     }
-                    Value::Vec(v) if field.parse::<usize>().is_ok() => {
-                        let idx = field.parse::<usize>().unwrap();
-                        let mut vec = v.lock().unwrap();
-                        if idx < vec.len() {
-                            vec[idx] = value;
-                            return Ok(());
-                        }
-                        return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
-                    }
-                    _ => return Err(RuntimeError::TypeError(format!(
-                        "cannot assign field '{}' on {}", field, current.type_name()
-                    ))),
+                    return Err(RuntimeError::IndexOutOfBounds { index: idx as i64, len: vec.len() });
                 }
-            } else {
-                current = match current {
-                    Value::Struct { fields, .. } => {
-                        fields.get_mut(field).ok_or_else(|| {
-                            RuntimeError::TypeError(format!("no field '{}' on struct", field))
-                        })?
-                    }
-                    _ => return Err(RuntimeError::TypeError(format!(
-                        "cannot access field '{}' on {}", field, current.type_name()
-                    ))),
-                };
+                _ => return Err(RuntimeError::TypeError(format!(
+                    "cannot assign field '{}' on {}", field, obj.type_name()
+                ))),
             }
         }
-        unreachable!()
+
+        // Multi-level: drill down through struct fields
+        let first = &field_chain[0];
+        match obj {
+            Value::Struct(s) => {
+                let guard = s.lock().unwrap();
+                let inner = guard.fields.get(first).cloned().ok_or_else(|| {
+                    RuntimeError::TypeError(format!("no field '{}' on struct", first))
+                })?;
+                drop(guard);
+                Self::assign_nested_field(&inner, &field_chain[1..], value)
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "cannot access field '{}' on {}", first, obj.type_name()
+            ))),
+        }
     }
 
     /// Evaluate an expression that will be the target of an index assignment.
@@ -166,7 +171,7 @@ impl Interpreter {
                     let mut pool = p.lock().unwrap();
                     let slot_idx = pool.validate(*pool_id, *index, *generation)
                         .map_err(|e| RuntimeError::Panic(e))?;
-                    if let Some(ref mut elem) = pool.slots[slot_idx].1 {
+                    if let Some(ref elem) = pool.slots[slot_idx].1 {
                         Self::assign_nested_field(elem, field_chain, value)
                     } else {
                         Err(RuntimeError::TypeError("pool slot is empty; the handle may have been removed".to_string()))
@@ -180,7 +185,7 @@ impl Interpreter {
                     let idx = *i as usize;
                     let mut vec = v.lock().unwrap();
                     if idx < vec.len() {
-                        Self::assign_nested_field(&mut vec[idx], field_chain, value)
+                        Self::assign_nested_field(&vec[idx], field_chain, value)
                     } else {
                         Err(RuntimeError::IndexOutOfBounds { index: *i, len: vec.len() })
                     }
@@ -192,7 +197,7 @@ impl Interpreter {
                 let mut map = m.lock().unwrap();
                 for (k, v) in map.iter_mut() {
                     if Self::value_eq(k, idx) {
-                        return Self::assign_nested_field(v, field_chain, value);
+                        return Self::assign_nested_field(&v, field_chain, value);
                     }
                 }
                 Err(RuntimeError::Panic(format!("key not found in map")))
@@ -222,8 +227,9 @@ impl Interpreter {
 
                 match &current.kind {
                     ExprKind::Ident(var_name) => {
-                        if let Some(obj) = self.env.get_mut(var_name) {
-                            Self::assign_nested_field(obj, &field_chain, value)
+                        if let Some(obj) = self.env.get(var_name) {
+                            let obj = obj.clone();
+                            Self::assign_nested_field(&obj, &field_chain, value)
                         } else {
                             Err(RuntimeError::UndefinedVariable(var_name.clone()))
                         }

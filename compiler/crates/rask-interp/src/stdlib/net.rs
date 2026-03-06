@@ -273,11 +273,11 @@ impl Interpreter {
             Value::String(Arc::new(Mutex::new(body))),
         );
 
-        Ok(make_result_ok(Value::Struct {
-            name: "Request".to_string(),
+        Ok(make_result_ok(Value::new_struct(
+            "Request".to_string(),
             fields,
-            resource_id: None,
-        }))
+            None,
+        )))
     }
 
     /// Write an HTTP/1.1 response to a TCP stream.
@@ -287,16 +287,17 @@ impl Interpreter {
         response: &Value,
     ) -> Result<Value, RuntimeError> {
         let (status, headers, body) = match response {
-            Value::Struct { fields, .. } => {
-                let status = match fields.get("status") {
+            Value::Struct(ref s) => {
+                let guard = s.lock().unwrap();
+                let status = match guard.fields.get("status") {
                     Some(Value::Int(n)) => *n as i32,
                     _ => 200,
                 };
-                let body = match fields.get("body") {
+                let body = match guard.fields.get("body") {
                     Some(Value::String(s)) => s.lock().unwrap().clone(),
                     _ => String::new(),
                 };
-                let headers = match fields.get("headers") {
+                let headers = match guard.fields.get("headers") {
                     Some(Value::Map(m)) => {
                         let map = m.lock().unwrap();
                         map.iter()

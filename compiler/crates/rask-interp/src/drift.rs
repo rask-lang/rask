@@ -50,11 +50,11 @@ fn dummy_value(type_name: &str) -> Value {
             variant_index: 0,
         },
         "File" => Value::File(Arc::new(Mutex::new(None))),
-        "Metadata" => Value::Struct {
-            name: "Metadata".to_string(),
-            fields: IndexMap::new(),
-            resource_id: None,
-        },
+        "Metadata" => Value::new_struct(
+            "Metadata".to_string(),
+            IndexMap::new(),
+            None,
+        ),
         "TcpListener" => Value::TcpListener(Arc::new(Mutex::new(None))),
         "TcpConnection" => Value::TcpConnection(Arc::new(Mutex::new(None))),
         "JsonValue" => Value::Enum {
@@ -71,17 +71,17 @@ fn dummy_value(type_name: &str) -> Value {
                 "value".to_string(),
                 Value::String(Arc::new(Mutex::new("/tmp".to_string()))),
             );
-            Value::Struct {
-                name: "Path".to_string(),
+            Value::new_struct(
+                "Path".to_string(),
                 fields,
-                resource_id: None,
-            }
+                None,
+            )
         }
-        "Args" => Value::Struct {
-            name: "Args".to_string(),
-            fields: IndexMap::new(),
-            resource_id: None,
-        },
+        "Args" => Value::new_struct(
+            "Args".to_string(),
+            IndexMap::new(),
+            None,
+        ),
         "ThreadHandle" => Value::ThreadHandle(Arc::new(ThreadHandleInner {
             handle: Mutex::new(None),
             receiver: Mutex::new(None),

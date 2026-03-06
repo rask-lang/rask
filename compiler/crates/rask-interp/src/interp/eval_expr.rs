@@ -4,7 +4,7 @@
 use indexmap::IndexMap;
 use std::sync::{Arc, Mutex, RwLock, mpsc};
 
-use rask_ast::expr::{ArgMode, BinOp, Expr, ExprKind, UnaryOp};
+use rask_ast::expr::{BinOp, Expr, ExprKind, UnaryOp};
 
 use crate::value::{ModuleKind, PoolTask, ThreadHandleInner, ThreadPoolInner, TypeConstructorKind, Value};
 
@@ -164,30 +164,6 @@ impl Interpreter {
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
 
-                // Handle mutate arg writebacks for regular function calls
-                let has_mutate = args.iter().any(|a| matches!(a.mode, ArgMode::Mutate));
-                if has_mutate {
-                    if let Value::Function { ref name } = func_val {
-                        if let Some(decl) = self.functions.get(name).cloned() {
-                            let mut mutate_writebacks = Vec::new();
-                            for (i, call_arg) in args.iter().enumerate() {
-                                if matches!(call_arg.mode, ArgMode::Mutate) {
-                                    if let ExprKind::Ident(arg_var) = &call_arg.expr.kind {
-                                        if let Some(param) = decl.params.get(i) {
-                                            mutate_writebacks.push((param.name.clone(), arg_var.clone()));
-                                        }
-                                    }
-                                }
-                            }
-                            let wb_refs: Vec<(&str, &str)> = mutate_writebacks.iter()
-                                .map(|(p, c)| (p.as_str(), c.as_str()))
-                                .collect();
-                            return self.call_function_with_writebacks(&decl, arg_vals, &wb_refs)
-                                .map_err(|diag| RuntimeDiagnostic::new(diag.error, expr.span));
-                        }
-                    }
-                }
-
                 self.call_value(func_val, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -301,56 +277,6 @@ impl Interpreter {
                         RuntimeError::UndefinedVariable(method.clone()),
                         expr.span,
                     ));
-                }
-
-                // User-defined self methods on value types: write back
-                // the modified receiver after the call so mutations
-                // through `self.field = ...` are visible to the caller.
-                if let ExprKind::Ident(var_name) = &object.kind {
-                    if matches!(&receiver, Value::Struct { .. } | Value::Enum { .. }) {
-                        let type_name = match &receiver {
-                            Value::Struct { name, .. } => name.clone(),
-                            Value::Enum { name, .. } => name.clone(),
-                            _ => unreachable!(),
-                        };
-                        let resolved = self.methods.get(&type_name)
-                            .and_then(|m| m.get(method).cloned())
-                            .or_else(|| {
-                                type_name.find('.').and_then(|pos| {
-                                    self.methods.get(&type_name[..pos])
-                                        .and_then(|m| m.get(method).cloned())
-                                })
-                            });
-                        if let Some(method_fn) = resolved {
-                            let has_self = method_fn.params.first()
-                                .map(|p| p.name == "self")
-                                .unwrap_or(false);
-                            if has_self {
-                                // Build writebacks: self → caller var, plus mutate args
-                                let mut writebacks: Vec<(&str, &str)> = vec![("self", var_name)];
-                                let mut mutate_writebacks = Vec::new();
-                                for (i, call_arg) in args.iter().enumerate() {
-                                    if matches!(call_arg.mode, ArgMode::Mutate) {
-                                        if let ExprKind::Ident(arg_var) = &call_arg.expr.kind {
-                                            // param index is i+1 (self is 0)
-                                            if let Some(param) = method_fn.params.get(i + 1) {
-                                                mutate_writebacks.push((param.name.clone(), arg_var.clone()));
-                                            }
-                                        }
-                                    }
-                                }
-                                let wb_refs: Vec<(&str, &str)> = mutate_writebacks.iter()
-                                    .map(|(p, c)| (p.as_str(), c.as_str()))
-                                    .collect();
-                                writebacks.extend(wb_refs.iter());
-                                let mut all_args = vec![receiver];
-                                all_args.extend(arg_vals);
-                                return self.call_function_with_writebacks(
-                                    &method_fn, all_args, &writebacks,
-                                ).map_err(|diag| RuntimeDiagnostic::new(diag.error, expr.span));
-                            }
-                        }
-                    }
                 }
 
                 self.call_method(receiver, method, arg_vals)
@@ -499,12 +425,9 @@ impl Interpreter {
                 let mut field_values = IndexMap::new();
 
                 if let Some(spread_expr) = spread {
-                    if let Value::Struct {
-                        fields: base_fields,
-                        ..
-                    } = self.eval_expr(spread_expr)?
-                    {
-                        field_values.extend(base_fields);
+                    if let Value::Struct(ref s) = self.eval_expr(spread_expr)? {
+                        let guard = s.lock().unwrap();
+                        field_values.extend(guard.fields.clone());
                     }
                 }
 
@@ -519,11 +442,7 @@ impl Interpreter {
                     None
                 };
 
-                Ok(Value::Struct {
-                    name: concrete_name,
-                    fields: field_values,
-                    resource_id,
-                })
+                Ok(Value::new_struct(concrete_name, field_values, resource_id))
             }
 
             ExprKind::Field { object, field } => {
@@ -554,8 +473,8 @@ impl Interpreter {
 
                 let obj = self.eval_expr(object)?;
                 match obj {
-                    Value::Struct { fields, .. } => {
-                        Ok(fields.get(field).cloned().unwrap_or(Value::Unit))
+                    Value::Struct(ref s) => {
+                        Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
                     // Tuple field access: tuple.0, tuple.1, ...
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {

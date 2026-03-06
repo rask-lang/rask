@@ -187,16 +187,19 @@ impl Interpreter {
             Value::Duration(nanos) => self.call_duration_method(*nanos, method, args),
             Value::Instant(instant) => self.call_instant_method(instant, method, args),
             #[cfg(not(target_arch = "wasm32"))]
-            Value::Struct { name, fields, .. } if name == "Metadata" => {
-                self.call_metadata_method(fields, method)
+            Value::Struct(ref s) if s.lock().unwrap().name == "Metadata" => {
+                let guard = s.lock().unwrap();
+                self.call_metadata_method(&guard.fields, method)
             }
-            Value::Struct { name, fields, .. } if name == "Path" => {
-                self.call_path_instance_method(fields, method, args)
+            Value::Struct(ref s) if s.lock().unwrap().name == "Path" => {
+                let guard = s.lock().unwrap();
+                self.call_path_instance_method(&guard.fields, method, args)
             }
-            Value::Struct { name, fields, .. } if name == "Args" => {
-                self.call_args_method(fields, method, args)
+            Value::Struct(ref s) if s.lock().unwrap().name == "Args" => {
+                let guard = s.lock().unwrap();
+                self.call_args_method(&guard.fields, method, args)
             }
-            Value::Struct { name, .. } if name == "BuildContext" => {
+            Value::Struct(ref s) if s.lock().unwrap().name == "BuildContext" => {
                 if method == "step" {
                     return self.call_build_step(args);
                 }

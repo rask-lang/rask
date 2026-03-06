@@ -83,13 +83,14 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(true));
             }
-            Value::Struct { .. } if method == "eq" => {
+            Value::Struct(..) if method == "eq" => {
                 if let Some(other) = args.first() {
-                    if let (Value::Struct { name: n1, fields: f1, .. },
-                            Value::Struct { name: n2, fields: f2, .. }) = (&receiver, other) {
-                        if n1 == n2 && f1.len() == f2.len() {
-                            let all_eq = f1.iter()
-                                .all(|(k, v1)| f2.get(k).map_or(false, |v2| Self::value_eq(v1, v2)));
+                    if let (Value::Struct(ref s1), Value::Struct(ref s2)) = (&receiver, other) {
+                        let g1 = s1.lock().unwrap();
+                        let g2 = s2.lock().unwrap();
+                        if g1.name == g2.name && g1.fields.len() == g2.fields.len() {
+                            let all_eq = g1.fields.iter()
+                                .all(|(k, v1)| g2.fields.get(k).map_or(false, |v2| Self::value_eq(v1, v2)));
                             return Ok(Value::Bool(all_eq));
                         }
                         return Ok(Value::Bool(false));
@@ -97,20 +98,20 @@ impl Interpreter {
                 }
                 return Ok(Value::Bool(false));
             }
-            Value::Struct { .. } if method == "ne" => {
+            Value::Struct(..) if method == "ne" => {
                 let eq_result = self.call_builtin_method(receiver, "eq", args)?;
                 if let Value::Bool(b) = eq_result {
                     return Ok(Value::Bool(!b));
                 }
                 return Ok(Value::Bool(true));
             }
-            Value::Struct { .. } if method == "hash" => {
+            Value::Struct(..) if method == "hash" => {
                 return Ok(Value::Int(Self::value_hash(&receiver) as i64));
             }
             Value::Enum { .. } if method == "hash" => {
                 return Ok(Value::Int(Self::value_hash(&receiver) as i64));
             }
-            Value::Struct { .. } if method == "compare" => {
+            Value::Struct(..) if method == "compare" => {
                 if let Some(other) = args.first() {
                     let ord = Self::value_cmp(&receiver, other).unwrap_or(std::cmp::Ordering::Equal);
                     return Ok(Value::Enum {
@@ -153,7 +154,7 @@ impl Interpreter {
                 });
             }
             // ORD1: lt/le/gt/ge derived from compare via value_cmp
-            Value::Struct { .. } | Value::Enum { .. }
+            Value::Struct(..) | Value::Enum { .. }
                 if matches!(method, "lt" | "le" | "gt" | "ge") =>
             {
                 if let Some(other) = args.first() {
@@ -170,10 +171,10 @@ impl Interpreter {
                 return Ok(Value::Bool(false));
             }
             // G2: debug_string for structs/enums — uses Display impl
-            Value::Struct { .. } | Value::Enum { .. } if method == "debug_string" => {
+            Value::Struct(..) | Value::Enum { .. } if method == "debug_string" => {
                 return Ok(Value::String(Arc::new(Mutex::new(format!("{}", receiver)))));
             }
-            Value::Struct { .. } if method == "clone" => return Ok(receiver.deep_clone()),
+            Value::Struct(..) if method == "clone" => return Ok(receiver.deep_clone()),
             Value::Enum { .. } if method == "clone" => return Ok(receiver.deep_clone()),
             _ => {}
         }
@@ -182,7 +183,7 @@ impl Interpreter {
         // If the type has a user-defined message() method, use it for to_string().
         if method == "to_string" {
             let type_name = match &receiver {
-                Value::Struct { name, .. } => Some(name.clone()),
+                Value::Struct(ref s) => Some(s.lock().unwrap().name.clone()),
                 Value::Enum { name, .. } => Some(name.clone()),
                 _ => None,
             };
@@ -214,7 +215,7 @@ impl Interpreter {
 
         // User-defined methods from extend blocks
         let type_name = match &receiver {
-            Value::Struct { name, .. } => name.clone(),
+            Value::Struct(ref s) => s.lock().unwrap().name.clone(),
             Value::Enum { name, .. } => name.clone(),
             _ => receiver.type_name().to_string(),
         };

@@ -142,11 +142,11 @@ impl Interpreter {
         fields.insert("features".to_string(), Value::Vec(Arc::new(Mutex::new(
             cfg.features.iter().map(|f| Value::String(Arc::new(Mutex::new(f.clone())))).collect(),
         ))));
-        self.env.define("cfg".to_string(), Value::Struct {
-            name: "Cfg".to_string(),
+        self.env.define("cfg".to_string(), Value::new_struct(
+            "Cfg".to_string(),
             fields,
-            resource_id: None,
-        });
+            None,
+        ));
     }
 
     /// Clones function/enum/method tables and captured environment for spawned thread.
@@ -390,7 +390,7 @@ impl Interpreter {
 
     pub(crate) fn get_resource_id(&self, value: &Value) -> Option<u64> {
         match value {
-            Value::Struct { resource_id, .. } => *resource_id,
+            Value::Struct(ref s) => s.lock().unwrap().resource_id,
             Value::File(rc) => {
                 let ptr = Arc::as_ptr(rc) as usize;
                 self.resource_tracker.lookup_file_id(ptr)
@@ -418,8 +418,10 @@ impl Interpreter {
                     self.resource_tracker.transfer_to_scope(id, new_depth);
                 }
             }
-            Value::Struct { resource_id: Some(id), .. } => {
-                self.resource_tracker.transfer_to_scope(*id, new_depth);
+            Value::Struct(ref s) => {
+                if let Some(id) = s.lock().unwrap().resource_id {
+                    self.resource_tracker.transfer_to_scope(id, new_depth);
+                }
             }
             Value::Enum { fields, .. } => {
                 for field in fields {

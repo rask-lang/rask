@@ -195,13 +195,13 @@ impl Interpreter {
                         Ok(Value::Enum {
                             name: "Result".to_string(),
                             variant: "Ok".to_string(),
-                            fields: vec![Value::Struct {
-                                name: "Metadata".to_string(),
+                            fields: vec![Value::new_struct(
+                                "Metadata".to_string(),
                                 fields,
-                                resource_id: None,
-                            }],
-                                variant_index: 0,
-                            })
+                                None,
+                            )],
+                            variant_index: 0,
+                        })
                     }
                     Err(e) => Ok(Value::Enum {
                         name: "Result".to_string(),
