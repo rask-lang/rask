@@ -89,9 +89,9 @@ impl Interpreter {
         if let Some(val) = self.env.get(parts[0]) {
             let mut current = val.clone();
             for &part in &parts[1..] {
-                match current {
-                    Value::Struct { fields, .. } => {
-                        current = fields.get(part).cloned().unwrap_or(Value::Unit);
+                let next = match &current {
+                    Value::Struct(s) => {
+                        s.lock().unwrap().fields.get(part).cloned().unwrap_or(Value::Unit)
                     }
                     _ => {
                         return Err(RuntimeError::TypeError(format!(
@@ -100,7 +100,8 @@ impl Interpreter {
                             current.type_name()
                         )));
                     }
-                }
+                };
+                current = next;
             }
             Ok(current)
         } else {
@@ -243,12 +244,13 @@ impl Interpreter {
                 let items: Vec<String> = vec.iter().map(|v| self.debug_format(v)).collect();
                 format!("[{}]", items.join(", "))
             }
-            Value::Struct { name, fields, .. } => {
-                let field_strs: Vec<String> = fields
+            Value::Struct(ref s) => {
+                let guard = s.lock().unwrap();
+                let field_strs: Vec<String> = guard.fields
                     .iter()
                     .map(|(k, v)| format!("{}: {}", k, self.debug_format(v)))
                     .collect();
-                format!("{} {{ {} }}", name, field_strs.join(", "))
+                format!("{} {{ {} }}", guard.name, field_strs.join(", "))
             }
             Value::Enum { name, variant, fields, .. } => {
                 if fields.is_empty() {

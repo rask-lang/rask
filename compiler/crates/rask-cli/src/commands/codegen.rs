@@ -300,6 +300,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
         comptime_interp: Some(std::cell::RefCell::new(mir_interp)),
         trait_coercions: &typed.trait_coercions,
+        call_rewrites: &mono.call_rewrites,
     };
 
     let mut mir_errors = 0;

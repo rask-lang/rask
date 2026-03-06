@@ -163,6 +163,7 @@ impl Interpreter {
                     .iter()
                     .map(|a| self.eval_expr(&a.expr))
                     .collect::<Result<_, _>>()?;
+
                 self.call_value(func_val, arg_vals)
                     .map_err(|e| RuntimeDiagnostic::new(e, expr.span))
             }
@@ -424,12 +425,9 @@ impl Interpreter {
                 let mut field_values = IndexMap::new();
 
                 if let Some(spread_expr) = spread {
-                    if let Value::Struct {
-                        fields: base_fields,
-                        ..
-                    } = self.eval_expr(spread_expr)?
-                    {
-                        field_values.extend(base_fields);
+                    if let Value::Struct(ref s) = self.eval_expr(spread_expr)? {
+                        let guard = s.lock().unwrap();
+                        field_values.extend(guard.fields.clone());
                     }
                 }
 
@@ -444,11 +442,7 @@ impl Interpreter {
                     None
                 };
 
-                Ok(Value::Struct {
-                    name: concrete_name,
-                    fields: field_values,
-                    resource_id,
-                })
+                Ok(Value::new_struct(concrete_name, field_values, resource_id))
             }
 
             ExprKind::Field { object, field } => {
@@ -479,8 +473,8 @@ impl Interpreter {
 
                 let obj = self.eval_expr(object)?;
                 match obj {
-                    Value::Struct { fields, .. } => {
-                        Ok(fields.get(field).cloned().unwrap_or(Value::Unit))
+                    Value::Struct(ref s) => {
+                        Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
                     // Tuple field access: tuple.0, tuple.1, ...
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {

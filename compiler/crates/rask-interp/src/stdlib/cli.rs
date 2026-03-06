@@ -206,11 +206,11 @@ fn parse_args(raw_args: &[String]) -> Value {
         Value::String(Arc::new(Mutex::new(program))),
     );
 
-    Value::Struct {
-        name: "Args".to_string(),
-        fields: struct_fields,
-        resource_id: None,
-    }
+    Value::new_struct(
+        "Args".to_string(),
+        struct_fields,
+        None,
+    )
 }
 
 /// Extract a Vec<String> from a struct field that holds Vec<Value::String>.

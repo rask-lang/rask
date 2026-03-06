@@ -25,12 +25,15 @@ impl TypeChecker {
                 DeclKind::Union(u) => self.register_union(u),
                 DeclKind::TypeAlias(a) => self.register_type_alias(a),
                 DeclKind::Fn(f) if !f.type_params.is_empty() => {
-                    // Find this function's SymbolId by matching name + Function kind
+                    // Find this function's SymbolId by matching name + Function kind.
+                    // Strip generic suffix: parser stores "foo<T: Trait>" but resolver
+                    // registers the base name "foo".
+                    let base_name = f.name.split('<').next().unwrap_or(&f.name);
                     let type_param_names: Vec<String> = f.type_params.iter()
                         .map(|p| p.name.clone())
                         .collect();
                     if let Some(sym) = self.resolved.symbols.iter()
-                        .find(|s| s.name == f.name && matches!(s.kind, SymbolKind::Function { .. }))
+                        .find(|s| s.name == base_name && matches!(s.kind, SymbolKind::Function { .. }))
                     {
                         self.fn_type_params.insert(sym.id, type_param_names);
                     }

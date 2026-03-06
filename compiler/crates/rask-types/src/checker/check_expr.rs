@@ -3,7 +3,7 @@
 
 use rask_ast::expr::{BinOp, CallArg, Expr, ExprKind};
 use rask_ast::stmt::StmtKind;
-use rask_ast::Span;
+use rask_ast::{NodeId, Span};
 use rask_resolve::{SymbolId, SymbolKind};
 
 use super::type_defs::TypeDef;
@@ -117,7 +117,7 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Call { func, args } => self.check_call(func, args, expr.span),
+            ExprKind::Call { func, args } => self.check_call(expr.id, func, args, expr.span),
 
             ExprKind::MethodCall {
                 object,
@@ -882,7 +882,7 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn check_call(&mut self, func: &Expr, args: &[CallArg], span: Span) -> Type {
+    pub(super) fn check_call(&mut self, call_id: NodeId, func: &Expr, args: &[CallArg], span: Span) -> Type {
         if let ExprKind::Ident(name) = &func.kind {
             // transmute(val) — reinterpret bits, requires unsafe
             if name == "transmute" {
@@ -964,7 +964,7 @@ impl TypeChecker {
                         })
                         .collect();
                     let fresh_vars: Vec<Type> = pairs.iter().map(|(_, v)| v.clone()).collect();
-                    self.pending_call_type_args.push((func.id, fresh_vars));
+                    self.pending_call_type_args.push((call_id, fresh_vars));
                     pairs
                 })
         } else {

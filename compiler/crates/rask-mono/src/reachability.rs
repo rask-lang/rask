@@ -26,6 +26,16 @@ struct WorkItem {
     type_args: Vec<Type>,
 }
 
+/// Generate a mangled name for a generic function instantiation.
+/// e.g., ("render_children", [Inline]) → "render_children$Inline"
+pub fn mangle_name(base: &str, type_args: &[Type]) -> String {
+    if type_args.is_empty() {
+        return base.to_string();
+    }
+    let args_str: Vec<String> = type_args.iter().map(|t| format!("{}", t)).collect();
+    format!("{}${}", base, args_str.join("_"))
+}
+
 /// Drives monomorphization: reachability first, instantiation on demand.
 pub struct Monomorphizer<'a> {
     /// Lookup table: function name → original declaration
@@ -44,6 +54,9 @@ pub struct Monomorphizer<'a> {
     queue: VecDeque<WorkItem>,
     /// Resulting instantiated functions
     pub results: Vec<MonoFunction>,
+    /// Call expression NodeId → mangled callee name.
+    /// Used by MIR lowering to rewrite calls to generic function instantiations.
+    pub call_rewrites: HashMap<NodeId, String>,
 }
 
 /// Wrap a method FnDecl as a top-level Decl and register it under its
@@ -78,6 +91,12 @@ impl<'a> Monomorphizer<'a> {
             match &decl.kind {
                 DeclKind::Fn(f) => {
                     fn_table.insert(f.name.clone(), decl);
+                    // Also register under base name for generic functions:
+                    // parser stores "foo<T: Trait>" but call sites use "foo"
+                    let base = f.name.split('<').next().unwrap_or(&f.name);
+                    if base != f.name {
+                        fn_table.insert(base.to_string(), decl);
+                    }
                     // Free functions with Type_method naming (e.g. compiled stdlib
                     // wrappers) should also be discoverable as instance methods.
                     if let Some(underscore_pos) = f.name.find('_') {
@@ -126,6 +145,7 @@ impl<'a> Monomorphizer<'a> {
             seen: HashMap::new(),
             queue: VecDeque::new(),
             results: Vec::new(),
+            call_rewrites: HashMap::new(),
         }
     }
 
@@ -173,8 +193,9 @@ impl<'a> Monomorphizer<'a> {
                 }
             }
 
+            let mangled = mangle_name(&item.name, &item.type_args);
             self.results.push(MonoFunction {
-                name: item.name.clone(),
+                name: mangled,
                 type_args: item.type_args,
                 body: concrete,
             });
@@ -258,6 +279,11 @@ impl<'a> Monomorphizer<'a> {
                         .get(&expr.id)
                         .cloned()
                         .unwrap_or_default();
+                    // Record call rewrite so MIR lowering uses the mangled name
+                    if !type_args.is_empty() {
+                        let mangled = mangle_name(name, &type_args);
+                        self.call_rewrites.insert(expr.id, mangled);
+                    }
                     self.enqueue(name.clone(), type_args);
                 }
                 self.visit_expr(func);
