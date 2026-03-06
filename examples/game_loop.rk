@@ -276,7 +276,7 @@ func main() -> () or Error {
             // Parallel physics: split entity updates across thread pool
             // Each thread processes a batch of entities
             // Borrow checker tracks that only state.entities is borrowed
-            parallel_movement_system(state.entities, dt, NUM_PHYSICS_THREADS)
+            parallel_movement_system(mutate state.entities, dt, NUM_PHYSICS_THREADS)
 
             // Collision runs single-threaded (needs to see all entities)
             collision_system(mutate state)
