@@ -3,7 +3,7 @@
 ## Codegen
 
 - [x] **ThreadPool.spawn / Thread.spawn MIR routing** — Already handled via `is_type_constructor_name` detecting uppercase type names and routing through dispatch table.
-- [x] **Sensor processor native compilation** — Runs natively with threads, timing, shared Vec. Float averages limited by untyped Vec codegen.
+- [ ] **Sensor processor native compilation** — Cranelift f64 struct field access generates loads with wrong address type (uses f64 value as pointer). Blocks `compute_averages`.
 - [x] CleanupReturn deduplication — shared Cranelift blocks per unique cleanup chain
 - [x] Non-closure `map_err` variant constructors — handles both bare (`MyError`) and qualified (`ConfigError.Io`) names
 - [x] **Unsafe block codegen** — Unsafe context enforced by type checker. Raw pointer primitives (read, write, add, sub, offset, etc.) fully implemented with dispatch and C runtime.
@@ -48,8 +48,15 @@
 - [x] **MIR lowering: module-level constants not visible** — `const BLOOM_BITS: i32 = 256` etc. at file scope cause `UnresolvedVariable` during MIR lowering. Fix: pass `DeclKind::Const` decls through to MIR, inject as locals with `try_eval_const_init` before function body.
 - [x] **MIR lowering: `i64` as variable** — `i64.MAX` / `i32.MIN` etc. not recognized. Fix: `primitive_type_constant()` resolves type-associated constants in `ExprKind::Field`.
 - [x] **MIR lowering: for-loop tuple destructuring** — `for (name, value) in collection.iter()` only bound first element. Fix: generic for-loop and iter-chain paths now extract fields for `ForBinding::Tuple`.
+- [ ] **Codegen: `format()` not wired** — `format()` is compiler-known (std.fmt/CM1) but codegen dispatch doesn't route it. Blocks 08_traits, 13_string_operations.
+- [ ] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
 - [ ] **Codegen: comparison/arithmetic operators not declared** — `lt`, `rem` not found for string/user-type comparisons. MIR generates `lt`/`rem` calls but codegen doesn't declare them. Affects `<`, `>=`, `%` on non-primitive types.
-- [ ] **Codegen: missing method declarations** — `push`, `push_str`, `KeyValue_clone`, `string_ge`, `string_compare`, `string_chars`, `fs_list_dir`, `Vec_find`, `Map_iter`, `Vec_parse_int` not in codegen function namespace. 23 total codegen errors across lsm_database.
+- [ ] **Codegen: missing method declarations** — `push`, `push_str`, `KeyValue_clone`, `string_ge`, `string_compare`, `string_chars`, `fs_list_dir`, `Vec_find`, `Map_iter`, `Vec_parse_int`, `EditCommand_clone`, `Pool_is_empty`, `Thread_detach`, `f64_powf`, `string_parse` not in codegen function namespace.
+- [ ] **Codegen: f64 struct field access** — Cranelift loads from struct fields of type `f64` use the f64 value itself as the address instead of computing field pointer offset. Blocks sensor_processor.
+- [ ] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
+- [ ] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
+- [ ] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
+- [ ] **Runtime: silent crashes in collection iteration** — 03_collections, 04_pattern_matching, 12_iterators compile+link but exit(1) with no output. Likely Vec/Map for-each iterator codegen producing wrong code.
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
 - [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).

@@ -112,9 +112,8 @@ func main() {
 
     // Expression form — no braces needed for single operations
     print("\n=== Expression-Form Unsafe ===\n")
-    const x = 42
-    let ptr: *i32 = &x as *i32
-    const value = unsafe *ptr
+    const nums = Vec.from([42])
+    const value = unsafe *nums.as_ptr()
     print("Read via expression-form unsafe: ")
     print(value)
     print("\n")
