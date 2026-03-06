@@ -48,15 +48,17 @@
 - [x] **MIR lowering: module-level constants not visible** — `const BLOOM_BITS: i32 = 256` etc. at file scope cause `UnresolvedVariable` during MIR lowering. Fix: pass `DeclKind::Const` decls through to MIR, inject as locals with `try_eval_const_init` before function body.
 - [x] **MIR lowering: `i64` as variable** — `i64.MAX` / `i32.MIN` etc. not recognized. Fix: `primitive_type_constant()` resolves type-associated constants in `ExprKind::Field`.
 - [x] **MIR lowering: for-loop tuple destructuring** — `for (name, value) in collection.iter()` only bound first element. Fix: generic for-loop and iter-chain paths now extract fields for `ForBinding::Tuple`.
-- [ ] **Codegen: `format()` not wired** — `format()` is compiler-known (std.fmt/CM1) but codegen dispatch doesn't route it. Blocks 08_traits, 13_string_operations.
+- [x] **Codegen: `format()` was redundant** — Examples used `format("template {}", arg)` but Rask has string interpolation (`"template {arg}"`). Converted examples, removed unused MIR lowering.
+- [x] **Codegen: None lowering** — Bare `None` was lowered as integer constant 1, causing segfault when tag-checked. Fixed: allocates proper tagged union.
+- [x] **Codegen: Vec.from([...])** — Was calling `rask_vec_clone` with stack array pointer. Fixed: `lower_vec_from_array` uses `rask_vec_from_static`.
+- [x] **Codegen: dispatch gaps** — Added Pool_is_empty, Pool_contains, Pool_cursor, Thread_detach, f64_powf, f64_powi, string_parse.
 - [ ] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
-- [ ] **Codegen: comparison/arithmetic operators not declared** — `lt`, `rem` not found for string/user-type comparisons. MIR generates `lt`/`rem` calls but codegen doesn't declare them. Affects `<`, `>=`, `%` on non-primitive types.
-- [ ] **Codegen: missing method declarations** — `push`, `push_str`, `KeyValue_clone`, `string_ge`, `string_compare`, `string_chars`, `fs_list_dir`, `Vec_find`, `Map_iter`, `Vec_parse_int`, `EditCommand_clone`, `Pool_is_empty`, `Thread_detach`, `f64_powf`, `string_parse` not in codegen function namespace.
-- [ ] **Codegen: f64 struct field access** — Cranelift loads from struct fields of type `f64` use the f64 value itself as the address instead of computing field pointer offset. Blocks sensor_processor.
+- [ ] **Codegen: f64 chained struct field access** — Loading an f64 field produces an f64 Cranelift value which then gets used as a base address for the next field load. Root cause: MIR field chains where intermediate loads return typed values instead of addresses. Blocks sensor_processor `compute_averages`.
 - [ ] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
+- [ ] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
 - [ ] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
 - [ ] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
-- [ ] **Runtime: silent crashes in collection iteration** — 03_collections, 04_pattern_matching, 12_iterators compile+link but exit(1) with no output. Likely Vec/Map for-each iterator codegen producing wrong code.
+- [ ] **Runtime: silent crashes in collection iteration** — 03_collections, 12_iterators, 13_string_operations compile+link but exit(1) with no output. Likely Vec for-each iterator codegen producing wrong loop bounds or element access.
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
 - [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).
@@ -68,7 +70,7 @@
 - [x] **`todo()` / `unreachable()`** — Development panic builtins returning `!` (Never). Interpreter + native codegen (desugars to `panic()` in MIR). See [error-types.md](specs/types/error-types.md)
 - [x] **Tuple spec** — Formalized existing tuple support. See [tuples.md](specs/types/tuples.md)
 - [x] **Destructuring spec** — Formalized existing destructuring. See [control-flow.md](specs/control/control-flow.md)
-- [x] **Macros / `format!`** — `format()` is a compiler-known function (`std.fmt/CM1`, `struct.modules/BF2`). General macro system rejected (`rejected-features.md`)
+- [x] **Macros / `format!`** — `format()` removed as redundant — string interpolation `"hello {name}"` covers all use cases. General macro system rejected (`rejected-features.md`)
 ## Design — Decided
 
 - [x] **Serialization / encoding** — `comptime for` + field access, auto-derived `Encode`/`Decode` marker traits, field annotations (`@rename`, `@skip`, `@default`). See [encoding.md](specs/stdlib/encoding.md)
