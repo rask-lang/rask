@@ -11,23 +11,7 @@ use crate::value::Value;
 use super::{Interpreter, RuntimeDiagnostic, RuntimeError};
 
 impl Interpreter {
-    /// Call a function with writeback support for mutated parameters.
-    /// `writebacks` maps parameter names to caller variable names, so
-    /// modified values propagate back after the call.
-    pub(crate) fn call_function_with_writebacks(
-        &mut self,
-        func: &FnDecl,
-        args: Vec<Value>,
-        writebacks: &[(&str, &str)],  // (param_name, caller_var_name)
-    ) -> Result<Value, RuntimeDiagnostic> {
-        self.call_function_inner(func, args, writebacks)
-    }
-
-    pub(crate) fn call_function(&mut self, func: &FnDecl, args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
-        self.call_function_inner(func, args, &[])
-    }
-
-    fn call_function_inner(&mut self, func: &FnDecl, mut args: Vec<Value>, writebacks: &[(&str, &str)]) -> Result<Value, RuntimeDiagnostic> {
+    pub(crate) fn call_function(&mut self, func: &FnDecl, mut args: Vec<Value>) -> Result<Value, RuntimeDiagnostic> {
         // Fill in default values for missing trailing arguments
         if args.len() < func.params.len() {
             for i in args.len()..func.params.len() {
@@ -63,13 +47,6 @@ impl Interpreter {
 
         let result = self.exec_stmts(&func.body);
 
-        // Capture modified values for writeback before popping scope
-        let modified_values: Vec<(String, Value)> = writebacks.iter()
-            .filter_map(|(param_name, caller_var)| {
-                self.env.get(param_name).cloned().map(|v| (caller_var.to_string(), v))
-            })
-            .collect();
-
         let scope_depth = self.env.scope_depth();
         let caller_depth = scope_depth.saturating_sub(1);
         match &result {
@@ -95,11 +72,6 @@ impl Interpreter {
         }
 
         self.env.pop_scope();
-
-        // Apply writebacks after scope pop
-        for (caller_var, modified) in modified_values {
-            self.env.assign(&caller_var, modified);
-        }
 
         let value = match result {
             Ok(_) => Value::Unit,

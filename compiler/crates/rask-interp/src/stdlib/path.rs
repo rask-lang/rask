@@ -148,11 +148,11 @@ fn make_path_value(s: &str) -> Value {
         "value".to_string(),
         Value::String(Arc::new(Mutex::new(result))),
     );
-    Value::Struct {
-        name: "Path".to_string(),
+    Value::new_struct(
+        "Path".to_string(),
         fields,
-        resource_id: None,
-    }
+        None,
+    )
 }
 
 /// Extract the inner string from a Path struct.

@@ -439,16 +439,17 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                 format!("[{}]", items.join(","))
             }
         }
-        Value::Struct { fields, .. } => {
-            if fields.is_empty() {
+        Value::Struct(ref s) => {
+            let guard = s.lock().unwrap();
+            if guard.fields.is_empty() {
                 return "{}".to_string();
             }
-            let mut sorted_keys: Vec<&String> = fields.keys().collect();
+            let mut sorted_keys: Vec<&String> = guard.fields.keys().collect();
             sorted_keys.sort();
             if pretty {
                 let mut s = "{\n".to_string();
                 for (i, key) in sorted_keys.iter().enumerate() {
-                    let val = &fields[*key];
+                    let val = &guard.fields[*key];
                     s.push_str(&"  ".repeat(indent + 1));
                     s.push_str(&escape_json_string(key));
                     s.push_str(": ");
@@ -468,7 +469,7 @@ fn stringify_value(value: &Value, pretty: bool, indent: usize) -> String {
                         format!(
                             "{}:{}",
                             escape_json_string(k),
-                            stringify_value(&fields[*k], false, 0)
+                            stringify_value(&guard.fields[*k], false, 0)
                         )
                     })
                     .collect();
@@ -576,8 +577,9 @@ fn value_to_json(value: &Value) -> Result<Value, RuntimeError> {
                 vec.iter().map(|v| value_to_json(v)).collect();
             Ok(make_json_array(items?))
         }
-        Value::Struct { fields, .. } => {
-            let entries: Result<Vec<(String, Value)>, RuntimeError> = fields
+        Value::Struct(ref s) => {
+            let guard = s.lock().unwrap();
+            let entries: Result<Vec<(String, Value)>, RuntimeError> = guard.fields
                 .iter()
                 .filter(|(k, _)| !k.starts_with('_')) // Skip internal fields
                 .map(|(k, v)| value_to_json(v).map(|jv| (k.clone(), jv)))
@@ -662,13 +664,13 @@ fn make_json_object(entries: Vec<(String, Value)>) -> Value {
     Value::Enum {
         name: "JsonValue".to_string(),
         variant: "Object".to_string(),
-        fields: vec![Value::Struct {
-            name: "Map".to_string(),
-            fields: map,
-            resource_id: None,
-        }],
-            variant_index: 0,
-        }
+        fields: vec![Value::new_struct(
+            "Map".to_string(),
+            map,
+            None,
+        )],
+        variant_index: 0,
+    }
 }
 
 // ─── JSON Decode (typed deserialization) ───
@@ -713,11 +715,11 @@ fn json_to_typed(
                 }
             }
 
-            Ok(Value::Struct {
-                name: type_name.to_string(),
-                fields: struct_fields,
-                resource_id: None,
-            })
+            Ok(Value::new_struct(
+                type_name.to_string(),
+                struct_fields,
+                None,
+            ))
         }
     }
 }
@@ -827,7 +829,7 @@ fn extract_array(v: &Value) -> Result<Vec<Value>, String> {
 fn extract_object_fields(v: &Value) -> Result<IndexMap<String, Value>, String> {
     match v {
         // JsonValue.Object wraps a Struct named "Map" with field→value pairs
-        Value::Struct { fields, .. } => Ok(fields.clone()),
+        Value::Struct(ref s) => Ok(s.lock().unwrap().fields.clone()),
         // Direct Map (from parsed JSON)
         Value::Map(m) => {
             let map = m.lock().unwrap();
