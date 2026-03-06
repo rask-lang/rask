@@ -137,12 +137,22 @@ impl TypeChecker {
             .map(|(id, ty)| (*id, self.ctx.apply(ty)))
             .collect();
 
-        // Resolve pending generic call type args
+        // Build reverse map TypeId → name for normalizing Named types
+        let id_to_name: HashMap<crate::TypeId, String> = self.types.type_names
+            .iter()
+            .map(|(name, id)| (*id, name.clone()))
+            .collect();
+
+        // Resolve pending generic call type args, normalizing Named(TypeId)
+        // to UnresolvedNamed(name) so monomorphizer can use consistent names.
         let call_type_args: HashMap<_, _> = self
             .pending_call_type_args
             .iter()
             .map(|(node_id, vars)| {
-                let resolved: Vec<Type> = vars.iter().map(|v| self.ctx.apply(v)).collect();
+                let resolved: Vec<Type> = vars.iter().map(|v| {
+                    let applied = self.ctx.apply(v);
+                    Self::normalize_named_types(&applied, &id_to_name)
+                }).collect();
                 (*node_id, resolved)
             })
             .collect();
@@ -179,6 +189,35 @@ impl TypeChecker {
             } else {
                 Err(errors)
             }
+        }
+    }
+
+    /// Replace Named(TypeId) with UnresolvedNamed(name) so the monomorphizer
+    /// sees consistent string-based type names regardless of resolution order.
+    fn normalize_named_types(ty: &Type, id_to_name: &HashMap<crate::TypeId, String>) -> Type {
+        match ty {
+            Type::Named(id) => {
+                if let Some(name) = id_to_name.get(id) {
+                    Type::UnresolvedNamed(name.clone())
+                } else {
+                    ty.clone()
+                }
+            }
+            Type::UnresolvedGeneric { name, args } => Type::UnresolvedGeneric {
+                name: name.clone(),
+                args: args.iter().map(|a| match a {
+                    crate::GenericArg::Type(inner) => {
+                        crate::GenericArg::Type(Box::new(Self::normalize_named_types(inner, id_to_name)))
+                    }
+                    other => other.clone(),
+                }).collect(),
+            },
+            Type::Option(inner) => Type::Option(Box::new(Self::normalize_named_types(inner, id_to_name))),
+            Type::Result { ok, err } => Type::Result {
+                ok: Box::new(Self::normalize_named_types(ok, id_to_name)),
+                err: Box::new(Self::normalize_named_types(err, id_to_name)),
+            },
+            _ => ty.clone(),
         }
     }
 

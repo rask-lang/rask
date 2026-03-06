@@ -1990,6 +1990,7 @@ mod tests {
             functions: vec![],
             struct_layouts: vec![],
             enum_layouts: vec![],
+            call_rewrites: std::collections::HashMap::new(),
         }
     }
 
@@ -2021,6 +2022,7 @@ mod tests {
                 },
             ],
             enum_layouts: vec![],
+            call_rewrites: std::collections::HashMap::new(),
         }
     }
 
@@ -2070,6 +2072,7 @@ mod tests {
                     ],
                 },
             ],
+            call_rewrites: std::collections::HashMap::new(),
         }
     }
 }

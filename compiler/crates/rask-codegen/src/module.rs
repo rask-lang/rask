@@ -708,25 +708,32 @@ impl CodeGenerator {
             func_refs.insert(name.clone(), func_ref);
         }
 
-        // Pre-import string data globals into this function
+        // Import only the string data globals that this function actually uses
+        let needed_strings = collect_used_strings(mir_fn);
         let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
-        for (content, data_id) in &self.string_data {
-            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
-            string_globals.insert(content.clone(), gv);
+        for s in &needed_strings {
+            if let Some(data_id) = self.string_data.get(s) {
+                let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                string_globals.insert(s.clone(), gv);
+            }
         }
 
-        // Pre-import comptime data globals into this function
+        // Import only the comptime data globals that this function actually uses
         let mut comptime_globals: HashMap<String, GlobalValue> = HashMap::new();
         for (name, data_id) in &self.comptime_data {
+            // Comptime globals are rare; import all for simplicity
             let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
             comptime_globals.insert(name.clone(), gv);
         }
 
-        // Pre-import vtable data globals into this function
+        // Import only the vtable data globals that this function actually uses
+        let needed_vtables = collect_used_vtables(mir_fn);
         let mut vtable_globals: HashMap<String, GlobalValue> = HashMap::new();
-        for (name, data_id) in &self.vtable_data {
-            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
-            vtable_globals.insert(name.clone(), gv);
+        for name in &needed_vtables {
+            if let Some(data_id) = self.vtable_data.get(name) {
+                let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+                vtable_globals.insert(name.clone(), gv);
+            }
         }
 
         // Build the function
@@ -758,6 +765,88 @@ impl CodeGenerator {
         Ok(())
     }
 
+}
+
+/// Collect all string constants referenced by a single MIR function.
+fn collect_used_strings(mir_fn: &MirFunction) -> HashSet<String> {
+    let mut strings = HashSet::new();
+    for block in &mir_fn.blocks {
+        for stmt in &block.statements {
+            collect_operand_strings_stmt(stmt, &mut strings);
+        }
+        collect_operand_strings_term(&block.terminator, &mut strings);
+    }
+    // Source file is used for panic locations
+    if let Some(ref src) = mir_fn.source_file {
+        strings.insert(src.clone());
+    }
+    strings
+}
+
+fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<String>) {
+    match stmt {
+        rask_mir::MirStmt::Assign { rvalue, .. } => collect_rvalue_strings(rvalue, out),
+        rask_mir::MirStmt::Store { value, .. } => collect_operand_string(value, out),
+        rask_mir::MirStmt::Call { args, .. }
+        | rask_mir::MirStmt::ClosureCall { args, .. } => {
+            for arg in args { collect_operand_string(arg, out); }
+        }
+        rask_mir::MirStmt::PoolCheckedAccess { .. } => {
+            // Pool access may need panic strings
+            out.insert("pool access with invalid handle".to_string());
+        }
+        _ => {}
+    }
+}
+
+fn collect_operand_strings_term(term: &rask_mir::MirTerminator, out: &mut HashSet<String>) {
+    match term {
+        rask_mir::MirTerminator::Return { value: Some(op) } => collect_operand_string(op, out),
+        rask_mir::MirTerminator::Switch { value, .. } => collect_operand_string(value, out),
+        _ => {}
+    }
+}
+
+fn collect_rvalue_strings(rvalue: &rask_mir::MirRValue, out: &mut HashSet<String>) {
+    match rvalue {
+        rask_mir::MirRValue::Use(op) => collect_operand_string(op, out),
+        rask_mir::MirRValue::BinaryOp { left, right, .. } => {
+            collect_operand_string(left, out);
+            collect_operand_string(right, out);
+        }
+        rask_mir::MirRValue::UnaryOp { operand, .. } => collect_operand_string(operand, out),
+        rask_mir::MirRValue::Cast { value, .. } => collect_operand_string(value, out),
+        rask_mir::MirRValue::Field { base, .. } => collect_operand_string(base, out),
+        rask_mir::MirRValue::EnumTag { value } => collect_operand_string(value, out),
+        rask_mir::MirRValue::Deref(op) => collect_operand_string(op, out),
+        rask_mir::MirRValue::Ref(_) => {}
+        rask_mir::MirRValue::ArrayIndex { base, index, .. } => {
+            collect_operand_string(base, out);
+            collect_operand_string(index, out);
+        }
+    }
+}
+
+fn collect_operand_string(op: &MirOperand, out: &mut HashSet<String>) {
+    if let MirOperand::Constant(MirConst::String(s)) = op {
+        out.insert(s.clone());
+    }
+}
+
+/// Collect vtable names used by a single MIR function.
+fn collect_used_vtables(mir_fn: &MirFunction) -> HashSet<String> {
+    let mut vtables = HashSet::new();
+    for block in &mir_fn.blocks {
+        for stmt in &block.statements {
+            if let rask_mir::MirStmt::TraitBox { vtable_name, .. } = stmt {
+                vtables.insert(vtable_name.clone());
+            }
+        }
+    }
+    vtables
+}
+
+impl CodeGenerator {
     /// Generate a benchmark runner entry point (`main`) that calls `rask_bench_run`
     /// for each benchmark function.
     ///

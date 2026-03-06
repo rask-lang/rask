@@ -246,7 +246,14 @@ impl<'a> MirLowerer<'a> {
                 // Non-ident callees: field access, returned functions, etc.
                 // Lower the callee expression and emit an indirect ClosureCall.
                 let func_name = match &func.kind {
-                    ExprKind::Ident(name) => name.clone(),
+                    ExprKind::Ident(name) => {
+                        // Check for monomorphized generic call rewrite
+                        if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
+                            mangled.clone()
+                        } else {
+                            name.clone()
+                        }
+                    }
                     _ => {
                         let (callee_op, _callee_ty) = self.lower_expr(func)?;
                         let callee_local = match callee_op {

@@ -16,16 +16,20 @@ pub use layout::{
     compute_enum_layout, compute_struct_layout, compute_union_layout, type_size_align, EnumLayout, FieldLayout,
     LayoutCache, StructLayout, VariantLayout,
 };
-pub use reachability::Monomorphizer;
+pub use reachability::{mangle_name, Monomorphizer};
 
 use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::NodeId;
 use rask_types::{Type, TypedProgram};
+use std::collections::HashMap;
 
 /// Monomorphized program with all generics eliminated
 pub struct MonoProgram {
     pub functions: Vec<MonoFunction>,
     pub struct_layouts: Vec<StructLayout>,
     pub enum_layouts: Vec<EnumLayout>,
+    /// Call expression NodeId → mangled callee name for generic function calls.
+    pub call_rewrites: HashMap<NodeId, String>,
 }
 
 /// Monomorphized function instance
@@ -87,6 +91,7 @@ pub fn monomorphize(
         functions: mono.results,
         struct_layouts,
         enum_layouts,
+        call_rewrites: mono.call_rewrites,
     })
 }
 
