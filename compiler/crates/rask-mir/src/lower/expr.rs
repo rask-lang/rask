@@ -1050,7 +1050,9 @@ impl<'a> MirLowerer<'a> {
                         "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
                         | "enumerate" | "any" | "all" | "find" | "fold"
-                        | "for_each" | "flat_map" | "take" | "zip" => Some("Vec".to_string()),
+                        | "for_each" | "flat_map" | "take" | "zip"
+                        | "sort_by" | "sort" | "dedup"
+                        | "first" | "last" => Some("Vec".to_string()),
                         "join" if all_args.len() == 2 => Some("Vec".to_string()),
                         // Map (Vec uses index syntax for element access, so .get()/.insert()/.remove()
                         // as method calls are effectively Map-only in practice)

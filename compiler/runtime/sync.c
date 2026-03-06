@@ -23,6 +23,7 @@ struct RaskMutex {
     pthread_mutex_t lock;
     void           *data;
     int64_t         data_size;
+    _Atomic int64_t refcount;
 };
 
 RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
@@ -36,12 +37,14 @@ RaskMutex *rask_mutex_new(const void *initial_data, int64_t data_size) {
     m->data_size = data_size;
     m->data = rask_alloc(data_size);
 
+    atomic_store(&m->refcount, 1);
     memcpy(m->data, initial_data, (size_t)data_size);
     return m;
 }
 
 void rask_mutex_free(RaskMutex *m) {
     if (!m) return;
+    if (atomic_fetch_sub(&m->refcount, 1) > 1) return;
     pthread_mutex_destroy(&m->lock);
     rask_free(m->data);
     rask_free(m);
@@ -204,6 +207,12 @@ int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure) {
         return result;
     }
     return 0; // lock not acquired
+}
+
+int64_t rask_mutex_clone(int64_t mutex) {
+    RaskMutex *m = (RaskMutex *)(intptr_t)mutex;
+    atomic_fetch_add(&m->refcount, 1);
+    return mutex;
 }
 
 void rask_mutex_drop(int64_t mutex) {

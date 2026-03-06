@@ -375,12 +375,14 @@ impl<'a> MirLowerer<'a> {
                 if super::is_type_constructor_name(obj_name) {
                     // Type.method() → prefix is the type name.
                     // Covers stdlib (Vec, Map, string) and user types (Person, Document).
+                    // Strip generic args: Map<string, JsonValue> → Map
+                    let base_name = obj_name.split('<').next().unwrap_or(obj_name);
                     if super::MirContext::stdlib_type_prefix(
-                        &rask_types::Type::UnresolvedNamed(obj_name.clone())
+                        &rask_types::Type::UnresolvedNamed(base_name.to_string())
                     ).is_some()
-                        || obj_name.chars().next().map_or(false, |c| c.is_uppercase())
+                        || base_name.chars().next().map_or(false, |c| c.is_uppercase())
                     {
-                        self.local_type_prefix.insert(name.to_string(), obj_name.clone());
+                        self.local_type_prefix.insert(name.to_string(), base_name.to_string());
                     } else {
                         // Module function (fs.open) → check return type prefix
                         let func_name = format!("{}_{}", obj_name, method);

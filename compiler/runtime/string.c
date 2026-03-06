@@ -411,6 +411,10 @@ int64_t rask_char_is_lowercase(int32_t c) {
     return (c >= 'a' && c <= 'z') ? 1 : 0;
 }
 
+int64_t rask_char_to_int(int32_t c) {
+    return (int64_t)c;
+}
+
 int64_t rask_char_to_uppercase(int32_t c) {
     if (c >= 'a' && c <= 'z') return c - 32;
     return c;
