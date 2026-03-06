@@ -656,6 +656,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
+            mir_name: "string_push_char",
+            c_name: "rask_string_push_char",
+            params: &[types::I64, types::I32],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
             mir_name: "string_chars",
             c_name: "rask_string_chars",
             params: &[types::I64],

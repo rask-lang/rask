@@ -48,11 +48,11 @@ impl BuildState {
         fields.insert("gen_dir".into(), make_path(&self.gen_dir));
         fields.insert("out_dir".into(), make_path(&self.out_dir));
 
-        Value::Struct {
-            name: "BuildContext".into(),
+        Value::new_struct(
+            "BuildContext".into(),
             fields,
-            resource_id: None,
-        }
+            None,
+        )
     }
 }
 
@@ -63,17 +63,22 @@ fn make_path(p: &PathBuf) -> Value {
         "value".into(),
         Value::String(Arc::new(Mutex::new(p.to_string_lossy().into_owned()))),
     );
-    Value::Struct { name: "Path".into(), fields, resource_id: None }
+    Value::new_struct("Path".into(), fields, None)
 }
 
 /// Extract a string from a Value, handling both String and Path structs.
 fn expect_string(val: &Value, context: &str) -> Result<String, String> {
     match val {
         Value::String(s) => Ok(s.lock().unwrap().clone()),
-        Value::Struct { name, fields, .. } if name == "Path" => {
-            match fields.get("value") {
-                Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
-                _ => Err(format!("{}: expected string or Path", context)),
+        Value::Struct(ref s) => {
+            let guard = s.lock().unwrap();
+            if guard.name == "Path" {
+                match guard.fields.get("value") {
+                    Some(Value::String(s)) => Ok(s.lock().unwrap().clone()),
+                    _ => Err(format!("{}: expected string or Path", context)),
+                }
+            } else {
+                Err(format!("{}: expected string, got {}", context, val.type_name()))
             }
         }
         other => Err(format!("{}: expected string, got {}", context, other.type_name())),

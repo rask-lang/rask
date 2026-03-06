@@ -24,9 +24,14 @@ impl Interpreter {
                         {
                             Some(HashMap::new())
                         }
-                        // Unit struct variant: Value::Struct { name: "Shape.Circle" } with no fields
-                        Value::Struct { name: sn, fields, .. } if sn == name && fields.is_empty() => {
-                            Some(HashMap::new())
+                        // Unit struct variant with no fields
+                        Value::Struct(ref s) => {
+                            let guard = s.lock().unwrap();
+                            if guard.name == *name && guard.fields.is_empty() {
+                                Some(HashMap::new())
+                            } else {
+                                None
+                            }
                         }
                         _ => None,
                     };
@@ -93,11 +98,12 @@ impl Interpreter {
                 fields: pat_fields,
                 rest: _,
             } => {
-                if let Value::Struct { name, fields, .. } = value {
-                    if name == pat_name {
+                if let Value::Struct(ref s) = value {
+                    let guard = s.lock().unwrap();
+                    if guard.name == *pat_name {
                         let mut bindings = HashMap::new();
                         for (field_name, field_pattern) in pat_fields {
-                            if let Some(field_val) = fields.get(field_name) {
+                            if let Some(field_val) = guard.fields.get(field_name) {
                                 if let Some(sub_bindings) =
                                     self.match_pattern(field_pattern, field_val)
                                 {
@@ -199,9 +205,10 @@ impl Interpreter {
                     Self::value_hash(f).hash(&mut hasher);
                 }
             }
-            Value::Struct { name, fields, .. } => {
-                name.hash(&mut hasher);
-                for (k, v) in fields {
+            Value::Struct(ref s) => {
+                let guard = s.lock().unwrap();
+                guard.name.hash(&mut hasher);
+                for (k, v) in &guard.fields {
                     k.hash(&mut hasher);
                     Self::value_hash(v).hash(&mut hasher);
                 }
@@ -226,8 +233,10 @@ impl Interpreter {
             (Value::Char(a), Value::Char(b)) => Some(a.cmp(b)),
             // CO3: structs — lexicographic by field declaration order
             // (IndexMap preserves insertion order = declaration order)
-            (Value::Struct { fields: f1, .. }, Value::Struct { fields: f2, .. }) => {
-                for ((_, v1), (_, v2)) in f1.iter().zip(f2.iter()) {
+            (Value::Struct(ref s1), Value::Struct(ref s2)) => {
+                let g1 = s1.lock().unwrap();
+                let g2 = s2.lock().unwrap();
+                for ((_, v1), (_, v2)) in g1.fields.iter().zip(g2.fields.iter()) {
                     match Self::value_cmp(v1, v2) {
                         Some(std::cmp::Ordering::Equal) => continue,
                         other => return other,

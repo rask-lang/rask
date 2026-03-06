@@ -247,6 +247,16 @@ impl fmt::Debug for MultitaskingRuntime {
     }
 }
 
+/// Struct instance data behind Arc<Mutex<>> for shared mutation.
+/// IndexMap preserves field declaration order (CO3).
+#[derive(Debug, Clone)]
+pub struct StructData {
+    pub name: String,
+    pub fields: IndexMap<String, Value>,
+    /// Resource tracking ID (Some for @resource types).
+    pub resource_id: Option<u64>,
+}
+
 /// A runtime value in the interpreter.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -266,13 +276,8 @@ pub enum Value {
     Char(char),
     /// String (mutable, like Vec)
     String(Arc<Mutex<String>>),
-    /// Struct instance (IndexMap preserves field declaration order for CO3)
-    Struct {
-        name: String,
-        fields: IndexMap<String, Value>,
-        /// Resource tracking ID (Some for @resource types).
-        resource_id: Option<u64>,
-    },
+    /// Struct instance (shared reference for mutation through self methods)
+    Struct(Arc<Mutex<StructData>>),
     /// Enum variant
     Enum {
         name: String,
@@ -506,6 +511,11 @@ impl fmt::Debug for IteratorState {
 }
 
 impl Value {
+    /// Create a new struct value wrapped in Arc<Mutex<>>.
+    pub fn new_struct(name: String, fields: IndexMap<String, Value>, resource_id: Option<u64>) -> Self {
+        Value::Struct(Arc::new(Mutex::new(StructData { name, fields, resource_id })))
+    }
+
     /// Create an enum value. variant_index defaults to 0 (builtin enums).
     /// User-defined enums should use `enum_with_index` for correct ordering.
     pub fn enum_val(name: String, variant: String, fields: Vec<Value>) -> Self {
@@ -528,7 +538,7 @@ impl Value {
             Value::Float(_) => "f64",
             Value::Char(_) => "char",
             Value::String(_) => "string",
-            Value::Struct { .. } => "struct",
+            Value::Struct(_) => "struct",
             Value::Enum { .. } => "enum",
             Value::Function { .. } => "func",
             Value::Builtin(_) => "builtin",
@@ -589,11 +599,12 @@ impl Value {
                 let deep: Vec<Value> = v.lock().unwrap().iter().map(|val| val.deep_clone()).collect();
                 Value::Vec(Arc::new(Mutex::new(deep)))
             }
-            Value::Struct { name, fields, resource_id } => {
-                let deep_fields: IndexMap<String, Value> = fields.iter()
+            Value::Struct(s) => {
+                let guard = s.lock().unwrap();
+                let deep_fields: IndexMap<String, Value> = guard.fields.iter()
                     .map(|(k, v)| (k.clone(), v.deep_clone()))
                     .collect();
-                Value::Struct { name: name.clone(), fields: deep_fields, resource_id: *resource_id }
+                Value::new_struct(guard.name.clone(), deep_fields, guard.resource_id)
             }
             Value::Enum { name, variant, fields, variant_index } => {
                 Value::Enum {
@@ -664,7 +675,7 @@ impl Value {
     /// Get the resource ID if this value is a tracked resource.
     pub fn resource_id(&self) -> Option<u64> {
         match self {
-            Value::Struct { resource_id, .. } => *resource_id,
+            Value::Struct(s) => s.lock().unwrap().resource_id,
             _ => None,
         }
     }
@@ -697,9 +708,10 @@ impl fmt::Display for Value {
             Value::Float(n) => write!(f, "{}", n),
             Value::Char(c) => write!(f, "{}", c),
             Value::String(s) => write!(f, "{}", s.lock().unwrap()),
-            Value::Struct { name, fields, .. } => {
-                write!(f, "{} {{ ", name)?;
-                for (i, (k, v)) in fields.iter().enumerate() {
+            Value::Struct(s) => {
+                let guard = s.lock().unwrap();
+                write!(f, "{} {{ ", guard.name)?;
+                for (i, (k, v)) in guard.fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
                     }

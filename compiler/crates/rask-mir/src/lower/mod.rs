@@ -113,6 +113,8 @@ pub struct MirContext<'a> {
     pub trait_methods: HashMap<String, Vec<String>>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: &'a HashMap<NodeId, String>,
+    /// Call expression NodeId → mangled callee name for generic function calls.
+    pub call_rewrites: &'a HashMap<NodeId, String>,
 }
 
 impl<'a> MirContext<'a> {
@@ -125,6 +127,8 @@ impl<'a> MirContext<'a> {
         static EMPTY_TYPE_NAMES: std::sync::LazyLock<HashMap<rask_types::TypeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COERCIONS: std::sync::LazyLock<HashMap<NodeId, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY_REWRITES: std::sync::LazyLock<HashMap<NodeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         MirContext {
             struct_layouts: &[],
@@ -139,6 +143,7 @@ impl<'a> MirContext<'a> {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &EMPTY_COERCIONS,
+            call_rewrites: &EMPTY_REWRITES,
         }
     }
 
@@ -682,6 +687,12 @@ impl<'a> MirLowerer<'a> {
             // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
             if param_ty_str.contains('<') {
                 lowerer.local_full_type.insert(param.name.clone(), param_ty_str.to_string());
+                // Track collection element types so for-loop iteration resolves correctly.
+                // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
+                if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = ctx.resolve_type_str(elem_str);
+                    lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
+                }
             }
         }
 
@@ -805,9 +816,10 @@ impl<'a> MirLowerer<'a> {
         // After mono, node IDs are fresh — use AST structure heuristics.
         // Functions known to return Vec<string>:
         if let ExprKind::MethodCall { object, method, .. } = &expr.kind {
-            // String methods that return Vec<string>
+            // String methods that produce iterators
             match method.as_str() {
                 "split" | "split_whitespace" | "lines" => return Some(MirType::String),
+                "chars" => return Some(MirType::Char),
                 _ => {}
             }
             if let ExprKind::Ident(name) = &object.kind {
@@ -1468,9 +1480,13 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         }
     }
     // String-returning functions
-    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
+    if func_name == "string_new" || func_name == "string_from"
+        || func_name == "string_clone"
+        || func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
+        || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
         || func_name.ends_with("_replace") || func_name.ends_with("_substring")
+        || func_name.ends_with("_substr")
         || func_name.ends_with("_repeat") || func_name.ends_with("_reverse")
     {
         return MirType::String;
@@ -2441,6 +2457,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_rewrites = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2454,6 +2471,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            call_rewrites: &empty_rewrites,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2492,6 +2510,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_rewrites = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2505,6 +2524,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            call_rewrites: &empty_rewrites,
         };
 
         let decl = make_fn("f", vec![], None, vec![
@@ -2549,6 +2569,7 @@ mod tests {
         let extern_funcs = std::collections::HashSet::new();
         let type_names = HashMap::new();
         let empty_coercions = HashMap::new();
+        let empty_rewrites = HashMap::new();
         let ctx = MirContext {
             struct_layouts: &[],
             enum_layouts: &enum_layouts,
@@ -2562,6 +2583,7 @@ mod tests {
             comptime_interp: None,
             trait_methods: HashMap::new(),
             trait_coercions: &empty_coercions,
+            call_rewrites: &empty_rewrites,
         };
 
         let decl = make_fn("f", vec![], None, vec![

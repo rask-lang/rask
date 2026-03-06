@@ -51,6 +51,8 @@ const double = |x| x * 2
 const result = double(5)  // 10
 ```
 
+Closure parameters use borrow mode only — no `mutate` or `take`. The `||` list already serves double duty for captures and parameters (e.g., `|item, mutate total|` where `item` is a parameter and `mutate total` is a capture). Adding parameter modes would create ambiguity: `|mutate x|` could mean either "mutable capture of outer `x`" or "parameter `x` by mutable borrow." If a closure needs `mutate` parameters, extract it to a standalone function.
+
 ## Mutable Capture
 
 Closures can borrow mutable locals with explicit `mutate` in the capture:

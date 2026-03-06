@@ -170,11 +170,11 @@ impl Interpreter {
                         let fields: indexmap::IndexMap<String, Value> = struct_decl.fields.iter()
                             .map(|f| (f.name.clone(), Value::default_for_type(&f.ty)))
                             .collect();
-                        return Ok(Value::Struct {
-                            name: type_name.to_string(),
+                        return Ok(Value::new_struct(
+                            type_name.to_string(),
                             fields,
-                            resource_id: None,
-                        });
+                            None,
+                        ));
                     }
                 }
 

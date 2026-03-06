@@ -2949,7 +2949,7 @@ impl Parser {
             } else {
                 None
             };
-            params.push(ClosureParam { name, ty });
+            params.push(ClosureParam { name, ty, is_mutate: false, is_take: false });
             if !self.match_token(&TokenKind::Comma) { break; }
         }
 

@@ -32,7 +32,7 @@ impl Interpreter {
                 let pattern = self.expect_string(&args, 0)?;
                 Ok(Value::Bool(s.lock().unwrap().contains(&pattern)))
             }
-            "push" => {
+            "push" | "push_char" => {
                 let c = self.expect_char(&args, 0)?;
                 s.lock().unwrap().push(c);
                 Ok(Value::Unit)

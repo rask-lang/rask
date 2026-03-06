@@ -246,7 +246,14 @@ impl<'a> MirLowerer<'a> {
                 // Non-ident callees: field access, returned functions, etc.
                 // Lower the callee expression and emit an indirect ClosureCall.
                 let func_name = match &func.kind {
-                    ExprKind::Ident(name) => name.clone(),
+                    ExprKind::Ident(name) => {
+                        // Check for monomorphized generic call rewrite
+                        if let Some(mangled) = self.ctx.call_rewrites.get(&expr.id) {
+                            mangled.clone()
+                        } else {
+                            name.clone()
+                        }
+                    }
                     _ => {
                         let (callee_op, _callee_ty) = self.lower_expr(func)?;
                         let callee_local = match callee_op {
@@ -815,6 +822,7 @@ impl<'a> MirLowerer<'a> {
                     .unwrap_or(false);
                 if is_string_obj && args.len() == 1 {
                     let string_cmp_fn = match method.as_str() {
+                        "eq" => Some("string_eq"),
                         "lt" => Some("string_lt"),
                         "gt" => Some("string_gt"),
                         "le" => Some("string_le"),
@@ -1037,7 +1045,7 @@ impl<'a> MirLowerer<'a> {
                         | "substr" | "substring" | "repeat" | "reverse"
                         | "lines" | "split" | "split_whitespace"
                         | "char_at" | "index_of"
-                        | "chars" | "push_str" => Some("string".to_string()),
+                        | "chars" | "push_str" | "push_char" => Some("string".to_string()),
                         // Vec / iterator (no other Rask type has these)
                         "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
@@ -1324,15 +1332,54 @@ impl<'a> MirLowerer<'a> {
 
             // Index access
             ExprKind::Index { object, index } => {
-                // Range index → slice operation: vec[start..end]
+                // Range index → slice operation: vec[start..end] or string[start..end]
                 if let ExprKind::Range { start, end, .. } = &index.kind {
-                    let (obj_op, _obj_ty) = self.lower_expr(object)?;
+                    let (obj_op, obj_ty) = self.lower_expr(object)?;
+
+                    // Determine if receiver is a string (MIR type, type checker, or local prefix)
+                    let is_string = matches!(obj_ty, MirType::String)
+                        || self.ctx.lookup_raw_type(object.id)
+                            .map(|ty| matches!(ty, rask_types::Type::String))
+                            .unwrap_or(false)
+                        || if let ExprKind::Ident(var_name) = &object.kind {
+                            self.local_type_prefix.get(var_name)
+                                .map(|p| p == "string")
+                                .unwrap_or(false)
+                        } else {
+                            false
+                        };
+
                     let start_op = if let Some(s) = start {
                         let (op, _) = self.lower_expr(s)?;
                         op
                     } else {
                         MirOperand::Constant(MirConst::Int(0))
                     };
+
+                    if is_string {
+                        // String slice: string_substr(s, start, end)
+                        let end_op = if let Some(e) = end {
+                            let (op, _) = self.lower_expr(e)?;
+                            op
+                        } else {
+                            let len_local = self.builder.alloc_temp(MirType::I64);
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: Some(len_local),
+                                func: FunctionRef::internal("string_len".to_string()),
+                                args: vec![obj_op.clone()],
+                            });
+                            MirOperand::Local(len_local)
+                        };
+                        let result_local = self.builder.alloc_temp(MirType::String);
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: Some(result_local),
+                            func: FunctionRef::internal("string_substr".to_string()),
+                            args: vec![obj_op, start_op, end_op],
+                        });
+                        return Ok((MirOperand::Local(result_local), MirType::String));
+                    }
+
+                    // Vec slice: Vec_slice(v, start, end)
                     // end is None for open ranges (parts[2..]), use Vec_len
                     let end_op = if let Some(e) = end {
                         let (op, _) = self.lower_expr(e)?;
