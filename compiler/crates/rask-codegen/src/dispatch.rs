@@ -662,6 +662,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: None,
             can_panic: false,
         },
+        // Alias: .push() on string → push_char (char is the natural element type)
+        StdlibEntry {
+            mir_name: "string_push",
+            c_name: "rask_string_push_char",
+            params: &[types::I64, types::I32],
+            ret_ty: None,
+            can_panic: false,
+        },
         StdlibEntry {
             mir_name: "string_chars",
             c_name: "rask_string_chars",
@@ -1008,6 +1016,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "File_write",
             c_name: "rask_file_write",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "File_write_all",
+            c_name: "rask_file_write_all",
             params: &[types::I64, types::I64],
             ret_ty: None,
             can_panic: false,
@@ -1901,6 +1916,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
+            mir_name: "Mutex_clone",
+            c_name: "rask_mutex_clone",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
             mir_name: "Mutex_drop",
             c_name: "rask_mutex_drop",
             params: &[types::I64],
@@ -1961,6 +1983,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "char_is_lowercase",
             c_name: "rask_char_is_lowercase",
+            params: &[types::I32],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "char_to_int",
+            c_name: "rask_char_to_int",
             params: &[types::I32],
             ret_ty: Some(types::I64),
             can_panic: false,

@@ -339,6 +339,7 @@ impl<'a> MirContext<'a> {
         match ty {
             Type::String => Some("string"),
             Type::UnresolvedNamed(name) => match name.as_str() {
+                "string" => Some("string"),
                 "Vec" => Some("Vec"),
                 "Map" => Some("Map"),
                 "Pool" => Some("Pool"),

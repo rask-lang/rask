@@ -135,6 +135,7 @@ int64_t rask_char_is_alphanumeric(int32_t c);
 int64_t rask_char_is_whitespace(int32_t c);
 int64_t rask_char_is_uppercase(int32_t c);
 int64_t rask_char_is_lowercase(int32_t c);
+int64_t rask_char_to_int(int32_t c);
 int64_t rask_char_to_uppercase(int32_t c);
 int64_t rask_char_to_lowercase(int32_t c);
 int64_t rask_char_len_utf8(int32_t c);
@@ -250,6 +251,7 @@ void        rask_fs_append_file(const RaskString *path, const RaskString *conten
 void        rask_file_close(int64_t file);
 RaskString *rask_file_read_all(int64_t file);
 void        rask_file_write(int64_t file, const RaskString *content);
+void        rask_file_write_all(int64_t file, const RaskString *content);
 void        rask_file_write_line(int64_t file, const RaskString *content);
 RaskVec    *rask_file_lines(int64_t file);
 
@@ -507,6 +509,7 @@ int64_t rask_mutex_try_lock(RaskMutex *m, RaskAccessFn f, void *ctx);
 int64_t rask_mutex_new_ptr(int64_t data_ptr, int64_t data_size);
 int64_t rask_mutex_lock_ptr(int64_t mutex, int64_t closure);
 int64_t rask_mutex_try_lock_ptr(int64_t mutex, int64_t closure);
+int64_t rask_mutex_clone(int64_t mutex);
 void    rask_mutex_drop(int64_t mutex);
 
 // ─── Shared (RwLock) ───────────────────────────────────────

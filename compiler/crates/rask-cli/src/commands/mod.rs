@@ -19,3 +19,4 @@ pub mod fetch;
 pub mod vendor;
 pub mod publish;
 pub mod audit;
+pub mod derive;
