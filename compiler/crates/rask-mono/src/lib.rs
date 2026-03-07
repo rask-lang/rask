@@ -253,6 +253,7 @@ mod tests {
             node_types: std::collections::HashMap::new(),
             call_type_args: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
+            unsafe_ops: Vec::new(),
         }
     }
 

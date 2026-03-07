@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Analysis commands: typecheck, ownership, comptime.
+//! Analysis commands: typecheck, ownership, comptime, unsafe report.
 
 use colored::Colorize;
 use rask_diagnostics::{Diagnostic, ToDiagnostic};
+use rask_types::UnsafeCategory;
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::process;
 
@@ -154,4 +157,80 @@ pub fn cmd_comptime(path: &str, format: Format) {
             process::exit(1);
         }
     }
+}
+
+fn category_label(cat: UnsafeCategory) -> &'static str {
+    match cat {
+        UnsafeCategory::PointerDeref => "Pointer Dereference",
+        UnsafeCategory::PointerDerefWrite => "Pointer Dereference (write)",
+        UnsafeCategory::PointerArithmetic => "Pointer Arithmetic",
+        UnsafeCategory::PointerMethod => "Pointer Method",
+        UnsafeCategory::ExternCall => "Extern Call",
+        UnsafeCategory::UnsafeFuncCall => "Unsafe Function Call",
+        UnsafeCategory::Transmute => "Transmute",
+        UnsafeCategory::UnionFieldAccess => "Union Field Access",
+    }
+}
+
+pub fn cmd_unsafe_report(path: &str, format: Format) {
+    let result = super::pipeline::run_frontend(path, format);
+
+    let ops = &result.typed.unsafe_ops;
+
+    if format == Format::Json {
+        let mut json = String::from("{\n  \"unsafe_ops\": [");
+        for (i, (span, cat)) in ops.iter().enumerate() {
+            if i > 0 { json.push(','); }
+            let _ = write!(json,
+                "\n    {{\"category\": \"{:?}\", \"start\": {}, \"end\": {}}}",
+                cat, span.start, span.end
+            );
+        }
+        let _ = write!(json, "\n  ],\n  \"total\": {}\n}}", ops.len());
+        println!("{}", json);
+        return;
+    }
+
+    // Human format
+    if ops.is_empty() {
+        println!("{}", output::banner_ok("Unsafe Report"));
+        println!();
+        println!("No unsafe operations found.");
+        return;
+    }
+
+    // Build line map from source (single-file) or source_files (multi-file)
+    let line_map = result.source.as_ref().map(|s| rask_ast::LineMap::new(s));
+
+    // Group by category, preserving order via BTreeMap on discriminant
+    let mut grouped: BTreeMap<u8, (UnsafeCategory, Vec<&rask_ast::Span>)> = BTreeMap::new();
+    for (span, cat) in ops {
+        let key = *cat as u8;
+        grouped.entry(key).or_insert_with(|| (*cat, Vec::new())).1.push(span);
+    }
+
+    println!("{} Unsafe Report {}\n", "===".dimmed(), "===".dimmed());
+
+    let mut total_categories = 0;
+    for (_key, (cat, spans)) in &grouped {
+        total_categories += 1;
+        println!("{} ({})", category_label(*cat).yellow(), spans.len());
+        for span in spans {
+            if let Some(ref lm) = line_map {
+                let (line, col) = lm.offset_to_line_col(span.start);
+                println!("  {}:{}:{}", output::file_path(path), line, col);
+            } else {
+                println!("  offset {}..{}", span.start, span.end);
+            }
+        }
+        println!();
+    }
+
+    println!("{} {} unsafe operation(s) across {} categor{} {}",
+        "===".dimmed(),
+        ops.len(),
+        total_categories,
+        if total_categories == 1 { "y" } else { "ies" },
+        "===".dimmed(),
+    );
 }
