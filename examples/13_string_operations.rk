@@ -98,18 +98,18 @@ func main() {
     print(slice2)
     print("\n\n")
 
-    // String formatting
+    // String interpolation
     const name = "Alice"
     const age = 30
-    const formatted = format("Name: {}, Age: {}", name, age)
+    const formatted = "Name: {name}, Age: {age}"
 
     print(formatted)
     print("\n\n")
 
-    // Multiple format arguments
+    // Multiple interpolated values
     const x = 10
     const y = 20
-    const msg = format("Point ({}, {})", x, y)
+    const msg = "Point ({x}, {y})"
     print(msg)
     print("\n\n")
 
@@ -150,7 +150,7 @@ func main() {
     // String concatenation
     const first = "Hello"
     const second = "World"
-    const combined = format("{} {}", first, second)
+    const combined = "{first} {second}"
 
     print("Combined: ")
     print(combined)

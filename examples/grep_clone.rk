@@ -6,7 +6,7 @@ import fs
 import cli
 import std
 
-struct Options {
+struct GrepOptions {
     pattern: string
     files: Vec<string>
     ignore_case: bool
@@ -31,8 +31,8 @@ extend GrepError {
     }
 }
 
-func parse_args(take args: Vec<string>) -> Options or GrepError {
-    let opts = Options {
+func parse_args(take args: Vec<string>) -> GrepOptions or GrepError {
+    let opts = GrepOptions {
         pattern: "",
         files: Vec.new(),
         ignore_case: false,
@@ -43,7 +43,9 @@ func parse_args(take args: Vec<string>) -> Options or GrepError {
 
     let positional = Vec.new()
 
-    for arg in args.take_all().skip(1) {
+    let i: usize = 1
+    while i < args.len() {
+        const arg = args[i]
         match arg {
             "-i" => opts.ignore_case = true,
             "-n" => opts.line_numbers = true,
@@ -56,6 +58,7 @@ func parse_args(take args: Vec<string>) -> Options or GrepError {
             "--" => {}
             _ => positional.push(arg),
         }
+        i = i + 1
     }
 
     if positional.is_empty(): return Err(GrepError.NoPattern)
@@ -88,7 +91,7 @@ func line_matches(line: string, pattern: string, ignore_case: bool) -> bool {
     }
 }
 
-func grep_file(path: string, opts: Options) -> i64 or GrepError {
+func grep_file(path: string, opts: GrepOptions) -> i64 or GrepError {
     const content = try fs.read_file(path)
         else |e| GrepError.FileError(e)
 
@@ -136,7 +139,9 @@ func main() {
     let total_matches = 0
     let had_errors = false
 
-    for file_path in opts.files.take_all() {
+    let fi: usize = 0
+    while fi < opts.files.len() {
+        const file_path = opts.files[fi]
         match grep_file(file_path, opts) {
             Ok(count) => total_matches = total_matches + count,
             Err(e) => {
@@ -145,6 +150,7 @@ func main() {
                 had_errors = true
             }
         }
+        fi = fi + 1
     }
 
     if had_errors: std.exit(2)

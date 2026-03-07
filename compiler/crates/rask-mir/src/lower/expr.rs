@@ -172,7 +172,17 @@ impl<'a> MirLowerer<'a> {
                     if self.is_niche_option_expr(expr) {
                         Ok((MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)), MirType::Handle))
                     } else {
-                        Ok((MirOperand::Constant(MirConst::Int(1)), MirType::Ptr))
+                        // Allocate a proper tagged union with tag=1 (None)
+                        let option_ty = self.lookup_expr_type(expr)
+                            .filter(|t| matches!(t, MirType::Option(_)))
+                            .unwrap_or_else(|| MirType::Option(Box::new(MirType::I64)));
+                        let result_local = self.builder.alloc_temp(option_ty.clone());
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: result_local,
+                            offset: 0,
+                            value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+                        });
+                        Ok((MirOperand::Local(result_local), option_ty))
                     }
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
@@ -644,9 +654,15 @@ impl<'a> MirLowerer<'a> {
                             return Ok((MirOperand::Local(result_local), MirType::I64));
                         }
 
+                        // Vec.from([...]) → stack array + rask_vec_from_static(ptr, count)
                         // Map.from([("k", "v"), ...]) → Map.new() + Map.insert() per pair
                         {
                             let base = name.split('<').next().unwrap_or(name);
+                            if base == "Vec" && method == "from" && args.len() == 1 {
+                                if let ExprKind::Array(elems) = &args[0].expr.kind {
+                                    return self.lower_vec_from_array(elems);
+                                }
+                            }
                             if base == "Map" && method == "from" && args.len() == 1 {
                                 if let ExprKind::Array(elems) = &args[0].expr.kind {
                                     return self.lower_map_from_pairs(elems);
@@ -685,6 +701,23 @@ impl<'a> MirLowerer<'a> {
                                     arg_operands.push(size_op);
                                 }
                             }
+
+                            // Map.new() with string keys → use string hash/eq
+                            let func_name = if func_name == "Map_new" {
+                                let has_string_keys = self.ctx.lookup_raw_type(expr.id)
+                                    .map(|ty| {
+                                        let s = format!("{:?}", ty);
+                                        s.contains("Map") && s.contains("String")
+                                    })
+                                    .unwrap_or(false);
+                                if has_string_keys {
+                                    "Map_new_string_keys".to_string()
+                                } else {
+                                    func_name
+                                }
+                            } else {
+                                func_name
+                            };
 
                             let ret_ty = self
                                 .func_sigs
@@ -902,6 +935,17 @@ impl<'a> MirLowerer<'a> {
                 }
 
                 // .unwrap(): Option<T>/Result<T,E> → T — panic on None/Err
+                // Special case: .get(i).unwrap() on collections.
+                // Vec_get panics on OOB → unwrap is a no-op.
+                // Map_get returns NULL on missing key → rewrite to Map_get_unwrap.
+                if method == "unwrap" && args.is_empty() {
+                    if let ExprKind::MethodCall { method: inner_method, .. } = &object.kind {
+                        if inner_method == "get" {
+                            self.builder.rewrite_last_call("Map_get", "Map_get_unwrap");
+                            return Ok((obj_op, obj_ty));
+                        }
+                    }
+                }
                 if method == "unwrap" && args.is_empty() {
                     let is_niche = self.is_niche_option_expr(object);
                     let tag_local = self.emit_option_tag(&obj_op, is_niche);
@@ -3829,15 +3873,68 @@ impl<'a> MirLowerer<'a> {
     }
 
     /// Expand `Map.from([(k, v), ...])` into `Map.new()` + `Map.insert()` per pair.
+    /// Vec.from([a, b, c]) → store elements into stack array, call rask_vec_from_static
+    fn lower_vec_from_array(
+        &mut self,
+        elems: &[Expr],
+    ) -> Result<TypedOperand, LoweringError> {
+        // Lower elements and store into a stack array
+        let mut elem_ty = MirType::I64;
+        let mut lowered = Vec::new();
+        for (i, elem) in elems.iter().enumerate() {
+            let (op, ty) = self.lower_expr(elem)?;
+            if i == 0 {
+                elem_ty = ty;
+            }
+            lowered.push(op);
+        }
+        let elem_size = elem_ty.size();
+        let array_ty = MirType::Array {
+            elem: Box::new(elem_ty.clone()),
+            len: elems.len() as u32,
+        };
+        let arr_local = self.builder.alloc_temp(array_ty);
+        for (i, op) in lowered.into_iter().enumerate() {
+            self.builder.push_stmt(MirStmt::Store {
+                addr: arr_local,
+                offset: i as u32 * elem_size,
+                value: op,
+            });
+        }
+
+        // rask_vec_from_static(data_ptr, count) → RaskVec*
+        let vec_local = self.builder.alloc_temp(MirType::I64);
+        self.builder.push_stmt(MirStmt::Call {
+            dst: Some(vec_local),
+            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+            args: vec![
+                MirOperand::Local(arr_local),
+                MirOperand::Constant(MirConst::Int(elems.len() as i64)),
+            ],
+        });
+        Ok((MirOperand::Local(vec_local), MirType::I64))
+    }
+
     fn lower_map_from_pairs(
         &mut self,
         elems: &[Expr],
     ) -> Result<TypedOperand, LoweringError> {
-        // Create new map
+        // Detect string keys from first pair
+        let has_string_keys = elems.first()
+            .and_then(|e| match &e.kind {
+                ExprKind::Tuple(parts) if parts.len() == 2 => {
+                    self.ctx.lookup_raw_type(parts[0].id)
+                        .map(|ty| matches!(ty, rask_types::Type::String))
+                },
+                _ => None,
+            })
+            .unwrap_or(false);
+
+        let ctor = if has_string_keys { "Map_new_string_keys" } else { "Map_new" };
         let map_local = self.builder.alloc_temp(MirType::I64);
         self.builder.push_stmt(MirStmt::Call {
             dst: Some(map_local),
-            func: FunctionRef::internal("Map_new".to_string()),
+            func: FunctionRef::internal(ctor.to_string()),
             args: vec![],
         });
 
