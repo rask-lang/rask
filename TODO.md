@@ -27,7 +27,7 @@ Returning or passing structs through function boundaries sometimes generates wro
 
 The interpreter-based comptime system works for simple cases but doesn't bridge into native codegen.
 
-- [ ] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
+- [x] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
 - [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
 
 ## 5. Collection Iteration & Runtime Crashes
@@ -114,6 +114,7 @@ Hardening for the package ecosystem. Not blocking any examples.
 - [x] Module-level constants
 - [x] `i64.MAX` / `i32.MIN` type-associated constants
 - [x] For-loop tuple destructuring
+- [x] Comptime module constants — MIR resolves globals, scalar deref, branch quota reset
 
 ### Type Checker
 - [x] Vec.len() returned i64 instead of u64

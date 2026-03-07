@@ -377,7 +377,7 @@ impl ComptimeEnv {
             scopes: vec![HashMap::new()],
             functions: HashMap::new(),
             branch_count: 0,
-            branch_quota: 1000, // Default
+            branch_quota: 10_000, // Default
         }
     }
 
@@ -388,6 +388,11 @@ impl ComptimeEnv {
             branch_count: 0,
             branch_quota: quota,
         }
+    }
+
+    /// Reset branch counter between independent comptime evaluations.
+    pub fn reset_branch_count(&mut self) {
+        self.branch_count = 0;
     }
 
     fn push_scope(&mut self) {
@@ -488,6 +493,11 @@ impl ComptimeInterpreter {
         Self {
             env: ComptimeEnv::with_quota(quota),
         }
+    }
+
+    /// Reset branch counter between independent comptime evaluations.
+    pub fn reset_branch_count(&mut self) {
+        self.env.reset_branch_count();
     }
 
     /// Inject the `cfg` build configuration into the comptime environment.
@@ -1754,6 +1764,6 @@ mod tests {
 
         // We'd need to construct AST nodes for proper testing
         // For now, just verify the interpreter can be created
-        assert_eq!(interp.env.branch_quota, 1000);
+        assert_eq!(interp.env.branch_quota, 10_000);
     }
 }
