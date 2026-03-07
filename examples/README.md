@@ -28,6 +28,7 @@ These examples parse and run with the current interpreter:
 | 13 | `13_string_operations.rk` | String methods | ✅ Runnable |
 | 16 | `16_concurrency_basics.rk` | Threads and channels | ✅ Runnable |
 | 17 | `17_comptime.rk` | Compile-time execution | ✅ Runnable |
+| 11 | `11_closures.rk` | Closures and lambdas | ✅ Runnable |
 | 18 | `18_resource_types.rk` | Linear resources, `@resource` | ✅ Runnable |
 
 ### 📝 Spec Examples (Not Yet Fully Implemented)
@@ -38,7 +39,6 @@ These examples demonstrate **intended syntax** but require features not yet in t
 |---|---------|-------|------------------|
 | 09 | `09_generics.rk` | Generic types | Generic `extend`, full closure types |
 | 10 | `10_enums_advanced.rk` | Enum variants with data | Advanced pattern matching |
-| 11 | `11_closures.rk` | Closures and lambdas | Full closure syntax, higher-order functions |
 | 12 | `12_iterators.rk` | Iterator patterns | Iterator trait, method chaining |
 | 14 | `14_borrowing_patterns.rk` | Borrowing rules | Borrow checker, reference types |
 | 15 | `15_memory_management.rk` | Pool/Handle pattern | Generic pools, handle types |
