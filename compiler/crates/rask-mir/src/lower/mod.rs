@@ -695,6 +695,19 @@ impl<'a> MirLowerer<'a> {
                     lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
                 }
             }
+
+            // Function-type params (|args| -> ret) are closures passed as arguments.
+            // Register them so call sites emit ClosureCall instead of Call.
+            if param_ty_str.starts_with('|') {
+                lowerer.closure_locals.insert(param.name.clone());
+                let ret_ty = if let Some(arrow_pos) = param_ty_str.rfind("-> ") {
+                    let ret_str = param_ty_str[arrow_pos + 3..].trim();
+                    ctx.resolve_type_str(ret_str)
+                } else {
+                    MirType::Void
+                };
+                lowerer.func_sigs.insert(param.name.clone(), FuncSig { ret_ty });
+            }
         }
 
         // Inject module-level constants as locals so functions can reference them

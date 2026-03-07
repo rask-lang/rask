@@ -15,7 +15,7 @@ Enums compile as tagged unions but advanced patterns don't work natively yet.
 
 Closures work as inline lambdas (spawn, iterators) but can't be passed as function parameters.
 
-- [ ] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
+- [x] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
 
 ## 3. Aggregate / Struct Return Codegen
 
@@ -119,6 +119,9 @@ Hardening for the package ecosystem. Not blocking any examples.
 ### Type Checker
 - [x] Vec.len() returned i64 instead of u64
 - [x] Module-level const didn't coerce integer literals
+
+### Closures
+- [x] Closure-as-parameter calling — function-type params registered in closure_locals
 
 ### Ownership
 - [x] `mutate self` treated as borrowed
