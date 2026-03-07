@@ -178,6 +178,18 @@ fn main() {
             }
             commands::analysis::cmd_comptime(cmd_args[2], format);
         }
+        "unsafe" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                help::print_unsafe_help();
+                return;
+            }
+            if cmd_args.len() < 3 {
+                eprintln!("{}: missing file argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("unsafe"), output::arg("<file.rk>"));
+                process::exit(1);
+            }
+            commands::analysis::cmd_unsafe_report(cmd_args[2], format);
+        }
         "run" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
                 help::print_run_help();
