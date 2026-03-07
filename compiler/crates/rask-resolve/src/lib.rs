@@ -49,6 +49,14 @@ pub fn resolve(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve(decls)
 }
 
+/// Resolve with cfg values for dead branch elimination in `comptime if`.
+pub fn resolve_with_cfg(
+    decls: &[Decl],
+    cfg_values: HashMap<String, String>,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_with_cfg(decls, cfg_values)
+}
+
 /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
 pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve_stdlib(decls)
@@ -63,6 +71,16 @@ pub fn resolve_package(
     Resolver::resolve_package(decls, registry, current_package)
 }
 
+/// Resolve a package with cfg values for dead branch elimination.
+pub fn resolve_package_with_cfg(
+    decls: &[Decl],
+    registry: &PackageRegistry,
+    current_package: PackageId,
+    cfg_values: HashMap<String, String>,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_package_with_cfg(decls, registry, current_package, cfg_values)
+}
+
 /// Resolve a package with separate stdlib declarations. Stdlib decls are
 /// processed in stdlib_mode (bypasses builtin-shadowing checks).
 pub fn resolve_package_with_stdlib(
@@ -72,4 +90,16 @@ pub fn resolve_package_with_stdlib(
     stdlib_decls: &[Decl],
 ) -> Result<ResolvedProgram, Vec<ResolveError>> {
     Resolver::resolve_package_with_stdlib(decls, registry, current_package, stdlib_decls)
+}
+
+/// Resolve a package with stdlib declarations and cfg values for
+/// dead branch elimination in `comptime if`.
+pub fn resolve_package_with_stdlib_and_cfg(
+    decls: &[Decl],
+    registry: &PackageRegistry,
+    current_package: PackageId,
+    stdlib_decls: &[Decl],
+    cfg_values: HashMap<String, String>,
+) -> Result<ResolvedProgram, Vec<ResolveError>> {
+    Resolver::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, stdlib_decls, cfg_values)
 }

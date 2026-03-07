@@ -28,7 +28,7 @@ Returning or passing structs through function boundaries sometimes generates wro
 The interpreter-based comptime system works for simple cases but doesn't bridge into native codegen.
 
 - [x] **MIR: comptime module constants** — `comptime { ... }` at module level doesn't inject results into MIR scope. `SQUARES`, `PRIMES` etc. unresolved. Blocks 17_comptime.
-- [ ] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2).
+- [x] **Conditional compilation** — `comptime if cfg.os/arch/features` (CC1-CC2). Dead branch elimination via AST rewrite before desugar; resolver also has cfg-aware fallback.
 
 ## 5. Collection Iteration & Runtime Crashes
 
