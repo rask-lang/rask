@@ -29,18 +29,45 @@ impl<'a> MirLowerer<'a> {
             StmtKind::Const { name, ty, init, .. } => {
                 // If this const was evaluated at compile time, emit a global reference
                 if let Some(meta) = self.ctx.comptime_globals.get(name) {
-                    let mir_ty = if let Some(ty_str) = ty.as_deref() {
-                        self.ctx.resolve_type_str(ty_str)
+                    if meta.type_prefix == "Vec" {
+                        // Array: store pointer for later Vec wrapping
+                        let mir_ty = if let Some(ty_str) = ty.as_deref() {
+                            self.ctx.resolve_type_str(ty_str)
+                        } else {
+                            MirType::Ptr
+                        };
+                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
+                        self.locals.insert(name.to_string(), (local_id, mir_ty));
+                        self.builder.push_stmt(MirStmt::GlobalRef {
+                            dst: local_id,
+                            name: name.clone(),
+                        });
                     } else {
-                        MirType::Ptr
-                    };
-                    let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                    self.locals.insert(name.to_string(), (local_id, mir_ty));
-                    self.builder.push_stmt(MirStmt::GlobalRef {
-                        dst: local_id,
-                        name: name.clone(),
-                    });
-                    // Track type prefix for method dispatch
+                        // Scalar: load the data pointer, then deref to get the value
+                        let mir_ty = match meta.type_prefix.as_str() {
+                            "bool" => MirType::Bool,
+                            "i32" => MirType::I32,
+                            "i64" => MirType::I64,
+                            "f32" => MirType::F32,
+                            "f64" => MirType::F64,
+                            _ => if let Some(ty_str) = ty.as_deref() {
+                                self.ctx.resolve_type_str(ty_str)
+                            } else {
+                                MirType::I64
+                            },
+                        };
+                        let ptr_local = self.builder.alloc_temp(MirType::Ptr);
+                        self.builder.push_stmt(MirStmt::GlobalRef {
+                            dst: ptr_local,
+                            name: name.clone(),
+                        });
+                        let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: local_id,
+                            rvalue: MirRValue::Deref(MirOperand::Local(ptr_local)),
+                        });
+                        self.locals.insert(name.to_string(), (local_id, mir_ty));
+                    }
                     self.local_type_prefix.insert(name.to_string(), meta.type_prefix.clone());
                     return Ok(());
                 }

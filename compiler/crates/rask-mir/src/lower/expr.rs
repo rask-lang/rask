@@ -184,6 +184,44 @@ impl<'a> MirLowerer<'a> {
                         });
                         Ok((MirOperand::Local(result_local), option_ty))
                     }
+                } else if let Some(meta) = self.ctx.comptime_globals.get(name) {
+                    // Module-level comptime global reference
+                    let global_local = self.builder.alloc_temp(MirType::Ptr);
+                    self.builder.push_stmt(MirStmt::GlobalRef {
+                        dst: global_local,
+                        name: name.clone(),
+                    });
+
+                    if meta.type_prefix == "Vec" {
+                        // Array global: wrap raw data into a Vec
+                        let vec_local = self.builder.alloc_temp(MirType::I64);
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: Some(vec_local),
+                            func: FunctionRef::internal("rask_vec_from_static".to_string()),
+                            args: vec![
+                                MirOperand::Local(global_local),
+                                MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
+                            ],
+                        });
+                        self.local_type_prefix.insert(name.to_string(), "Vec".to_string());
+                        Ok((MirOperand::Local(vec_local), MirType::I64))
+                    } else {
+                        // Scalar global: load value from the data pointer
+                        let mir_ty = match meta.type_prefix.as_str() {
+                            "bool" => MirType::Bool,
+                            "i32" => MirType::I32,
+                            "i64" => MirType::I64,
+                            "f32" => MirType::F32,
+                            "f64" => MirType::F64,
+                            _ => MirType::I64,
+                        };
+                        let result_local = self.builder.alloc_temp(mir_ty.clone());
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: result_local,
+                            rvalue: MirRValue::Deref(MirOperand::Local(global_local)),
+                        });
+                        Ok((MirOperand::Local(result_local), mir_ty))
+                    }
                 } else {
                     Err(LoweringError::UnresolvedVariable(name.clone()))
                 }
