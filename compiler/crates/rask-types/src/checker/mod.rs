@@ -159,6 +159,8 @@ impl TypeChecker {
 
         let trait_coercions = self.trait_coercions.clone();
 
+        let unsafe_ops = self.unsafe_ops;
+
         if self.errors.is_empty() {
             Ok(TypedProgram {
                 symbols: self.resolved.symbols,
@@ -167,6 +169,7 @@ impl TypeChecker {
                 node_types,
                 call_type_args,
                 trait_coercions,
+                unsafe_ops,
             })
         } else {
             let ctx = &self.ctx;
@@ -185,6 +188,7 @@ impl TypeChecker {
                     node_types,
                     call_type_args,
                     trait_coercions,
+                    unsafe_ops,
                 })
             } else {
                 Err(errors)
