@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Enums with associated data
-//
-// NOTE: This is a SPEC EXAMPLE showing intended syntax.
-// Advanced pattern matching not fully implemented yet.
-// See examples/README.md for status.
 
 // Enum with different kinds of variants
 enum Message {

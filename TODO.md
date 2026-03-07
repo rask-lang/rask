@@ -8,7 +8,7 @@ Open work, grouped by theme. Each chunk is roughly independent.
 
 Enums compile as tagged unions but advanced patterns don't work natively yet.
 
-- [ ] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
+- [x] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
 - [ ] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
 
 ## 2. Closure & Indirect Call Codegen
@@ -34,7 +34,7 @@ The interpreter-based comptime system works for simple cases but doesn't bridge 
 
 Several examples compile and link but crash at runtime with no output.
 
-- [ ] **Runtime: silent crashes in collection iteration** — 03_collections (needs `.join()` and `is Some(score)`), 12_iterators (needs `.iter().map().collect()`), 13_string_operations (unknown crash). pool_test still crashes silently.
+- [x] **Runtime: silent crashes in collection iteration** — 03_collections (needs `.join()` and `is Some(score)`), 12_iterators (needs `.iter().map().collect()`), 13_string_operations (unknown crash). pool_test still crashes silently.
 
 ## 6. Ownership Checker Gaps
 
@@ -122,6 +122,10 @@ Hardening for the package ecosystem. Not blocking any examples.
 
 ### Closures
 - [x] Closure-as-parameter calling — function-type params registered in closure_locals
+
+### Enum / Pattern Matching
+- [x] Enum payload destructuring — Pattern::Struct handler for named-field match arms
+- [x] Collection iteration crashes — None allocation, Vec.from dispatch, get().unwrap() tag checks
 
 ### Ownership
 - [x] `mutate self` treated as borrowed
