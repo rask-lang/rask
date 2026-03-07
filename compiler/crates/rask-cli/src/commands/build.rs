@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
+use rask_diagnostics::formatter::DiagnosticFormatter;
+use rask_diagnostics::ToDiagnostic;
+
 use crate::output;
 
 /// Build options parsed from CLI flags.
@@ -625,7 +628,24 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                             if !ownership_result.is_ok() {
                                 for error in &ownership_result.errors {
-                                    eprintln!("error: {}", error.kind);
+                                    let d = error.to_diagnostic();
+                                    let primary_end = d.labels.iter()
+                                        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+                                        .map(|l| l.span.end);
+                                    let matched = primary_end.and_then(|end| {
+                                        let candidates: Vec<_> = source_files.iter()
+                                            .filter(|(_, src)| end <= src.len() && !src.is_empty())
+                                            .collect();
+                                        if candidates.len() == 1 { Some(candidates[0]) } else { None }
+                                    });
+                                    if let Some((path, source)) = matched {
+                                        let file_name = path.to_string_lossy();
+                                        let fmt = DiagnosticFormatter::new(source)
+                                            .with_file_name(&file_name);
+                                        eprintln!("{}", fmt.format(&d));
+                                    } else {
+                                        eprintln!("{}: {}", output::error_label(), d.message);
+                                    }
                                 }
                                 total_errors += ownership_result.errors.len();
                             } else {

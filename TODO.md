@@ -40,8 +40,8 @@ Several examples compile and link but crash at runtime with no output.
 
 Ownership checking works for common patterns but has gaps in error reporting and explicit `own` handling.
 
-- [ ] **Ownership error messages lack source location** — `rask-cli/src/commands/build.rs:628` prints `error.kind` only, no file/line/span. The `OwnershipError` struct has a `span` field but it's never rendered. Needs file-to-span mapping like the type checker has.
-- [ ] **Ownership checker ignores `own` at call sites** — `ArgMode::Own` is parsed but `rask-ownership` never inspects it. Call sites with `own kv` don't mark `kv` as moved.
+- [x] **Ownership error messages lack source location** — `rask-cli/src/commands/build.rs:628` prints `error.kind` only, no file/line/span. The `OwnershipError` struct has a `span` field but it's never rendered. Needs file-to-span mapping like the type checker has.
+- [x] **Ownership checker ignores `own` at call sites** — `ArgMode::Own` is parsed but `rask-ownership` never inspects it. Call sites with `own kv` don't mark `kv` as moved.
 
 ## 7. Multi-Package / Build System
 
@@ -122,6 +122,8 @@ Hardening for the package ecosystem. Not blocking any examples.
 ### Ownership
 - [x] `mutate self` treated as borrowed
 - [x] if/else branches don't save/restore state
+- [x] Ownership error messages lack source location in `rask build`
+- [x] `own` at call sites marks variable as moved
 
 ### Build System
 - [x] Build pipeline end-to-end
