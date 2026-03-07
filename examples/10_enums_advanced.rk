@@ -33,11 +33,11 @@ extend Shape {
     func describe(self) -> string {
         match self {
             Shape.Circle { radius } =>
-                return format("Circle with radius {}", radius),
+                return "Circle with radius {radius}",
             Shape.Rectangle { width, height } =>
-                return format("Rectangle {}x{}", width, height),
+                return "Rectangle {width}x{height}",
             Shape.Triangle { base, height } =>
-                return format("Triangle (base={}, height={})", base, height),
+                return "Triangle (base={base}, height={height})",
         }
     }
 }

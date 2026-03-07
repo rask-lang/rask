@@ -45,6 +45,33 @@ int rask_eq_bytes(const void *a, const void *b, int64_t key_size) {
     return memcmp(a, b, (size_t)key_size) == 0;
 }
 
+// String-keyed maps: key slot holds a RaskString*, hash/eq use string content
+uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
+    (void)key_size;
+    const RaskString *s = *(RaskString *const *)key;
+    if (!s) return 0;
+    int64_t len = rask_string_len(s);
+    const char *data = rask_string_ptr(s);
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (int64_t i = 0; i < len; i++) {
+        h ^= (uint8_t)data[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+int rask_eq_string_key(const void *a, const void *b, int64_t key_size) {
+    (void)key_size;
+    const RaskString *sa = *(RaskString *const *)a;
+    const RaskString *sb = *(RaskString *const *)b;
+    if (sa == sb) return 1;
+    if (!sa || !sb) return 0;
+    int64_t la = rask_string_len(sa);
+    int64_t lb = rask_string_len(sb);
+    if (la != lb) return 0;
+    return memcmp(rask_string_ptr(sa), rask_string_ptr(sb), (size_t)la) == 0;
+}
+
 // ─── Internal ───────────────────────────────────────────────
 
 static void map_alloc_tables(RaskMap *m, int64_t cap) {
@@ -106,6 +133,10 @@ static void map_rehash(RaskMap *m) {
 
 RaskMap *rask_map_new(int64_t key_size, int64_t val_size) {
     return rask_map_new_custom(key_size, val_size, rask_hash_bytes, rask_eq_bytes);
+}
+
+RaskMap *rask_map_new_string_keys(int64_t key_size, int64_t val_size) {
+    return rask_map_new_custom(key_size, val_size, rask_hash_string_key, rask_eq_string_key);
 }
 
 RaskMap *rask_map_new_custom(int64_t key_size, int64_t val_size,
@@ -176,6 +207,14 @@ void *rask_map_get(const RaskMap *m, const void *key) {
         }
     }
     return NULL;
+}
+
+void *rask_map_get_unwrap(const RaskMap *m, const void *key) {
+    void *result = rask_map_get(m, key);
+    if (!result) {
+        rask_panic("Map.get().unwrap(): key not found");
+    }
+    return result;
 }
 
 int64_t rask_map_remove(RaskMap *m, const void *key) {

@@ -107,6 +107,21 @@ impl BlockBuilder {
         block.terminator = term;
     }
 
+    /// Rewrite the function name of the last Call statement in the current block.
+    /// Returns true if a Call was found and rewritten.
+    pub fn rewrite_last_call(&mut self, from: &str, to: &str) -> bool {
+        let block = &mut self.function.blocks[self.current_block.0 as usize];
+        for stmt in block.statements.iter_mut().rev() {
+            if let MirStmt::Call { func, .. } = stmt {
+                if func.name == from {
+                    func.name = to.to_string();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     /// Check if the current block still has the default Unreachable terminator.
     pub fn current_block_unterminated(&self) -> bool {
         matches!(
