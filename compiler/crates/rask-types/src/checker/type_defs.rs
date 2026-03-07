@@ -88,4 +88,6 @@ pub struct TypedProgram {
     pub call_type_args: HashMap<NodeId, Vec<Type>>,
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     pub trait_coercions: HashMap<NodeId, String>,
+    /// Unsafe operations recorded during type checking (span + category).
+    pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
 }

@@ -48,7 +48,7 @@ Ownership checking works for common patterns but has gaps in error reporting and
 Single-file compilation works. Multi-file packages have symbol visibility issues.
 
 - [ ] **Cross-package public symbol export** — `public` types/funcs not visible via `import pkg` in workspace path deps. `lsm.DbError` resolves to `no such field on __module_lsm`. Blocks multi-package examples.
-- [ ] **Parser: empty guard else block** — `expr is Ok else {}` with empty braces causes brace mismatch.
+- [x] **Parser: empty guard else block** — `expr is Ok else {}` with empty braces causes brace mismatch.
 
 ## 8. Build Infrastructure & Security
 
@@ -57,7 +57,7 @@ Hardening for the package ecosystem. Not blocking any examples.
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
 - [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).
 - [ ] **Build exec gating** — `exec()`/`exec_output()` require `build_exec` capability (PM9-PM10).
-- [ ] **Unsafe report command** — CLI command to report all unsafe operations by category.
+- [x] **Unsafe report command** — CLI command to report all unsafe operations by category.
 
 ---
 
@@ -148,5 +148,11 @@ Hardening for the package ecosystem. Not blocking any examples.
 - [x] Serialization / encoding spec
 - [x] Granular unsafe operations — keep blanket unsafe blocks
 - [x] Capability-based security for dependencies
+
+### Build Infrastructure
+- [x] Unsafe report command — `rask unsafe <file>` reports operations by category
+
+### Parser
+- [x] Empty guard else block — `expr is Ok else {}` already works correctly
 
 </details>

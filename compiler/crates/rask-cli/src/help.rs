@@ -61,6 +61,7 @@ pub fn print_usage() {
     println!("{}", output::section_header("Debugging and Exploration:"));
     println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
     println!("  {} {}       Show a module's public API", output::command("api"), output::arg("<file>"));
+    println!("  {} {}    Report all unsafe operations by category", output::command("unsafe"), output::arg("<file>"));
 
     println!();
     println!("{}", output::section_header("Compilation Phases:"));
@@ -571,6 +572,24 @@ pub fn print_comptime_help() {
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output comptime results as structured JSON", output::arg("--json"));
+}
+
+pub fn print_unsafe_help() {
+    println!("{}", output::section_header("Unsafe Report"));
+    println!();
+    println!("Report all unsafe operations in a Rask source file, grouped by category.");
+    println!();
+    println!("{}: {} {} {}", "Usage".yellow(),
+        output::command("rask"),
+        output::command("unsafe"),
+        output::arg("<file.rk>"));
+    println!();
+    println!("{}", output::section_header("Categories:"));
+    println!("  Pointer Dereference, Pointer Dereference (write), Pointer Arithmetic,");
+    println!("  Pointer Method, Extern Call, Unsafe Function Call, Transmute, Union Field Access");
+    println!();
+    println!("{}", output::section_header("Options:"));
+    println!("  {}  Output unsafe report as structured JSON", output::arg("--json"));
 }
 
 pub fn print_mono_help() {
