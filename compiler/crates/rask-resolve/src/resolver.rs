@@ -4,7 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use rask_ast::decl::{Decl, DeclKind, FnDecl, StructDecl, EnumDecl, TraitDecl, ImplDecl, ImportDecl, ExportDecl, TypeParam, UnionDecl};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{BinOp, Expr, ExprKind, Pattern, UnaryOp};
 use rask_ast::{NodeId, Span};
 
 use crate::error::ResolveError;
@@ -30,6 +30,9 @@ pub struct Resolver {
     package_exports: HashMap<PackageId, HashMap<String, SymbolId>>,
     /// When true, declarations can shadow builtin names without E0209.
     stdlib_mode: bool,
+    /// Compile-time cfg values for dead branch elimination in `comptime if`.
+    /// Maps field names (os, arch, env, profile) to their values.
+    cfg_values: HashMap<String, String>,
 }
 
 impl Resolver {
@@ -47,6 +50,7 @@ impl Resolver {
             type_param_map: HashMap::new(),
             package_exports: HashMap::new(),
             stdlib_mode: false,
+            cfg_values: HashMap::new(),
         };
 
         resolver.register_builtins();
@@ -287,6 +291,25 @@ impl Resolver {
         Self::resolve_inner(decls, false)
     }
 
+    /// Resolve with cfg values for dead branch elimination in `comptime if`.
+    pub fn resolve_with_cfg(
+        decls: &[Decl],
+        cfg_values: HashMap<String, String>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        let mut resolver = Resolver::new();
+        resolver.cfg_values = cfg_values;
+        resolver.collect_declarations(decls);
+        resolver.resolve_bodies(decls);
+        if resolver.errors.is_empty() {
+            Ok(ResolvedProgram {
+                symbols: resolver.symbols,
+                resolutions: resolver.resolutions,
+            })
+        } else {
+            Err(resolver.errors)
+        }
+    }
+
     /// Resolve stdlib definition files — skips E0209 builtin shadowing checks.
     pub fn resolve_stdlib(decls: &[Decl]) -> Result<ResolvedProgram, Vec<ResolveError>> {
         Self::resolve_inner(decls, true)
@@ -300,6 +323,15 @@ impl Resolver {
         Self::resolve_package_with_stdlib(decls, registry, current_package, &[])
     }
 
+    pub fn resolve_package_with_cfg(
+        decls: &[Decl],
+        registry: &crate::PackageRegistry,
+        current_package: crate::PackageId,
+        cfg_values: HashMap<String, String>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, &[], cfg_values)
+    }
+
     /// Resolve a package with separate stdlib declarations processed in
     /// stdlib_mode (bypasses builtin-shadowing checks). Stdlib decls are
     /// collected and resolved first, then user decls on top.
@@ -309,7 +341,20 @@ impl Resolver {
         current_package: crate::PackageId,
         stdlib_decls: &[Decl],
     ) -> Result<ResolvedProgram, Vec<ResolveError>> {
+        Self::resolve_package_with_stdlib_and_cfg(decls, registry, current_package, stdlib_decls, HashMap::new())
+    }
+
+    /// Resolve a package with stdlib declarations and cfg values for
+    /// dead branch elimination in `comptime if`.
+    pub fn resolve_package_with_stdlib_and_cfg(
+        decls: &[Decl],
+        registry: &crate::PackageRegistry,
+        current_package: crate::PackageId,
+        stdlib_decls: &[Decl],
+        cfg_values: HashMap<String, String>,
+    ) -> Result<ResolvedProgram, Vec<ResolveError>> {
         let mut resolver = Resolver::new();
+        resolver.cfg_values = cfg_values;
 
         resolver.current_package = Some(current_package);
 
@@ -1214,12 +1259,127 @@ impl Resolver {
             }
             StmtKind::Comptime(body) => {
                 self.scopes.push(ScopeKind::Block);
-                for s in body {
-                    self.resolve_stmt(s);
+                if let Some(taken) = self.try_resolve_comptime_if(body) {
+                    for s in taken {
+                        self.resolve_stmt(s);
+                    }
+                } else {
+                    for s in body {
+                        self.resolve_stmt(s);
+                    }
                 }
                 self.scopes.pop();
             }
         }
+    }
+
+    /// Try to evaluate a `comptime if cfg.field == "value"` condition statically.
+    /// Returns the taken branch's statements if the pattern matches and
+    /// the condition can be evaluated, or None to fall through to normal resolution.
+    fn try_resolve_comptime_if<'b>(&self, stmts: &'b [Stmt]) -> Option<&'b [Stmt]> {
+        if self.cfg_values.is_empty() || stmts.len() != 1 {
+            return None;
+        }
+        let inner = match &stmts[0].kind {
+            StmtKind::Expr(e) => e,
+            _ => return None,
+        };
+        let (cond, then_branch, else_branch) = match &inner.kind {
+            ExprKind::If { cond, then_branch, else_branch } => (cond, then_branch, else_branch),
+            _ => return None,
+        };
+
+        let taken = self.eval_cfg_condition(cond)?;
+        if taken {
+            if let ExprKind::Block(block_stmts) = &then_branch.kind {
+                Some(block_stmts)
+            } else {
+                None
+            }
+        } else if let Some(else_br) = else_branch {
+            if let ExprKind::Block(block_stmts) = &else_br.kind {
+                Some(block_stmts)
+            } else {
+                None
+            }
+        } else {
+            Some(&[])
+        }
+    }
+
+    /// Evaluate a cfg condition expression statically.
+    /// Handles both pre-desugar (`Binary { Eq, .. }`) and post-desugar
+    /// (`MethodCall { method: "eq", .. }`) forms, plus `!`, `&&`, `||`.
+    fn eval_cfg_condition(&self, expr: &Expr) -> Option<bool> {
+        match &expr.kind {
+            // Pre-desugar: cfg.field == "value"
+            ExprKind::Binary { op, left, right } => {
+                match op {
+                    BinOp::Eq | BinOp::Ne => {
+                        let (field, value) = self.extract_cfg_comparison(left, right)?;
+                        let cfg_val = self.cfg_values.get(field)?;
+                        let result = cfg_val == value;
+                        Some(if *op == BinOp::Eq { result } else { !result })
+                    }
+                    BinOp::And => {
+                        let l = self.eval_cfg_condition(left)?;
+                        let r = self.eval_cfg_condition(right)?;
+                        Some(l && r)
+                    }
+                    BinOp::Or => {
+                        let l = self.eval_cfg_condition(left)?;
+                        let r = self.eval_cfg_condition(right)?;
+                        Some(l || r)
+                    }
+                    _ => None,
+                }
+            }
+            // Post-desugar: cfg.field.eq("value") — `==` desugars to `.eq()` method call
+            ExprKind::MethodCall { object, method, args, .. } if method == "eq" => {
+                let field = self.extract_cfg_field(object)?;
+                let value = match args.first() {
+                    Some(arg) => match &arg.expr.kind {
+                        ExprKind::String(s) => s.as_str(),
+                        _ => return None,
+                    },
+                    None => return None,
+                };
+                let cfg_val = self.cfg_values.get(field)?;
+                Some(cfg_val == value)
+            }
+            // Post-desugar: !(cfg.field.eq("value")) — `!=` desugars to `!(.eq())`
+            ExprKind::Unary { op: UnaryOp::Not, operand } => {
+                Some(!self.eval_cfg_condition(operand)?)
+            }
+            _ => None,
+        }
+    }
+
+    /// Extract (field_name, string_value) from `cfg.field == "value"` (pre-desugar).
+    fn extract_cfg_comparison<'b>(&self, left: &'b Expr, right: &'b Expr) -> Option<(&'b str, &'b str)> {
+        if let Some(field) = self.extract_cfg_field(left) {
+            if let ExprKind::String(val) = &right.kind {
+                return Some((field, val));
+            }
+        }
+        if let Some(field) = self.extract_cfg_field(right) {
+            if let ExprKind::String(val) = &left.kind {
+                return Some((field, val));
+            }
+        }
+        None
+    }
+
+    /// Extract the field name from a `cfg.field` expression.
+    fn extract_cfg_field<'b>(&self, expr: &'b Expr) -> Option<&'b str> {
+        if let ExprKind::Field { object, field } = &expr.kind {
+            if let ExprKind::Ident(name) = &object.kind {
+                if name == "cfg" {
+                    return Some(field);
+                }
+            }
+        }
+        None
     }
 
     // =========================================================================
@@ -1538,8 +1698,14 @@ impl Resolver {
             }
             ExprKind::Comptime { body } => {
                 self.scopes.push(ScopeKind::Block);
-                for stmt in body {
-                    self.resolve_stmt(stmt);
+                if let Some(taken) = self.try_resolve_comptime_if(body) {
+                    for s in taken {
+                        self.resolve_stmt(s);
+                    }
+                } else {
+                    for stmt in body {
+                        self.resolve_stmt(stmt);
+                    }
                 }
                 self.scopes.pop();
             }
