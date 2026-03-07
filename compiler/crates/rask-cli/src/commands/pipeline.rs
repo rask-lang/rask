@@ -80,10 +80,14 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         process::exit(1);
     }
 
+    // Eliminate dead branches in `comptime if cfg.*` before any other pass (CC1)
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    rask_comptime::eliminate_comptime_if(&mut parse_result.decls, &cfg);
+
     rask_desugar::desugar(&mut parse_result.decls);
     rask_desugar::desugar_default_args(&mut parse_result.decls);
 
-    let resolved = match rask_resolve::resolve(&parse_result.decls) {
+    let resolved = match rask_resolve::resolve_with_cfg(&parse_result.decls, cfg.to_cfg_values()) {
         Ok(r) => r,
         Err(errors) => {
             let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
@@ -148,15 +152,17 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         .map(|f| (f.path.clone(), f.source.clone()))
         .collect();
 
+    // Eliminate dead branches in `comptime if cfg.*` before any other pass (CC1)
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    rask_comptime::eliminate_comptime_if(&mut pkg_ctx.all_decls, &cfg);
+
     rask_desugar::desugar(&mut pkg_ctx.all_decls);
     rask_desugar::desugar_default_args(&mut pkg_ctx.all_decls);
-
-    // Resolver handles external packages via collect_package_exports —
-    // only pass root package decls here to avoid double registration.
-    let resolved = match rask_resolve::resolve_package(
+    let resolved = match rask_resolve::resolve_package_with_cfg(
         &pkg_ctx.all_decls,
         &pkg_ctx.registry,
         pkg_ctx.root_id,
+        cfg.to_cfg_values(),
     ) {
         Ok(r) => r,
         Err(errors) => {

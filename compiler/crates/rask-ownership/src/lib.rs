@@ -15,7 +15,7 @@ pub use error::{OwnershipError, OwnershipErrorKind, AccessKind, MoveReason};
 use std::collections::{HashMap, HashSet};
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
-use rask_ast::expr::{Expr, ExprKind, Pattern};
+use rask_ast::expr::{ArgMode, Expr, ExprKind, Pattern};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::Span;
 use rask_types::{Type, TypedProgram};
@@ -382,12 +382,22 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(func);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    if arg.mode == ArgMode::Own {
+                        if let ExprKind::Ident(name) = &arg.expr.kind {
+                            self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
+                        }
+                    }
                 }
             }
             ExprKind::MethodCall { object, method, type_args: _, args } => {
                 self.check_expr(object);
                 for arg in args {
                     self.check_expr(&arg.expr);
+                    if arg.mode == ArgMode::Own {
+                        if let ExprKind::Ident(name) = &arg.expr.kind {
+                            self.bindings.insert(name.clone(), BindingState::Moved { at: arg.expr.span });
+                        }
+                    }
                 }
                 // CC3/PF5: Check for mutations on frozen pool contexts
                 if matches!(method.as_str(), "insert" | "remove" | "clear") {

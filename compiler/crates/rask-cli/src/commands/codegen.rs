@@ -88,6 +88,7 @@ pub fn evaluate_comptime_globals(
     }
 
     for (name, init) in comptime_consts {
+        comptime_interp.reset_branch_count();
         match comptime_interp.eval_expr(init) {
             Ok(val) => {
                 let type_prefix = val.type_prefix().to_string();
