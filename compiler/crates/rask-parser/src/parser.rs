@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! The parser implementation using Pratt parsing for expressions.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, ContextClause, Decl, DeclKind, DepDecl, EnumDecl, ExternDecl, FeatureDecl, FeatureOption, Field, FieldVisibility, FnDecl, ImplDecl, ImportDecl, PackageDecl, Param, ProfileDecl, StructDecl, TestDecl, TraitDecl, TypeAliasDecl, TypeParam, UnionDecl, Variant};
 use rask_ast::expr::{ArgMode, BinOp, CallArg, ClosureParam, Expr, ExprKind, FieldInit, MatchArm, Pattern, SelectArm, SelectArmKind, UnaryOp, WithBinding};
 use rask_ast::stmt::{ForBinding, Stmt, StmtKind};
 use rask_ast::token::{Token, TokenKind};
@@ -80,7 +80,7 @@ impl Parser {
                 }
                 TokenKind::Func | TokenKind::Struct | TokenKind::Enum |
                 TokenKind::Trait | TokenKind::Extend | TokenKind::Import |
-                TokenKind::Extern | TokenKind::Public | TokenKind::Package if brace_depth == 0 => {
+                TokenKind::Extern | TokenKind::Public | TokenKind::Private | TokenKind::Package if brace_depth == 0 => {
                     return;
                 }
                 _ => { self.advance(); }
@@ -235,6 +235,7 @@ impl Parser {
             TokenKind::Type => "type".to_string(),
             // Modifiers
             TokenKind::Public => "public".to_string(),
+            TokenKind::Private => "private".to_string(),
             TokenKind::Take => "take".to_string(),
             TokenKind::Own => "own".to_string(),
             TokenKind::ReadKw => "read".to_string(),
@@ -429,7 +430,7 @@ impl Parser {
                         TokenKind::Union | TokenKind::Trait | TokenKind::Extend |
                         TokenKind::Import | TokenKind::Export | TokenKind::Extern |
                         TokenKind::Test | TokenKind::Benchmark | TokenKind::Package |
-                        TokenKind::Public
+                        TokenKind::Public | TokenKind::Private
                     ) {
                         if !self.record_error(decl_err) { break; }
                         self.synchronize();
@@ -505,7 +506,7 @@ impl Parser {
                         ret_ty: None,
                         context_clauses: vec![],
                         body: top_level_stmts,
-                        is_pub: false,
+                        is_pub: false, is_private: false,
                         is_comptime: false,
                         is_unsafe: false,
                         abi: None,
@@ -561,7 +562,7 @@ impl Parser {
         }
 
         let kind = match self.current_kind() {
-            TokenKind::Func => self.parse_fn_decl(is_pub, is_comptime, is_unsafe, attrs, doc)?,
+            TokenKind::Func => self.parse_fn_decl(is_pub, false, is_comptime, is_unsafe, attrs, doc)?,
             TokenKind::Struct => self.parse_struct_decl(is_pub, attrs, doc)?,
             TokenKind::Enum => self.parse_enum_decl(is_pub, attrs, doc)?,
             TokenKind::Union => self.parse_union_decl(is_pub, doc)?,
@@ -647,7 +648,7 @@ impl Parser {
     // Declaration Parsing
     // =========================================================================
 
-    fn parse_fn_decl(&mut self, is_pub: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
+    fn parse_fn_decl(&mut self, is_pub: bool, is_private: bool, is_comptime: bool, is_unsafe: bool, attrs: Vec<String>, doc: Option<String>) -> Result<DeclKind, ParseError> {
         let fn_start = self.current().span.start;
         self.expect(&TokenKind::Func)?;
         // Allow keywords as function names (e.g., `or` for Option.or)
@@ -705,7 +706,7 @@ impl Parser {
 
         let fn_end = self.tokens[self.pos.saturating_sub(1)].span.end;
         let fn_span = Span::new(fn_start, fn_end);
-        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
+        Ok(DeclKind::Fn(FnDecl { name, type_params, params, ret_ty, context_clauses, body, is_pub, is_private, is_comptime, is_unsafe, abi: None, attrs, doc, span: fn_span }))
     }
 
     fn parse_using_clauses(&mut self) -> Result<Vec<ContextClause>, ParseError> {
@@ -1139,18 +1140,26 @@ impl Parser {
             }
 
             let method_doc = self.take_doc();
-            let field_pub = self.match_token(&TokenKind::Public);
+            let field_private = self.match_token(&TokenKind::Private);
+            let field_pub = if !field_private { self.match_token(&TokenKind::Public) } else { false };
 
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, false, false, vec![], method_doc)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(field_pub, field_private, false, false, vec![], method_doc)? {
                     methods.push(fn_decl);
                 }
             } else {
+                let visibility = if field_private {
+                    FieldVisibility::Private
+                } else if field_pub {
+                    FieldVisibility::Public
+                } else {
+                    FieldVisibility::Package
+                };
                 let name_span = self.current().span;
                 let field_name = self.expect_ident_or_keyword()?;
                 self.expect(&TokenKind::Colon)?;
                 let ty = self.parse_type_name()?;
-                fields.push(Field { name: field_name, name_span, ty, is_pub: field_pub });
+                fields.push(Field { name: field_name, name_span, ty, visibility });
             }
 
             self.match_token(&TokenKind::Comma);
@@ -1181,7 +1190,8 @@ impl Parser {
 
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             let _field_doc = self.take_doc();
-            let field_pub = self.match_token(&TokenKind::Public);
+            let field_private = self.match_token(&TokenKind::Private);
+            let field_pub = if !field_private { self.match_token(&TokenKind::Public) } else { false };
 
             if self.check(&TokenKind::Func) {
                 return Err(ParseError {
@@ -1191,11 +1201,18 @@ impl Parser {
                 });
             }
 
+            let visibility = if field_private {
+                FieldVisibility::Private
+            } else if field_pub {
+                FieldVisibility::Public
+            } else {
+                FieldVisibility::Package
+            };
             let name_span = self.current().span;
             let field_name = self.expect_ident_or_keyword()?;
             self.expect(&TokenKind::Colon)?;
             let ty = self.parse_type_name()?;
-            fields.push(Field { name: field_name, name_span, ty, is_pub: field_pub });
+            fields.push(Field { name: field_name, name_span, ty, visibility });
 
             self.match_token(&TokenKind::Comma);
             self.skip_newlines();
@@ -1238,9 +1255,10 @@ impl Parser {
             }
 
             let item_doc = self.take_doc();
-            if self.check(&TokenKind::Func) || (self.check(&TokenKind::Public) && matches!(self.peek(1), TokenKind::Func)) {
-                let m_pub = self.match_token(&TokenKind::Public);
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, false, false, vec![], item_doc)? {
+            if self.check(&TokenKind::Func) || (self.check(&TokenKind::Public) && matches!(self.peek(1), TokenKind::Func)) || (self.check(&TokenKind::Private) && matches!(self.peek(1), TokenKind::Func)) {
+                let m_private = self.match_token(&TokenKind::Private);
+                let m_pub = if !m_private { self.match_token(&TokenKind::Public) } else { false };
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_private, false, false, vec![], item_doc)? {
                     methods.push(fn_decl);
                 }
             } else {
@@ -1269,7 +1287,7 @@ impl Parser {
                             (format!("_{}", idx), type_span, ty)
                         };
 
-                        fields.push(Field { name: field_name, name_span, ty, is_pub: false });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package });
                         idx += 1;
 
                         if !self.match_token(&TokenKind::Comma) { break; }
@@ -1284,7 +1302,7 @@ impl Parser {
                         let field_name = self.expect_ident()?;
                         self.expect(&TokenKind::Colon)?;
                         let ty = self.parse_type_name()?;
-                        fields.push(Field { name: field_name, name_span, ty, is_pub: false });
+                        fields.push(Field { name: field_name, name_span, ty, visibility: FieldVisibility::Package });
                         if !self.match_token(&TokenKind::Comma) {
                             self.skip_newlines();
                             if !self.check(&TokenKind::RBrace) { continue; }
@@ -1345,7 +1363,7 @@ impl Parser {
         while !self.check(&TokenKind::RBrace) && !self.at_end() {
             let method_doc = self.take_doc();
             if self.check(&TokenKind::Func) {
-                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, vec![], method_doc)? {
+                if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(false, false, false, false, vec![], method_doc)? {
                     methods.push(fn_decl);
                 }
             } else if let TokenKind::Ident(_) = self.current_kind() {
@@ -1406,7 +1424,7 @@ impl Parser {
             ret_ty,
             context_clauses,
             body,
-            is_pub: false,
+            is_pub: false, is_private: false,
             is_comptime: false,
             is_unsafe: false,
             abi: None,
@@ -1438,10 +1456,11 @@ impl Parser {
                 self.skip_newlines();
             }
             let method_doc = self.take_doc();
-            let m_pub = self.match_token(&TokenKind::Public);
+            let m_private = self.match_token(&TokenKind::Private);
+            let m_pub = if !m_private { self.match_token(&TokenKind::Public) } else { false };
             let m_comptime = self.match_token(&TokenKind::Comptime);
             let m_unsafe = if !m_comptime { self.match_token(&TokenKind::Unsafe) } else { false };
-            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_comptime, m_unsafe, method_attrs, method_doc)? {
+            if let DeclKind::Fn(fn_decl) = self.parse_fn_decl(m_pub, m_private, m_comptime, m_unsafe, method_attrs, method_doc)? {
                 methods.push(fn_decl);
             }
             self.skip_newlines();
@@ -1709,6 +1728,7 @@ impl Parser {
                 context_clauses: vec![],
                 body,
                 is_pub: true,
+                is_private: false,
                 is_comptime: false,
                 is_unsafe: false,
                 abi: Some(abi.to_string()),

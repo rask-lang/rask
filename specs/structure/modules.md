@@ -1,10 +1,10 @@
 <!-- id: struct.modules -->
 <!-- status: decided -->
-<!-- summary: Package-visible default, fixed built-ins, path-based imports, export re-exports -->
+<!-- summary: Package-visible default, `private` keyword for encapsulation, fixed built-ins, path-based imports, export re-exports -->
 
 # Module System
 
-Package-visible default with explicit `public`, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
+Package-visible default for items and fields, `private` keyword for extend-only access, explicit `public` modifier, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
 
 ## Visibility
 
@@ -14,11 +14,13 @@ Package-visible default with explicit `public`, fixed built-in types, simple pat
 | **V2: Public** | `public` exposes to external packages |
 | **V3: Tests access all** | Test files (`*_test.rk`) access all package items |
 | **V4: No file-private** | Same package = same team — no file-level visibility |
+| **V5: Private keyword** | `private` restricts fields and methods to `extend` blocks only. Invalid on free functions or types |
 
-| Level | Scope | Declaration | Default |
-|-------|-------|-------------|---------|
-| pkg | All files in package | (no keyword) | Yes |
-| public | External packages | `public` | No |
+| Level | Scope | Declaration | Applies to |
+|-------|-------|-------------|------------|
+| private | `extend` blocks only | `private` | Fields, methods in `extend` blocks |
+| package | All files in package | (no keyword) | Items and fields (default) |
+| public | External packages | `public` | Items and fields |
 
 ## Built-in Types
 
@@ -102,13 +104,14 @@ export internal.parser.Parser
 export internal.lexer.Lexer
 ```
 
-## Struct Visibility
+## Struct Field Visibility
 
 | Rule | Description |
 |------|-------------|
-| **SV1: All-public fields** | External literal construction allowed |
-| **SV2: Any non-public field** | External literal construction forbidden — must provide factory |
-| **SV3: Pattern matching** | External code sees `public` fields only; non-public fields automatically ignored |
+| **SV1: All-public fields** | Literal construction allowed by anyone |
+| **SV2: No private fields** | Literal construction allowed within same package |
+| **SV3: Any private field** | Literal construction only in `extend` blocks — must provide factory for outside use |
+| **SV4: Pattern matching** | Only visible fields are bindable; `private` fields require `..` |
 
 ## Trait Implementation Visibility
 
@@ -141,7 +144,7 @@ export internal.lexer.Lexer
 |------|-------------|
 | **CM1: Package = unit** | All files in package compiled together |
 | **CM2: Public change** | `public` signature change recompiles importers |
-| **CM3: Private change** | Non-public change recompiles package only |
+| **CM3: Private change** | Non-public (package-visible or `private`) change recompiles package only |
 | **CM4: Generic recompilation** | Generic body change recompiles instantiation sites (mitigated by semantic hash caching) |
 
 ## Error Messages
@@ -187,7 +190,7 @@ ERROR [struct.modules/PS3]: mutable global
 
 ### Rationale
 
-**V1 (package default):** Packages are compilation units — default package visibility keeps related code accessible without ceremony. Same package = same team.
+**V1 (package default):** Everything defaults to package-visible — functions, types, and fields. Same package = same team. No asymmetry to learn. I chose this over struct-private default because data-oriented design (plain structs accessed by functions) is as common as encapsulated types, and shouldn't require annotation tax. When you need encapsulation, `private` is explicit and signals "this field has invariants."
 
 **BI2 (fixed built-in set):** Predictability. Reading any Rask file, you always know what's in scope. Go has no extension mechanism either — IDE auto-import handles repetition.
 
@@ -201,11 +204,13 @@ ERROR [struct.modules/PS3]: mutable global
 public struct Request {
     public method: string
     public path: string
-    id: u64  // non-public → factory required
+    private id: u64             // private → factory required
 }
 
-public func new_request(method: string, path: string) -> Request {
-    Request { method, path, id: next_id() }
+extend Request {
+    public func new(method: string, path: string) -> Request {
+        Request { method, path, id: next_id() }   // OK: inside extend block
+    }
 }
 ```
 
@@ -233,6 +238,16 @@ struct Node {
 }
 ```
 
+### Rejected: Workspace Visibility
+
+**Workspace-level visibility (rejected):** Considered adding a 4th visibility level (`internal`) for items shared across workspace member packages but not exposed in the public API. Rejected because:
+
+1. The primary use case (unpublished internal packages) is already handled — path deps can't be published (struct.packages/RG3), so `public` items in internal packages don't leak to external consumers.
+2. Each visibility level must earn its existence by preventing real mistakes. `internal` would prevent nothing — it's a semantic distinction with no technical consequence for unpublished packages.
+3. Three visibility levels (private, package-default, public) is already on the edge for a simplicity-focused language. Go and Zig thrive with two.
+
+If multi-package published libraries become common, revisit with a package-level `internal: true` flag in `build.rk` (import restriction, not item-level visibility). The *package* is internal, not individual items.
+
 ### Open Questions
 
 **Package granularity (deferred):** Current design is directory = package (Go-style). File = package (Zig-style) is an alternative. Deferring until validation programs exist.
@@ -247,7 +262,7 @@ struct Node {
 | Built-in type tracking | Implemented |
 | Built-in shadowing detection | Implemented |
 | Cross-package symbol lookup | Implemented |
-| Visibility checking (public/package) | Implemented |
+| Visibility checking (public/package/private) | Implemented |
 | Circular dependency detection | Implemented |
 | Semver constraint parsing | Implemented |
 | Feature resolution (additive + exclusive) | Implemented |

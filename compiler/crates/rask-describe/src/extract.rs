@@ -118,11 +118,11 @@ fn extract_struct(s: &StructDecl, opts: &DescribeOpts) -> StructDesc {
     let fields: Vec<FieldDesc> = s
         .fields
         .iter()
-        .filter(|f| opts.show_all || f.is_pub)
+        .filter(|f| opts.show_all || f.visibility.is_pub())
         .map(|f| FieldDesc {
             name: f.name.clone(),
             type_str: f.ty.clone(),
-            public: f.is_pub,
+            public: f.visibility.is_pub(),
         })
         .collect();
 

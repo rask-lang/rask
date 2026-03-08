@@ -111,6 +111,8 @@ enum RawToken {
     Or,
     #[token("package")]
     Package,
+    #[token("private")]
+    Private,
     #[token("dep")]
     Dep,
     #[token("scope")]
@@ -490,6 +492,7 @@ impl<'a> Lexer<'a> {
             RawToken::Try => TokenKind::Try,
             RawToken::Or => TokenKind::Or,
             RawToken::Package => TokenKind::Package,
+            RawToken::Private => TokenKind::Private,
             RawToken::Dep => TokenKind::Ident("dep".to_string()),
             RawToken::Scope => TokenKind::Scope,
             RawToken::Feature => TokenKind::Feature,

@@ -110,6 +110,7 @@ pub struct FnDecl {
     pub context_clauses: Vec<ContextClause>,
     pub body: Vec<Stmt>,
     pub is_pub: bool,
+    pub is_private: bool,
     pub is_comptime: bool,
     pub is_unsafe: bool,
     /// ABI for exported functions (e.g. `extern "C" func`)
@@ -166,13 +167,30 @@ pub struct StructDecl {
     pub doc: Option<String>,
 }
 
+/// Field-level visibility.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldVisibility {
+    /// `private field: T` — only extend blocks
+    Private,
+    /// (no keyword) — same package
+    Package,
+    /// `public field: T` — external
+    Public,
+}
+
+impl FieldVisibility {
+    pub fn is_pub(&self) -> bool {
+        matches!(self, Self::Public)
+    }
+}
+
 /// A struct field.
 #[derive(Debug, Clone)]
 pub struct Field {
     pub name: String,
     pub name_span: Span,
     pub ty: String,
-    pub is_pub: bool,
+    pub visibility: FieldVisibility,
 }
 
 /// An enum declaration.

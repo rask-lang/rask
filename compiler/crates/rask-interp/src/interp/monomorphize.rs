@@ -111,7 +111,7 @@ impl Interpreter {
                 name: field.name.clone(),
                 name_span: field.name_span,
                 ty: new_ty,
-                is_pub: field.is_pub,
+                visibility: field.visibility,
             });
         }
 
