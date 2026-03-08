@@ -457,7 +457,7 @@ impl Resolver {
                             SymbolKind::Field { parent: sym_id },
                             Some(field.ty.clone()),
                             Span::new(0, 0),
-                            field.is_pub,
+                            field.visibility.is_pub(),
                         );
                         field_syms.push((field.name.clone(), field_sym));
                     }
@@ -653,7 +653,7 @@ impl Resolver {
                 SymbolKind::Field { parent: sym_id },
                 Some(field.ty.clone()),
                 span,
-                field.is_pub,
+                field.visibility.is_pub(),
             );
             field_syms.push((field.name.clone(), field_sym));
         }
@@ -682,7 +682,7 @@ impl Resolver {
                 SymbolKind::Field { parent: sym_id },
                 Some(field.ty.clone()),
                 span,
-                field.is_pub,
+                field.visibility.is_pub(),
             );
             field_syms.push((field.name.clone(), field_sym));
         }
@@ -1902,6 +1902,7 @@ mod tests {
                 context_clauses: vec![],
                 body: vec![],
                 is_pub: false,
+                is_private: false,
                 is_comptime: false,
                 is_unsafe: false,
                 abi: None,
@@ -2015,6 +2016,7 @@ mod tests {
                 context_clauses: vec![],
                 body: vec![],
                 is_pub: true,
+                is_private: false,
                 is_comptime: false,
                 is_unsafe: false,
                 abi: None,
@@ -2027,15 +2029,15 @@ mod tests {
     }
 
     fn make_pub_struct_decl(name: &str) -> Decl {
-        use rask_ast::decl::{Field, StructDecl};
+        use rask_ast::decl::{Field, FieldVisibility, StructDecl};
         Decl {
             id: NodeId(200),
             kind: DeclKind::Struct(StructDecl {
                 name: name.to_string(),
                 type_params: vec![],
                 fields: vec![
-                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), is_pub: true },
-                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), is_pub: true },
+                    Field { name: "x".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public },
+                    Field { name: "y".to_string(), name_span: Span::new(0, 0), ty: "i32".to_string(), visibility: FieldVisibility::Public },
                 ],
                 methods: vec![],
                 is_pub: true,

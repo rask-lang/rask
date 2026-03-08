@@ -238,7 +238,7 @@ pub enum MonomorphizeError {
 mod tests {
     use super::*;
     use rask_ast::decl::{
-        Decl, DeclKind, EnumDecl, FnDecl, ImplDecl, Param, StructDecl, TypeParam, Variant, Field,
+        Decl, DeclKind, EnumDecl, Field, FieldVisibility, FnDecl, ImplDecl, Param, StructDecl, TypeParam, Variant,
     };
     use rask_ast::expr::{ArgMode, CallArg, Expr, ExprKind};
     use rask_ast::stmt::{Stmt, StmtKind};
@@ -312,6 +312,7 @@ mod tests {
                 context_clauses: vec![],
                 body,
                 is_pub: false,
+                is_private: false,
                 is_comptime: false,
                 is_unsafe: false,
                 abi: None,
@@ -358,6 +359,7 @@ mod tests {
                 context_clauses: vec![],
                 body,
                 is_pub: false,
+                is_private: false,
                 is_comptime: false,
                 is_unsafe: false,
                 abi: None,
@@ -517,8 +519,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
+                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -789,6 +791,7 @@ mod tests {
             context_clauses: vec![],
             body,
             is_pub: false,
+            is_private: false,
             is_comptime: false,
             is_unsafe: false,
             abi: None,
@@ -817,8 +820,8 @@ mod tests {
                     name: "Point".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
-                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                        Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
+                        Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
                     ],
                     methods: vec![
                         make_method("new", vec![], Some("Point"), vec![return_stmt(None)]),
