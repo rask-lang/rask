@@ -440,8 +440,10 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -457,8 +459,10 @@ impl<'a> Printer<'a> {
             self.indent += 1;
             for field in &s.fields {
                 self.emit_indent();
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -474,7 +478,11 @@ impl<'a> Printer<'a> {
 
     fn struct_fields_fit_one_line(&self, fields: &[Field]) -> bool {
         let est: usize = fields.iter().map(|f| {
-            f.name.len() + 2 + f.ty.len() + if f.is_pub { 7 } else { 0 }
+            f.name.len() + 2 + f.ty.len() + match f.visibility {
+                FieldVisibility::Private => 8,
+                FieldVisibility::Public => 7,
+                FieldVisibility::Package => 0,
+            }
         }).sum::<usize>() + (fields.len().saturating_sub(1) * 2);
         est < 60
     }
@@ -496,8 +504,10 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -512,8 +522,10 @@ impl<'a> Printer<'a> {
             self.indent += 1;
             for field in &u.fields {
                 self.emit_indent();
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");

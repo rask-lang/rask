@@ -305,7 +305,7 @@ impl Hasher {
         for f in fields {
             self.feed_str(&f.name);
             self.feed_str(&f.ty);
-            self.feed_bool(f.is_pub);
+            self.feed_u8(f.visibility as u8);
         }
     }
 
@@ -1015,6 +1015,7 @@ mod tests {
             context_clauses: vec![],
             body,
             is_pub: false,
+            is_private: false,
             is_comptime: false,
             is_unsafe: false,
             abi: None,

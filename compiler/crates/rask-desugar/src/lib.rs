@@ -189,6 +189,7 @@ impl Desugarer {
             context_clauses: vec![],
             body: vec![return_stmt],
             is_pub: true,
+            is_private: false,
             is_comptime: false,
             is_unsafe: false,
             abi: None,

@@ -153,7 +153,7 @@ const p = Point { x: 10, y: 20 }   // OK: all fields public
 ```
 
 **Factory functions (idiomatic for encapsulation):**
-<!-- test: skip reason: parser doesn't support `private` keyword yet -->
+<!-- test: parse -->
 ```rask
 public struct Connection {
     private socket: Socket
@@ -299,7 +299,7 @@ extend User {
 ```
 
 ### Encapsulated State
-<!-- test: skip reason: parser doesn't support `private` keyword yet -->
+<!-- test: parse -->
 ```rask
 public struct Counter {
     private value: i64
@@ -322,7 +322,7 @@ extend Counter {
 ```
 
 ### Linear Resource Wrapper
-<!-- test: skip reason: parser doesn't support `private` keyword yet -->
+<!-- test: parse -->
 ```rask
 @resource
 struct FileHandle {
