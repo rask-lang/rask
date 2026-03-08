@@ -96,6 +96,7 @@ impl TypeTable {
             TypeDef::Enum { name, .. } => name.clone(),
             TypeDef::Trait { name, .. } => name.clone(),
             TypeDef::Union { name, .. } => name.clone(),
+            TypeDef::NominalAlias { name, .. } => name.clone(),
         };
         self.types.push(def);
         // Also register the base name (without <...>) for generic type lookup
@@ -207,7 +208,16 @@ impl TypeTable {
             Some(TypeDef::Enum { name, .. }) => name.clone(),
             Some(TypeDef::Trait { name, .. }) => name.clone(),
             Some(TypeDef::Union { name, .. }) => name.clone(),
+            Some(TypeDef::NominalAlias { name, .. }) => name.clone(),
             None => format!("<type#{}>", id.0),
+        }
+    }
+
+    /// Get the underlying type for a nominal alias.
+    pub fn get_nominal_underlying(&self, id: TypeId) -> Option<&Type> {
+        match self.get(id) {
+            Some(TypeDef::NominalAlias { underlying, .. }) => Some(underlying),
+            _ => None,
         }
     }
 

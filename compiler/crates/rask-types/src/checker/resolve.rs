@@ -50,6 +50,13 @@ impl TypeChecker {
                                 }
                             })
                         }
+                        TypeDef::NominalAlias { underlying, .. } => {
+                            if field == "value" {
+                                Some(underlying.clone())
+                            } else {
+                                None
+                            }
+                        }
                         _ => None,
                     }
                 });

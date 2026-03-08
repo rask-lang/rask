@@ -114,6 +114,18 @@ impl TypeChecker {
                         span,
                     });
                 }
+                // Literal vars cannot implicitly coerce to nominal types
+                if self.ctx.literal_vars.contains_key(id) {
+                    if let Type::Named(type_id) = other {
+                        if self.types.get_nominal_underlying(*type_id).is_some() {
+                            return Err(TypeError::Mismatch {
+                                expected: other.clone(),
+                                found: t1,
+                                span,
+                            });
+                        }
+                    }
+                }
                 self.ctx.substitutions.insert(*id, other.clone());
                 Ok(true)
             }
@@ -125,6 +137,18 @@ impl TypeChecker {
                         ty: other.clone(),
                         span,
                     });
+                }
+                // Literal vars cannot implicitly coerce to nominal types
+                if self.ctx.literal_vars.contains_key(id) {
+                    if let Type::Named(type_id) = other {
+                        if self.types.get_nominal_underlying(*type_id).is_some() {
+                            return Err(TypeError::Mismatch {
+                                expected: other.clone(),
+                                found: t2,
+                                span,
+                            });
+                        }
+                    }
                 }
                 self.ctx.substitutions.insert(*id, other.clone());
                 Ok(true)

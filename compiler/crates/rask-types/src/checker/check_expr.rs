@@ -916,6 +916,29 @@ impl TypeChecker {
                     _ => Type::Unit,
                 };
             }
+
+            // Nominal type constructor: UserId(42)
+            if let Some(type_id) = self.types.get_type_id(name) {
+                if let Some(TypeDef::NominalAlias { underlying, .. }) = self.types.get(type_id) {
+                    let underlying = underlying.clone();
+                    if args.len() != 1 {
+                        self.errors.push(TypeError::ArityMismatch {
+                            expected: 1,
+                            found: args.len(),
+                            span,
+                        });
+                        for arg in args { self.infer_expr(&arg.expr); }
+                        return Type::Error;
+                    }
+                    let arg_ty = self.infer_expr_expecting(&args[0].expr, &underlying);
+                    self.ctx.add_constraint(TypeConstraint::Equal(
+                        underlying,
+                        arg_ty,
+                        span,
+                    ));
+                    return Type::Named(type_id);
+                }
+            }
         }
 
         // Extern and unsafe function calls require unsafe context

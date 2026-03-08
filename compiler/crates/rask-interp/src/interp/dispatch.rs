@@ -63,6 +63,18 @@ impl Interpreter {
                     Err(e) => Err(e),
                 }
             }
+            Value::NominalConstructor { type_name } => {
+                if args.len() != 1 {
+                    return Err(RuntimeError::ArityMismatch {
+                        expected: 1,
+                        got: args.len(),
+                    });
+                }
+                Ok(Value::Nominal {
+                    type_name,
+                    inner: Box::new(args.into_iter().next().unwrap()),
+                })
+            }
             _ => Err(RuntimeError::TypeError(format!(
                 "{} is not callable",
                 func.type_name()
