@@ -653,20 +653,20 @@ extend Point {
 `self` means "this instance." `origin()` has no `self`—it's a static method, called as
 `Point.origin()`.
 
-**Visibility:** Fields are struct-private by default — only the struct's own `extend`
-blocks can access them. Use `package` for same-package access, `public` for external:
+**Visibility:** Fields are package-visible by default — any code in the same package can
+access them. Use `private` to restrict to `extend` blocks, `public` for external access:
 
 ```rask
 struct User {
     public name: string         // Anyone can see this
-    package email: string       // Same package can see this
-    password_hash: string       // Struct-private (default) — only extend blocks
+    email: string               // Same package can see this (default)
+    private password_hash: string   // Only extend blocks
 }
 ```
 
-If any field is struct-private (the default), code outside `extend` blocks can't
-construct the struct directly. They need a factory function like `User.new(name, password)`.
-This pushes encapsulation by default — the common case is safe without extra keywords.
+If any field is `private`, code outside `extend` blocks can't construct the struct directly.
+They need a factory function like `User.new(name, password)`. Data-oriented types (plain
+structs with no invariants) need zero annotation — just declare your fields and go.
 
 ### Enums (Tagged Unions)
 
@@ -1375,9 +1375,8 @@ myapp/
 ```
 
 All files in a directory can see each other's package-visible items. No file-private
-visibility—if it's in the package, the whole package can use it. Struct fields are
-different: they default to struct-private (only `extend` blocks), not package-visible.
-Use `package` on a field to widen access to the whole package.
+visibility—if it's in the package, the whole package can use it. Fields follow the same
+default. Use `private` on a field to restrict access to `extend` blocks only.
 
 ### Imports
 
@@ -1391,14 +1390,21 @@ import mylib as ml             // Alias: ml.Parser
 
 ### Visibility
 
-Two levels:
+Three levels:
 
+- **Private** (`private`): Only `extend` blocks for that type. Valid on fields and methods.
 - **Package-visible** (default): Any file in the same package can see it.
-- **Public**: Any external package can see it. Requires the `public` keyword.
+- **Public** (`public`): Any external package can see it.
 
 ```rask
-func helper() { ... }                 // Package-visible only
+func helper() { ... }                 // Package-visible (default)
 public func api_endpoint() { ... }    // Visible to importers
+
+struct Player {
+    health: i32                       // Package-visible (default)
+    private session_key: u64          // Only extend blocks
+    public name: string               // External access
+}
 ```
 
 ### Build Configuration
