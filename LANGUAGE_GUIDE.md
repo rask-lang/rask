@@ -653,18 +653,20 @@ extend Point {
 `self` means "this instance." `origin()` has no `self`—it's a static method, called as
 `Point.origin()`.
 
-**Visibility:** Fields are package-visible by default (any file in the same package can
-see them). Add `public` to expose them externally:
+**Visibility:** Fields are struct-private by default — only the struct's own `extend`
+blocks can access them. Use `package` for same-package access, `public` for external:
 
 ```rask
 struct User {
-    public name: string       // External code can see this
-    password_hash: string     // Only same package can see this
+    public name: string         // Anyone can see this
+    package email: string       // Same package can see this
+    password_hash: string       // Struct-private (default) — only extend blocks
 }
 ```
 
-If any field is non-public, external code can't construct the struct directly. They need
-a factory function like `User.new(name, password)`.
+If any field is struct-private (the default), code outside `extend` blocks can't
+construct the struct directly. They need a factory function like `User.new(name, password)`.
+This pushes encapsulation by default — the common case is safe without extra keywords.
 
 ### Enums (Tagged Unions)
 
@@ -1372,8 +1374,10 @@ myapp/
     api.rk           // package: myapp.handlers (same)
 ```
 
-All files in a directory can see each other's non-public items. No file-private
-visibility—if it's in the package, the whole package can use it.
+All files in a directory can see each other's package-visible items. No file-private
+visibility—if it's in the package, the whole package can use it. Struct fields are
+different: they default to struct-private (only `extend` blocks), not package-visible.
+Use `package` on a field to widen access to the whole package.
 
 ### Imports
 

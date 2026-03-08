@@ -1,10 +1,10 @@
 <!-- id: struct.modules -->
 <!-- status: decided -->
-<!-- summary: Package-visible default, fixed built-ins, path-based imports, export re-exports -->
+<!-- summary: Package-visible items, struct-private fields, fixed built-ins, path-based imports, export re-exports -->
 
 # Module System
 
-Package-visible default with explicit `public`, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
+Package-visible default for items, struct-private default for fields, explicit `public`/`package` modifiers, fixed built-in types, simple path-based imports, `export` for library facades, transparent re-exports with origin-based identity.
 
 ## Visibility
 
@@ -14,11 +14,13 @@ Package-visible default with explicit `public`, fixed built-in types, simple pat
 | **V2: Public** | `public` exposes to external packages |
 | **V3: Tests access all** | Test files (`*_test.rk`) access all package items |
 | **V4: No file-private** | Same package = same team — no file-level visibility |
+| **V5: Struct-private fields** | Struct fields default to struct-private (only `extend` blocks). `package` widens to package, `public` to external |
 
-| Level | Scope | Declaration | Default |
-|-------|-------|-------------|---------|
-| pkg | All files in package | (no keyword) | Yes |
-| public | External packages | `public` | No |
+| Level | Scope | Declaration | Applies to |
+|-------|-------|-------------|------------|
+| struct-private | `extend` blocks only | (no keyword on fields) | Fields only |
+| package | All files in package | (no keyword on items) / `package` on fields | Items default, fields opt-in |
+| public | External packages | `public` | Items and fields |
 
 ## Built-in Types
 
@@ -102,13 +104,14 @@ export internal.parser.Parser
 export internal.lexer.Lexer
 ```
 
-## Struct Visibility
+## Struct Field Visibility
 
 | Rule | Description |
 |------|-------------|
-| **SV1: All-public fields** | External literal construction allowed |
-| **SV2: Any non-public field** | External literal construction forbidden — must provide factory |
-| **SV3: Pattern matching** | External code sees `public` fields only; non-public fields automatically ignored |
+| **SV1: All-public fields** | Literal construction allowed by anyone |
+| **SV2: All public + package fields** | Literal construction allowed within same package |
+| **SV3: Any struct-private field** | Literal construction only in `extend` blocks — must provide factory for outside use |
+| **SV4: Pattern matching** | Only visible fields are bindable; hidden fields require `..` |
 
 ## Trait Implementation Visibility
 
@@ -141,7 +144,7 @@ export internal.lexer.Lexer
 |------|-------------|
 | **CM1: Package = unit** | All files in package compiled together |
 | **CM2: Public change** | `public` signature change recompiles importers |
-| **CM3: Private change** | Non-public change recompiles package only |
+| **CM3: Private change** | Non-public (package or struct-private) change recompiles package only |
 | **CM4: Generic recompilation** | Generic body change recompiles instantiation sites (mitigated by semantic hash caching) |
 
 ## Error Messages
@@ -187,7 +190,7 @@ ERROR [struct.modules/PS3]: mutable global
 
 ### Rationale
 
-**V1 (package default):** Packages are compilation units — default package visibility keeps related code accessible without ceremony. Same package = same team.
+**V1 (package default):** Packages are compilation units — default package visibility for functions and types keeps related code accessible without ceremony. Same package = same team. Struct fields are different: they default to struct-private because fields are implementation details. This asymmetry (package-default for items, struct-private for fields) matches how real code works — functions are interfaces, fields are internals.
 
 **BI2 (fixed built-in set):** Predictability. Reading any Rask file, you always know what's in scope. Go has no extension mechanism either — IDE auto-import handles repetition.
 
@@ -201,11 +204,13 @@ ERROR [struct.modules/PS3]: mutable global
 public struct Request {
     public method: string
     public path: string
-    id: u64  // non-public → factory required
+    id: u64                     // struct-private → factory required
 }
 
-public func new_request(method: string, path: string) -> Request {
-    Request { method, path, id: next_id() }
+extend Request {
+    public func new(method: string, path: string) -> Request {
+        Request { method, path, id: next_id() }   // OK: inside extend block
+    }
 }
 ```
 
@@ -247,7 +252,7 @@ struct Node {
 | Built-in type tracking | Implemented |
 | Built-in shadowing detection | Implemented |
 | Cross-package symbol lookup | Implemented |
-| Visibility checking (public/package) | Implemented |
+| Visibility checking (public/package/struct-private) | Implemented |
 | Circular dependency detection | Implemented |
 | Semver constraint parsing | Implemented |
 | Feature resolution (additive + exclusive) | Implemented |
