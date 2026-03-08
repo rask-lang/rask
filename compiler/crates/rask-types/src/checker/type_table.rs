@@ -221,6 +221,14 @@ impl TypeTable {
         }
     }
 
+    /// Get the name of a nominal alias, if this type ID is one.
+    pub fn get_nominal_name(&self, id: TypeId) -> Option<String> {
+        match self.get(id) {
+            Some(TypeDef::NominalAlias { name, .. }) => Some(name.clone()),
+            _ => None,
+        }
+    }
+
     fn resolve_type_names(&self, ty: &Type) -> Type {
         match ty {
             Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
@@ -312,6 +320,12 @@ impl TypeTable {
             },
             TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
                 found: self.resolve_type_names(&found),
+                span,
+            },
+            TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {
+                expected: self.resolve_type_names(&expected),
+                found: self.resolve_type_names(&found),
+                nominal_name,
                 span,
             },
             other => other,
