@@ -46,6 +46,13 @@ pub fn cmd_typecheck(path: &str, format: Format) {
                     }
                     println!("  }}");
                 }
+                rask_types::TypeDef::NominalAlias { name, underlying, with_traits } => {
+                    if with_traits.is_empty() {
+                        println!("  type {} = {:?}", name, underlying);
+                    } else {
+                        println!("  type {} = {:?} with ({})", name, underlying, with_traits.join(", "));
+                    }
+                }
             }
         }
 

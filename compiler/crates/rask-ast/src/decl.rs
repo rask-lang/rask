@@ -46,13 +46,17 @@ pub enum DeclKind {
     TypeAlias(TypeAliasDecl),
 }
 
-/// A type alias declaration.
+/// A type declaration: nominal by default, transparent with `type alias`.
 #[derive(Debug, Clone)]
 pub struct TypeAliasDecl {
     pub name: String,
     pub type_params: Vec<TypeParam>,
     pub target: String,
     pub is_pub: bool,
+    /// True for `type alias X = Y` (transparent). False for `type X = Y` (nominal).
+    pub is_transparent: bool,
+    /// Traits inherited from underlying type: `type X = Y with (Equal, Hashable)`
+    pub with_traits: Vec<String>,
 }
 
 /// A top-level constant declaration.

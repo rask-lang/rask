@@ -337,7 +337,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Struct { methods, .. } => methods.clone(),
                         TypeDef::Enum { methods, .. } => methods.clone(),
                         TypeDef::Trait { methods, .. } => methods.clone(),
-                        TypeDef::Union { .. } => Vec::new(),
+                        TypeDef::Union { .. } | TypeDef::NominalAlias { .. } => Vec::new(),
                     }
                 } else {
                     Vec::new()
@@ -448,6 +448,7 @@ impl<'a> TraitChecker<'a> {
                         TypeDef::Enum { name, .. } => name.clone(),
                         TypeDef::Trait { name, .. } => name.clone(),
                         TypeDef::Union { name, .. } => name.clone(),
+                        TypeDef::NominalAlias { name, .. } => name.clone(),
                     }
                 } else {
                     format!("Type({})", id.0)

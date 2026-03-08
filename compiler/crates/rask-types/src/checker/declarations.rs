@@ -186,7 +186,18 @@ impl TypeChecker {
     }
 
     pub(super) fn register_type_alias(&mut self, a: &TypeAliasDecl) {
-        self.types.register_alias(a.name.clone(), a.target.clone());
+        if a.is_transparent {
+            // `type alias X = Y` — transparent, same as before
+            self.types.register_alias(a.name.clone(), a.target.clone());
+        } else {
+            // `type X = Y` — nominal, gets its own TypeId
+            let underlying = parse_type_string(&a.target, &self.types).unwrap_or(Type::Error);
+            self.types.register_type(TypeDef::NominalAlias {
+                name: a.name.clone(),
+                underlying,
+                with_traits: a.with_traits.clone(),
+            });
+        }
     }
 
     pub(super) fn register_union(&mut self, u: &UnionDecl) {

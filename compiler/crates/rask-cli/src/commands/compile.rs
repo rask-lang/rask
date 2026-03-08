@@ -51,6 +51,7 @@ pub fn compile_to_object(
                 rask_types::TypeDef::Enum { name, .. } => name.clone(),
                 rask_types::TypeDef::Trait { name, .. } => name.clone(),
                 rask_types::TypeDef::Union { name, .. } => name.clone(),
+                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
             };
             (rask_types::TypeId(i as u32), name)
         })
@@ -370,6 +371,7 @@ pub fn compile_benchmarks_to_object(
                 rask_types::TypeDef::Enum { name, .. } => name.clone(),
                 rask_types::TypeDef::Trait { name, .. } => name.clone(),
                 rask_types::TypeDef::Union { name, .. } => name.clone(),
+                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
             };
             (rask_types::TypeId(i as u32), name)
         })

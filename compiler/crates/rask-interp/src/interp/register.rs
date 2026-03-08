@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Declaration registration, test runners, and benchmark runners.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, Variant, Field};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, TypeAliasDecl, Variant, Field};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
@@ -151,6 +151,15 @@ impl Interpreter {
                 }
                 DeclKind::Const(c) => {
                     top_level_consts.push(c.clone());
+                }
+                DeclKind::TypeAlias(a) => {
+                    if !a.is_transparent {
+                        // Nominal type: register constructor so `UserId(42)` works
+                        self.env.define(
+                            a.name.clone(),
+                            Value::NominalConstructor { type_name: a.name.clone() },
+                        );
+                    }
                 }
                 _ => {}
             }

@@ -271,6 +271,15 @@ fn add_typedef_completions(
                 });
             }
         }
+        TypeDef::NominalAlias { underlying, .. } => {
+            // .value extracts the underlying type
+            items.push(CompletionItem {
+                label: "value".to_string(),
+                kind: Some(CompletionItemKind::FIELD),
+                detail: Some(formatter.format(underlying)),
+                ..Default::default()
+            });
+        }
     }
 }
 

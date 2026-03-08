@@ -36,6 +36,12 @@ pub enum TypeDef {
         name: String,
         fields: Vec<(String, Type)>,
     },
+    /// Nominal type alias: same layout as underlying, distinct identity.
+    NominalAlias {
+        name: String,
+        underlying: Type,
+        with_traits: Vec<String>,
+    },
 }
 
 /// Method signature.

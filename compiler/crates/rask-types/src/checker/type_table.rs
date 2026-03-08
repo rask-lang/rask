@@ -96,6 +96,7 @@ impl TypeTable {
             TypeDef::Enum { name, .. } => name.clone(),
             TypeDef::Trait { name, .. } => name.clone(),
             TypeDef::Union { name, .. } => name.clone(),
+            TypeDef::NominalAlias { name, .. } => name.clone(),
         };
         self.types.push(def);
         // Also register the base name (without <...>) for generic type lookup
@@ -207,7 +208,24 @@ impl TypeTable {
             Some(TypeDef::Enum { name, .. }) => name.clone(),
             Some(TypeDef::Trait { name, .. }) => name.clone(),
             Some(TypeDef::Union { name, .. }) => name.clone(),
+            Some(TypeDef::NominalAlias { name, .. }) => name.clone(),
             None => format!("<type#{}>", id.0),
+        }
+    }
+
+    /// Get the underlying type for a nominal alias.
+    pub fn get_nominal_underlying(&self, id: TypeId) -> Option<&Type> {
+        match self.get(id) {
+            Some(TypeDef::NominalAlias { underlying, .. }) => Some(underlying),
+            _ => None,
+        }
+    }
+
+    /// Get the name of a nominal alias, if this type ID is one.
+    pub fn get_nominal_name(&self, id: TypeId) -> Option<String> {
+        match self.get(id) {
+            Some(TypeDef::NominalAlias { name, .. }) => Some(name.clone()),
+            _ => None,
         }
     }
 
@@ -302,6 +320,12 @@ impl TypeTable {
             },
             TypeError::TryOnNonResult { found, span } => TypeError::TryOnNonResult {
                 found: self.resolve_type_names(&found),
+                span,
+            },
+            TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {
+                expected: self.resolve_type_names(&expected),
+                found: self.resolve_type_names(&found),
+                nominal_name,
                 span,
             },
             other => other,
