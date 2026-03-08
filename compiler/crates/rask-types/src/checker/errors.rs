@@ -133,6 +133,15 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// type.aliases/T9: nominal type used where underlying expected, or vice versa
+    #[error("nominal type mismatch: expected `{expected}`, found `{found}`")]
+    NominalMismatch {
+        expected: Type,
+        found: Type,
+        nominal_name: String,
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {
