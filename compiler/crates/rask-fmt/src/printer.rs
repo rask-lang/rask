@@ -703,7 +703,11 @@ impl<'a> Printer<'a> {
         if t.is_pub {
             self.emit("public ");
         }
-        self.emit("type ");
+        if t.is_transparent {
+            self.emit("type alias ");
+        } else {
+            self.emit("type ");
+        }
         self.emit(&t.name);
         if !t.type_params.is_empty() {
             self.emit("<");
@@ -717,6 +721,16 @@ impl<'a> Printer<'a> {
         }
         self.emit(" = ");
         self.emit(&t.target);
+        if !t.with_traits.is_empty() {
+            self.emit(" with (");
+            for (i, trait_name) in t.with_traits.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                self.emit(trait_name);
+            }
+            self.emit(")");
+        }
     }
 
     fn format_const_decl(&mut self, c: &ConstDecl) {

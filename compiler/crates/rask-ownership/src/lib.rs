@@ -897,6 +897,9 @@ impl<'a> OwnershipChecker<'a> {
                             fields.iter().all(|(_, t)| self.is_copy(t))
                                 && self.type_size(ty) <= 16
                         }
+                        rask_types::TypeDef::NominalAlias { underlying, .. } => {
+                            self.is_copy(underlying)
+                        }
                     }
                 } else {
                     false

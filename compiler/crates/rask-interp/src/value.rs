@@ -372,6 +372,15 @@ pub enum Value {
     Rng(Arc<Mutex<RngState>>),
     /// Lazy iterator (wraps a source and optional adapters)
     Iterator(Arc<Mutex<IteratorState>>),
+    /// Nominal type wrapper: `type UserId = u64` — wraps the underlying value
+    Nominal {
+        type_name: String,
+        inner: Box<Value>,
+    },
+    /// Nominal type constructor: makes a type name callable as `UserId(42)`
+    NominalConstructor {
+        type_name: String,
+    },
 }
 
 /// xoshiro256++ PRNG state.
@@ -572,6 +581,8 @@ impl Value {
             Value::SimdF32x8(_) => "f32x8",
             Value::Rng(_) => "Rng",
             Value::Iterator(_) => "Iterator",
+            Value::Nominal { .. } => "nominal",
+            Value::NominalConstructor { .. } => "nominal constructor",
         }
     }
 
@@ -885,6 +896,8 @@ impl fmt::Display for Value {
             }
             Value::Rng(_) => write!(f, "<Rng>"),
             Value::Iterator(_) => write!(f, "<Iterator>"),
+            Value::Nominal { type_name, inner } => write!(f, "{}({})", type_name, inner),
+            Value::NominalConstructor { type_name } => write!(f, "<type {}>", type_name),
         }
     }
 }
