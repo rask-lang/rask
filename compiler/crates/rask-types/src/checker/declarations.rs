@@ -577,7 +577,23 @@ impl TypeChecker {
                 // check_method_call directly. Others like 'time' need local registration
                 // so field access (time.Instant) flows through resolve_field.
                 if imp.path.len() == 1 {
-                    let module_name = imp.alias.as_ref().unwrap_or(&imp.path[0]).clone();
+                    let pkg_name = &imp.path[0];
+                    let module_name = imp.alias.as_ref().unwrap_or(pkg_name).clone();
+
+                    // Register public types from external packages so
+                    // qualified access (pkg.Type) resolves through the type table.
+                    if let Some(ext_decls) = self.resolved.external_decls.get(pkg_name).cloned() {
+                        for ext_decl in &ext_decls {
+                            match &ext_decl.kind {
+                                DeclKind::Struct(s) => self.register_struct(s),
+                                DeclKind::Enum(e) => self.register_enum(e),
+                                DeclKind::Trait(t) => self.register_trait(t),
+                                DeclKind::TypeAlias(a) => self.register_type_alias(a),
+                                _ => {}
+                            }
+                        }
+                    }
+
                     if !self.types.builtin_modules.is_module(&module_name) {
                         self.define_local(
                             module_name.clone(),
