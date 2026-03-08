@@ -15,7 +15,7 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
 | **S3: Field ordering** | Default layout (`@layout(Rask)`): compiler reorders fields for optimal alignment. `@layout(C)`: declaration order preserved. Field *access* is always by name — reordering doesn't change semantics |
-| **S4: Visibility** | Default: package-visible. `public` makes externally visible |
+| **S4: Visibility** | Default: struct-private (only `extend` blocks). `package` for package-visible, `public` for external |
 
 <!-- test: parse -->
 ```rask
@@ -27,27 +27,35 @@ struct Name {
 
 ## Field Visibility
 
-| Declaration | Same Package | External |
-|-------------|--------------|----------|
-| `field: T` | Read + Write | Not visible |
-| `public field: T` | Read + Write | Read + Write |
+| Declaration | `extend` blocks | Same Package | External |
+|-------------|-----------------|--------------|----------|
+| `field: T` | Read + Write | Not visible | Not visible |
+| `package field: T` | Read + Write | Read + Write | Not visible |
+| `public field: T` | Read + Write | Read + Write | Read + Write |
 
-| Struct Type | External Literal | External Pattern Match |
-|-------------|------------------|------------------------|
-| All fields `public` | Allowed | All fields bindable |
-| Any non-public field | Forbidden (factory required) | Only `public` fields bindable |
+| Struct Fields | Literal Construction | Pattern Match |
+|---------------|---------------------|---------------|
+| All `public` | Anyone | All fields bindable by anyone |
+| All `public` + `package` | Same package (or `extend` blocks) | `package` + `public` fields within package; `public` only externally |
+| Any struct-private (default) | Only `extend` blocks | Only visible fields; must use `..` for hidden fields |
 
 <!-- test: skip -->
 ```rask
 public struct Request {
-    public method: string
-    public path: string
-    id: u64              // package-only
+    public method: string       // anyone can read/write
+    public path: string         // anyone can read/write
+    package id: u64             // same package only
+    buffer: Vec<u8>             // struct-private (default)
 }
 
+// Same package, outside extend block:
+const r = new_request("GET", "/")             // factory required (buffer is struct-private)
+r.id                                          // OK: package field
+r.buffer                                      // ERROR: struct-private
+
 // External code:
-const r = Request { method: "GET", path: "/" }  // ERROR: `id` not visible
-const r = new_request("GET", "/")               // OK: factory
+r.method                                      // OK: public
+r.id                                          // ERROR: package-only
 
 match r {
     Request { method, path, .. } => ...       // OK: public fields only
@@ -133,24 +141,29 @@ const c = Config.new()                          // Called on type
 
 ## Construction Patterns
 
-**Literal construction (when visible):**
+**Literal construction (when all fields visible):**
 <!-- test: skip -->
 ```rask
-const p = Point { x: 10, y: 20 }
+public struct Point {
+    public x: i32
+    public y: i32
+}
+
+const p = Point { x: 10, y: 20 }   // OK: all fields public
 ```
 
 **Factory functions (idiomatic for encapsulation):**
 <!-- test: parse -->
 ```rask
 public struct Connection {
-    socket: Socket        // non-pub
+    socket: Socket              // struct-private (default)
     public state: State
 }
 
 extend Connection {
     public func new(addr: string) -> Connection or Error {
         const socket = try connect(addr)
-        Ok(Connection { socket, state: State.Connected })
+        Ok(Connection { socket, state: State.Connected })  // OK: inside extend block
     }
 }
 ```
@@ -158,22 +171,23 @@ extend Connection {
 **Update syntax (functional update):**
 <!-- test: skip -->
 ```rask
-const p2 = Point { x: 5, ..p1 }    // Copy p1, override x
+const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 ```
 
 | Syntax | Requirement |
 |--------|-------------|
 | `{ x: v, ..source }` | Source must be same type; unspecified fields copied/moved |
-| All-public struct | Works externally |
-| Mixed visibility | Works only within package |
+| All-public struct | Works anywhere |
+| All `public` + `package` | Works within package |
+| Any struct-private field | Works only in `extend` blocks |
 
 ## Generics
 
 <!-- test: parse -->
 ```rask
 struct Pair<T, U> {
-    first: T
-    second: U
+    public first: T
+    public second: U
 }
 
 const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
@@ -233,6 +247,8 @@ Types with `extern "C"` must use `@layout(C)`. See `struct.modules` for C intero
 
 ## Pattern Matching
 
+Assuming `Point` with `public` fields (see Construction Patterns above):
+
 <!-- test: skip -->
 ```rask
 match point {
@@ -245,10 +261,10 @@ match point {
 **Partial patterns:**
 <!-- test: skip -->
 ```rask
-let Point { x, .. } = point    // Ignore other fields
+let Point { x, .. } = point    // Bind visible fields, ignore rest
 ```
 
-Visibility in patterns: same package gets all fields; external gets only `public` fields and MUST use `..` for non-public fields.
+Visibility in patterns: `extend` blocks see all fields; same package sees `package` + `public` fields; external sees only `public` fields. Hidden fields require `..`.
 
 ## Edge Cases
 
@@ -286,22 +302,23 @@ extend User {
 <!-- test: parse -->
 ```rask
 public struct Counter {
-    value: i64    // non-pub: controlled access
+    value: i64    // struct-private by default
 }
 
 extend Counter {
     public func new() -> Counter {
-        Counter { value: 0 }
+        Counter { value: 0 }       // OK: inside extend block
     }
 
     public func increment(self) {
-        self.value += 1
+        self.value += 1             // OK: inside extend block
     }
 
     public func get(self) -> i64 {
-        self.value
+        self.value                  // OK: inside extend block
     }
 }
+// counter.value from outside extend block → compile error
 ```
 
 ### Linear Resource Wrapper
@@ -332,7 +349,7 @@ extend FileHandle {
 
 ### Rationale
 
-**S4 (visibility):** Field visibility is explicit — `public` on each field — so API boundaries are clear without scanning the whole struct.
+**S4 (visibility):** Fields default to struct-private — only `extend` blocks can access them. This pushes encapsulation by default: you get controlled access without thinking about it. `package` widens to same-package access, `public` widens to everyone. The asymmetry with function/type visibility (which defaults to package-visible) is intentional: fields are implementation details, functions are interfaces.
 
 **M3 (same module):** Methods in separate `extend` blocks keep data and behavior distinct, but requiring same-module keeps the type's behavior discoverable.
 
