@@ -281,6 +281,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                external_decls: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -304,6 +305,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                external_decls: HashMap::new(),
             })
         } else {
             Err(resolver.errors)
@@ -362,10 +364,25 @@ impl Resolver {
             resolver.package_bindings.insert(pkg.name.clone(), pkg.id);
         }
 
-        // Collect public symbols from external packages
+        // Collect public symbols and type declarations from external packages
+        let mut external_decls: HashMap<String, Vec<Decl>> = HashMap::new();
         for pkg in registry.packages() {
             if pkg.id != current_package {
                 resolver.collect_package_exports(pkg);
+
+                let public_type_decls: Vec<Decl> = pkg.all_decls()
+                    .filter(|d| match &d.kind {
+                        DeclKind::Struct(s) => s.is_pub,
+                        DeclKind::Enum(e) => e.is_pub,
+                        DeclKind::Trait(t) => t.is_pub,
+                        DeclKind::TypeAlias(a) => a.is_pub,
+                        _ => false,
+                    })
+                    .cloned()
+                    .collect();
+                if !public_type_decls.is_empty() {
+                    external_decls.insert(pkg.name.clone(), public_type_decls);
+                }
             }
         }
 
@@ -391,6 +408,7 @@ impl Resolver {
             Ok(ResolvedProgram {
                 symbols: resolver.symbols,
                 resolutions: resolver.resolutions,
+                external_decls,
             })
         } else {
             Err(resolver.errors)
@@ -2239,5 +2257,131 @@ mod tests {
         }];
         let result = Resolver::resolve_stdlib(&decls);
         assert!(result.is_ok(), "resolve_stdlib should allow redefining builtin enums");
+    }
+
+    fn make_pub_enum_decl(name: &str, variants: &[&str]) -> Decl {
+        use rask_ast::decl::{EnumDecl, Variant};
+        Decl {
+            id: NodeId(300),
+            kind: DeclKind::Enum(EnumDecl {
+                name: name.to_string(),
+                type_params: vec![],
+                variants: variants.iter().map(|v| Variant {
+                    name: v.to_string(),
+                    fields: vec![],
+                    attrs: vec![],
+                }).collect(),
+                methods: vec![],
+                is_pub: true,
+                attrs: vec![],
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        }
+    }
+
+    #[test]
+    fn test_external_decls_populated() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        let _lib_pkg = registry.add_package_with_decls(
+            "lsm".to_string(),
+            vec!["lsm".to_string()],
+            PathBuf::from("/lsm"),
+            vec![
+                make_pub_struct_decl("Config"),
+                make_pub_enum_decl("DbError", &["NotFound", "Corruption"]),
+                make_fn_decl("internal_helper"), // private — should NOT appear
+            ],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            make_import_decl(vec!["lsm"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Should resolve: {:?}", result.err());
+
+        let resolved = result.unwrap();
+
+        // external_decls should contain the public struct and enum
+        let lsm_decls = resolved.external_decls.get("lsm")
+            .expect("lsm should have external_decls");
+        assert_eq!(lsm_decls.len(), 2, "Only public types (struct + enum), not private fn");
+
+        let has_config = lsm_decls.iter().any(|d| matches!(&d.kind, DeclKind::Struct(s) if s.name == "Config"));
+        let has_db_error = lsm_decls.iter().any(|d| matches!(&d.kind, DeclKind::Enum(e) if e.name == "DbError"));
+        assert!(has_config, "Config struct should be in external_decls");
+        assert!(has_db_error, "DbError enum should be in external_decls");
+    }
+
+    #[test]
+    fn test_external_decls_empty_for_single_file() {
+        let decls = vec![
+            make_import_decl(vec!["io"], None, false, false),
+            make_fn_decl("main"),
+        ];
+        let result = Resolver::resolve(&decls);
+        assert!(result.is_ok());
+        assert!(result.unwrap().external_decls.is_empty(),
+            "Single-file resolve should have empty external_decls");
+    }
+
+    #[test]
+    fn test_external_decls_excludes_private_types() {
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+
+        let mut registry = PackageRegistry::new();
+
+        // Package with only private (non-public) types
+        let private_struct = Decl {
+            id: NodeId(400),
+            kind: DeclKind::Struct(rask_ast::decl::StructDecl {
+                name: "InternalState".to_string(),
+                type_params: vec![],
+                fields: vec![],
+                methods: vec![],
+                is_pub: false,
+                attrs: vec![],
+                doc: None,
+            }),
+            span: Span::new(0, 10),
+        };
+
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![private_struct],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        let decls = vec![
+            make_import_decl(vec!["lib"], None, false, false),
+            make_fn_decl("main"),
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok());
+
+        let resolved = result.unwrap();
+        assert!(!resolved.external_decls.contains_key("lib"),
+            "Package with only private types should not appear in external_decls");
     }
 }

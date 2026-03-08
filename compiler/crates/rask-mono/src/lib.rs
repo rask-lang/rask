@@ -21,7 +21,7 @@ pub use reachability::{mangle_name, Monomorphizer};
 use rask_ast::decl::{Decl, DeclKind};
 use rask_ast::NodeId;
 use rask_types::{Type, TypedProgram};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 /// Monomorphized program with all generics eliminated
 pub struct MonoProgram {
@@ -37,6 +37,124 @@ pub struct MonoFunction {
     pub name: String,
     pub type_args: Vec<Type>,
     pub body: Decl,
+}
+
+/// Collect user-defined type names referenced in a parsed Type.
+fn collect_type_deps(ty: &Type, out: &mut HashSet<String>) {
+    match ty {
+        Type::UnresolvedNamed(name) => {
+            out.insert(name.clone());
+        }
+        Type::UnresolvedGeneric { name, args } => {
+            out.insert(name.clone());
+            for arg in args {
+                if let rask_types::GenericArg::Type(inner) = arg {
+                    collect_type_deps(inner, out);
+                }
+            }
+        }
+        Type::Option(inner) => collect_type_deps(inner, out),
+        Type::Result { ok, err } => {
+            collect_type_deps(ok, out);
+            collect_type_deps(err, out);
+        }
+        Type::Slice(inner) => collect_type_deps(inner, out),
+        _ => {}
+    }
+}
+
+/// Topological sort of type declarations by field dependencies (Kahn's algorithm).
+/// Returns indices into `decls` for struct/enum/union declarations only,
+/// ordered so that dependencies come before dependents.
+fn topo_sort_type_decls(decls: &[Decl]) -> Vec<usize> {
+    // Map type name → decl index for struct/enum/union declarations
+    let mut name_to_idx: HashMap<String, usize> = HashMap::new();
+    let mut type_indices: Vec<usize> = Vec::new();
+
+    for (i, decl) in decls.iter().enumerate() {
+        match &decl.kind {
+            DeclKind::Struct(s) if s.type_params.is_empty() => {
+                name_to_idx.insert(s.name.clone(), i);
+                type_indices.push(i);
+            }
+            DeclKind::Enum(e) if e.type_params.is_empty() => {
+                name_to_idx.insert(e.name.clone(), i);
+                type_indices.push(i);
+            }
+            DeclKind::Union(u) => {
+                name_to_idx.insert(u.name.clone(), i);
+                type_indices.push(i);
+            }
+            _ => {}
+        }
+    }
+
+    // Build dependency edges: decl_idx → set of decl indices it depends on
+    let mut deps: HashMap<usize, HashSet<usize>> = HashMap::new();
+    let mut rdeps: HashMap<usize, Vec<usize>> = HashMap::new();
+
+    for &idx in &type_indices {
+        let mut field_deps = HashSet::new();
+        let fields: Vec<&str> = match &decls[idx].kind {
+            DeclKind::Struct(s) => s.fields.iter().map(|f| f.ty.as_str()).collect(),
+            DeclKind::Enum(e) => e.variants.iter()
+                .flat_map(|v| v.fields.iter().map(|f| f.ty.as_str()))
+                .collect(),
+            DeclKind::Union(u) => u.fields.iter().map(|f| f.ty.as_str()).collect(),
+            _ => vec![],
+        };
+
+        let mut type_names = HashSet::new();
+        for ty_str in fields {
+            let parsed = layout::parse_field_type(ty_str);
+            collect_type_deps(&parsed, &mut type_names);
+        }
+
+        for name in type_names {
+            if let Some(&dep_idx) = name_to_idx.get(&name) {
+                if dep_idx != idx {
+                    field_deps.insert(dep_idx);
+                    rdeps.entry(dep_idx).or_default().push(idx);
+                }
+            }
+        }
+        deps.insert(idx, field_deps);
+    }
+
+    // Kahn's algorithm
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    for &idx in &type_indices {
+        if deps.get(&idx).map_or(true, |d| d.is_empty()) {
+            queue.push_back(idx);
+        }
+    }
+
+    let mut sorted = Vec::with_capacity(type_indices.len());
+    while let Some(idx) = queue.pop_front() {
+        sorted.push(idx);
+        if let Some(dependents) = rdeps.get(&idx) {
+            for &dep in dependents {
+                if let Some(dep_set) = deps.get_mut(&dep) {
+                    dep_set.remove(&idx);
+                    if dep_set.is_empty() {
+                        queue.push_back(dep);
+                    }
+                }
+            }
+        }
+    }
+
+    // Any remaining (cycles) — append in source order
+    if sorted.len() < type_indices.len() {
+        let in_sorted: HashSet<usize> = sorted.iter().copied().collect();
+        for &idx in &type_indices {
+            if !in_sorted.contains(&idx) {
+                sorted.push(idx);
+            }
+        }
+    }
+
+    sorted
 }
 
 /// Monomorphize a type-checked program.
@@ -63,10 +181,16 @@ pub fn monomorphize(
     // Generic types need concrete type_args for correct field sizes;
     // their layouts are computed per-instantiation, not here.
     // Layout cache lets structs reference other user-defined types.
+    //
+    // Topological sort ensures types are processed after their dependencies,
+    // so a struct referencing an enum declared later gets the correct layout.
     let mut layout_cache = LayoutCache::new();
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
-    for decl in decls {
+
+    let sorted = topo_sort_type_decls(decls);
+    for idx in sorted {
+        let decl = &decls[idx];
         match &decl.kind {
             DeclKind::Struct(s) if s.type_params.is_empty() => {
                 let layout = compute_struct_layout(decl, &[], &layout_cache);
@@ -435,6 +559,67 @@ mod tests {
         let result = monomorphize(&tp, &decls).unwrap();
         assert_eq!(result.enum_layouts.len(), 1);
         assert_eq!(result.enum_layouts[0].name, "Color");
+    }
+
+    #[test]
+    fn struct_forward_references_enum() {
+        // Struct declared BEFORE the enum it references — topo sort
+        // must process the enum first so its layout is in the cache.
+        let decls = vec![
+            make_fn("main", vec![], None, vec![return_stmt(None)]),
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Struct(StructDecl {
+                    name: "Container".to_string(),
+                    type_params: vec![],
+                    fields: vec![
+                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), is_pub: false },
+                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                    ],
+                    methods: vec![],
+                    is_pub: false,
+                    attrs: vec![],
+                    doc: None,
+                }),
+                span: sp(),
+            },
+            Decl {
+                id: NodeId(0),
+                kind: DeclKind::Enum(EnumDecl {
+                    name: "Kind".to_string(),
+                    type_params: vec![],
+                    variants: vec![
+                        Variant {
+                            name: "Alpha".to_string(),
+                            fields: vec![
+                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                            ],
+                            attrs: vec![],
+                        },
+                        Variant { name: "Beta".to_string(), fields: vec![], attrs: vec![] },
+                    ],
+                    methods: vec![],
+                    is_pub: false,
+                    attrs: vec![],
+                    doc: None,
+                }),
+                span: sp(),
+            },
+        ];
+        let tp = dummy_typed_program();
+        let result = monomorphize(&tp, &decls).unwrap();
+
+        assert_eq!(result.enum_layouts.len(), 1);
+        assert_eq!(result.enum_layouts[0].name, "Kind");
+
+        assert_eq!(result.struct_layouts.len(), 1);
+        let container = &result.struct_layouts[0];
+        assert_eq!(container.name, "Container");
+        // Kind enum: tag(8) + field_x(8) + field_y(8) = 24 bytes
+        // Container should embed Kind at its full size, not the (8,8) default.
+        let kind_field = container.fields.iter().find(|f| f.name == "kind").unwrap();
+        assert_eq!(kind_field.size, 24, "Kind field should be 24 bytes (tag + 2 fields), not 8");
     }
 
     // ── Instantiation ───────────────────────────────────────────

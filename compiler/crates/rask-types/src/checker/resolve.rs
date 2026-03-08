@@ -132,17 +132,23 @@ impl TypeChecker {
                     Err(TypeError::NoSuchField { ty, field, span })
                 }
             }
-            // Builtin struct field resolution for runtime/stdlib types
+            // Module namespace and builtin struct field resolution
             Type::UnresolvedNamed(name) => {
+                // Module namespace: __module_X.Field → look up Field in type table
+                if name.starts_with("__module_") {
+                    if let Some(type_id) = self.types.get_type_id(&field) {
+                        return self.unify(&expected, &Type::Named(type_id), span);
+                    }
+                    // Fallback: treat as unresolved named type
+                    let resolved_ty = Type::UnresolvedNamed(field.to_string());
+                    return self.unify(&expected, &resolved_ty, span);
+                }
+
+                // Builtin struct fields for runtime/stdlib types
                 let field_ty = match (name.as_str(), field.as_str()) {
-                    // time module namespace
-                    ("__module_time", "Instant") => Some(Type::UnresolvedNamed("Instant".to_string())),
-                    ("__module_time", "Duration") => Some(Type::UnresolvedNamed("Duration".to_string())),
-                    // Response struct fields
                     ("Response", "status") => Some(Type::U16),
                     ("Response", "headers") => Some(Type::UnresolvedNamed("Headers".to_string())),
                     ("Response", "body") => Some(Type::String),
-                    // Request struct fields
                     ("Request", "method") => Some(Type::UnresolvedNamed("Method".to_string())),
                     ("Request", "url") => Some(Type::String),
                     ("Request", "body") => Some(Type::String),

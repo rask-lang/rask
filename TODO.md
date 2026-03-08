@@ -8,20 +8,20 @@ Open work, grouped by theme. Each chunk is roughly independent.
 
 Enums compile as tagged unions but advanced patterns don't work natively yet.
 
-- [ ] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
-- [ ] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
+- [x] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
+- [x] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
 
 ## 2. Closure & Indirect Call Codegen
 
 Closures work as inline lambdas (spawn, iterators) but can't be passed as function parameters.
 
-- [ ] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
+- [x] **Codegen: closure-as-parameter calling** — Functions taking closure params (`func apply(f: Func)`) generate calls to `f` but codegen can't resolve the indirect call. Blocks 11_closures.
 
 ## 3. Aggregate / Struct Return Codegen
 
 Returning or passing structs through function boundaries sometimes generates wrong Cranelift IR.
 
-- [ ] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
+- [x] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
 
 ## 4. Comptime Execution
 
@@ -34,7 +34,7 @@ The interpreter-based comptime system works for simple cases but doesn't bridge 
 
 Several examples compile and link but crash at runtime with no output.
 
-- [ ] **Runtime: silent crashes in collection iteration** — 03_collections (needs `.join()` and `is Some(score)`), 12_iterators (needs `.iter().map().collect()`), 13_string_operations (unknown crash). pool_test still crashes silently.
+- [x] **Runtime: silent crashes in collection iteration** — 03_collections (needs `.join()` and `is Some(score)`), 12_iterators (needs `.iter().map().collect()`), 13_string_operations (unknown crash). pool_test still crashes silently.
 
 ## 6. Ownership Checker Gaps
 
@@ -92,6 +92,8 @@ Hardening for the package ecosystem. Not blocking any examples.
 <summary>Completed items (click to expand)</summary>
 
 ### Codegen
+- [x] Type layout topological sort — forward-referenced enums in structs get correct sizes
+- [x] Aggregate return/arg count — Pool.alloc/insert return paths work correctly
 - [x] ThreadPool.spawn / Thread.spawn MIR routing
 - [x] Sensor processor native compilation — f64 struct field access fixed
 - [x] CleanupReturn deduplication
@@ -119,6 +121,13 @@ Hardening for the package ecosystem. Not blocking any examples.
 ### Type Checker
 - [x] Vec.len() returned i64 instead of u64
 - [x] Module-level const didn't coerce integer literals
+
+### Closures
+- [x] Closure-as-parameter calling — function-type params registered in closure_locals
+
+### Enum / Pattern Matching
+- [x] Enum payload destructuring — Pattern::Struct handler for named-field match arms
+- [x] Collection iteration crashes — None allocation, Vec.from dispatch, get().unwrap() tag checks
 
 ### Ownership
 - [x] `mutate self` treated as borrowed
