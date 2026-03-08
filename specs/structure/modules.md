@@ -233,6 +233,16 @@ struct Node {
 }
 ```
 
+### Rejected: Workspace Visibility
+
+**Workspace-level visibility (rejected):** Considered adding a 4th visibility level (`internal`) for items shared across workspace member packages but not exposed in the public API. Rejected because:
+
+1. The primary use case (unpublished internal packages) is already handled — path deps can't be published (struct.packages/RG3), so `public` items in internal packages don't leak to external consumers.
+2. Each visibility level must earn its existence by preventing real mistakes. `internal` would prevent nothing — it's a semantic distinction with no technical consequence for unpublished packages.
+3. Three visibility levels (private, package-default, public) is already on the edge for a simplicity-focused language. Go and Zig thrive with two.
+
+If multi-package published libraries become common, revisit with a package-level `internal: true` flag in `build.rk` (import restriction, not item-level visibility). The *package* is internal, not individual items.
+
 ### Open Questions
 
 **Package granularity (deferred):** Current design is directory = package (Go-style). File = package (Zig-style) is an alternative. Deferring until validation programs exist.
