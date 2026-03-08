@@ -562,6 +562,20 @@ const coords: Pair<f64> = (1.0, 2.0)
 
 Visibility: `public type Name = ...` exports the alias.
 
+### Distinct Types (Newtypes)
+
+Nominal wrappers — same layout, no implicit conversion. See [distinct-types.md](types/distinct-types.md).
+
+```rask
+newtype UserId = u64 with (Equal, Hashable)
+newtype Email = string with (Equal, Debug)
+
+const id = UserId(42)           // explicit construction
+const raw: u64 = id.value       // explicit extraction
+find_user(42)                   // ❌ compile error
+find_user(UserId(42))           // ✓
+```
+
 ### Tuples
 
 Anonymous product types. Use when naming fields adds nothing.

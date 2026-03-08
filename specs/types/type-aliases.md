@@ -60,7 +60,7 @@ FIX: Break the cycle by using the underlying type directly.
 
 ### Rationale
 
-**TA2 (transparent):** I chose transparent over nominal (newtype) because aliases are about readability, not type safety. `UserId` and `u64` should mix freely — the alias says "this u64 means a user ID" without adding conversion boilerplate. If you want a distinct type, use a struct with a single field.
+**TA2 (transparent):** I chose transparent over nominal (newtype) because aliases are about readability, not type safety. `UserId` and `u64` should mix freely — the alias says "this u64 means a user ID" without adding conversion boilerplate. If you want compile-time enforcement, use `newtype` (see `type.distinct`).
 
 **TA3 (generic):** Generic aliases reduce repetition. `type NodeMap<V> = Map<NodeId, V>` is clearer than writing the full type everywhere. Parameterized aliases resolve at use site — no runtime impact.
 
@@ -93,5 +93,6 @@ type Callback<T> = func(T) -> bool
 
 ### See Also
 
+- `type.distinct` — for nominal wrappers with compile-time enforcement (`newtype`)
 - `type.structs` — for nominal types (distinct types with named fields)
 - `type.generics` — generic type parameters
