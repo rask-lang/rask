@@ -1,12 +1,12 @@
 <!-- id: type.structs -->
 <!-- status: decided -->
-<!-- summary: Named product types with value semantics, extend blocks, explicit field visibility -->
+<!-- summary: Named product types with value semantics, extend blocks, `private` keyword for encapsulation -->
 <!-- depends: memory/ownership.md, memory/value-semantics.md -->
 <!-- implemented-by: compiler/crates/rask-parser/, compiler/crates/rask-types/ -->
 
 # Structs and Product Types
 
-Named product types with value semantics, structural Copy, `extend` blocks for methods, explicit visibility per field.
+Named product types with value semantics, structural Copy, `extend` blocks for methods, `private` keyword for encapsulation.
 
 ## Struct Definition
 
@@ -15,7 +15,7 @@ Named product types with value semantics, structural Copy, `extend` blocks for m
 | **S1: Named fields** | All fields MUST have names (no tuple structs) |
 | **S2: Explicit types** | All fields MUST have explicit types (no inference) |
 | **S3: Field ordering** | Default layout (`@layout(Rask)`): compiler reorders fields for optimal alignment. `@layout(C)`: declaration order preserved. Field *access* is always by name — reordering doesn't change semantics |
-| **S4: Visibility** | Default: package-visible. `public` makes externally visible |
+| **S4: Visibility** | Default: package-visible. `private` restricts to `extend` blocks only. `public` for external |
 
 <!-- test: parse -->
 ```rask
@@ -27,27 +27,35 @@ struct Name {
 
 ## Field Visibility
 
-| Declaration | Same Package | External |
-|-------------|--------------|----------|
-| `field: T` | Read + Write | Not visible |
-| `public field: T` | Read + Write | Read + Write |
+| Declaration | `extend` blocks | Same Package | External |
+|-------------|-----------------|--------------|----------|
+| `private field: T` | Read + Write | Not visible | Not visible |
+| `field: T` | Read + Write | Read + Write | Not visible |
+| `public field: T` | Read + Write | Read + Write | Read + Write |
 
-| Struct Type | External Literal | External Pattern Match |
-|-------------|------------------|------------------------|
-| All fields `public` | Allowed | All fields bindable |
-| Any non-public field | Forbidden (factory required) | Only `public` fields bindable |
+| Struct Fields | Literal Construction | Pattern Match |
+|---------------|---------------------|---------------|
+| All `public` | Anyone | All fields bindable by anyone |
+| No `private` fields | Same package (or `extend` blocks) | All fields within package; `public` only externally |
+| Any `private` field | Only `extend` blocks | Only visible fields; must use `..` for hidden fields |
 
 <!-- test: skip -->
 ```rask
 public struct Request {
-    public method: string
-    public path: string
-    id: u64              // package-only
+    public method: string       // anyone can read/write
+    public path: string         // anyone can read/write
+    id: u64                     // same package (default)
+    private buffer: Vec<u8>     // extend blocks only
 }
 
+// Same package, outside extend block:
+const r = new_request("GET", "/")             // factory required (buffer is private)
+r.id                                          // OK: package-visible (default)
+r.buffer                                      // ERROR: private
+
 // External code:
-const r = Request { method: "GET", path: "/" }  // ERROR: `id` not visible
-const r = new_request("GET", "/")               // OK: factory
+r.method                                      // OK: public
+r.id                                          // ERROR: package-only
 
 match r {
     Request { method, path, .. } => ...       // OK: public fields only
@@ -79,7 +87,7 @@ See `mem.ownership` for complete Copy/move semantics.
 | Rule | Description |
 |------|-------------|
 | **M1: Default borrow** | `self` without modifier means borrow (mutability inferred from usage) |
-| **M2: Visibility** | Methods follow same `public`/package rules as structs |
+| **M2: Visibility** | Methods follow same `public`/`private`/package rules. `private` methods in `extend` blocks are only callable from that type's `extend` blocks |
 | **M3: Same module** | `extend` blocks MUST be in the same module as the struct definition |
 | **M4: Self type** | `self` always refers to the extended struct type |
 | **M5: Multiple blocks** | Multiple `extend` blocks for the same type are allowed (for organization) |
@@ -133,24 +141,29 @@ const c = Config.new()                          // Called on type
 
 ## Construction Patterns
 
-**Literal construction (when visible):**
+**Literal construction (when all fields visible):**
 <!-- test: skip -->
 ```rask
-const p = Point { x: 10, y: 20 }
+public struct Point {
+    public x: i32
+    public y: i32
+}
+
+const p = Point { x: 10, y: 20 }   // OK: all fields public
 ```
 
 **Factory functions (idiomatic for encapsulation):**
 <!-- test: parse -->
 ```rask
 public struct Connection {
-    socket: Socket        // non-pub
+    private socket: Socket
     public state: State
 }
 
 extend Connection {
     public func new(addr: string) -> Connection or Error {
         const socket = try connect(addr)
-        Ok(Connection { socket, state: State.Connected })
+        Ok(Connection { socket, state: State.Connected })  // OK: inside extend block
     }
 }
 ```
@@ -158,22 +171,23 @@ extend Connection {
 **Update syntax (functional update):**
 <!-- test: skip -->
 ```rask
-const p2 = Point { x: 5, ..p1 }    // Copy p1, override x
+const p2 = Point { x: 5, ..p1 }    // OK: all fields public, copy p1, override x
 ```
 
 | Syntax | Requirement |
 |--------|-------------|
 | `{ x: v, ..source }` | Source must be same type; unspecified fields copied/moved |
-| All-public struct | Works externally |
-| Mixed visibility | Works only within package |
+| All-public struct | Works anywhere |
+| No `private` fields | Works within package |
+| Any `private` field | Works only in `extend` blocks |
 
 ## Generics
 
 <!-- test: parse -->
 ```rask
 struct Pair<T, U> {
-    first: T
-    second: U
+    public first: T
+    public second: U
 }
 
 const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
@@ -182,7 +196,7 @@ const p: Pair<i32, string> = Pair { first: 1, second: "hello" }
 <!-- test: skip -->
 ```rask
 struct SortedVec<T: Comparable> {
-    items: Vec<T>
+    private items: Vec<T>
 }
 
 extend SortedVec<T: Comparable> {
@@ -233,6 +247,8 @@ Types with `extern "C"` must use `@layout(C)`. See `struct.modules` for C intero
 
 ## Pattern Matching
 
+Assuming `Point` with `public` fields (see Construction Patterns above):
+
 <!-- test: skip -->
 ```rask
 match point {
@@ -245,10 +261,10 @@ match point {
 **Partial patterns:**
 <!-- test: skip -->
 ```rask
-let Point { x, .. } = point    // Ignore other fields
+let Point { x, .. } = point    // Bind visible fields, ignore rest
 ```
 
-Visibility in patterns: same package gets all fields; external gets only `public` fields and MUST use `..` for non-public fields.
+Visibility in patterns: `extend` blocks see all fields; same package sees package-visible + `public` fields; external sees only `public` fields. `private` fields require `..`.
 
 ## Edge Cases
 
@@ -286,22 +302,23 @@ extend User {
 <!-- test: parse -->
 ```rask
 public struct Counter {
-    value: i64    // non-pub: controlled access
+    private value: i64
 }
 
 extend Counter {
     public func new() -> Counter {
-        Counter { value: 0 }
+        Counter { value: 0 }       // OK: inside extend block
     }
 
     public func increment(self) {
-        self.value += 1
+        self.value += 1             // OK: inside extend block
     }
 
     public func get(self) -> i64 {
-        self.value
+        self.value                  // OK: inside extend block
     }
 }
+// counter.value from outside extend block → compile error (private)
 ```
 
 ### Linear Resource Wrapper
@@ -309,7 +326,7 @@ extend Counter {
 ```rask
 @resource
 struct FileHandle {
-    fd: i32
+    private fd: i32
 }
 
 extend FileHandle {
@@ -332,7 +349,7 @@ extend FileHandle {
 
 ### Rationale
 
-**S4 (visibility):** Field visibility is explicit — `public` on each field — so API boundaries are clear without scanning the whole struct.
+**S4 (visibility):** Fields default to package-visible — same as functions and types. Same package = same team. `private` restricts to `extend` blocks for when you need encapsulation (invariant protection). `public` widens to external access. This keeps data-oriented design zero-ceremony while giving an explicit opt-in for encapsulation. I think the `private` keyword pulling its weight by signaling intent — "this field has invariants" — is more informative than a silent default.
 
 **M3 (same module):** Methods in separate `extend` blocks keep data and behavior distinct, but requiring same-module keeps the type's behavior discoverable.
 

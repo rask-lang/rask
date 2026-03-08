@@ -97,7 +97,8 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Mutable | `let x = 1` | `let mut x = 1` |
 | Function | `func foo()` | `fn foo()` |
 | Methods | `extend Type { }` | `impl Type { }` |
-| Visibility | `public` | `pub` |
+| Item visibility | `public` | `pub` |
+| Field visibility | package (default), `private`, `public` | `pub` / private (default) |
 | Enum variant | `Token.Plus` | `Token::Plus` |
 | Mutable param | `func f(mutate x: T)` | `&mut` / `inout` |
 | Take ownership | `func f(take x: T)` | implicit move |
