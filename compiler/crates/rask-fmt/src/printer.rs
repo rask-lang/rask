@@ -303,7 +303,9 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
-        if f.is_pub {
+        if f.is_private {
+            self.emit("private ");
+        } else if f.is_pub {
             self.emit("public ");
         }
         if f.is_comptime {
