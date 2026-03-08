@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Declaration registration, test runners, and benchmark runners.
 
-use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FnDecl, TestDecl, Variant, Field};
+use rask_ast::decl::{BenchmarkDecl, ConstDecl, DeclKind, Decl, EnumDecl, FieldVisibility, FnDecl, TestDecl, Variant, Field};
 use rask_ast::stmt::Stmt;
 use rask_ast::stmt::StmtKind;
 use rask_ast::Span;
@@ -232,7 +232,7 @@ impl Interpreter {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
                             ty: "T".to_string(),
-                            is_pub: false,
+                            visibility: FieldVisibility::Package,
                         }],
                         attrs: vec![],
                     },
@@ -260,7 +260,7 @@ impl Interpreter {
                             name: "value".to_string(),
                             name_span: Span::new(0, 0),
                             ty: "T".to_string(),
-                            is_pub: false,
+                            visibility: FieldVisibility::Package,
                         }],
                         attrs: vec![],
                     },
@@ -270,7 +270,7 @@ impl Interpreter {
                             name: "error".to_string(),
                             name_span: Span::new(0, 0),
                             ty: "E".to_string(),
-                            is_pub: false,
+                            visibility: FieldVisibility::Package,
                         }],
                         attrs: vec![],
                     },

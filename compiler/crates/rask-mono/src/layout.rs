@@ -500,7 +500,7 @@ pub fn compute_enum_layout(enum_def: &Decl, type_args: &[Type], cache: &LayoutCa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rask_ast::decl::{Decl, DeclKind, EnumDecl, Field, StructDecl, Variant};
+    use rask_ast::decl::{Decl, DeclKind, EnumDecl, Field, FieldVisibility, StructDecl, Variant};
     use rask_ast::{NodeId, Span};
 
     fn dummy_span() -> Span {
@@ -519,7 +519,7 @@ mod tests {
                         name: n.to_string(),
                         name_span: dummy_span(),
                         ty: ty.to_string(),
-                        is_pub: false,
+                        visibility: FieldVisibility::Package,
                     })
                     .collect(),
                 methods: vec![],
@@ -548,7 +548,7 @@ mod tests {
                                 name: format!("f{}", i),
                                 name_span: dummy_span(),
                                 ty: ty.to_string(),
-                                is_pub: false,
+                                visibility: FieldVisibility::Package,
                             })
                             .collect(),
                         attrs: vec![],
@@ -858,7 +858,7 @@ mod tests {
                         name: n.to_string(),
                         name_span: dummy_span(),
                         ty: ty.to_string(),
-                        is_pub: false,
+                        visibility: FieldVisibility::Package,
                     })
                     .collect(),
                 methods: vec![],
