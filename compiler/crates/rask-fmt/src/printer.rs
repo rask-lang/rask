@@ -472,6 +472,19 @@ impl<'a> Printer<'a> {
                 self.emit(&ty);
                 self.emit_newline();
             }
+            if !s.methods.is_empty() {
+                self.emit_newline();
+                let mut first = true;
+                for method in &s.methods {
+                    if !first {
+                        self.emit_blank_line();
+                    }
+                    self.emit_indent();
+                    self.format_fn_decl(method, true, false);
+                    self.emit_newline();
+                    first = false;
+                }
+            }
             self.indent -= 1;
             self.emit_indent();
             self.emit("}");
@@ -615,6 +628,19 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.emit_newline();
+            }
+            if !e.methods.is_empty() {
+                self.emit_newline();
+                let mut first = true;
+                for method in &e.methods {
+                    if !first {
+                        self.emit_blank_line();
+                    }
+                    self.emit_indent();
+                    self.format_fn_decl(method, true, false);
+                    self.emit_newline();
+                    first = false;
+                }
             }
             self.indent -= 1;
             self.emit_indent();
