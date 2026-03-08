@@ -303,7 +303,9 @@ impl<'a> Printer<'a> {
             self.emit_indent();
         }
 
-        if f.is_pub {
+        if f.is_private {
+            self.emit("private ");
+        } else if f.is_pub {
             self.emit("public ");
         }
         if f.is_comptime {
@@ -440,8 +442,10 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -457,14 +461,29 @@ impl<'a> Printer<'a> {
             self.indent += 1;
             for field in &s.fields {
                 self.emit_indent();
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
                 let ty = self.format_type(&field.ty);
                 self.emit(&ty);
                 self.emit_newline();
+            }
+            if !s.methods.is_empty() {
+                self.emit_newline();
+                let mut first = true;
+                for method in &s.methods {
+                    if !first {
+                        self.emit_blank_line();
+                    }
+                    self.emit_indent();
+                    self.format_fn_decl(method, true, false);
+                    self.emit_newline();
+                    first = false;
+                }
             }
             self.indent -= 1;
             self.emit_indent();
@@ -474,7 +493,11 @@ impl<'a> Printer<'a> {
 
     fn struct_fields_fit_one_line(&self, fields: &[Field]) -> bool {
         let est: usize = fields.iter().map(|f| {
-            f.name.len() + 2 + f.ty.len() + if f.is_pub { 7 } else { 0 }
+            f.name.len() + 2 + f.ty.len() + match f.visibility {
+                FieldVisibility::Private => 8,
+                FieldVisibility::Public => 7,
+                FieldVisibility::Package => 0,
+            }
         }).sum::<usize>() + (fields.len().saturating_sub(1) * 2);
         est < 60
     }
@@ -496,8 +519,10 @@ impl<'a> Printer<'a> {
                 if i > 0 {
                     self.emit(", ");
                 }
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -512,8 +537,10 @@ impl<'a> Printer<'a> {
             self.indent += 1;
             for field in &u.fields {
                 self.emit_indent();
-                if field.is_pub {
-                    self.emit("public ");
+                match field.visibility {
+                    FieldVisibility::Private => self.emit("private "),
+                    FieldVisibility::Public => self.emit("public "),
+                    FieldVisibility::Package => {},
                 }
                 self.emit(&field.name);
                 self.emit(": ");
@@ -601,6 +628,19 @@ impl<'a> Printer<'a> {
                     }
                 }
                 self.emit_newline();
+            }
+            if !e.methods.is_empty() {
+                self.emit_newline();
+                let mut first = true;
+                for method in &e.methods {
+                    if !first {
+                        self.emit_blank_line();
+                    }
+                    self.emit_indent();
+                    self.format_fn_decl(method, true, false);
+                    self.emit_newline();
+                    first = false;
+                }
             }
             self.indent -= 1;
             self.emit_indent();

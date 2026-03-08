@@ -162,6 +162,7 @@ fn gen_struct_compare(
         context_clauses: vec![],
         body,
         is_pub: false,
+        is_private: false,
         is_comptime: false,
         is_unsafe: false,
         abi: None,
