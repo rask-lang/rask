@@ -1,9 +1,5 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 // Learn: Closures and function types
-//
-// NOTE: This is a SPEC EXAMPLE showing intended syntax.
-// Full closure syntax not yet implemented.
-// See examples/README.md for status.
 
 // Function that takes a closure as a parameter
 func apply(f: |i32| -> i32, value: i32) -> i32 {

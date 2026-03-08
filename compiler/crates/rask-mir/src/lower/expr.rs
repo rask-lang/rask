@@ -2613,6 +2613,43 @@ impl<'a> MirLowerer<'a> {
                             self.locals.insert(binding.clone(), (payload_local, field_ty));
                         }
                     }
+                } else if let Pattern::Struct { name, fields, .. } = &arm.pattern {
+                    // Named-field destructuring: Shape.Circle { radius }
+                    if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
+                        if let Some(layout) = self.ctx.enum_layouts.get(*idx as usize) {
+                            if let Some(variant) = layout.variants.iter().find(|v| v.name == *name) {
+                                for (field_name, field_pat) in fields {
+                                    if let Pattern::Ident(binding) = field_pat {
+                                        if let Some((field_idx, field_layout)) = variant.fields.iter()
+                                            .enumerate()
+                                            .find(|(_, f)| f.name == *field_name)
+                                        {
+                                            let field_ty = self.ctx.type_to_mir(&field_layout.ty);
+                                            let payload_local = self.builder.alloc_local(
+                                                binding.clone(), field_ty.clone(),
+                                            );
+                                            let rvalue = MirRValue::Field {
+                                                base: scrutinee_op.clone(),
+                                                field_index: field_idx as u32,
+                                                byte_offset: None,
+                                                field_size: None,
+                                            };
+                                            self.builder.push_stmt(MirStmt::Assign {
+                                                dst: payload_local,
+                                                rvalue,
+                                            });
+                                            if let Some(p) = self.mir_type_name(&field_ty)
+                                                .or_else(|| super::MirContext::type_prefix(&field_layout.ty))
+                                            {
+                                                self.local_type_prefix.insert(binding.clone(), p);
+                                            }
+                                            self.locals.insert(binding.clone(), (payload_local, field_ty));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

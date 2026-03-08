@@ -42,6 +42,9 @@ pub struct ResolvedProgram {
     pub symbols: SymbolTable,
     /// Mapping from AST nodes (identifier usages) to their resolved symbols.
     pub resolutions: HashMap<NodeId, SymbolId>,
+    /// Public type declarations from external packages, keyed by package name.
+    /// The type checker registers these so cross-package types resolve.
+    pub external_decls: HashMap<String, Vec<Decl>>,
 }
 
 /// Resolve all names in a list of declarations (single-file mode).

@@ -28,6 +28,10 @@ These examples parse and run with the current interpreter:
 | 13 | `13_string_operations.rk` | String methods | ✅ Runnable |
 | 16 | `16_concurrency_basics.rk` | Threads and channels | ✅ Runnable |
 | 17 | `17_comptime.rk` | Compile-time execution | ✅ Runnable |
+| 10 | `10_enums_advanced.rk` | Enum variants with data | ✅ Runnable |
+| 11 | `11_closures.rk` | Closures and lambdas | ✅ Runnable |
+| 14 | `14_borrowing_patterns.rk` | Borrowing rules | ✅ Runnable |
+| 15 | `15_memory_management.rk` | Pool/Handle pattern | ✅ Runnable |
 | 18 | `18_resource_types.rk` | Linear resources, `@resource` | ✅ Runnable |
 
 ### 📝 Spec Examples (Not Yet Fully Implemented)
@@ -37,11 +41,7 @@ These examples demonstrate **intended syntax** but require features not yet in t
 | # | Example | Topic | Missing Features |
 |---|---------|-------|------------------|
 | 09 | `09_generics.rk` | Generic types | Generic `extend`, full closure types |
-| 10 | `10_enums_advanced.rk` | Enum variants with data | Advanced pattern matching |
-| 11 | `11_closures.rk` | Closures and lambdas | Full closure syntax, higher-order functions |
 | 12 | `12_iterators.rk` | Iterator patterns | Iterator trait, method chaining |
-| 14 | `14_borrowing_patterns.rk` | Borrowing rules | Borrow checker, reference types |
-| 15 | `15_memory_management.rk` | Pool/Handle pattern | Generic pools, handle types |
 | 19 | `19_unsafe.rk` | Unsafe blocks, FFI | Pointer dereference, `extern "C"` |
 
 **Note:** These are valuable learning resources showing Rask's design goals. They will become runnable as the compiler matures.
@@ -156,11 +156,7 @@ When adding new examples:
 Priority order for completing spec examples:
 
 1. **09_generics.rk** - Core abstraction, needed for many patterns
-2. **11_closures.rk** - Used throughout real programs
-3. **12_iterators.rk** - Functional programming patterns
-4. **10_enums_advanced.rk** - Rich data modeling
-5. **14_borrowing_patterns.rk** - Memory safety patterns
-6. **15_memory_management.rk** - Pool/Handle for graphs
-7. **19_unsafe.rk** - C interop for systems programming
+2. **12_iterators.rk** - Functional programming patterns
+3. **19_unsafe.rk** - C interop for systems programming
 
 These align with compiler roadmap priorities.
