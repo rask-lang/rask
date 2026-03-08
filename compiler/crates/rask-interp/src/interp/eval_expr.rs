@@ -476,6 +476,10 @@ impl Interpreter {
                     Value::Struct(ref s) => {
                         Ok(s.lock().unwrap().fields.get(field).cloned().unwrap_or(Value::Unit))
                     }
+                    // Nominal type .value extraction
+                    Value::Nominal { ref inner, .. } if field == "value" => {
+                        Ok(*inner.clone())
+                    }
                     // Tuple field access: tuple.0, tuple.1, ...
                     Value::Vec(v) if field.parse::<usize>().is_ok() => {
                         let idx = field.parse::<usize>().unwrap();

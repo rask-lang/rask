@@ -116,6 +116,8 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Async spawn | `spawn(\|\| {})` | `tokio::spawn(async {})` |
 | Thread pool spawn | `ThreadPool.spawn(\|\| {})` | N/A |
 | OS thread spawn | `Thread.spawn(\|\| {})` | `std::thread::spawn(\|\| {})` |
+| Nominal type | `type UserId = u64` | N/A (struct wrapper) |
+| Transparent alias | `type alias Matrix = Vec<Vec<f64>>` | `type Matrix = Vec<Vec<f64>>` |
 | Statement end | Newline | `;` |
 
 **Common patterns:**
@@ -229,7 +231,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Borrowing | Block-scoped (fixed sources), inline + `with` (growable sources) | [borrowing.md](specs/memory/borrowing.md) |
 | Collections | Vec, Map, Pool+Handle for graphs | [collections.md](specs/stdlib/collections.md), [pools.md](specs/memory/pools.md) |
 | Resource types | Must-consume (linear resources), `ensure` cleanup | [resource-types.md](specs/memory/resource-types.md) |
-| Types | Primitives, structs, enums, generics, traits, unions, tuples, type aliases | [types/](specs/types/) |
+| Types | Primitives, structs, enums, generics, traits, unions, tuples, nominal types, type aliases | [types/](specs/types/) |
 | Errors | `T or E` result, `try` propagation, `T?` optionals, `todo()`/`unreachable()` | [error-types.md](specs/types/error-types.md) |
 | Concurrency | spawn(\|\| {})/join/detach (functions), channels, no function coloring | [concurrency/](specs/concurrency/) |
 | Comptime | Compile-time execution | [comptime.md](specs/control/comptime.md) |

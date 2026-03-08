@@ -275,6 +275,7 @@ pub fn cmd_mir(path: &str, format: Format) {
                 rask_types::TypeDef::Enum { name, .. } => name.clone(),
                 rask_types::TypeDef::Trait { name, .. } => name.clone(),
                 rask_types::TypeDef::Union { name, .. } => name.clone(),
+                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
             };
             (rask_types::TypeId(i as u32), name)
         })

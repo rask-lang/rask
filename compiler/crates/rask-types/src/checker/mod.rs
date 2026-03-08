@@ -264,6 +264,12 @@ impl TypeChecker {
                 found: ctx.apply(&found),
                 span,
             },
+            TypeError::NominalMismatch { expected, found, nominal_name, span } => TypeError::NominalMismatch {
+                expected: ctx.apply(&expected),
+                found: ctx.apply(&found),
+                nominal_name,
+                span,
+            },
             other => other,
         }
     }

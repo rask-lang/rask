@@ -454,6 +454,31 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("string concatenation allocates — Rask requires the allocation to be visible through the method name or interpolation syntax")
             }
 
+            NominalMismatch { expected, found, nominal_name, span } => {
+                let expected_is_nominal = format!("{}", expected) == *nominal_name;
+                let (label, fix, why) = if expected_is_nominal {
+                    // Expected nominal, found raw: wrap with constructor
+                    (
+                        format!("expected `{}`, found `{}`", expected, found),
+                        format!("wrap with `{}(...)` to construct the nominal type", nominal_name),
+                        format!("`{}` is a distinct type — raw `{}` values don't convert implicitly [type.aliases/T9]", nominal_name, found),
+                    )
+                } else {
+                    // Expected raw, found nominal: unwrap with .value
+                    (
+                        format!("expected `{}`, found `{}`", expected, found),
+                        format!("use `.value` to extract the underlying `{}` from `{}`", expected, nominal_name),
+                        format!("`{}` is a distinct type — it doesn't convert to `{}` implicitly [type.aliases/T9]", nominal_name, expected),
+                    )
+                };
+                Diagnostic::error("nominal type mismatch")
+                    .with_code("E0340")
+                    .with_primary(*span, label)
+                    .with_fix(fix)
+                    .with_help(format!("`type {} = ...` creates a distinct type — use `{}(value)` to wrap, `.value` to unwrap", nominal_name, nominal_name))
+                    .with_why(why)
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {

@@ -1609,22 +1609,52 @@ impl Parser {
         Ok(DeclKind::Const(ConstDecl { name, ty, init, is_pub, doc }))
     }
 
-    /// Parse a type alias: `type Name = TargetType` or `type Name<T> = (T, T)`
+    /// Parse type declaration:
+    /// - `type Name = TargetType` (nominal, default)
+    /// - `type Name = TargetType with (Trait1, Trait2)` (nominal with traits)
+    /// - `type alias Name = TargetType` (transparent)
     fn parse_type_alias_decl(&mut self, is_pub: bool) -> Result<DeclKind, ParseError> {
         self.expect(&TokenKind::Type)?;
+
+        // Check for `type alias` (transparent)
+        let is_transparent = if matches!(self.current_kind(), TokenKind::Ident(ref s) if s == "alias") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         let name = self.expect_ident()?;
         let type_params = if self.check(&TokenKind::Lt) {
             self.advance();
             let (params, _) = self.parse_type_params()?;
-            // parse_type_params already consumes the closing '>'
             params
         } else {
             Vec::new()
         };
         self.expect(&TokenKind::Eq)?;
         let target = self.parse_type_name()?;
+
+        // Parse optional `with (Trait1, Trait2)` clause (nominal types only)
+        let with_traits = if !is_transparent && self.check(&TokenKind::With) {
+            self.advance();
+            self.expect(&TokenKind::LParen)?;
+            let mut traits = Vec::new();
+            loop {
+                if self.check(&TokenKind::RParen) { break; }
+                traits.push(self.expect_ident()?);
+                if !self.match_token(&TokenKind::Comma) { break; }
+            }
+            self.expect(&TokenKind::RParen)?;
+            traits
+        } else {
+            Vec::new()
+        };
+
         self.expect_terminator()?;
-        Ok(DeclKind::TypeAlias(TypeAliasDecl { name, type_params, target, is_pub }))
+        Ok(DeclKind::TypeAlias(TypeAliasDecl {
+            name, type_params, target, is_pub, is_transparent, with_traits,
+        }))
     }
 
     /// Parse a test block: `test "name" { body }` or `comptime test "name" { body }`

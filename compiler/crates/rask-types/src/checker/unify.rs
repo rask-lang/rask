@@ -114,6 +114,19 @@ impl TypeChecker {
                         span,
                     });
                 }
+                // Literal vars cannot implicitly coerce to nominal types
+                if self.ctx.literal_vars.contains_key(id) {
+                    if let Type::Named(type_id) = other {
+                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                            return Err(TypeError::NominalMismatch {
+                                expected: other.clone(),
+                                found: t1,
+                                nominal_name: name,
+                                span,
+                            });
+                        }
+                    }
+                }
                 self.ctx.substitutions.insert(*id, other.clone());
                 Ok(true)
             }
@@ -125,6 +138,19 @@ impl TypeChecker {
                         ty: other.clone(),
                         span,
                     });
+                }
+                // Literal vars cannot implicitly coerce to nominal types
+                if self.ctx.literal_vars.contains_key(id) {
+                    if let Type::Named(type_id) = other {
+                        if let Some(name) = self.types.get_nominal_name(*type_id) {
+                            return Err(TypeError::NominalMismatch {
+                                expected: other.clone(),
+                                found: t2,
+                                nominal_name: name,
+                                span,
+                            });
+                        }
+                    }
                 }
                 self.ctx.substitutions.insert(*id, other.clone());
                 Ok(true)
@@ -340,6 +366,26 @@ impl TypeChecker {
                         span,
                     })
                 }
+            }
+
+            // Nominal type vs non-nominal: produce specific error
+            (Type::Named(id), _) if self.types.get_nominal_name(*id).is_some() => {
+                let name = self.types.get_nominal_name(*id).unwrap();
+                Err(TypeError::NominalMismatch {
+                    expected: t1,
+                    found: t2,
+                    nominal_name: name,
+                    span,
+                })
+            }
+            (_, Type::Named(id)) if self.types.get_nominal_name(*id).is_some() => {
+                let name = self.types.get_nominal_name(*id).unwrap();
+                Err(TypeError::NominalMismatch {
+                    expected: t1,
+                    found: t2,
+                    nominal_name: name,
+                    span,
+                })
             }
 
             _ => Err(TypeError::Mismatch {
