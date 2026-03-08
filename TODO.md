@@ -9,7 +9,7 @@ Open work, grouped by theme. Each chunk is roughly independent.
 Enums compile as tagged unions but advanced patterns don't work natively yet.
 
 - [x] **MIR: enum payload destructuring** — Match arms that destructure enum payloads (e.g., `Circle(radius)`) leave payload variables unresolved. Blocks 10_enums_advanced.
-- [ ] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
+- [x] **Codegen: unknown type layouts** — Monomorphizer doesn't resolve enum types referenced inside structs (e.g., `EntityType` in game_loop). Defaults to (8, 8) which causes wrong field offsets and silent runtime crashes.
 
 ## 2. Closure & Indirect Call Codegen
 
@@ -21,7 +21,7 @@ Closures work as inline lambdas (spawn, iterators) but can't be passed as functi
 
 Returning or passing structs through function boundaries sometimes generates wrong Cranelift IR.
 
-- [ ] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
+- [x] **Codegen: aggregate return/arg count mismatches** — Pool.alloc() and some return paths generate wrong Cranelift IR argument counts. Blocks 14_borrowing_patterns, 15_memory_management.
 
 ## 4. Comptime Execution
 
@@ -92,6 +92,8 @@ Hardening for the package ecosystem. Not blocking any examples.
 <summary>Completed items (click to expand)</summary>
 
 ### Codegen
+- [x] Type layout topological sort — forward-referenced enums in structs get correct sizes
+- [x] Aggregate return/arg count — Pool.alloc/insert return paths work correctly
 - [x] ThreadPool.spawn / Thread.spawn MIR routing
 - [x] Sensor processor native compilation — f64 struct field access fixed
 - [x] CleanupReturn deduplication

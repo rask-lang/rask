@@ -187,7 +187,7 @@ fn align_up(val: u32, align: u32) -> u32 {
 }
 
 /// Parse a field type string (from AST) to a Type for layout computation.
-fn parse_field_type(s: &str) -> Type {
+pub(crate) fn parse_field_type(s: &str) -> Type {
     let s = s.trim();
 
     // Result type: "T or E"
