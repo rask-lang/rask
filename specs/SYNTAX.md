@@ -547,34 +547,31 @@ Map<string, Vec<i32>>      // , inside <> → generic parameters
 
 The ambiguous case `f(a<b, c>(d))` parses as a generic call `a<b, c>(d)`. To express the comparison, use parentheses: `f((a < b), (c > d))`. This matches Kotlin, TypeScript, and Scala's approach — locally resolved, no name resolution during parsing.
 
-### Type Aliases
+### Type Declarations
 
-Transparent aliases — the alias and underlying type are identical everywhere.
-
-```rask
-type UserId = u64
-type Pair<T> = (T, T)
-type Handler = func(i32) -> string
-
-const id: UserId = 42           // UserId is u64
-const coords: Pair<f64> = (1.0, 2.0)
-```
-
-Visibility: `public type Name = ...` exports the alias.
-
-### Distinct Types (Newtypes)
-
-Nominal wrappers — same layout, no implicit conversion. See [distinct-types.md](types/distinct-types.md).
+`type` creates a nominal type — same layout, no implicit conversion. This is the default because when you name a type, you usually want it distinct.
 
 ```rask
-newtype UserId = u64 with (Equal, Hashable)
-newtype Email = string with (Equal, Debug)
+type UserId = u64 with (Equal, Hashable)
+type Email = string with (Equal, Debug)
 
 const id = UserId(42)           // explicit construction
 const raw: u64 = id.value       // explicit extraction
 find_user(42)                   // ❌ compile error
 find_user(UserId(42))           // ✓
 ```
+
+`type alias` for transparent shorthand — alias and underlying type are identical:
+
+```rask
+type alias Matrix = Vec<Vec<f64>>
+type alias Pair<T> = (T, T)
+type alias Handler = func(i32) -> string
+
+const coords: Pair<f64> = (1.0, 2.0)  // Pair<f64> IS (f64, f64)
+```
+
+Visibility: `public type Name = ...` exports the type. See [type-aliases.md](types/type-aliases.md).
 
 ### Tuples
 
