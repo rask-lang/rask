@@ -34,12 +34,15 @@ button.on_click(|event, state| {
 | **CE3: Move-only** | `Cell<T>` is never Copy; assignment moves |
 | **CE4: with access** | Access through `with cell as v { ... }` — always mutable binding |
 | **CE5: Exclusive mutation** | `with...as v` (mutable, default) takes exclusive access; no concurrent reads or writes |
+| **CE6: Convenience methods** | `.get()` returns a copy (Copy types only), `.set(value)` replaces the inner value — single-expression alternatives to `with` |
 
 ## API
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `Cell.new(value)` | `T -> Cell<T>` | Create cell with initial value |
+| `cell.get()` | `Cell<T> -> T` | Copy out the inner value (CE6, Copy types only) |
+| `cell.set(value)` | `(Cell<T>, T) -> ()` | Replace inner value (CE6) |
 | `cell.replace(value)` | `T -> T` | Swap in new value, return old |
 | `cell.into_inner()` | `take Cell<T> -> T` | Consume cell, return value |
 
@@ -49,19 +52,18 @@ Access is through `with`:
 ```rask
 const counter = Cell.new(0)
 
-// Read
-const current = with counter as c { c }
+// Convenience methods (CE6)
+const current = counter.get()            // Copy out (Copy types only)
+counter.set(42)                          // Replace inner value
 
-// Mutate
+// with access (CE4) — still needed for multi-statement or non-Copy
 with counter as c { c += 1 }
-
-// One-liner shorthand
-with counter as c: c += 1
+with counter as c: c += 1               // one-liner shorthand
 
 // Expression context
 const doubled = with counter as c { c * 2 }
 
-// Replace
+// Replace (returns old value)
 const old = counter.replace(0)
 
 // Consume

@@ -114,6 +114,7 @@ Single-expression access to collection elements works inline. The compiler creat
 | **E2: Chain calls OK** | `pool[h].field.method()` is one expression |
 | **E3: Lvalue in-place** | `collection[key].field = value` is in-place mutation, not copy-modify-discard |
 | **E4: Rvalue copies or errors** | `const x = collection[key]` copies if Copy, compile error if not |
+| **E5: Sync inline access** | `shared.read().chain`, `shared.write().chain`, and `mutex.lock().chain` follow E1-E4 rules. Lock held for expression duration, released at expression end. Standalone `.read()`/`.write()`/`.lock()` without chaining is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -125,6 +126,21 @@ if pool[h].health <= 0 {     // New inline access
 const hp = pool[h].health    // Copy out i32 (E4, Copy type)
 process(pool[h].name)        // Temporary borrow for call duration (E1)
 pool[h].pos.normalize()      // Method chain (E2)
+```
+
+**Sync primitive inline access (E5):**
+<!-- test: skip -->
+```rask
+const timeout = config.read().timeout           // Copy out (E4)
+const name = config.read().user.name.clone()    // Clone non-Copy
+config.write().timeout = 60.seconds             // In-place mutation (E3)
+queue.lock().push(item)                         // Mutex inline access
+
+// Multi-statement still needs with
+with config.write() as c {
+    c.timeout = 60.seconds
+    c.max_retries = 5
+}
 ```
 
 For non-Copy types, `const x = collection[key]` is a compile error. Use `.clone()` or `with` for multi-statement access.
@@ -454,6 +470,11 @@ FIX: Move the removal outside the with block:
 | Inline access in method chain | E2 | Access spans entire chain |
 | `collection[key].field = value` | E3 | In-place lvalue mutation |
 | `const x = collection[key]` (non-Copy) | E4 | Compile error |
+| `shared.read().field` | E5 | Expression-scoped read lock, same as E1-E4 |
+| `shared.write().field = value` | E5 | Expression-scoped write lock, in-place mutation |
+| `mutex.lock().field` | E5 | Expression-scoped exclusive lock |
+| `shared.read()` standalone | E5 | Compile error — must access a field or method |
+| Multiple sync accesses in one expression | E5/DL4 | Compile error — deadlock risk (see `conc.sync/DL4`) |
 | `with` and `return` | W1 | Exits the function |
 | `with` and `try` | W1 | Propagates to enclosing function |
 | `with` and `break`/`continue` | W1 | Applies to surrounding loop |
@@ -479,6 +500,13 @@ FIX: Move the removal outside the with block:
 | Can store in `const`? | Yes | Copy types only |
 | Multi-statement use? | Direct | `with...as` or copy out |
 | The test | Can't grow or shrink | Can grow or shrink |
+
+| Aspect | Sync Primitives (Shared, Mutex) |
+|--------|---------------------------------|
+| Inline access | `.read()/.write()/.lock()` + field chain (E5) |
+| View duration | Expression only (lock released at expression end) |
+| Can store in `const`? | Copy types only |
+| Multi-statement use? | `with...as` |
 
 ## Examples
 
@@ -538,6 +566,8 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 **W2a–W2d (pool exception):** Pool handles survive reallocation (PL9) — that's the entire point of handles. I decided to exploit this inside `with` blocks rather than apply the same restriction as Vec/Map. After `pool.insert()` or `pool.remove(other)`, the compiler re-resolves the binding by re-validating the handle (~1ns generation check). If a `remove(other_h)` aliased the bound handle at runtime, the re-resolution panics "stale handle" — same aliasing semantics as W3. The cost is per-type rules in the compiler, but pools already have their own rules (context clauses, generation coalescing, frozen modifiers). One more isn't conceptual overhead — it's the handle abstraction doing what it was designed for.
 
 **W5 (always mutable):** `with` exists for multi-statement access — and the overwhelming majority of cases involve mutation. If you just need to read, inline access often suffices. Making bindings always mutable eliminates the `const` keyword from `with` entirely, removing a concept that caused confusion: for `Shared<T>`, `const` previously changed the lock type (shared vs exclusive), while for everything else it only controlled binding mutability. With explicit `.read()`/`.write()` on Shared, there's no need for `const` on `with` bindings. The compiler warns when a `with` binding is never mutated.
+
+**E5 (sync inline access):** Collections got inline access through `[]` indexing — `pool[h].field` works without `with`. Sync primitives didn't have an equivalent. `.read()`, `.write()`, and `.lock()` now serve the same role: they produce expression-scoped access to the inner value. The lock is visible in the dot-chain (`config.read().timeout`), so cost transparency is preserved. `with` blocks remain for multi-statement access — inline is just the single-expression shorthand.
 
 **Why strings are value-access, not block-scoped:** Strings own heap buffers — structurally the same as Vec. Block-scoped string views would require a hidden view type distinct from `string` and borrow-of-borrow tracking when views are passed to functions. This contradicts the "no storable references" principle. The cost is `.to_string()` calls or `string_view` indices — visible, simple, no borrow tracking needed.
 

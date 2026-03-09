@@ -127,7 +127,7 @@ func create_user(body: string) -> Response {
 }
 
 func delete_user(id: i64) -> Response {
-    const removed = with db.write() as d { d.users.remove(id) }
+    const removed = db.write().users.remove(id)
 
     return match removed {
         Some(_) => Response.no_content(),

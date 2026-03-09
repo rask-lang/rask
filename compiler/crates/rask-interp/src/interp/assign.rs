@@ -239,6 +239,18 @@ impl Interpreter {
                         let container = self.eval_index_target(idx_obj)?;
                         Self::assign_index_field(&container, &idx_val, &field_chain, value)
                     }
+                    // Inline sync access: shared.write().field = value, mutex.lock().field = value
+                    ExprKind::MethodCall { object, method, args, .. }
+                        if args.is_empty() && matches!(method.as_str(), "write" | "lock" | "read") =>
+                    {
+                        let receiver = self.eval_expr(object).map_err(|diag| diag.error)?;
+                        let obj = self.call_inline_sync_access(&receiver, method)
+                            .map_err(|_| RuntimeError::TypeError(format!(
+                                "invalid inline sync access: .{}() on {}",
+                                method, receiver.type_name()
+                            )))?;
+                        Self::assign_nested_field(&obj, &field_chain, value)
+                    }
                     _ => Err(RuntimeError::TypeError("invalid assignment target; assign to a variable, field, or index".to_string())),
                 }
             }
