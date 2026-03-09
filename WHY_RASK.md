@@ -10,11 +10,11 @@ This is a research language. It might not work out. Here's why I think it's wort
 
 ## The Gap
 
-There's a space in systems programming that nobody occupies well.
+There's a space in programming that nobody occupies well.
 
 **Rust** is safe, but it demands you prove safety to the compiler. Lifetime annotations leak into every signature. The borrow checker rejects valid programs. Graphs require `Rc<RefCell<T>>` — reference counting plus interior mutability, which is the complexity you were trying to avoid. For application code (web services, CLIs, data pipelines), this proof burden often isn't worth the cost.
 
-**Go** is simple and productive. But it gives you no memory safety guarantees beyond garbage collection. Data races are possible. Nil panics happen at runtime. Goroutines leak silently. GC pauses are unpredictable. You trade control for convenience.
+**Go** is memory-safe (GC prevents use-after-free) and productive. But the safety has gaps: data races are possible and only caught by a runtime detector, nil panics crash at runtime instead of compile time, goroutines leak silently, and there's no way to enforce resource cleanup — forgetting to close a file is invisible. GC pauses trade predictable latency for convenience.
 
 **Zig** is transparent and gives you real control. But memory management is manual. Use-after-free is your problem. It's honest about the tradeoff — you get power, you accept risk.
 
@@ -110,7 +110,7 @@ Hylo may well end up being the better language. It has stronger theoretical back
 
 **Rust developers** who found that lifetime annotations aren't worth the cost for application code. If you've ever wrapped something in `Rc<RefCell<T>>` just to make the borrow checker happy, Rask is exploring whether that detour was necessary.
 
-**Go developers** who want actual compile-time safety guarantees. No nil panics, no data races, no GC pauses, no silent goroutine leaks — without giving up Go's readability.
+**Go developers** who want the gaps closed. Compile-time nil safety, compile-time data race prevention, deterministic resource cleanup, no GC pauses — without giving up Go's readability.
 
 **Researchers and language enthusiasts** interested in whether mutable value semantics can work for real programs. There aren't many data points yet. Rask is trying to be one.
 
