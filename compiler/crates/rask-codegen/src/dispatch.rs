@@ -168,6 +168,13 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: true,
         },
+        StdlibEntry {
+            mir_name: "Vec_remove_at",
+            c_name: "rask_vec_remove_at",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: true,
+        },
 
         // ── Subscript (desugared from args[0] → args.index(0)) ─
         // Bare "index" kept: desugaring doesn't have receiver type info

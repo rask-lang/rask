@@ -169,7 +169,20 @@ pub fn monomorphize(
     program: &TypedProgram,
     decls: &[Decl],
 ) -> Result<MonoProgram, MonomorphizeError> {
+    monomorphize_with_packages(program, decls, std::collections::HashSet::new())
+}
+
+/// Monomorphize with cross-package module awareness.
+///
+/// `package_modules` contains names of imported external packages so the
+/// reachability pass correctly discovers `pkg.func()` calls.
+pub fn monomorphize_with_packages(
+    program: &TypedProgram,
+    decls: &[Decl],
+    package_modules: std::collections::HashSet<String>,
+) -> Result<MonoProgram, MonomorphizeError> {
     let mut mono = Monomorphizer::new(decls, &program.call_type_args);
+    mono.set_package_modules(package_modules);
 
     if !mono.add_entry("main") {
         return Err(MonomorphizeError::NoEntryPoint);
