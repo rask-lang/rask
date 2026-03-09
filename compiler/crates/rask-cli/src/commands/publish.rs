@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Publishing — struct.build/PB1-PB7.
+//! Publishing — struct.build/PB1-PB7, SG1-SG2.
 //!
 //! `rask publish` validates metadata, builds a reproducible tarball,
-//! and uploads it to the registry.
+//! signs it with Ed25519 (SG1), and uploads it to the registry.
+//! Publishing without a key requires `--unsigned` (SG2).
 
 use colored::Colorize;
 use std::path::{Path, PathBuf};
@@ -11,7 +12,7 @@ use std::process;
 use crate::output;
 
 /// Publish a package to the registry.
-pub fn cmd_publish(path: &str, dry_run: bool, verbose: bool) {
+pub fn cmd_publish(path: &str, dry_run: bool, unsigned: bool, verbose: bool) {
     let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
 
     if !root.is_dir() {
@@ -69,6 +70,30 @@ pub fn cmd_publish(path: &str, dry_run: bool, verbose: bool) {
         process::exit(1);
     }
 
+    // SG1/SG2: Load signing key (unless --unsigned)
+    let signing_key = if unsigned {
+        if verbose {
+            println!("  {} publishing without signature (--unsigned)", "Warning:".yellow());
+        }
+        None
+    } else {
+        match rask_resolve::signing::load_signing_key() {
+            Ok(kp) => {
+                if verbose {
+                    println!("  {} {}", "Signing key:".dimmed(), kp.fingerprint());
+                }
+                Some(kp)
+            }
+            Err(e) => {
+                eprintln!("{}: {}", output::error_label(), e);
+                eprintln!();
+                eprintln!("  To publish unsigned: rask publish --unsigned");
+                eprintln!("  To generate a key:   rask keys generate");
+                process::exit(1);
+            }
+        }
+    };
+
     // PB1: Pre-checks — run build (type-check + validation)
     if verbose {
         println!("  {} pre-checks...", "Running".dimmed());
@@ -122,13 +147,29 @@ pub fn cmd_publish(path: &str, dry_run: bool, verbose: bool) {
         process::exit(1);
     }
 
+    // SG1: Sign the tarball
+    let signature_info = signing_key.as_ref().map(|kp| {
+        let tarball_bytes = std::fs::read(&tarball_path).unwrap_or_else(|e| {
+            eprintln!("{}: failed to read tarball for signing: {}", output::error_label(), e);
+            process::exit(1);
+        });
+        let sig = kp.sign(&tarball_bytes);
+        let pubkey = rask_resolve::signing::hex_encode(kp.verifying_key().as_bytes());
+        (sig, pubkey, kp.fingerprint())
+    });
+
     // PB3: Dry run — print summary and exit
     if dry_run {
         println!("  {} (dry run)", "Publish".yellow().bold());
-        println!("  Package: {} {}", manifest.name, manifest.version);
-        println!("  Files:   {}", tarball_info.file_count);
-        println!("  Size:    {} bytes", tarball_info.size);
+        println!("  Package:  {} {}", manifest.name, manifest.version);
+        println!("  Files:    {}", tarball_info.file_count);
+        println!("  Size:     {} bytes", tarball_info.size);
         println!("  Checksum: {}", tarball_info.checksum);
+        if let Some((_, _, ref fp)) = signature_info {
+            println!("  Signed:   {}", fp);
+        } else {
+            println!("  Signed:   no (unsigned)");
+        }
         if verbose {
             println!();
             for (file_path, size) in &tarball_info.files {
@@ -155,10 +196,22 @@ pub fn cmd_publish(path: &str, dry_run: bool, verbose: bool) {
         println!("  {} to {}...", "Publishing".cyan(), reg_config.url);
     }
 
-    match reg_config.publish(&manifest.name, &manifest.version, &tarball_path, &token) {
+    let result = if let Some((ref sig, ref pubkey, _)) = signature_info {
+        reg_config.publish_signed(
+            &manifest.name, &manifest.version, &tarball_path, &token,
+            sig, pubkey,
+        )
+    } else {
+        reg_config.publish(&manifest.name, &manifest.version, &tarball_path, &token)
+    };
+
+    match result {
         Ok(()) => {
             println!("  {} {} {}",
                 "Published".green().bold(), manifest.name, manifest.version);
+            if let Some((_, _, ref fp)) = signature_info {
+                println!("  Signed with {}", fp);
+            }
         }
         Err(e) => {
             eprintln!("{}: upload failed: {}", output::error_label(), e);

@@ -445,9 +445,10 @@ fn main() {
                 return;
             }
             let dry_run = cmd_args.contains(&"--dry-run");
+            let unsigned = cmd_args.contains(&"--unsigned");
             let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
-            let path = find_positional_arg(&cmd_args, 2, &["--dry-run"]).unwrap_or(".");
-            commands::publish::cmd_publish(path, dry_run, verbose);
+            let path = find_positional_arg(&cmd_args, 2, &["--dry-run", "--unsigned"]).unwrap_or(".");
+            commands::publish::cmd_publish(path, dry_run, unsigned, verbose);
         }
         "yank" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
@@ -556,6 +557,32 @@ fn main() {
                 process::exit(1);
             }
             commands::tools::cmd_explain(cmd_args[2]);
+        }
+        "keys" => {
+            if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {
+                println!("Manage Ed25519 signing keys.\n");
+                println!("Usage: rask keys <subcommand>\n");
+                println!("Subcommands:");
+                println!("  generate   Generate a new Ed25519 signing keypair");
+                println!("  list       Show key fingerprint and public key");
+                println!("  rotate     Rotate signing key (new key signed by old)");
+                return;
+            }
+            match cmd_args.get(2).copied() {
+                Some("generate") => commands::keys::cmd_keys_generate(),
+                Some("list") => commands::keys::cmd_keys_list(),
+                Some("rotate") => commands::keys::cmd_keys_rotate(),
+                Some(sub) => {
+                    eprintln!("{}: unknown keys subcommand '{}'", output::error_label(), sub);
+                    eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("keys"), output::arg("<generate|list|rotate>"));
+                    process::exit(1);
+                }
+                None => {
+                    eprintln!("{}: missing subcommand", output::error_label());
+                    eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("keys"), output::arg("<generate|list|rotate>"));
+                    process::exit(1);
+                }
+            }
         }
         "help" | "--help" | "-h" => {
             if cmd_args.len() > 2 && (cmd_args[2] == "--help" || cmd_args[2] == "-h") {

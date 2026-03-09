@@ -55,7 +55,7 @@ Single-file compilation works. Multi-file packages have symbol visibility issues
 Hardening for the package ecosystem. Not blocking any examples.
 
 - [ ] **Build script sandbox** — Cross-platform sandbox for dep build scripts (SB1-SB7).
-- [ ] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).
+- [x] **Package signing** — Ed25519 TOFU signing on publish/fetch (SG1-SG7, KM1-KM3, LK8).
 - [ ] **Build exec gating** — `exec()`/`exec_output()` require `build_exec` capability (PM9-PM10).
 - [x] **Unsafe report command** — CLI command to report all unsafe operations by category.
 
