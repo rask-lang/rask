@@ -22,6 +22,8 @@ pub mod cache;
 pub mod tarball;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod advisory;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod signing;
 
 pub use error::{ResolveError, ResolveErrorKind};
 pub use scope::{Scope, ScopeId, ScopeKind};
