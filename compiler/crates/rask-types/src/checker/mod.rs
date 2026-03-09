@@ -89,6 +89,10 @@ pub struct TypeChecker {
     /// TR5: implicit trait coercion sites. NodeId of expression → trait name.
     /// MIR lowering uses this to emit TraitBox instructions at coercion sites.
     pub(super) trait_coercions: HashMap<NodeId, String>,
+    /// ER20: Collected error types from `try` calls in error-accumulation mode.
+    pub(super) inferred_errors: Vec<Type>,
+    /// ER20: Whether we're collecting errors instead of unifying them.
+    pub(super) accumulate_errors: bool,
 }
 
 impl TypeChecker {
@@ -113,6 +117,8 @@ impl TypeChecker {
             inferred_fn_types: HashMap::new(),
             in_assign_target: false,
             trait_coercions: HashMap::new(),
+            inferred_errors: Vec::new(),
+            accumulate_errors: false,
         }
     }
 

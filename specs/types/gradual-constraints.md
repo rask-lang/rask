@@ -145,7 +145,7 @@ ERROR [type.gradual/GC2]: inferred return type changed
 
 ## Error Union Inference
 
-Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and explicit `Err()` returns in the body.
+Error return types are inferred like any other return type — the compiler collects error types from all `try` calls and explicit `Err()` returns in the body. Three annotation levels from least to most explicit:
 
 | Rule | Description |
 |------|-------------|
@@ -154,7 +154,7 @@ Error return types are inferred like any other return type — the compiler coll
 
 <!-- test: skip -->
 ```rask
-// Private: error union inferred
+// Fully omitted — both success and error types inferred
 func load_config(path: string) {
     const text = try read_file(path)     // contributes IoError
     const config = try parse(text)       // contributes ParseError
@@ -162,7 +162,15 @@ func load_config(path: string) {
 }
 // Inferred: -> Config or (IoError | ParseError)
 
-// Public: must be explicit
+// Partial: `or _` — success type explicit, error union inferred
+func load_config(path: string) -> Config or _ {
+    const text = try read_file(path)     // contributes IoError
+    const config = try parse(text)       // contributes ParseError
+    return config
+}
+// LSP ghost text: -> Config or (IoError | ParseError)
+
+// Public: must be fully explicit
 public func load_config(path: string) -> Config or (IoError | ParseError) {
     const text = try read_file(path)
     return try parse(text)
