@@ -64,7 +64,9 @@ impl TypeChecker {
             };
             for f in fns {
                 let has_inferred_params = f.params.iter().any(|p| p.name != "self" && p.ty.is_empty());
-                let has_inferred_return = f.ret_ty.is_none() && !f.is_pub && self.has_explicit_return(&f.body);
+                let has_inferred_error = f.ret_ty.as_ref().is_some_and(|t| t.ends_with(", _>"));
+                let has_inferred_return = (f.ret_ty.is_none() && !f.is_pub && self.has_explicit_return(&f.body))
+                    || has_inferred_error;
                 if !has_inferred_params && !has_inferred_return {
                     continue;
                 }
@@ -85,7 +87,16 @@ impl TypeChecker {
                     param_types.push(ty);
                 }
 
-                let ret_ty = if has_inferred_return {
+                let ret_ty = if has_inferred_error {
+                    // "Result<Config, _>" → Result { ok: Config, err: fresh_var }
+                    let t = f.ret_ty.as_ref().unwrap();
+                    let ok_str = &t["Result<".len()..t.len() - ", _>".len()];
+                    let ok_ty = parse_type_string(ok_str, &self.types).unwrap_or(Type::Error);
+                    Type::Result {
+                        ok: Box::new(ok_ty),
+                        err: Box::new(self.ctx.fresh_var()),
+                    }
+                } else if has_inferred_return {
                     self.ctx.fresh_var()
                 } else if let Some(t) = &f.ret_ty {
                     parse_type_string(t, &self.types).unwrap_or(Type::Error)

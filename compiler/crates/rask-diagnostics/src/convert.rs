@@ -479,6 +479,17 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why(why)
             }
 
+            PublicInferredError { function_name, span } => {
+                Diagnostic::error(format!(
+                    "public function `{}` must declare error types explicitly",
+                    function_name
+                ))
+                .with_code("E0335")
+                .with_primary(*span, "replace `_` with explicit error types")
+                .with_why("public functions are API contracts — callers need to see error types (ER21)")
+                .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {
