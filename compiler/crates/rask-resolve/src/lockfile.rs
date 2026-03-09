@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Lock file generation and verification — LK1-LK5.
+//! Lock file generation and verification — LK1-LK5, LK8.
 //!
 //! Pins exact dependency versions for reproducible builds.
 //! SHA-256 checksums for integrity. Capabilities field per
-//! package for permission tracking (PM1-PM8).
+//! package for permission tracking (PM1-PM8). Signing key
+//! fingerprint per registry package for TOFU (LK8).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -24,6 +25,9 @@ pub struct LockedPackage {
     pub checksum: String,
     /// Inferred capabilities: "net", "read", "write", "exec", "ffi".
     pub capabilities: Vec<String>,
+    /// Ed25519 signing key fingerprint for registry packages (LK8).
+    /// `None` for path/git deps or pre-signing packages (SG7).
+    pub signing_key: Option<String>,
 }
 
 /// The full lock file.
@@ -63,6 +67,7 @@ impl LockFile {
                 source,
                 checksum,
                 capabilities: Vec::new(),
+                signing_key: None,
             });
         }
 
@@ -122,6 +127,7 @@ impl LockFile {
                 source,
                 checksum,
                 capabilities: Vec::new(),
+                signing_key: None,
             });
         }
 
@@ -201,6 +207,9 @@ impl LockFile {
             content.push_str(&format!("version = \"{}\"\n", pkg.version));
             content.push_str(&format!("source = \"{}\"\n", pkg.source));
             content.push_str(&format!("checksum = \"{}\"\n", pkg.checksum));
+            if let Some(ref key) = pkg.signing_key {
+                content.push_str(&format!("signing-key = \"{}\"\n", key));
+            }
             if !pkg.capabilities.is_empty() {
                 let caps: Vec<String> = pkg.capabilities.iter()
                     .map(|c| format!("\"{}\"", c))
@@ -254,6 +263,29 @@ impl LockFile {
                 new_sorted.sort();
                 if old_sorted != new_sorted {
                     changed.push(pkg.name.clone());
+                }
+            }
+        }
+        changed
+    }
+
+    /// Check if any registry package's signing key changed versus what's locked (LK8).
+    /// Returns package names where the key changed — callers should warn.
+    pub fn signing_keys_changed(
+        &self,
+        new_keys: &BTreeMap<String, String>,
+    ) -> Vec<(String, String, String)> {
+        let mut changed = Vec::new();
+        for pkg in &self.packages {
+            if let Some(ref old_key) = pkg.signing_key {
+                if let Some(new_key) = new_keys.get(&pkg.name) {
+                    if old_key != new_key {
+                        changed.push((
+                            pkg.name.clone(),
+                            old_key.clone(),
+                            new_key.clone(),
+                        ));
+                    }
                 }
             }
         }
@@ -343,12 +375,15 @@ fn fields_to_locked(fields: &BTreeMap<String, String>) -> Result<LockedPackage, 
         .map(|v| parse_string_array(v))
         .unwrap_or_default();
 
+    let signing_key = fields.get("signing-key").cloned();
+
     Ok(LockedPackage {
         name: fields.get("name").cloned().ok_or("missing 'name' in lock file entry")?,
         version: fields.get("version").cloned().ok_or("missing 'version' in lock file entry")?,
         source: fields.get("source").cloned().ok_or("missing 'source' in lock file entry")?,
         checksum: fields.get("checksum").cloned().ok_or("missing 'checksum' in lock file entry")?,
         capabilities,
+        signing_key,
     })
 }
 

@@ -30,6 +30,12 @@ pub struct VersionMeta {
     pub capabilities: Vec<String>,
     #[serde(default)]
     pub yanked: bool,
+    /// Hex-encoded Ed25519 signature of the tarball (SG3).
+    #[serde(default)]
+    pub signature: Option<String>,
+    /// Hex-encoded Ed25519 public key that produced the signature.
+    #[serde(default)]
+    pub signing_pubkey: Option<String>,
 }
 
 /// A dependency entry from the registry index.
@@ -225,7 +231,7 @@ impl RegistryConfig {
         Ok(())
     }
 
-    /// Publish a package tarball to the registry.
+    /// Publish a package tarball to the registry (unsigned).
     ///
     /// POST {url}/publish with Bearer token auth.
     pub fn publish(
@@ -235,15 +241,51 @@ impl RegistryConfig {
         tarball: &Path,
         token: &str,
     ) -> Result<(), RegistryError> {
+        self.publish_inner(name, version, tarball, token, None, None)
+    }
+
+    /// Publish a signed package tarball to the registry (SG1).
+    ///
+    /// Includes Ed25519 signature and public key in headers.
+    pub fn publish_signed(
+        &self,
+        name: &str,
+        version: &str,
+        tarball: &Path,
+        token: &str,
+        signature: &str,
+        pubkey: &str,
+    ) -> Result<(), RegistryError> {
+        self.publish_inner(name, version, tarball, token, Some(signature), Some(pubkey))
+    }
+
+    fn publish_inner(
+        &self,
+        name: &str,
+        version: &str,
+        tarball: &Path,
+        token: &str,
+        signature: Option<&str>,
+        pubkey: Option<&str>,
+    ) -> Result<(), RegistryError> {
         let url = format!("{}/publish", self.url);
         let body = std::fs::read(tarball)?;
 
         let client = reqwest::blocking::Client::new();
-        let response = client.post(&url)
+        let mut request = client.post(&url)
             .header("Authorization", format!("Bearer {}", token))
             .header("X-Package-Name", name)
             .header("X-Package-Version", version)
-            .header("Content-Type", "application/gzip")
+            .header("Content-Type", "application/gzip");
+
+        // SG1/SG3: Include signature and public key when signing
+        if let (Some(sig), Some(key)) = (signature, pubkey) {
+            request = request
+                .header("X-Signature", sig)
+                .header("X-Signing-Key", key);
+        }
+
+        let response = request
             .body(body)
             .send()
             .map_err(|e| RegistryError::Http(format!("{}: {}", url, e)))?;
@@ -257,6 +299,90 @@ impl RegistryConfig {
         if response.status() == reqwest::StatusCode::CONFLICT {
             return Err(RegistryError::Http(
                 format!("{} {} already exists in the registry", name, version)
+            ));
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            return Err(RegistryError::Http(format!(
+                "HTTP {}: {}", status, body
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Download a detached signature for a package version (SG3).
+    ///
+    /// GET {url}/pkg/{name}/{version}.sig
+    pub fn download_signature(
+        &self,
+        name: &str,
+        version: &str,
+    ) -> Result<Option<(String, String)>, RegistryError> {
+        let url = format!("{}/pkg/{}/{}.sig", self.url, name, version);
+        let response = reqwest::blocking::get(&url)
+            .map_err(|e| RegistryError::Http(format!("{}: {}", url, e)))?;
+
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            // No signature — pre-signing package (SG7)
+            return Ok(None);
+        }
+
+        if !response.status().is_success() {
+            return Err(RegistryError::Http(format!(
+                "{}: HTTP {}", url, response.status()
+            )));
+        }
+
+        let body = response.text()
+            .map_err(|e| RegistryError::Http(format!("reading signature: {}", e)))?;
+
+        // Format: "<hex-signature>\n<hex-pubkey>"
+        let mut lines = body.lines();
+        let sig = lines.next()
+            .ok_or_else(|| RegistryError::ParseError("empty signature file".into()))?
+            .trim()
+            .to_string();
+        let pubkey = lines.next()
+            .ok_or_else(|| RegistryError::ParseError("missing public key in signature file".into()))?
+            .trim()
+            .to_string();
+
+        Ok(Some((sig, pubkey)))
+    }
+
+    /// Upload a key rotation record (KM2).
+    ///
+    /// POST {url}/rotate-key with old pubkey, new pubkey, and rotation
+    /// signature (old key signs new pubkey bytes).
+    pub fn publish_key_rotation(
+        &self,
+        old_pubkey: &str,
+        new_pubkey: &str,
+        rotation_sig: &str,
+        token: &str,
+    ) -> Result<(), RegistryError> {
+        let url = format!("{}/rotate-key", self.url);
+
+        let body = serde_json::json!({
+            "old_pubkey": old_pubkey,
+            "new_pubkey": new_pubkey,
+            "rotation_signature": rotation_sig,
+        });
+
+        let client = reqwest::blocking::Client::new();
+        let response = client.post(&url)
+            .header("Authorization", format!("Bearer {}", token))
+            .header("Content-Type", "application/json")
+            .body(body.to_string())
+            .send()
+            .map_err(|e| RegistryError::Http(format!("{}: {}", url, e)))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(RegistryError::Http(
+                "authentication failed — check your token".to_string()
             ));
         }
 

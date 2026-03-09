@@ -20,3 +20,4 @@ pub mod vendor;
 pub mod publish;
 pub mod audit;
 pub mod derive;
+pub mod keys;

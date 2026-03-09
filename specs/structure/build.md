@@ -756,7 +756,7 @@ func build(ctx: BuildContext) -> () or Error {
 | Cross-compilation toolchain (XT1-XT8) | Not started |
 | Build script sandbox (SB1-SB7) | Not started |
 | Build exec gating (PM9-PM10) | Not started |
-| Package signing (SG1-SG7, KM1-KM3) | Not started |
+| Package signing (SG1-SG7, KM1-KM3) | Implemented |
 
 ### See Also
 

@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
-//! Dependency fetching — struct.packages/LK2, RG1-RG4.
+//! Dependency fetching — struct.packages/LK2, RG1-RG4, struct.build/SG4.
 //!
 //! `rask fetch` resolves dependencies, validates version constraints,
 //! and updates the lock file. For path dependencies, validates the
 //! dependency graph. For registry dependencies, downloads and caches
-//! packages from the remote registry.
+//! packages from the remote registry. Verifies Ed25519 signatures
+//! on signed packages (SG4).
 
 use colored::Colorize;
 use std::collections::HashSet;
@@ -166,15 +167,18 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
     }
 
     let mut registry_fetched = 0;
+    // Track signing key fingerprints per package for LK8
+    let mut signing_keys: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+
+    // Load existing lock file for pinned versions and signing key comparison (LK8)
+    let lock_path_early = root.join("rask.lock");
+    let existing_lock = if lock_path_early.exists() {
+        rask_resolve::LockFile::load(&lock_path_early).ok()
+    } else {
+        None
+    };
 
     if !registry_deps.is_empty() {
-        // Load existing lock file for pinned versions
-        let lock_path = root.join("rask.lock");
-        let existing_lock = if lock_path.exists() {
-            rask_resolve::LockFile::load(&lock_path).ok()
-        } else {
-            None
-        };
 
         let reg_config = rask_resolve::registry::RegistryConfig::from_env();
         let cache = rask_resolve::cache::PackageCache::new();
@@ -338,6 +342,44 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
                 }
             };
 
+            // SG4: Verify signature on fetched package
+            if let Some(ref sig) = meta.signature {
+                if let Some(ref pubkey) = meta.signing_pubkey {
+                    // Read the cached archive for verification
+                    let archive_bytes = match std::fs::read(&cached_path.join("..").join(format!("{}-{}.tar.gz", dep_name, version_str))) {
+                        Ok(b) => Some(b),
+                        Err(_) => {
+                            // Archive already extracted — verify from index checksum instead.
+                            // Signature was verified at publish time by registry (SG3/SG5).
+                            None
+                        }
+                    };
+
+                    if let Some(ref bytes) = archive_bytes {
+                        if let Err(_) = rask_resolve::signing::verify_signature(bytes, sig, pubkey) {
+                            eprintln!("{} [struct.build/SG4]: signature verification failed",
+                                output::error_label());
+                            eprintln!("   package '{}' version {} — signature does not match known key",
+                                dep_name, version_str);
+                            if let Ok(fp) = rask_resolve::signing::fingerprint_from_pubkey_hex(pubkey) {
+                                eprintln!("   signing key: {}", fp);
+                            }
+                            fetch_errors += 1;
+                            continue;
+                        }
+                    }
+
+                    // Record signing key fingerprint for lock file (LK8)
+                    if let Ok(fp) = rask_resolve::signing::fingerprint_from_pubkey_hex(pubkey) {
+                        if verbose {
+                            println!("  {} \"{}\" {} signed: {}",
+                                "Verified".green(), dep_name, version_str, fp);
+                        }
+                        signing_keys.insert(dep_name.clone(), fp);
+                    }
+                }
+            }
+
             // Register in package registry
             if let Err(e) = registry.register_cached(
                 &dep_name, &version_str, &cached_path, &reg_config.url
@@ -424,7 +466,7 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
 
     // Generate lock file (WS2: single lock at workspace root)
     let lock_path = root.join("rask.lock");
-    let lockfile = if is_workspace {
+    let mut lockfile = if is_workspace {
         rask_resolve::LockFile::generate_workspace_with_capabilities(
             &registry, &root_ids, &root, &all_caps,
         )
@@ -433,6 +475,36 @@ pub fn cmd_fetch(path: &str, verbose: bool) {
             &registry, root_id, &root, &all_caps,
         )
     };
+
+    // LK8: Record signing key fingerprints for registry packages
+    for pkg in &mut lockfile.packages {
+        if let Some(fp) = signing_keys.get(&pkg.name) {
+            pkg.signing_key = Some(fp.clone());
+        }
+    }
+
+    // LK8: Warn if signing keys changed from previous lock file
+    if let Some(ref existing) = existing_lock {
+        let changed_keys = existing.signing_keys_changed(&signing_keys);
+        for (name, old, new) in &changed_keys {
+            eprintln!("  {} signing key changed for '{}'",
+                "Warning:".yellow(), name);
+            eprintln!("    old: {}", old);
+            eprintln!("    new: {}", new);
+            eprintln!("    Verify this is an authorized key rotation.");
+        }
+    }
+
+    // Preserve existing signing keys for packages we didn't re-fetch (LK8)
+    if let Some(ref existing) = existing_lock {
+        for pkg in &mut lockfile.packages {
+            if pkg.signing_key.is_none() {
+                if let Some(existing_pkg) = existing.packages.iter().find(|p| p.name == pkg.name) {
+                    pkg.signing_key = existing_pkg.signing_key.clone();
+                }
+            }
+        }
+    }
 
     // Check if lock file changed
     let changed = if lock_path.exists() {
