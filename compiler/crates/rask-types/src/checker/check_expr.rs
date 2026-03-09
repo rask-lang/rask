@@ -450,7 +450,10 @@ impl TypeChecker {
                             // Handler produces the transformed error; unify with function's error type
                             if let Some(return_ty) = &self.current_return_type {
                                 let resolved_ret = self.ctx.apply(return_ty);
-                                if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                if self.accumulate_errors {
+                                    // ER20: Collect instead of unifying
+                                    self.inferred_errors.push(handler_ty);
+                                } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
                                     let _ = self.unify(&handler_ty, ret_err, expr.span);
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
@@ -466,7 +469,10 @@ impl TypeChecker {
                             // Plain try: unify error types directly
                             if let Some(return_ty) = &self.current_return_type {
                                 let resolved_ret = self.ctx.apply(return_ty);
-                                if let Type::Result { err: ret_err, .. } = &resolved_ret {
+                                if self.accumulate_errors {
+                                    // ER20: Collect instead of unifying
+                                    self.inferred_errors.push(*err.clone());
+                                } else if let Type::Result { err: ret_err, .. } = &resolved_ret {
                                     let _ = self.unify(err, ret_err, expr.span);
                                 } else if matches!(resolved_ret, Type::Var(_)) {
                                     // GC7/ER20: Return type is inferred — make it Result
@@ -491,14 +497,20 @@ impl TypeChecker {
                                     let _ = self.unify(&inner_ty, &option_ty, expr.span);
                                     inner_opt_ty
                                 }
-                                Type::Result { .. } => {
+                                Type::Result { err: ret_err, .. } => {
                                     let ok_ty = self.ctx.fresh_var();
                                     let err_ty = self.ctx.fresh_var();
                                     let result_ty = Type::Result {
                                         ok: Box::new(ok_ty.clone()),
-                                        err: Box::new(err_ty),
+                                        err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &result_ty, expr.span);
+                                    if self.accumulate_errors {
+                                        // ER20: Collect instead of unifying with return
+                                        self.inferred_errors.push(err_ty);
+                                    } else {
+                                        let _ = self.unify(&err_ty, ret_err, expr.span);
+                                    }
                                     ok_ty
                                 }
                                 Type::Var(_) => {
@@ -511,13 +523,17 @@ impl TypeChecker {
                                         err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &inner_result, expr.span);
-                                    // Unify return type with Result to enable error propagation
-                                    let ret_ok = self.ctx.fresh_var();
-                                    let ret_result = Type::Result {
-                                        ok: Box::new(ret_ok),
-                                        err: Box::new(err_ty),
-                                    };
-                                    let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                    if self.accumulate_errors {
+                                        // ER20: Collect instead of unifying with return
+                                        self.inferred_errors.push(err_ty);
+                                    } else {
+                                        let ret_ok = self.ctx.fresh_var();
+                                        let ret_result = Type::Result {
+                                            ok: Box::new(ret_ok),
+                                            err: Box::new(err_ty),
+                                        };
+                                        let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                    }
                                     ok_ty
                                 }
                                 _ => {
@@ -586,12 +602,17 @@ impl TypeChecker {
                 // Save enclosing return type — `return` inside a closure
                 // returns from the closure, not the enclosing function
                 let outer_return_type = self.current_return_type.take();
+                let outer_accumulate = self.accumulate_errors;
+                let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
+                self.accumulate_errors = false;
                 let closure_return_type = self.ctx.fresh_var();
                 self.current_return_type = Some(closure_return_type.clone());
 
                 let inferred_ret = self.infer_expr(body);
 
                 self.current_return_type = outer_return_type;
+                self.accumulate_errors = outer_accumulate;
+                self.inferred_errors = outer_inferred_errors;
 
                 // Unify the closure body type with the return type from
                 // return statements (if any)
@@ -673,6 +694,9 @@ impl TypeChecker {
             ExprKind::Spawn { body } => {
                 // Spawn blocks are like anonymous functions - they have their own return type
                 let outer_return_type = self.current_return_type.take();
+                let outer_accumulate = self.accumulate_errors;
+                let outer_inferred_errors = std::mem::take(&mut self.inferred_errors);
+                self.accumulate_errors = false;
                 let spawn_return_type = self.ctx.fresh_var();
                 self.current_return_type = Some(spawn_return_type.clone());
 
@@ -708,6 +732,8 @@ impl TypeChecker {
                 ));
 
                 self.current_return_type = outer_return_type;
+                self.accumulate_errors = outer_accumulate;
+                self.inferred_errors = outer_inferred_errors;
 
                 Type::UnresolvedGeneric {
                     name: "ThreadHandle".to_string(),

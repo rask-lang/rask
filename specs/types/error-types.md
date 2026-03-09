@@ -523,32 +523,42 @@ thread panicked at 'entered unreachable code', src/handler.rk:12:21
 
 ## Inferred Error Unions for Private Functions
 
-Private functions can omit error return types entirely. The compiler infers the error union from all `try` calls and explicit `Err()` returns in the body — same local analysis pattern as [Gradual Constraints](gradual-constraints.md).
+Private functions can omit error return types entirely, or use `or _` to state the success type while letting the compiler infer the error union. The compiler collects error types from all `try` calls and explicit `Err()` returns in the body — same local analysis pattern as [Gradual Constraints](gradual-constraints.md).
 
 | Rule | Description |
 |------|-------------|
-| **ER20: Error union inference** | Private functions may omit error types in their return signature. The compiler computes the union from all error-producing expressions in the body |
-| **ER21: Public must be explicit** | `public` functions must declare error types explicitly (API stability, same as `type.gradual/GC5`) |
+| **ER20: Error union inference** | Private functions may omit error types or use `or _`. The compiler computes the union from all error-producing expressions in the body |
+| **ER21: Public must be explicit** | `public` functions must declare error types explicitly — `or _` is not allowed (API stability, same as `type.gradual/GC5`) |
 | **ER22: Recursive annotation** | Mutually recursive functions where error type is ambiguous require annotation on at least one function in the cycle (same as `type.gradual/GC2`) |
+
+Three annotation levels:
 
 <!-- test: skip -->
 ```rask
-// Private function — error union inferred from body
+// 1. Fully omitted — both success and error types inferred
 func load_config(path: string) {
     const text = try read_file(path)       // IoError
     const config = try parse(text)         // ParseError
     return config
 }
 // Compiler infers: -> Config or (IoError | ParseError)
-// IDE ghost text shows the full signature
 
-// Explicit error type still works — merges with inferred (GC4)
+// 2. Partial: `or _` — success type explicit, error union inferred
+func load_config(path: string) -> Config or _ {
+    const text = try read_file(path)       // IoError
+    const config = try parse(text)         // ParseError
+    return config
+}
+// Compiler infers the `_` as (IoError | ParseError)
+// LSP ghost text: -> Config or (IoError | ParseError)
+
+// 3. Fully explicit — required for public functions (ER21)
 func load_config(path: string) -> Config or (IoError | ParseError) {
     const text = try read_file(path)
     return try parse(text)
 }
 
-// Public — must be explicit (ER21)
+// Public — must be explicit (ER21), `or _` is a compile error
 public func load_config(path: string) -> Config or (IoError | ParseError) {
     const text = try read_file(path)
     return try parse(text)
@@ -563,7 +573,7 @@ Inference rules:
 - Inferred union is deduplicated and sorted alphabetically for deterministic output
 
 IDE integration:
-- Ghost text shows inferred error union after return type
+- Ghost text shows inferred error union inline (both for omitted return and `or _`)
 - Quick action: "Make error type explicit" fills in the full union
 - Quick action: "Make public" adds `public` and the explicit error union
 
