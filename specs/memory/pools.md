@@ -583,7 +583,7 @@ with pool[h1] as e1, pool[h2] as e2 {
 **Shared state:** Share handles, not data. Handles are 12-byte copyable values that can be sent anywhere. The pool stays in one thread; commands flow back to it.
 
 **Emergent capabilities:**
-- **Serialization:** Handles are integers (pool_id, index, generation) — no pointer fixup needed. An entire pool graph survives serialization and deserialization.
+- **Relocatable state:** Handles are integers — no pointer fixup. Pools can be serialized to bytes (`pool.to_bytes()`), memory-mapped for flat types (`pool.to_mmap()`), and restored with handles still valid. See `mem.relocatable` for the full specification.
 - **Plugin isolation:** Dropping a pool invalidates all its handles. Stale handles fail safely (panic or `None`), never undefined behavior.
 
 **Handle filtering (manual partitioning):**
