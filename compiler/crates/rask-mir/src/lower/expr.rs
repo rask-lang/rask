@@ -502,6 +502,28 @@ impl<'a> MirLowerer<'a> {
                 // before lowering it as a value expression.
                 if let ExprKind::Ident(name) = &object.kind {
                     if !self.locals.contains_key(name) {
+                        // Cross-package call: pkg.func() → direct call to func
+                        if self.ctx.package_modules.contains(name) {
+                            let func_name = method.clone();
+                            let mut arg_operands = Vec::new();
+                            for arg in args {
+                                let (op, _) = self.lower_expr(&arg.expr)?;
+                                arg_operands.push(op);
+                            }
+                            let ret_ty = self
+                                .func_sigs
+                                .get(&func_name)
+                                .map(|s| s.ret_ty.clone())
+                                .unwrap_or_else(|| super::stdlib_return_mir_type(&func_name));
+                            let result_local = self.builder.alloc_temp(ret_ty.clone());
+                            self.builder.push_stmt(MirStmt::Call {
+                                dst: Some(result_local),
+                                func: FunctionRef::internal(func_name),
+                                args: arg_operands,
+                            });
+                            return Ok((MirOperand::Local(result_local), ret_ty));
+                        }
+
                         // Comptime global: TABLE.get(0) → GlobalRef + Vec_get
                         if let Some(meta) = self.ctx.comptime_globals.get(name) {
                             let type_prefix = meta.type_prefix.clone();
@@ -845,9 +867,11 @@ impl<'a> MirLowerer<'a> {
                         self.local_type_prefix.get(var_name)
                             .map(|p| matches!(p.as_str(), "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
                             .unwrap_or(false)
-                        || matches!(obj_ty, MirType::Ptr)
                     } else {
-                        matches!(obj_ty, MirType::Ptr)
+                        // Unknown type from complex expression — default to native
+                        // binop. The common case is numeric field access chains
+                        // (e.g. self.entries.len() / 2) where Ptr means lost type info.
+                        false
                     }
                 };
 
@@ -1127,9 +1151,10 @@ impl<'a> MirLowerer<'a> {
                         | "substr" | "substring" | "repeat" | "reverse"
                         | "lines" | "split" | "split_whitespace"
                         | "char_at" | "index_of"
-                        | "chars" | "push_str" | "push_char" => Some("string".to_string()),
+                        | "chars" | "push_str" | "push_char"
+                        | "compare" => Some("string".to_string()),
                         // Vec / iterator (no other Rask type has these)
-                        "to_vec" | "chunks" | "skip"
+                        "push" | "remove_at" | "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
                         | "enumerate" | "any" | "all" | "find" | "fold"
                         | "for_each" | "flat_map" | "take" | "zip"
@@ -1223,6 +1248,55 @@ impl<'a> MirLowerer<'a> {
                     .map(|s| s.ret_ty.clone())
                     .unwrap_or_else(|| super::stdlib_return_mir_type(&qualified_name)));
 
+                // Struct clone: inline field-by-field copy with deep clone for
+                // heap fields (string, Vec, Map). Avoids needing a generated
+                // runtime clone function for every user struct.
+                if method == "clone" {
+                    if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                        if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
+                            let result_local = self.builder.alloc_temp(obj_ty.clone());
+                            let src = all_args[0].clone();
+                            for field in &layout.fields {
+                                let field_val = self.builder.alloc_temp(MirType::I64);
+                                self.builder.push_stmt(MirStmt::Assign {
+                                    dst: field_val,
+                                    rvalue: MirRValue::Field {
+                                        base: src.clone(),
+                                        field_index: field.offset,
+                                        byte_offset: None,
+                                        field_size: None,
+                                    },
+                                });
+                                // Deep clone heap types
+                                let clone_fn = match &field.ty {
+                                    rask_types::Type::String => Some("string_clone"),
+                                    rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
+                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
+                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),
+                                    _ => None,
+                                };
+                                let store_val = if let Some(cfn) = clone_fn {
+                                    let cloned = self.builder.alloc_temp(MirType::I64);
+                                    self.builder.push_stmt(MirStmt::Call {
+                                        dst: Some(cloned),
+                                        func: FunctionRef::internal(cfn.to_string()),
+                                        args: vec![MirOperand::Local(field_val)],
+                                    });
+                                    MirOperand::Local(cloned)
+                                } else {
+                                    MirOperand::Local(field_val)
+                                };
+                                self.builder.push_stmt(MirStmt::Store {
+                                    addr: result_local,
+                                    offset: field.offset,
+                                    value: store_val,
+                                });
+                            }
+                            return Ok((MirOperand::Local(result_local), obj_ty));
+                        }
+                    }
+                }
+
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
@@ -1256,6 +1330,35 @@ impl<'a> MirLowerer<'a> {
                 if let ExprKind::Ident(name) = &object.kind {
                     if let Some(val) = primitive_type_constant(name, field) {
                         return Ok(val);
+                    }
+                }
+
+                // Cross-package type access: pkg.Type → treat field as the type name.
+                // Subsequent field access (pkg.DbError.NotFound) chains through
+                // enum variant resolution on the resolved type.
+                if let ExprKind::Ident(name) = &object.kind {
+                    if self.ctx.package_modules.contains(name) {
+                        // Look up the field as an enum type
+                        if let Some((idx, layout)) = self.ctx.find_enum(field) {
+                            let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                            let result_local = self.builder.alloc_temp(enum_ty.clone());
+                            // Default-initialize (tag 0) — caller will likely access a variant
+                            self.builder.push_stmt(MirStmt::Store {
+                                addr: result_local,
+                                offset: layout.tag_offset,
+                                value: MirOperand::Constant(MirConst::Int(0)),
+                            });
+                            return Ok((MirOperand::Local(result_local), enum_ty));
+                        }
+                        // Look up as a struct type
+                        if let Some((idx, _)) = self.ctx.find_struct(field) {
+                            let struct_ty = MirType::Struct(StructLayoutId(idx));
+                            let result_local = self.builder.alloc_temp(struct_ty.clone());
+                            return Ok((MirOperand::Local(result_local), struct_ty));
+                        }
+                        // Fallback: treat as an opaque type reference
+                        let result_local = self.builder.alloc_temp(MirType::I64);
+                        return Ok((MirOperand::Local(result_local), MirType::I64));
                     }
                 }
 

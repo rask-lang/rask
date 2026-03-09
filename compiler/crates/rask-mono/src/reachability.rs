@@ -48,6 +48,8 @@ pub struct Monomorphizer<'a> {
     method_by_bare_name: HashMap<String, Vec<String>>,
     /// Resolved type args per call site (from typechecker)
     call_type_args: &'a HashMap<NodeId, Vec<Type>>,
+    /// External package module names — `pkg.func()` enqueues `func`, not `pkg_func`
+    package_modules: std::collections::HashSet<String>,
     /// Already processed (name, type_args) pairs
     seen: HashMap<(String, Vec<Type>), bool>,
     /// BFS work queue
@@ -142,11 +144,17 @@ impl<'a> Monomorphizer<'a> {
             method_table,
             method_by_bare_name,
             call_type_args,
+            package_modules: std::collections::HashSet::new(),
             seen: HashMap::new(),
             queue: VecDeque::new(),
             results: Vec::new(),
             call_rewrites: HashMap::new(),
         }
+    }
+
+    /// Set the external package module names for cross-package call discovery.
+    pub fn set_package_modules(&mut self, modules: std::collections::HashSet<String>) {
+        self.package_modules = modules;
     }
 
     /// Seed the work queue with main()
@@ -298,8 +306,14 @@ impl<'a> Monomorphizer<'a> {
                     .unwrap_or_default();
 
                 // Static method call: Type.method() → enqueue "Type_method"
+                // Cross-package call: pkg.func() → enqueue "func" (the function
+                // is registered under its original name from the dependency).
                 if let ExprKind::Ident(name) = &object.kind {
-                    self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                    if self.package_modules.contains(name) {
+                        self.enqueue(method.clone(), type_args.clone());
+                    } else {
+                        self.enqueue(format!("{}_{}", name, method), type_args.clone());
+                    }
                 }
 
                 // Instance method call: value.method() → enqueue all methods
