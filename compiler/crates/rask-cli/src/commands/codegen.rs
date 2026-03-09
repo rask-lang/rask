@@ -292,6 +292,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     let mut mir_interp = rask_comptime::ComptimeInterpreter::new();
     mir_interp.inject_cfg(&cfg);
     mir_interp.register_functions(&decls);
+    let empty_packages = std::collections::HashSet::new();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -299,6 +300,7 @@ pub fn cmd_mir(path: &str, format: Format) {
         type_names: &type_names,
         comptime_globals: &comptime_globals,
         extern_funcs: &extern_funcs,
+        package_modules: &empty_packages,
         trait_methods,
         line_map: line_map.as_ref(),
         source_file: Some(path),
@@ -383,9 +385,11 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
     let obj_path = format!("{}.o", bin_path);
 
+    let empty_packages = std::collections::HashSet::new();
     if let Err(errors) = super::compile::compile_to_object(
         &mono, &typed, &decls, &comptime_globals,
         Some(path), source.as_deref(), target, &obj_path, build_mode, Some(&cfg),
+        &empty_packages,
     ) {
         for e in &errors {
             eprintln!("{}: {}", output::error_label(), e);

@@ -617,6 +617,28 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
             rask_desugar::desugar(&mut all_decls);
 
+            // Collect imported package module names and all their declarations.
+            // All dependency declarations (public and private) are included so
+            // internal calls within dependency functions resolve correctly.
+            let mut package_modules = std::collections::HashSet::new();
+            let mut dep_decls = Vec::new();
+            for pkg in registry.packages() {
+                if pkg.id == root_id { continue; }
+                package_modules.insert(pkg.name.clone());
+                for decl in pkg.all_decls() {
+                    match &decl.kind {
+                        rask_ast::decl::DeclKind::Fn(_)
+                        | rask_ast::decl::DeclKind::Struct(_)
+                        | rask_ast::decl::DeclKind::Enum(_)
+                        | rask_ast::decl::DeclKind::Impl(_)
+                        | rask_ast::decl::DeclKind::Const(_) => {
+                            dep_decls.push(decl.clone());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             // Resolve with stdlib decls in stdlib_mode (bypasses shadow checks)
             let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
 
@@ -651,9 +673,14 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                             } else {
                                 // Merge stdlib decls for mono/codegen
                                 all_decls.extend(stdlib_decls);
+                                // Merge dependency decls so mono/MIR can find them.
+                                // Desugar first so string interpolation etc. works.
+                                let mut dep_decls_desugared = dep_decls.clone();
+                                rask_desugar::desugar(&mut dep_decls_desugared);
+                                all_decls.extend(dep_decls_desugared);
                                 rask_hidden_params::desugar_hidden_params(&mut all_decls);
 
-                                match rask_mono::monomorphize(&typed, &all_decls) {
+                                match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules.clone()) {
                                     Ok(mono) => {
                                         let cfg = rask_comptime::CfgConfig::from_target_or_host(
                                             opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
@@ -669,6 +696,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                         match super::compile::compile_to_object(
                                             &mono, &typed, &all_decls, &comptime_globals,
                                             None, None, target, &obj_str, build_mode, Some(&cfg),
+                                            &package_modules,
                                         ) {
                                             Ok(()) => {
                                                 // Cache the compiled object (XC1)

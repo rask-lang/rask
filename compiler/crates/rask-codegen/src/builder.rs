@@ -1942,7 +1942,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Vec remove_at: add out-param for the removed element
-            "Vec_remove" => {
+            "Vec_remove" | "Vec_remove_at" => {
                 // args: [vec, index] → [vec, index, &out]
                 let ss = builder.create_sized_stack_slot(StackSlotData::new(
                     StackSlotKind::ExplicitSlot, 8, 0,

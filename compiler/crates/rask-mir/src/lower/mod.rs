@@ -97,6 +97,9 @@ pub struct MirContext<'a> {
     pub comptime_globals: &'a HashMap<String, ComptimeGlobalMeta>,
     /// Names of extern "C" functions — calls emit FunctionRef::extern_c().
     pub extern_funcs: &'a std::collections::HashSet<String>,
+    /// Names of imported external packages — used to recognize cross-package
+    /// qualified calls like `pkg.func()` and `pkg.Type` field access.
+    pub package_modules: &'a std::collections::HashSet<String>,
     /// Line map for converting byte offsets to line:col (None in tests)
     pub line_map: Option<&'a LineMap>,
     /// Source file path for runtime error messages (None in tests)
@@ -124,6 +127,8 @@ impl<'a> MirContext<'a> {
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_EXTERNS: std::sync::LazyLock<std::collections::HashSet<String>> =
             std::sync::LazyLock::new(std::collections::HashSet::new);
+        static EMPTY_PACKAGES: std::sync::LazyLock<std::collections::HashSet<String>> =
+            std::sync::LazyLock::new(std::collections::HashSet::new);
         static EMPTY_TYPE_NAMES: std::sync::LazyLock<HashMap<rask_types::TypeId, String>> =
             std::sync::LazyLock::new(HashMap::new);
         static EMPTY_COERCIONS: std::sync::LazyLock<HashMap<NodeId, String>> =
@@ -137,6 +142,7 @@ impl<'a> MirContext<'a> {
             type_names: &EMPTY_TYPE_NAMES,
             comptime_globals: &EMPTY_COMPTIME,
             extern_funcs: &EMPTY_EXTERNS,
+            package_modules: &EMPTY_PACKAGES,
             line_map: None,
             source_file: None,
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
@@ -2480,6 +2486,7 @@ mod tests {
             type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
@@ -2533,6 +2540,7 @@ mod tests {
             type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
@@ -2592,6 +2600,7 @@ mod tests {
             type_names: &type_names,
             comptime_globals: &comptime_globals,
             extern_funcs: &extern_funcs,
+            package_modules: &std::collections::HashSet::new(),
             shared_elem_types: std::cell::RefCell::new(HashMap::new()),
             line_map: None,
             source_file: None,
