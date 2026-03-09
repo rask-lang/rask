@@ -259,6 +259,8 @@ Estimated overhead: ~1-2ns per access. In tight loops with millions of accesses,
 
 No lifetime annotations needed. Function signatures are simple. Reasoning about ownership is local.
 
+**Concrete benefit — relocatable state:** Because user-visible types contain only owned values and integer handles (never pointers), pool state can be serialized, memory-mapped, and sent across processes without pointer fixup. Handles survive round-trips because they're integers, not addresses. See `mem.relocatable` for the full specification.
+
 **The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection. I think the explicitness is worth it.
 
 ### Comptime Limitations
