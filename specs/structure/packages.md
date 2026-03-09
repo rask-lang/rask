@@ -207,7 +207,7 @@ public func old_function() { ... }
 | Remote registry (RG1-RG4) | Implemented |
 | Dependency cache (CA1-CA3) | Implemented |
 | Workspaces (WS1-WS3) | Implemented |
-| Lock file signing key (LK8) | Not started |
+| Lock file signing key (LK8) | Implemented |
 
 ### See Also
 
