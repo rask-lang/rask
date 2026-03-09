@@ -24,6 +24,7 @@ pub fn compile_to_object(
     obj_path: &str,
     build_mode: rask_codegen::BuildMode,
     cfg: Option<&rask_comptime::CfgConfig>,
+    package_modules: &std::collections::HashSet<String>,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
 
@@ -82,6 +83,7 @@ pub fn compile_to_object(
         type_names: &type_names,
         comptime_globals,
         extern_funcs: &extern_funcs,
+        package_modules,
         line_map: line_map.as_ref(),
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -391,6 +393,7 @@ pub fn compile_benchmarks_to_object(
         interp.register_functions(decls);
         std::cell::RefCell::new(interp)
     });
+    let empty_packages = std::collections::HashSet::new();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
         enum_layouts: &mono.enum_layouts,
@@ -398,6 +401,7 @@ pub fn compile_benchmarks_to_object(
         type_names: &type_names,
         comptime_globals,
         extern_funcs: &extern_funcs,
+        package_modules: &empty_packages,
         trait_methods: bench_trait_methods,
         line_map: line_map.as_ref(),
         source_file,
