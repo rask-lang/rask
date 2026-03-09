@@ -31,10 +31,33 @@ impl TypeChecker {
             });
         }
 
+        // ER21: public functions must not use `or _` (inferred error types)
+        let has_inferred_error = f.ret_ty.as_ref().is_some_and(|t| t.ends_with(", _>"));
+        if f.is_pub && has_inferred_error {
+            self.errors.push(TypeError::PublicInferredError {
+                function_name: f.name.clone(),
+                span: f.span,
+            });
+        }
+
         // GC1/GC2: Reuse pre-registered type vars for inferred params/return
         let inferred = self.inferred_fn_types.get(&f.name).cloned();
 
-        let ret_ty = if let Some(t) = &f.ret_ty {
+        let ret_ty = if has_inferred_error {
+            // `or _` — reuse the pre-registered Result with fresh error var
+            if let Some((_, ref ret_var)) = inferred {
+                ret_var.clone()
+            } else {
+                // Fallback: parse the ok type, create fresh error var
+                let t = f.ret_ty.as_ref().unwrap();
+                let ok_str = &t["Result<".len()..t.len() - ", _>".len()];
+                let ok_ty = parse_type_string(ok_str, &self.types).unwrap_or(Type::Error);
+                Type::Result {
+                    ok: Box::new(ok_ty),
+                    err: Box::new(self.ctx.fresh_var()),
+                }
+            }
+        } else if let Some(t) = &f.ret_ty {
             parse_type_string(t, &self.types).unwrap_or(Type::Error)
         } else if let Some((_, ref ret_var)) = inferred {
             ret_var.clone()
@@ -42,6 +65,16 @@ impl TypeChecker {
             Type::Unit
         };
         self.current_return_type = Some(ret_ty);
+
+        // ER20: Save outer accumulation state and detect if we should accumulate
+        let old_accumulate = self.accumulate_errors;
+        let old_inferred_errors = std::mem::take(&mut self.inferred_errors);
+        let resolved_for_accum = self.ctx.apply(self.current_return_type.as_ref().unwrap());
+        self.accumulate_errors = match &resolved_for_accum {
+            Type::Var(_) => true,
+            Type::Result { err, .. } => matches!(self.ctx.apply(err), Type::Var(_)),
+            _ => false,
+        };
 
         // UF1: unsafe func body is implicitly unsafe
         let was_unsafe = self.in_unsafe;
@@ -111,6 +144,31 @@ impl TypeChecker {
             self.check_stmt(stmt);
         }
 
+        // ER20: Finalize error union from accumulated error types
+        if self.accumulate_errors && !self.inferred_errors.is_empty() {
+            let errors = std::mem::take(&mut self.inferred_errors);
+            let error_union = Type::union(errors);
+            let ret = self.current_return_type.as_ref().unwrap().clone();
+            let resolved_ret = self.ctx.apply(&ret);
+            match &resolved_ret {
+                Type::Result { err, .. } => {
+                    let resolved_err = self.ctx.apply(err);
+                    if matches!(resolved_err, Type::Var(_)) {
+                        let _ = self.unify(&error_union, &resolved_err, f.span);
+                    }
+                }
+                Type::Var(_) => {
+                    let ret_ok = self.ctx.fresh_var();
+                    let ret_result = Type::Result {
+                        ok: Box::new(ret_ok),
+                        err: Box::new(error_union),
+                    };
+                    let _ = self.unify(&resolved_ret, &ret_result, f.span);
+                }
+                _ => {}
+            }
+        }
+
         let ret_ty = self.current_return_type.as_ref().unwrap();
         let resolved_ret_ty = self.ctx.apply(ret_ty);
 
@@ -150,6 +208,10 @@ impl TypeChecker {
         self.pop_scope();
         self.current_return_type = None;
         self.in_unsafe = was_unsafe;
+
+        // ER20: Restore outer accumulation state
+        self.accumulate_errors = old_accumulate;
+        self.inferred_errors = old_inferred_errors;
 
         // @no_alloc enforcement: scan body for heap allocations
         if f.attrs.iter().any(|a| a == "no_alloc") {
