@@ -17,6 +17,26 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
+            // Shared<T>.read() -> T  (inline access, E5/R5)
+            // Returns a snapshot — lock held only during clone.
+            // For aggregate types (Struct, Vec, etc.), clone shares the Arc,
+            // so subsequent field access operates on shared data.
+            "read" if args.is_empty() => {
+                let guard = shared.read().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.read: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            // Shared<T>.write() -> T  (inline access, E5/R5)
+            // Returns a snapshot for inline mutation. Aggregate types share
+            // through Arc, so field mutations go to the shared data.
+            "write" if args.is_empty() => {
+                let guard = shared.write().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            // Shared<T>.read(|T| -> R) -> R  (closure-based)
             "read" => {
                 let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
@@ -30,6 +50,7 @@ impl Interpreter {
                 };
                 self.call_closure_with_arg(&closure, snapshot)
             }
+            // Shared<T>.write(|T| -> R) -> R  (closure-based)
             "write" => {
                 let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
@@ -42,6 +63,40 @@ impl Interpreter {
                 ty: "Shared".to_string(),
                 method: method.to_string(),
             }),
+        }
+    }
+
+    /// Inline sync access helper — acquires the appropriate lock and returns
+    /// a clone of the inner value. Used by assign_target for field assignment
+    /// through .write()/.lock()/.read() chains.
+    pub(crate) fn call_inline_sync_access(
+        &mut self,
+        receiver: &Value,
+        method: &str,
+    ) -> Result<Value, RuntimeError> {
+        match (receiver, method) {
+            (Value::Shared(s), "read") => {
+                let guard = s.read().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.read: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            (Value::Shared(s), "write") => {
+                let guard = s.write().map_err(|e| {
+                    RuntimeError::Panic(format!("Shared.write: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            (Value::RaskMutex(m), "lock") => {
+                let guard = m.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            _ => Err(RuntimeError::TypeError(format!(
+                "inline sync access: .{}() not supported on {}",
+                method, receiver.type_name()
+            ))),
         }
     }
 
@@ -183,6 +238,16 @@ impl Interpreter {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         match method {
+            // Mutex<T>.lock() -> T  (inline access, E5/MX3)
+            // Returns a snapshot for inline mutation. Aggregate types share
+            // through Arc, so field mutations go to the shared data.
+            "lock" if args.is_empty() => {
+                let guard = mutex.lock().map_err(|e| {
+                    RuntimeError::Panic(format!("Mutex.lock: lock poisoned: {}", e))
+                })?;
+                Ok(guard.clone())
+            }
+            // Mutex<T>.lock(|T| -> R) -> R  (closure-based)
             "lock" => {
                 let closure = args.into_iter().next().ok_or(RuntimeError::ArityMismatch {
                     expected: 1,
