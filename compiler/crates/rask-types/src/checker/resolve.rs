@@ -929,12 +929,20 @@ impl TypeChecker {
         };
 
         match (type_name, method) {
-            // Shared<T>.read(|T| -> R) -> R
+            // Shared<T>.read() -> T  (inline access, E5/R5)
+            ("Shared", "read") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // Shared<T>.write() -> T  (inline access, E5/R5)
+            ("Shared", "write") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // Shared<T>.read(|T| -> R) -> R  (closure-based, try_read)
             ("Shared", "read") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
             }
-            // Shared<T>.write(|T| -> R) -> R
+            // Shared<T>.write(|T| -> R) -> R  (closure-based, try_write)
             ("Shared", "write") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)
@@ -947,7 +955,11 @@ impl TypeChecker {
                 };
                 self.unify(ret, &shared_ty, span)
             }
-            // Mutex<T>.lock(|T| -> R) -> R
+            // Mutex<T>.lock() -> T  (inline access, E5/MX3)
+            ("Mutex", "lock") if args.is_empty() => {
+                self.unify(ret, &inner_type, span)
+            }
+            // Mutex<T>.lock(|T| -> R) -> R  (closure-based)
             ("Mutex", "lock") if args.len() == 1 => {
                 let result_var = self.ctx.fresh_var();
                 self.unify(ret, &result_var, span)

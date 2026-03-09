@@ -482,10 +482,40 @@ impl Parser {
             self.skip_newlines();
         }
 
+        // Script mode: when there's no explicit main(), top-level const
+        // declarations become statements so everything executes in source
+        // order. Without this, consts are evaluated at registration time
+        // (before any statements run), which is surprising when consts
+        // read from sync primitives modified by earlier statements.
+        let has_main = decls.iter().any(|d| matches!(&d.kind,
+            DeclKind::Fn(f) if f.name == "main" || f.attrs.contains(&"entry".to_string())));
+
+        if !has_main && !top_level_stmts.is_empty() {
+            // Move const decls into the statement list
+            let mut const_stmts: Vec<Stmt> = Vec::new();
+            decls.retain(|d| {
+                if let DeclKind::Const(c) = &d.kind {
+                    const_stmts.push(Stmt {
+                        id: d.id,
+                        kind: StmtKind::Const {
+                            name: c.name.clone(),
+                            name_span: d.span,
+                            ty: c.ty.clone(),
+                            init: c.init.clone(),
+                        },
+                        span: d.span,
+                    });
+                    false
+                } else {
+                    true
+                }
+            });
+            top_level_stmts.extend(const_stmts);
+            top_level_stmts.sort_by_key(|s| s.span.start);
+        }
+
         // Wrap top-level statements in a synthetic main function
         if !top_level_stmts.is_empty() {
-            let has_main = decls.iter().any(|d| matches!(&d.kind,
-                DeclKind::Fn(f) if f.name == "main" || f.attrs.contains(&"entry".to_string())));
             if has_main {
                 self.errors.push(ParseError {
                     span: top_level_stmts[0].span,

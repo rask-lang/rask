@@ -127,6 +127,7 @@ export internal.lexer.Lexer
 | **PS1: Const only** | Package-level declarations must be `const` |
 | **PS2: Sync required** | Mutable state requires `Atomic`, `Mutex`, or `Shared` (via interior mutability) |
 | **PS3: No mutable globals** | `let` at package level is a compile error |
+| **PS4: Script mode** | Files without `main()` may have interleaved `const` and statements. All top-level code runs in source order within a synthetic entry point. Declarations (func, struct, enum, import) are hoisted; `const` is not. |
 
 ## Package Initialization
 

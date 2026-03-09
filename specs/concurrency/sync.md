@@ -32,6 +32,7 @@ Cross-task shared state when channels aren't enough.
 | **R2a: Unused write warning** | Compiler warns when `.write()` used but binding never mutated — suggests `.read()` |
 | **R3: Try variants** | `try_read(f)` / `try_write(f)` — non-blocking closures, return `None` if contended |
 | **R4: Bare access forbidden** | `with shared as v { ... }` is a compile error — must use `.read()` or `.write()` |
+| **R5: Inline access** | `shared.read().chain` and `shared.write().chain` — expression-scoped lock for single-expression access. Follows `mem.borrowing/E5` rules. Standalone `.read()`/`.write()` without chaining is a compile error |
 
 <!-- test: skip -->
 ```rask
@@ -40,8 +41,17 @@ let config = Shared.new(AppConfig {
     max_retries: 3,
 })
 
+// Inline access (single expression)
+const timeout = config.read().timeout
+config.write().timeout = 60.seconds
+const name = config.read().user.name.clone()
+
+// Multi-statement access (with block)
 const timeout = with config.read() as c { c.timeout }
-with config.write() as c { c.timeout = 60.seconds }
+with config.write() as c {
+    c.timeout = 60.seconds
+    c.max_retries = 5
+}
 ```
 
 ### API
@@ -52,12 +62,19 @@ struct Shared<T> { }
 
 extend Shared<T> {
     func new(value: T) -> Shared<T>
+    func read(self) -> T             // inline access (R5) — expression-scoped read lock
+    func write(self) -> T            // inline access (R5) — expression-scoped write lock
     func try_read<R>(self, f: |T| -> R) -> Option<R>
     func try_write<R>(self, f: |T| -> R) -> Option<R>
 }
 ```
 
-`with shared.read() as v { ... }` (shared read lock) and `with shared.write() as v { ... }` (exclusive write lock) are the primary access patterns. `try_read`/`try_write` remain as closure-based non-blocking variants. Bare `with shared as v` is a compile error — the lock type must be explicit.
+Three access patterns:
+- **Inline:** `shared.read().field` / `shared.write().field = x` — single-expression access, lock scoped to expression
+- **`with` block:** `with shared.read() as v { ... }` / `with shared.write() as v { ... }` — multi-statement access
+- **Non-blocking closures:** `try_read(f)` / `try_write(f)` — return `None` if contended
+
+Bare `with shared as v` is a compile error — the lock type must be explicit.
 
 ## Mutex\<T\>
 
@@ -65,12 +82,21 @@ extend Shared<T> {
 |------|-------------|
 | **MX1: Lock** | `with mutex as v { ... }` — exclusive lock; blocks until available |
 | **MX2: Try lock** | `try_lock(f)` — non-blocking closure, returns `None` if held |
+| **MX3: Inline access** | `mutex.lock().chain` — expression-scoped exclusive lock for single-expression access. Follows `mem.borrowing/E5` rules |
 
 <!-- test: skip -->
 ```rask
 const queue = Mutex.new(Vec.new())
-with queue as q { q.push(item) }
-const len = with queue as q { q.len() }
+
+// Inline access (single expression)
+queue.lock().push(item)
+const len = queue.lock().len()
+
+// Multi-statement access (with block)
+with queue as q {
+    q.push(item_a)
+    q.push(item_b)
+}
 ```
 
 ### API
@@ -81,11 +107,15 @@ struct Mutex<T> { }
 
 extend Mutex<T> {
     func new(value: T) -> Mutex<T>
+    func lock(self) -> T             // inline access (MX3) — expression-scoped exclusive lock
     func try_lock<R>(self, f: |T| -> R) -> Option<R>
 }
 ```
 
-`with mutex as v { ... }` is the primary access pattern. Mutex always takes an exclusive lock. `try_lock` remains as a closure-based non-blocking variant.
+Three access patterns:
+- **Inline:** `mutex.lock().field` — single-expression access, lock scoped to expression
+- **`with` block:** `with mutex as v { ... }` — multi-statement access
+- **Non-blocking closure:** `try_lock(f)` — returns `None` if held
 
 ## `with`-Based Access
 
@@ -115,6 +145,7 @@ with mutex as data {
 | **DL1: Direct nesting** | Nested `with` on different sync primitives is a compile error |
 | **DL2: Same lock** | `with shared.read() as v { with shared.write() as v2 { ... } }` is a compile error |
 | **DL3: Indirect — your responsibility** | Locks acquired through function calls or dynamic dispatch are NOT detected |
+| **DL4: Multiple inline accesses** | Multiple `.read()`/`.write()`/`.lock()` calls in the same expression is a compile error — same deadlock risk as DL1 |
 
 ```
 ERROR [conc.sync/DL1]: nested lock acquisition
@@ -134,6 +165,20 @@ ERROR [conc.sync/DL2]: same lock re-acquisition
    |      ^^^^ cannot acquire write lock — already holding read lock
 
 WHY: Re-acquiring the same lock inside a with block would deadlock.
+```
+
+```
+ERROR [conc.sync/DL4]: multiple lock acquisitions in one expression
+   |
+5  |  process(shared_a.read().x, shared_b.read().y)
+   |          ^^^^^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^ second lock acquisition
+   |          first lock acquisition
+
+WHY: Multiple locks in one expression risk deadlock. Copy values out first.
+
+FIX:
+  const x = shared_a.read().x
+  process(x, shared_b.read().y)
 ```
 
 <!-- test: skip -->
@@ -164,6 +209,12 @@ const got_it = mutex.try_lock(|v| v.push(item))
 | Direct nested `with` on sync primitives | DL1 | Compile error |
 | Same-lock re-acquisition | DL2 | Compile error |
 | Lock via function call | DL3 | Not detected — programmer responsibility |
+| Multiple inline sync accesses in one expression | DL4 | Compile error |
+| `shared.read().field` | R5 | Expression-scoped read lock |
+| `shared.write().field = value` | R5 | Expression-scoped write lock |
+| `mutex.lock().field` | MX3 | Expression-scoped exclusive lock |
+| Standalone `shared.read()` without chaining | R5 | Compile error |
+| Inline access inside `with` on same primitive | DL2 | Compile error |
 | Writers starve under read load | SY1 | By design — read performance prioritized |
 
 ---
@@ -211,15 +262,15 @@ For patterns that genuinely need multiple locks:
 ```rask
 // Lock ordering — copy out, then lock separately
 func transfer(from: Mutex<Account>, to: Mutex<Account>, amount: u64) {
-    const from_balance = with from as f { f.balance }
-    with from as f { f.balance -= amount }
-    with to as t { t.balance += amount }
+    const from_balance = from.lock().balance
+    from.lock().balance -= amount
+    to.lock().balance += amount
 }
 
 // Copy out, modify, copy back
 func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
-    const a_val = with a as v { v }
-    const b_val = with b as v { v }
+    const a_val = a.lock().clone()
+    const b_val = b.lock().clone()
     with a as v { v = b_val }
     with b as v { v = a_val }
 }
@@ -242,7 +293,7 @@ func swap_values(a: Mutex<i32>, b: Mutex<i32>) {
 static CONFIG: Shared<AppConfig> = Shared.new(AppConfig.default())
 
 func get_timeout() -> Duration {
-    return with CONFIG.read() as c { c.timeout }
+    return CONFIG.read().timeout
 }
 ```
 
@@ -258,7 +309,7 @@ struct Metrics {
 func record_request(latency: Duration, success: bool) {
     METRICS.requests.fetch_add(1, Relaxed)
     if !success { METRICS.errors.fetch_add(1, Relaxed) }
-    with METRICS.latencies as v { v.push(latency) }
+    METRICS.latencies.lock().push(latency)
 }
 ```
 
@@ -266,7 +317,7 @@ func record_request(latency: Duration, success: bool) {
 
 | Decision | Chosen | Rejected | Why |
 |----------|--------|----------|-----|
-| Access pattern | `with`-based blocks | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock |
+| Access pattern | `with`-based blocks + inline `.read()`/`.write()`/`.lock()` | Guard-based / closure-based | No escaping references, `return`/`try` work, prevents nested deadlock. Inline access for single-expression convenience |
 | Read-heavy primitive | `Shared<T>` | Just `Mutex<T>` | Common pattern deserves optimization |
 | Naming | `Shared<T>` | `RwLock<T>` | Describes intent, not mechanism |
 | Direct nested locks | Compile error (syntactic) | Whole-program analysis | Local analysis only |
