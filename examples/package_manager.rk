@@ -568,7 +568,7 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
 
     // Insert root package
     const root_meta = PackageMeta {
-        name: manifest.name.clone(),
+        name: manifest.name,
         version: manifest.version,
         checksum: "",
         deps: Vec.new(),
@@ -580,7 +580,7 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
 
     // Resolve each dependency
     for dep in manifest.deps {
-        const handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
+        const handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
         with state.packages[root] as root_pkg {
             root_pkg.deps.push(handle)
         }
@@ -621,7 +621,7 @@ func resolve_one(
             const con_str = constraint.to_string()
             const ver_str = existing.meta.version.to_string()
             return Err(FetchError.Resolve(ResolveError.Conflict(
-                name.clone(),
+                name,
                 ver_str,
                 con_str,
             )))
@@ -638,25 +638,25 @@ func resolve_one(
 
     const meta = candidates.first() is Some else {
         const con_str = constraint.to_string()
-        return Err(FetchError.Resolve(ResolveError.NoMatch(name.clone(), con_str)))
+        return Err(FetchError.Resolve(ResolveError.NoMatch(name, con_str)))
     }
 
     const handle = state.packages.insert(ResolvedPkg {
         meta: PackageMeta {
-            name: meta.name.clone(),
+            name: meta.name,
             version: meta.version,
-            checksum: meta.checksum.clone(),
+            checksum: meta.checksum,
             deps: Vec.new(),
         },
         deps: Vec.new(),
     })
 
-    state.by_name.insert(name.clone(), handle)
+    state.by_name.insert(name, handle)
 
     // Recursively resolve transitive deps
-    state.visiting.push(name.clone())
+    state.visiting.push(name)
     for dep in meta.deps {
-        const dep_handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
+        const dep_handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
         with state.packages[handle] as pkg {
             pkg.deps.push(dep_handle)
         }

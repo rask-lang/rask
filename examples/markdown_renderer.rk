@@ -322,7 +322,7 @@ func parse_inline(text: string) -> Vec<Inline> or MarkdownError {
 
 func flush_text(mutate result: Vec<Inline>, mutate text_buf: string) {
     if !text_buf.is_empty() {
-        result.push(Inline.Text(text_buf.clone()))
+        result.push(Inline.Text(text_buf))
         text_buf = string.new()
     }
 }
