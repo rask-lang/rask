@@ -186,7 +186,7 @@ extend Parser {
             }
             try self.advance()
             const right = try self.parse_term()
-            left = Expr.Binary(left: own left, op: op, right: own right)
+            left = Expr.Binary(left: left, op: op, right: right)
         }
 
         return left
@@ -205,7 +205,7 @@ extend Parser {
             }
             try self.advance()
             const right = try self.parse_power()
-            left = Expr.Binary(left: own left, op: op, right: own right)
+            left = Expr.Binary(left: left, op: op, right: right)
         }
 
         return left
