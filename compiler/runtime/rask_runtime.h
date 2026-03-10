@@ -82,7 +82,8 @@ void    *rask_vec_first(const RaskVec *v);
 void    *rask_vec_last(const RaskVec *v);
 
 // ─── String ─────────────────────────────────────────────────
-// UTF-8 owned string, always null-terminated.
+// UTF-8 immutable refcounted string, always null-terminated.
+// Clone is O(1) (atomic refcount increment). Free decrements and frees at 0.
 
 typedef struct RaskString RaskString;
 
@@ -92,10 +93,10 @@ RaskString *rask_string_from_bytes(const char *data, int64_t len);
 void        rask_string_free(RaskString *s);
 int64_t     rask_string_len(const RaskString *s);
 const char *rask_string_ptr(const RaskString *s);
-int64_t     rask_string_push_byte(RaskString *s, uint8_t byte);
-int64_t     rask_string_push_char(RaskString *s, int32_t codepoint);
-int64_t     rask_string_append(RaskString *s, const RaskString *other);
-int64_t     rask_string_append_cstr(RaskString *s, const char *cstr);
+RaskString *rask_string_push_byte(RaskString *s, uint8_t byte);
+RaskString *rask_string_push_char(RaskString *s, int32_t codepoint);
+RaskString *rask_string_append(RaskString *s, const RaskString *other);
+RaskString *rask_string_append_cstr(RaskString *s, const char *cstr);
 RaskString *rask_string_clone(const RaskString *s);
 int64_t     rask_string_eq(const RaskString *a, const RaskString *b);
 int64_t     rask_string_byte_at(const RaskString *s, int64_t pos);
