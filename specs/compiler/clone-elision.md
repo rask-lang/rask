@@ -99,7 +99,7 @@ func example(data: Data, flag: bool) {
 | Clone followed by `discard` of original | Elided — `discard` confirms last use |
 | Clone of function parameter | Elided if parameter not used after clone |
 | Clone where original is shadowed | Elided — shadowing proves no further access to original |
-| Clone of Copy type | Clone is already a bitwise copy — no optimization needed |
+| Clone of Copy type | Clone is already a bitwise copy — for `string`, refcount ops may also be elided (`comp.string-refcount-elision`) |
 | Nested clone (`x.clone().clone()`) | Outer clone checked independently |
 
 ## Implementation
@@ -130,3 +130,4 @@ Rust is adding similar optimizations (RFC 3680 / "clone ergonomics"). Rask benef
 
 - [Ownership](../memory/ownership.md) — Move semantics (`mem.ownership`)
 - [Value Semantics](../memory/value-semantics.md) — Copy vs move threshold (`mem.value`)
+- [String Refcount Elision](string-refcount-elision.md) — Atomic op elision for string copies (`comp.string-refcount-elision`)
