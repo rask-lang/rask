@@ -690,7 +690,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
     for handle in handles {
         with graph.packages[handle] as pkg {
             if pkg.meta.checksum.is_empty() { continue }
-            const name = pkg.meta.name.clone()
+            const name = pkg.meta.name
             const ver_str = pkg.meta.version.to_string()
             const cache_path = "{cache_dir}/{name}-{ver_str}"
 
@@ -702,7 +702,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
             items.push(FetchItem {
                 name: name,
                 version: pkg.meta.version,
-                checksum: pkg.meta.checksum.clone(),
+                checksum: pkg.meta.checksum,
                 cache_path: cache_path,
             })
         }
@@ -883,10 +883,10 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
         if trimmed == "[[package]]" {
             // Flush previous
             if !current_name.is_empty() {
-                packages.insert(current_name.clone(), LockedPackage {
-                    name: current_name.clone(),
-                    version: current_version.clone(),
-                    checksum: current_checksum.clone(),
+                packages.insert(current_name, LockedPackage {
+                    name: current_name,
+                    version: current_version,
+                    checksum: current_checksum,
                 })
             }
             current_name = ""
@@ -911,10 +911,10 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
 
     // Flush last
     if !current_name.is_empty() {
-        packages.insert(current_name.clone(), LockedPackage {
-            name: current_name.clone(),
-            version: current_version.clone(),
-            checksum: current_checksum.clone(),
+        packages.insert(current_name, LockedPackage {
+            name: current_name,
+            version: current_version,
+            checksum: current_checksum,
         })
     }
 
@@ -949,7 +949,7 @@ func topo_visit(
     mutate visited: Map<string, bool>,
     mutate order: Vec<Handle<ResolvedPkg>>,
 ) {
-    const name = graph.packages[handle].meta.name.clone()
+    const name = graph.packages[handle].meta.name
     if visited.contains_key(name) { return }
     visited.insert(name, true)
 
