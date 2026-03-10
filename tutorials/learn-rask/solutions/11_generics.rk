@@ -12,7 +12,7 @@ func min_of<T: Comparable>(a: T, b: T) -> T {
     return b
 }
 
-func clamp<T: Comparable>(value: T, low: T, high: T) -> T {
+func clamp_value<T: Comparable>(value: T, low: T, high: T) -> T {
     if value < low { return low }
     if value > high { return high }
     return value
@@ -51,12 +51,12 @@ test "min of" {
     assert min_of(10, 2) == 2
 }
 
-test "clamp" {
-    assert clamp(25.0, -17.0, 17.0) == 17.0
-    assert clamp(-20.0, -17.0, 17.0) == -17.0
-    assert clamp(5.0, -17.0, 17.0) == 5.0
-    assert clamp(180, 120, 250) == 180
-    assert clamp(100, 120, 250) == 120
+test "clamp_value" {
+    assert clamp_value(25.0, -17.0, 17.0) == 17.0
+    assert clamp_value(-20.0, -17.0, 17.0) == -17.0
+    assert clamp_value(5.0, -17.0, 17.0) == 5.0
+    assert clamp_value(180, 120, 250) == 180
+    assert clamp_value(100, 120, 250) == 120
 }
 
 test "min max" {
