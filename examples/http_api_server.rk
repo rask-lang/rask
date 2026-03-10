@@ -85,8 +85,8 @@ func list_users() -> Response {
     const users = with db.read() as d {
         d.users.values().map(|u| UserResponse {
             id: u.id,
-            name: u.name.clone(),
-            email: u.email.clone(),
+            name: u.name,
+            email: u.email,
         }).collect()
     }
     return Response.json(json.encode(users))
@@ -96,8 +96,8 @@ func get_user(id: i64) -> Response {
     const user = with db.read() as d {
         d.users.get(id).map(|u| UserResponse {
             id: u.id,
-            name: u.name.clone(),
-            email: u.email.clone(),
+            name: u.name,
+            email: u.email,
         })
     }
 

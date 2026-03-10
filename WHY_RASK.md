@@ -53,13 +53,13 @@ The same thing in Rask:
 func process_entries(entries: Vec<Entry>, filter: string) -> Vec<string> {
     const result = Vec.new()
     for entry in entries {
-        if entry.tag == filter: result.push(entry.name.clone())
+        if entry.tag == filter: result.push(entry.name)
     }
     return result
 }
 ```
 
-No `'a`. No lifetime bounds. The cost: an explicit `.clone()` because you can't return a reference to `entry.name`. I think that's a better tradeoff than lifetime annotations everywhere.
+No `'a`. No lifetime bounds. No `.clone()` either — `string` is an immutable, refcounted Copy type (16 bytes). It copies like an integer. The compiler elides the atomic refcount operations in ~70-80% of cases, so the runtime cost is near-zero.
 
 This approach is called *mutable value semantics* (MVS) — ban aliasing instead of banning mutation. [Hylo](https://www.hylo-lang.org/) pioneered the formal model. Rask builds on it with practical extensions for problems that pure MVS hits at scale.
 
@@ -81,9 +81,11 @@ Most of Rask is assembled from existing ideas. I'm not claiming otherwise.
 **What Rask combines differently:**
 - **Block-scoped references as the entire model** — not a restriction layered on top, but the foundation everything else builds on
 - **Two-tier borrowing** — fixed-layout sources (struct fields, arrays) keep references to block end; growable sources (Vec, Map) release at the semicolon. The rule is simple: "can it reallocate?"
-- **`with` blocks** — scoped mutable access with full control flow. `break`, `return`, and `try` propagate naturally because `with` is a real block, not a closure
-- **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly
-- **Union error types** — `T or (IoError | ParseError)` with automatic widening. No wrapper types, no trait objects, pattern match directly
+- **`with` blocks** — scoped mutable access with full control flow. `break`, `return`, and `try` propagate naturally because `with` is a real block, not a closure. Single-expression access works inline: `shared.read().timeout` holds the lock for just the expression
+- **Immutable refcounted strings** — `string` is Copy (16 bytes), immutable, atomically refcounted. Copies like a primitive. The compiler elides refcount ops in most cases (`comp.string-refcount-elision`). Go's string ergonomics without GC
+- **Context clauses** — `func damage(h: Handle<Entity>) using Pool<Entity>` declares pool dependencies; the compiler threads them implicitly. Same mechanism for custom allocators: `using Allocator` threads an arena or fixed-buffer allocator without polluting every function signature
+- **Custom allocators** — `Arena`, `FixedBuffer`, scoped blocks (`using Arena.scoped(1MB) { ... }`). Data can't escape the arena scope — compiler-enforced, no lifetime annotations. Global allocator is zero-sized and the default
+- **Union error types** — `T or (IoError | ParseError)` with automatic widening. `try...else` chains error context inline: `try read(path) else |e| context("reading {path}", e)`. Private functions can use `or _` to let the compiler infer the error union from the body
 - **Must-use task handles** — `spawn(|| { work() })` returns a handle that must be joined or detached. Forgetting is a compile error
 - **No function coloring** — I/O pauses green tasks transparently. One concurrency model, no async/sync split
 
@@ -98,6 +100,7 @@ Rask is more pragmatic. I hit problems that pure MVS doesn't solve and built ext
 - **Pool+Handle for graphs and cycles.** Hylo doesn't have a built-in answer for self-referential structures. Entity-component systems, dependency graphs, caches with cross-references — these need some form of indirect access. Rask provides typed pools with generational handles.
 - **`with` blocks with control flow.** Hylo uses subscripts (similar to computed properties) for scoped access. These are closures underneath, which means you can't `return` from the enclosing function, `break` from a loop, or `try` an error inside them. Rask's `with` is a real lexical block — all control flow works.
 - **Context clauses.** When every handle function needs a pool parameter, you end up threading pools through 15 layers of calls. `using Pool<T>` makes this implicit where it's noise and explicit where it matters (public API boundaries).
+- **Custom allocators.** Arena, FixedBuffer, and scoped allocation blocks — all using the same `using` context mechanism as pools. Compiler-enforced scope restriction replaces lifetime annotations. Hylo doesn't specify custom allocator support.
 - **Concurrency model.** Green tasks, channels, must-use handles, thread pools. Hylo doesn't specify a concurrency story yet.
 
 Hylo may well end up being the better language. It has stronger theoretical backing. Rask's bet is that the practical extensions matter more than formal elegance for building real software — and that you can only discover the right extensions by trying to build real programs.
@@ -130,17 +133,23 @@ Hylo may well end up being the better language. It has stronger theoretical back
 
 ### Clone calls
 
-You can't return a reference to something inside a collection. When you need the data outside its scope, you clone it.
+You can't return a reference to something inside a collection. When you need a non-Copy value outside its scope, you clone it.
+
+Strings are Copy — they just work. The remaining clones are for collections and large structs at API boundaries:
 
 ```rask
-// Can't return a reference to entry.name — clone it
+// Strings copy freely — no clone needed
 const names = Vec.new()
 for entry in entries {
-    if entry.active: names.push(entry.name.clone())
+    if entry.active: names.push(entry.name)
 }
+
+// Structs >16 bytes need explicit clone
+const user_copy = user.clone()
+db.insert(id, user_copy)
 ```
 
-In string-heavy code (CLI parsing, HTTP routing), roughly 5% of lines will have an explicit `.clone()`. I think that's better than lifetime annotations, but it's a real cost.
+In practice, clone calls concentrate at collection API boundaries — roughly 1-2% of lines, not spread through the code. I think that's better than lifetime annotations, and with Copy strings it's rarely visible in everyday code.
 
 ### Handle indirection
 
@@ -177,6 +186,32 @@ func search(entries: Vec<Entry>, query: string) -> Vec<Entry>
 fn search<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry>
 ```
 
+### Copy strings
+
+`string` is immutable, refcounted, and Copy (16 bytes). It copies like an integer — no `.clone()`, no GC, no COW hidden costs. The compiler elides atomic refcount operations in ~70-80% of cases.
+
+```rask
+const name = user.name        // just copies — 16 bytes, like copying two pointers
+const greeting = "hello {name}"
+```
+
+Go gives you this with garbage collection. Rask gives you this with deterministic cleanup and near-zero overhead.
+
+### Custom allocators
+
+Arena-scoped memory, fixed-buffer allocation for embedded, request-scoped scratch space — all using the same `using` context mechanism as pools. No Zig-style parameter threading, no lifetime annotations.
+
+```rask
+func handle_request(req: Request) -> Response {
+    using Arena.scoped(256.kilobytes()) {
+        const params = parse_query(req.url)
+        const body = try parse_json(req.body)
+        return Response.json(process(params, body))
+    }
+    // arena freed — all scratch memory gone
+}
+```
+
 ### Deterministic cleanup
 
 Values are freed when their owner goes out of scope. I/O resources use `ensure` for guaranteed cleanup. No GC pauses, no unpredictable latency.
@@ -197,6 +232,18 @@ I/O operations pause green tasks transparently. Write one function, call it from
 func fetch_data(url: string) -> string or HttpError {
     const resp = try http.get(url)   // pauses the task, not the thread
     return resp.body()
+}
+```
+
+### Error context without boilerplate
+
+`try...else` chains error context inline. `@message` generates Display-like methods from annotations. Private functions can use `or _` to let the compiler infer the error union.
+
+```rask
+func load_config(path: string) -> Config or _ {
+    const text = try fs.read(path) else |e| context("reading {path}", e)
+    const config = try parse(text) else |e| context("parsing {path}", e)
+    return config
 }
 ```
 
@@ -282,7 +329,7 @@ fn grep_file(path: &str, opts: &GrepOptions) -> Result<i64, GrepError> {
 }
 ```
 
-They're roughly the same length. The Rust version has `&str`, `&GrepOptions`, `Result<>`, `?`, `::`, `&`, semicolons. The Rask version has `try`, `else |e|`, `const`/`let`, string interpolation. Neither is dramatically shorter — the difference is that the Rask version has no borrowing annotations at all, and the safety guarantees are comparable.
+They're roughly the same length. The Rust version has `&str`, `&GrepOptions`, `Result<>`, `?`, `::`, `&`, semicolons. The Rask version has `try`, `else |e|`, `const`/`let`, string interpolation. Neither is dramatically shorter — the difference is that the Rask version has no borrowing annotations at all, and the safety guarantees are comparable. Note there's also no `.clone()` anywhere — strings are Copy, and all the values here flow naturally.
 
 The point isn't "Rask is shorter." It's that Rask reads like Go but has Rust-level safety guarantees.
 
