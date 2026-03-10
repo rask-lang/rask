@@ -661,7 +661,7 @@ apply(pos, vel)              // [uses views from lines 3-4]
 
 Hover information shows the access type, duration, and suggested patterns for that source type.
 
-**String ownership patterns (reducing clone noise):** Most string `.clone()` calls are unnecessary — O3 borrow inference handles the common case. See the `std.strings` appendix [Why Not COW Strings?](../stdlib/strings.md#why-not-cow-strings) for the full pattern catalog.
+**String ownership:** `string` is Copy (immutable, refcounted, 16 bytes) — no `.clone()` needed. See `std.strings/S1` and the [Why Immutable Strings?](../stdlib/strings.md#why-immutable-strings) appendix for rationale.
 
 ### See Also
 
