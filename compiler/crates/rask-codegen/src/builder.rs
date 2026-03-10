@@ -20,6 +20,8 @@ enum CallAdapt {
     None,
     /// Result is void* — load the i64 value from the returned pointer
     DerefResult,
+    /// Result is void* — wrap as Option: NULL→None(tag=1), non-NULL→Some(tag=0, deref)
+    DerefOption,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
 }
@@ -329,7 +331,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, val);
             }
 
-            MirStmt::Store { addr, offset, value } => {
+            MirStmt::Store { addr, offset, value, store_size } => {
                 let addr_val = builder.use_var(*var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
 
@@ -370,6 +372,19 @@ impl<'a> FunctionBuilder<'a> {
 
                 if !is_aggregate {
                     let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                    let val_ty = builder.func.dfg.value_type(val);
+
+                    // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
+                    // values to fill the full slot — otherwise a 4-byte f32 store
+                    // leaves stale upper bytes that corrupt the f64 read-back.
+                    let val = if val_ty == types::F32 {
+                        builder.ins().fpromote(types::F64, val)
+                    } else if val_ty.is_int() && val_ty.bits() < 64 {
+                        Self::convert_value(builder, val, val_ty, types::I64)
+                    } else {
+                        val
+                    };
+
                     let flags = MemFlags::new();
                     builder.ins().store(flags, val, addr_val, *offset as i32);
                 }
@@ -637,6 +652,7 @@ impl<'a> FunctionBuilder<'a> {
                             ))?;
 
                         // Post-call result handling
+                        let mut slot_already_written = false;
                         let val = match adapt {
                             CallAdapt::DerefResult => {
                                 // Result is void* — load the value from it.
@@ -651,6 +667,68 @@ impl<'a> FunctionBuilder<'a> {
                                     builder.ins().load(load_ty, MemFlags::new(), ptr, 0)
                                 } else {
                                     builder.ins().iconst(types::I64, 0)
+                                }
+                            }
+                            CallAdapt::DerefOption => {
+                                // Result is void*: NULL → None, non-NULL → Some(deref).
+                                // Write tag+payload into the destination stack slot.
+                                let results = builder.inst_results(call_inst);
+                                let ptr = if !results.is_empty() { results[0] } else {
+                                    builder.ins().iconst(types::I64, 0)
+                                };
+                                if let Some((ss, slot_size)) = stack_slot_map.get(dst_id) {
+                                    slot_already_written = true;
+                                    let zero = builder.ins().iconst(types::I64, 0);
+                                    let is_null = builder.ins().icmp(IntCC::Equal, ptr, zero);
+                                    let then_block = builder.create_block();
+                                    let else_block = builder.create_block();
+                                    let merge_block = builder.create_block();
+                                    builder.ins().brif(is_null, then_block, &[], else_block, &[]);
+
+                                    // NULL path: tag = 1 (None)
+                                    builder.switch_to_block(then_block);
+                                    builder.seal_block(then_block);
+                                    let one = builder.ins().iconst(types::I64, 1);
+                                    builder.ins().stack_store(one, *ss, 0);
+                                    builder.ins().jump(merge_block, &[]);
+
+                                    // non-NULL path: tag = 0 (Some), payload copied from ptr
+                                    builder.switch_to_block(else_block);
+                                    builder.seal_block(else_block);
+                                    let tag_some = builder.ins().iconst(types::I64, 0);
+                                    builder.ins().stack_store(tag_some, *ss, 0);
+                                    // Copy payload: for scalars (slot_size=16) just load one word;
+                                    // for aggregates copy word-by-word from ptr into slot at offset 8+.
+                                    let payload_size = *slot_size as i32 - 8;
+                                    let mut off = 0i32;
+                                    while off + 8 <= payload_size {
+                                        let word = builder.ins().load(types::I64, MemFlags::new(), ptr, off);
+                                        builder.ins().stack_store(word, *ss, 8 + off);
+                                        off += 8;
+                                    }
+                                    if payload_size - off >= 4 {
+                                        let word = builder.ins().load(types::I32, MemFlags::new(), ptr, off);
+                                        builder.ins().stack_store(word, *ss, 8 + off);
+                                        off += 4;
+                                    }
+                                    if payload_size - off >= 2 {
+                                        let word = builder.ins().load(types::I16, MemFlags::new(), ptr, off);
+                                        builder.ins().stack_store(word, *ss, 8 + off);
+                                        off += 2;
+                                    }
+                                    if payload_size - off >= 1 {
+                                        let word = builder.ins().load(types::I8, MemFlags::new(), ptr, off);
+                                        builder.ins().stack_store(word, *ss, 8 + off);
+                                    }
+                                    builder.ins().jump(merge_block, &[]);
+
+                                    builder.switch_to_block(merge_block);
+                                    builder.seal_block(merge_block);
+                                    // Return dummy value — real data is in the stack slot
+                                    builder.ins().iconst(types::I64, 0)
+                                } else {
+                                    // No stack slot — just deref like DerefResult
+                                    builder.ins().load(types::I64, MemFlags::new(), ptr, 0)
                                 }
                             }
                             CallAdapt::PopOutParam(ss) => {
@@ -681,11 +759,19 @@ impl<'a> FunctionBuilder<'a> {
                         };
                         // If destination has a stack slot (aggregate type), handle differently
                         // for internal Rask functions vs C stdlib functions.
-                        if let Some((ss, size)) = stack_slot_map.get(dst_id) {
+                        // DerefOption already wrote directly to the stack slot.
+                        if slot_already_written {
+                            // Nothing to do — DerefOption already populated the slot
+                        } else if let Some((ss, size)) = stack_slot_map.get(dst_id) {
                             if internal_fns.contains(&func.name) {
-                                // Internal function returns a pointer to its stack-allocated aggregate.
-                                // Copy the data into our own stack slot before it goes stale.
-                                Self::copy_aggregate(builder, final_val, *ss, *size);
+                                // Internal function returns aggregate data loaded from its stack.
+                                // Store directly into our stack slot (value, not pointer).
+                                if *size <= 8 {
+                                    builder.ins().stack_store(final_val, *ss, 0);
+                                } else {
+                                    // Larger aggregates: copy from returned pointer
+                                    Self::copy_aggregate(builder, final_val, *ss, *size);
+                                }
                             } else if Self::is_negative_err_fn(&func.name) {
                                 // C function uses negative return = error convention.
                                 Self::wrap_result_into_slot(builder, final_val, *ss);
@@ -778,16 +864,17 @@ impl<'a> FunctionBuilder<'a> {
                     // as Cranelift IR, avoiding the C function call overhead.
                     //
                     // Pool layout (verified by _Static_assert in pool.c):
+                    //   offset 16: slot_stride (i64)
                     //   offset 24: cap (i64)
                     //   offset 40: slots (ptr)
-                    // Slot layout (stride=16 for elem_size=8):
+                    // Slot layout (stride varies by elem_size):
                     //   offset 0: generation (u32)
                     //   offset 8: data (elem_size bytes)
+                    const POOL_STRIDE_OFFSET: i32 = 16;
                     const POOL_CAP_OFFSET: i32 = 24;
                     const POOL_SLOTS_OFFSET: i32 = 40;
                     const SLOT_GEN_OFFSET: i32 = 0;
                     const SLOT_DATA_OFFSET: i32 = 8;
-                    const SLOT_STRIDE_SHIFT: i64 = 4; // log2(16)
 
                     // 1. Extract index and generation from packed i64 handle
                     //    handle = index:32 | generation:32
@@ -824,11 +911,12 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     builder.ins().trap(cranelift_codegen::ir::TrapCode::unwrap_user(1));
 
-                    // bounds_ok: load slots pointer, compute slot address
+                    // bounds_ok: load slots pointer and stride, compute slot address
                     builder.switch_to_block(bounds_ok);
                     builder.seal_block(bounds_ok);
                     let slots = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_SLOTS_OFFSET);
-                    let slot_offset = builder.ins().ishl_imm(index, SLOT_STRIDE_SHIFT);
+                    let stride = builder.ins().load(types::I64, MemFlags::new(), pool_val, POOL_STRIDE_OFFSET);
+                    let slot_offset = builder.ins().imul(index, stride);
                     let slot_addr = builder.ins().iadd(slots, slot_offset);
 
                     // 3. Generation check
@@ -867,13 +955,10 @@ impl<'a> FunctionBuilder<'a> {
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Pool access destination not found".to_string()
                         ))?;
-                    if is_struct {
-                        let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
-                        builder.def_var(*var, data_ptr);
-                    } else {
-                        let val = builder.ins().load(load_ty, MemFlags::new(), slot_addr, SLOT_DATA_OFFSET);
-                        builder.def_var(*var, val);
-                    }
+                    // Always return pointer to slot data — pool[h] is used
+                    // for mutation, so callers need the address.
+                    let data_ptr = builder.ins().iadd_imm(slot_addr, SLOT_DATA_OFFSET as i64);
+                    builder.def_var(*var, data_ptr);
                 } else {
                     // ── Debug mode: call C function ──────────────────────
                     let call_inst = if let Some(file_str) = source_file {
@@ -903,12 +988,10 @@ impl<'a> FunctionBuilder<'a> {
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "Pool access destination not found".to_string()
                             ))?;
-                        if is_struct {
-                            builder.def_var(*var, ptr);
-                        } else {
-                            let val = builder.ins().load(load_ty, MemFlags::new(), ptr, 0);
-                            builder.def_var(*var, val);
-                        }
+                        // Always return raw pointer — pool[h] is used for
+                        // mutation (pool[h].field = val), so callers need
+                        // the address, not the loaded value.
+                        builder.def_var(*var, ptr);
                     }
                 }
             }
@@ -1275,6 +1358,31 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// True when a struct field's declared type uses stack-slot (aggregate)
+    /// representation in codegen. These fields return a pointer into the parent
+    /// struct rather than a loaded scalar.
+    fn is_aggregate_field_type(ty: &RaskType) -> bool {
+        match ty {
+            // Primitives, opaque pointers — scalar
+            RaskType::Unit | RaskType::Bool
+            | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64 | RaskType::I128
+            | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
+            | RaskType::F32 | RaskType::F64
+            | RaskType::Char | RaskType::String
+            | RaskType::Fn { .. } | RaskType::Slice(_) => false,
+            // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
+            RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
+            // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
+            RaskType::Option(inner)
+                if matches!(inner.as_ref(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>
+            {
+                false
+            }
+            // User-defined enums/structs, tuples, arrays, Option, Result — aggregate
+            _ => true,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn lower_rvalue(
         builder: &mut ClifFunctionBuilder,
@@ -1454,20 +1562,18 @@ impl<'a> FunctionBuilder<'a> {
                     Some(MirType::Struct(id)) => {
                         if let Some(layout) = struct_layouts.get(id.0 as usize) {
                             if let Some(field) = layout.fields.get(*field_index as usize) {
-                                // Aggregate field (embedded struct): return pointer, don't load
-                                if field.size > 8 {
+                                // Aggregate field: return pointer into parent struct.
+                                // Covers both >8-byte structs and ≤8-byte enums/structs
+                                // that use stack-slot representation in codegen.
+                                if field.size > 8 || Self::is_aggregate_field_type(&field.ty) {
                                     let addr = builder.ins().iadd_imm(base_val, field.offset as i64);
                                     return Ok(addr);
                                 }
-                                // Derive Cranelift load type from field's declared type
+                                // Scalar field. Layout uses 8-byte slots; load at storage
+                                // width to avoid reading wrong bytes (e.g. lower f64 half).
                                 load_ty = match &field.ty {
-                                    RaskType::F64 => types::F64,
-                                    RaskType::F32 => types::F32,
-                                    RaskType::Bool => types::I8,
-                                    RaskType::I8 | RaskType::U8 => types::I8,
-                                    RaskType::I16 | RaskType::U16 => types::I16,
-                                    RaskType::I32 | RaskType::U32 | RaskType::Char => types::I32,
-                                    _ => load_ty,
+                                    RaskType::F64 | RaskType::F32 => types::F64,
+                                    _ => types::I64,
                                 };
                                 field.offset as i32
                             } else {
@@ -1535,7 +1641,21 @@ impl<'a> FunctionBuilder<'a> {
                 }
 
                 let flags = MemFlags::new();
-                Ok(builder.ins().load(load_ty, flags, base_val, offset))
+                let loaded = builder.ins().load(load_ty, flags, base_val, offset);
+
+                // Narrow from storage type to declared type when needed.
+                // E.g., f32 field stored as f64 in 8-byte slot → fdemote.
+                let result = if let Some(exp) = expected_ty {
+                    let loaded_ty = builder.func.dfg.value_type(loaded);
+                    if loaded_ty != exp {
+                        Self::convert_value(builder, loaded, loaded_ty, exp)
+                    } else {
+                        loaded
+                    }
+                } else {
+                    loaded
+                };
+                Ok(result)
             }
 
             // Enum discriminant extraction: load tag byte from base pointer
@@ -1630,18 +1750,54 @@ impl<'a> FunctionBuilder<'a> {
         _mir_blocks: &[rask_mir::MirBlock],
         _locals: &[rask_mir::MirLocal],
         func_refs: &HashMap<String, FuncRef>,
-        _struct_layouts: &[StructLayout],
-        _enum_layouts: &[EnumLayout],
+        struct_layouts: &[StructLayout],
+        enum_layouts: &[EnumLayout],
         string_globals: &HashMap<String, GlobalValue>,
         _comptime_globals: &HashMap<String, GlobalValue>,
         _panicking_fns: &HashSet<String>,
-        _stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
+        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
         _internal_fns: &HashSet<String>,
         cleanup_chain_blocks: &HashMap<Vec<BlockId>, cranelift_codegen::ir::Block>,
     ) -> CodegenResult<()> {
         match term {
             MirTerminator::Return { value } => {
-                Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                // For small aggregate return values (≤8 bytes) in stack slots,
+                // load the data and return it directly.
+                // For larger aggregates, return the stack slot address. The caller
+                // copies from it immediately via copy_aggregate (the callee stack
+                // is still accessible at that point on x86-64).
+                if let Some(stack_info) = Self::return_stack_info(value.as_ref(), stack_slot_map) {
+                    let (_local_id, ss, size) = stack_info;
+                    if size <= 8 {
+                        let loaded = builder.ins().stack_load(types::I64, ss, 0);
+                        builder.ins().return_(&[loaded]);
+                    } else {
+                        // Return pointer to stack slot data for copy_aggregate
+                        Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                    }
+                } else if matches!(ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                    // Function returns Result/Option but value is a plain scalar
+                    // (e.g. `return 42` in a function returning `i32 or string`).
+                    // Wrap the value as Ok/Some in a temporary stack slot and return
+                    // the slot address so the caller can copy_aggregate.
+                    let slot_size = Self::resolve_type_alloc_size(ret_ty, struct_layouts, enum_layouts)
+                        .unwrap_or(16);
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot,
+                        slot_size,
+                        0,
+                    ));
+                    let val = if let Some(val_op) = value.as_ref() {
+                        Self::lower_operand_typed(builder, val_op, var_map, Some(types::I64), string_globals, func_refs)?
+                    } else {
+                        builder.ins().iconst(types::I64, 0)
+                    };
+                    Self::wrap_ok_into_slot(builder, val, ss);
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    builder.ins().return_(&[addr]);
+                } else {
+                    Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                }
             }
 
             MirTerminator::Goto { target } => {
@@ -1764,6 +1920,20 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
+    /// Check if a return value comes from a stack-allocated aggregate local.
+    /// Returns the (stack_slot, size) if so.
+    fn return_stack_info(
+        value: Option<&MirOperand>,
+        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
+    ) -> Option<(LocalId, StackSlot, u32)> {
+        if let Some(MirOperand::Local(id)) = value {
+            if let Some((ss, size)) = stack_slot_map.get(id) {
+                return Some((*id, *ss, *size));
+            }
+        }
+        None
+    }
+
     /// Compute the actual allocation size for a MirType, resolving struct/enum
     /// sizes from layouts. Unlike MirType::size() which returns 8 for Struct/Enum
     /// (pointer size), this returns the true layout size. Needed for stack slots
@@ -1857,7 +2027,8 @@ impl<'a> FunctionBuilder<'a> {
         matches!(name,
             "net_tcp_listen" | "TcpListener_accept" |
             "TcpConnection_read_http_request" | "TcpConnection_write_http_response" |
-            "Sender_send" | "Sender_try_send"
+            "Sender_send" | "Sender_try_send" |
+            "ThreadHandle_join" | "Thread_join"
         )
     }
 
@@ -1906,11 +2077,9 @@ impl<'a> FunctionBuilder<'a> {
                 args.insert(1, val_size);
                 CallAdapt::None
             }
-            "Pool_new" => {
-                let elem_size = builder.ins().iconst(types::I64, 8);
-                args.insert(0, elem_size);
-                CallAdapt::None
-            }
+            // Pool_new: MIR injects elem_size as first arg.
+            // No special codegen handling needed.
+            "Pool_new" => CallAdapt::None,
 
             // Vec push/set: wrap value arg as pointer
             "Vec_push" => {
@@ -1976,8 +2145,15 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Map get: wrap key as pointer, deref result
-            "Map_get" | "Map_get_unwrap" => {
+            // Map get: wrap key as pointer, wrap result as Option
+            "Map_get" => {
+                if args.len() >= 2 {
+                    let key = args[1];
+                    args[1] = Self::value_to_ptr(builder, key);
+                }
+                CallAdapt::DerefOption
+            }
+            "Map_get_unwrap" => {
                 if args.len() >= 2 {
                     let key = args[1];
                     args[1] = Self::value_to_ptr(builder, key);
@@ -2030,8 +2206,12 @@ impl<'a> FunctionBuilder<'a> {
                 CallAdapt::None
             }
 
-            // Pool get/index: result is void*, deref to get value
-            "Pool_get" | "Pool_index" | "Pool_checked_access" => CallAdapt::DerefResult,
+            // Pool get: result is void*, wrap as Option storing the
+            // pointer itself (not dereferenced) so field access works
+            // through it regardless of element struct size.
+            "Pool_get" => CallAdapt::DerefOption,
+            // Pool index: return raw pointer for mutation (pool[h].field = val)
+            "Pool_index" | "Pool_checked_access" => CallAdapt::None,
 
             // Channel_unbuffered: MIR injects elem_size; builder appends capacity=0
             "Channel_unbuffered" => {

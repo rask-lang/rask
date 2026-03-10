@@ -549,6 +549,7 @@ fn generate_poll_fn(
                         addr: state_ptr,
                         offset: field.offset,
                         value: MirOperand::Local(new_id),
+                        store_size: None,
                     });
                 }
             }
@@ -558,6 +559,7 @@ fn generate_poll_fn(
                 addr: state_ptr,
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int((seg_idx + 1) as i64)),
+                store_size: None,
             });
 
             builder.terminate(MirTerminator::Return {
@@ -601,10 +603,11 @@ fn remap_stmt(
             dst: remap_id(*dst, map),
             rvalue: remap_rvalue(rvalue, map),
         },
-        MirStmt::Store { addr, offset, value } => MirStmt::Store {
+        MirStmt::Store { addr, offset, value, store_size } => MirStmt::Store {
             addr: remap_id(*addr, map),
             offset: *offset,
             value: remap_operand(value, map),
+            store_size: *store_size,
         },
         MirStmt::Call { dst, func, args } => MirStmt::Call {
             dst: dst.map(|d| remap_id(d, map)),

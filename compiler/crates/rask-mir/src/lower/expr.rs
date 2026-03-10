@@ -181,6 +181,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(1)), // tag = None
+                            store_size: None,
                         });
                         Ok((MirOperand::Local(result_local), option_ty))
                     }
@@ -280,6 +281,7 @@ impl<'a> MirLowerer<'a> {
             // Function call — direct or through closure
             ExprKind::Call { func, args } => {
                 let mut arg_operands = Vec::new();
+                let mut arg_mir_types = Vec::new();
                 for a in args {
                     let (op, mir_ty) = self.lower_expr(&a.expr)?;
                     // TR5: implicit trait coercion — emit TraitBox if type checker flagged this arg
@@ -289,6 +291,7 @@ impl<'a> MirLowerer<'a> {
                     } else {
                         arg_operands.push(op);
                     }
+                    arg_mir_types.push(mir_ty);
                 }
 
                 // Non-ident callees: field access, returned functions, etc.
@@ -386,13 +389,21 @@ impl<'a> MirLowerer<'a> {
                     "Ok" | "Some" | "Err" => {
                         let tag = self.variant_tag(&func_name);
                         // Derive the result MirType from type checker info if available.
-                        // Fallback to Result/Option so codegen allocates a stack slot.
+                        // Fallback uses the payload's actual type so aggregate payloads
+                        // get a correctly-sized stack slot.
+                        let payload_ty = arg_mir_types.first().cloned().unwrap_or(MirType::I64);
                         let fallback_ty = if func_name == "Some" {
-                            MirType::Option(Box::new(MirType::I64))
+                            MirType::Option(Box::new(payload_ty.clone()))
+                        } else if func_name == "Ok" {
+                            MirType::Result {
+                                ok: Box::new(payload_ty.clone()),
+                                err: Box::new(MirType::I64),
+                            }
                         } else {
+                            // Err
                             MirType::Result {
                                 ok: Box::new(MirType::I64),
-                                err: Box::new(MirType::I64),
+                                err: Box::new(payload_ty.clone()),
                             }
                         };
                         let result_ty = self.lookup_expr_type(expr)
@@ -407,12 +418,14 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: 0,
                             value: MirOperand::Constant(MirConst::Int(tag)),
+                            store_size: None,
                         });
                         if let Some(payload) = arg_operands.first() {
                             self.builder.push_stmt(MirStmt::Store {
                                 addr: result_local,
                                 offset: 8,
                                 value: payload.clone(),
+                                store_size: None,
                             });
                         }
                         return Ok((MirOperand::Local(result_local), result_ty));
@@ -592,6 +605,7 @@ impl<'a> MirLowerer<'a> {
                                 addr: result_local,
                                 offset: tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(tag_val as i64)),
+                                store_size: None,
                             });
 
                             // Store payload fields
@@ -606,6 +620,7 @@ impl<'a> MirLowerer<'a> {
                                     addr: result_local,
                                     offset,
                                     value: val,
+                                    store_size: None,
                                 });
                             }
 
@@ -760,6 +775,13 @@ impl<'a> MirLowerer<'a> {
                                     // Shared: data_size goes last → (data_ptr, data_size)
                                     arg_operands.push(size_op);
                                 }
+                            }
+                            // Pool.new(): inject elem_size so pool allocates
+                            // correctly-sized slots for struct elements.
+                            if base_name == "Pool" && method == "new" {
+                                let elem_size = self.generic_inner_struct_size(name);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                arg_operands.insert(0, size_op);
                             }
 
                             // Map.new() with string keys → use string hash/eq
@@ -1001,10 +1023,17 @@ impl<'a> MirLowerer<'a> {
                 // Vec_get panics on OOB → unwrap is a no-op.
                 // Map_get returns NULL on missing key → rewrite to Map_get_unwrap.
                 if method == "unwrap" && args.is_empty() {
-                    if let ExprKind::MethodCall { method: inner_method, .. } = &object.kind {
+                    if let ExprKind::MethodCall { method: inner_method, object: inner_obj, .. } = &object.kind {
                         if inner_method == "get" {
-                            self.builder.rewrite_last_call("Map_get", "Map_get_unwrap");
-                            return Ok((obj_op, obj_ty));
+                            // Only rewrite Map_get → Map_get_unwrap, not Pool_get
+                            let is_map = if let ExprKind::Ident(name) = &inner_obj.kind {
+                                self.local_type_prefix.get(name.as_str())
+                                    .map_or(false, |p| p == "Map")
+                            } else { false };
+                            if is_map {
+                                self.builder.rewrite_last_call("Map_get", "Map_get_unwrap");
+                                return Ok((obj_op, obj_ty));
+                            }
                         }
                     }
                 }
@@ -1239,6 +1268,30 @@ impl<'a> MirLowerer<'a> {
                             self.collection_elem_types.get(&key).cloned()
                                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                         })
+                } else if qualified_name == "Pool_get" {
+                    // Pool.get returns Option<T> — extract T from tracked element type
+                    let elem_ty = Self::vec_tracking_key(object)
+                        .and_then(|key| {
+                            self.collection_elem_types.get(&key).cloned()
+                                .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
+                        })
+                        // Fallback: extract from Pool<T> generic parameter
+                        .or_else(|| {
+                            self.ctx.lookup_raw_type(object.id)
+                                .and_then(|ty| match ty {
+                                    rask_types::Type::UnresolvedGeneric { args, .. } => {
+                                        args.first().and_then(|a| match a {
+                                            rask_types::GenericArg::Type(t) => Some(t.as_ref()),
+                                            _ => None,
+                                        })
+                                    }
+                                    _ => None,
+                                })
+                                .map(|elem_ty| self.ctx.type_to_mir(elem_ty))
+                                .filter(|t| !matches!(t, MirType::Ptr))
+                        })
+                        .unwrap_or(MirType::I64);
+                    Some(MirType::Option(Box::new(elem_ty)))
                 } else {
                     None
                 }.unwrap_or_else(|| self
@@ -1268,13 +1321,7 @@ impl<'a> MirLowerer<'a> {
                                     },
                                 });
                                 // Deep clone heap types
-                                let clone_fn = match &field.ty {
-                                    rask_types::Type::String => Some("string_clone"),
-                                    rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
-                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
-                                    rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),
-                                    _ => None,
-                                };
+                                let clone_fn = Self::clone_fn_for_type(&field.ty);
                                 let store_val = if let Some(cfn) = clone_fn {
                                     let cloned = self.builder.alloc_temp(MirType::I64);
                                     self.builder.push_stmt(MirStmt::Call {
@@ -1290,22 +1337,49 @@ impl<'a> MirLowerer<'a> {
                                     addr: result_local,
                                     offset: field.offset,
                                     value: store_val,
+                                    store_size: None,
                                 });
                             }
                             return Ok((MirOperand::Local(result_local), obj_ty));
                         }
                     }
+                    // Enum clone: copy tag, then switch on tag to deep-clone
+                    // heap fields per variant.
+                    if let MirType::Enum(EnumLayoutId(id)) = &obj_ty {
+                        if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
+                            return self.lower_enum_clone(&layout, &all_args[0], obj_ty);
+                        }
+                    }
                 }
+
+                // Pool.alloc(value) → Pool_insert(pool, elem_ptr)
+                // Pool_alloc takes no element arg; codegen Pool_insert appends elem_size
+                let (final_name, final_args) = if qualified_name == "Pool_alloc" && all_args.len() == 2 {
+                    ("Pool_insert".to_string(), all_args)
+                } else if qualified_name == "Vec_join" {
+                    // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
+                    let is_string = Self::vec_tracking_key(object)
+                        .and_then(|key| self.collection_elem_types.get(&key).cloned()
+                            .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
+                        .map_or(false, |ty| matches!(ty, MirType::String));
+                    if is_string {
+                        (qualified_name.clone(), all_args)
+                    } else {
+                        ("Vec_join_i64".to_string(), all_args)
+                    }
+                } else {
+                    (qualified_name.clone(), all_args)
+                };
 
                 let result_local = self.builder.alloc_temp(ret_ty.clone());
                 self.builder.push_stmt(MirStmt::Call {
                     dst: Some(result_local),
-                    func: FunctionRef::internal(qualified_name.clone()),
-                    args: all_args,
+                    func: FunctionRef::internal(final_name.clone()),
+                    args: final_args,
                 });
 
                 // W2a/W2b: Re-resolve pool bindings after pool mutators inside `with` blocks
-                if matches!(qualified_name.as_str(),
+                if matches!(final_name.as_str(),
                     "Pool_insert" | "Pool_remove" | "Pool_clear" | "Pool_drain" | "Pool_alloc"
                 ) {
                     if let ExprKind::Ident(pool_var) = &object.kind {
@@ -1347,6 +1421,7 @@ impl<'a> MirLowerer<'a> {
                                 addr: result_local,
                                 offset: layout.tag_offset,
                                 value: MirOperand::Constant(MirConst::Int(0)),
+                                store_size: None,
                             });
                             return Ok((MirOperand::Local(result_local), enum_ty));
                         }
@@ -1374,6 +1449,7 @@ impl<'a> MirLowerer<'a> {
                                     addr: result_local,
                                     offset: layout.tag_offset,
                                     value: MirOperand::Constant(MirConst::Int(variant.tag as i64)),
+                                    store_size: None,
                                 });
                                 return Ok((MirOperand::Local(result_local), enum_ty));
                             }
@@ -1397,7 +1473,18 @@ impl<'a> MirLowerer<'a> {
                         if let Some((idx, fl)) = layout.fields.iter().enumerate()
                             .find(|(_, f)| f.name == *field)
                         {
-                            (idx as u32, self.ctx.resolve_type_str(&format!("{}", fl.ty)), Some(fl.offset), Some(fl.size))
+                            // Resolve field type from layout; if generic/unresolved,
+                            // prefer the type checker's type for this expression.
+                            let mut ft = self.ctx.resolve_type_str(&format!("{}", fl.ty));
+                            if matches!(ft, MirType::Ptr | MirType::I64) {
+                                if let Some(raw) = self.ctx.lookup_raw_type(expr.id) {
+                                    let tc_ty = self.ctx.type_to_mir(raw);
+                                    if !matches!(tc_ty, MirType::Ptr) {
+                                        ft = tc_ty;
+                                    }
+                                }
+                            }
+                            (idx as u32, ft, Some(fl.offset), Some(fl.size))
                         } else {
                             (0, MirType::I64, None, None)
                         }
@@ -1718,6 +1805,7 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset: i as u32 * elem_size,
                         value: elem_op,
+                        store_size: None,
                     });
                 }
                 Ok((MirOperand::Local(result_local), array_ty))
@@ -1743,6 +1831,7 @@ impl<'a> MirLowerer<'a> {
                         addr: result_local,
                         offset,
                         value: elem_op,
+                        store_size: None,
                     });
                     offset += elem_size;
                 }
@@ -1751,24 +1840,64 @@ impl<'a> MirLowerer<'a> {
 
             // Struct literal
             ExprKind::StructLit { name, fields, .. } => {
-                let (result_ty, layout) = if let Some((idx, sl)) = self.ctx.find_struct(name) {
-                    (MirType::Struct(StructLayoutId(idx)), Some(sl))
+                // Check for enum variant constructor: "EnumName.VariantName { ... }"
+                let (result_ty, layout, enum_variant_info) = if let Some(dot_pos) = name.find('.') {
+                    let enum_name = &name[..dot_pos];
+                    let variant_name = &name[dot_pos + 1..];
+                    if let Some((idx, el)) = self.ctx.find_enum(enum_name) {
+                        let variant_info = el.variants.iter().find(|v| v.name == variant_name)
+                            .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
+                        (MirType::Enum(EnumLayoutId(idx)), None, variant_info)
+                    } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                        (MirType::Struct(StructLayoutId(idx)), Some(sl), None)
+                    } else {
+                        (MirType::Ptr, None, None)
+                    }
+                } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
+                    (MirType::Struct(StructLayoutId(idx)), Some(sl), None)
                 } else {
-                    (MirType::Ptr, None)
+                    (MirType::Ptr, None, None)
                 };
 
                 let result_local = self.builder.alloc_temp(result_ty.clone());
+
+                // For enum variants, store the tag first
+                if let Some((tag, payload_offset, ref variant_fields)) = enum_variant_info {
+                    // Store discriminant tag at offset 0
+                    self.builder.push_stmt(MirStmt::Store {
+                        addr: result_local,
+                        offset: 0,
+                        value: MirOperand::Constant(MirConst::Int(tag as i64)),
+                        store_size: None,
+                    });
+                    // Store fields at their offsets within the payload
+                    for field in fields.iter() {
+                        let (val_op, _) = self.lower_expr(&field.value)?;
+                        let vf = variant_fields.iter()
+                            .find(|f| f.name == field.name);
+                        let offset = vf.map(|f| payload_offset + f.offset)
+                            .unwrap_or(payload_offset);
+                        let store_size = vf.map(|f| f.size);
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: result_local,
+                            offset,
+                            value: val_op,
+                            store_size,
+                        });
+                    }
+                } else {
                 for field in fields.iter() {
                     let (val_op, _) = self.lower_expr(&field.value)?;
-                    // Look up field offset from layout
-                    let offset = layout
-                        .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name))
-                        .map(|f| f.offset)
-                        .unwrap_or(0);
+                    // Look up field offset and size from layout
+                    let field_layout = layout
+                        .and_then(|sl| sl.fields.iter().find(|f| f.name == field.name));
+                    let offset = field_layout.map(|f| f.offset).unwrap_or(0);
+                    let store_size = field_layout.map(|f| f.size);
                     self.builder.push_stmt(MirStmt::Store {
                         addr: result_local,
                         offset,
                         value: val_op,
+                        store_size,
                     });
 
                     // Propagate Vec element types from source var to struct field.
@@ -1784,6 +1913,7 @@ impl<'a> MirLowerer<'a> {
                         }
                     }
                 }
+                } // end else (non-enum-variant struct literal)
                 Ok((MirOperand::Local(result_local), result_ty))
             }
 
@@ -2036,6 +2166,7 @@ impl<'a> MirLowerer<'a> {
                             addr: result_local,
                             offset: i * elem_size,
                             value: val.clone(),
+                            store_size: None,
                         });
                     }
                     return Ok((MirOperand::Local(result_local), array_ty));
@@ -2538,6 +2669,9 @@ impl<'a> MirLowerer<'a> {
         let patterns_imply_enum = if !is_enum && !is_result_or_option {
             arms.iter().any(|arm| match &arm.pattern {
                 Pattern::Constructor { name, .. } => is_variant_name(name),
+                Pattern::Struct { name, .. } => {
+                    self.resolve_pattern_tag(name).is_some()
+                }
                 Pattern::Ident(name) => {
                     self.resolve_pattern_tag(name).is_some()
                         || matches!(name.as_str(), "Ok" | "Err" | "Some" | "None")
@@ -2612,6 +2746,13 @@ impl<'a> MirLowerer<'a> {
                         cases.push((*v as u64, arm_blocks[i]));
                     } else if let ExprKind::Bool(b) = &lit_expr.kind {
                         cases.push((if *b { 1 } else { 0 }, arm_blocks[i]));
+                    } else {
+                        cases.push((i as u64, arm_blocks[i]));
+                    }
+                }
+                Pattern::Struct { name, .. } => {
+                    if let Some(tag) = self.resolve_pattern_tag(name) {
+                        cases.push((tag, arm_blocks[i]));
                     } else {
                         cases.push((i as u64, arm_blocks[i]));
                     }
@@ -2718,9 +2859,11 @@ impl<'a> MirLowerer<'a> {
                     }
                 } else if let Pattern::Struct { name, fields, .. } = &arm.pattern {
                     // Named-field destructuring: Shape.Circle { radius }
+                    // Strip enum prefix: "Shape.Circle" → "Circle"
+                    let variant_name = name.rsplit('.').next().unwrap_or(name);
                     if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
                         if let Some(layout) = self.ctx.enum_layouts.get(*idx as usize) {
-                            if let Some(variant) = layout.variants.iter().find(|v| v.name == *name) {
+                            if let Some(variant) = layout.variants.iter().find(|v| v.name == variant_name) {
                                 for (field_name, field_pat) in fields {
                                     if let Pattern::Ident(binding) = field_pat {
                                         if let Some((field_idx, field_layout)) = variant.fields.iter()
@@ -3618,6 +3761,7 @@ impl<'a> MirLowerer<'a> {
                 addr: state_ptr,
                 offset: 0,
                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
+                store_size: None,
             });
 
             // Store captured variables into the state struct.
@@ -3630,6 +3774,7 @@ impl<'a> MirLowerer<'a> {
                         addr: state_ptr,
                         offset: state_offset,
                         value: MirOperand::Local(cap.local_id),
+                        store_size: None,
                     });
                 }
             }
@@ -3961,11 +4106,13 @@ impl<'a> MirLowerer<'a> {
             addr: out,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
         });
         self.builder.push_stmt(MirStmt::Store {
             addr: out,
             offset: 8,
             value: MirOperand::Local(new_err),
+            store_size: None,
         });
         self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
@@ -4027,22 +4174,26 @@ impl<'a> MirLowerer<'a> {
             addr: wrapped,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(constructor_tag)),
+            store_size: None,
         });
         self.builder.push_stmt(MirStmt::Store {
             addr: wrapped,
             offset: 8,
             value: MirOperand::Local(err_payload),
+            store_size: None,
         });
         // Re-wrap as Err(wrapped)
         self.builder.push_stmt(MirStmt::Store {
             addr: out,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)), // Err tag
+            store_size: None,
         });
         self.builder.push_stmt(MirStmt::Store {
             addr: out,
             offset: 8,
             value: MirOperand::Local(wrapped),
+            store_size: None,
         });
         self.builder.terminate(MirTerminator::Goto { target: merge_block });
 
@@ -4077,6 +4228,7 @@ impl<'a> MirLowerer<'a> {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
+                store_size: None,
             });
         }
 
@@ -4401,6 +4553,7 @@ impl<'a> MirLowerer<'a> {
                 addr: result,
                 offset: field.offset,
                 value: MirOperand::Local(field_val),
+                store_size: None,
             });
         }
 
@@ -4493,6 +4646,123 @@ impl<'a> MirLowerer<'a> {
                 _ => return None, // Chain must be method calls all the way down
             }
         }
+    }
+
+    /// Clone function name for a type, or None if the type is Copy.
+    fn clone_fn_for_type(ty: &rask_types::Type) -> Option<&'static str> {
+        match ty {
+            rask_types::Type::String => Some("string_clone"),
+            rask_types::Type::UnresolvedNamed(n) if n == "string" => Some("string_clone"),
+            rask_types::Type::UnresolvedGeneric { name, .. } if name == "Vec" => Some("Vec_clone"),
+            rask_types::Type::UnresolvedGeneric { name, .. } if name == "Map" => Some("Map_clone"),
+            _ => None,
+        }
+    }
+
+    /// Emit inline clone for an enum value: shallow copy the full block,
+    /// then switch on the tag to deep-clone heap fields per variant.
+    fn lower_enum_clone(
+        &mut self,
+        layout: &rask_mono::EnumLayout,
+        src: &MirOperand,
+        obj_ty: MirType,
+    ) -> Result<TypedOperand, LoweringError> {
+        let result = self.builder.alloc_temp(obj_ty.clone());
+
+        // Shallow copy: copy each 8-byte word from src to result
+        let num_words = (layout.size as u32 + 7) / 8;
+        for i in 0..num_words {
+            let offset = i * 8;
+            let word = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: word,
+                rvalue: MirRValue::Field {
+                    base: src.clone(),
+                    field_index: offset,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            });
+            self.builder.push_stmt(MirStmt::Store {
+                addr: result,
+                offset,
+                value: MirOperand::Local(word),
+                store_size: None,
+            });
+        }
+
+        // Check if any variant has heap fields needing deep clone
+        let needs_switch = layout.variants.iter().any(|v| {
+            v.fields.iter().any(|f| Self::clone_fn_for_type(&f.ty).is_some())
+        });
+
+        if needs_switch {
+            // Read the tag
+            let tag = self.builder.alloc_temp(MirType::I64);
+            self.builder.push_stmt(MirStmt::Assign {
+                dst: tag,
+                rvalue: MirRValue::Field {
+                    base: MirOperand::Local(result),
+                    field_index: layout.tag_offset,
+                    byte_offset: None,
+                    field_size: None,
+                },
+            });
+
+            let exit_block = self.builder.create_block();
+            let mut cases = Vec::new();
+
+            for variant in &layout.variants {
+                let has_heap = variant.fields.iter().any(|f| Self::clone_fn_for_type(&f.ty).is_some());
+                if !has_heap {
+                    // No heap fields — shallow copy is sufficient, skip
+                    continue;
+                }
+                let vblock = self.builder.create_block();
+                cases.push((variant.tag as u64, vblock));
+
+                self.builder.switch_to_block(vblock);
+                for field in &variant.fields {
+                    if let Some(cfn) = Self::clone_fn_for_type(&field.ty) {
+                        let abs_offset = variant.payload_offset + field.offset;
+                        let field_val = self.builder.alloc_temp(MirType::I64);
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: field_val,
+                            rvalue: MirRValue::Field {
+                                base: MirOperand::Local(result),
+                                field_index: abs_offset,
+                                byte_offset: None,
+                                field_size: None,
+                            },
+                        });
+                        let cloned = self.builder.alloc_temp(MirType::I64);
+                        self.builder.push_stmt(MirStmt::Call {
+                            dst: Some(cloned),
+                            func: FunctionRef::internal(cfn.to_string()),
+                            args: vec![MirOperand::Local(field_val)],
+                        });
+                        self.builder.push_stmt(MirStmt::Store {
+                            addr: result,
+                            offset: abs_offset,
+                            value: MirOperand::Local(cloned),
+                            store_size: None,
+                        });
+                    }
+                }
+                self.builder.terminate(MirTerminator::Goto { target: exit_block });
+            }
+
+            // Default case (variants with no heap fields) goes straight to exit
+            self.builder.terminate(MirTerminator::Switch {
+                value: MirOperand::Local(tag),
+                cases,
+                default: exit_block,
+            });
+
+            self.builder.switch_to_block(exit_block);
+        }
+
+        Ok((MirOperand::Local(result), obj_ty))
     }
 
     /// Try to handle an iterator terminal method (.collect, .fold, .any, etc.)
@@ -4765,12 +5035,14 @@ impl<'a> MirLowerer<'a> {
                         addr: tuple_local,
                         offset: 0,
                         value: MirOperand::Local(idx),
+                        store_size: None,
                     });
                     // field 1: element (offset 8, aligned)
                     self.builder.push_stmt(MirStmt::Store {
                         addr: tuple_local,
                         offset: 8,
                         value: current_op,
+                        store_size: None,
                     });
                     current_op = MirOperand::Local(tuple_local);
                     current_ty = tuple_ty;
@@ -4883,11 +5155,25 @@ impl<'a> MirLowerer<'a> {
                 });
                 self.locals.insert(elem_name.clone(), (elem_param, final_ty));
 
+                // A continue block for after the inlined body finishes normally
+                let after_body = self.builder.create_block();
+
+                // Redirect `return` inside the closure to assign to acc and continue the loop
+                let saved_return_target = self.inline_return_target.take();
+                self.inline_return_target = Some((acc, setup.inc_block));
+
                 let (result_op, _) = self.lower_expr(body)?;
+
+                self.inline_return_target = saved_return_target;
+
+                // Normal (non-return) path: assign result to acc
                 self.builder.push_stmt(MirStmt::Assign {
                     dst: acc,
                     rvalue: MirRValue::Use(result_op),
                 });
+                self.builder.terminate(MirTerminator::Goto { target: after_body });
+
+                self.builder.switch_to_block(after_body);
 
                 self.locals.remove(acc_name);
                 self.locals.remove(elem_name);
@@ -5061,13 +5347,14 @@ impl<'a> MirLowerer<'a> {
         chain: &super::IterChain<'_>,
         predicate: &Expr,
     ) -> Result<TypedOperand, LoweringError> {
-        // Result: Option represented as Ptr (tag 0 = Some, tag 1 = None)
-        let result = self.builder.alloc_temp(MirType::Ptr);
+        // Result: Option<I64> (tag at offset 0, payload at offset 8)
+        let result = self.builder.alloc_temp(MirType::Option(Box::new(MirType::I64)));
         // Start as None (tag = 1)
         self.builder.push_stmt(MirStmt::Store {
             addr: result,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(1)),
+            store_size: None,
         });
 
         let setup = self.setup_iter_chain_loop(chain)?;
@@ -5090,17 +5377,19 @@ impl<'a> MirLowerer<'a> {
             addr: result,
             offset: 0,
             value: MirOperand::Constant(MirConst::Int(0)), // Some tag
+            store_size: None,
         });
         self.builder.push_stmt(MirStmt::Store {
             addr: result,
             offset: 8,
             value: final_op,
+            store_size: None,
         });
         self.builder.terminate(MirTerminator::Goto { target: setup.exit_block });
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);
         self.builder.switch_to_block(setup.exit_block);
-        Ok((MirOperand::Local(result), MirType::Ptr))
+        Ok((MirOperand::Local(result), MirType::Option(Box::new(MirType::I64))))
     }
 }
 

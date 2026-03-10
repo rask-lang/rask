@@ -648,8 +648,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(10) },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(20) },
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None },
                     assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -971,8 +971,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(1) },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(2) },
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None },
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
@@ -1007,8 +1007,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)) },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(42) },
+                    MirStmt::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None },
+                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None },
                     assign(1, MirRValue::EnumTag { value: local_op(0) }),
                 ], ret(Some(local_op(1)))),
             ],
