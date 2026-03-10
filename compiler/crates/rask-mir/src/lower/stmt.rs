@@ -81,7 +81,19 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     None
                 };
-                self.builder.terminate(MirTerminator::Return { value });
+                // Inside an inlined closure (e.g. fold callback), redirect
+                // return to an assignment + goto instead of a real return.
+                if let Some((dst_local, cont_block)) = self.inline_return_target {
+                    if let Some(val) = value {
+                        self.builder.push_stmt(MirStmt::Assign {
+                            dst: dst_local,
+                            rvalue: MirRValue::Use(val),
+                        });
+                    }
+                    self.builder.terminate(MirTerminator::Goto { target: cont_block });
+                } else {
+                    self.builder.terminate(MirTerminator::Return { value });
+                }
                 Ok(())
             }
 
@@ -111,7 +123,13 @@ impl<'a> MirLowerer<'a> {
                             } else { 0 }
                         } else if let Some((_, _, Some(bo), _)) = Self::resolve_tuple_field(&obj_ty, field) {
                             bo
-                        } else { 0 };
+                        } else {
+                            // Base is a raw pointer (I64/Ptr) — field offset unknown.
+                            // With correct element type tracking, pool[h] and pool.get(h)
+                            // return Struct-typed results so this path shouldn't fire
+                            // for pool operations.
+                            0
+                        };
                         let base_local = match obj_op {
                             MirOperand::Local(id) => id,
                             _ => {
@@ -127,6 +145,7 @@ impl<'a> MirLowerer<'a> {
                             addr: base_local,
                             offset,
                             value: val_op,
+                            store_size: None,
                         });
                     }
                     // Index assignment: a[i] = val
@@ -171,6 +190,7 @@ impl<'a> MirLowerer<'a> {
                             addr: addr_local,
                             offset: 0,
                             value: val_op,
+                            store_size: None,
                         });
                     }
                     _ => {
@@ -462,6 +482,21 @@ impl<'a> MirLowerer<'a> {
                 }
             }
         }
+        // Track element type for Pool<T>.new() constructors:
+        // const pool = Pool<Node>.new() → collection_elem_types["pool"] = Struct(Node)
+        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+            if let ExprKind::Ident(obj_name) = &object.kind {
+                let base_name = obj_name.split('<').next().unwrap_or(obj_name);
+                if base_name == "Pool" && method == "new" {
+                    if let Some(inner) = obj_name.split('<').nth(1).and_then(|s| s.strip_suffix('>')) {
+                        let elem_mir = self.ctx.resolve_type_str(inner);
+                        if !matches!(elem_mir, MirType::Ptr | MirType::I64) {
+                            self.collection_elem_types.insert(name.to_string(), elem_mir);
+                        }
+                    }
+                }
+            }
+        }
         // Iterator terminal .collect() returns a Vec
         if let ExprKind::MethodCall { method, .. } = &init.kind {
             if method == "collect" {
@@ -506,6 +541,17 @@ impl<'a> MirLowerer<'a> {
             let closure_fn = format!("{}__closure_{}", self.parent_name, self.closure_counter - 1);
             if let Some(sig) = self.func_sigs.get(&closure_fn).cloned() {
                 self.func_sigs.insert(name.to_string(), sig);
+            }
+        }
+
+        // Track locals assigned from calls that return closure types.
+        // e.g., `const add_5 = make_adder(5)` where make_adder returns |i32| -> i32.
+        // Check via type checker's node_types: if init expr has Type::Fn, it's a closure.
+        if !is_closure {
+            if let Some(rask_types::Type::Fn { ret, .. }) = self.ctx.node_types.get(&init.id) {
+                self.closure_locals.insert(name.to_string());
+                let ret_mir = self.ctx.type_to_mir(ret);
+                self.func_sigs.insert(name.to_string(), super::FuncSig { ret_ty: ret_mir });
             }
         }
 
@@ -1286,4 +1332,5 @@ impl<'a> MirLowerer<'a> {
         self.builder.switch_to_block(setup.exit_block);
         Ok(())
     }
+
 }

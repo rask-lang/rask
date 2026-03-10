@@ -203,6 +203,21 @@ RaskString *rask_vec_join(const RaskVec *src, const RaskString *sep) {
     return result;
 }
 
+// join(vec_of_ints, separator) — convert integers to strings and concatenate.
+RaskString *rask_vec_join_i64(const RaskVec *src, const RaskString *sep) {
+    RaskString *result = rask_string_new();
+    if (!src || src->len == 0) return result;
+    for (int64_t i = 0; i < src->len; i++) {
+        if (i > 0 && sep) {
+            rask_string_append(result, sep);
+        }
+        int64_t val = *(int64_t *)(src->data + i * src->elem_size);
+        RaskString *s = rask_i64_to_string(val);
+        rask_string_append(result, s);
+    }
+    return result;
+}
+
 // slice(vec, start, end) — returns a new Vec with elements [start..end).
 RaskVec *rask_vec_slice(const RaskVec *src, int64_t start, int64_t end) {
     if (!src) return rask_vec_new(8);
