@@ -142,6 +142,13 @@ pub enum TypeError {
         span: Span,
     },
 
+    /// ER21: public function uses `or _` (must declare error types explicitly)
+    #[error("public function `{function_name}` must declare error types explicitly")]
+    PublicInferredError {
+        function_name: String,
+        span: Span,
+    },
+
     /// GC5: public function missing type annotation
     #[error("public function `{function_name}` requires explicit type annotations")]
     PublicMissingAnnotation {

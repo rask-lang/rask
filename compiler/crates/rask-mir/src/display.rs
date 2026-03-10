@@ -145,7 +145,7 @@ impl fmt::Display for MirStmt {
             MirStmt::Assign { dst, rvalue } => {
                 write!(f, "_{} = {}", dst.0, rvalue)
             }
-            MirStmt::Store { addr, offset, value } => {
+            MirStmt::Store { addr, offset, value, .. } => {
                 write!(f, "*(_{}+{}) = {}", addr.0, offset, value)
             }
             MirStmt::Call { dst, func, args } => {
