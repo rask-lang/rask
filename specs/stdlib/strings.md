@@ -16,7 +16,7 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 | **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
-| **S6: Refcount semantics** | Atomic refcount in heap header. Literals use sentinel refcount (never freed/decremented). Compiler may skip atomic ops for provably sole-owner strings |
+| **S6: Refcount semantics** | Atomic refcount in heap header. Literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
 | **S7: Builder for mutation** | `push_str`, `push_char`, `truncate`, `clear` live on `string_builder` only. `string` has no mutation methods |
 
 | Type | Description | Ownership | Storable? |
@@ -366,6 +366,14 @@ The grep_clone validation program (string-heavy CLI tool) had zero `.clone()` ca
 **Why refcount, not GC?** Deterministic cleanup. Fits the ownership model. No pauses.
 
 **Why Copy despite owning heap memory?** Normally heap-owning types move. But `string` is immutable — there's no aliased mutation risk. The refcount makes sharing safe. And at 16 bytes, it fits under the Copy threshold. This is a principled exception, not a hack.
+
+### Why Only String?
+
+`string` is a language primitive, like `i32` or `bool`. The compiler knows its exact layout and refcount semantics — user types can't opt into refcounted Copy behavior.
+
+The pressure to extend this to `Path`, `Vec<u8>`, or custom wrappers is anticipated and rejected. Those types are mutable — refcounted Copy requires immutability. And even for hypothetical user-defined immutable types, the compiler can't verify deep immutability without a whole new annotation system. Getting it wrong means data races from elided refcounts on aliased mutable data.
+
+For cheap sharing of arbitrary data, use `Shared<T>` — explicit, visible, correct. `string` gets special treatment because it's the most common type in most programs and the ergonomic cost of `.clone()` on strings was disproportionate to the actual risk.
 
 ### Builder Patterns
 

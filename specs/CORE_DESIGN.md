@@ -149,6 +149,8 @@ Ref counting (Swift, Python) solves the GC pause problem but introduces overhead
 
 I'd rather have explicit `.clone()` calls than hidden overhead on every pointer operation.
 
+`string` is the deliberate exception — immutable data where refcounting is safe and the ergonomic payoff is highest. The compiler aggressively elides the atomic ops (`comp.string-refcount-elision`). For mutable types, the argument stands: move semantics over hidden refcount overhead.
+
 ### Why Not Rust's Borrow Checker?
 
 Rust's borrow checker is technically sound, but ergonomically expensive. Lifetime annotations leak into function signatures. The complexity is front-loaded—you pay for it whether you need it or not.
