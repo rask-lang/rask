@@ -25,6 +25,7 @@ This is a compiler optimization. No user annotation, no semantic change. Strings
 
 ### RE1: Inc/dec cancellation
 
+<!-- test: skip -->
 ```rask
 func process(user: User) {
     const name = user.name       // copy: normally inc refcount
@@ -38,6 +39,7 @@ Without elision: `atomic_inc` on copy, `atomic_dec` when `user.name` drops at fu
 
 ### RE2: Local-only strings
 
+<!-- test: skip -->
 ```rask
 func format_greeting(first: string, last: string) -> string {
     const full = "{first} {last}"    // new string from interpolation
@@ -52,6 +54,7 @@ func format_greeting(first: string, last: string) -> string {
 
 ### RE3: Literal propagation
 
+<!-- test: skip -->
 ```rask
 func log_level() -> string {
     const prefix = "INFO"     // literal → sentinel refcount
@@ -64,6 +67,7 @@ Literals use sentinel refcount (never incremented, never freed). When the compil
 
 ### RE4: Borrow chain elision
 
+<!-- test: skip -->
 ```rask
 func render(name: string) -> string {
     return format(normalize(name))

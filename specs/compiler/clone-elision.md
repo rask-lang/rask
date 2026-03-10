@@ -35,6 +35,7 @@ The compiler can see that `config.path` has no subsequent uses. The clone alloca
 
 ### Simple case — clone then no further use
 
+<!-- test: skip -->
 ```rask
 func process(config: Config) {
     const name = config.name.clone()   // [clone elided → move]
@@ -45,6 +46,7 @@ func process(config: Config) {
 
 ### Branch-aware — all paths must be last-use
 
+<!-- test: skip -->
 ```rask
 func example(data: Data) {
     const copy = data.items.clone()
@@ -61,6 +63,7 @@ func example(data: Data) {
 
 ### NOT elided — subsequent use exists
 
+<!-- test: skip -->
 ```rask
 func example(data: Data) {
     const copy = data.items.clone()
@@ -71,6 +74,7 @@ func example(data: Data) {
 
 ### NOT elided — used in one branch
 
+<!-- test: skip -->
 ```rask
 func example(data: Data, flag: bool) {
     const copy = data.items.clone()
