@@ -34,7 +34,7 @@ There is no distinction between "value types" and "reference types." Every type 
 - Structs — values (embed their fields)
 - Enums — values (inline payloads)
 - Collections (`Vec<T>`, `Map<K,V>`) — values that own heap buffers
-- Strings (`string`) — values that own heap buffers
+- Strings (`string`) — immutable refcounted values (Copy)
 - `any Trait` — values that own heap-allocated concrete data
 - `Cell<T>` — values that own a heap-allocated inner value
 - `Shared<T>`, `Mutex<T>` — values that own thread-safe inner data
@@ -197,7 +197,7 @@ Each mechanism has its own spec with full details. This section gives the shape 
 
 **Compile-time execution.** `comptime` runs a restricted subset of Rask in the compiler's interpreter — pure computation without I/O, pools, or concurrency. Build scripts (`build.rk`) handle full-language code generation. See [comptime.md](control/comptime.md).
 
-**Strings.** One owned type: `string` (UTF-8, move semantics). Slicing is inline — strings own heap buffers, same as Vec. `string_view` for lightweight stored indices, `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
+**Strings.** One type: `string` (UTF-8, immutable, refcounted, Copy). `string_builder` for construction. Slicing is inline — `.to_string()` copies bytes into a new independent string (no shared backing). `string_view` for lightweight stored indices, `StringPool` for validated handle-based access. See [strings.md](stdlib/strings.md).
 
 **Modules.** Package = directory. Two visibility levels: default (package-internal) and `public`. Imports are qualified by default; `using` for selective unqualified access. See [modules.md](structure/modules.md), [packages.md](structure/packages.md).
 
@@ -213,18 +213,18 @@ I'm not pretending there aren't costs to these choices. Every design has tradeof
 
 **Decision:** No storable references. References are block-scoped (struct fields, arrays) or inline expression-scoped (anything with a heap buffer). Multi-statement access via `with`.
 
-**Cost:** Code that passes strings/data through multiple layers needs explicit `.clone()` calls. In string-heavy code (CLI parsing, HTTP routing), expect ~5% of lines to have a clone. Computation-heavy code (game loops, data processing) typically has 0% clones.
+**Cost:** Collections (`Vec`, `Map`) and custom types that need sharing require explicit `.clone()` calls. Strings copy freely — `string` is immutable, refcounted, and Copy (16 bytes). The remaining clones concentrate at API boundaries for collections, not strings.
 
 **Benefit:** No lifetime annotations, no borrow checker complexity, no "fighting the borrow checker" experience. The mental model is simple: values are owned, borrows are temporary.
 
 **Comparison:**
-- **Go:** Copies strings freely (implicit, hidden cost)
-- **Rust:** Requires lifetime annotations to avoid copies
-- **Rask:** Explicit `.clone()` when copies are needed (visible cost, no annotations)
+- **Go:** Copies strings freely (implicit, GC handles memory)
+- **Rust:** Requires lifetime annotations or `.clone()` to avoid moves
+- **Rask:** Strings copy freely like Go. Collections use explicit `.clone()` (visible cost, no annotations)
 
-**When this hurts:** Error handlers that capture context (`path.clone()` in map_err), shared configuration passed to multiple subsystems.
+**When this hurts:** Collection cloning in error handlers that capture context, shared configuration passed to multiple subsystems.
 
-**When this is fine:** Most code. The clone calls are localized to API boundaries, not scattered through core logic.
+**When this is fine:** Most code. String-heavy code (CLI parsing, HTTP routing) has near-zero ceremony now that strings are Copy. The remaining clone calls are localized to API boundaries for collections.
 
 ### Pool Handle Overhead
 
@@ -301,7 +301,7 @@ I'm targeting the "90% of code" that doesn't need pointer-level control but bene
 
 I'm upfront about what Rask doesn't do well:
 
-1. **Explicit cloning:** Large values require explicit cloning to share access
+1. **Explicit cloning:** Collections and large values require explicit cloning to share access (strings are Copy — no cloning needed)
 2. **Key-based indirection:** Graphs and self-referential structures use handles, not pointers
 3. **No shared mutable references:** Cross-task data sharing uses channels (ownership transfer), `Shared<T>` / `Mutex<T>` (`with`-based scoped access), or explicit synchronization
 4. **Unsafe for low-level code:** OS/kernel work requires unsafe blocks with raw pointers
