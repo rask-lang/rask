@@ -190,7 +190,7 @@ extend Db {
         let last_key = ""
         for entry in all_entries {
             if entry.key == last_key { continue }
-            last_key = entry.key.clone()
+            last_key = entry.key
             if !entry.deleted {
                 deduped.push(entry)
             }

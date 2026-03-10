@@ -20,9 +20,9 @@ extend Memtable {
     func put(mutate self, take kv: KeyValue) {
         const key_len = kv.key.len()
         const val_len = kv.value.len()
-        const key = kv.key.clone()
+        const key = kv.key
         self.size_bytes += key_len + val_len
-        const pos = self.find_pos(key.clone())
+        const pos = self.find_pos(key)
 
         if pos < self.entries.len() && self.entries[pos].key == key {
             self.entries[pos] = kv
