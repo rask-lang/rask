@@ -191,12 +191,6 @@ pub fn monomorphize_with_packages(
     mono.run();
 
     // Compute layouts for concrete (non-generic) struct/enum types.
-    // Generic types need concrete type_args for correct field sizes;
-    // their layouts are computed per-instantiation, not here.
-    // Layout cache lets structs reference other user-defined types.
-    //
-    // Topological sort ensures types are processed after their dependencies,
-    // so a struct referencing an enum declared later gets the correct layout.
     let mut layout_cache = LayoutCache::new();
     let mut struct_layouts = Vec::new();
     let mut enum_layouts = Vec::new();
@@ -219,6 +213,37 @@ pub fn monomorphize_with_packages(
                 let layout = compute_union_layout(decl, &layout_cache);
                 layout_cache.insert(u.name.clone(), (layout.size, layout.align));
                 struct_layouts.push(layout);
+            }
+            _ => {}
+        }
+    }
+
+    // Compute layouts for generic struct/enum types. The 8-byte-everything
+    // layout model means all scalar type parameters produce the same field
+    // sizes, so a single layout per generic struct suffices. Use i64 as the
+    // placeholder type for each type parameter.
+    for decl in decls {
+        match &decl.kind {
+            DeclKind::Struct(s) if !s.type_params.is_empty() => {
+                let placeholder_args: Vec<Type> = s.type_params.iter()
+                    .map(|_| Type::I64)
+                    .collect();
+                let mut layout = compute_struct_layout(decl, &placeholder_args, &layout_cache);
+                // Strip type params from name so struct literals ("Box") match
+                let base_name = s.name.split('<').next().unwrap_or(&s.name).to_string();
+                layout.name = base_name.clone();
+                layout_cache.insert(base_name, (layout.size, layout.align));
+                struct_layouts.push(layout);
+            }
+            DeclKind::Enum(e) if !e.type_params.is_empty() => {
+                let placeholder_args: Vec<Type> = e.type_params.iter()
+                    .map(|_| Type::I64)
+                    .collect();
+                let mut layout = compute_enum_layout(decl, &placeholder_args, &layout_cache);
+                let base_name = e.name.split('<').next().unwrap_or(&e.name).to_string();
+                layout.name = base_name.clone();
+                layout_cache.insert(base_name, (layout.size, layout.align));
+                enum_layouts.push(layout);
             }
             _ => {}
         }

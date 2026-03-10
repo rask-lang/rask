@@ -161,6 +161,19 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
+    /// Size in bytes for a MirType. Struct/Enum sizes come from layouts; scalars are 8.
+    pub fn mir_type_size(&self, ty: &MirType) -> u32 {
+        match ty {
+            MirType::Struct(StructLayoutId(id)) => {
+                self.struct_layouts.get(*id as usize).map_or(8, |s| s.size)
+            }
+            MirType::Enum(EnumLayoutId(id)) => {
+                self.enum_layouts.get(*id as usize).map_or(8, |e| e.size)
+            }
+            _ => 8,
+        }
+    }
+
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
         self.enum_layouts
             .iter()
@@ -238,6 +251,15 @@ impl<'a> MirContext<'a> {
                     MirType::Struct(StructLayoutId(idx))
                 } else if let Some((idx, _)) = self.find_enum(name) {
                     MirType::Enum(EnumLayoutId(idx))
+                } else if let Some(base) = name.split('<').next() {
+                    // Generic type like "Box<i64>" — try base name "Box"
+                    if let Some((idx, _)) = self.find_struct(base) {
+                        MirType::Struct(StructLayoutId(idx))
+                    } else if let Some((idx, _)) = self.find_enum(base) {
+                        MirType::Enum(EnumLayoutId(idx))
+                    } else {
+                        MirType::Ptr
+                    }
                 } else {
                     MirType::Ptr
                 }
@@ -476,6 +498,10 @@ pub struct MirLowerer<'a> {
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
+    /// When set, `return expr` inside an inlined closure body assigns to the
+    /// target local and jumps to the continuation block instead of emitting
+    /// MirTerminator::Return.  Used by fold/reduce/etc.
+    inline_return_target: Option<(LocalId, BlockId)>,
 }
 
 impl<'a> MirLowerer<'a> {
@@ -662,6 +688,7 @@ impl<'a> MirLowerer<'a> {
             channel_elem_sizes: HashMap::new(),
             local_full_type: HashMap::new(),
             with_pool_bindings: HashMap::new(),
+            inline_return_target: None,
         };
 
         // Resolve Self type from function name: "Document_delete_line" → "Document"
@@ -700,11 +727,16 @@ impl<'a> MirLowerer<'a> {
                     let elem_mir = ctx.resolve_type_str(elem_str);
                     lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
                 }
+                if let Some(elem_str) = param_ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+                    let elem_mir = ctx.resolve_type_str(elem_str);
+                    lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
+                }
             }
 
             // Function-type params (|args| -> ret) are closures passed as arguments.
             // Register them so call sites emit ClosureCall instead of Call.
-            if param_ty_str.starts_with('|') {
+            // Parser normalizes |T| -> R to "func(T) -> R", so check both forms.
+            if param_ty_str.starts_with('|') || param_ty_str.starts_with("func(") {
                 lowerer.closure_locals.insert(param.name.clone());
                 let ret_ty = if let Some(arrow_pos) = param_ty_str.rfind("-> ") {
                     let ret_str = param_ty_str[arrow_pos + 3..].trim();
@@ -1442,6 +1474,7 @@ fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
         | "string_lines" | "string_split" | "string_split_whitespace"
         | "Map_keys" | "Map_values" => Some("Vec"),
         "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
+        "Thread_spawn" => Some("ThreadHandle"),
         "Shared_clone" => Some("Shared"),
         "Mutex_new" => Some("Mutex"),
         "Sender_clone" => Some("Sender"),
@@ -1481,9 +1514,22 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
         // handle into a Result stack slot (tag at offset 0, payload at 8).
         // Without this, field extraction uses offset 0 (the tag) instead
         // of 8, returning wrong handle values for non-first inserts.
-        "Pool_insert" => return MirType::Result {
+        "Pool_alloc" | "Pool_insert" => return MirType::Result {
             ok: Box::new(MirType::I64),
             err: Box::new(MirType::I64),
+        },
+        "Map_get" => return MirType::Option(Box::new(MirType::I64)),
+        "ThreadHandle_join" | "Thread_join" => return MirType::Result {
+            ok: Box::new(MirType::I64),
+            err: Box::new(MirType::String),
+        },
+        "string_parse_i32" | "string_parse_i64" | "string_parse_int" => return MirType::Result {
+            ok: Box::new(MirType::I64),
+            err: Box::new(MirType::String),
+        },
+        "string_parse_f64" | "string_parse_float" | "string_parse" => return MirType::Result {
+            ok: Box::new(MirType::F64),
+            err: Box::new(MirType::String),
         },
         _ => {}
     }
@@ -1502,6 +1548,7 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
     // String-returning functions
     if func_name == "string_new" || func_name == "string_from"
         || func_name == "string_clone"
+        || func_name == "Vec_join" || func_name == "Vec_join_i64"
         || func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
         || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")

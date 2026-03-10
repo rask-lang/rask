@@ -225,6 +225,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // rask_vec_join_i64(v: Vec<i64>*, separator: string*) → string*
+        StdlibEntry {
+            mir_name: "Vec_join_i64",
+            c_name: "rask_vec_join_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
 
         // rask_vec_sort(v: RaskVec*) → void
         StdlibEntry {
