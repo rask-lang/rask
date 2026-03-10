@@ -87,7 +87,7 @@ Use explicit bindings for: C++ libraries, complex macros (token pasting, stringi
 | **ST1: as_c_str** | `.as_c_str()` returns null-terminated `*u8` — zero-cost if already null-terminated, copies otherwise |
 | **ST2: ptr + len** | `.ptr` + `.len` for pointer+length APIs — NOT null-terminated |
 | **ST3: from_c** | `string.from_c(ptr)` copies from null-terminated C string (unsafe) |
-| **ST4: Lifetime** | `.as_c_str()` pointer invalidated if string moved, dropped, or mutated |
+| **ST4: Lifetime** | `.as_c_str()` pointer invalidated if string dropped (refcount reaches zero) |
 
 <!-- test: skip -->
 ```rask

@@ -20,7 +20,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 |------|-------------|
 | **VS1: Copy eligibility** | Copy if all fields are Copy AND total size ≤16 bytes |
 | **VS2: Primitives always Copy** | Primitives are always Copy |
-| **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (own heap memory) |
+| **VS3: Collections never Copy** | Vec, Pool, Map are never Copy (own heap memory, mutable). `string` is not a collection — it's a language primitive with compiler-special refcount semantics. No user-defined type can replicate string's refcounted Copy behavior. This is a deliberate exception, not a pattern |
 | **VS3.1: Trait objects never Copy** | `any Trait` is never Copy (owns heap data; copying would create two owners) |
 | **VS4: Sync types never Copy** | Shared, Mutex, Atomic* are never Copy |
 | **VS5: Automatic derivation** | Copy is structural — no `extend Copy` needed |
@@ -38,7 +38,7 @@ All types are values with single ownership. Small types (≤16 bytes) copy impli
 | >16 bytes | Move (ownership transfer) | Zero |
 | `.clone()` | Deep duplicate | Explicit, visible |
 
-**Common type coverage:** `(i64, i64)`, `Point3D{x, y, z: f32}`, `RGBA{r, g, b, a: u8}`, small enums.
+**Common type coverage:** `(i64, i64)`, `Point3D{x, y, z: f32}`, `RGBA{r, g, b, a: u8}`, `string`, small enums.
 
 ## Unique Types (Opt-Out)
 
@@ -108,7 +108,7 @@ func try_duplicate<T>(value: T) -> (T, T) {
 | `(i32, i32)` | Yes | 8 bytes, all fields Copy |
 | `Point{x: i32, y: i32}` | Yes | 8 bytes, all fields Copy |
 | `@unique struct UserId{id: u64}` | No | Explicitly unique |
-| `string` | No | >16 bytes, owns heap memory |
+| `string` | Yes | 16 bytes, immutable refcounted (see `std.strings/S1`) |
 | `Vec<i32>` | No | Collection type, never Copy |
 | `any Widget` | No | Trait object, owns heap data |
 

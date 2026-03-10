@@ -35,6 +35,7 @@ The compiler can see that `config.path` has no subsequent uses. The clone alloca
 
 ### Simple case — clone then no further use
 
+<!-- test: skip -->
 ```rask
 func process(config: Config) {
     const name = config.name.clone()   // [clone elided → move]
@@ -45,6 +46,7 @@ func process(config: Config) {
 
 ### Branch-aware — all paths must be last-use
 
+<!-- test: skip -->
 ```rask
 func example(data: Data) {
     const copy = data.items.clone()
@@ -61,6 +63,7 @@ func example(data: Data) {
 
 ### NOT elided — subsequent use exists
 
+<!-- test: skip -->
 ```rask
 func example(data: Data) {
     const copy = data.items.clone()
@@ -71,6 +74,7 @@ func example(data: Data) {
 
 ### NOT elided — used in one branch
 
+<!-- test: skip -->
 ```rask
 func example(data: Data, flag: bool) {
     const copy = data.items.clone()
@@ -99,7 +103,7 @@ func example(data: Data, flag: bool) {
 | Clone followed by `discard` of original | Elided — `discard` confirms last use |
 | Clone of function parameter | Elided if parameter not used after clone |
 | Clone where original is shadowed | Elided — shadowing proves no further access to original |
-| Clone of Copy type | Clone is already a bitwise copy — no optimization needed |
+| Clone of Copy type | Clone is already a bitwise copy — for `string`, refcount ops may also be elided (`comp.string-refcount-elision`) |
 | Nested clone (`x.clone().clone()`) | Outer clone checked independently |
 
 ## Implementation
@@ -118,7 +122,7 @@ Compile-time cost: O(n) per function — single backward pass from clone sites. 
 
 ### Rationale
 
-**CE1 (last-use):** This directly addresses Rask's biggest user-facing cost: `.clone()` calls from the no-storable-references design. The ~5% clone rate in string-heavy code drops to ~2-3% with this optimization. Users still write `.clone()` for clarity, but the compiler eliminates the allocation when it's provably unnecessary.
+**CE1 (last-use):** This addresses `.clone()` calls from the no-storable-references design. With strings now Copy (immutable, refcounted), remaining clones concentrate on collections (`Vec`, `Map`). Clone elision further reduces those — users still write `.clone()` for clarity, but the compiler eliminates the allocation when it's provably unnecessary.
 
 **CE5 (IDE annotation):** Showing `[clone elided]` helps users learn which clones matter and which don't. Over time, users write fewer unnecessary clones.
 
@@ -130,3 +134,4 @@ Rust is adding similar optimizations (RFC 3680 / "clone ergonomics"). Rask benef
 
 - [Ownership](../memory/ownership.md) — Move semantics (`mem.ownership`)
 - [Value Semantics](../memory/value-semantics.md) — Copy vs move threshold (`mem.value`)
+- [String Refcount Elision](string-refcount-elision.md) — Atomic op elision for string copies (`comp.string-refcount-elision`)

@@ -225,6 +225,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // rask_vec_join_i64(v: Vec<i64>*, separator: string*) → string*
+        StdlibEntry {
+            mir_name: "Vec_join_i64",
+            c_name: "rask_vec_join_i64",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
 
         // rask_vec_sort(v: RaskVec*) → void
         StdlibEntry {
@@ -375,8 +383,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_string_append(s: RaskString*, other: const RaskString*) → i64
-        // Inserted by the self-concat → append optimization pass.
+        // rask_string_append(s: RaskString*, other: const RaskString*) → RaskString*
+        // Returns s (or a COW copy if refcount > 1).
         StdlibEntry {
             mir_name: "string_append",
             c_name: "rask_string_append",
@@ -384,8 +392,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_string_append_cstr(s: RaskString*, cstr: const char*) → i64
-        // Variant for string constant args — avoids RaskString allocation.
+        // rask_string_append_cstr(s: RaskString*, cstr: const char*) → RaskString*
+        // COW-safe variant for string constant args.
         StdlibEntry {
             mir_name: "string_append_cstr",
             c_name: "rask_string_append_cstr",

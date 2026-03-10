@@ -1,25 +1,27 @@
 <!-- id: std.strings -->
 <!-- status: decided -->
-<!-- summary: Owned string, inline slicing, string_view, StringPool, string_builder, C interop -->
+<!-- summary: Immutable refcounted string (Copy), inline slicing, string_builder for construction -->
 <!-- depends: memory/borrowing.md, memory/value-semantics.md, memory/pools.md -->
 
 # String Handling
 
-Single owned `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `string_view` for lightweight stored indices, and `StringPool` for validated handle-based access.
+Immutable refcounted `string` type with UTF-8 validation, inline slicing for zero-copy expression access, `string_view` for lightweight stored indices, `StringPool` for validated handle-based access, and `string_builder` for construction.
 
 ## Type Categories
 
 | Rule | Description |
 |------|-------------|
-| **S1: Owned string** | `string` is the default. UTF-8 validated, move on assignment |
+| **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes `(header_ptr, len)`. Header: `(refcount: atomic_u32, capacity: u32, data: [u8])`. Under VS1 threshold → implicit Copy |
 | **S2: Inline slicing** | `s[i..j]` creates a temporary view valid only within the expression |
 | **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
+| **S6: Refcount semantics** | Atomic refcount in heap header. Literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
+| **S7: Builder for mutation** | `push_str`, `push_char`, `truncate`, `clear` live on `string_builder` only. `string` has no mutation methods |
 
 | Type | Description | Ownership | Storable? |
 |------|-------------|-----------|-----------|
-| `string` | UTF-8 validated, owned | Move on assignment | Yes |
+| `string` | UTF-8 immutable, refcounted | Copy (16 bytes) | Yes |
 | `string_view` | Plain indices into a string | Copy (2 words) | Yes |
 | `string_builder` | Growable mutable buffer | Move on assignment | Yes |
 | `StringPool` | Pool of strings with validated handles | Move on assignment | Yes |
@@ -30,18 +32,17 @@ Single owned `string` type with UTF-8 validation, inline slicing for zero-copy e
 
 | Rule | Description |
 |------|-------------|
-| **O1: Move on assign** | `const s2 = s1` moves; `s1` becomes invalid |
-| **O2: Explicit clone** | `s1.clone()` creates independent copy (visible allocation) |
-| **O3: Borrow inferred** | `func foo(s: string)` borrows for call duration (compiler infers mode) |
-| **O4: Explicit take** | `func foo(take s: string)` transfers ownership |
+| **O1: Copy on assign** | `const s2 = s1` copies 16-byte header + atomic increment. Both remain valid |
+| **O2: Borrow inferred** | `func foo(s: string)` borrows for call duration. No refcount change |
+| **O3: Explicit take** | `func foo(take s: string)` transfers ownership, decrements caller's count |
 
-> Most string `.clone()` calls are unnecessary — O3 handles the common case. See [Why Not COW Strings?](#why-not-cow-strings) in the appendix for patterns that minimize clones.
+> `string` is Copy. No `.clone()` needed — assignment copies the 16-byte header and bumps the refcount. This is one of the few types that owns heap memory but is still Copy, because the immutable + refcounted design makes sharing safe.
 
 ## Inline Slicing
 
-`s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned.
+`s[i..j]` creates a temporary view valid only within the expression (S2). Cannot be assigned, stored, or returned. `.to_string()` copies the slice bytes into a new independent refcounted string — no shared backing with the source.
 
-Strings have internal heap buffers that can reallocate — same as Vec. This makes them growable sources under `mem.borrowing/B2`, regardless of whether the binding is `const` or `let`.
+Slicing follows the same inline access rules as Vec and other growable sources under `mem.borrowing/B2`.
 
 | Context | Example | Valid? |
 |---------|---------|--------|
@@ -52,7 +53,7 @@ Strings have internal heap buffers that can reallocate — same as Vec. This mak
 | Struct field | `Foo { field: s[0..5] }` | Compile error |
 | Return value | `return s[0..5]` | Compile error |
 
-> **Rejected alternative: block-scoped slicing for `const` strings.** A `const` string's buffer can't reallocate, so block-scoped views would be memory-safe. I rejected this because (1) it introduces a hidden view type distinct from owned `string` — functions receiving the view need borrow-of-borrow tracking, (2) it violates the "no storable references" principle that makes Rask's ownership model simple, and (3) the ergonomic win is small — `.to_string()` or `string_view` indices cover the stored-slice use case without borrow tracking. Strings are buffers. Buffers go in the growable bucket.
+> **Why copy on `.to_string()`, not shared slice?** A 50-byte substring must not silently retain a 10MB source buffer. `.to_string()` copies bytes into a fresh allocation with its own refcount. The cost is visible and bounded by the slice size, not the source size. This prevents the classic "small slice pins large buffer" memory leak.
 
 ## The `string_view` Type
 
@@ -117,25 +118,30 @@ Iterators borrow for expression scope only. Cannot be stored.
 
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
-| `"literal"` | `string` | Static storage, compile-time validated |
+| `"literal"` | `string` | Static storage, compile-time validated, sentinel refcount (never freed) |
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
 | `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
-| `slice.to_string()` | `string` | Convert expression slice to owned (allocates) |
+| `slice.to_string()` | `string` | Copy slice bytes into new independent string (allocates) |
 
 ## String Builder
+
+`string_builder` is the sole owner of its buffer — mutation is always O(1) amortized. `string` has no mutation methods.
 
 | Operation | Signature | Notes |
 |-----------|-----------|-------|
 | `string_builder.new()` | `() -> string_builder` | Empty builder |
 | `string_builder.with_capacity(n)` | `(usize) -> string_builder` | Pre-allocate |
-| `b.append(s: string)` | `(self)` | Append string/slice |
+| `b.append(s)` | `(self, s: string)` | Append string/slice |
 | `b.append_char(c)` | `(self, c: char)` | Append char |
-| `b.build()` | `(self) -> string` | Consume builder, return string |
+| `b.build()` | `(take self) -> string` | Consume builder, return string |
+| `b.build_and_reset()` | `(self) -> string` | Return built string, reset to empty. Zero-copy buffer handoff |
 | `b.clear()` | `(self)` | Clear contents, keep capacity |
 | `b.len()` | `(self) -> usize` | Current byte length |
 
-`build()` consumes the builder. To reuse: call `clear()` after building.
+`build()` consumes the builder. `build_and_reset()` hands off the internal buffer to the new string and gives the builder a fresh allocation — for use with `mutate` parameters or accumulator loops where consuming isn't possible.
+
+**Interpolation optimization:** `builder.append("hello {name}")` — compiler desugars interpolation directly into builder appends, avoiding temp string allocation.
 
 ## Concatenation and Formatting
 
@@ -158,15 +164,6 @@ const names = ["Alice", "Bob", "Charlie"]
 const result = names.join(", ")    // "Alice, Bob, Charlie"
 const csv = headers.join(",")      // CSV header row
 ```
-
-## In-Place Mutation
-
-| Operation | Signature | Notes |
-|-----------|-----------|-------|
-| `s.push(c)` or `s.push_char(c)` | `(self, c: char)` | Append char, may reallocate |
-| `s.push_str(other)` | `(self)` | Append string/slice |
-| `s.truncate(len)` | `(self, len: usize)` | Truncate to `len` bytes |
-| `s.clear()` | `(self)` | Clear contents, keep capacity |
 
 ## Searching
 
@@ -218,14 +215,14 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Return | Notes |
 |-----------|--------|-------|
-| `s.replace(from, to)` | `string` | Replace all occurrences of pattern, allocates |
-| `s.reverse()` | `string` | Reverse string by Unicode scalars, allocates |
+| `s.replace(from, to)` | `string` | Replace all occurrences of pattern, allocates new string |
+| `s.reverse()` | `string` | Reverse string by Unicode scalars, allocates new string |
 
 ## Equality and Comparison
 
 | Operation | Cost | Notes |
 |-----------|------|-------|
-| `s1 == s2` | O(n) | Byte-wise (length check first) |
+| `s1 == s2` | O(1) or O(n) | Pointer+length fast path: same backing buffer and same length → equal without byte comparison. Otherwise byte-wise (length check first) |
 | `s1 < s2` | O(n) | Lexicographic |
 | `s.hash()` | O(n) | Not cached |
 
@@ -294,6 +291,21 @@ FIX: Accept string and let the compiler infer borrow mode:
   public func parse(s: string) -> Token
 ```
 
+```
+ERROR [std.strings/S7]: cannot mutate string
+   |
+3  |  s.push_str("x")
+   |    ^^^^^^^^ string is immutable
+
+WHY: Use string_builder for construction.
+
+FIX:
+  let b = string_builder.new()
+  b.append(s)
+  b.append("x")
+  const result = b.build()
+```
+
 ## Edge Cases
 
 | Case | Rule | Handling |
@@ -303,13 +315,13 @@ FIX: Accept string and let the compiler infer borrow mode:
 | Slice not on char boundary | S5 | Panic at runtime |
 | Embedded `\0` in string | — | Valid; `to_cstring()` returns error |
 | Allocation failure | — | Returns `Result` error |
-| String literal moved | O1 | Semantic move, memory never freed (static storage) |
+| String literal | S6 | Sentinel refcount, never freed/decremented |
 | `string_view` of freed source | — | Undefined behavior (user's responsibility) |
 | `string_view` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
 | `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
 | `StringSlice` wrong pool | — | `pool.get(slice)` returns `None` |
-| Mutation during iteration | — | Compile error (iterator holds borrow) |
-| Multiple simultaneous iterators | — | Allowed for read-only |
+| Refcount overflow | S6 | Panic (practically unreachable — requires ~4 billion live copies) |
+| Multiple simultaneous iterators | — | Allowed (string is immutable) |
 
 ---
 
@@ -317,74 +329,110 @@ FIX: Accept string and let the compiler infer borrow mode:
 
 ### Rationale
 
-**S1 (single owned type):** One string type covers the common case. `string_view` and `StringPool` handle the uncommon stored-reference case without polluting the default API.
+**S1 (immutable, refcounted, Copy):** I audited all validation programs (~5,000 lines including LSM database, stdlib). Found ~60+ `.clone()` on strings — concentrated in lock scope reads, divergent use, and parser state flush. Evaluated three models:
 
-**S2 (inline slicing):** Strings own heap buffers — they're growable sources, same as Vec. Slices are temporary views for the expression. The cost is more `.to_string()` calls when you need a stored value, or `string_view` indices when you need lightweight stored references. I think that's better than introducing a hidden view type with borrow tracking — which is what block-scoped string slices would require. Consistency over cleverness: buffers get inline access.
+- **Status quo** — O(n) clone, 60+ explicit `.clone()` calls
+- **COW** — O(1) clone but hidden O(n) mutation cost (violates transparency)
+- **Immutable + refcount** — O(1) copy, no hidden costs, builder for mutation
+
+Immutable wins over COW: no hidden mutation cost, builder is sole owner so mutation is always O(1). Refcount over GC: deterministic, fits the ownership model. Builder pattern is established (Go, C#, Java) and concentrated in few callsites (~8 `.build()` calls across a 1,114-line renderer).
+
+This is one of the few cases where a type owns heap memory but is still Copy. The immutable + refcounted design makes sharing safe — there's no aliased mutation to worry about. The 16-byte `(header_ptr, len)` representation fits under the VS1 threshold.
+
+**S2 (inline slicing):** Strings own heap buffers — they're growable sources, same as Vec. Slices are temporary views for the expression. `.to_string()` copies bytes into a new independent string — no shared backing. A 50-byte slice must not silently retain a 10MB source buffer. The `.to_string()` calls are honest cost markers bounded by the slice size, not the source size.
 
 **S3 (public APIs use string):** Forces a clean boundary. Callers never need to know about internal storage strategies.
 
 **S5 (byte indices):** Byte indexing matches the underlying UTF-8 representation. Character indexing would be O(n) and misleading for multi-byte characters.
 
-### Why Not COW Strings?
+**S6 (refcount semantics):** Atomic refcount enables safe sharing across tasks. Sentinel refcount for literals avoids overhead on the most common case. Compiler optimization for provably sole-owner strings eliminates atomic ops when sharing can't happen.
 
-COW (copy-on-write) strings were considered and rejected. Under COW, strings share their buffer via reference counting, cloning only on mutation. Fewer `.clone()` calls — but it violates core design principles.
+**S7 (builder for mutation):** All mutation lives on `string_builder`. This means `string` is truly immutable — no COW surprise, no hidden cost. The builder is always the sole owner of its buffer, so mutation is always O(1) amortized.
 
-**Transparency of cost.** COW mutation is O(n) when the string is shared, O(1) when unique. The call site looks identical either way. The cost depends on sharing state established elsewhere — non-local reasoning that Rask exists to prevent.
+### Why Immutable Strings?
 
-**Consistency.** `Vec<T>`, `Map<K,V>`, and every other heap type use move semantics. Making `string` special creates a rule to remember. "All heap types move" is one rule; "all heap types move except strings" is two rules and a footnote.
+Three models were evaluated with concrete impact across ~5,000 lines of validation programs:
 
-**Refcount overhead.** Every string carries an atomic reference count. Atomic operations are cheap individually but they add up in string-heavy code — and they're invisible at the call site.
+**Status quo (owned, mutable, move semantics):** 60+ `.clone()` calls. Half eliminable with O3 borrow inference, but ~30 genuinely needed for lock scope reads, divergent use, and parser state flush. Each clone is O(n).
 
-**The actual clone count is low.** I audited the four validation programs (~600 lines, 30 `.clone()` calls). Half were eliminable using existing language features — O3 borrow inference and consuming iteration. The remaining 15 are genuinely needed: cross-task sharing, undo buffers, constructing owned error messages from borrowed data, extracting fields from inside lock scopes. COW wouldn't eliminate those either; it would just hide them.
+**COW (copy-on-write, shared buffer):** O(1) clone — just bump the refcount. But mutation is O(n) when shared, O(1) when unique. The cost depends on sharing state established elsewhere — non-local reasoning that Rask exists to prevent. Violates transparency of cost.
 
-#### Patterns That Minimize Clones
+**Immutable + refcount (this design):** O(1) copy (16-byte header + atomic increment). No hidden costs. Builder is sole owner so mutation is always O(1). Eliminates all `.clone()` on strings.
 
-**O3 borrow inference — most function calls don't need clones:**
+The grep_clone validation program (string-heavy CLI tool) had zero `.clone()` calls even under the status quo — but that's because it was carefully structured. The immutable design means you don't need careful structuring; strings just copy freely like in Go.
+
+**Why not COW?** The call site looks identical for O(1) and O(n) mutation. The cost depends on how many other references exist — invisible at the mutation site. This is exactly the kind of hidden cost Rask exists to prevent.
+
+**Why refcount, not GC?** Deterministic cleanup. Fits the ownership model. No pauses.
+
+**Why Copy despite owning heap memory?** Normally heap-owning types move. But `string` is immutable — there's no aliased mutation risk. The refcount makes sharing safe. And at 16 bytes, it fits under the Copy threshold. This is a principled exception, not a hack.
+
+### Why Only String?
+
+`string` is a language primitive, like `i32` or `bool`. The compiler knows its exact layout and refcount semantics — user types can't opt into refcounted Copy behavior.
+
+The pressure to extend this to `Path`, `Vec<u8>`, or custom wrappers is anticipated and rejected. Those types are mutable — refcounted Copy requires immutability. And even for hypothetical user-defined immutable types, the compiler can't verify deep immutability without a whole new annotation system. Getting it wrong means data races from elided refcounts on aliased mutable data.
+
+For cheap sharing of arbitrary data, use `Shared<T>` — explicit, visible, correct. `string` gets special treatment because it's the most common type in most programs and the ergonomic cost of `.clone()` on strings was disproportionate to the actual risk.
+
+### Builder Patterns
+
+**Basic construction:**
 
 <!-- test: skip -->
 ```rask
-// NO clone needed — fs.read_file borrows path for call duration
-const content = try fs.read_file(path)
-
-// NO clone needed — line and pattern are borrowed
-const matches = line_matches(line, pattern, ignore_case)
+let b = string_builder.new()
+b.append("User: ")
+b.append(name)
+b.append_char('\n')
+const msg = b.build()
 ```
 
-**Consuming iteration for arg parsing:**
+**Accumulator pattern** — `build_and_reset()` for flush-text style loops:
 
 <!-- test: skip -->
 ```rask
-func parse_args(take args: Vec<string>) -> Options or Error {
-    let positional = Vec.new()
-    for arg in args.take_all().skip(1) {
-        match arg {
-            "-v" => verbose = true,
-            _ => positional.push(arg),  // arg is owned, no clone
-        }
+func flush_lines(lines: Vec<string>, mutate builder: string_builder) -> Vec<string> {
+    let results = Vec.new()
+    for line in lines {
+        builder.append(line)
+        builder.append_char('\n')
+        results.push(builder.build_and_reset())
     }
-    // positional elements are owned — extract without cloning
-    opts.pattern = positional.remove(0)
-    opts.files = positional  // move remaining
-    return Ok(opts)
+    return results
 }
 ```
 
-**Restructure before divergent use:**
+**Rendering trait pattern:**
 
 <!-- test: skip -->
 ```rask
-// Instead of cloning opts.files to iterate + cloning opts per call:
-for file_path in opts.files.take_all() {     // consume files vec
-    grep_file(file_path, opts)               // O3 borrows opts (files field now empty, that's fine)
+trait Renderable {
+    func render(self, mutate builder: string_builder)
+}
+
+extend HtmlTag: Renderable {
+    func render(self, mutate builder: string_builder) {
+        builder.append("<{self.tag}>")
+        for child in self.children {
+            child.render(builder)
+        }
+        builder.append("</{self.tag}>")
+    }
 }
 ```
 
-**When `.clone()` is genuinely needed:**
-- Cross-task sharing (`Shared<T>.clone()`, channel sender `.clone()`)
-- Undo buffers (old state must survive the edit)
-- Reading from a Pool element to return an owned value
-- Constructing owned error values from borrowed parameters
-- Building owned data inside a `with shared.read()` block (fields must be cloned out of the lock scope)
+**Interpolation in builder** — compiler desugars efficiently:
+
+<!-- test: skip -->
+```rask
+// These are equivalent, but the compiler optimizes the interpolation
+// form to avoid creating a temp string:
+builder.append("tag {value}")
+// ≈
+builder.append("tag ")
+builder.append(value.to_string())
+```
 
 ### Patterns & Guidance
 
@@ -393,23 +441,12 @@ for file_path in opts.files.take_all() {     // consume files vec
 <!-- test: skip -->
 ```rask
 const s1 = "hello"
-const s2 = s1  // MOVE: s1 invalid
+const s2 = s1  // COPY: both s1 and s2 valid (refcount incremented)
 
 process(s2[0..3])  // passes "hel" as temporary slice
 
 const view = string_view(0, 3)
 process(s2[view])  // user ensures s2 is still valid
-```
-
-**Building strings:**
-
-<!-- test: skip -->
-```rask
-const builder = string_builder.with_capacity(100)
-builder.append("User: ")
-builder.append(name)
-builder.append_char('\n')
-const msg = builder.build()
 ```
 
 **Parsing with StringPool (validated access):**
@@ -442,10 +479,10 @@ for (i, c) in text.char_indices() {
 
 ### Integration
 
-- `string` implements `Cloneable`, `Displayable`, `Hashable`, `Comparable` traits
+- `string` implements `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1)
 - All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
-- String literals and interpolation at comptime produce static strings
+- String literals and interpolation at comptime produce static strings (sentinel refcount)
 
 ### Implementation Notes (Interpreter)
 
@@ -456,7 +493,7 @@ Current interpreter behavior differs from spec in some areas:
 - This causes allocation but matches common usage patterns
 
 **Method name aliases:**
-- `s.push(c)` and `s.push_char(c)` both work
+- `s.push(c)` and `s.push_char(c)` both work (on builder)
 - `s.parse()` and `s.parse_int()` both work
 - `s.index_of(pat)` is alias for `s.find(pat)`
 

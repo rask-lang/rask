@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-// String — UTF-8 owned string, always null-terminated.
+// String — UTF-8 immutable refcounted string, always null-terminated.
 // Internal buffer has room for the null byte beyond the reported length.
+// Refcounted: clone is O(1) (atomic increment), free decrements and frees at 0.
+// Sentinel refcount (INT32_MAX) marks literals that are never freed.
 
 #include "rask_runtime.h"
 #include <stdio.h>
@@ -9,11 +11,39 @@
 #include <string.h>
 #include <dirent.h>
 
+#define RASK_RC_SENTINEL INT32_MAX
+
 struct RaskString {
+    int32_t refcount; // atomic; RASK_RC_SENTINEL = never freed
     char   *data;
     int64_t len;
     int64_t cap; // capacity excluding null terminator
 };
+
+// Copy-on-write: if buffer is shared (refcount > 1), detach into a private copy.
+// Returns s if sole owner, or a new RaskString with its own buffer.
+static RaskString *string_cow(RaskString *s) {
+    if (!s || s->refcount <= 1) return s;
+    if (s->refcount == RASK_RC_SENTINEL) {
+        // Literal — create a mutable copy
+        RaskString *new_s = (RaskString *)rask_alloc(sizeof(RaskString));
+        new_s->refcount = 1;
+        new_s->len = s->len;
+        new_s->cap = s->len;
+        new_s->data = (char *)rask_alloc(s->len + 1);
+        memcpy(new_s->data, s->data, (size_t)s->len + 1);
+        return new_s;
+    }
+    // Shared — detach
+    RaskString *new_s = (RaskString *)rask_alloc(sizeof(RaskString));
+    new_s->refcount = 1;
+    new_s->len = s->len;
+    new_s->cap = s->len;
+    new_s->data = (char *)rask_alloc(s->len + 1);
+    memcpy(new_s->data, s->data, (size_t)s->len + 1);
+    __atomic_sub_fetch(&s->refcount, 1, __ATOMIC_ACQ_REL);
+    return new_s;
+}
 
 static void string_grow(RaskString *s, int64_t needed) {
     if (needed <= s->cap) return;
@@ -29,6 +59,7 @@ static void string_grow(RaskString *s, int64_t needed) {
 
 RaskString *rask_string_new(void) {
     RaskString *s = (RaskString *)rask_alloc(sizeof(RaskString));
+    s->refcount = 1;
     s->data = (char *)rask_alloc(1);
     s->data[0] = '\0';
     s->len = 0;
@@ -40,6 +71,7 @@ RaskString *rask_string_from(const char *cstr) {
     if (!cstr) return rask_string_new();
     int64_t len = (int64_t)strlen(cstr);
     RaskString *s = (RaskString *)rask_alloc(sizeof(RaskString));
+    s->refcount = 1;
     s->data = (char *)rask_alloc(len + 1);
     memcpy(s->data, cstr, (size_t)len + 1);
     s->len = len;
@@ -50,6 +82,7 @@ RaskString *rask_string_from(const char *cstr) {
 RaskString *rask_string_from_bytes(const char *data, int64_t len) {
     if (!data || len <= 0) return rask_string_new();
     RaskString *s = (RaskString *)rask_alloc(sizeof(RaskString));
+    s->refcount = 1;
     s->data = (char *)rask_alloc(len + 1);
     memcpy(s->data, data, (size_t)len);
     s->data[len] = '\0';
@@ -60,8 +93,11 @@ RaskString *rask_string_from_bytes(const char *data, int64_t len) {
 
 void rask_string_free(RaskString *s) {
     if (!s) return;
-    if (s->data) rask_realloc(s->data, s->cap + 1, 0);
-    rask_realloc(s, (int64_t)sizeof(RaskString), 0);
+    if (s->refcount == RASK_RC_SENTINEL) return;
+    if (__atomic_sub_fetch(&s->refcount, 1, __ATOMIC_ACQ_REL) == 0) {
+        if (s->data) rask_realloc(s->data, s->cap + 1, 0);
+        rask_realloc(s, (int64_t)sizeof(RaskString), 0);
+    }
 }
 
 int64_t rask_string_len(const RaskString *s) {
@@ -73,22 +109,23 @@ const char *rask_string_ptr(const RaskString *s) {
     return s->data;
 }
 
-int64_t rask_string_push_byte(RaskString *s, uint8_t byte) {
-    if (!s) return -1;
+RaskString *rask_string_push_byte(RaskString *s, uint8_t byte) {
+    if (!s) return s;
+    s = string_cow(s);
     string_grow(s, s->len + 1);
     s->data[s->len] = (char)byte;
     s->len++;
     s->data[s->len] = '\0';
-    return 0;
+    return s;
 }
 
 // Encode a Unicode codepoint as UTF-8 and append it.
-int64_t rask_string_push_char(RaskString *s, int32_t cp) {
-    if (!s) return -1;
+RaskString *rask_string_push_char(RaskString *s, int32_t cp) {
+    if (!s) return s;
     uint8_t buf[4];
     int n;
     if (cp < 0) {
-        return -1;
+        return s;
     } else if (cp <= 0x7F) {
         buf[0] = (uint8_t)cp;
         n = 1;
@@ -98,7 +135,7 @@ int64_t rask_string_push_char(RaskString *s, int32_t cp) {
         n = 2;
     } else if (cp <= 0xFFFF) {
         // Reject surrogates — not valid Unicode scalar values
-        if (cp >= 0xD800 && cp <= 0xDFFF) return -1;
+        if (cp >= 0xD800 && cp <= 0xDFFF) return s;
         buf[0] = 0xE0 | (uint8_t)(cp >> 12);
         buf[1] = 0x80 | (uint8_t)((cp >> 6) & 0x3F);
         buf[2] = 0x80 | (uint8_t)(cp & 0x3F);
@@ -110,38 +147,44 @@ int64_t rask_string_push_char(RaskString *s, int32_t cp) {
         buf[3] = 0x80 | (uint8_t)(cp & 0x3F);
         n = 4;
     } else {
-        return -1; // invalid codepoint
+        return s; // invalid codepoint
     }
+    s = string_cow(s);
     string_grow(s, s->len + n);
     memcpy(s->data + s->len, buf, (size_t)n);
     s->len += n;
     s->data[s->len] = '\0';
-    return 0;
+    return s;
 }
 
-int64_t rask_string_append(RaskString *s, const RaskString *other) {
-    if (!s || !other || other->len == 0) return 0;
+RaskString *rask_string_append(RaskString *s, const RaskString *other) {
+    if (!s || !other || other->len == 0) return s;
+    s = string_cow(s);
     string_grow(s, s->len + other->len);
     memcpy(s->data + s->len, other->data, (size_t)other->len);
     s->len += other->len;
     s->data[s->len] = '\0';
-    return 0;
+    return s;
 }
 
-int64_t rask_string_append_cstr(RaskString *s, const char *cstr) {
-    if (!s || !cstr) return 0;
+RaskString *rask_string_append_cstr(RaskString *s, const char *cstr) {
+    if (!s || !cstr) return s;
     int64_t clen = (int64_t)strlen(cstr);
-    if (clen == 0) return 0;
+    if (clen == 0) return s;
+    s = string_cow(s);
     string_grow(s, s->len + clen);
     memcpy(s->data + s->len, cstr, (size_t)clen);
     s->len += clen;
     s->data[s->len] = '\0';
-    return 0;
+    return s;
 }
 
 RaskString *rask_string_clone(const RaskString *s) {
     if (!s) return rask_string_new();
-    return rask_string_from_bytes(s->data, s->len);
+    if (s->refcount != RASK_RC_SENTINEL) {
+        __atomic_add_fetch(&((RaskString *)s)->refcount, 1, __ATOMIC_RELAXED);
+    }
+    return (RaskString *)s;
 }
 
 int64_t rask_string_eq(const RaskString *a, const RaskString *b) {
@@ -170,6 +213,7 @@ RaskString *rask_string_concat(const RaskString *a, const RaskString *b) {
     const char *bd = b ? b->data : "";
     int64_t blen = b ? b->len : 0;
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->refcount = 1;
     r->len = rask_safe_add(alen, blen);
     r->cap = r->len;
     r->data = (char *)rask_alloc(rask_safe_add(r->len, 1));
@@ -188,6 +232,7 @@ int64_t rask_string_contains(const RaskString *haystack, const RaskString *needl
 RaskString *rask_string_to_lowercase(const RaskString *s) {
     if (!s || s->len == 0) return rask_string_new();
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->refcount = 1;
     r->len = s->len;
     r->cap = s->len;
     r->data = (char *)rask_alloc(s->len + 1);
@@ -315,6 +360,7 @@ RaskString *rask_string_replace(const RaskString *s, const RaskString *from, con
 
     int64_t new_len = rask_safe_add(s->len, rask_safe_mul(count, to_len - from->len));
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->refcount = 1;
     r->len = new_len;
     r->cap = new_len;
     r->data = (char *)rask_alloc(rask_safe_add(new_len, 1));
@@ -364,7 +410,7 @@ RaskString *rask_f64_to_string(double val) {
 
 RaskString *rask_char_to_string(int32_t codepoint) {
     RaskString *s = rask_string_new();
-    rask_string_push_char(s, codepoint);
+    s = rask_string_push_char(s, codepoint);
     return s;
 }
 
@@ -501,6 +547,7 @@ RaskString *rask_string_repeat(const RaskString *s, int64_t count) {
     if (!s || count <= 0) return rask_string_new();
     int64_t total = s->len * count;
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->refcount = 1;
     r->data = (char *)rask_alloc(total + 1);
     r->cap = total + 1;
     r->len = total;
@@ -515,6 +562,7 @@ RaskString *rask_string_repeat(const RaskString *s, int64_t count) {
 RaskString *rask_string_reverse(const RaskString *s) {
     if (!s) return rask_string_new();
     RaskString *r = (RaskString *)rask_alloc(sizeof(RaskString));
+    r->refcount = 1;
     r->data = (char *)rask_alloc(s->len + 1);
     r->cap = s->len + 1;
     r->len = s->len;
@@ -576,9 +624,10 @@ int64_t rask_string_ge(const RaskString *a, const RaskString *b) {
     return rask_string_compare(a, b) >= 0;
 }
 
-// push_str: append another string (mutates in place)
+// push_str: append another string (builder-only, must be sole owner)
 void rask_string_push_str(RaskString *s, const RaskString *other) {
     if (!s || !other || other->len == 0) return;
+    // Builder context — must be sole owner. COW via rask_string_append.
     rask_string_append(s, other);
 }
 

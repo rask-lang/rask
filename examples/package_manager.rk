@@ -949,7 +949,7 @@ func topo_visit(
     mutate visited: Map<string, bool>,
     mutate order: Vec<Handle<ResolvedPkg>>,
 ) {
-    const name = with graph.packages[handle] as pkg { pkg.meta.name.clone() }
+    const name = graph.packages[handle].meta.name.clone()
     if visited.contains_key(name) { return }
     visited.insert(name, true)
 

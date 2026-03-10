@@ -17,6 +17,8 @@ Value semantics with single ownership, scoped borrowing, and handle-based indire
 | **O3: Invalid after move** | Using the original variable after a move is a compile error |
 | **O4: Explicit clone** | To keep access while transferring, clone explicitly |
 
+> **Note:** `string` is Copy (immutable, refcounted, 16 bytes) — assignment copies the header and bumps the refcount. No `.clone()` needed. O2/O4 apply to collections (`Vec`, `Map`) and other heap-owning types.
+
 <!-- test: parse -->
 ```rask
 const a = Vec.new()

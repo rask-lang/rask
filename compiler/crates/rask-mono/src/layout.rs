@@ -190,6 +190,12 @@ fn align_up(val: u32, align: u32) -> u32 {
 pub(crate) fn parse_field_type(s: &str) -> Type {
     let s = s.trim();
 
+    // Option shorthand: T? → Option<T>
+    if s.ends_with('?') {
+        let inner = parse_field_type(&s[..s.len() - 1]);
+        return Type::Option(Box::new(inner));
+    }
+
     // Result type: "T or E"
     if let Some(idx) = s.find(" or ") {
         let ok = parse_field_type(&s[..idx]);

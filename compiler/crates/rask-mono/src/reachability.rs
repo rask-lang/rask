@@ -76,11 +76,23 @@ fn register_method(
         kind: DeclKind::Fn(method.clone()),
         span: parent_decl.span,
     };
-    method_table.insert(qualified.clone(), wrapped);
+    method_table.insert(qualified.clone(), wrapped.clone());
     method_by_bare_name
         .entry(method.name.clone())
         .or_default()
-        .push(qualified);
+        .push(qualified.clone());
+
+    // For generic types like Box<T>, also register under the stripped name (Box_new)
+    // so MIR calls that strip generic params can resolve the method.
+    let base = type_name.split('<').next().unwrap_or(type_name);
+    if base != type_name {
+        let stripped = format!("{}_{}", base, method.name);
+        method_table.entry(stripped.clone()).or_insert(wrapped);
+        method_by_bare_name
+            .entry(method.name.clone())
+            .or_default()
+            .push(stripped);
+    }
 }
 
 impl<'a> Monomorphizer<'a> {
