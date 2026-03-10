@@ -15,6 +15,9 @@ pub enum MirStmt {
         addr: LocalId,
         offset: u32,
         value: MirOperand,
+        /// Byte size of the store (e.g. 4 for f32, 1 for bool).
+        /// When None, codegen uses the natural size of the value.
+        store_size: Option<u32>,
     },
     Call {
         dst: Option<LocalId>,
