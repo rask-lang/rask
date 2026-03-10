@@ -68,12 +68,12 @@ extend Document {
     func get_line(self, index: i32) -> Option<string> {
         if index < 0 || index >= self.line_count(): return None
         const h = self.line_order[index as usize]
-        return Some(self.lines[h].text.clone())
+        return Some(self.lines[h].text)
     }
 
     // Insert a new line after the given index (-1 for beginning)
     func insert_line(self, after: i32, text: string) -> () or Error {
-        const h = try self.lines.insert(Line { text: text.clone() })
+        const h = try self.lines.insert(Line { text: text })
         const raw_pos = after + 1
         const insert_pos = if raw_pos > self.line_order.len(): self.line_order.len() else: raw_pos
         self.line_order.insert(insert_pos, h)
@@ -102,8 +102,8 @@ extend Document {
         if at < 0 || at >= self.line_count(): return Err(Error.IndexOutOfBounds)
 
         const h = self.line_order[at as usize]
-        const old_text = self.lines[h].text.clone()
-        self.lines[h].text = new_text.clone()
+        const old_text = self.lines[h].text
+        self.lines[h].text = new_text
 
         // Record for undo
         self.undo_stack.push(EditCommand.ModifyLine(at: at, old_text: old_text, new_text: new_text))
@@ -215,7 +215,7 @@ func parse_command(input: string) -> Option<EditorCommand> {
         }
         "u" | "undo" => Some(EditorCommand.Undo),
         "r" | "redo" => Some(EditorCommand.Redo),
-        "w" | "save" if parts.len() >= 2 => Some(EditorCommand.Save(path: parts[1].clone())),
+        "w" | "save" if parts.len() >= 2 => Some(EditorCommand.Save(path: parts[1])),
         "p" | "print" => Some(EditorCommand.Print),
         "q" | "quit" => Some(EditorCommand.Quit),
         "h" | "help" => Some(EditorCommand.Help),

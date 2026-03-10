@@ -568,7 +568,7 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
 
     // Insert root package
     const root_meta = PackageMeta {
-        name: manifest.name.clone(),
+        name: manifest.name,
         version: manifest.version,
         checksum: "",
         deps: Vec.new(),
@@ -580,7 +580,7 @@ func resolve(manifest: Manifest, registry: any Registry) -> DepGraph or FetchErr
 
     // Resolve each dependency
     for dep in manifest.deps {
-        const handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
+        const handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
         with state.packages[root] as root_pkg {
             root_pkg.deps.push(handle)
         }
@@ -621,7 +621,7 @@ func resolve_one(
             const con_str = constraint.to_string()
             const ver_str = existing.meta.version.to_string()
             return Err(FetchError.Resolve(ResolveError.Conflict(
-                name.clone(),
+                name,
                 ver_str,
                 con_str,
             )))
@@ -638,25 +638,25 @@ func resolve_one(
 
     const meta = candidates.first() is Some else {
         const con_str = constraint.to_string()
-        return Err(FetchError.Resolve(ResolveError.NoMatch(name.clone(), con_str)))
+        return Err(FetchError.Resolve(ResolveError.NoMatch(name, con_str)))
     }
 
     const handle = state.packages.insert(ResolvedPkg {
         meta: PackageMeta {
-            name: meta.name.clone(),
+            name: meta.name,
             version: meta.version,
-            checksum: meta.checksum.clone(),
+            checksum: meta.checksum,
             deps: Vec.new(),
         },
         deps: Vec.new(),
     })
 
-    state.by_name.insert(name.clone(), handle)
+    state.by_name.insert(name, handle)
 
     // Recursively resolve transitive deps
-    state.visiting.push(name.clone())
+    state.visiting.push(name)
     for dep in meta.deps {
-        const dep_handle = try resolve_one(dep.name.clone(), dep.constraint, registry, mutate state)
+        const dep_handle = try resolve_one(dep.name, dep.constraint, registry, mutate state)
         with state.packages[handle] as pkg {
             pkg.deps.push(dep_handle)
         }
@@ -690,7 +690,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
     for handle in handles {
         with graph.packages[handle] as pkg {
             if pkg.meta.checksum.is_empty() { continue }
-            const name = pkg.meta.name.clone()
+            const name = pkg.meta.name
             const ver_str = pkg.meta.version.to_string()
             const cache_path = "{cache_dir}/{name}-{ver_str}"
 
@@ -702,7 +702,7 @@ func collect_fetch_items(graph: DepGraph, cache_dir: string) -> Vec<FetchItem> {
             items.push(FetchItem {
                 name: name,
                 version: pkg.meta.version,
-                checksum: pkg.meta.checksum.clone(),
+                checksum: pkg.meta.checksum,
                 cache_path: cache_path,
             })
         }
@@ -883,10 +883,10 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
         if trimmed == "[[package]]" {
             // Flush previous
             if !current_name.is_empty() {
-                packages.insert(current_name.clone(), LockedPackage {
-                    name: current_name.clone(),
-                    version: current_version.clone(),
-                    checksum: current_checksum.clone(),
+                packages.insert(current_name, LockedPackage {
+                    name: current_name,
+                    version: current_version,
+                    checksum: current_checksum,
                 })
             }
             current_name = ""
@@ -911,10 +911,10 @@ func read_lockfile(path: string) -> Map<string, LockedPackage> or FetchError {
 
     // Flush last
     if !current_name.is_empty() {
-        packages.insert(current_name.clone(), LockedPackage {
-            name: current_name.clone(),
-            version: current_version.clone(),
-            checksum: current_checksum.clone(),
+        packages.insert(current_name, LockedPackage {
+            name: current_name,
+            version: current_version,
+            checksum: current_checksum,
         })
     }
 
@@ -949,7 +949,7 @@ func topo_visit(
     mutate visited: Map<string, bool>,
     mutate order: Vec<Handle<ResolvedPkg>>,
 ) {
-    const name = graph.packages[handle].meta.name.clone()
+    const name = graph.packages[handle].meta.name
     if visited.contains_key(name) { return }
     visited.insert(name, true)
 

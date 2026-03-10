@@ -10,7 +10,7 @@ A research language exploring one question: **what if references can't be stored
 
 Rask sits somewhere between Rust and Go — memory safety without lifetime annotations or garbage collection, by making references temporary. They can't be stored in structs or returned from functions.
 
-It's a hobby project. I'm figuring out how far this approach can go.
+It's a hobby project. I'm figuring out how far this approach can go. **[Why a new language?](WHY_RASK.md)**
 
 **Status:** Design phase with working interpreter (grep, game loop, text editor all run). No compiler yet.
 

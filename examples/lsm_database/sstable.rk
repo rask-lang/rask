@@ -57,7 +57,7 @@ func write_sstable(
     for entry in entries {
         if block_entries.len() >= BLOCK_SIZE {
             index.push(BlockIndex {
-                first_key: block_entries[0].key.clone(),
+                first_key: block_entries[0].key,
                 offset: block_id,
                 count: block_entries.len() as i32,
             })
@@ -70,7 +70,7 @@ func write_sstable(
 
     if !block_entries.is_empty() {
         index.push(BlockIndex {
-            first_key: block_entries[0].key.clone(),
+            first_key: block_entries[0].key,
             offset: block_id,
             count: block_entries.len() as i32,
         })
@@ -95,8 +95,8 @@ func write_sstable(
     try fs.write_file(path, out)
         else |e| SstError.WriteFailure("cannot write {path}: {e}")
 
-    const min_key = entries[0].key.clone()
-    const max_key = entries[entries.len() - 1].key.clone()
+    const min_key = entries[0].key
+    const max_key = entries[entries.len() - 1].key
 
     return Ok(SstMeta {
         id: id,
@@ -258,14 +258,14 @@ func discover_sstables(dir: string) -> Vec<SstMeta> {
         const index = read_sstable_index(path) is Ok(idx) else { continue }
         if index.is_empty() { continue }
 
-        const min_key = index[0].first_key.clone()
+        const min_key = index[0].first_key
 
         const last_block_offset = index[index.len() - 1].offset
         const last_entries = read_sstable_block(path, last_block_offset) is Ok(e) else {
             continue
         }
         if last_entries.is_empty() { continue }
-        const max_key = last_entries[last_entries.len() - 1].key.clone()
+        const max_key = last_entries[last_entries.len() - 1].key
 
         let entry_count = 0
         for idx_entry in index {

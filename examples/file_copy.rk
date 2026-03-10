@@ -83,12 +83,12 @@ func print_usage() {
 func copy_file(opts: CopyOptions) -> u64 or CopyError {
     // O3 borrows opts — fs calls borrow the fields, only error enums need owned strings
     if !fs.exists(opts.source) {
-        return Err(CopyError.SourceNotFound(opts.source.clone()))
+        return Err(CopyError.SourceNotFound(opts.source))
     }
 
     if fs.exists(opts.dest) {
         if !opts.force {
-            return Err(CopyError.DestinationExists(opts.dest.clone()))
+            return Err(CopyError.DestinationExists(opts.dest))
         }
     }
 

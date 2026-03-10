@@ -92,7 +92,7 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 
 | Concept | Rask ✓ | Rust ✗ |
 |---------|--------|--------|
-| String type | `string` (lowercase) | `String` |
+| String type | `string` (lowercase, immutable, Copy) | `String` |
 | Immutable | `const x = 1` | `let x = 1` |
 | Mutable | `let x = 1` | `let mut x = 1` |
 | Function | `func foo()` | `fn foo()` |
@@ -108,11 +108,15 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 | Guard pattern | `const v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
 | Result type | `T or E` (= `Result<T, E>`) | `Result<T, E>` |
 | Error propagation | `try expr` | `expr?` |
+| Error with context | `try expr else \|e\| context(msg, e)` | `expr.map_err(\|e\| ...)? ` |
+| Inferred error type | `func f() -> T or _` (private only) | N/A |
 | Pool context | `func f() using Pool<T>` | N/A |
 | Runtime context | `using Multitasking { }` | N/A |
 | Element binding | `with pool[h] as x { }` (always mutable) | N/A |
 | Cell/Mutex | `with cell as v { }` / `with mutex as v { }` | N/A |
 | Shared read/write | `with shared.read() as v { }` / `with shared.write() as v { }` | N/A |
+| Inline sync access | `shared.read().field` / `shared.write().field = x` | N/A |
+| Allocator context | `func f() using Allocator` / `using Arena.scoped(1MB) { }` | N/A |
 | Async spawn | `spawn(\|\| {})` | `tokio::spawn(async {})` |
 | Thread pool spawn | `ThreadPool.spawn(\|\| {})` | N/A |
 | OS thread spawn | `Thread.spawn(\|\| {})` | `std::thread::spawn(\|\| {})` |
@@ -154,6 +158,11 @@ if user is Some: process(user)               // implicit unwrap (single-payload)
 if result is Ok(v): use(v)                   // explicit binding
 const v = opt is Some else { return None }   // guard pattern
 
+// Error handling
+const data = try fs.read(path)                      // propagate error
+const data = try fs.read(path) else |e| wrap(e)     // propagate with context
+func load() -> Config or _ { ... }                  // infer error union (private only)
+
 func damage(h: Handle<Player>) using Pool<Player> {  // pool context
     h.health -= 10
 }
@@ -170,6 +179,15 @@ with cell as v { v.count += 1 }             // Cell access (mutable)
 with shared.read() as v { v.timeout }        // Shared read lock (explicit)
 with shared.write() as v { v.count += 1 }    // Shared write lock (explicit)
 with mutex as v { v.push(item) }             // Mutex exclusive lock
+
+const t = shared.read().timeout              // inline sync: lock held for expression only
+shared.write().count += 1                    // inline sync: write lock
+
+// Custom allocators
+using Arena.scoped(1.megabytes()) {          // scoped arena — data can't escape
+    const scratch = Vec.new()                // allocated from arena
+    scratch.push(42)
+}
 
 // Spawning (functions, not keywords)
 import async.spawn
