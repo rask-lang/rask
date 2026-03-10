@@ -118,7 +118,7 @@ Compile-time cost: O(n) per function — single backward pass from clone sites. 
 
 ### Rationale
 
-**CE1 (last-use):** This directly addresses Rask's biggest user-facing cost: `.clone()` calls from the no-storable-references design. The ~5% clone rate in string-heavy code drops to ~2-3% with this optimization. Users still write `.clone()` for clarity, but the compiler eliminates the allocation when it's provably unnecessary.
+**CE1 (last-use):** This addresses `.clone()` calls from the no-storable-references design. With strings now Copy (immutable, refcounted), remaining clones concentrate on collections (`Vec`, `Map`). Clone elision further reduces those — users still write `.clone()` for clarity, but the compiler eliminates the allocation when it's provably unnecessary.
 
 **CE5 (IDE annotation):** Showing `[clone elided]` helps users learn which clones matter and which don't. Over time, users write fewer unnecessary clones.
 
