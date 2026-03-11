@@ -4,5 +4,6 @@
 
 pub mod clone_elision;
 pub mod gen_coalesce;
+pub mod pass;
 pub mod state_machine;
 pub mod string_append;
