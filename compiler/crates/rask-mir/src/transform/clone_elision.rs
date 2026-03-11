@@ -11,7 +11,8 @@
 
 use std::collections::HashSet;
 
-use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator};
+use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt};
+use crate::analysis::{cfg, uses};
 
 /// Clone function suffixes that indicate a heap-allocating clone (CE1).
 const CLONE_SUFFIXES: &[&str] = &[
@@ -84,20 +85,20 @@ fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: Lo
 
     // Check remaining statements in the same block after the clone
     for si in (stmt_idx + 1)..block.statements.len() {
-        if stmt_reads_local(&block.statements[si], source) {
+        if uses::stmt_reads(&block.statements[si], source) {
             return false;
         }
     }
 
     // Check the block terminator
-    if terminator_reads_local(&block.terminator, source) {
+    if uses::terminator_reads(&block.terminator, source) {
         return false;
     }
 
     // CE4: Check all reachable successor blocks via BFS
     let mut visited = HashSet::new();
     visited.insert(func.blocks[block_idx].id);
-    let mut worklist: Vec<BlockId> = successor_blocks(&block.terminator);
+    let mut worklist: Vec<BlockId> = cfg::successors(&block.terminator);
 
     while let Some(bid) = worklist.pop() {
         if !visited.insert(bid) {
@@ -108,16 +109,16 @@ fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: Lo
         };
         // Check all statements in successor block
         for stmt in &succ_block.statements {
-            if stmt_reads_local(stmt, source) {
+            if uses::stmt_reads(stmt, source) {
                 return false;
             }
         }
         // Check terminator
-        if terminator_reads_local(&succ_block.terminator, source) {
+        if uses::terminator_reads(&succ_block.terminator, source) {
             return false;
         }
         // Add this block's successors
-        for next in successor_blocks(&succ_block.terminator) {
+        for next in cfg::successors(&succ_block.terminator) {
             worklist.push(next);
         }
     }
@@ -125,101 +126,10 @@ fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: Lo
     true
 }
 
-/// Get successor block IDs from a terminator.
-fn successor_blocks(term: &MirTerminator) -> Vec<BlockId> {
-    match term {
-        MirTerminator::Return { .. } | MirTerminator::Unreachable => vec![],
-        MirTerminator::Goto { target } => vec![*target],
-        MirTerminator::Branch { then_block, else_block, .. } => {
-            vec![*then_block, *else_block]
-        }
-        MirTerminator::Switch { cases, default, .. } => {
-            let mut targets: Vec<BlockId> = cases.iter().map(|(_, b)| *b).collect();
-            targets.push(*default);
-            targets
-        }
-        MirTerminator::CleanupReturn { cleanup_chain, .. } => {
-            cleanup_chain.clone()
-        }
-    }
-}
-
-/// Check if a statement reads a given local as an operand.
-fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
-    match stmt {
-        MirStmt::Assign { rvalue, .. } => rvalue_reads(rvalue, local),
-        MirStmt::Store { addr, value, .. } => {
-            *addr == local || operand_is(value, local)
-        }
-        MirStmt::Call { args, .. } => {
-            args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmt::ClosureCall { closure, args, .. } => {
-            *closure == local || args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmt::PoolCheckedAccess { pool, handle, .. } => {
-            *pool == local || *handle == local
-        }
-        MirStmt::ClosureCreate { captures, .. } => {
-            captures.iter().any(|c| c.local_id == local)
-        }
-        MirStmt::LoadCapture { env_ptr, .. } => *env_ptr == local,
-        MirStmt::ClosureDrop { closure } => *closure == local,
-        MirStmt::ResourceConsume { resource_id } => *resource_id == local,
-        MirStmt::ArrayStore { base, index, value, .. } => {
-            *base == local || operand_is(index, local) || operand_is(value, local)
-        }
-        MirStmt::TraitBox { value, .. } => operand_is(value, local),
-        MirStmt::TraitCall { trait_object, args, .. } => {
-            *trait_object == local || args.iter().any(|a| operand_is(a, local))
-        }
-        MirStmt::TraitDrop { trait_object } => *trait_object == local,
-        MirStmt::ResourceRegister { .. }
-        | MirStmt::GlobalRef { .. }
-        | MirStmt::SourceLocation { .. }
-        | MirStmt::EnsurePush { .. }
-        | MirStmt::EnsurePop
-        | MirStmt::ResourceScopeCheck { .. } => false,
-    }
-}
-
-/// Check if a terminator reads a local.
-fn terminator_reads_local(term: &MirTerminator, local: LocalId) -> bool {
-    match term {
-        MirTerminator::Return { value: Some(op) } => operand_is(op, local),
-        MirTerminator::Branch { cond, .. } => operand_is(cond, local),
-        MirTerminator::Switch { value, .. } => operand_is(value, local),
-        MirTerminator::CleanupReturn { value: Some(op), .. } => operand_is(op, local),
-        _ => false,
-    }
-}
-
-fn operand_is(op: &MirOperand, local: LocalId) -> bool {
-    matches!(op, MirOperand::Local(id) if *id == local)
-}
-
-fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
-    match rv {
-        MirRValue::Use(op) => operand_is(op, local),
-        MirRValue::Ref(id) => *id == local,
-        MirRValue::Deref(op) => operand_is(op, local),
-        MirRValue::BinaryOp { left, right, .. } => {
-            operand_is(left, local) || operand_is(right, local)
-        }
-        MirRValue::UnaryOp { operand, .. } => operand_is(operand, local),
-        MirRValue::Cast { value, .. } => operand_is(value, local),
-        MirRValue::Field { base, .. } => operand_is(base, local),
-        MirRValue::EnumTag { value } => operand_is(value, local),
-        MirRValue::ArrayIndex { base, index, .. } => {
-            operand_is(base, local) || operand_is(index, local)
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FunctionRef, MirConst, MirType};
+    use crate::{FunctionRef, MirConst, MirTerminator, MirType};
     use crate::function::{MirBlock, MirLocal};
 
     fn local(id: u32) -> LocalId {

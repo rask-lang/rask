@@ -11,7 +11,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator};
+use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt};
+use crate::analysis::{cfg, uses};
 
 /// Key for tracking validated (pool, handle) pairs.
 type CheckKey = (LocalId, LocalId);
@@ -97,7 +98,7 @@ fn cross_block_coalesce(func: &mut MirFunction, pool_locals: &HashSet<LocalId>) 
     // Compute predecessor map (only forward edges — target index > source index)
     let mut predecessors: HashMap<BlockId, Vec<BlockId>> = HashMap::new();
     for (src_idx, block) in func.blocks.iter().enumerate() {
-        for target in terminator_targets(&block.terminator) {
+        for target in cfg::successors(&block.terminator) {
             if let Some(&tgt_idx) = block_index.get(&target) {
                 // CF3: Skip back-edges (loop boundaries)
                 if tgt_idx > src_idx {
@@ -228,7 +229,7 @@ fn process_invalidations(
         checked.clear();
     }
 
-    if let Some(assigned) = stmt_def_local(stmt) {
+    if let Some(assigned) = uses::stmt_def(stmt) {
         if !matches!(stmt, MirStmt::PoolCheckedAccess { .. }) {
             checked.retain(|&(pool, handle), &mut dst| {
                 pool != assigned && handle != assigned && dst != assigned
@@ -237,24 +238,6 @@ fn process_invalidations(
     }
 }
 
-/// Get block targets from a terminator.
-fn terminator_targets(term: &MirTerminator) -> Vec<BlockId> {
-    match term {
-        MirTerminator::Return { .. } | MirTerminator::Unreachable => vec![],
-        MirTerminator::Goto { target } => vec![*target],
-        MirTerminator::Branch { then_block, else_block, .. } => {
-            vec![*then_block, *else_block]
-        }
-        MirTerminator::Switch { cases, default, .. } => {
-            let mut targets: Vec<BlockId> = cases.iter().map(|(_, b)| *b).collect();
-            targets.push(*default);
-            targets
-        }
-        MirTerminator::CleanupReturn { cleanup_chain, .. } => {
-            cleanup_chain.clone()
-        }
-    }
-}
 
 fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
     // Map (pool, handle) → dst local from the first PoolCheckedAccess
@@ -286,7 +269,7 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
         }
 
         // Handle reassignment invalidates entries referencing that local (GC3)
-        if let Some(assigned) = stmt_def_local(stmt) {
+        if let Some(assigned) = uses::stmt_def(stmt) {
             if !matches!(stmt, MirStmt::PoolCheckedAccess { .. }) {
                 checked.retain(|&(pool, handle), &mut dst| {
                     pool != assigned && handle != assigned && dst != assigned
@@ -330,20 +313,6 @@ fn is_safe_pool_call(name: &str) -> bool {
     SAFE_POOL_CALLS.iter().any(|s| *s == name)
 }
 
-/// Return the local defined by this statement, if any.
-fn stmt_def_local(stmt: &MirStmt) -> Option<LocalId> {
-    match stmt {
-        MirStmt::Assign { dst, .. }
-        | MirStmt::PoolCheckedAccess { dst, .. }
-        | MirStmt::ClosureCreate { dst, .. }
-        | MirStmt::LoadCapture { dst, .. }
-        | MirStmt::ResourceRegister { dst, .. }
-        | MirStmt::GlobalRef { dst, .. } => Some(*dst),
-        MirStmt::Call { dst: Some(d), .. }
-        | MirStmt::ClosureCall { dst: Some(d), .. } => Some(*d),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {
