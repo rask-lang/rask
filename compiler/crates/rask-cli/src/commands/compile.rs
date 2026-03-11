@@ -112,17 +112,8 @@ pub fn compile_to_object(
         return Err(vec!["no functions to compile".to_string()]);
     }
 
-    // Closure optimization
-    rask_mir::optimize_all_closures(&mut mir_functions);
-
-    // Self-concat → in-place append (eliminates O(n²) string building)
-    rask_mir::optimize_string_concat(&mut mir_functions);
-
-    // Last-use clone elision — replace clone with move when source is dead
-    rask_mir::elide_clones(&mut mir_functions);
-
-    // Generation check coalescing — eliminate redundant pool access checks
-    rask_mir::coalesce_generation_checks(&mut mir_functions);
+    // MIR optimization passes
+    rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 
     // Cranelift codegen
     let mut codegen = match target {
@@ -433,10 +424,7 @@ pub fn compile_benchmarks_to_object(
         return Err(vec!["no functions or benchmarks to compile".to_string()]);
     }
 
-    rask_mir::optimize_all_closures(&mut mir_functions);
-    rask_mir::optimize_string_concat(&mut mir_functions);
-    rask_mir::elide_clones(&mut mir_functions);
-    rask_mir::coalesce_generation_checks(&mut mir_functions);
+    rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 
     // Insert cleanup calls for benchmark functions to prevent memory leaks.
     // Scans for Vec_new/Map_new/Pool_new/string_new calls and inserts
