@@ -69,7 +69,7 @@ Unnamed (`using Allocator`) is enough when you only need collections to auto-res
 func build_index(items: Vec<Item>) -> Map<string, Item> using Allocator {
     const map = Map.new()    // uses the caller's allocator
     for item in items {
-        map.insert(item.name.clone(), item)
+        map.insert(item.name, item)
     }
     return map
 }

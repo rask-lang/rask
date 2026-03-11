@@ -61,10 +61,15 @@ func example_copy_vs_move() {
     // copy — both valid
     println("x = {x}, y = {y}")
 
-    // Collections move — use .clone() for an independent copy
+    // Strings are Copy — they copy like numbers (16 bytes, refcounted)
     const name = "Besse"
-    const other = name.clone()
+    const other = name          // copy — both valid, no .clone() needed
     println("name = {name}, other = {other}")
+
+    // Collections move — use .clone() for an independent copy
+    const names = Vec.from(["Besse", "Dagny"])
+    const backup = names.clone()
+    println("names len = {names.len()}, backup len = {backup.len()}")
     // Borrows data — can read but not modify
     // Borrows data mutably — can modify the caller's value
 }
