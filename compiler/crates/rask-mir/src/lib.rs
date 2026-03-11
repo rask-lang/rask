@@ -5,6 +5,7 @@
 //! MIR is the bridge between high-level AST and backend code generation.
 //! It uses basic blocks with statements and terminators.
 
+pub mod analysis;
 mod builder;
 mod closures;
 mod display;
