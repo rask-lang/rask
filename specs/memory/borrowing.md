@@ -132,7 +132,7 @@ pool[h].pos.normalize()      // Method chain (E2)
 <!-- test: skip -->
 ```rask
 const timeout = config.read().timeout           // Copy out (E4)
-const name = config.read().user.name.clone()    // Clone non-Copy
+const name = config.read().user.name             // Copy out (string is Copy)
 config.write().timeout = 60.seconds             // In-place mutation (E3)
 queue.lock().push(item)                         // Mutex inline access
 
@@ -192,7 +192,7 @@ with pool[h1] as e1, pool[h2] as e2 {
 }
 
 // Expression context — produces a value
-const name = with pool[h] as entity { entity.name.clone() }
+const name = with pool[h] as entity { entity.name }
 
 // One-liner shorthand
 with pool[h] as e: e.health -= 10

@@ -32,9 +32,11 @@ In C++, `auto result = greeting + " " + name` creates two temporary strings and 
 Rask doesn't do this. Large values move, not copy. If you want a copy, you write `.clone()`. Operators don't allocate behind your back. When something is expensive, you can see it in the code:
 
 ```rask
-const name = user.name.clone()                  // explicit: this copies
+const items = user.inventory.clone()            // explicit: this copies
 process(own user)                               // explicit: ownership transferred
 ```
+
+Strings are the deliberate exception — `string` is immutable, refcounted, and Copy (16 bytes). It copies like an integer, no `.clone()` needed. I think that's fine because immutability eliminates aliased mutation risk, and the compiler elides most refcount operations anyway.
 
 This is transparency winning over convenience. Some languages let you write `a + b` on strings and hide the allocation inside the operator. I'd rather make you call a function that says what it does.
 

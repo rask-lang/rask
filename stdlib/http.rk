@@ -427,7 +427,7 @@ func write_raw(conn_fd: i64, data: string) {
 
 // Parse "http://host:port/path" into (host, port, path).
 func parse_url(url: string) -> (string, string, string) or HttpError {
-    let rest = url.clone()
+    let rest = url
 
     // Strip scheme
     if rest.starts_with("http://") {
@@ -437,7 +437,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     }
 
     // Split host+port from path at first /
-    let host_port = rest.clone()
+    let host_port = rest
     let path = "/"
     const slash = rest.find("/")
     if slash is Some(pos) {
@@ -446,7 +446,7 @@ func parse_url(url: string) -> (string, string, string) or HttpError {
     }
 
     // Split host from port at last :
-    let host = host_port.clone()
+    let host = host_port
     let port = "80"
     const colon = host_port.find(":")
     if colon is Some(cpos) {

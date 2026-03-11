@@ -155,8 +155,8 @@ up. This is the most fundamental rule.
 
 ### Small Values Copy, Big Values Move
 
-Here's the key insight: some things are cheap to copy (a number, a coordinate, a color),
-and some things are expensive (a big string, a list of 10,000 items).
+Here's the key insight: some things are cheap to copy (a number, a coordinate, a string),
+and some things are expensive (a list of 10,000 items, a large struct).
 
 Rask draws the line at **16 bytes**:
 
@@ -167,15 +167,18 @@ const b = a           // b gets a copy. a is still valid.
 use(a)                // ✓ Fine
 
 // Big (>16 bytes): moves
-const name = "hello world"                 // string > 16 bytes (heap allocated)
-const other = name                         // other takes ownership. name is GONE.
-use(name)                                  // ✗ Compile error: name was moved
+const names = Vec.from(["alice", "bob"])   // Vec owns heap data
+const other = names                        // other takes ownership. names is GONE.
+use(names)                                 // ✗ Compile error: names was moved
 ```
+
+Strings are Copy too — `string` is 16 bytes (immutable, refcounted) and copies like a
+number. See [String Handling](#string-handling) for details.
 
 **Why 16 bytes?** It matches what most CPUs can pass in registers. Copying 16 bytes is
 essentially free—it's what the hardware does anyway for function calls. This covers
-integers, floats, booleans, small structs like `Point { x: f64, y: f64 }`, small enums,
-and handles.
+integers, floats, booleans, strings, small structs like `Point { x: f64, y: f64 }`,
+small enums, and handles.
 
 **Why not let the programmer choose the threshold?** Because changing it changes what
 your code means. If you set it to 8 bytes, a `Point { x: f64, y: f64 }` would suddenly
@@ -187,9 +190,9 @@ predictable.
 If you genuinely need two copies of a big value, say so explicitly:
 
 ```rask
-const name = "hello"
-const backup = name.clone()    // Allocates new memory, copies bytes
-use(name)                      // ✓ Both are valid
+const names = Vec.from(["alice", "bob"])
+const backup = names.clone()   // Allocates new memory, copies elements
+use(names)                     // ✓ Both are valid
 use(backup)                    // ✓ Independent copies
 ```
 
@@ -368,7 +371,7 @@ func apply_buff(pool: Pool<Entity>, h: Handle<Entity>) -> () or Error {
 `with` also works as an expression—the last expression in the block is the value:
 
 ```rask
-const name = with pool[h] as const entity { entity.name.clone() }
+const name = with pool[h] as entity { entity.name }
 ```
 
 One-liner shorthand (parallels `if cond: expr`):
