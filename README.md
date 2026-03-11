@@ -129,7 +129,7 @@ I'm not pretending there aren't tradeoffs. Here's what you give up:
 - String slices in structs → store indices or use StringPool
 - Arbitrary graphs → use Pool<T> with handles
 
-**More `.clone()` calls:** In string-heavy code (CLI parsing, HTTP routing) you'll see ~5% of lines with an explicit clone. I think that's better than lifetime annotations everywhere.
+**More `.clone()` calls:** Collections and large structs require explicit `.clone()` to share. Strings are Copy (no cloning needed), so clones concentrate at API boundaries for collection types. I think that's better than lifetime annotations everywhere.
 
 The upside, if the approach works out:
 - No use-after-free, no dangling pointers, no data races

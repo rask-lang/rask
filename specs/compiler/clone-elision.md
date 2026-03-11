@@ -11,15 +11,15 @@ When a `.clone()` call is the last use of a value, the compiler replaces the clo
 
 ## The Problem
 
-Rask's "no storable references" design means more `.clone()` calls than Rust. The spec acknowledges this (~5% of lines in string-heavy code). But many clones are unnecessary:
+Rask's "no storable references" design means more `.clone()` calls than Rust. With strings now Copy (immutable, refcounted), the remaining clones concentrate on collections (`Vec`, `Map`). But many clones are unnecessary:
 
 ```rask
-const path = config.path.clone()
-do_something(path)
-// config.path is never used again — the clone was pointless
+const items = config.items.clone()
+do_something(items)
+// config.items is never used again — the clone was pointless
 ```
 
-The compiler can see that `config.path` has no subsequent uses. The clone allocates and copies data that was about to be dropped anyway.
+The compiler can see that `config.items` has no subsequent uses. The clone allocates and copies data that was about to be dropped anyway.
 
 ## Rules
 
@@ -38,9 +38,9 @@ The compiler can see that `config.path` has no subsequent uses. The clone alloca
 <!-- test: skip -->
 ```rask
 func process(config: Config) {
-    const name = config.name.clone()   // [clone elided → move]
-    send(name)
-    // config.name never used again → clone becomes move
+    const items = config.items.clone()   // [clone elided → move]
+    send(items)
+    // config.items never used again → clone becomes move
 }
 ```
 

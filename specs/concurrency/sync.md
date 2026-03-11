@@ -44,7 +44,7 @@ let config = Shared.new(AppConfig {
 // Inline access (single expression)
 const timeout = config.read().timeout
 config.write().timeout = 60.seconds
-const name = config.read().user.name.clone()
+const name = config.read().user.name
 
 // Multi-statement access (with block)
 const timeout = with config.read() as c { c.timeout }

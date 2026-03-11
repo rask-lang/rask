@@ -151,19 +151,21 @@ A closure that captures a block-scoped borrow (struct field, array view) inherit
 <!-- test: skip -->
 ```rask
 const entity = get_entity()
-const name = entity.name            // block-scoped borrow (struct field)
-const f = || process(name)         // f inherits scope constraint
+const tags = entity.tags            // block-scoped borrow (struct field, non-Copy)
+const f = || process(tags)         // f inherits scope constraint
 f()                                 // OK: called in same scope
 return f                            // ERROR: cannot escape scope
 ```
+
+Note: Copy fields like `string` don't create scope-limited closures — `const name = entity.name` produces an owned copy, not a borrow. Only non-Copy fields (like `Vec<string>`) create block-scoped borrows that limit closures.
 
 <!-- test: compile-fail -->
 ```rask
 let outer_closure
 {
     const entity = get_entity()
-    const name = entity.name
-    outer_closure = || process(name)  // ERROR: outer_closure outlives entity
+    const tags = entity.tags
+    outer_closure = || process(tags)  // ERROR: outer_closure outlives entity
 }
 ```
 
@@ -171,8 +173,8 @@ let outer_closure
 
 <!-- test: skip -->
 ```rask
-const name = entity.name.clone()   // owned copy
-const f = || process(name)         // captures owned value
+const tags = entity.tags.clone()   // owned copy
+const f = || process(tags)         // captures owned value
 return f                            // OK: no scope constraint
 ```
 
@@ -195,8 +197,8 @@ func store_callback<F: Fn()>(f: F) {
     const holder = Holder { callback: f }  // ERROR if F is scope-limited
 }
 
-const name = entity.name
-const greet = || print(name)   // scope-limited (captures a borrow)
+const tags = entity.tags
+const greet = || print(tags)   // scope-limited (captures a borrow)
 
 run_twice(greet)              // OK: run_twice doesn't store F
 store_callback(greet)         // ERROR: store_callback tries to store F
@@ -208,17 +210,17 @@ store_callback(greet)         // ERROR: store_callback tries to store F
 ```
 ERROR [mem.closures/SL2]: closure cannot escape scope
    |
-3  |  const name = entity.name
+3  |  const tags = entity.tags
    |               ^^^^^^^^^^^ borrowed from 'entity' (line 2)
-4  |  const f = || process(name)
+4  |  const f = || process(tags)
    |            ^^^^^^^^^^^^^^^^^ closure captures scoped borrow
 5  |  return f
    |  ^^^^^^^^ cannot escape scope where 'entity' lives
 
 FIX: Clone to owned data:
 
-  const name = entity.name.clone()
-  const f = || process(name)
+  const tags = entity.tags.clone()
+  const f = || process(tags)
   return f                          // OK: no scoped borrows
 ```
 
