@@ -2,7 +2,13 @@
 
 //! MIR lowering - transform AST to MIR CFG.
 
+mod closures;
+mod collections;
+mod concurrency;
+mod errors;
 mod expr;
+mod iterators;
+mod match_lower;
 mod stmt;
 
 use crate::{
