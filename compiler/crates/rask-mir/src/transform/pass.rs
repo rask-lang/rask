@@ -54,6 +54,7 @@ impl PassManager {
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
         pm.add(GenerationCoalescingPass);
+        pm.add(DeadCodeEliminationPass);
         pm
     }
 }
@@ -87,6 +88,16 @@ impl MirPass for CloneElisionPass {
     fn name(&self) -> &str { "clone_elision" }
     fn run(&self, fns: &mut Vec<MirFunction>) {
         crate::elide_clones(fns);
+    }
+}
+
+/// Remove unreachable blocks and dead assignments.
+pub struct DeadCodeEliminationPass;
+
+impl MirPass for DeadCodeEliminationPass {
+    fn name(&self) -> &str { "dce" }
+    fn run_function(&self, func: &mut MirFunction) {
+        crate::transform::dce::eliminate_dead_code(func);
     }
 }
 

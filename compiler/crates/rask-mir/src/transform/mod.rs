@@ -3,6 +3,7 @@
 //! MIR transform passes.
 
 pub mod clone_elision;
+pub mod dce;
 pub mod gen_coalesce;
 pub mod pass;
 pub mod state_machine;
