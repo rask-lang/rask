@@ -14,6 +14,27 @@ use rask_types::Type as RaskType;
 use crate::types::mir_to_cranelift_type;
 use crate::{BuildMode, CodegenError, CodegenResult};
 
+/// Read-only context bundling parameters for lowering functions.
+struct CodegenCtx<'a> {
+    var_map: &'a HashMap<LocalId, Variable>,
+    locals: &'a [rask_mir::MirLocal],
+    func_refs: &'a HashMap<String, FuncRef>,
+    struct_layouts: &'a [StructLayout],
+    enum_layouts: &'a [EnumLayout],
+    string_globals: &'a HashMap<String, GlobalValue>,
+    comptime_globals: &'a HashMap<String, GlobalValue>,
+    vtable_globals: &'a HashMap<String, GlobalValue>,
+    panicking_fns: &'a HashSet<String>,
+    internal_fns: &'a HashSet<String>,
+    stack_slot_map: &'a HashMap<LocalId, (StackSlot, u32)>,
+    block_map: &'a HashMap<BlockId, Block>,
+    build_mode: BuildMode,
+    source_file: Option<&'a str>,
+    current_line: u32,
+    current_col: u32,
+    ret_ty: &'a MirType,
+}
+
 /// Result of adapting a stdlib call for the typed runtime API.
 enum CallAdapt {
     /// No special post-call handling needed
@@ -190,6 +211,26 @@ impl<'a> FunctionBuilder<'a> {
             builder.def_var(var, addr);
         }
 
+        let mut ctx = CodegenCtx {
+            var_map: &self.var_map,
+            locals: &self.mir_fn.locals,
+            func_refs: self.func_refs,
+            struct_layouts: self.struct_layouts,
+            enum_layouts: self.enum_layouts,
+            string_globals: self.string_globals,
+            comptime_globals: self.comptime_globals,
+            vtable_globals: self.vtable_globals,
+            panicking_fns: self.panicking_fns,
+            internal_fns: self.internal_fns,
+            stack_slot_map: &self.stack_slot_map,
+            block_map: &self.block_map,
+            build_mode: self.build_mode,
+            source_file: self.mir_fn.source_file.as_deref(),
+            current_line: self.current_line,
+            current_col: self.current_col,
+            ret_ty: &self.mir_fn.ret_ty,
+        };
+
         // Lower each block (skip cleanup-only blocks)
         for mir_block in &self.mir_fn.blocks {
             if cleanup_only.contains(&mir_block.id) {
@@ -206,35 +247,15 @@ impl<'a> FunctionBuilder<'a> {
             for stmt in &mir_block.statements {
                 // Track source location for runtime error messages
                 if let MirStmt::SourceLocation { line, col } = stmt {
-                    self.current_line = *line;
-                    self.current_col = *col;
+                    ctx.current_line = *line;
+                    ctx.current_col = *col;
                     continue;
                 }
-                Self::lower_stmt(
-                    &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
-                    self.func_refs, self.struct_layouts, self.enum_layouts,
-                    self.string_globals, self.comptime_globals, self.vtable_globals,
-                    self.mir_fn.source_file.as_deref(),
-                    self.current_line, self.current_col,
-                    self.panicking_fns,
-                    &self.stack_slot_map,
-                    self.internal_fns,
-                    self.build_mode,
-                )?;
+                Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
             // Lower terminator
-            Self::lower_terminator(
-                &mut builder, &mir_block.terminator, &self.var_map,
-                &self.block_map, &self.mir_fn.ret_ty,
-                &self.mir_fn.blocks, &self.mir_fn.locals,
-                self.func_refs, self.struct_layouts, self.enum_layouts,
-                self.string_globals, self.comptime_globals,
-                self.panicking_fns,
-                &self.stack_slot_map,
-                self.internal_fns,
-                &cleanup_chain_blocks,
-            )?;
+            Self::lower_terminator(&mut builder, &mir_block.terminator, &ctx, &cleanup_chain_blocks)?;
         }
 
         // Emit shared cleanup blocks. Each unique cleanup chain gets one
@@ -250,20 +271,17 @@ impl<'a> FunctionBuilder<'a> {
                 None
             };
 
+            let cleanup_ctx = CodegenCtx {
+                source_file: None,
+                current_line: 0,
+                current_col: 0,
+                ..ctx
+            };
             // Emit cleanup statements from each block in the chain
             for block_id in chain {
                 if let Some(mir_block) = self.mir_fn.blocks.iter().find(|b| b.id == *block_id) {
                     for stmt in &mir_block.statements {
-                        Self::lower_stmt(
-                            &mut builder, stmt, &self.var_map, &self.mir_fn.locals,
-                            self.func_refs, self.struct_layouts, self.enum_layouts,
-                            self.string_globals, self.comptime_globals, self.vtable_globals,
-                            None, 0, 0,
-                            self.panicking_fns,
-                            &self.stack_slot_map,
-                            self.internal_fns,
-                            self.build_mode,
-                        )?;
+                        Self::lower_stmt(&mut builder, stmt, &cleanup_ctx)?;
                     }
                 }
             }
@@ -290,49 +308,31 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn lower_stmt(
         builder: &mut ClifFunctionBuilder,
         stmt: &MirStmt,
-        var_map: &HashMap<LocalId, Variable>,
-        locals: &[rask_mir::MirLocal],
-        func_refs: &HashMap<String, FuncRef>,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
-        string_globals: &HashMap<String, GlobalValue>,
-        comptime_globals: &HashMap<String, GlobalValue>,
-        vtable_globals: &HashMap<String, GlobalValue>,
-        source_file: Option<&str>,
-        current_line: u32,
-        current_col: u32,
-        panicking_fns: &HashSet<String>,
-        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
-        internal_fns: &HashSet<String>,
-        build_mode: BuildMode,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         match stmt {
             MirStmt::Assign { dst, rvalue } => {
-                let dst_local = locals.iter().find(|l| l.id == *dst)
+                let dst_local = ctx.locals.iter().find(|l| l.id == *dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
                 let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
 
-                let mut val = Self::lower_rvalue(
-                    builder, rvalue, var_map, locals, Some(dst_ty),
-                    struct_layouts, enum_layouts, string_globals, func_refs,
-                )?;
+                let mut val = Self::lower_rvalue(builder, rvalue, Some(dst_ty), ctx)?;
 
                 let val_ty = builder.func.dfg.value_type(val);
                 if val_ty != dst_ty {
                     val = Self::convert_value(builder, val, val_ty, dst_ty);
                 }
 
-                let var = var_map.get(dst)
+                let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
                 builder.def_var(*var, val);
             }
 
             MirStmt::Store { addr, offset, value, store_size } => {
-                let addr_val = builder.use_var(*var_map.get(addr)
+                let addr_val = builder.use_var(*ctx.var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
 
                 // If the value is a stack-allocated aggregate (struct/enum), copy its
@@ -341,8 +341,8 @@ impl<'a> FunctionBuilder<'a> {
                 // Use the variable's current value (not the stack_slot address) because
                 // the variable may alias another slot (e.g., p = struct_literal result).
                 let is_aggregate = if let MirOperand::Local(src_id) = value {
-                    if let Some((_src_slot, src_size)) = stack_slot_map.get(src_id) {
-                        let src_var = var_map.get(src_id)
+                    if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
+                        let src_var = ctx.var_map.get(src_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                         let src_addr = builder.use_var(*src_var);
                         let mut byte_offset = 0i32;
@@ -371,7 +371,7 @@ impl<'a> FunctionBuilder<'a> {
                 } else { false };
 
                 if !is_aggregate {
-                    let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                    let val = Self::lower_operand(builder, value, ctx)?;
                     let val_ty = builder.func.dfg.value_type(val);
 
                     // Layout uses 8-byte slots for all scalars. Widen sub-8-byte
@@ -392,10 +392,10 @@ impl<'a> FunctionBuilder<'a> {
 
             // Array element store: base_ptr[index * elem_size] = value
             MirStmt::ArrayStore { base, index, elem_size, value } => {
-                let base_val = builder.use_var(*var_map.get(base)
+                let base_val = builder.use_var(*ctx.var_map.get(base)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("ArrayStore: base not found".to_string()))?);
-                let idx_val = Self::lower_operand_typed(builder, index, var_map, Some(types::I64), string_globals, func_refs)?;
-                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                let idx_val = Self::lower_operand_typed(builder, index, Some(types::I64), ctx)?;
+                let val = Self::lower_operand(builder, value, ctx)?;
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
@@ -410,20 +410,20 @@ impl<'a> FunctionBuilder<'a> {
                         if i > 0 {
                             let sp = Self::lower_operand_typed(
                                 builder, &MirOperand::Constant(MirConst::String(" ".to_string())),
-                                var_map, Some(types::I64), string_globals, func_refs,
+                                Some(types::I64), ctx,
                             )?;
-                            let print_str = func_refs.get("rask_print_string")
+                            let print_str = ctx.func_refs.get("rask_print_string")
                                 .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_string".into()))?;
                             builder.ins().call(*print_str, &[sp]);
                         }
-                        let runtime_fn = Self::runtime_print_for_operand(a, locals);
-                        let fr = func_refs.get(runtime_fn)
+                        let runtime_fn = Self::runtime_print_for_operand(a, ctx.locals);
+                        let fr = ctx.func_refs.get(runtime_fn)
                             .ok_or_else(|| CodegenError::FunctionNotFound(runtime_fn.into()))?;
                         // Get the expected param type from the runtime function's signature
                         let ext_func = &builder.func.dfg.ext_funcs[*fr];
                         let sig = &builder.func.dfg.signatures[ext_func.signature];
                         let expected_ty = sig.params.first().map(|p| p.value_type);
-                        let mut val = Self::lower_operand_typed(builder, a, var_map, expected_ty, string_globals, func_refs)?;
+                        let mut val = Self::lower_operand_typed(builder, a, expected_ty, ctx)?;
                         if let Some(expected) = expected_ty {
                             let actual = builder.func.dfg.value_type(val);
                             if actual != expected {
@@ -433,13 +433,13 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().call(*fr, &[val]);
                     }
                     if func.name == "println" {
-                        let nl = func_refs.get("rask_print_newline")
+                        let nl = ctx.func_refs.get("rask_print_newline")
                             .ok_or_else(|| CodegenError::FunctionNotFound("rask_print_newline".into()))?;
                         builder.ins().call(*nl, &[]);
                     }
                     // print/println return void — define dest as zero if needed
                     if let Some(dst_id) = dst {
-                        if let Some(var) = var_map.get(dst_id) {
+                        if let Some(var) = ctx.var_map.get(dst_id) {
                             let zero = builder.ins().iconst(types::I64, 0);
                             builder.def_var(*var, zero);
                         }
@@ -447,51 +447,51 @@ impl<'a> FunctionBuilder<'a> {
                 } else if func.name == "assert_fail" {
                     // MIR already handled branching; this is the fail path.
                     // Use location-aware variant when source info is available.
-                    if let Some(file_str) = source_file {
+                    if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
-                            func_refs.get("assert_fail_at"),
-                            string_globals.get(file_str),
+                            ctx.func_refs.get("assert_fail_at"),
+                            ctx.string_globals.get(file_str),
                         ) {
                             let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                             builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
                         } else {
-                            let assert_fn = func_refs.get("assert_fail")
+                            let assert_fn = ctx.func_refs.get("assert_fail")
                                 .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                             builder.ins().call(*assert_fn, &[]);
                         }
                     } else {
-                        let assert_fn = func_refs.get("assert_fail")
+                        let assert_fn = ctx.func_refs.get("assert_fail")
                             .ok_or_else(|| CodegenError::FunctionNotFound("assert_fail".into()))?;
                         builder.ins().call(*assert_fn, &[]);
                     }
                 } else if func.name == "panic_unwrap" {
                     // MIR already handled branching; this is the panic path.
-                    if let Some(file_str) = source_file {
+                    if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
-                            func_refs.get("panic_unwrap_at"),
-                            string_globals.get(file_str),
+                            ctx.func_refs.get("panic_unwrap_at"),
+                            ctx.string_globals.get(file_str),
                         ) {
                             let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                             builder.ins().call(*func_ref, &[file_ptr, line_val, col_val]);
                         } else {
-                            let unwrap_fn = func_refs.get("panic_unwrap")
+                            let unwrap_fn = ctx.func_refs.get("panic_unwrap")
                                 .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
                             builder.ins().call(*unwrap_fn, &[]);
                         }
                     } else {
-                        let unwrap_fn = func_refs.get("panic_unwrap")
+                        let unwrap_fn = ctx.func_refs.get("panic_unwrap")
                             .ok_or_else(|| CodegenError::FunctionNotFound("panic_unwrap".into()))?;
                         builder.ins().call(*unwrap_fn, &[]);
                     }
                 } else if func.name == "Ptr_add" || func.name == "Ptr_sub" || func.name == "Ptr_offset" {
                     // Pointer arithmetic: ptr.add(n) → ptr + n*8, ptr.sub(n) → ptr - n*8
                     // Hardcoded elem_size=8 (all values are i64 for now)
-                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
-                    let n_val = Self::lower_operand_typed(builder, &args[1], var_map, Some(types::I64), string_globals, func_refs)?;
+                    let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
+                    let n_val = Self::lower_operand_typed(builder, &args[1], Some(types::I64), ctx)?;
                     let elem_size = builder.ins().iconst(types::I64, 8);
                     let byte_offset = builder.ins().imul(n_val, elem_size);
                     let result = if func.name == "Ptr_sub" {
@@ -500,30 +500,30 @@ impl<'a> FunctionBuilder<'a> {
                         builder.ins().iadd(ptr_val, byte_offset)
                     };
                     if let Some(dst_id) = dst {
-                        if let Some(var) = var_map.get(dst_id) {
+                        if let Some(var) = ctx.var_map.get(dst_id) {
                             builder.def_var(*var, result);
                         }
                     }
                 } else if func.name == "Ptr_is_null" {
                     // ptr.is_null() → ptr == 0 (returns I8 boolean)
-                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
+                    let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
                     let result = builder.ins().icmp_imm(IntCC::Equal, ptr_val, 0);
                     if let Some(dst_id) = dst {
-                        if let Some(var) = var_map.get(dst_id) {
+                        if let Some(var) = ctx.var_map.get(dst_id) {
                             builder.def_var(*var, result);
                         }
                     }
                 } else if func.name == "Ptr_cast" {
                     // ptr.cast<U>() → identity (pointer is always i64)
-                    let ptr_val = Self::lower_operand(builder, &args[0], var_map, string_globals, func_refs)?;
+                    let ptr_val = Self::lower_operand(builder, &args[0], ctx)?;
                     if let Some(dst_id) = dst {
-                        if let Some(var) = var_map.get(dst_id) {
+                        if let Some(var) = ctx.var_map.get(dst_id) {
                             builder.def_var(*var, ptr_val);
                         }
                     }
                 } else if func.is_extern {
                     // Extern "C" call — use declared signature directly, no stdlib adaptation
-                    let func_ref = func_refs.get(&func.name)
+                    let func_ref = ctx.func_refs.get(&func.name)
                         .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
 
                     // Read declared signature to get expected param types
@@ -534,7 +534,7 @@ impl<'a> FunctionBuilder<'a> {
                     let mut arg_vals = Vec::with_capacity(args.len());
                     for (i, a) in args.iter().enumerate() {
                         let expected = param_types.get(i).copied();
-                        let val = Self::lower_operand_typed(builder, a, var_map, expected, string_globals, func_refs)?;
+                        let val = Self::lower_operand_typed(builder, a, expected, ctx)?;
                         let actual = builder.func.dfg.value_type(val);
                         if let Some(exp) = expected {
                             if actual != exp {
@@ -550,16 +550,16 @@ impl<'a> FunctionBuilder<'a> {
                     let call_inst = builder.ins().call(*func_ref, &arg_vals);
 
                     if let Some(dst_id) = dst {
-                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                         let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
                         if !is_void {
-                            let var = var_map.get(dst_id)
+                            let var = ctx.var_map.get(dst_id)
                                 .ok_or_else(|| CodegenError::UnsupportedFeature(
                                     "Call destination variable not found".to_string()
                                 ))?;
                             let results = builder.inst_results(call_inst);
                             let val = if !results.is_empty() {
-                                let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                                let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                                 let result = results[0];
                                 if let Some(local) = dst_local {
                                     let dst_ty = mir_to_cranelift_type(&local.ty)?;
@@ -575,7 +575,7 @@ impl<'a> FunctionBuilder<'a> {
                             } else {
                                 builder.ins().iconst(types::I64, 0)
                             };
-                            if let Some((ss, _size)) = stack_slot_map.get(dst_id) {
+                            if let Some((ss, _size)) = ctx.stack_slot_map.get(dst_id) {
                                 // Extern C functions return plain values; wrap in Ok for Result destinations
                                 Self::wrap_ok_into_slot(builder, val, *ss);
                             } else {
@@ -584,7 +584,7 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                 } else {
-                    let func_ref = func_refs.get(&func.name)
+                    let func_ref = ctx.func_refs.get(&func.name)
                         .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
 
                     // Lower MIR args to Cranelift values
@@ -592,9 +592,9 @@ impl<'a> FunctionBuilder<'a> {
                     for (arg_idx, a) in args.iter().enumerate() {
                         // string_append_cstr: second arg is raw char*, skip RaskString wrapping
                         let val = if func.name == "string_append_cstr" && arg_idx == 1 {
-                            Self::lower_string_const_as_cstr(builder, a, string_globals)?
+                            Self::lower_string_const_as_cstr(builder, a, ctx)?
                         } else {
-                            Self::lower_operand_typed(builder, a, var_map, Some(types::I64), string_globals, func_refs)?
+                            Self::lower_operand_typed(builder, a, Some(types::I64), ctx)?
                         };
                         let actual = builder.func.dfg.value_type(val);
                         let converted = if actual != types::I64 && actual.is_int() {
@@ -606,7 +606,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
 
                     // Adapt args for typed runtime API
-                    let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, locals, struct_layouts);
+                    let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, ctx);
 
                     // Re-read signature after adaptation (arg count may have changed)
                     let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
@@ -624,15 +624,15 @@ impl<'a> FunctionBuilder<'a> {
                     }
 
                     // Store source location before calling panicking functions
-                    if panicking_fns.contains(&func.name) {
-                        if let Some(file_str) = source_file {
+                    if ctx.panicking_fns.contains(&func.name) {
+                        if let Some(file_str) = ctx.source_file {
                             if let (Some(set_loc_fn), Some(gv)) = (
-                                func_refs.get("set_panic_location"),
-                                string_globals.get(file_str),
+                                ctx.func_refs.get("set_panic_location"),
+                                ctx.string_globals.get(file_str),
                             ) {
                                 let file_ptr = builder.ins().global_value(types::I64, *gv);
-                                let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                                let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                                let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                                let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                                 builder.ins().call(*set_loc_fn, &[file_ptr, line_val, col_val]);
                             }
                         }
@@ -642,11 +642,11 @@ impl<'a> FunctionBuilder<'a> {
 
                     if let Some(dst_id) = dst {
                         // Skip void-typed destinations — nothing to store
-                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                         let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
 
                         if !is_void {
-                        let var = var_map.get(dst_id)
+                        let var = ctx.var_map.get(dst_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "Call destination variable not found".to_string()
                             ))?;
@@ -676,7 +676,7 @@ impl<'a> FunctionBuilder<'a> {
                                 let ptr = if !results.is_empty() { results[0] } else {
                                     builder.ins().iconst(types::I64, 0)
                                 };
-                                if let Some((ss, slot_size)) = stack_slot_map.get(dst_id) {
+                                if let Some((ss, slot_size)) = ctx.stack_slot_map.get(dst_id) {
                                     slot_already_written = true;
                                     let zero = builder.ins().iconst(types::I64, 0);
                                     let is_null = builder.ins().icmp(IntCC::Equal, ptr, zero);
@@ -745,7 +745,7 @@ impl<'a> FunctionBuilder<'a> {
                             }
                         };
 
-                        let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                        let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                         let final_val = if let Some(local) = dst_local {
                             let dst_ty = mir_to_cranelift_type(&local.ty)?;
                             let val_ty = builder.func.dfg.value_type(val);
@@ -762,8 +762,8 @@ impl<'a> FunctionBuilder<'a> {
                         // DerefOption already wrote directly to the stack slot.
                         if slot_already_written {
                             // Nothing to do — DerefOption already populated the slot
-                        } else if let Some((ss, size)) = stack_slot_map.get(dst_id) {
-                            if internal_fns.contains(&func.name) {
+                        } else if let Some((ss, size)) = ctx.stack_slot_map.get(dst_id) {
+                            if ctx.internal_fns.contains(&func.name) {
                                 // Internal function returns aggregate data loaded from its stack.
                                 // Store directly into our stack slot (value, not pointer).
                                 if *size <= 8 {
@@ -797,14 +797,14 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmt::ResourceRegister { dst, scope_depth, .. } => {
                 // rask_resource_register(scope_depth) → resource_id
-                let func_ref = func_refs.get("rask_resource_register")
+                let func_ref = ctx.func_refs.get("rask_resource_register")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_register".to_string()))?;
                 let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
                 let call_inst = builder.ins().call(*func_ref, &[depth_val]);
 
                 let results = builder.inst_results(call_inst);
                 if !results.is_empty() {
-                    let var = var_map.get(dst)
+                    let var = ctx.var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Resource register destination not found".to_string()
                         ))?;
@@ -814,9 +814,9 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmt::ResourceConsume { resource_id } => {
                 // rask_resource_consume(resource_id)
-                let func_ref = func_refs.get("rask_resource_consume")
+                let func_ref = ctx.func_refs.get("rask_resource_consume")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_consume".to_string()))?;
-                let id_val = builder.use_var(*var_map.get(resource_id)
+                let id_val = builder.use_var(*ctx.var_map.get(resource_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Resource ID variable not found".to_string()
                     ))?);
@@ -825,7 +825,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmt::ResourceScopeCheck { scope_depth } => {
                 // rask_resource_scope_check(scope_depth)
-                let func_ref = func_refs.get("rask_resource_scope_check")
+                let func_ref = ctx.func_refs.get("rask_resource_scope_check")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_scope_check".to_string()))?;
                 let depth_val = builder.ins().iconst(types::I64, *scope_depth as i64);
                 builder.ins().call(*func_ref, &[depth_val]);
@@ -839,26 +839,26 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Pool checked access ────────────────────────────────────
             MirStmt::PoolCheckedAccess { dst, pool, handle } => {
-                let pool_val = builder.use_var(*var_map.get(pool)
+                let pool_val = builder.use_var(*ctx.var_map.get(pool)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Pool variable not found".to_string()
                     ))?);
-                let handle_val = builder.use_var(*var_map.get(handle)
+                let handle_val = builder.use_var(*ctx.var_map.get(handle)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Handle variable not found".to_string()
                     ))?);
 
                 // Determine result type before emitting IR
-                let is_struct = locals.iter()
+                let is_struct = ctx.locals.iter()
                     .find(|l| l.id == *dst)
                     .map(|l| matches!(&l.ty, MirType::Struct(_)))
                     .unwrap_or(false);
-                let load_ty = locals.iter()
+                let load_ty = ctx.locals.iter()
                     .find(|l| l.id == *dst)
                     .and_then(|l| mir_to_cranelift_type(&l.ty).ok())
                     .unwrap_or(types::I64);
 
-                if build_mode == BuildMode::Release {
+                if ctx.build_mode == BuildMode::Release {
                     // ── Inline pool access (release mode) ──────────────
                     // Emits bounds check + generation check + data load directly
                     // as Cranelift IR, avoiding the C function call overhead.
@@ -895,17 +895,17 @@ impl<'a> FunctionBuilder<'a> {
                     builder.seal_block(panic_block);
                     builder.set_cold_block(panic_block);
                     if let (Some(panic_ref), Some(msg_gv)) = (
-                        func_refs.get("panic_at"),
-                        string_globals.get("pool access with invalid handle"),
+                        ctx.func_refs.get("panic_at"),
+                        ctx.string_globals.get("pool access with invalid handle"),
                     ) {
-                        let file_gv = source_file.and_then(|f| string_globals.get(f));
+                        let file_gv = ctx.source_file.and_then(|f| ctx.string_globals.get(f));
                         let file_ptr = if let Some(gv) = file_gv {
                             builder.ins().global_value(types::I64, *gv)
                         } else {
                             builder.ins().iconst(types::I64, 0)
                         };
-                        let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                         let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
                         builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
                     }
@@ -932,17 +932,17 @@ impl<'a> FunctionBuilder<'a> {
                     builder.seal_block(gen_panic_block);
                     builder.set_cold_block(gen_panic_block);
                     if let (Some(panic_ref), Some(msg_gv)) = (
-                        func_refs.get("panic_at"),
-                        string_globals.get("pool access with invalid handle"),
+                        ctx.func_refs.get("panic_at"),
+                        ctx.string_globals.get("pool access with invalid handle"),
                     ) {
-                        let file_gv = source_file.and_then(|f| string_globals.get(f));
+                        let file_gv = ctx.source_file.and_then(|f| ctx.string_globals.get(f));
                         let file_ptr = if let Some(gv) = file_gv {
                             builder.ins().global_value(types::I64, *gv)
                         } else {
                             builder.ins().iconst(types::I64, 0)
                         };
-                        let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                        let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                        let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                        let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                         let msg_ptr = builder.ins().global_value(types::I64, *msg_gv);
                         builder.ins().call(*panic_ref, &[file_ptr, line_val, col_val, msg_ptr]);
                     }
@@ -951,7 +951,7 @@ impl<'a> FunctionBuilder<'a> {
                     // ok_block: load data (single predecessor, seal immediately)
                     builder.switch_to_block(ok_block);
                     builder.seal_block(ok_block);
-                    let var = var_map.get(dst)
+                    let var = ctx.var_map.get(dst)
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             "Pool access destination not found".to_string()
                         ))?;
@@ -961,22 +961,22 @@ impl<'a> FunctionBuilder<'a> {
                     builder.def_var(*var, data_ptr);
                 } else {
                     // ── Debug mode: call C function ──────────────────────
-                    let call_inst = if let Some(file_str) = source_file {
+                    let call_inst = if let Some(file_str) = ctx.source_file {
                         if let (Some(func_ref), Some(gv)) = (
-                            func_refs.get("pool_get_checked"),
-                            string_globals.get(file_str),
+                            ctx.func_refs.get("pool_get_checked"),
+                            ctx.string_globals.get(file_str),
                         ) {
                             let file_ptr = builder.ins().global_value(types::I64, *gv);
-                            let line_val = builder.ins().iconst(types::I32, current_line as i64);
-                            let col_val = builder.ins().iconst(types::I32, current_col as i64);
+                            let line_val = builder.ins().iconst(types::I32, ctx.current_line as i64);
+                            let col_val = builder.ins().iconst(types::I32, ctx.current_col as i64);
                             builder.ins().call(*func_ref, &[pool_val, handle_val, file_ptr, line_val, col_val])
                         } else {
-                            let func_ref = func_refs.get("Pool_checked_access")
+                            let func_ref = ctx.func_refs.get("Pool_checked_access")
                                 .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
                             builder.ins().call(*func_ref, &[pool_val, handle_val])
                         }
                     } else {
-                        let func_ref = func_refs.get("Pool_checked_access")
+                        let func_ref = ctx.func_refs.get("Pool_checked_access")
                             .ok_or_else(|| CodegenError::FunctionNotFound("Pool_checked_access".to_string()))?;
                         builder.ins().call(*func_ref, &[pool_val, handle_val])
                     };
@@ -984,7 +984,7 @@ impl<'a> FunctionBuilder<'a> {
                     let results = builder.inst_results(call_inst);
                     if !results.is_empty() {
                         let ptr = results[0];
-                        let var = var_map.get(dst)
+                        let var = ctx.var_map.get(dst)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "Pool access destination not found".to_string()
                             ))?;
@@ -1012,25 +1012,25 @@ impl<'a> FunctionBuilder<'a> {
                 };
 
                 // Get function pointer for the closure function
-                let func_ref = func_refs.get(func_name)
+                let func_ref = ctx.func_refs.get(func_name)
                     .ok_or_else(|| CodegenError::FunctionNotFound(func_name.clone()))?;
                 let func_ptr = builder.ins().func_addr(types::I64, *func_ref);
 
                 let closure_ptr = if *heap {
                     // Escaping closure: heap-allocate via rask_alloc
-                    let alloc_ref = func_refs.get("rask_alloc")
+                    let alloc_ref = ctx.func_refs.get("rask_alloc")
                         .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
                     crate::closures::allocate_closure_heap(
-                        builder, func_ptr, &env_layout, var_map, *alloc_ref,
+                        builder, func_ptr, &env_layout, ctx.var_map, *alloc_ref,
                     )?
                 } else {
                     // Non-escaping closure: stack-allocate
                     crate::closures::allocate_closure_stack(
-                        builder, func_ptr, &env_layout, var_map,
+                        builder, func_ptr, &env_layout, ctx.var_map,
                     )?
                 };
 
-                let var = var_map.get(dst)
+                let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureCreate destination not found".to_string()
                     ))?;
@@ -1038,7 +1038,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::ClosureCall { dst, closure, args } => {
-                let closure_val = builder.use_var(*var_map.get(closure)
+                let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Closure variable not found".to_string()
                     ))?);
@@ -1046,7 +1046,7 @@ impl<'a> FunctionBuilder<'a> {
                 // Lower arg values
                 let mut arg_vals = Vec::new();
                 for a in args {
-                    let val = Self::lower_operand(builder, a, var_map, string_globals, func_refs)?;
+                    let val = Self::lower_operand(builder, a, ctx)?;
                     arg_vals.push(val);
                 }
 
@@ -1062,10 +1062,10 @@ impl<'a> FunctionBuilder<'a> {
                 }
 
                 if let Some(dst_id) = dst {
-                    let dst_local = locals.iter().find(|l| l.id == *dst_id);
+                    let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                     if let Some(local) = dst_local {
-                        let ret_ty = mir_to_cranelift_type(&local.ty)?;
-                        sig.returns.push(AbiParam::new(ret_ty));
+                        let cl_ret_ty = mir_to_cranelift_type(&local.ty)?;
+                        sig.returns.push(AbiParam::new(cl_ret_ty));
                     }
                 }
 
@@ -1076,7 +1076,7 @@ impl<'a> FunctionBuilder<'a> {
                 if let Some(dst_id) = dst {
                     let results = builder.inst_results(call_inst);
                     if !results.is_empty() {
-                        let var = var_map.get(dst_id)
+                        let var = ctx.var_map.get(dst_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "ClosureCall destination not found".to_string()
                             ))?;
@@ -1086,17 +1086,17 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::LoadCapture { dst, env_ptr, offset } => {
-                let env_val = builder.use_var(*var_map.get(env_ptr)
+                let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture env_ptr not found".to_string()
                     ))?);
-                let dst_local = locals.iter().find(|l| l.id == *dst)
+                let dst_local = ctx.locals.iter().find(|l| l.id == *dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture destination not found".to_string()
                     ))?;
                 let load_ty = mir_to_cranelift_type(&dst_local.ty)?;
                 let val = crate::closures::load_capture(builder, env_val, *offset, load_ty);
-                let var = var_map.get(dst)
+                let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture destination variable not found".to_string()
                     ))?;
@@ -1104,22 +1104,22 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::ClosureDrop { closure } => {
-                let closure_val = builder.use_var(*var_map.get(closure)
+                let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureDrop closure variable not found".to_string()
                     ))?);
-                let free_ref = func_refs.get("rask_free")
+                let free_ref = ctx.func_refs.get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
             MirStmt::GlobalRef { dst, name } => {
-                let gv = comptime_globals.get(name.as_str())
+                let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         format!("GlobalRef: comptime global '{}' not found", name)
                     ))?;
                 let addr = builder.ins().global_value(types::I64, *gv);
-                let var = var_map.get(dst)
+                let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "GlobalRef destination not found".to_string()
                     ))?;
@@ -1129,7 +1129,7 @@ impl<'a> FunctionBuilder<'a> {
             // ── Trait object support ──────────────────────────────────
 
             MirStmt::TraitBox { dst, value, vtable_name, concrete_size, .. } => {
-                let alloc_ref = func_refs.get("rask_alloc")
+                let alloc_ref = ctx.func_refs.get("rask_alloc")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
 
                 // Allocate heap memory for the concrete value (min 8 to avoid null from zero-size alloc)
@@ -1140,7 +1140,7 @@ impl<'a> FunctionBuilder<'a> {
 
                 // Copy concrete value to heap
                 if let MirOperand::Local(src_id) = value {
-                    if let Some((ss, sz)) = stack_slot_map.get(src_id) {
+                    if let Some((ss, sz)) = ctx.stack_slot_map.get(src_id) {
                         // Aggregate: memcpy from stack slot
                         let src_ptr = builder.ins().stack_addr(types::I64, *ss, 0);
                         let mut off = 0i32;
@@ -1155,7 +1155,7 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     } else {
                         // Scalar: load from variable, store to heap
-                        let src_val = builder.use_var(*var_map.get(src_id)
+                        let src_val = builder.use_var(*ctx.var_map.get(src_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature(
                                 "TraitBox: source variable not found".to_string()
                             ))?);
@@ -1163,19 +1163,19 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 } else {
                     // Constant: lower and store
-                    let src_val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                    let src_val = Self::lower_operand(builder, value, ctx)?;
                     builder.ins().store(MemFlags::new(), src_val, data_ptr, 0);
                 }
 
                 // Get vtable address
-                let gv = vtable_globals.get(vtable_name.as_str())
+                let gv = ctx.vtable_globals.get(vtable_name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         format!("TraitBox: vtable '{}' not found", vtable_name)
                     ))?;
                 let vtable_ptr = builder.ins().global_value(types::I64, *gv);
 
                 // Store fat pointer into destination stack slot: [data_ptr, vtable_ptr]
-                let (ss, _) = stack_slot_map.get(dst)
+                let (ss, _) = ctx.stack_slot_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitBox destination stack slot not found".to_string()
                     ))?;
@@ -1184,7 +1184,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().store(MemFlags::new(), vtable_ptr, dst_addr, 8);
 
                 // Set the variable to point to the stack slot
-                let var = var_map.get(dst)
+                let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitBox destination variable not found".to_string()
                     ))?;
@@ -1193,7 +1193,7 @@ impl<'a> FunctionBuilder<'a> {
 
             MirStmt::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
                 // Load fat pointer components from trait object stack slot
-                let obj_val = builder.use_var(*var_map.get(trait_object)
+                let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitCall: trait object variable not found".to_string()
                     ))?);
@@ -1217,7 +1217,7 @@ impl<'a> FunctionBuilder<'a> {
                 let mut call_args = Vec::with_capacity(1 + args.len());
                 call_args.push(data_ptr);
                 for arg in args.iter() {
-                    let val = Self::lower_operand(builder, arg, var_map, string_globals, func_refs)?;
+                    let val = Self::lower_operand(builder, arg, ctx)?;
                     call_args.push(val);
                 }
 
@@ -1226,7 +1226,7 @@ impl<'a> FunctionBuilder<'a> {
 
                 if let Some(dst_id) = dst {
                     let result = builder.inst_results(call_inst)[0];
-                    let var = var_map.get(dst_id)
+                    let var = ctx.var_map.get(dst_id)
                         .ok_or_else(|| CodegenError::UnsupportedFeature(
                             format!("TraitCall destination for '{}' not found", method_name)
                         ))?;
@@ -1235,7 +1235,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirStmt::TraitDrop { trait_object } => {
-                let obj_val = builder.use_var(*var_map.get(trait_object)
+                let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitDrop: trait object variable not found".to_string()
                     ))?);
@@ -1266,7 +1266,7 @@ impl<'a> FunctionBuilder<'a> {
 
                 // Free block: rask_free(data_ptr)
                 builder.switch_to_block(free_block);
-                let free_ref = func_refs.get("rask_free")
+                let free_ref = ctx.func_refs.get("rask_free")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[data_ptr]);
             }
@@ -1383,21 +1383,15 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn lower_rvalue(
         builder: &mut ClifFunctionBuilder,
         rvalue: &MirRValue,
-        var_map: &HashMap<LocalId, Variable>,
-        locals: &[rask_mir::MirLocal],
         expected_ty: Option<Type>,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
-        string_globals: &HashMap<String, GlobalValue>,
-        func_refs: &HashMap<String, FuncRef>,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
         match rvalue {
             MirRValue::Use(op) => {
-                Self::lower_operand_typed(builder, op, var_map, expected_ty, string_globals, func_refs)
+                Self::lower_operand_typed(builder, op, expected_ty, ctx)
             }
 
             MirRValue::BinaryOp { op, left, right } => {
@@ -1406,15 +1400,15 @@ impl<'a> FunctionBuilder<'a> {
                 );
 
                 let operand_ty = if is_comparison { None } else { expected_ty };
-                let lhs_val = Self::lower_operand_typed(builder, left, var_map, operand_ty, string_globals, func_refs)?;
+                let lhs_val = Self::lower_operand_typed(builder, left, operand_ty, ctx)?;
                 let lhs_ty = builder.func.dfg.value_type(lhs_val);
-                let rhs_val = Self::lower_operand_typed(builder, right, var_map, Some(lhs_ty), string_globals, func_refs)?;
+                let rhs_val = Self::lower_operand_typed(builder, right, Some(lhs_ty), ctx)?;
                 let rhs_ty = builder.func.dfg.value_type(rhs_val);
 
                 let is_float = lhs_ty.is_float() || rhs_ty.is_float();
 
                 // Check if the left operand has an unsigned MIR type
-                let is_unsigned = Self::operand_mir_type(left, locals)
+                let is_unsigned = Self::operand_mir_type(left, ctx.locals)
                     .map(|t| t.is_unsigned())
                     .unwrap_or(false);
 
@@ -1526,7 +1520,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::UnaryOp { op, operand } => {
-                let val = Self::lower_operand_typed(builder, operand, var_map, expected_ty, string_globals, func_refs)?;
+                let val = Self::lower_operand_typed(builder, operand, expected_ty, ctx)?;
                 let val_ty = builder.func.dfg.value_type(val);
 
                 let result = match op {
@@ -1546,7 +1540,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             MirRValue::Cast { value, target_ty } => {
-                let val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                let val = Self::lower_operand(builder, value, ctx)?;
                 let target = mir_to_cranelift_type(target_ty)?;
                 let val_ty = builder.func.dfg.value_type(val);
                 Ok(Self::convert_value(builder, val, val_ty, target))
@@ -1554,13 +1548,13 @@ impl<'a> FunctionBuilder<'a> {
 
             // Struct/enum field access: load from base pointer + field offset
             MirRValue::Field { base, field_index, byte_offset, field_size } => {
-                let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
-                let base_ty = Self::operand_mir_type(base, locals);
+                let base_val = Self::lower_operand(builder, base, ctx)?;
+                let base_ty = Self::operand_mir_type(base, ctx.locals);
                 let mut load_ty = expected_ty.unwrap_or(types::I64);
 
                 let offset = match &base_ty {
                     Some(MirType::Struct(id)) => {
-                        if let Some(layout) = struct_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.struct_layouts.get(id.0 as usize) {
                             if let Some(field) = layout.fields.get(*field_index as usize) {
                                 // Aggregate field: return pointer into parent struct.
                                 // Covers both >8-byte structs and ≤8-byte enums/structs
@@ -1584,7 +1578,7 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     Some(MirType::Enum(id)) => {
-                        if let Some(layout) = enum_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
                             // Payload starts at payload_offset; field is relative within payload.
                             // Use the first variant with enough fields for the offset.
                             let variant = layout.variants.iter()
@@ -1660,12 +1654,12 @@ impl<'a> FunctionBuilder<'a> {
 
             // Enum discriminant extraction: load tag byte from base pointer
             MirRValue::EnumTag { value } => {
-                let ptr_val = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
-                let base_ty = Self::operand_mir_type(value, locals);
+                let ptr_val = Self::lower_operand(builder, value, ctx)?;
+                let base_ty = Self::operand_mir_type(value, ctx.locals);
 
                 let (tag_offset, tag_cranelift_ty) = match &base_ty {
                     Some(MirType::Enum(id)) => {
-                        if let Some(layout) = enum_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
                             let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
@@ -1688,12 +1682,12 @@ impl<'a> FunctionBuilder<'a> {
             // Address-of: return the pointer that the local already holds (for aggregates)
             // or spill a scalar to a stack slot and return its address.
             MirRValue::Ref(local_id) => {
-                let var = var_map.get(local_id)
+                let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Ref: local not found".to_string()))?;
                 let val = builder.use_var(*var);
 
                 // For aggregate types the variable already IS a pointer
-                let local_ty = locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
+                let local_ty = ctx.locals.iter().find(|l| l.id == *local_id).map(|l| &l.ty);
                 let is_aggregate = matches!(
                     local_ty,
                     Some(MirType::Struct(_) | MirType::Enum(_) | MirType::Array { .. }
@@ -1720,7 +1714,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // Pointer dereference: load the value pointed to by the operand
             MirRValue::Deref(operand) => {
-                let ptr_val = Self::lower_operand(builder, operand, var_map, string_globals, func_refs)?;
+                let ptr_val = Self::lower_operand(builder, operand, ctx)?;
                 let load_ty = expected_ty.unwrap_or(types::I64);
                 let flags = MemFlags::new();
                 Ok(builder.ins().load(load_ty, flags, ptr_val, 0))
@@ -1728,8 +1722,8 @@ impl<'a> FunctionBuilder<'a> {
 
             // Array element access: base_ptr + index * elem_size → load
             MirRValue::ArrayIndex { base, index, elem_size } => {
-                let base_val = Self::lower_operand(builder, base, var_map, string_globals, func_refs)?;
-                let idx_val = Self::lower_operand_typed(builder, index, var_map, Some(types::I64), string_globals, func_refs)?;
+                let base_val = Self::lower_operand(builder, base, ctx)?;
+                let idx_val = Self::lower_operand_typed(builder, index, Some(types::I64), ctx)?;
                 let elem_sz = builder.ins().iconst(types::I64, *elem_size as i64);
                 let offset = builder.ins().imul(idx_val, elem_sz);
                 let addr = builder.ins().iadd(base_val, offset);
@@ -1744,19 +1738,7 @@ impl<'a> FunctionBuilder<'a> {
     fn lower_terminator(
         builder: &mut ClifFunctionBuilder,
         term: &MirTerminator,
-        var_map: &HashMap<LocalId, Variable>,
-        block_map: &HashMap<BlockId, Block>,
-        ret_ty: &MirType,
-        _mir_blocks: &[rask_mir::MirBlock],
-        _locals: &[rask_mir::MirLocal],
-        func_refs: &HashMap<String, FuncRef>,
-        struct_layouts: &[StructLayout],
-        enum_layouts: &[EnumLayout],
-        string_globals: &HashMap<String, GlobalValue>,
-        _comptime_globals: &HashMap<String, GlobalValue>,
-        _panicking_fns: &HashSet<String>,
-        stack_slot_map: &HashMap<LocalId, (StackSlot, u32)>,
-        _internal_fns: &HashSet<String>,
+        ctx: &CodegenCtx,
         cleanup_chain_blocks: &HashMap<Vec<BlockId>, cranelift_codegen::ir::Block>,
     ) -> CodegenResult<()> {
         match term {
@@ -1766,21 +1748,21 @@ impl<'a> FunctionBuilder<'a> {
                 // For larger aggregates, return the stack slot address. The caller
                 // copies from it immediately via copy_aggregate (the callee stack
                 // is still accessible at that point on x86-64).
-                if let Some(stack_info) = Self::return_stack_info(value.as_ref(), stack_slot_map) {
+                if let Some(stack_info) = Self::return_stack_info(value.as_ref(), ctx.stack_slot_map) {
                     let (_local_id, ss, size) = stack_info;
                     if size <= 8 {
                         let loaded = builder.ins().stack_load(types::I64, ss, 0);
                         builder.ins().return_(&[loaded]);
                     } else {
                         // Return pointer to stack slot data for copy_aggregate
-                        Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                        Self::emit_return(builder, value.as_ref(), ctx)?;
                     }
-                } else if matches!(ret_ty, MirType::Result { .. } | MirType::Option(_)) {
+                } else if matches!(ctx.ret_ty, MirType::Result { .. } | MirType::Option(_)) {
                     // Function returns Result/Option but value is a plain scalar
                     // (e.g. `return 42` in a function returning `i32 or string`).
                     // Wrap the value as Ok/Some in a temporary stack slot and return
                     // the slot address so the caller can copy_aggregate.
-                    let slot_size = Self::resolve_type_alloc_size(ret_ty, struct_layouts, enum_layouts)
+                    let slot_size = Self::resolve_type_alloc_size(ctx.ret_ty, ctx.struct_layouts, ctx.enum_layouts)
                         .unwrap_or(16);
                     let ss = builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot,
@@ -1788,7 +1770,7 @@ impl<'a> FunctionBuilder<'a> {
                         0,
                     ));
                     let val = if let Some(val_op) = value.as_ref() {
-                        Self::lower_operand_typed(builder, val_op, var_map, Some(types::I64), string_globals, func_refs)?
+                        Self::lower_operand_typed(builder, val_op, Some(types::I64), ctx)?
                     } else {
                         builder.ins().iconst(types::I64, 0)
                     };
@@ -1796,33 +1778,33 @@ impl<'a> FunctionBuilder<'a> {
                     let addr = builder.ins().stack_addr(types::I64, ss, 0);
                     builder.ins().return_(&[addr]);
                 } else {
-                    Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                    Self::emit_return(builder, value.as_ref(), ctx)?;
                 }
             }
 
             MirTerminator::Goto { target } => {
-                let target_block = block_map.get(target)
+                let target_block = ctx.block_map.get(target)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Target block not found".to_string()))?;
                 builder.ins().jump(*target_block, &[]);
             }
 
             MirTerminator::Branch { cond, then_block, else_block } => {
-                let mut cond_val = Self::lower_operand(builder, cond, var_map, string_globals, func_refs)?;
+                let mut cond_val = Self::lower_operand(builder, cond, ctx)?;
 
                 let cond_ty = builder.func.dfg.value_type(cond_val);
                 if cond_ty == types::I8 {
                     cond_val = builder.ins().icmp_imm(IntCC::NotEqual, cond_val, 0);
                 }
 
-                let then_cl = block_map.get(then_block)
+                let then_cl = ctx.block_map.get(then_block)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Then block not found".to_string()))?;
-                let else_cl = block_map.get(else_block)
+                let else_cl = ctx.block_map.get(else_block)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Else block not found".to_string()))?;
                 builder.ins().brif(cond_val, *then_cl, &[], *else_cl, &[]);
             }
 
             MirTerminator::Switch { value, cases, default } => {
-                let raw_scrutinee = Self::lower_operand(builder, value, var_map, string_globals, func_refs)?;
+                let raw_scrutinee = Self::lower_operand(builder, value, ctx)?;
                 // Extend to i64 if the scrutinee is a narrower type (e.g. u8 enum tag)
                 let scrutinee_val = {
                     let val_ty = builder.func.dfg.value_type(raw_scrutinee);
@@ -1838,7 +1820,7 @@ impl<'a> FunctionBuilder<'a> {
                 let mut comparison_blocks = Vec::new();
 
                 for (value, target_id) in cases {
-                    let target_block = block_map.get(target_id)
+                    let target_block = ctx.block_map.get(target_id)
                         .ok_or_else(|| CodegenError::UnsupportedFeature("Switch target block not found".to_string()))?;
 
                     let cmp_val = builder.ins().iconst(types::I64, *value as i64);
@@ -1851,7 +1833,7 @@ impl<'a> FunctionBuilder<'a> {
                     builder.switch_to_block(next_block);
                 }
 
-                let default_block = block_map.get(default)
+                let default_block = ctx.block_map.get(default)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Switch default block not found".to_string()))?;
                 builder.ins().jump(*default_block, &[]);
 
@@ -1870,8 +1852,8 @@ impl<'a> FunctionBuilder<'a> {
                     if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
                         // Jump to shared cleanup block, passing return value.
                         if let Some(val_op) = value {
-                            let expected_ty = mir_to_cranelift_type(ret_ty)?;
-                            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals, func_refs)?;
+                            let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
+                            let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
                             let actual_ty = builder.func.dfg.value_type(val);
                             let final_val = if actual_ty != expected_ty {
                                 Self::convert_value(builder, val, actual_ty, expected_ty)
@@ -1884,11 +1866,11 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     } else {
                         // Fallback: inline (shouldn't happen with the setup above)
-                        Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                        Self::emit_return(builder, value.as_ref(), ctx)?;
                     }
                 } else {
                     // Empty cleanup chain — just return directly
-                    Self::emit_return(builder, value.as_ref(), ret_ty, var_map, string_globals, func_refs)?;
+                    Self::emit_return(builder, value.as_ref(), ctx)?;
                 }
             }
         }
@@ -1899,14 +1881,11 @@ impl<'a> FunctionBuilder<'a> {
     fn emit_return(
         builder: &mut ClifFunctionBuilder,
         value: Option<&MirOperand>,
-        ret_ty: &MirType,
-        var_map: &HashMap<LocalId, Variable>,
-        string_globals: &HashMap<String, GlobalValue>,
-        func_refs: &HashMap<String, FuncRef>,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
         if let Some(val_op) = value {
-            let expected_ty = mir_to_cranelift_type(ret_ty)?;
-            let val = Self::lower_operand_typed(builder, val_op, var_map, Some(expected_ty), string_globals, func_refs)?;
+            let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
+            let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
             let actual_ty = builder.func.dfg.value_type(val);
             let final_val = if actual_ty != expected_ty {
                 Self::convert_value(builder, val, actual_ty, expected_ty)
@@ -2060,8 +2039,7 @@ impl<'a> FunctionBuilder<'a> {
         func_name: &str,
         args: &mut Vec<Value>,
         mir_args: &[MirOperand],
-        locals: &[rask_mir::MirLocal],
-        struct_layouts: &[StructLayout],
+        ctx: &CodegenCtx,
     ) -> CallAdapt {
         match func_name {
             // Constructors: inject elem_size / key_size+val_size
@@ -2168,9 +2146,9 @@ impl<'a> FunctionBuilder<'a> {
                 let mut elem_size: i64 = 8;
                 let mut is_struct_elem = false;
                 if let Some(MirOperand::Local(arg_id)) = mir_args.get(1) {
-                    if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                    if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
                         if let MirType::Struct(layout_id) = &local.ty {
-                            if let Some(layout) = struct_layouts.get(layout_id.0 as usize) {
+                            if let Some(layout) = ctx.struct_layouts.get(layout_id.0 as usize) {
                                 elem_size = layout.size as i64;
                                 is_struct_elem = true;
                             }
@@ -2228,9 +2206,9 @@ impl<'a> FunctionBuilder<'a> {
                     let mut data_size: i64 = 8;
                     let mut is_struct = false;
                     if let Some(MirOperand::Local(arg_id)) = mir_args.first() {
-                        if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                        if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
                             if let MirType::Struct(layout_id) = &local.ty {
-                                if let Some(layout) = struct_layouts.get(layout_id.0 as usize) {
+                                if let Some(layout) = ctx.struct_layouts.get(layout_id.0 as usize) {
                                     data_size = layout.size as i64;
                                     is_struct = true;
                                 }
@@ -2253,7 +2231,7 @@ impl<'a> FunctionBuilder<'a> {
                 if args.len() >= 2 {
                     let mut is_struct = false;
                     if let Some(MirOperand::Local(arg_id)) = mir_args.get(1) {
-                        if let Some(local) = locals.iter().find(|l| l.id == *arg_id) {
+                        if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
                             if matches!(&local.ty, MirType::Struct(_)) {
                                 is_struct = true;
                             }
@@ -2306,11 +2284,9 @@ impl<'a> FunctionBuilder<'a> {
     fn lower_operand(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
-        var_map: &HashMap<LocalId, Variable>,
-        string_globals: &HashMap<String, GlobalValue>,
-        func_refs: &HashMap<String, FuncRef>,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
-        Self::lower_operand_typed(builder, op, var_map, None, string_globals, func_refs)
+        Self::lower_operand_typed(builder, op, None, ctx)
     }
 
     /// Lower a string constant as a raw `const char*` pointer (no RaskString wrapping).
@@ -2318,10 +2294,10 @@ impl<'a> FunctionBuilder<'a> {
     fn lower_string_const_as_cstr(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
-        string_globals: &HashMap<String, GlobalValue>,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
         if let MirOperand::Constant(MirConst::String(s)) = op {
-            if let Some(gv) = string_globals.get(s.as_str()) {
+            if let Some(gv) = ctx.string_globals.get(s.as_str()) {
                 return Ok(builder.ins().global_value(types::I64, *gv));
             }
         }
@@ -2332,14 +2308,12 @@ impl<'a> FunctionBuilder<'a> {
     fn lower_operand_typed(
         builder: &mut ClifFunctionBuilder,
         op: &MirOperand,
-        var_map: &HashMap<LocalId, Variable>,
         expected_ty: Option<Type>,
-        string_globals: &HashMap<String, GlobalValue>,
-        func_refs: &HashMap<String, FuncRef>,
+        ctx: &CodegenCtx,
     ) -> CodegenResult<Value> {
         match op {
             MirOperand::Local(local_id) => {
-                let var = var_map.get(local_id)
+                let var = ctx.var_map.get(local_id)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Local not found".to_string()))?;
                 let val = builder.use_var(*var);
                 // Widen to expected type if needed (e.g., i32 local used where i64 expected)
@@ -2379,9 +2353,9 @@ impl<'a> FunctionBuilder<'a> {
                     MirConst::String(s) => {
                         // String constants: get raw char* from data section,
                         // then wrap in RaskString via rask_string_from().
-                        if let Some(gv) = string_globals.get(s.as_str()) {
+                        if let Some(gv) = ctx.string_globals.get(s.as_str()) {
                             let raw_ptr = builder.ins().global_value(types::I64, *gv);
-                            if let Some(string_from_ref) = func_refs.get("string_from") {
+                            if let Some(string_from_ref) = ctx.func_refs.get("string_from") {
                                 let call = builder.ins().call(*string_from_ref, &[raw_ptr]);
                                 let results = builder.inst_results(call);
                                 Ok(results[0])
