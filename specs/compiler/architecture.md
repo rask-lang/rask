@@ -125,18 +125,110 @@ Inlining is listed as `comp.codegen/O6` but has no implementation yet. The archi
 | Rule | Description |
 |------|-------------|
 | **ER1: Collect, don't stop** | The type checker collects all errors into a `Vec<TypeError>` and processes the entire program before returning. Already implemented |
-| **ER2: Cascade filtering** | Duplicate/cascading errors are filtered before reporting. A type error caused by an earlier error shouldn't generate a second message |
-| **ER3: Frontend stops pipeline** | If typechecking produces errors, MIR lowering and everything after it doesn't run. No attempt to compile partially-typed code |
-| **ER4: MIR passes assume correctness** | MIR passes assume the input is well-typed. No defensive checks for type errors in MIR — if it got past the type checker, it's valid |
+| **ER2: Root-cause ordering** | Errors are topologically sorted by dependency. If a type error in function A causes 5 downstream errors, show A's error first with a note: "5 errors caused by this." Don't dump all 6 equally |
+| **ER3: Suggested fixes** | Every error that has an unambiguous fix carries a `Fix` — a concrete code edit the tooling can apply. Missing `.clone()`, wrong type, missing import, unused variable — if the fix is mechanical, offer it |
+| **ER4: Per-function gate** | If typechecking fails for function A but succeeds for function B, MIR lowering processes B normally. Errors don't block the entire pipeline — only errored functions are skipped |
+| **ER5: MIR passes assume correctness** | MIR passes assume the input is well-typed. If it got past the type checker, it's valid. No defensive type checks in MIR |
 
-### Future: IDE Integration
+### Error Output Structure
 
-For IDE support (diagnostics-as-you-type), the pipeline needs to produce partial results — type info for correct functions even when other functions have errors. This means:
-- Type checker marks functions as errored vs clean
-- MIR lowering skips errored functions, processes clean ones
-- Passes run on clean functions only
+```rust
+pub struct CompileError {
+    pub span: Span,
+    pub message: String,
+    pub severity: Severity,           // Error, Warning, Info
+    pub code: ErrorCode,              // structured error code (E0001, etc.)
+    pub fixes: Vec<SuggestedFix>,     // zero or more auto-applicable fixes
+    pub caused_by: Option<ErrorId>,   // upstream error that triggered this one
+    pub notes: Vec<(Span, String)>,   // "defined here", "previously moved here"
+}
 
-This is a future concern — the current batch-compile model works. But ER3's hard stop would need to become a per-function gate.
+pub struct SuggestedFix {
+    pub description: String,          // "add .clone()"
+    pub edits: Vec<TextEdit>,         // concrete source edits
+    pub confidence: Confidence,       // Certain (auto-apply safe) or Suggested (needs review)
+}
+```
+
+The LSP maps `SuggestedFix` directly to LSP code actions. `Certain` fixes can be auto-applied on save or via keybinding. `Suggested` fixes show as lightbulb suggestions.
+
+### Common Fix Patterns
+
+| Error | Fix | Confidence |
+|-------|-----|------------|
+| Move of value that's used later | Insert `.clone()` at move site | Certain |
+| Missing field in struct literal | Add field with default/todo value | Suggested |
+| Type mismatch: `i32` vs `i64` | Insert `.to_i64()` conversion | Certain |
+| Unused import | Remove import line | Certain |
+| Missing `try` on fallible call | Wrap in `try` | Certain |
+| Resource not consumed | Insert `ensure { resource.close() }` | Suggested |
+| Unknown identifier (close match) | "Did you mean `foo_bar`?" with rename edit | Suggested |
+| Missing match arm | Add missing variant with `todo()` body | Certain |
+
+---
+
+## Interactive Compilation
+
+The goal: errors appear as you type, fixes are one keypress away, and the compiler never feels like a wall between you and working code. Rask's type system is simpler than Rust's — no lifetime solving, no complex trait resolution — so the compiler can be fast enough that the LSP is a thin wrapper, not a separate reimplementation.
+
+### Strategy: Fast Compiler, Not Separate Tool
+
+| Rule | Description |
+|------|-------------|
+| **IX1: Single binary** | `rask check`, `rask build`, and `rask lsp` are the same compiler binary. The LSP mode keeps the compiler alive between invocations and reuses cached state. No separate analysis tool, no semantic drift |
+| **IX2: Frontend caching** | Parse trees and type-checked results are cached per file. When a file changes, re-parse that file and re-typecheck it plus its dependents. Unchanged files are not re-processed |
+| **IX3: File dependency graph** | The compiler tracks which files import which. On change, only the transitive dependents of the changed file are re-checked. This is the key to sub-200ms incremental response |
+| **IX4: Persistent process** | In LSP mode, the compiler stays resident. AST cache, type cache, and MIR cache persist across edits. Cold start parses everything; subsequent checks only process deltas |
+| **IX5: Debounced keystroke checking** | In LSP mode, re-check triggers on every edit with ~150ms debounce. Errors update inline as the user types, not on save |
+| **IX6: Partial results** | When files have errors, the compiler still provides completions, hover info, and go-to-definition for all correct code. ER4 (per-function gate) enables this — errored functions are skipped, not the whole program |
+
+### Why Not Query-Based (Salsa/rust-analyzer)?
+
+Query-based architectures (demand-driven, memoized computation graphs) are powerful but complex. rust-analyzer uses salsa and is a *separate codebase* from rustc — they have different type checkers that disagree on edge cases. That's exactly the problem I want to avoid.
+
+Rask's bet: the compiler is fast enough that file-level caching plus function-level incremental MIR (IC1-IC4) gives sub-200ms response without a query framework. If the full pipeline from "file changed" to "errors updated" runs in under 200ms, there's no perceptible lag. The architecture stays simple — a cache in front of a pipeline, not a rewrite of the pipeline into a dependency graph.
+
+If this bet is wrong (projects grow too large, 200ms isn't achievable), the upgrade path is: add finer-grained caching inside typecheck (per-function memoization). That's a local change to `rask-types`, not an architectural rewrite. The pipeline structure and the single-binary constraint both survive.
+
+### Design Targets
+
+| Target | Value | Why |
+|--------|-------|-----|
+| Incremental check (single file change) | <200ms | Below perception threshold — feels instant |
+| Full check (50k LOC project) | <2s | Fast enough for CI and `rask watch` |
+| Error-to-fix latency | 1 keypress | `SuggestedFix` with `Certain` confidence auto-applies |
+| Completions | <50ms | Must feel instant — completions that lag are worse than none |
+
+### Frontend Cache Structure
+
+```rust
+pub struct CompilerCache {
+    pub file_asts: HashMap<FileId, (ContentHash, Ast)>,
+    pub file_types: HashMap<FileId, (ContentHash, TypedFile)>,
+    pub file_deps: HashMap<FileId, Vec<FileId>>,    // import graph
+    pub mir_cache: HashMap<FunctionHash, CachedMir>, // from comp.incremental
+}
+```
+
+On file change:
+1. Re-lex + re-parse changed file (fast — single file)
+2. Compare AST hash — if unchanged after formatting/comment edit, stop
+3. Re-resolve + re-typecheck changed file
+4. Walk `file_deps` — re-typecheck transitive dependents whose imports changed
+5. If building: re-lower changed functions to MIR (IC2 semantic hash check)
+
+Steps 1-4 are the "check" path. The LSP only needs 1-4 for diagnostics. Step 5 only runs for `rask build`.
+
+### Watch Mode
+
+`rask watch` keeps the compiler resident and re-checks on file save. Shows only new/changed errors since last check. Clears errors when fixed. Combined with the suggested fix system, the workflow becomes:
+
+1. Write code
+2. See error appear inline (keystroke-level in LSP, save-level in watch)
+3. Press keybinding to apply fix
+4. Error disappears
+
+No context switch. No terminal. No error dump to scroll through.
 
 ---
 
@@ -418,12 +510,15 @@ This doesn't require architectural changes — it requires MIR serialization (IR
 
 ```
 Source → Lexer → Parser → AST
+  → [AST cache — skip unchanged files (IX2)]
   → Desugar (default args, syntax sugar, match desugaring)
   → Resolve (names → symbols)
   → Typecheck + Effects + Exhaustiveness → TypedProgram
       (type inference, pattern exhaustiveness, frozen enforcement,
-       unsafe block validation, effect signatures)
+       unsafe block validation, effect signatures, suggested fixes)
+  → [Type cache — skip unchanged files + non-dependents (IX2, IX3)]
   → Ownership check (AST-level: moves, borrows, resource consumption)
+  ← LSP check path stops here: diagnostics + completions + hover (IX1) →
   → Hidden params desugaring (using clauses → explicit params, allocator contexts)
   → Monomorphize + Reflection metadata → MonoProgram
   → MIR Lowering (with Spans) → MirProgram (non-SSA)
@@ -431,7 +526,7 @@ Source → Lexer → Parser → AST
        closures → ClosureCreate/ClosureCall/ClosureDrop,
        resources → ResourceRegister/ResourceConsume/ResourceScopeCheck,
        match → decision trees, unsafe → debug-mode checks)
-  → [Cache check — skip unchanged functions]
+  → [MIR cache check — skip unchanged functions (IC2)]
   → SSA Conversion (dominators → phi insertion → variable renaming)
   → Cross-function passes (sequential):
       - Closure escape analysis + capture strategy (CC2, CC4)
@@ -453,6 +548,8 @@ Source → Lexer → Parser → AST
   → Link with rask-rt → Executable
 ```
 
+The LSP path runs the frontend (lex → typecheck → ownership) and stops — it doesn't need MIR or codegen for diagnostics. This is why frontend caching (IX2) matters most: it's the hot path for every keystroke.
+
 ---
 
 ## Implementation Phases
@@ -466,9 +563,10 @@ Source → Lexer → Parser → AST
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
 | **F: Inlining** | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
 | **G: Advanced analyses** | Typestate, intervals, bounds check elimination, devirtualization | `comp.advanced` spec |
-| **H: Parallel + Incremental** | Rayon, MIR serialization, cache layer | Build performance |
+| **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience |
+| **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance |
 
-Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each other. Phase H is independent but benefits from all others.
+Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each other. Phase H can start early — frontend caching and error restructuring don't depend on MIR work. Phase I is independent but benefits from all others.
 
 ---
 
