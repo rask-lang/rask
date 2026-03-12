@@ -62,7 +62,7 @@ Same for `MirTerminator`. Every IR node carries provenance.
 | **CL1: Ensure in MIR** | `ensure` blocks lower to `EnsurePush { cleanup_block }` / `EnsurePop` statements with `CleanupReturn` terminators. Already implemented — no structural change needed |
 | **CL2: Cleanup chains** | `CleanupReturn` carries a `cleanup_chain: Vec<BlockId>` — the LIFO stack of ensure blocks to execute on scope exit. MIR lowering builds the chain; codegen emits the cleanup sequence |
 | **CL3: SSA interaction** | Cleanup blocks are side exits — they don't produce values that flow back into the main CFG. SSA conversion treats cleanup blocks as separate regions. Phi nodes are never inserted at cleanup block boundaries |
-| **CL4: RC interaction** | `RcDec` operations must run *before* cleanup blocks execute (ensure handlers may reference the values being decremented). RC drop placement respects cleanup chain ordering: RC drops go in normal blocks, not cleanup blocks |
+| **CL4: RC interaction** | If an ensure block references a value, liveness analysis keeps it alive through the cleanup — `RcDec` is placed after cleanup executes, not before. No special ordering logic needed; liveness handles it |
 | **CL5: Resource tracking in MIR** | `@resource` types have dedicated MIR statements: `ResourceRegister` (track new resource), `ResourceConsume` (mark consumed), `ResourceScopeCheck` (verify consumed before scope exit). Already implemented |
 | **CL6: Resource vs RC** | Resource types are NOT refcounted — they are linear (must-consume). String RC skips `@resource` types entirely. The two systems are orthogonal: RC handles shared-ownership values (strings), resource tracking handles exactly-once values (files, connections) |
 | **CL7: Ensure in MIR CTFE** | The MIR interpreter handles cleanup chains — executes ensure blocks on scope exit, respecting LIFO order |
@@ -81,46 +81,62 @@ Same for `MirTerminator`. Every IR node carries provenance.
 
 ---
 
-## Unsafe Blocks
+## Features With No Special Architecture
 
-| Rule | Description |
-|------|-------------|
-| **UB1: Validated at typecheck** | `unsafe` block scoping enforced during type checking. Unsafe operations outside `unsafe {}` are compile errors |
-| **UB2: Debug-mode checks** | In debug builds, raw pointer operations emit runtime bounds/null checks (`mem.unsafe/D1-D5`). These lower to conditional panics in MIR |
-| **UB3: Release-mode elision** | In release builds, debug-mode pointer checks are elided. `BuildMode` in codegen context controls this |
-| **UB4: No special MIR form** | Unsafe blocks don't have a separate MIR representation — the safety boundary is the type checker's job. In MIR, raw pointer ops are just statements |
+These features resolve in the frontend or lower to existing MIR constructs. They don't need dedicated optimization infrastructure.
 
----
-
-## Pattern Matching
-
-| Rule | Description |
-|------|-------------|
-| **PM1: Exhaustiveness at typecheck** | Pattern exhaustiveness checking runs during type checking. Missing patterns are compile errors |
-| **PM2: Decision trees in MIR** | `match` lowers to decision trees — nested `Branch`/`Switch` terminators. `match_lower.rs` handles this |
-| **PM3: Enum dispatch** | `EnumTag` rvalue extracts discriminant. `Switch` dispatches on it. Payload destructuring uses field access at computed offsets |
-| **PM4: Optimization opportunity** | Jump threading and redundant branch merging are future MIR passes that improve match codegen |
+| Feature | How it resolves | MIR impact |
+|---------|----------------|------------|
+| **Unsafe blocks** | Scoping enforced at typecheck. Debug builds emit bounds/null checks as conditional panics. Release elides them | Raw pointer ops are regular statements — no special MIR form |
+| **Pattern matching** | Exhaustiveness checked at typecheck. `match` lowers to decision trees (`Branch`/`Switch` terminators) | Already implemented. Jump threading is a future general optimization |
+| **Allocator contexts** | `using Allocator` / `using Arena.scoped(...)` desugared by hidden params pass into explicit `__ctx_allocator` parameters | Collections dispatch to allocator-aware functions when context is active |
+| **Concurrency** | `spawn`, channels, `using Multitasking` are function calls / hidden params. No special MIR constructs | State machine transform for async suspension is a MIR pass (already implemented) |
 
 ---
 
-## Allocator Contexts
+## Trait Objects and Dynamic Dispatch
 
 | Rule | Description |
 |------|-------------|
-| **AL1: Desugared by hidden params** | `using Allocator` and `using Arena.scoped(...)` desugar via the hidden parameters pass (`comp.hidden-params`). The allocator becomes an explicit `__ctx_allocator` parameter |
-| **AL2: Collection dispatch** | Collections resolve to allocator-aware runtime functions when an allocator context is active. MIR lowering passes the allocator parameter to allocation calls |
-| **AL3: Scoped arena** | `using Arena.scoped(size) { ... }` desugars to: allocate arena → set as context → execute body → free arena. Hidden params handles scoping; MIR lowering emits alloc/dealloc |
+| **TD1: Heap-allocated fat pointer** | `any Trait` values are heap-allocated. `TraitBox` MIR statement packages a concrete value into a fat pointer (data pointer + vtable pointer). Already implemented |
+| **TD2: Vtable layout** | Fixed layout: `[size: i64, align: i64, drop: fn_ptr, methods...]`. One static vtable per (concrete_type, trait) pair. Codegen emits vtable data sections with function address relocations |
+| **TD3: Indirect dispatch** | `TraitCall` loads the method pointer from the vtable at a known offset, then emits an indirect call. Already implemented |
+| **TD4: Move-only** | `any Trait` is move-only, not refcounted. Trait objects can have `mutate self` methods — shared RC ownership would create data race risk. Single owner, explicit `.clone()` for copies |
+| **TD5: Devirtualization** | Future optimization: when the concrete type behind `any Trait` is statically known (e.g., created and called in the same function), replace indirect call with direct call. Enables subsequent inlining. Not implemented — requires escape analysis + type propagation |
 
 ---
 
-## Concurrency in Pipeline
+## Inlining
 
 | Rule | Description |
 |------|-------------|
-| **CO1: Spawn is a call** | `spawn(|| { ... })` is a function call, not a special MIR construct. The closure is built via CC1-CC5, the spawn call goes through normal dispatch |
-| **CO2: Channel ops are calls** | `channel.send()`/`channel.recv()` are stdlib calls. No special MIR representation |
-| **CO3: Multitasking context** | `using Multitasking { ... }` desugars via hidden params — the runtime executor is an implicit parameter. MIR sees it as a regular context argument |
-| **CO4: State machine transform** | Async functions that need suspension lower to state machines via `transform/state_machine.rs`. This is a MIR pass, already implemented |
+| **IN1: Cross-function pass** | Inlining decisions run during the cross-function phase (PC2) — needs call graph and function sizes |
+| **IN2: Size-based heuristic** | Inline leaf functions under a MIR statement count threshold. Exact threshold TBD — start conservative (e.g., ≤20 statements) |
+| **IN3: Call-count aware** | Functions called once (private helpers) are always inlined regardless of size — no code size cost |
+| **IN4: Span preservation** | Inlined code retains original source spans plus inline metadata. Required for debug info (DI5) — debugger shows "inlined from file:line" |
+| **IN5: Interplay with other passes** | Inlining expands the scope of per-function analyses. After inlining, escape analysis, RC elision, and interval analysis see more context — wider optimization window |
+
+Inlining is listed as `comp.codegen/O6` but has no implementation yet. The architecture needs to support it as a cross-function MIR transform, not a codegen-level optimization — by the time we reach codegen, the opportunity for Rask-specific optimizations on the inlined code is lost.
+
+---
+
+## Error Model
+
+| Rule | Description |
+|------|-------------|
+| **ER1: Collect, don't stop** | The type checker collects all errors into a `Vec<TypeError>` and processes the entire program before returning. Already implemented |
+| **ER2: Cascade filtering** | Duplicate/cascading errors are filtered before reporting. A type error caused by an earlier error shouldn't generate a second message |
+| **ER3: Frontend stops pipeline** | If typechecking produces errors, MIR lowering and everything after it doesn't run. No attempt to compile partially-typed code |
+| **ER4: MIR passes assume correctness** | MIR passes assume the input is well-typed. No defensive checks for type errors in MIR — if it got past the type checker, it's valid |
+
+### Future: IDE Integration
+
+For IDE support (diagnostics-as-you-type), the pipeline needs to produce partial results — type info for correct functions even when other functions have errors. This means:
+- Type checker marks functions as errored vs clean
+- MIR lowering skips errored functions, processes clean ones
+- Passes run on clean functions only
+
+This is a future concern — the current batch-compile model works. But ER3's hard stop would need to become a per-function gate.
 
 ---
 
@@ -445,13 +461,14 @@ Source → Lexer → Parser → AST
 |-------|------|---------|
 | **A: Analysis foundation** | Dominator tree, dataflow framework, liveness | Everything else |
 | **B: SSA** | SSA construction + de-SSA | String RC, constant prop, precise analyses |
-| **C: String RC** | RC insertion/fusion/elision for strings | `comp.string-refcount-elision`, SSO preparation |
+| **C: String RC** | RC insertion/fusion/elision/reuse for strings | `comp.string-refcount-elision`, SSO preparation |
 | **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection |
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
-| **F: Advanced analyses** | Typestate, intervals, bounds check elimination | `comp.advanced` spec |
-| **G: Parallel + Incremental** | Rayon, MIR serialization, cache layer | Build performance |
+| **F: Inlining** | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
+| **G: Advanced analyses** | Typestate, intervals, bounds check elimination, devirtualization | `comp.advanced` spec |
+| **H: Parallel + Incremental** | Rayon, MIR serialization, cache layer | Build performance |
 
-Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is independent but benefits from all others.
+Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each other. Phase H is independent but benefits from all others.
 
 ---
 
@@ -496,10 +513,9 @@ Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is 
 - [String Refcount Elision](string-refcount-elision.md) — atomic op elision (`comp.string-refcount-elision`)
 - [Incremental Compilation](incremental.md) — caching strategy (`comp.incremental`)
 - [Effects](effects.md) — effect tracking (`comp.effects`)
+- [Traits](../types/traits.md) — trait objects, dynamic dispatch (`type.traits`)
 - [Compile-Time Execution](../control/comptime.md) — comptime rules (`ctrl.comptime`)
 - [Ensure](../control/ensure.md) — deferred cleanup (`ctrl.ensure`)
 - [Resource Types](../memory/resource-types.md) — must-consume types (`mem.resources`)
 - [Closures](../memory/closures.md) — capture inference (`mem.closures`)
-- [Unsafe Blocks](../memory/unsafe.md) — unsafe operations (`mem.unsafe`)
-- [Allocators](../memory/allocators.md) — allocator contexts (`mem.alloc`)
 - [Hidden Parameters](hidden-params.md) — using clause desugaring (`comp.hidden-params`)
