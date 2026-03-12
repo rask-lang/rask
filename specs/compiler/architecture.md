@@ -220,19 +220,20 @@ All five share the same solver. Adding a new analysis means implementing the tra
 | **RC3: Inc/dec fusion** | Adjacent or provably paired inc/dec cancel out (`comp.string-refcount-elision/RE1`). This is the highest-value optimization — most string copies are immediately followed by a drop of the original |
 | **RC4: Local-only elision** | Strings that don't escape the function skip all RC ops (`comp.string-refcount-elision/RE2`). Refcount stays at 1, just free on drop |
 | **RC5: Literal propagation** | Strings provably tracing back to literals skip all RC ops (`comp.string-refcount-elision/RE3`). Literals use a sentinel refcount |
+| **RC6: Buffer reuse** | When `RcDec` drops a string to zero and a same-capacity allocation follows, reuse the buffer instead of free+malloc. Allocators use size classes (e.g., 24-byte and 30-byte strings both get 32-byte blocks), so capacity matching is more common than exact length matching. Many string operations (replace, trim, case conversion) produce similar-capacity output — reuse turns a deallocation + allocation into a pointer swap |
 
-### What We Don't Need from Perceus
+### What We Don't Need from Full Perceus
 
 | Perceus feature | Why not |
 |----------------|---------|
-| **Reuse analysis** | Perceus reuses memory when RC drops to zero and a same-sized allocation follows. Strings are variable-length — buffer sizes rarely match. Not worth the complexity |
 | **General RC framework** | No other types are refcounted. Building infrastructure for hypothetical future RC types violates "don't design for hypothetical requirements" |
 | **RC on collections** | Vec, Map are single-owner (move semantics). `.clone()` is explicit deep copy, not RC. Clone elision handles this separately |
+| **General reuse analysis** | Perceus reuse works across arbitrary types — we only need it for strings, scoped to capacity-class matching |
 
 ### Pipeline Position
 
 ```
-MIR Lowering → SSA Conversion → String RC Insertion → RC Fusion/Elision → Other Passes → De-SSA → Codegen
+MIR Lowering → SSA Conversion → String RC Insertion → RC Fusion/Elision/Reuse → Other Passes → De-SSA → Codegen
 ```
 
 RC insertion runs after SSA because it needs precise def-use chains. It runs before other optimization passes so they can see (and potentially eliminate) the RC operations.
@@ -420,8 +421,7 @@ Source → Lexer → Parser → AST
       - Closure escape analysis + capture strategy (CC2, CC4)
       - Inlining decisions + inline expansion
   → Per-function passes (parallel via rayon):
-      - String RC insertion + fusion/elision (RC1-RC5)
-      - String refcount elision
+      - String RC insertion + fusion/elision/reuse (RC1-RC6)
       - Clone elision
       - Constant propagation
       - Copy propagation
