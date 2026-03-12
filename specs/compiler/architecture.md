@@ -5,7 +5,7 @@
 
 # Compiler Architecture
 
-The compiler grew feature-by-feature. This spec defines the target architecture so that Perceus RC, SSO strings, MIR-based CTFE, reflection, debugging, borrow analysis, effects, incremental compilation, and parallel compilation all have clean extension points — not bolted on after the fact.
+The compiler grew feature-by-feature. This spec defines the target architecture so that string RC optimization, SSO strings, MIR-based CTFE, reflection, debugging, borrow analysis, effects, incremental compilation, and parallel compilation all have clean extension points — not bolted on after the fact.
 
 I'm writing this now because every one of those features touches the MIR layer. If MIR's structure is wrong, every feature fights it. Getting the bones right means each feature is a pass, not a rewrite.
 
@@ -16,7 +16,7 @@ I'm writing this now because every one of those features touches the MIR layer. 
 | Rule | Description |
 |------|-------------|
 | **IR1: Three representations** | Source → AST → MIR (SSA) → machine code (via Cranelift/LLVM). No HIR — AST is rich enough after desugaring |
-| **IR2: MIR is the optimization target** | All Rask-specific optimizations (Perceus, clone elision, refcount elision, generation coalescing, typestate) run on MIR |
+| **IR2: MIR is the optimization target** | All Rask-specific optimizations (string RC, clone elision, generation coalescing, typestate) run on MIR |
 | **IR3: Hybrid SSA** | MIR lowering produces non-SSA form (variables as slots). Immediate SSA conversion before optimization. De-SSA before codegen |
 | **IR4: Source spans everywhere** | Every MIR statement and terminator carries a `Span`. Lossless source mapping from AST through MIR to machine code |
 | **IR5: Serializable MIR** | MIR types are serializable for incremental compilation caching (`comp.incremental/IC5`) |
@@ -25,7 +25,7 @@ I'm writing this now because every one of those features touches the MIR layer. 
 
 Non-SSA is easier to generate during lowering — each variable maps to a mutable slot, no phi insertion needed. But optimization passes need SSA's single-definition property:
 
-- Perceus needs precise def-use chains for RC placement
+- String RC insertion needs precise def-use chains for drop placement
 - Constant propagation needs single definitions to track values
 - Escape analysis needs to follow definitions to uses
 - Interval analysis explicitly assumes SSA form (`comp.advanced/IV3`)
@@ -62,9 +62,9 @@ Same for `MirTerminator`. Every IR node carries provenance.
 | **CL1: Ensure in MIR** | `ensure` blocks lower to `EnsurePush { cleanup_block }` / `EnsurePop` statements with `CleanupReturn` terminators. Already implemented — no structural change needed |
 | **CL2: Cleanup chains** | `CleanupReturn` carries a `cleanup_chain: Vec<BlockId>` — the LIFO stack of ensure blocks to execute on scope exit. MIR lowering builds the chain; codegen emits the cleanup sequence |
 | **CL3: SSA interaction** | Cleanup blocks are side exits — they don't produce values that flow back into the main CFG. SSA conversion treats cleanup blocks as separate regions. Phi nodes are never inserted at cleanup block boundaries |
-| **CL4: Perceus interaction** | `RcDec` operations must run *before* cleanup blocks execute (ensure handlers may reference the values being decremented). Drop placement in Perceus respects cleanup chain ordering: RC drops go in normal blocks, not cleanup blocks |
+| **CL4: RC interaction** | `RcDec` operations must run *before* cleanup blocks execute (ensure handlers may reference the values being decremented). RC drop placement respects cleanup chain ordering: RC drops go in normal blocks, not cleanup blocks |
 | **CL5: Resource tracking in MIR** | `@resource` types have dedicated MIR statements: `ResourceRegister` (track new resource), `ResourceConsume` (mark consumed), `ResourceScopeCheck` (verify consumed before scope exit). Already implemented |
-| **CL6: Resource vs Perceus** | Resource types are NOT refcounted — they are linear (must-consume). Perceus skips `@resource` types entirely. The two systems are orthogonal: Perceus handles shared-ownership values (strings), resource tracking handles exactly-once values (files, connections) |
+| **CL6: Resource vs RC** | Resource types are NOT refcounted — they are linear (must-consume). String RC skips `@resource` types entirely. The two systems are orthogonal: RC handles shared-ownership values (strings), resource tracking handles exactly-once values (files, connections) |
 | **CL7: Ensure in MIR CTFE** | The MIR interpreter handles cleanup chains — executes ensure blocks on scope exit, respecting LIFO order |
 
 ---
@@ -77,7 +77,7 @@ Same for `MirTerminator`. Every IR node carries provenance.
 | **CC2: Escape analysis determines allocation** | Non-escaping closures (inline callbacks, iterator adapters) are stack-allocated. Escaping closures (stored, returned, sent cross-task) are heap-allocated |
 | **CC3: MIR representation** | `ClosureCreate` builds the environment. `ClosureCall` invokes through it. `ClosureDrop` frees heap closures. Already in MIR |
 | **CC4: Cross-function pass** | Closure escape analysis is a cross-function pass (PC2) — needs to see all call sites to determine whether a closure escapes |
-| **CC5: Perceus interaction** | Heap closures capturing refcounted values (strings) need RC ops on captured values. Perceus inserts `RcInc` when building the environment and `RcDec` when dropping it |
+| **CC5: RC interaction** | Heap closures capturing strings need RC ops on captured values. The RC pass inserts `RcInc` when building the environment and `RcDec` when dropping it |
 
 ---
 
@@ -180,7 +180,7 @@ pub fn solve<A: DataflowAnalysis>(func: &MirFunction, analysis: &A) -> DataflowR
 
 | Analysis | Direction | Domain | Used By |
 |----------|-----------|--------|---------|
-| **Liveness** | Backward | `BitSet<LocalId>` (set of live locals) | Perceus drop placement, clone elision, DCE, register hints |
+| **Liveness** | Backward | `BitSet<LocalId>` (set of live locals) | RC drop placement, clone elision, DCE, register hints |
 | **Reaching definitions** | Forward | `Map<LocalId, Set<DefPoint>>` | Constant propagation, copy propagation |
 | **Handle typestate** | Forward | `Map<HandleLocal, {Fresh,Valid,Unknown,Invalid}>` | `comp.advanced/TS1-TS8` |
 | **Escape analysis** | Forward | `Map<LocalId, {Local,MayEscape,Escaped}>` | String refcount elision (`comp.string-refcount-elision/RE2`) |
@@ -209,9 +209,9 @@ All five share the same solver. Adding a new analysis means implementing the tra
 
 ## String Refcount Optimization
 
-`string` is the only refcounted type in Rask. Everything else is Copy, Move, or linear (`@resource`). The spec explicitly closes the door on general user-defined RC types (`comp.string-refcount-elision`, "Why This Is String-Only"). This means the RC optimization story is simpler than full Perceus — but still benefits from the same analysis infrastructure.
+`string` is the only refcounted type in Rask. Everything else is Copy, Move, or linear (`@resource`). The spec explicitly closes the door on general user-defined RC types (`comp.string-refcount-elision`, "Why This Is String-Only"). This keeps the RC story simple — one type, known layout, known immutability.
 
-### What We Take from Perceus
+### Rules
 
 | Rule | Description |
 |------|-------------|
@@ -222,13 +222,13 @@ All five share the same solver. Adding a new analysis means implementing the tra
 | **RC5: Literal propagation** | Strings provably tracing back to literals skip all RC ops (`comp.string-refcount-elision/RE3`). Literals use a sentinel refcount |
 | **RC6: Buffer reuse** | When `RcDec` drops a string to zero and a same-capacity allocation follows, reuse the buffer instead of free+malloc. Allocators use size classes (e.g., 24-byte and 30-byte strings both get 32-byte blocks), so capacity matching is more common than exact length matching. Many string operations (replace, trim, case conversion) produce similar-capacity output — reuse turns a deallocation + allocation into a pointer swap |
 
-### What We Don't Need from Full Perceus
+### Scope Constraints
 
-| Perceus feature | Why not |
-|----------------|---------|
-| **General RC framework** | No other types are refcounted. Building infrastructure for hypothetical future RC types violates "don't design for hypothetical requirements" |
-| **RC on collections** | Vec, Map are single-owner (move semantics). `.clone()` is explicit deep copy, not RC. Clone elision handles this separately |
-| **General reuse analysis** | Perceus reuse works across arbitrary types — we only need it for strings, scoped to capacity-class matching |
+| Constraint | Reason |
+|-----------|--------|
+| **String-only** | No other types are refcounted. No general RC framework |
+| **No RC on collections** | Vec, Map are single-owner (move semantics). `.clone()` is explicit deep copy. Clone elision handles this separately |
+| **Reuse is capacity-class only** | Buffer reuse (RC6) matches on allocator size class, not exact length. No cross-type reuse |
 
 ### Pipeline Position
 
@@ -462,7 +462,7 @@ Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is 
 | `comp.codegen/P2` | Superseded by IR3 (hybrid SSA). MIR is SSA during optimization |
 | `comp.effects/FX3` | Partially superseded by EF1. Pool effects enforced; IO/Async stay metadata |
 | `comp.clone-elision` | Unchanged, but implementation benefits from SSA form and liveness analysis |
-| `comp.string-refcount-elision` | Unchanged, but implemented via RC insertion pass using dataflow framework (not full Perceus — strings are the only RC type) |
+| `comp.string-refcount-elision` | Unchanged, but implemented via RC insertion pass using dataflow framework |
 | `comp.advanced` | Unchanged — dataflow framework provides the infrastructure it assumes |
 
 ---
