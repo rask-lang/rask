@@ -577,7 +577,10 @@ fn run_benchmark_file(path: &str, filter: Option<&str>, format: Format) -> Vec<B
         }
     };
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = super::codegen::evaluate_comptime_globals(&result.decls, Some(&cfg));
+    let comptime_globals = super::codegen::evaluate_comptime_globals(
+        &result.decls, Some(&cfg),
+        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
+    );
 
     let tmp_dir = std::env::temp_dir();
     let bin_path = tmp_dir.join(format!("rask_bench_{}", process::id()));

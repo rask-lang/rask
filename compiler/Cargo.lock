@@ -1356,6 +1356,7 @@ dependencies = [
  "rask-lexer",
  "rask-lint",
  "rask-mir",
+ "rask-miri",
  "rask-mono",
  "rask-ownership",
  "rask-parser",
@@ -1511,6 +1512,14 @@ dependencies = [
  "rask-comptime",
  "rask-mono",
  "rask-types",
+]
+
+[[package]]
+name = "rask-miri"
+version = "0.1.0"
+dependencies = [
+ "rask-mir",
+ "rask-mono",
 ]
 
 [[package]]
