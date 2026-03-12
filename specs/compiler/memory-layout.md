@@ -95,7 +95,7 @@ Result<i32, string>:
   padding: 7 bytes (to align to 8-byte string)
   payload union at offset 8:
     - Ok variant: i32 (4 bytes)
-    - Err variant: string (16 bytes: ptr + len)
+    - Err variant: string (16 bytes: tagged union, see String section)
 
 Total size: 8 (discriminant+padding) + 16 (union) = 24 bytes
 Alignment: 8 bytes (string's alignment)
@@ -377,17 +377,23 @@ struct Handle<T> {
 
 ## String
 
-Built-in `string` type:
+Built-in `string` type. 16 bytes, tagged union (`std.strings/S8`). The MSB of the last byte discriminates between heap and SSO modes:
 
-```rask
-struct string {
-    ptr: *u8,          // offset 0, 8 bytes
-    len: usize,        // offset 8, 8 bytes
-}
-// Total: 16 bytes
+```
+Heap mode (last byte MSB = 0):
+  [header_ptr: *u8 (8B)][len: usize (8B)]
+  Header at ptr: { refcount: atomic_u32, capacity: u32, data: [u8] }
+
+SSO mode (last byte MSB = 1):
+  [inline_data: [u8; 15]][len_tag: u8]
+  Length = len_tag & 0x7F (range 0..15)
 ```
 
-Heap data is UTF-8 bytes, no null terminator unless needed for FFI.
+Total: 16 bytes. Alignment: 8 bytes. Both modes are Copy (16-byte memcpy).
+
+SSO strings store UTF-8 data directly in the 16-byte value — no heap pointer, no refcount. Heap strings point to a refcounted header followed by UTF-8 data, no null terminator unless needed for FFI.
+
+Strings ≤ 15 bytes (including all single-byte-per-char ASCII strings up to 15 chars) use SSO. Strings > 15 bytes use heap mode. `string_builder.build()` produces SSO when the result fits.
 
 ## References and Slices
 
