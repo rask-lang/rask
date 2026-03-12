@@ -936,3 +936,49 @@ impl CodeGenerator {
         Ok(())
     }
 }
+
+impl crate::Backend for CodeGenerator {
+    fn declare_runtime_functions(&mut self) -> CodegenResult<()> {
+        self.declare_runtime_functions()
+    }
+
+    fn declare_stdlib_functions(&mut self) -> CodegenResult<()> {
+        self.declare_stdlib_functions()
+    }
+
+    fn declare_extern_functions(&mut self, extern_decls: &[crate::ExternFuncSig]) -> CodegenResult<()> {
+        self.declare_extern_functions(extern_decls)
+    }
+
+    fn declare_functions(&mut self, mono: &MonoProgram, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        self.declare_functions(mono, mir_functions)
+    }
+
+    fn register_strings(&mut self, mir_functions: &[MirFunction]) -> CodegenResult<()> {
+        self.register_strings(mir_functions)
+    }
+
+    fn register_comptime_globals(
+        &mut self,
+        globals: &std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    ) -> CodegenResult<()> {
+        self.register_comptime_globals(globals)
+    }
+
+    fn register_vtables(&mut self, vtables: &[crate::vtable::VTableInfo]) -> CodegenResult<()> {
+        self.register_vtables(vtables)
+    }
+
+    fn gen_function(&mut self, mir_fn: &MirFunction) -> CodegenResult<()> {
+        self.gen_function(mir_fn)
+    }
+
+    fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()> {
+        self.gen_benchmark_runner(benchmarks)
+    }
+
+    fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()> {
+        // Unbox to call the owned-self method
+        (*self).emit_object(path)
+    }
+}
