@@ -9,6 +9,147 @@ use rask_ast::{NodeId, Span};
 use rask_mono::MonoProgram;
 use std::collections::HashMap;
 
+/// Build the qualified mono decl list used for MIR lowering.
+///
+/// `include_consts` — regular compile includes DeclKind::Const, benchmarks don't.
+fn build_mono_decls(mono: &MonoProgram, decls: &[Decl], include_consts: bool) -> Vec<Decl> {
+    let mut all: Vec<_> = mono.functions.iter().map(|f| {
+        let mut decl = f.body.clone();
+        if let DeclKind::Fn(ref mut fn_decl) = decl.kind {
+            fn_decl.name = f.name.clone();
+        }
+        decl
+    }).collect();
+
+    all.extend(decls.iter().filter(|d| {
+        matches!(&d.kind, DeclKind::Extern(_))
+            || (include_consts && matches!(&d.kind, DeclKind::Const(_)))
+    }).cloned());
+
+    all
+}
+
+/// Extract type name map from typed program.
+fn build_type_names(typed: &rask_types::TypedProgram) -> HashMap<rask_types::TypeId, String> {
+    typed.types.iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let name = match def {
+                rask_types::TypeDef::Struct { name, .. } => name.clone(),
+                rask_types::TypeDef::Enum { name, .. } => name.clone(),
+                rask_types::TypeDef::Trait { name, .. } => name.clone(),
+                rask_types::TypeDef::Union { name, .. } => name.clone(),
+                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
+            };
+            (rask_types::TypeId(i as u32), name)
+        })
+        .collect()
+}
+
+/// Extract trait method lists for trait object dispatch.
+fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<String>> {
+    typed.types.iter()
+        .filter_map(|def| {
+            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
+                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Lower mono functions to MIR and run optimization passes.
+/// `skip_main` skips the synthetic main() for benchmarks.
+fn lower_to_mir(
+    mono: &MonoProgram,
+    all_mono_decls: &[Decl],
+    mir_ctx: &rask_mir::lower::MirContext,
+    skip_main: bool,
+) -> Result<Vec<rask_mir::MirFunction>, Vec<String>> {
+    let mut errors = Vec::new();
+    let mut mir_functions = Vec::new();
+
+    for mono_fn in &mono.functions {
+        if skip_main && mono_fn.name == "main" {
+            continue;
+        }
+        match rask_mir::lower::MirLowerer::lower_function_named(
+            &mono_fn.body, all_mono_decls, mir_ctx, Some(&mono_fn.name)
+        ) {
+            Ok(mir_fns) => mir_functions.extend(mir_fns),
+            Err(e) => errors.push(format!("MIR lowering '{}': {:?}", mono_fn.name, e)),
+        }
+    }
+
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+
+    rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
+    Ok(mir_functions)
+}
+
+/// Initialize codegen and declare all runtime/stdlib/extern functions.
+fn setup_codegen(
+    decls: &[Decl],
+    mono: &MonoProgram,
+    mir_functions: &[rask_mir::MirFunction],
+    comptime_globals: &HashMap<String, rask_mir::ComptimeGlobalMeta>,
+    target: Option<&str>,
+    build_mode: rask_codegen::BuildMode,
+) -> Result<rask_codegen::CodeGenerator, Vec<String>> {
+    let mut codegen = match target {
+        Some(t) => rask_codegen::CodeGenerator::new_with_target(t, build_mode),
+        None => rask_codegen::CodeGenerator::new(build_mode),
+    }.map_err(|e| vec![format!("codegen init: {}", e)])?;
+
+    codegen.declare_runtime_functions()
+        .map_err(|e| vec![e.to_string()])?;
+    codegen.declare_stdlib_functions()
+        .map_err(|e| vec![e.to_string()])?;
+
+    let extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
+        if let DeclKind::Extern(e) = &d.kind {
+            Some(rask_codegen::ExternFuncSig {
+                name: e.name.clone(),
+                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
+                ret_ty: e.ret_ty.clone(),
+            })
+        } else {
+            None
+        }
+    }).collect();
+    codegen.declare_extern_functions(&extern_sigs)
+        .map_err(|e| vec![e.to_string()])?;
+
+    codegen.declare_functions(mono, mir_functions)
+        .map_err(|e| vec![e.to_string()])?;
+    codegen.register_strings(mir_functions)
+        .map_err(|e| vec![e.to_string()])?;
+    codegen.register_comptime_globals(comptime_globals)
+        .map_err(|e| vec![e.to_string()])?;
+
+    Ok(codegen)
+}
+
+/// Generate IR for all MIR functions, collecting errors.
+fn gen_functions(
+    codegen: &mut rask_codegen::CodeGenerator,
+    mir_functions: &[rask_mir::MirFunction],
+) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    for mir_fn in mir_functions {
+        if let Err(e) = codegen.gen_function(mir_fn) {
+            errors.push(format!("codegen '{}': {}", mir_fn.name, e));
+        }
+    }
+    if !errors.is_empty() {
+        return Err(errors);
+    }
+    Ok(())
+}
+
 /// Compile monomorphized program to an object file.
 ///
 /// Takes ownership of the mono program and typed info, produces an object file
@@ -26,55 +167,18 @@ pub fn compile_to_object(
     cfg: Option<&rask_comptime::CfgConfig>,
     package_modules: &std::collections::HashSet<String>,
 ) -> Result<(), Vec<String>> {
-    let mut errors = Vec::new();
-
-    // Build mono decls with qualified names + extern decls
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
-        let mut decl = f.body.clone();
-        if let rask_ast::decl::DeclKind::Fn(ref mut fn_decl) = decl.kind {
-            fn_decl.name = f.name.clone();
-        }
-        decl
-    }).collect();
-    all_mono_decls.extend(
-        decls.iter()
-            .filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_) | rask_ast::decl::DeclKind::Const(_)))
-            .cloned()
-    );
-
-    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let all_mono_decls = build_mono_decls(mono, decls, true);
     let line_map = source_text.map(rask_ast::LineMap::new);
-    let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let name = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), name)
-        })
-        .collect();
-    // Build comptime interpreter with cfg for conditional compilation
+    let type_names = build_type_names(typed);
+    let trait_methods = build_trait_methods(typed);
+    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+
     let comptime_interp = cfg.map(|c| {
         let mut interp = rask_comptime::ComptimeInterpreter::new();
         interp.inject_cfg(c);
         interp.register_functions(decls);
         std::cell::RefCell::new(interp)
     });
-
-    // Extract trait method lists for trait object dispatch
-    let trait_methods: HashMap<String, Vec<String>> = typed.types.iter()
-        .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
-                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
-            } else {
-                None
-            }
-        })
-        .collect();
 
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
@@ -84,78 +188,22 @@ pub fn compile_to_object(
         comptime_globals,
         extern_funcs: &extern_funcs,
         package_modules,
+        trait_methods: trait_methods.clone(),
         line_map: line_map.as_ref(),
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
         comptime_interp,
-        trait_methods: trait_methods.clone(),
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
     };
 
-    // MIR lowering
-    let mut mir_functions = Vec::new();
-    for mono_fn in &mono.functions {
-        match rask_mir::lower::MirLowerer::lower_function_named(
-            &mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)
-        ) {
-            Ok(mir_fns) => mir_functions.extend(mir_fns),
-            Err(e) => errors.push(format!("MIR lowering '{}': {:?}", mono_fn.name, e)),
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    let mir_functions = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
     if mir_functions.is_empty() {
         return Err(vec!["no functions to compile".to_string()]);
     }
 
-    // Closure optimization
-    rask_mir::optimize_all_closures(&mut mir_functions);
-
-    // Self-concat → in-place append (eliminates O(n²) string building)
-    rask_mir::optimize_string_concat(&mut mir_functions);
-
-    // Last-use clone elision — replace clone with move when source is dead
-    rask_mir::elide_clones(&mut mir_functions);
-
-    // Generation check coalescing — eliminate redundant pool access checks
-    rask_mir::coalesce_generation_checks(&mut mir_functions);
-
-    // Cranelift codegen
-    let mut codegen = match target {
-        Some(t) => rask_codegen::CodeGenerator::new_with_target(t, build_mode),
-        None => rask_codegen::CodeGenerator::new(build_mode),
-    }.map_err(|e| vec![format!("codegen init: {}", e)])?;
-
-    codegen.declare_runtime_functions()
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.declare_stdlib_functions()
-        .map_err(|e| vec![e.to_string()])?;
-
-    // Declare extern functions
-    let extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
-        if let rask_ast::decl::DeclKind::Extern(e) = &d.kind {
-            Some(rask_codegen::ExternFuncSig {
-                name: e.name.clone(),
-                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
-                ret_ty: e.ret_ty.clone(),
-            })
-        } else {
-            None
-        }
-    }).collect();
-    codegen.declare_extern_functions(&extern_sigs)
-        .map_err(|e| vec![e.to_string()])?;
-
-    codegen.declare_functions(mono, &mir_functions)
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.register_strings(&mir_functions)
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.register_comptime_globals(comptime_globals)
-        .map_err(|e| vec![e.to_string()])?;
+    let mut codegen = setup_codegen(decls, mono, &mir_functions, comptime_globals, target, build_mode)?;
 
     // Build and register vtables for trait objects
     let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
@@ -164,15 +212,7 @@ pub fn compile_to_object(
             .map_err(|e| vec![e.to_string()])?;
     }
 
-    for mir_fn in &mir_functions {
-        if let Err(e) = codegen.gen_function(mir_fn) {
-            errors.push(format!("codegen '{}': {}", mir_fn.name, e));
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    gen_functions(&mut codegen, &mir_functions)?;
 
     codegen.emit_object(obj_path)
         .map_err(|e| vec![format!("emit object: {}", e)])?;
@@ -211,7 +251,6 @@ fn collect_vtables(
                             })
                             .collect();
 
-                        // Get concrete alignment from struct layouts
                         let concrete_align = mono.struct_layouts.iter()
                             .find(|s| s.name == *concrete_type)
                             .map(|s| s.align)
@@ -348,51 +387,19 @@ pub fn compile_benchmarks_to_object(
     obj_path: &str,
     cfg: Option<&rask_comptime::CfgConfig>,
 ) -> Result<(), Vec<String>> {
-    let mut errors = Vec::new();
-
-    let mut all_mono_decls: Vec<_> = mono.functions.iter().map(|f| {
-        let mut decl = f.body.clone();
-        if let DeclKind::Fn(ref mut fn_decl) = decl.kind {
-            fn_decl.name = f.name.clone();
-        }
-        decl
-    }).collect();
-    all_mono_decls.extend(
-        decls.iter()
-            .filter(|d| matches!(&d.kind, DeclKind::Extern(_)))
-            .cloned()
-    );
-
-    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+    let all_mono_decls = build_mono_decls(mono, decls, false);
     let line_map = source_text.map(rask_ast::LineMap::new);
-    let type_names: HashMap<rask_types::TypeId, String> = typed.types.iter()
-        .enumerate()
-        .map(|(i, def)| {
-            let name = match def {
-                rask_types::TypeDef::Struct { name, .. } => name.clone(),
-                rask_types::TypeDef::Enum { name, .. } => name.clone(),
-                rask_types::TypeDef::Trait { name, .. } => name.clone(),
-                rask_types::TypeDef::Union { name, .. } => name.clone(),
-                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
-            };
-            (rask_types::TypeId(i as u32), name)
-        })
-        .collect();
-    let bench_trait_methods: HashMap<String, Vec<String>> = typed.types.iter()
-        .filter_map(|def| {
-            if let rask_types::TypeDef::Trait { name, methods, .. } = def {
-                Some((name.clone(), methods.iter().map(|m| m.name.clone()).collect()))
-            } else {
-                None
-            }
-        })
-        .collect();
-    let bench_interp = cfg.map(|c| {
+    let type_names = build_type_names(typed);
+    let trait_methods = build_trait_methods(typed);
+    let extern_funcs = super::codegen::collect_extern_func_names(decls);
+
+    let comptime_interp = cfg.map(|c| {
         let mut interp = rask_comptime::ComptimeInterpreter::new();
         interp.inject_cfg(c);
         interp.register_functions(decls);
         std::cell::RefCell::new(interp)
     });
+
     let empty_packages = std::collections::HashSet::new();
     let mir_ctx = rask_mir::lower::MirContext {
         struct_layouts: &mono.struct_layouts,
@@ -402,45 +409,22 @@ pub fn compile_benchmarks_to_object(
         comptime_globals,
         extern_funcs: &extern_funcs,
         package_modules: &empty_packages,
-        trait_methods: bench_trait_methods,
+        trait_methods,
         line_map: line_map.as_ref(),
         source_file,
         shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
-        comptime_interp: bench_interp,
+        comptime_interp,
         trait_coercions: &typed.trait_coercions,
         call_rewrites: &mono.call_rewrites,
     };
 
-    // MIR lowering — skip the synthetic main() since gen_benchmark_runner replaces it
-    let mut mir_functions = Vec::new();
-    for mono_fn in &mono.functions {
-        if mono_fn.name == "main" {
-            continue;
-        }
-        match rask_mir::lower::MirLowerer::lower_function_named(
-            &mono_fn.body, &all_mono_decls, &mir_ctx, Some(&mono_fn.name)
-        ) {
-            Ok(mir_fns) => mir_functions.extend(mir_fns),
-            Err(e) => errors.push(format!("MIR lowering '{}': {:?}", mono_fn.name, e)),
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    let mut mir_functions = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
     if mir_functions.is_empty() && benchmarks.is_empty() {
         return Err(vec!["no functions or benchmarks to compile".to_string()]);
     }
 
-    rask_mir::optimize_all_closures(&mut mir_functions);
-    rask_mir::optimize_string_concat(&mut mir_functions);
-    rask_mir::elide_clones(&mut mir_functions);
-    rask_mir::coalesce_generation_checks(&mut mir_functions);
-
     // Insert cleanup calls for benchmark functions to prevent memory leaks.
-    // Scans for Vec_new/Map_new/Pool_new/string_new calls and inserts
-    // matching free calls before return terminators.
     let bench_names: Vec<String> = benchmarks.iter().map(|(_, fn_name)| fn_name.clone()).collect();
     for mir_fn in &mut mir_functions {
         if bench_names.contains(&mir_fn.name) {
@@ -448,45 +432,13 @@ pub fn compile_benchmarks_to_object(
         }
     }
 
-    // Cranelift codegen — benchmarks always use release mode
-    let mut codegen = rask_codegen::CodeGenerator::new(rask_codegen::BuildMode::Release)
-        .map_err(|e| vec![format!("codegen init: {}", e)])?;
+    // Benchmarks always use release mode
+    let mut codegen = setup_codegen(
+        decls, mono, &mir_functions, comptime_globals,
+        None, rask_codegen::BuildMode::Release,
+    )?;
 
-    codegen.declare_runtime_functions()
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.declare_stdlib_functions()
-        .map_err(|e| vec![e.to_string()])?;
-
-    let extern_sigs: Vec<_> = decls.iter().filter_map(|d| {
-        if let DeclKind::Extern(e) = &d.kind {
-            Some(rask_codegen::ExternFuncSig {
-                name: e.name.clone(),
-                param_types: e.params.iter().map(|p| p.ty.clone()).collect(),
-                ret_ty: e.ret_ty.clone(),
-            })
-        } else {
-            None
-        }
-    }).collect();
-    codegen.declare_extern_functions(&extern_sigs)
-        .map_err(|e| vec![e.to_string()])?;
-
-    codegen.declare_functions(mono, &mir_functions)
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.register_strings(&mir_functions)
-        .map_err(|e| vec![e.to_string()])?;
-    codegen.register_comptime_globals(comptime_globals)
-        .map_err(|e| vec![e.to_string()])?;
-
-    for mir_fn in &mir_functions {
-        if let Err(e) = codegen.gen_function(mir_fn) {
-            errors.push(format!("codegen '{}': {}", mir_fn.name, e));
-        }
-    }
-
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    gen_functions(&mut codegen, &mir_functions)?;
 
     // Generate the benchmark runner entry point
     codegen.gen_benchmark_runner(benchmarks)

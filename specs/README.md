@@ -169,8 +169,15 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 | Spec | Description |
 |------|-------------|
+| [architecture.md](compiler/architecture.md) | Target compiler architecture — IR layers, analysis framework, pass pipeline |
+| [codegen.md](compiler/codegen.md) | MIR-based compilation pipeline with Cranelift backend |
+| [advanced-analyses.md](compiler/advanced-analyses.md) | Handle typestate, interval analysis, bounds check elimination |
+| [clone-elision.md](compiler/clone-elision.md) | Last-use clone-to-move optimization |
+| [string-refcount-elision.md](compiler/string-refcount-elision.md) | Atomic refcount elision for strings |
+| [effects.md](compiler/effects.md) | Effect tracking: IO, async, pool mutation |
 | [generation-coalescing.md](compiler/generation-coalescing.md) | Redundant generation check elimination |
-| [semantic-hash-caching.md](compiler/semantic-hash-caching.md) | Incremental compilation, semantic hashing for generics |
+| [incremental.md](compiler/incremental.md) | Function-level incremental compilation |
+| [semantic-hash-caching.md](compiler/semantic-hash-caching.md) | Semantic hashing for generics |
 | [hidden-params.md](compiler/hidden-params.md) | Hidden parameter compiler pass for `using` clauses |
 
 ---
