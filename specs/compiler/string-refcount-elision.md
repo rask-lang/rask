@@ -7,7 +7,7 @@
 
 # String Refcount Elision
 
-`string` is Copy — assignment copies 16 bytes and bumps an atomic refcount. The atomic increment/decrement pair is the main runtime cost. This pass eliminates those atomic ops when the compiler can prove they're unnecessary.
+`string` is Copy — assignment copies 16 bytes. For heap strings (> 15 bytes), the copy also bumps an atomic refcount. SSO strings (≤ 15 bytes, `std.strings/S8`) have no refcount — they're pure value copies and bypass this pass entirely. For the remaining heap strings, the atomic increment/decrement pair is the main runtime cost. This pass eliminates those atomic ops when the compiler can prove they're unnecessary.
 
 This is a compiler optimization. No user annotation, no semantic change. Strings behave identically whether ops are elided or not.
 
@@ -20,6 +20,7 @@ This is a compiler optimization. No user annotation, no semantic change. Strings
 | **RE3: Literal propagation** | String literals have sentinel refcount (`std.strings/S6`). Compiler tracks "provably literal" through local analysis — no inc/dec needed |
 | **RE4: Borrow chain elision** | `f(g(s))` where `s` is borrowed at each call → no refcount ops at call boundaries. Follows from `mem.ownership/O2` borrow inference |
 | **RE5: IDE annotation** | IDE shows `[rc elided]` ghost text on string copies where refcount ops are skipped |
+| **RE6: SSO bypass** | SSO strings (≤ 15 bytes, `std.strings/S8`) have no refcount. All refcount operations on SSO strings are no-ops by construction. The elision pass skips SSO-typed bindings entirely |
 
 ## Examples
 
@@ -105,16 +106,19 @@ If none of these conditions hold at function exit, the binding's refcount ops ar
 | String returned from function | NOT elided — escapes to caller |
 | String copy in loop | Conservative — NOT elided unless loop body is sole-use per iteration |
 | Multiple copies of same string, some escape | Only non-escaping copies elided |
+| SSO string (≤ 15 bytes) | RE6 — no refcount exists, skip entirely |
+| String transitions SSO → heap (e.g., concat result) | New heap string gets normal refcount treatment |
 
 ## Implementation
 
 MIR-level optimization pass, runs after clone elision (`comp.clone-elision`):
 
 1. Identify all string-typed bindings in the function
-2. For each binding, set `rc_required = false`
-3. Walk the MIR: set `rc_required = true` if any escape condition (above) applies
-4. For bindings where `rc_required` is still false, replace all `atomic_inc`/`atomic_dec` with no-ops
-5. For RE1 specifically: detect copy-then-drop pairs and cancel them regardless of escape status
+2. For bindings provably SSO (constant ≤ 15 bytes, literal ≤ 15 bytes): skip — no refcount ops emitted (RE6)
+3. For remaining bindings, set `rc_required = false`
+4. Walk the MIR: set `rc_required = true` if any escape condition (above) applies
+5. For bindings where `rc_required` is still false, replace all `atomic_inc`/`atomic_dec` with no-ops
+6. For RE1 specifically: detect copy-then-drop pairs and cancel them regardless of escape status
 
 Compile-time cost: O(n) per function — single forward pass over MIR. Negligible.
 
@@ -134,7 +138,9 @@ Compile-time cost: O(n) per function — single forward pass over MIR. Negligibl
 
 **RE5 (IDE annotation):** Same rationale as `comp.clone-elision/CE5`. Visibility helps developers understand the cost model. Over time, developers learn which patterns are free and write naturally efficient code.
 
-**Expected impact:** Based on the string audit (~60 copies across ~5,000 lines of validation programs), RE1 alone covers the most common pattern. Estimate 70-80% of string copy/drop pairs have their atomics elided in typical code.
+**RE6 (SSO bypass):** SSO strings (`std.strings/S8`) have no heap header and no refcount field. The elision pass doesn't need to analyze them — there's nothing to elide. This is the first line of defense: strings ≤ 15 bytes never generate atomic ops in the first place. RE1–RE5 handle the remaining heap strings.
+
+**Expected impact:** SSO eliminates refcount ops for the most common short strings (field names, status codes, short identifiers, error tags). Based on the string audit (~60 copies across ~5,000 lines of validation programs), a significant fraction are short strings that would be SSO. For the remaining heap strings, RE1 alone covers the most common pattern. Combined estimate: 85-90% of string copy/drop pairs have zero atomic overhead.
 
 ### Why This Is String-Only
 
