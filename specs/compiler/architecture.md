@@ -55,6 +55,96 @@ Same for `MirTerminator`. Every IR node carries provenance.
 
 ---
 
+## Cleanup and Resource Tracking
+
+| Rule | Description |
+|------|-------------|
+| **CL1: Ensure in MIR** | `ensure` blocks lower to `EnsurePush { cleanup_block }` / `EnsurePop` statements with `CleanupReturn` terminators. Already implemented — no structural change needed |
+| **CL2: Cleanup chains** | `CleanupReturn` carries a `cleanup_chain: Vec<BlockId>` — the LIFO stack of ensure blocks to execute on scope exit. MIR lowering builds the chain; codegen emits the cleanup sequence |
+| **CL3: SSA interaction** | Cleanup blocks are side exits — they don't produce values that flow back into the main CFG. SSA conversion treats cleanup blocks as separate regions. Phi nodes are never inserted at cleanup block boundaries |
+| **CL4: Perceus interaction** | `RcDec` operations must run *before* cleanup blocks execute (ensure handlers may reference the values being decremented). Drop placement in Perceus respects cleanup chain ordering: RC drops go in normal blocks, not cleanup blocks |
+| **CL5: Resource tracking in MIR** | `@resource` types have dedicated MIR statements: `ResourceRegister` (track new resource), `ResourceConsume` (mark consumed), `ResourceScopeCheck` (verify consumed before scope exit). Already implemented |
+| **CL6: Resource vs Perceus** | Resource types are NOT refcounted — they are linear (must-consume). Perceus skips `@resource` types entirely. The two systems are orthogonal: Perceus handles shared-ownership values (strings), resource tracking handles exactly-once values (files, connections) |
+| **CL7: Ensure in MIR CTFE** | The MIR interpreter handles cleanup chains — executes ensure blocks on scope exit, respecting LIFO order |
+
+---
+
+## Closure Compilation
+
+| Rule | Description |
+|------|-------------|
+| **CC1: Capture inference** | Compiler infers capture strategy per variable: copy (≤16 bytes Copy), move (large/non-Copy), or mutable borrow (`mutate` keyword in capture list). No annotation except `mutate` |
+| **CC2: Escape analysis determines allocation** | Non-escaping closures (inline callbacks, iterator adapters) are stack-allocated. Escaping closures (stored, returned, sent cross-task) are heap-allocated |
+| **CC3: MIR representation** | `ClosureCreate` builds the environment. `ClosureCall` invokes through it. `ClosureDrop` frees heap closures. Already in MIR |
+| **CC4: Cross-function pass** | Closure escape analysis is a cross-function pass (PC2) — needs to see all call sites to determine whether a closure escapes |
+| **CC5: Perceus interaction** | Heap closures capturing refcounted values (strings) need RC ops on captured values. Perceus inserts `RcInc` when building the environment and `RcDec` when dropping it |
+
+---
+
+## Unsafe Blocks
+
+| Rule | Description |
+|------|-------------|
+| **UB1: Validated at typecheck** | `unsafe` block scoping enforced during type checking. Unsafe operations outside `unsafe {}` are compile errors |
+| **UB2: Debug-mode checks** | In debug builds, raw pointer operations emit runtime bounds/null checks (`mem.unsafe/D1-D5`). These lower to conditional panics in MIR |
+| **UB3: Release-mode elision** | In release builds, debug-mode pointer checks are elided. `BuildMode` in codegen context controls this |
+| **UB4: No special MIR form** | Unsafe blocks don't have a separate MIR representation — the safety boundary is the type checker's job. In MIR, raw pointer ops are just statements |
+
+---
+
+## Pattern Matching
+
+| Rule | Description |
+|------|-------------|
+| **PM1: Exhaustiveness at typecheck** | Pattern exhaustiveness checking runs during type checking. Missing patterns are compile errors |
+| **PM2: Decision trees in MIR** | `match` lowers to decision trees — nested `Branch`/`Switch` terminators. `match_lower.rs` handles this |
+| **PM3: Enum dispatch** | `EnumTag` rvalue extracts discriminant. `Switch` dispatches on it. Payload destructuring uses field access at computed offsets |
+| **PM4: Optimization opportunity** | Jump threading and redundant branch merging are future MIR passes that improve match codegen |
+
+---
+
+## Allocator Contexts
+
+| Rule | Description |
+|------|-------------|
+| **AL1: Desugared by hidden params** | `using Allocator` and `using Arena.scoped(...)` desugar via the hidden parameters pass (`comp.hidden-params`). The allocator becomes an explicit `__ctx_allocator` parameter |
+| **AL2: Collection dispatch** | Collections resolve to allocator-aware runtime functions when an allocator context is active. MIR lowering passes the allocator parameter to allocation calls |
+| **AL3: Scoped arena** | `using Arena.scoped(size) { ... }` desugars to: allocate arena → set as context → execute body → free arena. Hidden params handles scoping; MIR lowering emits alloc/dealloc |
+
+---
+
+## Concurrency in Pipeline
+
+| Rule | Description |
+|------|-------------|
+| **CO1: Spawn is a call** | `spawn(|| { ... })` is a function call, not a special MIR construct. The closure is built via CC1-CC5, the spawn call goes through normal dispatch |
+| **CO2: Channel ops are calls** | `channel.send()`/`channel.recv()` are stdlib calls. No special MIR representation |
+| **CO3: Multitasking context** | `using Multitasking { ... }` desugars via hidden params — the runtime executor is an implicit parameter. MIR sees it as a regular context argument |
+| **CO4: State machine transform** | Async functions that need suspension lower to state machines via `transform/state_machine.rs`. This is a MIR pass, already implemented |
+
+---
+
+## MirProgram Wrapper
+
+| Rule | Description |
+|------|-------------|
+| **MP1: Unified context** | `MirProgram` bundles `Vec<MirFunction>` with shared metadata: file table, struct/enum layouts, type metadata, call graph |
+| **MP2: Replaces ad-hoc threading** | Currently, layouts and type info are threaded separately through pipeline functions. `MirProgram` is the single context object |
+| **MP3: Pass manager operates on MirProgram** | `PassManager::run(&self, program: &mut MirProgram)` — passes access cross-function data (call graph, layouts) and per-function data |
+
+```rust
+pub struct MirProgram {
+    pub functions: Vec<MirFunction>,
+    pub file_table: Vec<String>,
+    pub struct_layouts: Vec<StructLayout>,
+    pub enum_layouts: Vec<EnumLayout>,
+    pub type_metadata: Vec<TypeMeta>,       // for reflection/debug
+    pub call_graph: Option<CallGraph>,      // built on demand by cross-function passes
+}
+```
+
+---
+
 ## Dataflow Analysis Framework
 
 | Rule | Description |
@@ -147,7 +237,7 @@ if string.is_heap() {
 }
 ```
 
-The Perceus pass inserts unconditional RC ops. A later SSO-aware pass (or codegen) adds the tag check. Alternatively, Perceus skips strings provably inline (from constant propagation — string literals ≤15 bytes are always inline).
+The Perceus pass inserts unconditional RC ops for all string-typed values. SSO awareness lives in codegen, not in MIR — codegen emits the tag check before each RC operation. This keeps MIR clean (no SSO conditionals cluttering the IR) while still avoiding unnecessary atomic ops at runtime. String literals are statically known to be inline or heap based on length, so codegen can elide the tag check entirely for literals ≤15 bytes.
 
 ---
 
@@ -291,20 +381,26 @@ This doesn't require architectural changes — it requires MIR serialization (IR
 
 ```
 Source → Lexer → Parser → AST
-  → Desugar (default args, syntax sugar)
+  → Desugar (default args, syntax sugar, match desugaring)
   → Resolve (names → symbols)
-  → Typecheck + Effects → TypedProgram (with EffectSignatures)
-  → Ownership check (AST-level; eventually MIR-level)
-  → Hidden params desugaring
+  → Typecheck + Effects + Exhaustiveness → TypedProgram
+      (type inference, pattern exhaustiveness, frozen enforcement,
+       unsafe block validation, effect signatures)
+  → Ownership check (AST-level: moves, borrows, resource consumption)
+  → Hidden params desugaring (using clauses → explicit params, allocator contexts)
   → Monomorphize + Reflection metadata → MonoProgram
-  → MIR Lowering (with Spans) → Vec<MirFunction> (non-SSA)
+  → MIR Lowering (with Spans) → MirProgram (non-SSA)
+      (ensure → EnsurePush/EnsurePop/CleanupReturn,
+       closures → ClosureCreate/ClosureCall/ClosureDrop,
+       resources → ResourceRegister/ResourceConsume/ResourceScopeCheck,
+       match → decision trees, unsafe → debug-mode checks)
   → [Cache check — skip unchanged functions]
   → SSA Conversion (dominators → phi insertion → variable renaming)
   → Cross-function passes (sequential):
-      - Closure escape analysis
+      - Closure escape analysis + capture strategy (CC2, CC4)
       - Inlining decisions + inline expansion
   → Per-function passes (parallel via rayon):
-      - Perceus RC insertion + RC optimization
+      - Perceus RC insertion + RC optimization (RC1-RC6)
       - String refcount elision
       - Clone elision
       - Constant propagation
@@ -315,7 +411,9 @@ Source → Lexer → Parser → AST
       - Dead code elimination
   → De-SSA (phi → copies)
   → [Cache store — serialized MIR + object code]
-  → Codegen (Cranelift/LLVM, parallel per function) with DWARF debug info
+  → Codegen (Cranelift/LLVM, parallel per function)
+      (DWARF debug info, SSO tag checks for RC ops,
+       debug-mode unsafe checks, release-mode elision)
   → Link with rask-rt → Executable
 ```
 
@@ -379,3 +477,9 @@ Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is 
 - [Incremental Compilation](incremental.md) — caching strategy (`comp.incremental`)
 - [Effects](effects.md) — effect tracking (`comp.effects`)
 - [Compile-Time Execution](../control/comptime.md) — comptime rules (`ctrl.comptime`)
+- [Ensure](../control/ensure.md) — deferred cleanup (`ctrl.ensure`)
+- [Resource Types](../memory/resource-types.md) — must-consume types (`mem.resources`)
+- [Closures](../memory/closures.md) — capture inference (`mem.closures`)
+- [Unsafe Blocks](../memory/unsafe.md) — unsafe operations (`mem.unsafe`)
+- [Allocators](../memory/allocators.md) — allocator contexts (`mem.alloc`)
+- [Hidden Parameters](hidden-params.md) — using clause desugaring (`comp.hidden-params`)
