@@ -685,7 +685,10 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                                         let cfg = rask_comptime::CfgConfig::from_target_or_host(
                                             opts.target.as_deref(), &opts.profile, resolved_feature_names.clone(),
                                         );
-                                        let comptime_globals = super::codegen::evaluate_comptime_globals(&all_decls, Some(&cfg));
+                                        let comptime_globals = super::codegen::evaluate_comptime_globals(
+                                            &all_decls, Some(&cfg),
+                                            Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
+                                        );
                                         let target = opts.target.as_deref();
 
                                         let build_mode = if opts.profile == "release" {

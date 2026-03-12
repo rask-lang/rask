@@ -47,9 +47,13 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
 }
 
 /// Evaluate comptime const declarations and return serialized data.
+///
+/// When `mir_ctx` is provided, tries MIR-based evaluation first (via rask-miri),
+/// falling back to the AST interpreter on failure.
 pub fn evaluate_comptime_globals(
     decls: &[rask_ast::decl::Decl],
     cfg: Option<&rask_comptime::CfgConfig>,
+    mir_ctx: Option<MirEvalContext<'_>>,
 ) -> std::collections::HashMap<String, rask_mir::ComptimeGlobalMeta> {
     use rask_ast::decl::DeclKind;
     use rask_ast::stmt::StmtKind;
@@ -88,6 +92,15 @@ pub fn evaluate_comptime_globals(
     }
 
     for (name, init) in comptime_consts {
+        // Try MIR-based evaluation first
+        if let Some(ref ctx) = mir_ctx {
+            if let Some(meta) = try_eval_comptime_mir(&name, init, ctx, decls) {
+                globals.insert(name, meta);
+                continue;
+            }
+        }
+
+        // Fallback: AST interpreter
         comptime_interp.reset_branch_count();
         match comptime_interp.eval_expr(init) {
             Ok(val) => {
@@ -104,6 +117,192 @@ pub fn evaluate_comptime_globals(
     }
 
     globals
+}
+
+/// Context for MIR-based comptime evaluation.
+pub struct MirEvalContext<'a> {
+    pub mono: &'a MonoProgram,
+    pub typed: &'a rask_types::TypedProgram,
+}
+
+/// Try to evaluate a comptime expression via MIR lowering + MiriEngine.
+/// Returns None on any failure (fallback to AST interpreter).
+fn try_eval_comptime_mir(
+    name: &str,
+    init: &rask_ast::expr::Expr,
+    ctx: &MirEvalContext<'_>,
+    decls: &[rask_ast::decl::Decl],
+) -> Option<rask_mir::ComptimeGlobalMeta> {
+    use rask_ast::decl::{DeclKind, FnDecl};
+    use rask_ast::expr::ExprKind;
+    use rask_ast::stmt::{Stmt, StmtKind};
+    use rask_ast::{NodeId, Span};
+
+    // Extract the comptime body
+    let body = match &init.kind {
+        ExprKind::Comptime { body } => body.clone(),
+        ExprKind::Call { func, args } => {
+            // Comptime function call — find the function and use its body
+            if let ExprKind::Ident(func_name) = &func.kind {
+                let fn_decl = decls.iter().find_map(|d| match &d.kind {
+                    DeclKind::Fn(f) if f.name == *func_name && f.is_comptime => Some(f),
+                    _ => None,
+                })?;
+                // For comptime functions with args, bail to AST interpreter for now
+                if !args.is_empty() {
+                    return None;
+                }
+                fn_decl.body.clone()
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+
+    // Determine return type from type checker
+    let ret_ty_str = ctx.typed.node_types.get(&init.id)
+        .map(|ty| format!("{ty:?}"))
+        .and_then(|s| {
+            // Map Type debug format to a type string the MIR lowerer understands
+            match s.as_str() {
+                "I64" => Some("i64"),
+                "I32" => Some("i32"),
+                "I16" => Some("i16"),
+                "I8" => Some("i8"),
+                "U64" => Some("u64"),
+                "U32" => Some("u32"),
+                "U16" => Some("u16"),
+                "U8" => Some("u8"),
+                "F64" => Some("f64"),
+                "F32" => Some("f32"),
+                "Bool" => Some("bool"),
+                "Char" => Some("char"),
+                "String" => Some("string"),
+                "Unit" => None,
+                _ => None,
+            }
+        });
+
+    // Build a synthetic function wrapping the comptime block.
+    // Add explicit `return <last_expr>` so MIR lowering captures the value.
+    let mut synth_body = body;
+    if let Some(last) = synth_body.last() {
+        if let StmtKind::Expr(_) = &last.kind {
+            // Last statement is an expression — wrap it in a return
+            let last_owned = synth_body.pop().unwrap();
+            if let StmtKind::Expr(e) = last_owned.kind {
+                synth_body.push(Stmt {
+                    id: NodeId(u32::MAX - 1),
+                    kind: StmtKind::Return(Some(e)),
+                    span: last_owned.span,
+                });
+            }
+        }
+    }
+
+    let synth_name = format!("__comptime_{name}");
+    let synth_decl = rask_ast::decl::Decl {
+        id: NodeId(u32::MAX),
+        kind: DeclKind::Fn(FnDecl {
+            name: synth_name.clone(),
+            type_params: vec![],
+            params: vec![],
+            ret_ty: ret_ty_str.map(|s| s.to_string()),
+            context_clauses: vec![],
+            body: synth_body,
+            is_pub: false,
+            is_private: false,
+            is_comptime: true,
+            is_unsafe: false,
+            abi: None,
+            attrs: vec![],
+            doc: None,
+            span: Span::new(0, 0),
+        }),
+        span: Span::new(0, 0),
+    };
+
+    // Create a minimal MirContext for comptime lowering
+    let empty_comptime = std::collections::HashMap::new();
+    let empty_externs = std::collections::HashSet::new();
+    let empty_packages = std::collections::HashSet::new();
+    let empty_coercions = std::collections::HashMap::new();
+    let empty_rewrites = std::collections::HashMap::new();
+    let type_names: std::collections::HashMap<rask_types::TypeId, String> = ctx.typed.types.iter()
+        .enumerate()
+        .map(|(i, def)| {
+            let tname = match def {
+                rask_types::TypeDef::Struct { name, .. } => name.clone(),
+                rask_types::TypeDef::Enum { name, .. } => name.clone(),
+                rask_types::TypeDef::Trait { name, .. } => name.clone(),
+                rask_types::TypeDef::Union { name, .. } => name.clone(),
+                rask_types::TypeDef::NominalAlias { name, .. } => name.clone(),
+            };
+            (rask_types::TypeId(i as u32), tname)
+        })
+        .collect();
+
+    let mir_ctx = rask_mir::lower::MirContext {
+        struct_layouts: &ctx.mono.struct_layouts,
+        enum_layouts: &ctx.mono.enum_layouts,
+        node_types: &ctx.typed.node_types,
+        type_names: &type_names,
+        comptime_globals: &empty_comptime,
+        extern_funcs: &empty_externs,
+        package_modules: &empty_packages,
+        trait_methods: std::collections::HashMap::new(),
+        line_map: None,
+        source_file: None,
+        shared_elem_types: std::cell::RefCell::new(std::collections::HashMap::new()),
+        comptime_interp: None,
+        trait_coercions: &empty_coercions,
+        call_rewrites: &empty_rewrites,
+    };
+
+    // Lower the synthetic function to MIR
+    let mir_fns = rask_mir::lower::MirLowerer::lower_function(
+        &synth_decl, decls, &mir_ctx,
+    ).ok()?;
+
+    let mir_fn = mir_fns.into_iter().next()?;
+
+    // Also lower any comptime functions that might be called
+    let mut engine = rask_miri::MiriEngine::new(Box::new(rask_miri::PureStdlib));
+    engine.set_struct_layouts(ctx.mono.struct_layouts.clone());
+    engine.set_enum_layouts(ctx.mono.enum_layouts.clone());
+
+    // Register comptime-callable functions
+    for decl in decls {
+        if let DeclKind::Fn(f) = &decl.kind {
+            if f.is_comptime {
+                let fn_decl = rask_ast::decl::Decl {
+                    id: decl.id,
+                    kind: DeclKind::Fn(f.clone()),
+                    span: decl.span,
+                };
+                if let Ok(fns) = rask_mir::lower::MirLowerer::lower_function(
+                    &fn_decl, decls, &mir_ctx,
+                ) {
+                    for f in fns {
+                        engine.register_function(f);
+                    }
+                }
+            }
+        }
+    }
+
+    engine.register_function(mir_fn);
+
+    // Execute
+    let result = engine.execute(&synth_name, vec![]).ok()?;
+
+    // Convert to ComptimeGlobalMeta
+    let type_prefix = result.type_prefix().to_string();
+    let elem_count = result.elem_count();
+    let bytes = result.serialize()?;
+
+    Some(rask_mir::ComptimeGlobalMeta { bytes, elem_count, type_prefix })
 }
 
 /// Check if an expression is a comptime initializer.
@@ -264,7 +463,7 @@ pub fn cmd_mir(path: &str, format: Format) {
     }).collect();
     all_mono_decls.extend(decls.iter().filter(|d| matches!(&d.kind, rask_ast::decl::DeclKind::Extern(_))).cloned());
     let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
-    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg));
+    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
     let extern_funcs = collect_extern_func_names(&decls);
     let line_map = source.as_deref().map(rask_ast::LineMap::new);
     let type_names: std::collections::HashMap<rask_types::TypeId, String> = typed.types.iter()
@@ -357,7 +556,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     let (mono, typed, decls, source) = run_pipeline(path, format);
     let profile = if release { "release" } else { "debug" };
     let cfg = rask_comptime::CfgConfig::from_target_or_host(target, profile, vec![]);
-    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg));
+    let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
     let build_mode = if release { rask_codegen::BuildMode::Release } else { rask_codegen::BuildMode::Debug };
 
     // Determine output paths
