@@ -11,13 +11,38 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 
 | Rule | Description |
 |------|-------------|
-| **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes `(header_ptr, len)`. Header: `(refcount: atomic_u32, capacity: u32, data: [u8])`. Under VS1 threshold → implicit Copy |
+| **S1: Immutable, refcounted, Copy** | `string` is UTF-8, immutable, 16 bytes (tagged union — see S8). Under VS1 threshold → implicit Copy |
 | **S2: Inline slicing** | `s[i..j]` creates a temporary view valid only within the expression |
 | **S3: Public APIs use string** | Never use `string_view` or `StringSlice` in public APIs |
 | **S4: UTF-8 required** | Strings must contain valid UTF-8. Validated at construction |
 | **S5: Byte indices** | Slicing uses byte indices. Mid-codepoint slice panics at runtime |
-| **S6: Refcount semantics** | Atomic refcount in heap header. Literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
+| **S6: Refcount semantics** | Atomic refcount in heap header. SSO strings (S8) bypass refcounting entirely. Literals ≤ 15 bytes use SSO; longer literals use sentinel refcount (never freed/decremented). Compiler elides atomic ops for provably sole-owner heap strings (see `comp.string-refcount-elision`). This is a language primitive — not available to user-defined types |
 | **S7: Builder for mutation** | `push_str`, `push_char`, `truncate`, `clear` live on `string_builder` only. `string` has no mutation methods |
+| **S8: Small string optimization** | Strings ≤ 15 bytes are stored inline in the 16-byte value (no heap allocation, no refcount). Longer strings use heap mode with refcounted header. Layout is a tagged union — discriminant is the MSB of the last byte. User-facing semantics are identical in both modes |
+
+### Internal Layout (S1 + S8)
+
+16 bytes, tagged union. The MSB of the last byte discriminates between modes:
+
+```
+Heap mode (last byte MSB = 0):
+  [header_ptr: *u8 (8B)][len: usize (8B)]
+  Header at ptr: { refcount: atomic_u32, capacity: u32, data: [u8] }
+
+SSO mode (last byte MSB = 1):
+  [inline_data: [u8; 15]][len_tag: u8]
+  Length = len_tag & 0x7F (range 0..15)
+```
+
+SSO strings are pure value copies — no heap, no refcount. Heap strings share backing storage via atomic refcount. Both modes are 16 bytes, both are Copy. The mode is invisible to user code.
+
+| String variant | Refcount | Allocation | Copy cost |
+|----------------|----------|------------|-----------|
+| SSO (≤ 15 bytes) | None | None | 16-byte memcpy |
+| Literal (> 15 bytes) | Sentinel (never freed) | Static | 16-byte memcpy |
+| Literal (≤ 15 bytes) | None (SSO) | None | 16-byte memcpy |
+| Heap (shared) | Atomic inc/dec | Heap | 16-byte memcpy + atomic inc |
+| Heap (unique, elided) | Skipped (RE1/RE2) | Heap | 16-byte memcpy |
 
 | Type | Description | Ownership | Storable? |
 |------|-------------|-----------|-----------|
@@ -32,11 +57,11 @@ Immutable refcounted `string` type with UTF-8 validation, inline slicing for zer
 
 | Rule | Description |
 |------|-------------|
-| **O1: Copy on assign** | `const s2 = s1` copies 16-byte header + atomic increment. Both remain valid |
+| **O1: Copy on assign** | `const s2 = s1` copies 16 bytes. For heap strings, atomic refcount increment. For SSO strings, plain memcpy (no refcount). Both remain valid |
 | **O2: Borrow inferred** | `func foo(s: string)` borrows for call duration. No refcount change |
 | **O3: Explicit take** | `func foo(take s: string)` transfers ownership, decrements caller's count |
 
-> `string` is Copy. No `.clone()` needed — assignment copies the 16-byte header and bumps the refcount. This is one of the few types that owns heap memory but is still Copy, because the immutable + refcounted design makes sharing safe.
+> `string` is Copy. No `.clone()` needed — assignment copies 16 bytes. For SSO strings (≤ 15 bytes), that's it — no heap, no refcount. For heap strings, the refcount is bumped atomically. This is one of the few types that owns heap memory but is still Copy, because the immutable + refcounted design makes sharing safe.
 
 ## Inline Slicing
 
@@ -118,7 +143,7 @@ Iterators borrow for expression scope only. Cannot be stored.
 
 | Operation | Return Type | Notes |
 |-----------|-------------|-------|
-| `"literal"` | `string` | Static storage, compile-time validated, sentinel refcount (never freed) |
+| `"literal"` | `string` | Compile-time validated. ≤ 15 bytes → SSO (inline, no allocation). > 15 bytes → static storage, sentinel refcount (never freed) |
 | `string.from_utf8(bytes)` | `Result<string, utf8_error>` | Validates bytes |
 | `string.from_char(c)` | `string` | Single-char string |
 | `string.repeat(s, n)` or `s.repeat(n)` | `string` | `s` repeated `n` times, allocates |
@@ -222,7 +247,7 @@ const csv = headers.join(",")      // CSV header row
 
 | Operation | Cost | Notes |
 |-----------|------|-------|
-| `s1 == s2` | O(1) or O(n) | Pointer+length fast path: same backing buffer and same length → equal without byte comparison. Otherwise byte-wise (length check first) |
+| `s1 == s2` | O(1) or O(n) | SSO: byte comparison (length check first, then memcmp). Heap: pointer+length fast path — same backing buffer and same length → equal without byte comparison. Otherwise byte-wise |
 | `s1 < s2` | O(n) | Lexicographic |
 | `s.hash()` | O(n) | Not cached |
 
@@ -315,7 +340,9 @@ FIX:
 | Slice not on char boundary | S5 | Panic at runtime |
 | Embedded `\0` in string | — | Valid; `to_cstring()` returns error |
 | Allocation failure | — | Returns `Result` error |
-| String literal | S6 | Sentinel refcount, never freed/decremented |
+| String literal ≤ 15 bytes | S8 | SSO — inline value, no heap, no refcount |
+| String literal > 15 bytes | S6 | Sentinel refcount, never freed/decremented |
+| Short string (≤ 15 bytes) | S8 | SSO — pure value copy, no atomic ops |
 | `string_view` of freed source | — | Undefined behavior (user's responsibility) |
 | `string_view` out of bounds | — | Panic on `s[view]`, `None` on `s.substr(view)` |
 | `StringSlice` with stale handle | — | `pool.get(slice)` returns `None` |
@@ -337,7 +364,7 @@ FIX:
 
 Immutable wins over COW: no hidden mutation cost, builder is sole owner so mutation is always O(1). Refcount over GC: deterministic, fits the ownership model. Builder pattern is established (Go, C#, Java) and concentrated in few callsites (~8 `.build()` calls across a 1,114-line renderer).
 
-This is one of the few cases where a type owns heap memory but is still Copy. The immutable + refcounted design makes sharing safe — there's no aliased mutation to worry about. The 16-byte `(header_ptr, len)` representation fits under the VS1 threshold.
+This is one of the few cases where a type owns heap memory but is still Copy. The immutable + refcounted design makes sharing safe — there's no aliased mutation to worry about. The 16-byte representation (tagged union — see S8) fits under the VS1 threshold. SSO means most short strings never touch the heap at all.
 
 **S2 (inline slicing):** Strings own heap buffers — they're growable sources, same as Vec. Slices are temporary views for the expression. `.to_string()` copies bytes into a new independent string — no shared backing. A 50-byte slice must not silently retain a 10MB source buffer. The `.to_string()` calls are honest cost markers bounded by the slice size, not the source size.
 
@@ -348,6 +375,8 @@ This is one of the few cases where a type owns heap memory but is still Copy. Th
 **S6 (refcount semantics):** Atomic refcount enables safe sharing across tasks. Sentinel refcount for literals avoids overhead on the most common case. Compiler optimization for provably sole-owner strings eliminates atomic ops when sharing can't happen.
 
 **S7 (builder for mutation):** All mutation lives on `string_builder`. This means `string` is truly immutable — no COW surprise, no hidden cost. The builder is always the sole owner of its buffer, so mutation is always O(1) amortized.
+
+**S8 (small string optimization):** Short strings are the most common case in many programs — field names, status codes, short identifiers, small log messages. The 15-byte threshold covers the vast majority of these. Without SSO, every string — even `"OK"` — heap-allocates and atomic-refcounts. With SSO, short strings are pure 16-byte values: no heap, no refcount, same cost as copying an `i128`. The tagged union uses a well-proven technique (same approach as libc++ and fbstring): the MSB of the last byte discriminates between SSO and heap mode. The 16-byte size and Copy semantics are unchanged — SSO is invisible to user code. `string_builder.build()` produces an SSO string when the result is ≤ 15 bytes, avoiding the heap allocation entirely.
 
 ### Why Immutable Strings?
 
@@ -482,7 +511,7 @@ for (i, c) in text.char_indices() {
 - `string` implements `Displayable`, `Hashable`, `Comparable` traits. Copy is structural (S1)
 - All types (`string`, `string_view`, `string_builder`, `StringPool`, `StringSlice`) are in core prelude
 - String builders can contain linear resources; `build()` consumes builder to preserve linearity
-- String literals and interpolation at comptime produce static strings (sentinel refcount)
+- String literals ≤ 15 bytes produce SSO values (inline, no allocation). Longer literals use static storage with sentinel refcount. Comptime interpolation follows the same rule based on result length
 
 ### Implementation Notes (Interpreter)
 
