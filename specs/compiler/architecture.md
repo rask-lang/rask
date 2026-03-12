@@ -207,24 +207,35 @@ All five share the same solver. Adding a new analysis means implementing the tra
 
 ---
 
-## Perceus Reference Counting
+## String Refcount Optimization
+
+`string` is the only refcounted type in Rask. Everything else is Copy, Move, or linear (`@resource`). The spec explicitly closes the door on general user-defined RC types (`comp.string-refcount-elision`, "Why This Is String-Only"). This means the RC optimization story is simpler than full Perceus — but still benefits from the same analysis infrastructure.
+
+### What We Take from Perceus
 
 | Rule | Description |
 |------|-------------|
-| **RC1: Explicit RC operations** | After SSA conversion, insert explicit `RcInc` and `RcDec` MIR statements for refcounted types |
+| **RC1: Explicit RC operations** | After SSA conversion, insert explicit `RcInc` and `RcDec` MIR statements for string-typed locals |
 | **RC2: Precise drop placement** | `RcDec` placed at each last-use point (from liveness analysis), not at scope exit |
-| **RC3: Inc/dec fusion** | Adjacent or provably paired inc/dec cancel out (`comp.string-refcount-elision/RE1`) |
-| **RC4: Local-only elision** | Refcounted values that don't escape the function skip all RC ops (`comp.string-refcount-elision/RE2`) |
-| **RC5: Reuse analysis** | If `RcDec` would drop to zero and an allocation of the same size follows, reuse the memory (Perceus reuse credit) |
-| **RC6: Applies to strings** | Primary target is `string` (16-byte header, heap buffer). Future refcounted types get this for free |
+| **RC3: Inc/dec fusion** | Adjacent or provably paired inc/dec cancel out (`comp.string-refcount-elision/RE1`). This is the highest-value optimization — most string copies are immediately followed by a drop of the original |
+| **RC4: Local-only elision** | Strings that don't escape the function skip all RC ops (`comp.string-refcount-elision/RE2`). Refcount stays at 1, just free on drop |
+| **RC5: Literal propagation** | Strings provably tracing back to literals skip all RC ops (`comp.string-refcount-elision/RE3`). Literals use a sentinel refcount |
+
+### What We Don't Need from Perceus
+
+| Perceus feature | Why not |
+|----------------|---------|
+| **Reuse analysis** | Perceus reuses memory when RC drops to zero and a same-sized allocation follows. Strings are variable-length — buffer sizes rarely match. Not worth the complexity |
+| **General RC framework** | No other types are refcounted. Building infrastructure for hypothetical future RC types violates "don't design for hypothetical requirements" |
+| **RC on collections** | Vec, Map are single-owner (move semantics). `.clone()` is explicit deep copy, not RC. Clone elision handles this separately |
 
 ### Pipeline Position
 
 ```
-MIR Lowering → SSA Conversion → Perceus RC Insertion → RC Optimization → Other Passes → De-SSA → Codegen
+MIR Lowering → SSA Conversion → String RC Insertion → RC Fusion/Elision → Other Passes → De-SSA → Codegen
 ```
 
-Perceus runs early (right after SSA) because later passes benefit from seeing explicit RC operations — clone elision can reason about what's actually an RC bump vs a deep clone.
+RC insertion runs after SSA because it needs precise def-use chains. It runs before other optimization passes so they can see (and potentially eliminate) the RC operations.
 
 ### Interaction with SSO
 
@@ -237,7 +248,16 @@ if string.is_heap() {
 }
 ```
 
-The Perceus pass inserts unconditional RC ops for all string-typed values. SSO awareness lives in codegen, not in MIR — codegen emits the tag check before each RC operation. This keeps MIR clean (no SSO conditionals cluttering the IR) while still avoiding unnecessary atomic ops at runtime. String literals are statically known to be inline or heap based on length, so codegen can elide the tag check entirely for literals ≤15 bytes.
+SSO awareness lives in codegen, not MIR — codegen emits the tag check before each RC operation. This keeps MIR clean (no SSO conditionals) while avoiding unnecessary atomic ops at runtime. String literals are statically known to be inline or heap based on length, so codegen elides the tag check entirely for literals ≤15 bytes.
+
+### What This Needs
+
+- **Liveness analysis** (DF framework) — for drop placement (RC2)
+- **Escape analysis** (DF framework) — for local-only elision (RC4)
+- **SSA form** — for precise def-use tracking (RC1, RC3)
+- **Literal tracking** — forward dataflow to propagate "provably literal" through copies (RC5)
+
+All four are useful for other purposes too. The string RC pass is a client of the analysis framework, not a standalone system.
 
 ---
 
@@ -400,7 +420,7 @@ Source → Lexer → Parser → AST
       - Closure escape analysis + capture strategy (CC2, CC4)
       - Inlining decisions + inline expansion
   → Per-function passes (parallel via rayon):
-      - Perceus RC insertion + RC optimization (RC1-RC6)
+      - String RC insertion + fusion/elision (RC1-RC5)
       - String refcount elision
       - Clone elision
       - Constant propagation
@@ -424,8 +444,8 @@ Source → Lexer → Parser → AST
 | Phase | What | Enables |
 |-------|------|---------|
 | **A: Analysis foundation** | Dominator tree, dataflow framework, liveness | Everything else |
-| **B: SSA** | SSA construction + de-SSA | Perceus, constant prop, precise analyses |
-| **C: Perceus** | RC insertion/optimization for strings | String refcount elision, SSO preparation |
+| **B: SSA** | SSA construction + de-SSA | String RC, constant prop, precise analyses |
+| **C: String RC** | RC insertion/fusion/elision for strings | `comp.string-refcount-elision`, SSO preparation |
 | **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection |
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
 | **F: Advanced analyses** | Typestate, intervals, bounds check elimination | `comp.advanced` spec |
@@ -442,7 +462,7 @@ Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is 
 | `comp.codegen/P2` | Superseded by IR3 (hybrid SSA). MIR is SSA during optimization |
 | `comp.effects/FX3` | Partially superseded by EF1. Pool effects enforced; IO/Async stay metadata |
 | `comp.clone-elision` | Unchanged, but implementation benefits from SSA form and liveness analysis |
-| `comp.string-refcount-elision` | Unchanged, but implemented via Perceus framework rather than standalone pass |
+| `comp.string-refcount-elision` | Unchanged, but implemented via RC insertion pass using dataflow framework (not full Perceus — strings are the only RC type) |
 | `comp.advanced` | Unchanged — dataflow framework provides the infrastructure it assumes |
 
 ---
@@ -451,7 +471,7 @@ Phase A is prerequisite for B, C, F. Phases D and E are independent. Phase G is 
 
 ### Rationale
 
-**IR3 (hybrid SSA):** I resisted SSA for a while because Cranelift does its own SSA conversion. But trying to implement Perceus, constant propagation, and interval analysis on non-SSA MIR means reimplementing def-use chains, reaching definitions, and variable renaming in every pass. SSA gives you all of that for free. The lowering complexity is a one-time cost; the optimization simplicity pays forever.
+**IR3 (hybrid SSA):** I resisted SSA for a while because Cranelift does its own SSA conversion. But trying to implement string RC optimization, constant propagation, and interval analysis on non-SSA MIR means reimplementing def-use chains, reaching definitions, and variable renaming in every pass. SSA gives you all of that for free. The lowering complexity is a one-time cost; the optimization simplicity pays forever.
 
 **DF1 (generic framework):** The specs promise 5+ different dataflow analyses. Building each ad-hoc means 5 different iteration strategies, 5 different caching approaches, 5 different ways to handle loops. A generic framework means getting iteration right once. Kildall's algorithm is textbook — there's no reason to reimplement it per analysis.
 
