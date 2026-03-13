@@ -9,10 +9,10 @@
 //!
 //! See `comp.clone-elision` spec for the full algorithm.
 
-use std::collections::HashSet;
-
-use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
-use crate::analysis::{cfg, uses};
+use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
+use crate::analysis::uses;
+use crate::analysis::dominators::DominatorTree;
+use crate::analysis::liveness;
 
 /// Clone function suffixes that indicate a heap-allocating clone (CE1).
 const CLONE_SUFFIXES: &[&str] = &[
@@ -60,10 +60,14 @@ fn elide_clones_in_function(func: &mut MirFunction) {
         return;
     }
 
+    // Compute liveness for precise cross-block last-use detection.
+    let dom = DominatorTree::build(func);
+    let live = liveness::analyze(func, &dom);
+
     // For each clone site, check if the source local is used anywhere after
     // the clone, on any control flow path.
     for (block_idx, stmt_idx, _dst, source) in &clone_sites {
-        if is_last_use(func, *block_idx, *stmt_idx, *source) {
+        if is_last_use_with_liveness(func, *block_idx, *stmt_idx, *source, &live) {
             // CE1: Replace clone call with move (simple copy of the operand).
             let stmt = &mut func.blocks[*block_idx].statements[*stmt_idx];
             if let MirStmtKind::Call { dst: Some(dst), .. } = &stmt.kind {
@@ -79,9 +83,16 @@ fn elide_clones_in_function(func: &mut MirFunction) {
 }
 
 /// Check whether `source` has no uses after position (block_idx, stmt_idx).
+/// Uses liveness analysis for precise cross-block detection.
 /// CE2: Local analysis per function.
 /// CE4: Control-flow aware — all paths from clone to function exit must not use source.
-fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: LocalId) -> bool {
+fn is_last_use_with_liveness(
+    func: &MirFunction,
+    block_idx: usize,
+    stmt_idx: usize,
+    source: LocalId,
+    live: &liveness::LivenessResults,
+) -> bool {
     let block = &func.blocks[block_idx];
 
     // Check remaining statements in the same block after the clone
@@ -96,41 +107,14 @@ fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: Lo
         return false;
     }
 
-    // CE4: Check all reachable successor blocks via BFS
-    let mut visited = HashSet::new();
-    visited.insert(func.blocks[block_idx].id);
-    let mut worklist: Vec<BlockId> = cfg::successors(&block.terminator);
-
-    while let Some(bid) = worklist.pop() {
-        if !visited.insert(bid) {
-            continue;
-        }
-        let Some(succ_block) = func.blocks.iter().find(|b| b.id == bid) else {
-            continue;
-        };
-        // Check all statements in successor block
-        for stmt in &succ_block.statements {
-            if uses::stmt_reads(stmt, source) {
-                return false;
-            }
-        }
-        // Check terminator
-        if uses::terminator_reads(&succ_block.terminator, source) {
-            return false;
-        }
-        // Add this block's successors
-        for next in cfg::successors(&succ_block.terminator) {
-            worklist.push(next);
-        }
-    }
-
-    true
+    // Use liveness: if source is not live at block exit, it's dead on all paths
+    !live.live_at_exit(block.id, source)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FunctionRef, MirConst, MirTerminator, MirTerminatorKind, MirType};
+    use crate::{BlockId, FunctionRef, MirConst, MirTerminator, MirTerminatorKind, MirType};
     use crate::function::{MirBlock, MirLocal};
 
     fn local(id: u32) -> LocalId {
