@@ -86,7 +86,18 @@ fn lower_to_mir(
         return Err(errors);
     }
 
+    // SSA construction: convert to pruned SSA form for optimization passes.
+    for func in &mut mir_functions {
+        rask_mir::transform::ssa::construct(func);
+    }
+
     rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
+
+    // De-SSA: lower phi nodes to copies before codegen.
+    for func in &mut mir_functions {
+        rask_mir::transform::ssa::destruct(func);
+    }
+
     Ok(mir_functions)
 }
 

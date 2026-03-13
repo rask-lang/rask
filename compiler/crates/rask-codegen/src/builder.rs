@@ -879,6 +879,10 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_free".to_string()))?;
                 builder.ins().call(*free_ref, &[data_ptr]);
             }
+
+            MirStmtKind::Phi { .. } => {
+                panic!("Phi nodes must be lowered by de-SSA before codegen");
+            }
         }
         Ok(())
     }

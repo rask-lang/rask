@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! MIR (Mid-level Intermediate Representation) - non-SSA control-flow graph.
+//! MIR (Mid-level Intermediate Representation) — hybrid SSA control-flow graph.
 //!
 //! MIR is the bridge between high-level AST and backend code generation.
-//! It uses basic blocks with statements and terminators.
+//! It uses basic blocks with statements and terminators. Lowering produces
+//! non-SSA form; `transform::ssa::construct` converts to pruned SSA before
+//! optimization; `transform::ssa::destruct` lowers back before codegen.
 
 pub mod analysis;
 mod builder;

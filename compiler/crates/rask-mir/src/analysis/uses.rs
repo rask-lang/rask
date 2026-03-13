@@ -59,6 +59,9 @@ pub fn stmt_reads(stmt: &MirStmt, local: LocalId) -> bool {
             *trait_object == local || args.iter().any(|a| operand_reads(a, local))
         }
         MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
+        MirStmtKind::Phi { args, .. } => {
+            args.iter().any(|(_, op)| operand_reads(op, local))
+        }
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
@@ -82,6 +85,7 @@ pub fn terminator_reads(term: &MirTerminator, local: LocalId) -> bool {
 pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
     match &stmt.kind {
         MirStmtKind::Assign { dst, .. }
+        | MirStmtKind::Phi { dst, .. }
         | MirStmtKind::PoolCheckedAccess { dst, .. }
         | MirStmtKind::ClosureCreate { dst, .. }
         | MirStmtKind::LoadCapture { dst, .. }

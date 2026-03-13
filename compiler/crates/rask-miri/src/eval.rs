@@ -300,6 +300,10 @@ impl MiriEngine {
                     "trait objects are not yet supported in compile-time evaluation".to_string(),
                 ));
             }
+
+            MirStmtKind::Phi { .. } => {
+                panic!("Phi nodes must be lowered by de-SSA before interpretation");
+            }
         }
         Ok(())
     }
