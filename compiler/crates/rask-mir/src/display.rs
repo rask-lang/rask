@@ -223,6 +223,14 @@ impl fmt::Display for MirStmt {
             MirStmtKind::TraitDrop { trait_object } => {
                 write!(f, "trait_drop(_{})", trait_object.0)
             }
+            MirStmtKind::Phi { dst, args } => {
+                write!(f, "_{} = phi [", dst.0)?;
+                for (i, (block, op)) in args.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{} from bb{}", op, block.0)?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
