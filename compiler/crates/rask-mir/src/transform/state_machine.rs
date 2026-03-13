@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     BlockBuilder, LocalId, MirFunction, MirOperand,
-    MirRValue, MirStmt, MirTerminator, MirType,
+    MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use crate::operand::MirConst;
 
@@ -73,8 +73,8 @@ pub struct StateField {
 pub fn has_yield_points(func: &MirFunction) -> bool {
     func.blocks.iter().any(|block| {
         block.statements.iter().any(|stmt| matches!(
-            stmt,
-            MirStmt::Call { func: fref, .. } if is_yield_point(&fref.name)
+            &stmt.kind,
+            MirStmtKind::Call { func: fref, .. } if is_yield_point(&fref.name)
         ))
     })
 }
@@ -147,8 +147,8 @@ fn linearize(func: &MirFunction) -> Vec<MirStmt> {
             result.push(stmt.clone());
         }
 
-        current = match &block.terminator {
-            MirTerminator::Goto { target } => Some(*target),
+        current = match &block.terminator.kind {
+            MirTerminatorKind::Goto { target } => Some(*target),
             _ => None,
         };
     }
@@ -160,8 +160,8 @@ fn find_yield_indices(stmts: &[MirStmt]) -> Vec<usize> {
     stmts
         .iter()
         .enumerate()
-        .filter_map(|(i, stmt)| match stmt {
-            MirStmt::Call { func, .. } if is_yield_point(&func.name) => Some(i),
+        .filter_map(|(i, stmt)| match &stmt.kind {
+            MirStmtKind::Call { func, .. } if is_yield_point(&func.name) => Some(i),
             _ => None,
         })
         .collect()
@@ -182,8 +182,8 @@ struct CaptureInfo {
 fn extract_captures(stmts: &[MirStmt], func: &MirFunction) -> Vec<CaptureInfo> {
     stmts
         .iter()
-        .filter_map(|stmt| match stmt {
-            MirStmt::LoadCapture { dst, offset, .. } => {
+        .filter_map(|stmt| match &stmt.kind {
+            MirStmtKind::LoadCapture { dst, offset, .. } => {
                 let ty = func.locals.iter()
                     .find(|l| l.id == *dst)
                     .map(|l| l.ty.clone())
@@ -230,14 +230,14 @@ fn segment(linear: &[MirStmt], yield_indices: &[usize]) -> Vec<Segment> {
 
 /// Collect locals defined by a statement.
 fn stmt_defs(stmt: &MirStmt) -> Vec<LocalId> {
-    match stmt {
-        MirStmt::Assign { dst, .. }
-        | MirStmt::ClosureCreate { dst, .. }
-        | MirStmt::LoadCapture { dst, .. }
-        | MirStmt::ResourceRegister { dst, .. }
-        | MirStmt::PoolCheckedAccess { dst, .. } => vec![*dst],
-        MirStmt::Call { dst: Some(d), .. }
-        | MirStmt::ClosureCall { dst: Some(d), .. } => vec![*d],
+    match &stmt.kind {
+        MirStmtKind::Assign { dst, .. }
+        | MirStmtKind::ClosureCreate { dst, .. }
+        | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::ResourceRegister { dst, .. }
+        | MirStmtKind::PoolCheckedAccess { dst, .. } => vec![*dst],
+        MirStmtKind::Call { dst: Some(d), .. }
+        | MirStmtKind::ClosureCall { dst: Some(d), .. } => vec![*d],
         _ => vec![],
     }
 }
@@ -245,32 +245,32 @@ fn stmt_defs(stmt: &MirStmt) -> Vec<LocalId> {
 /// Collect locals used by a statement.
 fn stmt_uses(stmt: &MirStmt) -> Vec<LocalId> {
     let mut uses = Vec::new();
-    match stmt {
-        MirStmt::Assign { rvalue, .. } => rvalue_uses(rvalue, &mut uses),
-        MirStmt::Store { addr, value, .. } => {
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => rvalue_uses(rvalue, &mut uses),
+        MirStmtKind::Store { addr, value, .. } => {
             uses.push(*addr);
             operand_uses(value, &mut uses);
         }
-        MirStmt::Call { args, .. } => {
+        MirStmtKind::Call { args, .. } => {
             for arg in args {
                 operand_uses(arg, &mut uses);
             }
         }
-        MirStmt::ClosureCreate { captures, .. } => {
+        MirStmtKind::ClosureCreate { captures, .. } => {
             for cap in captures {
                 uses.push(cap.local_id);
             }
         }
-        MirStmt::ClosureCall { closure, args, .. } => {
+        MirStmtKind::ClosureCall { closure, args, .. } => {
             uses.push(*closure);
             for arg in args {
                 operand_uses(arg, &mut uses);
             }
         }
-        MirStmt::LoadCapture { env_ptr, .. } => uses.push(*env_ptr),
-        MirStmt::ClosureDrop { closure } => uses.push(*closure),
-        MirStmt::ResourceConsume { resource_id } => uses.push(*resource_id),
-        MirStmt::PoolCheckedAccess { pool, handle, .. } => {
+        MirStmtKind::LoadCapture { env_ptr, .. } => uses.push(*env_ptr),
+        MirStmtKind::ClosureDrop { closure } => uses.push(*closure),
+        MirStmtKind::ResourceConsume { resource_id } => uses.push(*resource_id),
+        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
             uses.push(*pool);
             uses.push(*handle);
         }
@@ -484,11 +484,11 @@ fn generate_poll_fn(
 
     // Load state tag from state_ptr+0
     let tag_local = builder.alloc_temp(MirType::I32);
-    builder.push_stmt(MirStmt::LoadCapture {
+    builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
         dst: tag_local,
         env_ptr: state_ptr,
         offset: 0,
-    });
+    }));
 
     // Create segment blocks + default
     let segment_blocks: Vec<_> = (0..n_segments).map(|_| builder.create_block()).collect();
@@ -500,17 +500,17 @@ fn generate_poll_fn(
         .map(|(i, &block)| (i as u64, block))
         .collect();
 
-    builder.terminate(MirTerminator::Switch {
+    builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
         value: MirOperand::Local(tag_local),
         cases,
         default: default_block,
-    });
+    }));
 
     // Default: return READY (unreachable in correct code)
     builder.switch_to_block(default_block);
-    builder.terminate(MirTerminator::Return {
+    builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
         value: Some(MirOperand::Constant(MirConst::Int(0))),
-    });
+    }));
 
     for (seg_idx, seg) in segments.iter().enumerate() {
         builder.switch_to_block(segment_blocks[seg_idx]);
@@ -520,11 +520,11 @@ fn generate_poll_fn(
         if seg_idx > 0 {
             for (&orig_id, field) in &field_map {
                 if let Some(&new_id) = local_map.get(&orig_id) {
-                    builder.push_stmt(MirStmt::LoadCapture {
+                    builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                         dst: new_id,
                         env_ptr: state_ptr,
                         offset: field.offset,
-                    });
+                    }));
                 }
             }
         }
@@ -538,33 +538,33 @@ fn generate_poll_fn(
         }
 
         if is_last {
-            builder.terminate(MirTerminator::Return {
+            builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(MirOperand::Constant(MirConst::Int(0))), // READY
-            });
+            }));
         } else {
             // Save live locals to state
             for (&orig_id, field) in &field_map {
                 if let Some(&new_id) = local_map.get(&orig_id) {
-                    builder.push_stmt(MirStmt::Store {
+                    builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: state_ptr,
                         offset: field.offset,
                         value: MirOperand::Local(new_id),
                         store_size: None,
-                    });
+                    }));
                 }
             }
 
             // Advance state_tag
-            builder.push_stmt(MirStmt::Store {
+            builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: state_ptr,
                 offset: 0,
                 value: MirOperand::Constant(MirConst::Int((seg_idx + 1) as i64)),
                 store_size: None,
-            });
+            }));
 
-            builder.terminate(MirTerminator::Return {
+            builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(MirOperand::Constant(MirConst::Int(1))), // PENDING
-            });
+            }));
         }
     }
 
@@ -585,36 +585,38 @@ fn remap_stmt(
     state_ptr: LocalId,
     capture_remap: &HashMap<u32, u32>,
 ) -> MirStmt {
+    let span = stmt.span;
+
     // Rewrite LoadCapture from closure env → load from state struct
-    if let MirStmt::LoadCapture { dst, env_ptr, offset } = stmt {
+    if let MirStmtKind::LoadCapture { dst, env_ptr, offset } = &stmt.kind {
         if env_param_id == Some(*env_ptr) {
             if let Some(&state_offset) = capture_remap.get(offset) {
-                return MirStmt::LoadCapture {
+                return MirStmt::new(MirStmtKind::LoadCapture {
                     dst: remap_id(*dst, map),
                     env_ptr: state_ptr,
                     offset: state_offset,
-                };
+                }, span);
             }
         }
     }
 
-    match stmt {
-        MirStmt::Assign { dst, rvalue } => MirStmt::Assign {
+    let kind = match &stmt.kind {
+        MirStmtKind::Assign { dst, rvalue } => MirStmtKind::Assign {
             dst: remap_id(*dst, map),
             rvalue: remap_rvalue(rvalue, map),
         },
-        MirStmt::Store { addr, offset, value, store_size } => MirStmt::Store {
+        MirStmtKind::Store { addr, offset, value, store_size } => MirStmtKind::Store {
             addr: remap_id(*addr, map),
             offset: *offset,
             value: remap_operand(value, map),
             store_size: *store_size,
         },
-        MirStmt::Call { dst, func, args } => MirStmt::Call {
+        MirStmtKind::Call { dst, func, args } => MirStmtKind::Call {
             dst: dst.map(|d| remap_id(d, map)),
             func: func.clone(),
             args: args.iter().map(|a| remap_operand(a, map)).collect(),
         },
-        MirStmt::ClosureCreate { dst, func_name, captures, heap } => MirStmt::ClosureCreate {
+        MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => MirStmtKind::ClosureCreate {
             dst: remap_id(*dst, map),
             func_name: func_name.clone(),
             captures: captures
@@ -627,42 +629,43 @@ fn remap_stmt(
                 .collect(),
             heap: *heap,
         },
-        MirStmt::ClosureCall { dst, closure, args } => MirStmt::ClosureCall {
+        MirStmtKind::ClosureCall { dst, closure, args } => MirStmtKind::ClosureCall {
             dst: dst.map(|d| remap_id(d, map)),
             closure: remap_id(*closure, map),
             args: args.iter().map(|a| remap_operand(a, map)).collect(),
         },
-        MirStmt::LoadCapture { dst, env_ptr, offset } => MirStmt::LoadCapture {
+        MirStmtKind::LoadCapture { dst, env_ptr, offset } => MirStmtKind::LoadCapture {
             dst: remap_id(*dst, map),
             env_ptr: remap_id(*env_ptr, map),
             offset: *offset,
         },
-        MirStmt::ClosureDrop { closure } => MirStmt::ClosureDrop {
+        MirStmtKind::ClosureDrop { closure } => MirStmtKind::ClosureDrop {
             closure: remap_id(*closure, map),
         },
-        MirStmt::ResourceRegister { dst, type_name, scope_depth } => {
-            MirStmt::ResourceRegister {
+        MirStmtKind::ResourceRegister { dst, type_name, scope_depth } => {
+            MirStmtKind::ResourceRegister {
                 dst: remap_id(*dst, map),
                 type_name: type_name.clone(),
                 scope_depth: *scope_depth,
             }
         }
-        MirStmt::ResourceConsume { resource_id } => MirStmt::ResourceConsume {
+        MirStmtKind::ResourceConsume { resource_id } => MirStmtKind::ResourceConsume {
             resource_id: remap_id(*resource_id, map),
         },
-        MirStmt::PoolCheckedAccess { dst, pool, handle } => MirStmt::PoolCheckedAccess {
+        MirStmtKind::PoolCheckedAccess { dst, pool, handle } => MirStmtKind::PoolCheckedAccess {
             dst: remap_id(*dst, map),
             pool: remap_id(*pool, map),
             handle: remap_id(*handle, map),
         },
-        MirStmt::ArrayStore { base, index, elem_size, value } => MirStmt::ArrayStore {
+        MirStmtKind::ArrayStore { base, index, elem_size, value } => MirStmtKind::ArrayStore {
             base: remap_id(*base, map),
             index: remap_operand(index, map),
             elem_size: *elem_size,
             value: remap_operand(value, map),
         },
-        other => other.clone(),
-    }
+        _ => return stmt.clone(),
+    };
+    MirStmt::new(kind, span)
 }
 
 fn remap_id(id: LocalId, map: &HashMap<LocalId, LocalId>) -> LocalId {
@@ -730,41 +733,41 @@ mod tests {
         for stmt in stmts {
             builder.push_stmt(stmt);
         }
-        builder.terminate(MirTerminator::Return { value: None });
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
         builder.finish()
     }
 
     #[test]
     fn no_yield_points_returns_none() {
-        let func = make_test_spawn_fn(vec![MirStmt::Call {
+        let func = make_test_spawn_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("work".to_string()),
             args: vec![],
-        }]);
+        })]);
         assert!(!has_yield_points(&func));
         assert!(transform(&func).is_none());
     }
 
     #[test]
     fn detects_yield_point() {
-        let func = make_test_spawn_fn(vec![MirStmt::Call {
+        let func = make_test_spawn_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1_000_000))],
-        }]);
+        })]);
         assert!(has_yield_points(&func));
     }
 
     #[test]
     fn blocking_channel_ops_are_not_yield_points() {
-        let func = make_test_spawn_fn(vec![MirStmt::Call {
+        let func = make_test_spawn_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_channel_send_async".to_string()),
             args: vec![
                 MirOperand::Constant(MirConst::Int(0)),
                 MirOperand::Constant(MirConst::Int(42)),
             ],
-        }]);
+        })]);
         assert!(!has_yield_points(&func));
     }
 
@@ -774,21 +777,21 @@ mod tests {
         let _env = builder.add_param("__env".to_string(), MirType::Ptr);
 
         let x = builder.alloc_local("x".to_string(), MirType::I64);
-        builder.push_stmt(MirStmt::Assign {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: x,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(42))),
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1_000_000))],
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(x)],
-        });
-        builder.terminate(MirTerminator::Return { value: None });
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
         let func = builder.finish();
 
         let result = transform(&func).expect("should transform");
@@ -812,26 +815,26 @@ mod tests {
         let x = builder.alloc_local("x".to_string(), MirType::I64);
         let y = builder.alloc_local("y".to_string(), MirType::I64);
 
-        builder.push_stmt(MirStmt::Assign {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: x,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(1))),
-        });
-        builder.push_stmt(MirStmt::Assign {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: y,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(2))),
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
-        });
+        }));
         // Only x used after yield
-        builder.push_stmt(MirStmt::Call {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(x)],
-        });
-        builder.terminate(MirTerminator::Return { value: None });
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
         let func = builder.finish();
 
         let result = transform(&func).expect("should transform");
@@ -850,32 +853,32 @@ mod tests {
         let mut builder = BlockBuilder::new("test__spawn_0".to_string(), MirType::Void);
         let _env = builder.add_param("__env".to_string(), MirType::Ptr);
 
-        builder.push_stmt(MirStmt::Call {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("work1".to_string()),
             args: vec![],
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("work2".to_string()),
             args: vec![],
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_yield".to_string()),
             args: vec![],
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("work3".to_string()),
             args: vec![],
-        });
-        builder.terminate(MirTerminator::Return { value: None });
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
         let func = builder.finish();
 
         let result = transform(&func).expect("should transform");
@@ -893,23 +896,23 @@ mod tests {
 
         // LoadCapture: load captured var from env at offset 0
         let captured = builder.alloc_local("captured".to_string(), MirType::I64);
-        builder.push_stmt(MirStmt::LoadCapture {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
             dst: captured,
             env_ptr: env,
             offset: 0,
-        });
-        builder.push_stmt(MirStmt::Call {
+        }));
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(1000))],
-        });
+        }));
         // Use captured var after yield
-        builder.push_stmt(MirStmt::Call {
+        builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("print_i64".to_string()),
             args: vec![MirOperand::Local(captured)],
-        });
-        builder.terminate(MirTerminator::Return { value: None });
+        }));
+        builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
         let func = builder.finish();
 
         let result = transform(&func).expect("should transform");
@@ -926,11 +929,11 @@ mod tests {
 
     #[test]
     fn poll_fn_loads_tag_via_load_capture() {
-        let func = make_test_spawn_fn(vec![MirStmt::Call {
+        let func = make_test_spawn_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal("rask_green_sleep_ns".to_string()),
             args: vec![MirOperand::Constant(MirConst::Int(100))],
-        }]);
+        })]);
 
         let result = transform(&func).expect("should transform");
 
@@ -938,7 +941,7 @@ mod tests {
         let entry = &result.poll_fn.blocks[0];
         let first_stmt = &entry.statements[0];
         assert!(
-            matches!(first_stmt, MirStmt::LoadCapture { offset: 0, .. }),
+            matches!(&first_stmt.kind, MirStmtKind::LoadCapture { offset: 0, .. }),
             "tag should be loaded via LoadCapture at offset 0, got {:?}",
             first_stmt
         );

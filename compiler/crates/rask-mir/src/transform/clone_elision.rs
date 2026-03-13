@@ -9,10 +9,10 @@
 //!
 //! See `comp.clone-elision` spec for the full algorithm.
 
-use std::collections::HashSet;
-
-use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt};
-use crate::analysis::{cfg, uses};
+use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
+use crate::analysis::uses;
+use crate::analysis::dominators::DominatorTree;
+use crate::analysis::liveness;
 
 /// Clone function suffixes that indicate a heap-allocating clone (CE1).
 const CLONE_SUFFIXES: &[&str] = &[
@@ -44,7 +44,7 @@ fn elide_clones_in_function(func: &mut MirFunction) {
         .enumerate()
         .flat_map(|(bi, block)| {
             block.statements.iter().enumerate().filter_map(move |(si, stmt)| {
-                if let MirStmt::Call { dst: Some(dst), func: fref, args } = stmt {
+                if let MirStmtKind::Call { dst: Some(dst), func: fref, args } = &stmt.kind {
                     if is_clone_call(&fref.name) && args.len() == 1 {
                         if let MirOperand::Local(source) = &args[0] {
                             return Some((bi, si, *dst, *source));
@@ -60,27 +60,39 @@ fn elide_clones_in_function(func: &mut MirFunction) {
         return;
     }
 
+    // Compute liveness for precise cross-block last-use detection.
+    let dom = DominatorTree::build(func);
+    let live = liveness::analyze(func, &dom);
+
     // For each clone site, check if the source local is used anywhere after
     // the clone, on any control flow path.
     for (block_idx, stmt_idx, _dst, source) in &clone_sites {
-        if is_last_use(func, *block_idx, *stmt_idx, *source) {
+        if is_last_use_with_liveness(func, *block_idx, *stmt_idx, *source, &live) {
             // CE1: Replace clone call with move (simple copy of the operand).
             let stmt = &mut func.blocks[*block_idx].statements[*stmt_idx];
-            if let MirStmt::Call { dst: Some(dst), .. } = stmt {
+            if let MirStmtKind::Call { dst: Some(dst), .. } = &stmt.kind {
                 let dst = *dst;
-                *stmt = MirStmt::Assign {
+                let span = stmt.span;
+                *stmt = MirStmt::new(MirStmtKind::Assign {
                     dst,
                     rvalue: MirRValue::Use(MirOperand::Local(*source)),
-                };
+                }, span);
             }
         }
     }
 }
 
 /// Check whether `source` has no uses after position (block_idx, stmt_idx).
+/// Uses liveness analysis for precise cross-block detection.
 /// CE2: Local analysis per function.
 /// CE4: Control-flow aware — all paths from clone to function exit must not use source.
-fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: LocalId) -> bool {
+fn is_last_use_with_liveness(
+    func: &MirFunction,
+    block_idx: usize,
+    stmt_idx: usize,
+    source: LocalId,
+    live: &liveness::LivenessResults,
+) -> bool {
     let block = &func.blocks[block_idx];
 
     // Check remaining statements in the same block after the clone
@@ -95,41 +107,14 @@ fn is_last_use(func: &MirFunction, block_idx: usize, stmt_idx: usize, source: Lo
         return false;
     }
 
-    // CE4: Check all reachable successor blocks via BFS
-    let mut visited = HashSet::new();
-    visited.insert(func.blocks[block_idx].id);
-    let mut worklist: Vec<BlockId> = cfg::successors(&block.terminator);
-
-    while let Some(bid) = worklist.pop() {
-        if !visited.insert(bid) {
-            continue;
-        }
-        let Some(succ_block) = func.blocks.iter().find(|b| b.id == bid) else {
-            continue;
-        };
-        // Check all statements in successor block
-        for stmt in &succ_block.statements {
-            if uses::stmt_reads(stmt, source) {
-                return false;
-            }
-        }
-        // Check terminator
-        if uses::terminator_reads(&succ_block.terminator, source) {
-            return false;
-        }
-        // Add this block's successors
-        for next in cfg::successors(&succ_block.terminator) {
-            worklist.push(next);
-        }
-    }
-
-    true
+    // Use liveness: if source is not live at block exit, it's dead on all paths
+    !live.live_at_exit(block.id, source)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FunctionRef, MirConst, MirTerminator, MirType};
+    use crate::{BlockId, FunctionRef, MirConst, MirTerminator, MirTerminatorKind, MirType};
     use crate::function::{MirBlock, MirLocal};
 
     fn local(id: u32) -> LocalId {
@@ -158,24 +143,24 @@ mod tests {
         make_fn(vec![MirBlock {
             id: BlockId(0),
             statements: stmts,
-            terminator: MirTerminator::Return { value: None },
+            terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
         }])
     }
 
     fn clone_call(dst: u32, src: u32) -> MirStmt {
-        MirStmt::Call {
+        MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
             func: FunctionRef::internal("string_clone".to_string()),
             args: vec![MirOperand::Local(local(src))],
-        }
+        })
     }
 
     fn is_move(stmt: &MirStmt) -> bool {
-        matches!(stmt, MirStmt::Assign { rvalue: MirRValue::Use(MirOperand::Local(_)), .. })
+        matches!(&stmt.kind, MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(_)), .. })
     }
 
     fn is_clone(stmt: &MirStmt) -> bool {
-        matches!(stmt, MirStmt::Call { func, .. } if is_clone_call(&func.name))
+        matches!(&stmt.kind, MirStmtKind::Call { func, .. } if is_clone_call(&func.name))
     }
 
     // ── Basic elision ─────────────────────────────────────────────
@@ -193,11 +178,11 @@ mod tests {
         // dst = clone(src); print(src) — src used after → keep
         let mut f = single_block_fn(vec![
             clone_call(1, 0),
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("print_string".to_string()),
                 args: vec![MirOperand::Local(local(0))],
-            },
+            }),
         ]);
         elide_clones_in_function(&mut f);
         assert!(is_clone(&f.blocks[0].statements[0]));
@@ -209,7 +194,7 @@ mod tests {
         let mut f = make_fn(vec![MirBlock {
             id: BlockId(0),
             statements: vec![clone_call(1, 0)],
-            terminator: MirTerminator::Return { value: Some(MirOperand::Local(local(0))) },
+            terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: Some(MirOperand::Local(local(0))) }),
         }]);
         elide_clones_in_function(&mut f);
         assert!(is_clone(&f.blocks[0].statements[0]));
@@ -225,12 +210,12 @@ mod tests {
             MirBlock {
                 id: BlockId(0),
                 statements: vec![clone_call(1, 0)],
-                terminator: MirTerminator::Goto { target: BlockId(1) },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
             },
             MirBlock {
                 id: BlockId(1),
                 statements: vec![],
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
         ]);
         elide_clones_in_function(&mut f);
@@ -245,16 +230,16 @@ mod tests {
             MirBlock {
                 id: BlockId(0),
                 statements: vec![clone_call(1, 0)],
-                terminator: MirTerminator::Goto { target: BlockId(1) },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
             },
             MirBlock {
                 id: BlockId(1),
-                statements: vec![MirStmt::Call {
+                statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::internal("print_string".to_string()),
                     args: vec![MirOperand::Local(local(0))],
-                }],
-                terminator: MirTerminator::Return { value: None },
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
         ]);
         elide_clones_in_function(&mut f);
@@ -270,25 +255,25 @@ mod tests {
             MirBlock {
                 id: BlockId(0),
                 statements: vec![clone_call(1, 0)],
-                terminator: MirTerminator::Branch {
+                terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Constant(MirConst::Bool(true)),
                     then_block: BlockId(1),
                     else_block: BlockId(2),
-                },
+                }),
             },
             MirBlock {
                 id: BlockId(1),
                 statements: vec![],
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
             MirBlock {
                 id: BlockId(2),
-                statements: vec![MirStmt::Call {
+                statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::internal("print_string".to_string()),
                     args: vec![MirOperand::Local(local(0))],
-                }],
-                terminator: MirTerminator::Return { value: None },
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
         ]);
         elide_clones_in_function(&mut f);
@@ -304,21 +289,21 @@ mod tests {
             MirBlock {
                 id: BlockId(0),
                 statements: vec![clone_call(1, 0)],
-                terminator: MirTerminator::Branch {
+                terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Constant(MirConst::Bool(true)),
                     then_block: BlockId(1),
                     else_block: BlockId(2),
-                },
+                }),
             },
             MirBlock {
                 id: BlockId(1),
                 statements: vec![],
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
             MirBlock {
                 id: BlockId(2),
                 statements: vec![],
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             },
         ]);
         elide_clones_in_function(&mut f);
@@ -329,35 +314,35 @@ mod tests {
 
     #[test]
     fn vec_clone_detected() {
-        let mut f = single_block_fn(vec![MirStmt::Call {
+        let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(1)),
             func: FunctionRef::internal("Vec_clone".to_string()),
             args: vec![MirOperand::Local(local(0))],
-        }]);
+        })]);
         elide_clones_in_function(&mut f);
         assert!(is_move(&f.blocks[0].statements[0]));
     }
 
     #[test]
     fn non_clone_call_not_affected() {
-        let mut f = single_block_fn(vec![MirStmt::Call {
+        let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(1)),
             func: FunctionRef::internal("string_concat".to_string()),
             args: vec![MirOperand::Local(local(0))],
-        }]);
+        })]);
         elide_clones_in_function(&mut f);
         // Should remain as Call, not rewritten
-        assert!(matches!(&f.blocks[0].statements[0], MirStmt::Call { .. }));
+        assert!(matches!(&f.blocks[0].statements[0].kind, MirStmtKind::Call { .. }));
     }
 
     #[test]
     fn no_clone_calls_is_noop() {
-        let mut f = single_block_fn(vec![MirStmt::Assign {
+        let mut f = single_block_fn(vec![MirStmt::dummy(MirStmtKind::Assign {
             dst: local(1),
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(42))),
-        }]);
+        })]);
         elide_clones_in_function(&mut f);
-        assert!(matches!(&f.blocks[0].statements[0], MirStmt::Assign { .. }));
+        assert!(matches!(&f.blocks[0].statements[0].kind, MirStmtKind::Assign { .. }));
     }
 
     #[test]
@@ -368,12 +353,12 @@ mod tests {
             MirBlock {
                 id: BlockId(0),
                 statements: vec![clone_call(1, 0)],
-                terminator: MirTerminator::Goto { target: BlockId(1) },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
             },
             MirBlock {
                 id: BlockId(1),
                 statements: vec![],
-                terminator: MirTerminator::Goto { target: BlockId(0) },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(0) }),
             },
         ]);
         elide_clones_in_function(&mut f);

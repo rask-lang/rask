@@ -3,8 +3,8 @@
 //! MIR evaluation loop — execute statements, follow terminators.
 
 use rask_mir::{
-    BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt,
-    MirTerminator,
+    BlockId, MirBlock, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind,
+    MirTerminator, MirTerminatorKind,
 };
 
 use crate::intrinsics;
@@ -62,8 +62,8 @@ impl MiriEngine {
             }
 
             // Follow the terminator
-            match &block.terminator {
-                MirTerminator::Return { value } => {
+            match &block.terminator.kind {
+                MirTerminatorKind::Return { value } => {
                     let result = match value {
                         Some(op) => self.resolve_operand(op)?,
                         None => MiriValue::Unit,
@@ -71,12 +71,12 @@ impl MiriEngine {
                     return Ok(result);
                 }
 
-                MirTerminator::Goto { target } => {
+                MirTerminatorKind::Goto { target } => {
                     self.count_branch_if_backwards(*target, current_block_id)?;
                     current_block_id = *target;
                 }
 
-                MirTerminator::Branch {
+                MirTerminatorKind::Branch {
                     cond,
                     then_block,
                     else_block,
@@ -91,7 +91,7 @@ impl MiriEngine {
                     current_block_id = target;
                 }
 
-                MirTerminator::Switch {
+                MirTerminatorKind::Switch {
                     value,
                     cases,
                     default,
@@ -109,11 +109,11 @@ impl MiriEngine {
                     current_block_id = target;
                 }
 
-                MirTerminator::Unreachable => {
+                MirTerminatorKind::Unreachable => {
                     return Err(MiriError::Unreachable);
                 }
 
-                MirTerminator::CleanupReturn { value, cleanup_chain } => {
+                MirTerminatorKind::CleanupReturn { value, cleanup_chain } => {
                     // Execute cleanup blocks in order
                     for &cleanup_block_id in cleanup_chain {
                         let cleanup_block = self.find_block(func, cleanup_block_id)?;
@@ -158,13 +158,13 @@ impl MiriEngine {
 
     /// Execute a single MIR statement.
     fn eval_stmt(&mut self, stmt: &MirStmt) -> Result<(), MiriError> {
-        match stmt {
-            MirStmt::Assign { dst, rvalue } => {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue } => {
                 let value = self.eval_rvalue(rvalue)?;
                 self.stack.current_mut()?.set(*dst, value);
             }
 
-            MirStmt::Call { dst, func, args } => {
+            MirStmtKind::Call { dst, func, args } => {
                 let arg_values: Vec<MiriValue> = args
                     .iter()
                     .map(|a| self.resolve_operand(a))
@@ -185,7 +185,7 @@ impl MiriEngine {
                 }
             }
 
-            MirStmt::Store {
+            MirStmtKind::Store {
                 addr,
                 offset,
                 value,
@@ -220,7 +220,7 @@ impl MiriEngine {
                 }
             }
 
-            MirStmt::ArrayStore {
+            MirStmtKind::ArrayStore {
                 base,
                 index,
                 value,
@@ -248,7 +248,7 @@ impl MiriEngine {
                 }
             }
 
-            MirStmt::GlobalRef { dst, name } => {
+            MirStmtKind::GlobalRef { dst, name } => {
                 // Look up comptime globals
                 if let Some(value) = self.comptime_globals.get(name).cloned() {
                     self.stack.current_mut()?.set(*dst, value);
@@ -259,48 +259,43 @@ impl MiriEngine {
                 }
             }
 
-            MirStmt::SourceLocation { line, col } => {
-                self.current_line = *line;
-                self.current_col = *col;
-            }
-
-            MirStmt::EnsurePush { cleanup_block } => {
+            MirStmtKind::EnsurePush { cleanup_block } => {
                 self.stack.current_mut()?.cleanup_stack.push(*cleanup_block);
             }
 
-            MirStmt::EnsurePop => {
+            MirStmtKind::EnsurePop => {
                 self.stack.current_mut()?.cleanup_stack.pop();
             }
 
             // Forbidden at comptime
-            MirStmt::ResourceRegister { .. }
-            | MirStmt::ResourceConsume { .. }
-            | MirStmt::ResourceScopeCheck { .. } => {
+            MirStmtKind::ResourceRegister { .. }
+            | MirStmtKind::ResourceConsume { .. }
+            | MirStmtKind::ResourceScopeCheck { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "resource types are not available at compile time".to_string(),
                 ));
             }
 
-            MirStmt::PoolCheckedAccess { .. } => {
+            MirStmtKind::PoolCheckedAccess { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "pool access is not available at compile time".to_string(),
                 ));
             }
 
             // Closures — not in initial scope
-            MirStmt::ClosureCreate { .. }
-            | MirStmt::ClosureCall { .. }
-            | MirStmt::LoadCapture { .. }
-            | MirStmt::ClosureDrop { .. } => {
+            MirStmtKind::ClosureCreate { .. }
+            | MirStmtKind::ClosureCall { .. }
+            | MirStmtKind::LoadCapture { .. }
+            | MirStmtKind::ClosureDrop { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "closures are not yet supported in compile-time evaluation".to_string(),
                 ));
             }
 
             // Trait objects — not in initial scope
-            MirStmt::TraitBox { .. }
-            | MirStmt::TraitCall { .. }
-            | MirStmt::TraitDrop { .. } => {
+            MirStmtKind::TraitBox { .. }
+            | MirStmtKind::TraitCall { .. }
+            | MirStmtKind::TraitDrop { .. } => {
                 return Err(MiriError::UnsupportedOperation(
                     "trait objects are not yet supported in compile-time evaluation".to_string(),
                 ));

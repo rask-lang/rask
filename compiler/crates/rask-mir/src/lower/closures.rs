@@ -5,7 +5,7 @@
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     stmt::ClosureCapture, BlockBuilder, FunctionRef, LocalId, MirOperand,
-    MirRValue, MirStmt, MirTerminator, MirType,
+    MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::{
     expr::Expr,
@@ -70,11 +70,11 @@ impl<'a> MirLowerer<'a> {
         for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            closure_builder.push_stmt(MirStmt::LoadCapture {
+            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-            });
+            }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
 
@@ -93,9 +93,9 @@ impl<'a> MirLowerer<'a> {
             let (body_val, _body_ty) = body_result?;
 
             if closure_builder.current_block_unterminated() {
-                closure_builder.terminate(MirTerminator::Return {
+                closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(body_val),
-                });
+                }));
             }
         }
 
@@ -109,12 +109,12 @@ impl<'a> MirLowerer<'a> {
 
         // 5. In the parent function, emit ClosureCreate
         let result_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::ClosureCreate {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: result_local,
             func_name: closure_name,
             captures,
             heap: true,
-        });
+        }));
 
         Ok((MirOperand::Local(result_local), MirType::Ptr))
     }
@@ -155,11 +155,11 @@ impl<'a> MirLowerer<'a> {
         for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = spawn_builder.alloc_local(name.clone(), ty.clone());
-            spawn_builder.push_stmt(MirStmt::LoadCapture {
+            spawn_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-            });
+            }));
             spawn_locals.insert(name.clone(), (local_id, ty.clone()));
         }
 
@@ -184,7 +184,7 @@ impl<'a> MirLowerer<'a> {
             body_result?;
 
             if spawn_builder.current_block_unterminated() {
-                spawn_builder.terminate(MirTerminator::Return { value: None });
+                spawn_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
             }
         }
 
@@ -200,40 +200,40 @@ impl<'a> MirLowerer<'a> {
 
             let state_ptr = self.builder.alloc_temp(MirType::Ptr);
             let state_size_val = sm_result.state_size as i64;
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(state_ptr),
                 func: FunctionRef::internal("rask_alloc".to_string()),
                 args: vec![MirOperand::Constant(crate::operand::MirConst::Int(state_size_val))],
-            });
+            }));
 
-            self.builder.push_stmt(MirStmt::Store {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: state_ptr,
                 offset: 0,
                 value: MirOperand::Constant(crate::operand::MirConst::Int(0)),
                 store_size: None,
-            });
+            }));
 
             for &(env_offset, state_offset) in &sm_result.capture_stores {
                 if let Some(cap) = captures.iter().find(|c| c.offset == env_offset) {
-                    self.builder.push_stmt(MirStmt::Store {
+                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                         addr: state_ptr,
                         offset: state_offset,
                         value: MirOperand::Local(cap.local_id),
                         store_size: None,
-                    });
+                    }));
                 }
             }
 
             let poll_fn_ptr = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: poll_fn_ptr,
                 rvalue: MirRValue::Use(MirOperand::Constant(
                     crate::operand::MirConst::String(poll_name),
                 )),
-            });
+            }));
 
             let handle_local = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(handle_local),
                 func: FunctionRef::internal("rask_green_spawn".to_string()),
                 args: vec![
@@ -241,7 +241,7 @@ impl<'a> MirLowerer<'a> {
                     MirOperand::Local(state_ptr),
                     MirOperand::Constant(crate::operand::MirConst::Int(state_size_val)),
                 ],
-            });
+            }));
 
             Ok((MirOperand::Local(handle_local), MirType::Ptr))
         } else {
@@ -251,19 +251,19 @@ impl<'a> MirLowerer<'a> {
             self.synthesized_functions.push(spawn_fn);
 
             let closure_local = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::ClosureCreate {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
                 dst: closure_local,
                 func_name: spawn_name,
                 captures,
                 heap: true,
-            });
+            }));
 
             let handle_local = self.builder.alloc_temp(MirType::Ptr);
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(handle_local),
                 func: FunctionRef::internal("spawn".to_string()),
                 args: vec![MirOperand::Local(closure_local)],
-            });
+            }));
 
             Ok((MirOperand::Local(handle_local), MirType::Ptr))
         }
