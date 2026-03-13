@@ -53,6 +53,8 @@ impl PassManager {
         pm.add(ClosureOptimizationPass);
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
+        pm.add(StringRcInsertionPass);
+        pm.add(StringRcElisionPass);
         pm.add(GenerationCoalescingPass);
         pm.add(DeadCodeEliminationPass);
         pm
@@ -98,6 +100,26 @@ impl MirPass for DeadCodeEliminationPass {
     fn name(&self) -> &str { "dce" }
     fn run_function(&self, func: &mut MirFunction) {
         crate::transform::dce::eliminate_dead_code(func);
+    }
+}
+
+/// Insert explicit RcInc/RcDec for string-typed locals (RC1, RC2).
+pub struct StringRcInsertionPass;
+
+impl MirPass for StringRcInsertionPass {
+    fn name(&self) -> &str { "string_rc_insert" }
+    fn run_function(&self, func: &mut MirFunction) {
+        crate::transform::rc_insert::insert_rc_ops(func);
+    }
+}
+
+/// Elide unnecessary RcInc/RcDec via escape analysis and literal propagation (RE1-RE6).
+pub struct StringRcElisionPass;
+
+impl MirPass for StringRcElisionPass {
+    fn name(&self) -> &str { "string_rc_elide" }
+    fn run_function(&self, func: &mut MirFunction) {
+        crate::transform::rc_elide::elide_rc_ops(func);
     }
 }
 

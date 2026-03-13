@@ -468,6 +468,9 @@ fn rename_stmt(
         MirStmtKind::TraitDrop { trait_object } => {
             *trait_object = current_version(*trait_object, version_stack, num_orig_locals);
         }
+        MirStmtKind::RcInc { local } | MirStmtKind::RcDec { local } => {
+            *local = current_version(*local, version_stack, num_orig_locals);
+        }
     }
     None
 }

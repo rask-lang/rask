@@ -62,6 +62,7 @@ pub fn stmt_reads(stmt: &MirStmt, local: LocalId) -> bool {
         MirStmtKind::Phi { args, .. } => {
             args.iter().any(|(_, op)| operand_reads(op, local))
         }
+        MirStmtKind::RcInc { local: id } | MirStmtKind::RcDec { local: id } => *id == local,
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
