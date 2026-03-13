@@ -8,11 +8,29 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
+use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, type_string_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
+
+/// Source location entry mapping native code offset to source byte offset.
+#[derive(Debug, Clone)]
+pub struct SrcLocEntry {
+    /// Offset within the function's native code
+    pub native_offset: u32,
+    /// Byte offset in the source file (the SourceLoc value)
+    pub source_offset: u32,
+}
+
+/// Per-function debug info collected after compilation.
+#[derive(Debug, Clone)]
+pub struct FunctionDebugInfo {
+    pub func_id: cranelift_module::FuncId,
+    pub name: String,
+    pub srclocs: Vec<SrcLocEntry>,
+}
 
 pub struct CodeGenerator {
     module: ObjectModule,
@@ -34,6 +52,12 @@ pub struct CodeGenerator {
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
+    /// Collected srcloc mappings per function (debug builds only)
+    debug_srclocs: Vec<FunctionDebugInfo>,
+    /// Line map for converting byte offsets to line:col (debug builds)
+    line_map: Option<LineMap>,
+    /// Source file name for DWARF emission
+    source_file_name: Option<String>,
 }
 
 impl CodeGenerator {
@@ -65,6 +89,9 @@ impl CodeGenerator {
             internal_fns: HashSet::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            debug_srclocs: Vec::new(),
+            line_map: None,
+            source_file_name: None,
         })
     }
 
@@ -107,7 +134,17 @@ impl CodeGenerator {
             internal_fns: HashSet::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            debug_srclocs: Vec::new(),
+            line_map: None,
+            source_file_name: None,
         })
+    }
+
+    /// Set debug info context for DWARF emission.
+    /// Call before gen_function() if you want debug line tables.
+    pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
+        self.source_file_name = Some(source_file.to_string());
+        self.line_map = Some(line_map);
     }
 
     /// Declare runtime functions as external imports.
@@ -762,6 +799,30 @@ impl CodeGenerator {
             .define_function(*func_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
+        // Collect srcloc mappings for debug info (DI2)
+        if self.build_mode == BuildMode::Debug {
+            if let Some(compiled) = self.ctx.compiled_code() {
+                let all_srclocs = compiled.buffer.get_srclocs_sorted();
+                let mut srclocs = Vec::new();
+                for entry in all_srclocs {
+                    if !entry.loc.is_default() && entry.loc.bits() > 0 {
+                        srclocs.push(SrcLocEntry {
+                            native_offset: entry.start,
+                            // Decode: apply_srcloc encodes as offset+1
+                            source_offset: entry.loc.bits() - 1,
+                        });
+                    }
+                }
+                if !srclocs.is_empty() {
+                    self.debug_srclocs.push(FunctionDebugInfo {
+                        func_id: *func_id,
+                        name: mir_fn.name.clone(),
+                        srclocs,
+                    });
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -926,7 +987,32 @@ impl CodeGenerator {
 
     /// Emit the final object file. Consumes self because finish() takes ownership.
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
-        let product = self.module.finish();
+        let mut product = self.module.finish();
+
+        // Emit DWARF debug info in debug builds
+        if self.build_mode == BuildMode::Debug {
+            if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {
+                // Resolve FuncId → object SymbolId for DWARF address references
+                let resolved: Vec<crate::debug_info::ResolvedFunctionDebug> = self.debug_srclocs.iter()
+                    .map(|f| {
+                        let sym = product.function_symbol(f.func_id);
+                        crate::debug_info::ResolvedFunctionDebug {
+                            symbol_id: sym,
+                            name: f.name.clone(),
+                            srclocs: f.srclocs.clone(),
+                        }
+                    })
+                    .collect();
+
+                crate::debug_info::emit_dwarf(
+                    &mut product.object,
+                    &resolved,
+                    line_map,
+                    source_file,
+                )?;
+            }
+        }
+
         let bytes = product.emit()
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 

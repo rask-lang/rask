@@ -129,6 +129,7 @@ impl<'a> MirLowerer<'a> {
     }
 
     pub(super) fn lower_expr(&mut self, expr: &Expr) -> Result<TypedOperand, LoweringError> {
+        self.builder.set_span(expr.span);
         match &expr.kind {
             // Literals
             ExprKind::Int(val, suffix) => {

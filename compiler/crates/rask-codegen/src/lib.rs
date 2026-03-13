@@ -5,6 +5,7 @@
 mod types;
 mod builder;
 pub mod closures;
+mod debug_info;
 pub mod dispatch;
 mod module;
 mod tests;

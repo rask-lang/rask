@@ -216,6 +216,13 @@ pub fn compile_to_object(
 
     let mut codegen = setup_codegen(decls, mono, &mir_functions, comptime_globals, target, build_mode)?;
 
+    // Set debug context for DWARF emission (DI1)
+    if build_mode == rask_codegen::BuildMode::Debug {
+        if let (Some(src_file), Some(lm)) = (source_file, line_map.as_ref()) {
+            codegen.set_debug_context(src_file, lm.clone());
+        }
+    }
+
     // Build and register vtables for trait objects
     let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
     if !vtables.is_empty() {
