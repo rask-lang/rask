@@ -110,6 +110,16 @@ pub enum MirStmtKind {
         dst: LocalId,
         args: Vec<(BlockId, MirOperand)>,
     },
+    /// Increment refcount on a string value. Inserted by the RC insertion pass
+    /// for string-typed copies. Codegen lowers to `rask_string_clone`.
+    RcInc {
+        local: LocalId,
+    },
+    /// Decrement refcount on a string value. Inserted by the RC insertion pass
+    /// at last-use points. Codegen lowers to `rask_string_free`.
+    RcDec {
+        local: LocalId,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.
