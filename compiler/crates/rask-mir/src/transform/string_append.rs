@@ -13,7 +13,7 @@
 //! overwritten, the old value is dead and mutating in place is equivalent.
 //! Eliminates O(n²) copying and per-iteration allocation.
 
-use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt};
+use crate::{LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 
 /// Rewrite self-concat patterns to in-place append across all functions.
 pub fn optimize_string_concat(fns: &mut [MirFunction]) {
@@ -52,8 +52,8 @@ fn optimize_block(stmts: &mut Vec<MirStmt>) {
 /// Returns (target_local, temp_local) if matched.
 fn match_self_concat(call_stmt: &MirStmt, assign_stmt: &MirStmt) -> Option<(LocalId, LocalId)> {
     // Match: _t = call concat(Local(s), arg)
-    let (temp, target, _arg) = match call_stmt {
-        MirStmt::Call {
+    let (temp, target, _arg) = match &call_stmt.kind {
+        MirStmtKind::Call {
             dst: Some(temp),
             func,
             args,
@@ -67,8 +67,8 @@ fn match_self_concat(call_stmt: &MirStmt, assign_stmt: &MirStmt) -> Option<(Loca
     };
 
     // Match: s = Use(Local(_t))
-    match assign_stmt {
-        MirStmt::Assign {
+    match &assign_stmt.kind {
+        MirStmtKind::Assign {
             dst,
             rvalue: MirRValue::Use(MirOperand::Local(src)),
         } if *dst == target && *src == temp => Some((target, temp)),
@@ -100,54 +100,53 @@ fn temp_used_elsewhere(stmts: &[MirStmt], call_idx: usize, temp: LocalId) -> boo
 
 /// Check if a statement reads a given local (as an operand, not as a write destination).
 fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
-    match stmt {
-        MirStmt::Assign { rvalue, .. } => rvalue_references(rvalue, local),
-        MirStmt::Call { args, .. } => {
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => rvalue_references(rvalue, local),
+        MirStmtKind::Call { args, .. } => {
             args.iter().any(|a| operand_is(a, local))
         }
-        MirStmt::ClosureCall { closure, args, .. } => {
+        MirStmtKind::ClosureCall { closure, args, .. } => {
             *closure == local || args.iter().any(|a| operand_is(a, local))
         }
-        MirStmt::Store { addr, value, .. } => {
+        MirStmtKind::Store { addr, value, .. } => {
             *addr == local || operand_is(value, local)
         }
-        MirStmt::PoolCheckedAccess { pool, handle, .. } => {
+        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
             *pool == local || *handle == local
         }
-        MirStmt::ClosureCreate { captures, .. } => {
+        MirStmtKind::ClosureCreate { captures, .. } => {
             captures.iter().any(|c| c.local_id == local)
         }
-        MirStmt::LoadCapture { env_ptr, .. } => *env_ptr == local,
-        MirStmt::ClosureDrop { closure } => *closure == local,
-        MirStmt::ResourceConsume { resource_id } => *resource_id == local,
-        MirStmt::ArrayStore { base, index, value, .. } => {
+        MirStmtKind::LoadCapture { env_ptr, .. } => *env_ptr == local,
+        MirStmtKind::ClosureDrop { closure } => *closure == local,
+        MirStmtKind::ResourceConsume { resource_id } => *resource_id == local,
+        MirStmtKind::ArrayStore { base, index, value, .. } => {
             *base == local || operand_is(index, local) || operand_is(value, local)
         }
-        MirStmt::TraitBox { value, .. } => operand_is(value, local),
-        MirStmt::TraitCall { trait_object, args, .. } => {
+        MirStmtKind::TraitBox { value, .. } => operand_is(value, local),
+        MirStmtKind::TraitCall { trait_object, args, .. } => {
             *trait_object == local || args.iter().any(|a| operand_is(a, local))
         }
-        MirStmt::TraitDrop { trait_object } => *trait_object == local,
-        MirStmt::ResourceRegister { .. }
-        | MirStmt::GlobalRef { .. }
-        | MirStmt::SourceLocation { .. }
-        | MirStmt::EnsurePush { .. }
-        | MirStmt::EnsurePop
-        | MirStmt::ResourceScopeCheck { .. } => false,
+        MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
+        MirStmtKind::ResourceRegister { .. }
+        | MirStmtKind::GlobalRef { .. }
+        | MirStmtKind::EnsurePush { .. }
+        | MirStmtKind::EnsurePop
+        | MirStmtKind::ResourceScopeCheck { .. } => false,
     }
 }
 
 /// Return true if this statement writes (defines) the given local.
 fn stmt_defines_local(stmt: &MirStmt, local: LocalId) -> bool {
-    match stmt {
-        MirStmt::Assign { dst, .. }
-        | MirStmt::PoolCheckedAccess { dst, .. }
-        | MirStmt::ClosureCreate { dst, .. }
-        | MirStmt::LoadCapture { dst, .. }
-        | MirStmt::ResourceRegister { dst, .. }
-        | MirStmt::GlobalRef { dst, .. } => *dst == local,
-        MirStmt::Call { dst: Some(d), .. }
-        | MirStmt::ClosureCall { dst: Some(d), .. } => *d == local,
+    match &stmt.kind {
+        MirStmtKind::Assign { dst, .. }
+        | MirStmtKind::PoolCheckedAccess { dst, .. }
+        | MirStmtKind::ClosureCreate { dst, .. }
+        | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::ResourceRegister { dst, .. }
+        | MirStmtKind::GlobalRef { dst, .. } => *dst == local,
+        MirStmtKind::Call { dst: Some(d), .. }
+        | MirStmtKind::ClosureCall { dst: Some(d), .. } => *d == local,
         _ => false,
     }
 }
@@ -180,7 +179,7 @@ fn rvalue_references(rv: &MirRValue, local: LocalId) -> bool {
 /// The return value is captured because append may COW (copy-on-write)
 /// when the string is shared via refcounting, returning a new pointer.
 fn rewrite_to_append(stmt: &mut MirStmt, target: LocalId) {
-    if let MirStmt::Call { dst, func, args } = stmt {
+    if let MirStmtKind::Call { dst, func, args } = &mut stmt.kind {
         let use_cstr = matches!(args.get(1), Some(MirOperand::Constant(crate::MirConst::String(_))));
         func.name = if use_cstr {
             "string_append_cstr".to_string()
@@ -194,9 +193,8 @@ fn rewrite_to_append(stmt: &mut MirStmt, target: LocalId) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockId, FunctionRef, MirType};
+    use crate::{BlockId, FunctionRef, MirTerminator, MirTerminatorKind, MirType};
     use crate::function::{MirBlock, MirLocal};
-    use crate::MirTerminator;
 
     fn local(id: u32) -> LocalId {
         LocalId(id)
@@ -216,7 +214,7 @@ mod tests {
             blocks: vec![MirBlock {
                 id: BlockId(0),
                 statements: stmts,
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
@@ -225,18 +223,18 @@ mod tests {
     }
 
     fn concat_call(dst: u32, src: u32, arg: MirOperand) -> MirStmt {
-        MirStmt::Call {
+        MirStmt::dummy(MirStmtKind::Call {
             dst: Some(local(dst)),
             func: FunctionRef::internal("concat".to_string()),
             args: vec![MirOperand::Local(local(src)), arg],
-        }
+        })
     }
 
     fn assign_use(dst: u32, src: u32) -> MirStmt {
-        MirStmt::Assign {
+        MirStmt::dummy(MirStmtKind::Assign {
             dst: local(dst),
             rvalue: MirRValue::Use(MirOperand::Local(local(src))),
-        }
+        })
     }
 
     #[test]
@@ -249,8 +247,8 @@ mod tests {
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 1);
-        match &stmts[0] {
-            MirStmt::Call { dst, func, args } => {
+        match &stmts[0].kind {
+            MirStmtKind::Call { dst, func, args } => {
                 assert_eq!(func.name, "string_append");
                 // Return value captured — COW may return a new pointer
                 assert_eq!(*dst, Some(local(0)));
@@ -271,8 +269,8 @@ mod tests {
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 1);
-        match &stmts[0] {
-            MirStmt::Call { dst, func, .. } => {
+        match &stmts[0].kind {
+            MirStmtKind::Call { dst, func, .. } => {
                 assert_eq!(func.name, "string_append_cstr");
                 assert_eq!(*dst, Some(local(0)));
             }
@@ -290,8 +288,8 @@ mod tests {
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 2); // no change
-        match &stmts[0] {
-            MirStmt::Call { func, .. } => assert_eq!(func.name, "concat"),
+        match &stmts[0].kind {
+            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "concat"),
             other => panic!("expected concat Call, got {:?}", other),
         }
     }
@@ -303,17 +301,17 @@ mod tests {
             concat_call(1, 0, MirOperand::Local(local(2))),
             assign_use(0, 1),
             // _t referenced in another statement
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("print_string".to_string()),
                 args: vec![MirOperand::Local(local(1))],
-            },
+            }),
         ]);
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 3); // no change
-        match &stmts[0] {
-            MirStmt::Call { func, .. } => assert_eq!(func.name, "concat"),
+        match &stmts[0].kind {
+            MirStmtKind::Call { func, .. } => assert_eq!(func.name, "concat"),
             other => panic!("expected concat Call, got {:?}", other),
         }
     }
@@ -323,11 +321,11 @@ mod tests {
         // _t = concat(s, arg), <other stmt>, s = Use(_t) — not adjacent
         let mut f = make_fn(vec![
             concat_call(1, 0, MirOperand::Local(local(2))),
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("print_i64".to_string()),
                 args: vec![MirOperand::Constant(crate::MirConst::Int(42))],
-            },
+            }),
             assign_use(0, 1),
         ]);
         optimize_function(&mut f);
@@ -347,15 +345,15 @@ mod tests {
         optimize_function(&mut f);
         let stmts = &f.blocks[0].statements;
         assert_eq!(stmts.len(), 2);
-        match &stmts[0] {
-            MirStmt::Call { dst, func, .. } => {
+        match &stmts[0].kind {
+            MirStmtKind::Call { dst, func, .. } => {
                 assert_eq!(func.name, "string_append");
                 assert_eq!(*dst, Some(local(0)));
             }
             other => panic!("expected string_append, got {:?}", other),
         }
-        match &stmts[1] {
-            MirStmt::Call { dst, func, .. } => {
+        match &stmts[1].kind {
+            MirStmtKind::Call { dst, func, .. } => {
                 assert_eq!(func.name, "string_append_cstr");
                 assert_eq!(*dst, Some(local(0)));
             }
@@ -367,14 +365,14 @@ mod tests {
     fn constant_first_arg_not_rewritten() {
         // _t = concat("literal", arg) → not a self-concat (first arg isn't a local)
         let mut f = make_fn(vec![
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(local(1)),
                 func: FunctionRef::internal("concat".to_string()),
                 args: vec![
                     MirOperand::Constant(crate::MirConst::String("hello".into())),
                     MirOperand::Local(local(2)),
                 ],
-            },
+            }),
             assign_use(0, 1),
         ]);
         optimize_function(&mut f);

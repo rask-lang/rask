@@ -3,7 +3,7 @@
 //! Use/def analysis for MIR locals — which locals are read or written by
 //! statements and terminators.
 
-use crate::{LocalId, MirOperand, MirRValue, MirStmt, MirTerminator};
+use crate::{LocalId, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind};
 
 /// True if `op` references the given local.
 pub fn operand_reads(op: &MirOperand, local: LocalId) -> bool {
@@ -31,67 +31,66 @@ pub fn rvalue_reads(rv: &MirRValue, local: LocalId) -> bool {
 
 /// True if the statement reads the given local as an operand.
 pub fn stmt_reads(stmt: &MirStmt, local: LocalId) -> bool {
-    match stmt {
-        MirStmt::Assign { rvalue, .. } => rvalue_reads(rvalue, local),
-        MirStmt::Store { addr, value, .. } => {
+    match &stmt.kind {
+        MirStmtKind::Assign { rvalue, .. } => rvalue_reads(rvalue, local),
+        MirStmtKind::Store { addr, value, .. } => {
             *addr == local || operand_reads(value, local)
         }
-        MirStmt::Call { args, .. } => {
+        MirStmtKind::Call { args, .. } => {
             args.iter().any(|a| operand_reads(a, local))
         }
-        MirStmt::ClosureCall { closure, args, .. } => {
+        MirStmtKind::ClosureCall { closure, args, .. } => {
             *closure == local || args.iter().any(|a| operand_reads(a, local))
         }
-        MirStmt::PoolCheckedAccess { pool, handle, .. } => {
+        MirStmtKind::PoolCheckedAccess { pool, handle, .. } => {
             *pool == local || *handle == local
         }
-        MirStmt::ClosureCreate { captures, .. } => {
+        MirStmtKind::ClosureCreate { captures, .. } => {
             captures.iter().any(|c| c.local_id == local)
         }
-        MirStmt::LoadCapture { env_ptr, .. } => *env_ptr == local,
-        MirStmt::ClosureDrop { closure } => *closure == local,
-        MirStmt::ResourceConsume { resource_id } => *resource_id == local,
-        MirStmt::ArrayStore { base, index, value, .. } => {
+        MirStmtKind::LoadCapture { env_ptr, .. } => *env_ptr == local,
+        MirStmtKind::ClosureDrop { closure } => *closure == local,
+        MirStmtKind::ResourceConsume { resource_id } => *resource_id == local,
+        MirStmtKind::ArrayStore { base, index, value, .. } => {
             *base == local || operand_reads(index, local) || operand_reads(value, local)
         }
-        MirStmt::TraitBox { value, .. } => operand_reads(value, local),
-        MirStmt::TraitCall { trait_object, args, .. } => {
+        MirStmtKind::TraitBox { value, .. } => operand_reads(value, local),
+        MirStmtKind::TraitCall { trait_object, args, .. } => {
             *trait_object == local || args.iter().any(|a| operand_reads(a, local))
         }
-        MirStmt::TraitDrop { trait_object } => *trait_object == local,
-        MirStmt::ResourceRegister { .. }
-        | MirStmt::GlobalRef { .. }
-        | MirStmt::SourceLocation { .. }
-        | MirStmt::EnsurePush { .. }
-        | MirStmt::EnsurePop
-        | MirStmt::ResourceScopeCheck { .. } => false,
+        MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
+        MirStmtKind::ResourceRegister { .. }
+        | MirStmtKind::GlobalRef { .. }
+        | MirStmtKind::EnsurePush { .. }
+        | MirStmtKind::EnsurePop
+        | MirStmtKind::ResourceScopeCheck { .. } => false,
     }
 }
 
 /// True if the terminator reads a given local.
 pub fn terminator_reads(term: &MirTerminator, local: LocalId) -> bool {
-    match term {
-        MirTerminator::Return { value: Some(op) } => operand_reads(op, local),
-        MirTerminator::Branch { cond, .. } => operand_reads(cond, local),
-        MirTerminator::Switch { value, .. } => operand_reads(value, local),
-        MirTerminator::CleanupReturn { value: Some(op), .. } => operand_reads(op, local),
+    match &term.kind {
+        MirTerminatorKind::Return { value: Some(op) } => operand_reads(op, local),
+        MirTerminatorKind::Branch { cond, .. } => operand_reads(cond, local),
+        MirTerminatorKind::Switch { value, .. } => operand_reads(value, local),
+        MirTerminatorKind::CleanupReturn { value: Some(op), .. } => operand_reads(op, local),
         _ => false,
     }
 }
 
 /// Return the local defined (written) by this statement, if any.
 pub fn stmt_def(stmt: &MirStmt) -> Option<LocalId> {
-    match stmt {
-        MirStmt::Assign { dst, .. }
-        | MirStmt::PoolCheckedAccess { dst, .. }
-        | MirStmt::ClosureCreate { dst, .. }
-        | MirStmt::LoadCapture { dst, .. }
-        | MirStmt::ResourceRegister { dst, .. }
-        | MirStmt::GlobalRef { dst, .. }
-        | MirStmt::TraitBox { dst, .. } => Some(*dst),
-        MirStmt::Call { dst: Some(d), .. }
-        | MirStmt::ClosureCall { dst: Some(d), .. }
-        | MirStmt::TraitCall { dst: Some(d), .. } => Some(*d),
+    match &stmt.kind {
+        MirStmtKind::Assign { dst, .. }
+        | MirStmtKind::PoolCheckedAccess { dst, .. }
+        | MirStmtKind::ClosureCreate { dst, .. }
+        | MirStmtKind::LoadCapture { dst, .. }
+        | MirStmtKind::ResourceRegister { dst, .. }
+        | MirStmtKind::GlobalRef { dst, .. }
+        | MirStmtKind::TraitBox { dst, .. } => Some(*dst),
+        MirStmtKind::Call { dst: Some(d), .. }
+        | MirStmtKind::ClosureCall { dst: Some(d), .. }
+        | MirStmtKind::TraitCall { dst: Some(d), .. } => Some(*d),
         _ => None,
     }
 }

@@ -465,7 +465,7 @@ impl CodeGenerator {
         let needs_separator = mir_functions.iter().any(|f| {
             f.blocks.iter().any(|b| {
                 b.statements.iter().any(|s| {
-                    matches!(s, rask_mir::MirStmt::Call { func, args, .. }
+                    matches!(&s.kind, rask_mir::MirStmtKind::Call { func, args, .. }
                         if (func.name == "print" || func.name == "println") && args.len() > 1)
                 })
             })
@@ -481,7 +481,7 @@ impl CodeGenerator {
         if self.build_mode == BuildMode::Release {
             let has_pool_access = mir_functions.iter().any(|f| {
                 f.blocks.iter().any(|b| {
-                    b.statements.iter().any(|s| matches!(s, rask_mir::MirStmt::PoolCheckedAccess { .. }))
+                    b.statements.iter().any(|s| matches!(s.kind, rask_mir::MirStmtKind::PoolCheckedAccess { .. }))
                 })
             });
             if has_pool_access {
@@ -503,15 +503,15 @@ impl CodeGenerator {
 
     fn collect_string_constants(&mut self, stmt: &rask_mir::MirStmt, counter: &mut usize) -> CodegenResult<()> {
         // Walk operands looking for string constants
-        match stmt {
-            rask_mir::MirStmt::Assign { rvalue, .. } => {
+        match &stmt.kind {
+            rask_mir::MirStmtKind::Assign { rvalue, .. } => {
                 self.scan_rvalue_strings(rvalue, counter)?;
             }
-            rask_mir::MirStmt::Store { value, .. } => {
+            rask_mir::MirStmtKind::Store { value, .. } => {
                 self.register_operand_string(value, counter)?;
             }
-            rask_mir::MirStmt::Call { args, .. }
-            | rask_mir::MirStmt::ClosureCall { args, .. } => {
+            rask_mir::MirStmtKind::Call { args, .. }
+            | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
                 for arg in args {
                     self.register_operand_string(arg, counter)?;
                 }
@@ -522,11 +522,11 @@ impl CodeGenerator {
     }
 
     fn collect_terminator_strings(&mut self, term: &rask_mir::MirTerminator, counter: &mut usize) -> CodegenResult<()> {
-        match term {
-            rask_mir::MirTerminator::Return { value: Some(op) } => {
+        match &term.kind {
+            rask_mir::MirTerminatorKind::Return { value: Some(op) } => {
                 self.register_operand_string(op, counter)?;
             }
-            rask_mir::MirTerminator::Switch { value, .. } => {
+            rask_mir::MirTerminatorKind::Switch { value, .. } => {
                 self.register_operand_string(value, counter)?;
             }
             _ => {}
@@ -784,14 +784,14 @@ fn collect_used_strings(mir_fn: &MirFunction) -> HashSet<String> {
 }
 
 fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<String>) {
-    match stmt {
-        rask_mir::MirStmt::Assign { rvalue, .. } => collect_rvalue_strings(rvalue, out),
-        rask_mir::MirStmt::Store { value, .. } => collect_operand_string(value, out),
-        rask_mir::MirStmt::Call { args, .. }
-        | rask_mir::MirStmt::ClosureCall { args, .. } => {
+    match &stmt.kind {
+        rask_mir::MirStmtKind::Assign { rvalue, .. } => collect_rvalue_strings(rvalue, out),
+        rask_mir::MirStmtKind::Store { value, .. } => collect_operand_string(value, out),
+        rask_mir::MirStmtKind::Call { args, .. }
+        | rask_mir::MirStmtKind::ClosureCall { args, .. } => {
             for arg in args { collect_operand_string(arg, out); }
         }
-        rask_mir::MirStmt::PoolCheckedAccess { .. } => {
+        rask_mir::MirStmtKind::PoolCheckedAccess { .. } => {
             // Pool access may need panic strings
             out.insert("pool access with invalid handle".to_string());
         }
@@ -800,9 +800,9 @@ fn collect_operand_strings_stmt(stmt: &rask_mir::MirStmt, out: &mut HashSet<Stri
 }
 
 fn collect_operand_strings_term(term: &rask_mir::MirTerminator, out: &mut HashSet<String>) {
-    match term {
-        rask_mir::MirTerminator::Return { value: Some(op) } => collect_operand_string(op, out),
-        rask_mir::MirTerminator::Switch { value, .. } => collect_operand_string(value, out),
+    match &term.kind {
+        rask_mir::MirTerminatorKind::Return { value: Some(op) } => collect_operand_string(op, out),
+        rask_mir::MirTerminatorKind::Switch { value, .. } => collect_operand_string(value, out),
         _ => {}
     }
 }
@@ -838,7 +838,7 @@ fn collect_used_vtables(mir_fn: &MirFunction) -> HashSet<String> {
     let mut vtables = HashSet::new();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
-            if let rask_mir::MirStmt::TraitBox { vtable_name, .. } = stmt {
+            if let rask_mir::MirStmtKind::TraitBox { vtable_name, .. } = &stmt.kind {
                 vtables.insert(vtable_name.clone());
             }
         }

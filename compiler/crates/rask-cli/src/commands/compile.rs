@@ -233,9 +233,9 @@ fn collect_vtables(
     for mir_fn in mir_functions {
         for block in &mir_fn.blocks {
             for stmt in &block.statements {
-                if let rask_mir::MirStmt::TraitBox {
+                if let rask_mir::MirStmtKind::TraitBox {
                     concrete_type, trait_name, concrete_size, vtable_name, ..
-                } = stmt {
+                } = &stmt.kind {
                     if seen.insert(vtable_name.clone()) {
                         let methods = trait_methods.get(trait_name)
                             .cloned()
@@ -455,7 +455,7 @@ pub fn compile_benchmarks_to_object(
 /// Scans for Call statements that create collections (Vec_new, Map_new, etc.)
 /// and inserts corresponding free calls before return terminators.
 fn insert_bench_cleanup(mir_fn: &mut rask_mir::MirFunction) {
-    use rask_mir::{MirStmt, MirTerminator, MirOperand, FunctionRef};
+    use rask_mir::{MirStmt, MirStmtKind, MirTerminatorKind, MirOperand, FunctionRef};
 
     // Map: constructor name → free function name
     let ctor_to_free: &[(&str, &str)] = &[
@@ -474,7 +474,7 @@ fn insert_bench_cleanup(mir_fn: &mut rask_mir::MirFunction) {
     let mut to_free: Vec<(rask_mir::LocalId, String)> = Vec::new();
     for block in &mir_fn.blocks {
         for stmt in &block.statements {
-            if let MirStmt::Call { dst: Some(dst_id), func, .. } = stmt {
+            if let MirStmtKind::Call { dst: Some(dst_id), func, .. } = &stmt.kind {
                 for (ctor, free_fn) in ctor_to_free {
                     if func.name == *ctor {
                         to_free.push((*dst_id, free_fn.to_string()));
@@ -491,13 +491,13 @@ fn insert_bench_cleanup(mir_fn: &mut rask_mir::MirFunction) {
 
     // Insert free calls before every Return terminator
     for block in &mut mir_fn.blocks {
-        if matches!(block.terminator, MirTerminator::Return { .. }) {
+        if matches!(block.terminator.kind, MirTerminatorKind::Return { .. }) {
             for (local_id, free_fn) in to_free.iter().rev() {
-                block.statements.push(MirStmt::Call {
+                block.statements.push(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef { name: free_fn.clone(), is_extern: false },
                     args: vec![MirOperand::Local(*local_id)],
-                });
+                }));
             }
         }
     }

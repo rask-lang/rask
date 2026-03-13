@@ -5,7 +5,7 @@
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     stmt::ClosureCapture, types::StructLayoutId, BlockBuilder, FunctionRef,
-    MirOperand, MirStmt, MirTerminator, MirType,
+    MirOperand, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
 
@@ -88,11 +88,11 @@ impl<'a> MirLowerer<'a> {
         for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            closure_builder.push_stmt(MirStmt::LoadCapture {
+            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-            });
+            }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
 
@@ -112,9 +112,9 @@ impl<'a> MirLowerer<'a> {
         let (body_val, _) = body_result?;
 
         if closure_builder.current_block_unterminated() {
-            closure_builder.terminate(MirTerminator::Return {
+            closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(body_val),
-            });
+            }));
         }
 
         let closure_fn = closure_builder.finish();
@@ -124,12 +124,12 @@ impl<'a> MirLowerer<'a> {
         self.synthesized_functions.push(closure_fn);
 
         let closure_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::ClosureCreate {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: closure_local,
             func_name: closure_name,
             captures,
             heap: false,
-        });
+        }));
 
         let func_name = if method == "read" {
             "Shared_read".to_string()
@@ -138,11 +138,11 @@ impl<'a> MirLowerer<'a> {
         };
 
         let result_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal(func_name),
             args: vec![shared_op, MirOperand::Local(closure_local)],
-        });
+        }));
 
         Ok((MirOperand::Local(result_local), MirType::I64))
     }
@@ -198,11 +198,11 @@ impl<'a> MirLowerer<'a> {
         for (i, (name, _outer_id, ty)) in free_vars.iter().enumerate() {
             let cap = &captures[i];
             let local_id = closure_builder.alloc_local(name.clone(), ty.clone());
-            closure_builder.push_stmt(MirStmt::LoadCapture {
+            closure_builder.push_stmt(MirStmt::dummy(MirStmtKind::LoadCapture {
                 dst: local_id,
                 env_ptr: env_param_id,
                 offset: cap.offset,
-            });
+            }));
             closure_locals.insert(name.clone(), (local_id, ty.clone()));
         }
 
@@ -222,9 +222,9 @@ impl<'a> MirLowerer<'a> {
         let (body_val, _) = body_result?;
 
         if closure_builder.current_block_unterminated() {
-            closure_builder.terminate(MirTerminator::Return {
+            closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
                 value: Some(body_val),
-            });
+            }));
         }
 
         let closure_fn = closure_builder.finish();
@@ -234,19 +234,19 @@ impl<'a> MirLowerer<'a> {
         self.synthesized_functions.push(closure_fn);
 
         let closure_local = self.builder.alloc_temp(MirType::Ptr);
-        self.builder.push_stmt(MirStmt::ClosureCreate {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ClosureCreate {
             dst: closure_local,
             func_name: closure_name,
             captures,
             heap: false,
-        });
+        }));
 
         let result_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result_local),
             func: FunctionRef::internal("Mutex_lock".to_string()),
             args: vec![mutex_op, MirOperand::Local(closure_local)],
-        });
+        }));
 
         Ok((MirOperand::Local(result_local), MirType::I64))
     }

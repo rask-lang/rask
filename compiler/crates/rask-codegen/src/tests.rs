@@ -6,7 +6,8 @@
 mod tests {
     use rask_mir::{
         BlockId, FunctionRef, LocalId, MirConst, MirFunction, MirLocal, MirBlock,
-        MirOperand, MirRValue, MirStmt, MirTerminator, MirType, BinOp,
+        MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind,
+        MirType, BinOp,
     };
     use crate::CodeGenerator;
 
@@ -33,31 +34,31 @@ mod tests {
     }
 
     fn assign(dst: u32, rvalue: MirRValue) -> MirStmt {
-        MirStmt::Assign { dst: LocalId(dst), rvalue }
+        MirStmt::dummy(MirStmtKind::Assign { dst: LocalId(dst), rvalue })
     }
 
     fn call(dst: Option<u32>, name: &str, args: Vec<MirOperand>) -> MirStmt {
-        MirStmt::Call {
+        MirStmt::dummy(MirStmtKind::Call {
             dst: dst.map(LocalId),
             func: FunctionRef { name: name.to_string(), is_extern: false },
             args,
-        }
+        })
     }
 
     fn ret(val: Option<MirOperand>) -> MirTerminator {
-        MirTerminator::Return { value: val }
+        MirTerminator::dummy(MirTerminatorKind::Return { value: val })
     }
 
     fn goto(target: u32) -> MirTerminator {
-        MirTerminator::Goto { target: BlockId(target) }
+        MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(target) })
     }
 
     fn branch(cond: MirOperand, then_b: u32, else_b: u32) -> MirTerminator {
-        MirTerminator::Branch {
+        MirTerminator::dummy(MirTerminatorKind::Branch {
             cond,
             then_block: BlockId(then_b),
             else_block: BlockId(else_b),
-        }
+        })
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -564,16 +565,14 @@ mod tests {
 
     #[test]
     fn codegen_source_location_ignored() {
-        // SourceLocation statements should not cause errors
+        // Source location is now tracked via stmt.span — no SourceLocation statement
         let mir = MirFunction {
             name: "f".to_string(),
             params: vec![],
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![
-                block(0, vec![
-                    MirStmt::SourceLocation { line: 1, col: 1 },
-                ], ret(Some(i32_const(0)))),
+                block(0, vec![], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
@@ -648,8 +647,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None },
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(10), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(20), store_size: None }),
                     assign(1, MirRValue::Field { base: local_op(0), field_index: 1, byte_offset: None, field_size: None }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -971,8 +970,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None },
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: i32_const(1), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(2), store_size: None }),
                 ], ret(Some(i32_const(0)))),
             ],
             entry_block: BlockId(0),
@@ -1007,8 +1006,8 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None },
-                    MirStmt::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None },
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 0, value: MirOperand::Constant(MirConst::Int(0)), store_size: None }),
+                    MirStmt::dummy(MirStmtKind::Store { addr: LocalId(0), offset: 4, value: i32_const(42), store_size: None }),
                     assign(1, MirRValue::EnumTag { value: local_op(0) }),
                 ], ret(Some(local_op(1)))),
             ],
@@ -1097,11 +1096,11 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::PoolCheckedAccess {
+                    MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
                         dst: LocalId(2),
                         pool: LocalId(0),
                         handle: LocalId(1),
-                    },
+                    }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
@@ -1128,8 +1127,8 @@ mod tests {
             locals: vec![],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::EnsurePush { cleanup_block: BlockId(99) },
-                    MirStmt::EnsurePop,
+                    MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block: BlockId(99) }),
+                    MirStmt::dummy(MirStmtKind::EnsurePop),
                 ], ret(None)),
             ],
             entry_block: BlockId(0),
@@ -1156,10 +1155,10 @@ mod tests {
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![
-                block(0, vec![], MirTerminator::CleanupReturn {
+                block(0, vec![], MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
                     value: Some(i32_const(42)),
                     cleanup_chain: vec![],
-                }),
+                })),
             ],
             entry_block: BlockId(0),
             is_extern_c: false,
@@ -1184,10 +1183,10 @@ mod tests {
             ret_ty: MirType::I32,
             locals: vec![],
             blocks: vec![
-                block(0, vec![], MirTerminator::CleanupReturn {
+                block(0, vec![], MirTerminator::dummy(MirTerminatorKind::CleanupReturn {
                     value: Some(i32_const(99)),
                     cleanup_chain: vec![BlockId(1)],
-                }),
+                })),
                 block(1, vec![
                     call(None, "rask_print_i64", vec![i32_const(0)]),
                 ], ret(None)), // terminator ignored for cleanup blocks
@@ -1369,17 +1368,17 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(0),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
-                    },
-                    MirStmt::ClosureCall {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![MirOperand::Constant(MirConst::Int(42))],
-                    },
+                    }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1422,11 +1421,11 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::LoadCapture {
+                    MirStmt::dummy(MirStmtKind::LoadCapture {
                         dst: LocalId(1),
                         env_ptr: LocalId(0),
                         offset: 0,
-                    },
+                    }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1446,7 +1445,7 @@ mod tests {
             blocks: vec![
                 block(0, vec![
                     assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(10)))),
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
@@ -1457,12 +1456,12 @@ mod tests {
                             },
                         ],
                         heap: false,
-                    },
-                    MirStmt::ClosureCall {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                    },
+                    }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
@@ -1508,11 +1507,11 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::LoadCapture {
+                    MirStmt::dummy(MirStmtKind::LoadCapture {
                         dst: LocalId(1),
                         env_ptr: LocalId(0),
                         offset: 0,
-                    },
+                    }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1531,14 +1530,14 @@ mod tests {
             blocks: vec![
                 block(0, vec![
                     assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(99)))),
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "make_closure__closure_0".to_string(),
                         captures: vec![
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
                         ],
                         heap: true,
-                    },
+                    }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1557,11 +1556,11 @@ mod tests {
             blocks: vec![
                 block(0, vec![
                     call(Some(0), "make_closure", vec![]),
-                    MirStmt::ClosureCall {
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(1)),
                         closure: LocalId(0),
                         args: vec![],
-                    },
+                    }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1621,17 +1620,17 @@ mod tests {
             blocks: vec![
                 block(0, vec![
                     assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(99)))),
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
                         ],
                         heap: true,
-                    },
-                    MirStmt::ClosureDrop {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureDrop {
                         closure: LocalId(1),
-                    },
+                    }),
                 ], ret(Some(MirOperand::Constant(MirConst::Int(0))))),
             ],
             entry_block: BlockId(0),
@@ -1682,7 +1681,7 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 },
+                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 }),
                 ], ret(Some(local_op(1)))),
             ],
             entry_block: BlockId(0),
@@ -1702,20 +1701,20 @@ mod tests {
             ],
             blocks: vec![
                 block(0, vec![
-                    MirStmt::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 },
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::LoadCapture { dst: LocalId(1), env_ptr: LocalId(0), offset: 0 }),
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(2),
                         func_name: "main__closure_1".to_string(),
                         captures: vec![
                             ClosureCapture { local_id: LocalId(1), offset: 0, size: 8 },
                         ],
                         heap: false,
-                    },
-                    MirStmt::ClosureCall {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(3)),
                         closure: LocalId(2),
                         args: vec![],
-                    },
+                    }),
                 ], ret(Some(local_op(3)))),
             ],
             entry_block: BlockId(0),
@@ -1735,19 +1734,19 @@ mod tests {
             blocks: vec![
                 block(0, vec![
                     assign(0, MirRValue::Use(MirOperand::Constant(MirConst::Int(42)))),
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![
                             ClosureCapture { local_id: LocalId(0), offset: 0, size: 8 },
                         ],
                         heap: false,
-                    },
-                    MirStmt::ClosureCall {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![],
-                    },
+                    }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
@@ -1824,17 +1823,17 @@ mod tests {
                 ], branch(local_op(3), 2, 3)),
                 // block2: loop body — closure per iteration
                 block(2, vec![
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
-                    },
-                    MirStmt::ClosureCall {
+                    }),
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![local_op(0)],
-                    },
+                    }),
                     assign(0, MirRValue::BinaryOp {
                         op: BinOp::Add,
                         left: local_op(0),
@@ -1936,29 +1935,29 @@ mod tests {
                 block(0, vec![], branch(local_op(0), 1, 2)),
                 // block1: arm 1 — add closure
                 block(1, vec![
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_0".to_string(),
                         captures: vec![],
                         heap: false,
-                    },
+                    }),
                 ], goto(3)),
                 // block2: arm 2 — sub closure
                 block(2, vec![
-                    MirStmt::ClosureCreate {
+                    MirStmt::dummy(MirStmtKind::ClosureCreate {
                         dst: LocalId(1),
                         func_name: "main__closure_1".to_string(),
                         captures: vec![],
                         heap: false,
-                    },
+                    }),
                 ], goto(3)),
                 // block3: merge — call whichever closure was created
                 block(3, vec![
-                    MirStmt::ClosureCall {
+                    MirStmt::dummy(MirStmtKind::ClosureCall {
                         dst: Some(LocalId(2)),
                         closure: LocalId(1),
                         args: vec![MirOperand::Constant(MirConst::Int(10))],
-                    },
+                    }),
                 ], ret(Some(local_op(2)))),
             ],
             entry_block: BlockId(0),
