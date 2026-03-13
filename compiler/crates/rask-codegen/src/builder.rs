@@ -883,6 +883,28 @@ impl<'a> FunctionBuilder<'a> {
             MirStmtKind::Phi { .. } => {
                 panic!("Phi nodes must be lowered by de-SSA before codegen");
             }
+
+            MirStmtKind::RcInc { local } => {
+                // Increment string refcount: rask_string_clone(local)
+                let val = builder.use_var(*ctx.var_map.get(local)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "RcInc local variable not found".to_string()
+                    ))?);
+                let clone_ref = ctx.func_refs.get("rask_string_clone")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_clone".to_string()))?;
+                builder.ins().call(*clone_ref, &[val]);
+            }
+
+            MirStmtKind::RcDec { local } => {
+                // Decrement string refcount: rask_string_free(local)
+                let val = builder.use_var(*ctx.var_map.get(local)
+                    .ok_or_else(|| CodegenError::UnsupportedFeature(
+                        "RcDec local variable not found".to_string()
+                    ))?);
+                let free_ref = ctx.func_refs.get("rask_string_free")
+                    .ok_or_else(|| CodegenError::FunctionNotFound("rask_string_free".to_string()))?;
+                builder.ins().call(*free_ref, &[val]);
+            }
         }
         Ok(())
     }

@@ -231,6 +231,12 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, "]")
             }
+            MirStmtKind::RcInc { local } => {
+                write!(f, "rc_inc(_{})", local.0)
+            }
+            MirStmtKind::RcDec { local } => {
+                write!(f, "rc_dec(_{})", local.0)
+            }
         }
     }
 }
