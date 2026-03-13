@@ -4,5 +4,8 @@
 //! optimization passes and codegen.
 
 pub mod cfg;
+pub mod dataflow;
+pub mod dominators;
+pub mod loops;
 pub mod uses;
 pub mod local_index;
