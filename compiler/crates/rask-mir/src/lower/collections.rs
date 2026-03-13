@@ -6,7 +6,7 @@
 use super::{LoweringError, MirLowerer, TypedOperand};
 use crate::{
     operand::MirConst, types::{EnumLayoutId, StructLayoutId}, FunctionRef, MirOperand, MirRValue,
-    MirStmt, MirTerminator, MirType,
+    MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType,
 };
 use rask_ast::expr::{Expr, ExprKind};
 use rask_mono::StructLayout;
@@ -33,23 +33,23 @@ impl<'a> MirLowerer<'a> {
         };
         let arr_local = self.builder.alloc_temp(array_ty);
         for (i, op) in lowered.into_iter().enumerate() {
-            self.builder.push_stmt(MirStmt::Store {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: arr_local,
                 offset: i as u32 * elem_size,
                 value: op,
                 store_size: None,
-            });
+            }));
         }
 
         let vec_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(vec_local),
             func: FunctionRef::internal("rask_vec_from_static".to_string()),
             args: vec![
                 MirOperand::Local(arr_local),
                 MirOperand::Constant(MirConst::Int(elems.len() as i64)),
             ],
-        });
+        }));
         Ok((MirOperand::Local(vec_local), MirType::I64))
     }
 
@@ -70,11 +70,11 @@ impl<'a> MirLowerer<'a> {
 
         let ctor = if has_string_keys { "Map_new_string_keys" } else { "Map_new" };
         let map_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(map_local),
             func: FunctionRef::internal(ctor.to_string()),
             args: vec![],
-        });
+        }));
 
         for elem in elems {
             let (key_op, val_op) = match &elem.kind {
@@ -88,11 +88,11 @@ impl<'a> MirLowerer<'a> {
                     continue;
                 }
             };
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("Map_insert".to_string()),
                 args: vec![MirOperand::Local(map_local), key_op, val_op],
-            });
+            }));
         }
 
         Ok((MirOperand::Local(map_local), MirType::I64))
@@ -107,15 +107,15 @@ impl<'a> MirLowerer<'a> {
         use rask_types::Type;
 
         let buf = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(buf),
             func: FunctionRef::internal("json_buf_new".to_string()),
             args: vec![],
-        });
+        }));
 
         for (idx, field) in layout.fields.iter().enumerate() {
             let field_val = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: field_val,
                 rvalue: MirRValue::Field {
                     base: struct_op.clone(),
@@ -123,7 +123,7 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
+            }));
 
             let nested_struct = match &field.ty {
                 Type::UnresolvedNamed(name) => self.ctx.find_struct(name).map(|(_, l)| l.clone()),
@@ -136,7 +136,7 @@ impl<'a> MirLowerer<'a> {
                     MirOperand::Local(field_val),
                     nested_layout,
                 )?;
-                self.builder.push_stmt(MirStmt::Call {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                     dst: None,
                     func: FunctionRef::internal("json_buf_add_raw".to_string()),
                     args: vec![
@@ -144,7 +144,7 @@ impl<'a> MirLowerer<'a> {
                         MirOperand::Constant(MirConst::String(field.name.clone())),
                         nested_json,
                     ],
-                });
+                }));
                 continue;
             }
 
@@ -155,7 +155,7 @@ impl<'a> MirLowerer<'a> {
                 _ => "json_buf_add_i64",
             };
 
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal(helper.to_string()),
                 args: vec![
@@ -163,15 +163,15 @@ impl<'a> MirLowerer<'a> {
                     MirOperand::Constant(MirConst::String(field.name.clone())),
                     MirOperand::Local(field_val),
                 ],
-            });
+            }));
         }
 
         let result = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
             func: FunctionRef::internal("json_buf_finish".to_string()),
             args: vec![MirOperand::Local(buf)],
-        });
+        }));
 
         Ok((MirOperand::Local(result), MirType::I64))
     }
@@ -185,61 +185,61 @@ impl<'a> MirLowerer<'a> {
         use rask_types::Type;
 
         let arr_buf = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(arr_buf),
             func: FunctionRef::internal("json_buf_new_array".to_string()),
             args: vec![],
-        });
+        }));
 
         let collection = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: collection,
             rvalue: MirRValue::Use(vec_op),
-        });
+        }));
 
         let len_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(len_local),
             func: FunctionRef::internal("Vec_len".to_string()),
             args: vec![MirOperand::Local(collection)],
-        });
+        }));
 
         let idx = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        });
+        }));
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.builder.switch_to_block(check_block);
         let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: cond,
             rvalue: MirRValue::BinaryOp {
                 op: crate::operand::BinOp::Lt,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Local(len_local),
             },
-        });
-        self.builder.terminate(MirTerminator::Branch {
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(cond),
             then_block: body_block,
             else_block: exit_block,
-        });
+        }));
 
         self.builder.switch_to_block(body_block);
 
         let elem = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(elem),
             func: FunctionRef::internal("Vec_get".to_string()),
             args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
-        });
+        }));
 
         let elem_ref = &elem_ty;
         let nested_struct = match elem_ref {
@@ -257,11 +257,11 @@ impl<'a> MirLowerer<'a> {
                 MirOperand::Local(elem),
                 layout,
             )?;
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("json_buf_array_add_raw".to_string()),
                 args: vec![MirOperand::Local(arr_buf), json_str],
-            });
+            }));
         } else {
             let helper = match elem_ref {
                 Some(Type::String) => "json_buf_array_add_string",
@@ -269,30 +269,30 @@ impl<'a> MirLowerer<'a> {
                 Some(Type::F32) | Some(Type::F64) => "json_buf_array_add_f64",
                 _ => "json_buf_array_add_i64",
             };
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal(helper.to_string()),
                 args: vec![MirOperand::Local(arr_buf), MirOperand::Local(elem)],
-            });
+            }));
         }
 
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::BinaryOp {
                 op: crate::operand::BinOp::Add,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
-        });
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.builder.switch_to_block(exit_block);
         let result = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(result),
             func: FunctionRef::internal("json_buf_finish_array".to_string()),
             args: vec![MirOperand::Local(arr_buf)],
-        });
+        }));
 
         Ok((MirOperand::Local(result), MirType::I64))
     }
@@ -306,11 +306,11 @@ impl<'a> MirLowerer<'a> {
         use rask_types::Type;
 
         let parsed = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(parsed),
             func: FunctionRef::internal("json_parse".to_string()),
             args: vec![str_op],
-        });
+        }));
 
         let struct_id = self.ctx.find_struct(&layout.name)
             .map(|(id, _)| StructLayoutId(id));
@@ -328,21 +328,21 @@ impl<'a> MirLowerer<'a> {
             };
 
             let field_val = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(field_val),
                 func: FunctionRef::internal(helper.to_string()),
                 args: vec![
                     MirOperand::Local(parsed),
                     MirOperand::Constant(MirConst::String(field.name.clone())),
                 ],
-            });
+            }));
 
-            self.builder.push_stmt(MirStmt::Store {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: result,
                 offset: field.offset,
                 value: MirOperand::Local(field_val),
                 store_size: None,
-            });
+            }));
         }
 
         Ok((MirOperand::Local(result), struct_ty))
@@ -400,7 +400,7 @@ impl<'a> MirLowerer<'a> {
         for i in 0..num_words {
             let offset = i * 8;
             let word = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: word,
                 rvalue: MirRValue::Field {
                     base: src.clone(),
@@ -408,13 +408,13 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
-            self.builder.push_stmt(MirStmt::Store {
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                 addr: result,
                 offset,
                 value: MirOperand::Local(word),
                 store_size: None,
-            });
+            }));
         }
 
         let needs_switch = layout.variants.iter().any(|v| {
@@ -423,7 +423,7 @@ impl<'a> MirLowerer<'a> {
 
         if needs_switch {
             let tag = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: tag,
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(result),
@@ -431,7 +431,7 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
+            }));
 
             let exit_block = self.builder.create_block();
             let mut cases = Vec::new();
@@ -449,7 +449,7 @@ impl<'a> MirLowerer<'a> {
                     if let Some(cfn) = Self::clone_fn_for_type(&field.ty) {
                         let abs_offset = variant.payload_offset + field.offset;
                         let field_val = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Assign {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: field_val,
                             rvalue: MirRValue::Field {
                                 base: MirOperand::Local(result),
@@ -457,29 +457,29 @@ impl<'a> MirLowerer<'a> {
                                 byte_offset: None,
                                 field_size: None,
                             },
-                        });
+                        }));
                         let cloned = self.builder.alloc_temp(MirType::I64);
-                        self.builder.push_stmt(MirStmt::Call {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                             dst: Some(cloned),
                             func: FunctionRef::internal(cfn.to_string()),
                             args: vec![MirOperand::Local(field_val)],
-                        });
-                        self.builder.push_stmt(MirStmt::Store {
+                        }));
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: result,
                             offset: abs_offset,
                             value: MirOperand::Local(cloned),
                             store_size: None,
-                        });
+                        }));
                     }
                 }
-                self.builder.terminate(MirTerminator::Goto { target: exit_block });
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: exit_block }));
             }
 
-            self.builder.terminate(MirTerminator::Switch {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Switch {
                 value: MirOperand::Local(tag),
                 cases,
                 default: exit_block,
-            });
+            }));
 
             self.builder.switch_to_block(exit_block);
         }

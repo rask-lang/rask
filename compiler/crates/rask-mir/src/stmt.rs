@@ -4,9 +4,11 @@
 
 use crate::{BlockId, FunctionRef, LocalId, MirOperand, MirRValue};
 
-/// MIR statement - no control flow
+pub use rask_ast::Span;
+
+/// MIR statement kind — no control flow
 #[derive(Debug, Clone)]
-pub enum MirStmt {
+pub enum MirStmtKind {
     Assign {
         dst: LocalId,
         rvalue: MirRValue,
@@ -43,10 +45,6 @@ pub enum MirStmt {
         dst: LocalId,
         pool: LocalId,
         handle: LocalId,
-    },
-    SourceLocation {
-        line: u32,
-        col: u32,
     },
     /// Create a closure value: heap-allocated `[func_ptr | captures...]`.
     /// `captures` lists the locals whose values are stored into the environment.
@@ -108,6 +106,24 @@ pub enum MirStmt {
     },
 }
 
+/// MIR statement — wraps a kind with source span.
+#[derive(Debug, Clone)]
+pub struct MirStmt {
+    pub kind: MirStmtKind,
+    pub span: Span,
+}
+
+impl MirStmt {
+    pub fn new(kind: MirStmtKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    /// Dummy span (0..0) for tests and synthetic transforms.
+    pub fn dummy(kind: MirStmtKind) -> Self {
+        Self { kind, span: Span::new(0, 0) }
+    }
+}
+
 /// A captured variable in a closure environment.
 #[derive(Debug, Clone)]
 pub struct ClosureCapture {
@@ -116,9 +132,9 @@ pub struct ClosureCapture {
     pub size: u32,
 }
 
-/// MIR terminator - ends a basic block
+/// MIR terminator kind — ends a basic block
 #[derive(Debug, Clone)]
-pub enum MirTerminator {
+pub enum MirTerminatorKind {
     Return {
         value: Option<MirOperand>,
     },
@@ -140,4 +156,22 @@ pub enum MirTerminator {
         value: Option<MirOperand>,
         cleanup_chain: Vec<BlockId>,
     },
+}
+
+/// MIR terminator — wraps a kind with source span.
+#[derive(Debug, Clone)]
+pub struct MirTerminator {
+    pub kind: MirTerminatorKind,
+    pub span: Span,
+}
+
+impl MirTerminator {
+    pub fn new(kind: MirTerminatorKind, span: Span) -> Self {
+        Self { kind, span }
+    }
+
+    /// Dummy span (0..0) for tests and synthetic transforms.
+    pub fn dummy(kind: MirTerminatorKind) -> Self {
+        Self { kind, span: Span::new(0, 0) }
+    }
 }

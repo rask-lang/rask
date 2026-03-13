@@ -4,22 +4,22 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::{BlockId, MirFunction, MirTerminator};
+use crate::{BlockId, MirFunction, MirTerminator, MirTerminatorKind};
 
 /// Successor block IDs from a terminator.
 pub fn successors(term: &MirTerminator) -> Vec<BlockId> {
-    match term {
-        MirTerminator::Return { .. } | MirTerminator::Unreachable => vec![],
-        MirTerminator::Goto { target } => vec![*target],
-        MirTerminator::Branch { then_block, else_block, .. } => {
+    match &term.kind {
+        MirTerminatorKind::Return { .. } | MirTerminatorKind::Unreachable => vec![],
+        MirTerminatorKind::Goto { target } => vec![*target],
+        MirTerminatorKind::Branch { then_block, else_block, .. } => {
             vec![*then_block, *else_block]
         }
-        MirTerminator::Switch { cases, default, .. } => {
+        MirTerminatorKind::Switch { cases, default, .. } => {
             let mut targets: Vec<BlockId> = cases.iter().map(|(_, b)| *b).collect();
             targets.push(*default);
             targets
         }
-        MirTerminator::CleanupReturn { cleanup_chain, .. } => {
+        MirTerminatorKind::CleanupReturn { cleanup_chain, .. } => {
             cleanup_chain.clone()
         }
     }

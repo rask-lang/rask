@@ -6,7 +6,8 @@ use super::{LoopContext, LoweringError, MirLowerer};
 use crate::{
     operand::{BinOp, MirConst},
     types::StructLayoutId,
-    FunctionRef, MirOperand, MirRValue, MirStmt, MirTerminator, MirType,
+    FunctionRef, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind,
+    MirType,
 };
 use rask_ast::{
     expr::{Expr, ExprKind, UnaryOp},
@@ -15,7 +16,6 @@ use rask_ast::{
 
 impl<'a> MirLowerer<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
-        self.emit_source_location(&stmt.span);
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;
@@ -38,10 +38,10 @@ impl<'a> MirLowerer<'a> {
                         };
                         let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
-                        self.builder.push_stmt(MirStmt::GlobalRef {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                             dst: local_id,
                             name: name.clone(),
-                        });
+                        }));
                     } else {
                         // Scalar: load the data pointer, then deref to get the value
                         let mir_ty = match meta.type_prefix.as_str() {
@@ -57,15 +57,15 @@ impl<'a> MirLowerer<'a> {
                             },
                         };
                         let ptr_local = self.builder.alloc_temp(MirType::Ptr);
-                        self.builder.push_stmt(MirStmt::GlobalRef {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::GlobalRef {
                             dst: ptr_local,
                             name: name.clone(),
-                        });
+                        }));
                         let local_id = self.builder.alloc_local(name.to_string(), mir_ty.clone());
-                        self.builder.push_stmt(MirStmt::Assign {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: local_id,
                             rvalue: MirRValue::Deref(MirOperand::Local(ptr_local)),
-                        });
+                        }));
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                     }
                     self.local_type_prefix.insert(name.to_string(), meta.type_prefix.clone());
@@ -85,14 +85,14 @@ impl<'a> MirLowerer<'a> {
                 // return to an assignment + goto instead of a real return.
                 if let Some((dst_local, cont_block)) = self.inline_return_target {
                     if let Some(val) = value {
-                        self.builder.push_stmt(MirStmt::Assign {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: dst_local,
                             rvalue: MirRValue::Use(val),
-                        });
+                        }));
                     }
-                    self.builder.terminate(MirTerminator::Goto { target: cont_block });
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: cont_block }));
                 } else {
-                    self.builder.terminate(MirTerminator::Return { value });
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value }));
                 }
                 Ok(())
             }
@@ -106,10 +106,10 @@ impl<'a> MirLowerer<'a> {
                             .get(name)
                             .cloned()
                             .ok_or_else(|| LoweringError::UnresolvedVariable(name.clone()))?;
-                        self.builder.push_stmt(MirStmt::Assign {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: local_id,
                             rvalue: MirRValue::Use(val_op),
-                        });
+                        }));
                     }
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
@@ -134,19 +134,19 @@ impl<'a> MirLowerer<'a> {
                             MirOperand::Local(id) => id,
                             _ => {
                                 let tmp = self.builder.alloc_temp(obj_ty);
-                                self.builder.push_stmt(MirStmt::Assign {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                     dst: tmp,
                                     rvalue: MirRValue::Use(obj_op),
-                                });
+                                }));
                                 tmp
                             }
                         };
-                        self.builder.push_stmt(MirStmt::Store {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: base_local,
                             offset,
                             value: val_op,
                             store_size: None,
-                        });
+                        }));
                     }
                     // Index assignment: a[i] = val
                     ExprKind::Index { object, index } => {
@@ -156,20 +156,20 @@ impl<'a> MirLowerer<'a> {
                         if let MirType::Array { ref elem, .. } = obj_ty {
                             // Fixed-size array: direct store at base + index * elem_size
                             if let MirOperand::Local(base_id) = obj_op {
-                                self.builder.push_stmt(MirStmt::ArrayStore {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::ArrayStore {
                                     base: base_id,
                                     index: idx_op,
                                     elem_size: elem.size(),
                                     value: val_op,
-                                });
+                                }));
                             }
                         } else {
                             // Vec/Map: dispatch through runtime
-                            self.builder.push_stmt(MirStmt::Call {
+                            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                                 dst: None,
                                 func: FunctionRef::internal("Vec_set".to_string()),
                                 args: vec![obj_op, idx_op, val_op],
-                            });
+                            }));
                         }
                     }
                     // Deref assignment: *ptr = value → Store through pointer
@@ -179,19 +179,19 @@ impl<'a> MirLowerer<'a> {
                             MirOperand::Local(id) => id,
                             _ => {
                                 let tmp = self.builder.alloc_temp(MirType::Ptr);
-                                self.builder.push_stmt(MirStmt::Assign {
+                                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                                     dst: tmp,
                                     rvalue: MirRValue::Use(addr_op),
-                                });
+                                }));
                                 tmp
                             }
                         };
-                        self.builder.push_stmt(MirStmt::Store {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
                             addr: addr_local,
                             offset: 0,
                             value: val_op,
                             store_size: None,
-                        });
+                        }));
                     }
                     _ => {
                         return Err(LoweringError::InvalidConstruct(
@@ -234,31 +234,31 @@ impl<'a> MirLowerer<'a> {
                 let body_block = self.builder.create_block();
                 let exit_block = self.builder.create_block();
 
-                self.builder.terminate(MirTerminator::Goto { target: check_block });
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
                 self.builder.switch_to_block(check_block);
                 let (val, _) = self.lower_expr(expr)?;
                 let tag = self.builder.alloc_temp(MirType::U8);
-                self.builder.push_stmt(MirStmt::Assign {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: tag,
                     rvalue: MirRValue::EnumTag { value: val.clone() },
-                });
+                }));
                 // Compare tag against expected variant
                 let expected = self.pattern_tag(pattern);
                 let matches = self.builder.alloc_temp(MirType::Bool);
-                self.builder.push_stmt(MirStmt::Assign {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: matches,
                     rvalue: MirRValue::BinaryOp {
                         op: crate::operand::BinOp::Eq,
                         left: MirOperand::Local(tag),
                         right: MirOperand::Constant(crate::operand::MirConst::Int(expected)),
                     },
-                });
-                self.builder.terminate(MirTerminator::Branch {
+                }));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
                     cond: MirOperand::Local(matches),
                     then_block: body_block,
                     else_block: exit_block,
-                });
+                }));
 
                 self.builder.switch_to_block(body_block);
                 // Bind payload variables from the pattern
@@ -274,7 +274,7 @@ impl<'a> MirLowerer<'a> {
                 for s in body {
                     self.lower_stmt(s)?;
                 }
-                self.builder.terminate(MirTerminator::Goto { target: check_block });
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
                 self.loop_stack.pop();
 
                 self.builder.switch_to_block(exit_block);
@@ -286,14 +286,14 @@ impl<'a> MirLowerer<'a> {
                 let cleanup_block = self.builder.create_block();
                 let continue_block = self.builder.create_block();
 
-                self.builder.push_stmt(MirStmt::EnsurePush { cleanup_block });
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePush { cleanup_block }));
 
                 for s in body {
                     self.lower_stmt(s)?;
                 }
 
-                self.builder.push_stmt(MirStmt::EnsurePop);
-                self.builder.terminate(MirTerminator::Goto { target: continue_block });
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
                 self.builder.switch_to_block(cleanup_block);
                 if let Some((param_name, handler_body)) = else_handler {
@@ -306,8 +306,8 @@ impl<'a> MirLowerer<'a> {
                         self.lower_stmt(s)?;
                     }
                 }
-                self.builder.push_stmt(MirStmt::EnsurePop);
-                self.builder.terminate(MirTerminator::Goto { target: continue_block });
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::EnsurePop));
+                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: continue_block }));
 
                 self.builder.switch_to_block(continue_block);
                 Ok(())
@@ -390,10 +390,10 @@ impl<'a> MirLowerer<'a> {
         let var_ty = ty.map(|s| self.ctx.resolve_type_str(s)).unwrap_or(inferred_ty);
         let local_id = self.builder.alloc_local(name.to_string(), var_ty.clone());
         self.locals.insert(name.to_string(), (local_id, var_ty.clone()));
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: local_id,
             rvalue: MirRValue::Use(init_op),
-        });
+        }));
 
         // Track collection element types for for-in iteration heuristics
         if let ExprKind::MethodCall { object, method, .. } = &init.kind {
@@ -607,7 +607,7 @@ impl<'a> MirLowerer<'a> {
                 .unwrap_or(MirType::I32);
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
             self.locals.insert(name.clone(), (local_id, elem_ty));
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: local_id,
                 rvalue: MirRValue::Field {
                     base: init_op.clone(),
@@ -615,7 +615,7 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
+            }));
 
             // Track type prefix so method calls get qualified names.
             // First try type-checker info (works when types are fully resolved).
@@ -670,17 +670,17 @@ impl<'a> MirLowerer<'a> {
         let body_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: check_block,
-        });
+        }));
 
         self.builder.switch_to_block(check_block);
         let (cond_op, _) = self.lower_expr(cond)?;
-        self.builder.terminate(MirTerminator::Branch {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: cond_op,
             then_block: body_block,
             else_block: exit_block,
-        });
+        }));
 
         self.builder.switch_to_block(body_block);
         self.loop_stack.push(LoopContext {
@@ -693,9 +693,9 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: check_block,
-        });
+        }));
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
@@ -762,16 +762,16 @@ impl<'a> MirLowerer<'a> {
         // For pools: convert pool → Vec<Handle> via Pool_handles snapshot
         let (iter_op, iter_ty) = if is_pool {
             let pool_tmp = self.builder.alloc_temp(iter_ty.clone());
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: pool_tmp,
                 rvalue: MirRValue::Use(iter_op),
-            });
+            }));
             let handles_vec = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(handles_vec),
                 func: FunctionRef::internal("Pool_handles".to_string()),
                 args: vec![MirOperand::Local(pool_tmp)],
-            });
+            }));
             (MirOperand::Local(handles_vec), MirType::I64)
         } else {
             (iter_op, iter_ty)
@@ -784,57 +784,57 @@ impl<'a> MirLowerer<'a> {
         };
 
         let collection = self.builder.alloc_temp(iter_ty.clone());
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: collection,
             rvalue: MirRValue::Use(iter_op),
-        });
+        }));
 
         // _len = collection.len()
         let len_local = self.builder.alloc_temp(MirType::I64);
         if let Some(arr_len) = array_len {
             // Fixed-size array: compile-time constant length
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: len_local,
                 rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(arr_len as i64))),
-            });
+            }));
         } else {
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(len_local),
                 func: FunctionRef::internal("Vec_len".to_string()),
                 args: vec![MirOperand::Local(collection)],
-            });
+            }));
         }
 
         // _i = 0
         let idx = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        });
+        }));
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         // check: _i < _len
         self.builder.switch_to_block(check_block);
         let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: cond,
             rvalue: MirRValue::BinaryOp {
                 op: BinOp::Lt,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Local(len_local),
             },
-        });
-        self.builder.terminate(MirTerminator::Branch {
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(cond),
             then_block: body_block,
             else_block: exit_block,
-        });
+        }));
 
         // body: item = collection[_i]
         self.builder.switch_to_block(body_block);
@@ -861,20 +861,20 @@ impl<'a> MirLowerer<'a> {
         self.locals.insert(single_name.to_string(), (binding_local, elem_ty));
         if is_array {
             // Fixed-size array: direct memory load
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: binding_local,
                 rvalue: MirRValue::ArrayIndex {
                     base: MirOperand::Local(collection),
                     index: MirOperand::Local(idx),
                     elem_size: array_elem_size.unwrap_or(8),
                 },
-            });
+            }));
         } else {
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(binding_local),
                 func: FunctionRef::internal("Vec_get".to_string()),
                 args: vec![MirOperand::Local(collection), MirOperand::Local(idx)],
-            });
+            }));
         }
 
         // Tuple destructuring: for (a, b) in collection { ... }
@@ -884,7 +884,7 @@ impl<'a> MirLowerer<'a> {
                 if i == 0 { continue; }
                 let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
                 self.locals.insert(name.clone(), (field_local, MirType::I64));
-                self.builder.push_stmt(MirStmt::Assign {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: field_local,
                     rvalue: MirRValue::Field {
                         base: MirOperand::Local(binding_local),
@@ -892,11 +892,11 @@ impl<'a> MirLowerer<'a> {
                         byte_offset: None,
                         field_size: None,
                     },
-                });
+                }));
             }
             // Re-extract field 0 into the first binding (was whole tuple)
             let first_field = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: first_field,
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(binding_local),
@@ -904,11 +904,11 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
-            self.builder.push_stmt(MirStmt::Assign {
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: binding_local,
                 rvalue: MirRValue::Use(MirOperand::Local(first_field)),
-            });
+            }));
         }
 
         self.loop_stack.push(LoopContext {
@@ -921,24 +921,24 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);
         let incremented = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: incremented,
             rvalue: MirRValue::BinaryOp {
                 op: BinOp::Add,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
-        });
-        self.builder.push_stmt(MirStmt::Assign {
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::Use(MirOperand::Local(incremented)),
-        });
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
@@ -956,57 +956,57 @@ impl<'a> MirLowerer<'a> {
     ) -> Result<(), LoweringError> {
         let (pool_op, _) = self.lower_expr(pool_expr)?;
         let pool_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: pool_local,
             rvalue: MirRValue::Use(pool_op),
-        });
+        }));
 
         // handles_vec = Pool_handles(pool)
         let handles_vec = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(handles_vec),
             func: FunctionRef::internal("Pool_handles".to_string()),
             args: vec![MirOperand::Local(pool_local)],
-        });
+        }));
 
         // _len = Vec_len(handles_vec)
         let len_local = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(len_local),
             func: FunctionRef::internal("Vec_len".to_string()),
             args: vec![MirOperand::Local(handles_vec)],
-        });
+        }));
 
         // _i = 0
         let idx = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-        });
+        }));
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         // check: _i < _len
         self.builder.switch_to_block(check_block);
         let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: cond,
             rvalue: MirRValue::BinaryOp {
                 op: BinOp::Lt,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Local(len_local),
             },
-        });
-        self.builder.terminate(MirTerminator::Branch {
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(cond),
             then_block: body_block,
             else_block: exit_block,
-        });
+        }));
 
         // body: h = handles_vec[_i]; val = Pool_get(pool, h)
         self.builder.switch_to_block(body_block);
@@ -1015,22 +1015,22 @@ impl<'a> MirLowerer<'a> {
         let handle_name = names.first().map_or("_h", |n| n.as_str());
         let handle_local = self.builder.alloc_local(handle_name.to_string(), MirType::I64);
         self.locals.insert(handle_name.to_string(), (handle_local, MirType::I64));
-        self.builder.push_stmt(MirStmt::Call {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
             dst: Some(handle_local),
             func: FunctionRef::internal("Vec_get".to_string()),
             args: vec![MirOperand::Local(handles_vec), MirOperand::Local(idx)],
-        });
+        }));
 
         // Bind value (second name) via Pool_get
         if names.len() > 1 {
             let val_name = &names[1];
             let val_local = self.builder.alloc_local(val_name.clone(), MirType::I64);
             self.locals.insert(val_name.clone(), (val_local, MirType::I64));
-            self.builder.push_stmt(MirStmt::Call {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
                 dst: Some(val_local),
                 func: FunctionRef::internal("Pool_get".to_string()),
                 args: vec![MirOperand::Local(pool_local), MirOperand::Local(handle_local)],
-            });
+            }));
         }
 
         self.loop_stack.push(LoopContext {
@@ -1043,24 +1043,24 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // inc: _i = _i + 1
         self.builder.switch_to_block(inc_block);
         let incremented = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: incremented,
             rvalue: MirRValue::BinaryOp {
                 op: BinOp::Add,
                 left: MirOperand::Local(idx),
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
-        });
-        self.builder.push_stmt(MirStmt::Assign {
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: idx,
             rvalue: MirRValue::Use(MirOperand::Local(incremented)),
-        });
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
@@ -1091,42 +1091,42 @@ impl<'a> MirLowerer<'a> {
         // Mutable counter initialized to start
         let counter = self.builder.alloc_local(binding.to_string(), start_ty.clone());
         self.locals.insert(binding.to_string(), (counter, start_ty.clone()));
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: counter,
             rvalue: MirRValue::Use(start_op),
-        });
+        }));
 
         // Evaluate end once
         let end_local = self.builder.alloc_temp(start_ty);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: end_local,
             rvalue: MirRValue::Use(end_op),
-        });
+        }));
 
         let check_block = self.builder.create_block();
         let body_block = self.builder.create_block();
         let inc_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
         self.builder.switch_to_block(check_block);
 
         // counter < end (or <= for inclusive)
         let cmp_op = if inclusive { BinOp::Le } else { BinOp::Lt };
         let cond = self.builder.alloc_temp(MirType::Bool);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: cond,
             rvalue: MirRValue::BinaryOp {
                 op: cmp_op,
                 left: MirOperand::Local(counter),
                 right: MirOperand::Local(end_local),
             },
-        });
-        self.builder.terminate(MirTerminator::Branch {
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Branch {
             cond: MirOperand::Local(cond),
             then_block: body_block,
             else_block: exit_block,
-        });
+        }));
 
         self.builder.switch_to_block(body_block);
         self.loop_stack.push(LoopContext {
@@ -1139,24 +1139,24 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto { target: inc_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: inc_block }));
 
         // counter = counter + 1
         self.builder.switch_to_block(inc_block);
         let incremented = self.builder.alloc_temp(MirType::I64);
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: incremented,
             rvalue: MirRValue::BinaryOp {
                 op: BinOp::Add,
                 left: MirOperand::Local(counter),
                 right: MirOperand::Constant(MirConst::Int(1)),
             },
-        });
-        self.builder.push_stmt(MirStmt::Assign {
+        }));
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: counter,
             rvalue: MirRValue::Use(MirOperand::Local(incremented)),
-        });
-        self.builder.terminate(MirTerminator::Goto { target: check_block });
+        }));
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: check_block }));
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
@@ -1168,9 +1168,9 @@ impl<'a> MirLowerer<'a> {
         let loop_block = self.builder.create_block();
         let exit_block = self.builder.create_block();
 
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: loop_block,
-        });
+        }));
 
         self.builder.switch_to_block(loop_block);
 
@@ -1184,9 +1184,9 @@ impl<'a> MirLowerer<'a> {
         for stmt in body {
             self.lower_stmt(stmt)?;
         }
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: loop_block,
-        });
+        }));
 
         self.loop_stack.pop();
         self.builder.switch_to_block(exit_block);
@@ -1206,16 +1206,16 @@ impl<'a> MirLowerer<'a> {
         if let Some(val_expr) = value {
             let (val_op, _) = self.lower_expr(val_expr)?;
             if let Some(result) = result_local {
-                self.builder.push_stmt(MirStmt::Assign {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: result,
                     rvalue: MirRValue::Use(val_op),
-                });
+                }));
             }
         }
 
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: exit_block,
-        });
+        }));
 
         let dead_block = self.builder.create_block();
         self.builder.switch_to_block(dead_block);
@@ -1228,9 +1228,9 @@ impl<'a> MirLowerer<'a> {
         let ctx = self.find_loop(label)?;
         let continue_block = ctx.continue_block;
 
-        self.builder.terminate(MirTerminator::Goto {
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto {
             target: continue_block,
-        });
+        }));
 
         let dead_block = self.builder.create_block();
         self.builder.switch_to_block(dead_block);
@@ -1276,10 +1276,10 @@ impl<'a> MirLowerer<'a> {
             self.local_type_prefix.insert(binding_name.to_string(), prefix);
         }
         self.locals.insert(binding_name.to_string(), (binding_local, final_ty));
-        self.builder.push_stmt(MirStmt::Assign {
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
             dst: binding_local,
             rvalue: MirRValue::Use(final_op),
-        });
+        }));
 
         // Tuple destructuring for iter chains
         if let ForBinding::Tuple(names) = for_binding {
@@ -1287,7 +1287,7 @@ impl<'a> MirLowerer<'a> {
                 if i == 0 { continue; }
                 let field_local = self.builder.alloc_local(name.clone(), MirType::I64);
                 self.locals.insert(name.clone(), (field_local, MirType::I64));
-                self.builder.push_stmt(MirStmt::Assign {
+                self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                     dst: field_local,
                     rvalue: MirRValue::Field {
                         base: MirOperand::Local(binding_local),
@@ -1295,11 +1295,11 @@ impl<'a> MirLowerer<'a> {
                         byte_offset: None,
                         field_size: None,
                     },
-                });
+                }));
             }
             // Re-extract field 0 into the first binding
             let first_field = self.builder.alloc_temp(MirType::I64);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: first_field,
                 rvalue: MirRValue::Field {
                     base: MirOperand::Local(binding_local),
@@ -1307,11 +1307,11 @@ impl<'a> MirLowerer<'a> {
                     byte_offset: None,
                     field_size: None,
                 },
-            });
-            self.builder.push_stmt(MirStmt::Assign {
+            }));
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: binding_local,
                 rvalue: MirRValue::Use(MirOperand::Local(first_field)),
-            });
+            }));
         }
 
         self.loop_stack.push(super::LoopContext {
@@ -1325,7 +1325,7 @@ impl<'a> MirLowerer<'a> {
             self.lower_stmt(stmt)?;
         }
 
-        self.builder.terminate(MirTerminator::Goto { target: setup.inc_block });
+        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Goto { target: setup.inc_block }));
         self.loop_stack.pop();
 
         self.emit_iter_increment(setup.idx, setup.inc_block, setup.check_block);

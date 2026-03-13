@@ -4,6 +4,7 @@
 
 use crate::*;
 use crate::operand::{BinOp, UnaryOp, MirConst};
+use crate::stmt::{MirStmtKind, MirTerminatorKind};
 use std::fmt;
 
 impl fmt::Display for MirType {
@@ -141,14 +142,14 @@ impl fmt::Display for MirRValue {
 
 impl fmt::Display for MirStmt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MirStmt::Assign { dst, rvalue } => {
+        match &self.kind {
+            MirStmtKind::Assign { dst, rvalue } => {
                 write!(f, "_{} = {}", dst.0, rvalue)
             }
-            MirStmt::Store { addr, offset, value, .. } => {
+            MirStmtKind::Store { addr, offset, value, .. } => {
                 write!(f, "*(_{}+{}) = {}", addr.0, offset, value)
             }
-            MirStmt::Call { dst, func, args } => {
+            MirStmtKind::Call { dst, func, args } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
@@ -159,26 +160,23 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmt::ResourceRegister { dst, type_name, scope_depth } => {
+            MirStmtKind::ResourceRegister { dst, type_name, scope_depth } => {
                 write!(f, "_{} = resource_register({}, depth={})", dst.0, type_name, scope_depth)
             }
-            MirStmt::ResourceConsume { resource_id } => {
+            MirStmtKind::ResourceConsume { resource_id } => {
                 write!(f, "resource_consume(_{})", resource_id.0)
             }
-            MirStmt::ResourceScopeCheck { scope_depth } => {
+            MirStmtKind::ResourceScopeCheck { scope_depth } => {
                 write!(f, "resource_scope_check(depth={})", scope_depth)
             }
-            MirStmt::EnsurePush { cleanup_block } => {
+            MirStmtKind::EnsurePush { cleanup_block } => {
                 write!(f, "ensure_push(bb{})", cleanup_block.0)
             }
-            MirStmt::EnsurePop => write!(f, "ensure_pop"),
-            MirStmt::PoolCheckedAccess { dst, pool, handle } => {
+            MirStmtKind::EnsurePop => write!(f, "ensure_pop"),
+            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
                 write!(f, "_{} = pool_access(_{}[_{}])", dst.0, pool.0, handle.0)
             }
-            MirStmt::SourceLocation { line, col } => {
-                write!(f, "// {}:{}", line, col)
-            }
-            MirStmt::ClosureCreate { dst, func_name, captures, heap } => {
+            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
                 let alloc = if *heap { "heap" } else { "stack" };
                 write!(f, "_{} = closure[{}]({}, [", dst.0, alloc, func_name)?;
                 for (i, cap) in captures.iter().enumerate() {
@@ -187,7 +185,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, "])")
             }
-            MirStmt::ClosureCall { dst, closure, args } => {
+            MirStmtKind::ClosureCall { dst, closure, args } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
@@ -197,22 +195,22 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmt::LoadCapture { dst, env_ptr, offset } => {
+            MirStmtKind::LoadCapture { dst, env_ptr, offset } => {
                 write!(f, "_{} = load_capture(_{}+{})", dst.0, env_ptr.0, offset)
             }
-            MirStmt::ClosureDrop { closure } => {
+            MirStmtKind::ClosureDrop { closure } => {
                 write!(f, "closure_drop(_{}))", closure.0)
             }
-            MirStmt::ArrayStore { base, index, elem_size, value } => {
+            MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 write!(f, "*(_{}+{}*{}) = {}", base.0, index, elem_size, value)
             }
-            MirStmt::GlobalRef { dst, name } => {
+            MirStmtKind::GlobalRef { dst, name } => {
                 write!(f, "_{} = global_ref(\"{}\")", dst.0, name)
             }
-            MirStmt::TraitBox { dst, value, concrete_type, trait_name, .. } => {
+            MirStmtKind::TraitBox { dst, value, concrete_type, trait_name, .. } => {
                 write!(f, "_{} = trait_box({}, {} as any {})", dst.0, value, concrete_type, trait_name)
             }
-            MirStmt::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
+            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
                 if let Some(d) = dst {
                     write!(f, "_{} = ", d.0)?;
                 }
@@ -222,7 +220,7 @@ impl fmt::Display for MirStmt {
                 }
                 write!(f, ")")
             }
-            MirStmt::TraitDrop { trait_object } => {
+            MirStmtKind::TraitDrop { trait_object } => {
                 write!(f, "trait_drop(_{})", trait_object.0)
             }
         }
@@ -231,14 +229,14 @@ impl fmt::Display for MirStmt {
 
 impl fmt::Display for MirTerminator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            MirTerminator::Return { value: Some(v) } => write!(f, "return {}", v),
-            MirTerminator::Return { value: None } => write!(f, "return"),
-            MirTerminator::Goto { target } => write!(f, "goto bb{}", target.0),
-            MirTerminator::Branch { cond, then_block, else_block } => {
+        match &self.kind {
+            MirTerminatorKind::Return { value: Some(v) } => write!(f, "return {}", v),
+            MirTerminatorKind::Return { value: None } => write!(f, "return"),
+            MirTerminatorKind::Goto { target } => write!(f, "goto bb{}", target.0),
+            MirTerminatorKind::Branch { cond, then_block, else_block } => {
                 write!(f, "if {} then bb{} else bb{}", cond, then_block.0, else_block.0)
             }
-            MirTerminator::Switch { value, cases, default } => {
+            MirTerminatorKind::Switch { value, cases, default } => {
                 write!(f, "switch {} [", value)?;
                 for (i, (val, block)) in cases.iter().enumerate() {
                     if i > 0 { write!(f, ", ")?; }
@@ -246,8 +244,8 @@ impl fmt::Display for MirTerminator {
                 }
                 write!(f, ", default: bb{}]", default.0)
             }
-            MirTerminator::Unreachable => write!(f, "unreachable"),
-            MirTerminator::CleanupReturn { value, cleanup_chain } => {
+            MirTerminatorKind::Unreachable => write!(f, "unreachable"),
+            MirTerminatorKind::CleanupReturn { value, cleanup_chain } => {
                 if let Some(v) = value {
                     write!(f, "cleanup_return {} [", v)?;
                 } else {
