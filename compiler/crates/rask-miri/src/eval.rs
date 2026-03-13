@@ -304,6 +304,9 @@ impl MiriEngine {
             MirStmtKind::Phi { .. } => {
                 panic!("Phi nodes must be lowered by de-SSA before interpretation");
             }
+
+            // RC ops are no-ops at comptime — strings are GC'd by the interpreter.
+            MirStmtKind::RcInc { .. } | MirStmtKind::RcDec { .. } => {}
         }
         Ok(())
     }
