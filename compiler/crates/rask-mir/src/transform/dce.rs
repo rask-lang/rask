@@ -46,32 +46,34 @@ fn remove_dead_assignments_with_liveness(func: &mut MirFunction) -> usize {
         let mut dead_indices = Vec::new();
 
         for si in 0..stmts_len {
-            if let MirStmtKind::Assign { dst, rvalue } = &block.statements[si].kind {
-                if !is_pure_rvalue(rvalue) {
-                    continue;
+            // Pure assignments and phi nodes can be eliminated if their dst is dead.
+            let dst = match &block.statements[si].kind {
+                MirStmtKind::Assign { dst, rvalue } if is_pure_rvalue(rvalue) => *dst,
+                MirStmtKind::Phi { dst, .. } => *dst,
+                _ => continue,
+            };
+
+            // Check if dst is used in remaining stmts or terminator
+            let mut used_after = false;
+            for later in (si + 1)..stmts_len {
+                if crate::analysis::uses::stmt_reads(&block.statements[later], dst) {
+                    used_after = true;
+                    break;
                 }
-                // Check if dst is used in remaining stmts or terminator
-                let mut used_after = false;
-                for later in (si + 1)..stmts_len {
-                    if crate::analysis::uses::stmt_reads(&block.statements[later], *dst) {
-                        used_after = true;
+                // If later stmt redefines dst, stop looking
+                if let Some(def) = crate::analysis::uses::stmt_def(&block.statements[later]) {
+                    if def == dst {
                         break;
                     }
-                    // If later stmt redefines dst, stop looking
-                    if let Some(def) = crate::analysis::uses::stmt_def(&block.statements[later]) {
-                        if def == *dst {
-                            break;
-                        }
-                    }
                 }
-                if !used_after {
-                    if crate::analysis::uses::terminator_reads(&block.terminator, *dst) {
-                        used_after = true;
-                    }
+            }
+            if !used_after {
+                if crate::analysis::uses::terminator_reads(&block.terminator, dst) {
+                    used_after = true;
                 }
-                if !used_after && !live.live_at_exit(block_id, *dst) {
-                    dead_indices.push(si);
-                }
+            }
+            if !used_after && !live.live_at_exit(block_id, dst) {
+                dead_indices.push(si);
             }
         }
 

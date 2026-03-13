@@ -104,6 +104,12 @@ pub enum MirStmtKind {
     TraitDrop {
         trait_object: LocalId,
     },
+    /// SSA phi node — selects a value based on which predecessor block was executed.
+    /// Always appears at the start of a block; removed by de-SSA before codegen.
+    Phi {
+        dst: LocalId,
+        args: Vec<(BlockId, MirOperand)>,
+    },
 }
 
 /// MIR statement — wraps a kind with source span.

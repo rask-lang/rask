@@ -128,6 +128,9 @@ fn stmt_reads_local(stmt: &MirStmt, local: LocalId) -> bool {
             *trait_object == local || args.iter().any(|a| operand_is(a, local))
         }
         MirStmtKind::TraitDrop { trait_object } => *trait_object == local,
+        MirStmtKind::Phi { args, .. } => {
+            args.iter().any(|(_, op)| operand_is(op, local))
+        }
         MirStmtKind::ResourceRegister { .. }
         | MirStmtKind::GlobalRef { .. }
         | MirStmtKind::EnsurePush { .. }
