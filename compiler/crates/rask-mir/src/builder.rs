@@ -2,7 +2,7 @@
 
 //! BlockBuilder - helper for CFG construction during lowering.
 
-use crate::{BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirStmt, MirTerminator, MirType};
+use crate::{BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType};
 
 pub struct BlockBuilder {
     function: MirFunction,
@@ -22,7 +22,7 @@ impl BlockBuilder {
             blocks: vec![MirBlock {
                 id: entry_block,
                 statements: Vec::new(),
-                terminator: MirTerminator::Unreachable,
+                terminator: MirTerminator::dummy(MirTerminatorKind::Unreachable),
             }],
             entry_block,
             is_extern_c: false,
@@ -43,7 +43,7 @@ impl BlockBuilder {
         self.function.blocks.push(MirBlock {
             id,
             statements: Vec::new(),
-            terminator: MirTerminator::Unreachable,
+            terminator: MirTerminator::dummy(MirTerminatorKind::Unreachable),
         });
         id
     }
@@ -112,7 +112,7 @@ impl BlockBuilder {
     pub fn rewrite_last_call(&mut self, from: &str, to: &str) -> bool {
         let block = &mut self.function.blocks[self.current_block.0 as usize];
         for stmt in block.statements.iter_mut().rev() {
-            if let MirStmt::Call { func, .. } = stmt {
+            if let MirStmtKind::Call { func, .. } = &mut stmt.kind {
                 if func.name == from {
                     func.name = to.to_string();
                     return true;
@@ -125,8 +125,8 @@ impl BlockBuilder {
     /// Check if the current block still has the default Unreachable terminator.
     pub fn current_block_unterminated(&self) -> bool {
         matches!(
-            self.function.blocks[self.current_block.0 as usize].terminator,
-            MirTerminator::Unreachable
+            self.function.blocks[self.current_block.0 as usize].terminator.kind,
+            MirTerminatorKind::Unreachable
         )
     }
 

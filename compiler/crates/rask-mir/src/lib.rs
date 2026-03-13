@@ -25,6 +25,6 @@ pub use transform::string_append::optimize_string_concat;
 pub use transform::pass::{MirPass, PassManager};
 pub use function::{BlockId, MirBlock, MirFunction, MirLocal};
 pub use operand::{BinOp, FunctionRef, LocalId, MirConst, MirOperand, MirRValue, UnaryOp};
-pub use stmt::{ClosureCapture, MirStmt, MirTerminator};
+pub use stmt::{ClosureCapture, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, Span};
 pub use lower::ComptimeGlobalMeta;
 pub use types::{MirType, StructLayoutId, EnumLayoutId};

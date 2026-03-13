@@ -8,7 +8,7 @@ use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::{HashMap, HashSet};
 
-use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, UnaryOp};
+use rask_mir::{BinOp, BlockId, LocalId, MirConst, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, UnaryOp};
 use rask_mono::{StructLayout, EnumLayout};
 use rask_types::Type as RaskType;
 use crate::types::mir_to_cranelift_type;
@@ -140,7 +140,7 @@ impl<'a> FunctionBuilder<'a> {
         // the shared block instead of inlining the cleanup statements.
         let cleanup_only: HashSet<BlockId> = self.mir_fn.blocks.iter()
             .filter_map(|b| {
-                if let MirTerminator::CleanupReturn { cleanup_chain, .. } = &b.terminator {
+                if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &b.terminator.kind {
                     Some(cleanup_chain.iter().copied())
                 } else {
                     None
@@ -166,7 +166,7 @@ impl<'a> FunctionBuilder<'a> {
 
         // Create shared cleanup blocks for each unique chain.
         for mir_block in &self.mir_fn.blocks {
-            if let MirTerminator::CleanupReturn { cleanup_chain, .. } = &mir_block.terminator {
+            if let MirTerminatorKind::CleanupReturn { cleanup_chain, .. } = &mir_block.terminator.kind {
                 if !cleanup_chain.is_empty() && !cleanup_chain_blocks.contains_key(cleanup_chain) {
                     let shared_block = builder.create_block();
                     cleanup_chain_blocks.insert(cleanup_chain.clone(), shared_block);
@@ -245,12 +245,6 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
-                // Track source location for runtime error messages
-                if let MirStmt::SourceLocation { line, col } = stmt {
-                    ctx.current_line = *line;
-                    ctx.current_col = *col;
-                    continue;
-                }
                 Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
@@ -313,8 +307,8 @@ impl<'a> FunctionBuilder<'a> {
         stmt: &MirStmt,
         ctx: &CodegenCtx,
     ) -> CodegenResult<()> {
-        match stmt {
-            MirStmt::Assign { dst, rvalue } => {
+        match &stmt.kind {
+            MirStmtKind::Assign { dst, rvalue } => {
                 let dst_local = ctx.locals.iter().find(|l| l.id == *dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Destination variable not found".to_string()))?;
                 let dst_ty = mir_to_cranelift_type(&dst_local.ty)?;
@@ -331,7 +325,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, val);
             }
 
-            MirStmt::Store { addr, offset, value, store_size } => {
+            MirStmtKind::Store { addr, offset, value, store_size } => {
                 let addr_val = builder.use_var(*ctx.var_map.get(addr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Address variable not found".to_string()))?);
 
@@ -391,7 +385,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Array element store: base_ptr[index * elem_size] = value
-            MirStmt::ArrayStore { base, index, elem_size, value } => {
+            MirStmtKind::ArrayStore { base, index, elem_size, value } => {
                 let base_val = builder.use_var(*ctx.var_map.get(base)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("ArrayStore: base not found".to_string()))?);
                 let idx_val = Self::lower_operand_typed(builder, index, Some(types::I64), ctx)?;
@@ -403,19 +397,14 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().store(flags, val, addr, 0);
             }
 
-            MirStmt::Call { dst, func, args } => {
+            MirStmtKind::Call { dst, func, args } => {
                 Self::lower_call(builder, dst.as_ref(), func, args, ctx)?;
-            }
-
-
-            MirStmt::SourceLocation { .. } => {
-                // Source location tracking handled elsewhere
             }
 
             // ── Resource tracking ──────────────────────────────────────
             // Calls C runtime functions for runtime must-consume checks.
 
-            MirStmt::ResourceRegister { dst, scope_depth, .. } => {
+            MirStmtKind::ResourceRegister { dst, scope_depth, .. } => {
                 // rask_resource_register(scope_depth) → resource_id
                 let func_ref = ctx.func_refs.get("rask_resource_register")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_register".to_string()))?;
@@ -432,7 +421,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirStmt::ResourceConsume { resource_id } => {
+            MirStmtKind::ResourceConsume { resource_id } => {
                 // rask_resource_consume(resource_id)
                 let func_ref = ctx.func_refs.get("rask_resource_consume")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_consume".to_string()))?;
@@ -443,7 +432,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().call(*func_ref, &[id_val]);
             }
 
-            MirStmt::ResourceScopeCheck { scope_depth } => {
+            MirStmtKind::ResourceScopeCheck { scope_depth } => {
                 // rask_resource_scope_check(scope_depth)
                 let func_ref = ctx.func_refs.get("rask_resource_scope_check")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_resource_scope_check".to_string()))?;
@@ -455,10 +444,10 @@ impl<'a> FunctionBuilder<'a> {
             // EnsurePush/Pop track the cleanup scope during MIR construction.
             // At codegen time, the cleanup chain is already materialized in
             // CleanupReturn terminators, so these are no-ops.
-            MirStmt::EnsurePush { .. } | MirStmt::EnsurePop => {}
+            MirStmtKind::EnsurePush { .. } | MirStmtKind::EnsurePop => {}
 
             // ── Pool checked access ────────────────────────────────────
-            MirStmt::PoolCheckedAccess { dst, pool, handle } => {
+            MirStmtKind::PoolCheckedAccess { dst, pool, handle } => {
                 let pool_val = builder.use_var(*ctx.var_map.get(pool)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Pool variable not found".to_string()
@@ -618,7 +607,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Closure support ──────────────────────────────────────────
 
-            MirStmt::ClosureCreate { dst, func_name, captures, heap } => {
+            MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
                 // Build environment layout from captures
                 let env_layout = crate::closures::ClosureEnvLayout {
                     size: captures.last()
@@ -657,7 +646,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, closure_ptr);
             }
 
-            MirStmt::ClosureCall { dst, closure, args } => {
+            MirStmtKind::ClosureCall { dst, closure, args } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "Closure variable not found".to_string()
@@ -705,7 +694,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirStmt::LoadCapture { dst, env_ptr, offset } => {
+            MirStmtKind::LoadCapture { dst, env_ptr, offset } => {
                 let env_val = builder.use_var(*ctx.var_map.get(env_ptr)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture env_ptr not found".to_string()
@@ -723,7 +712,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, val);
             }
 
-            MirStmt::ClosureDrop { closure } => {
+            MirStmtKind::ClosureDrop { closure } => {
                 let closure_val = builder.use_var(*ctx.var_map.get(closure)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "ClosureDrop closure variable not found".to_string()
@@ -733,7 +722,7 @@ impl<'a> FunctionBuilder<'a> {
                 crate::closures::free_closure(builder, closure_val, *free_ref);
             }
 
-            MirStmt::GlobalRef { dst, name } => {
+            MirStmtKind::GlobalRef { dst, name } => {
                 let gv = ctx.comptime_globals.get(name.as_str())
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         format!("GlobalRef: comptime global '{}' not found", name)
@@ -748,7 +737,7 @@ impl<'a> FunctionBuilder<'a> {
 
             // ── Trait object support ──────────────────────────────────
 
-            MirStmt::TraitBox { dst, value, vtable_name, concrete_size, .. } => {
+            MirStmtKind::TraitBox { dst, value, vtable_name, concrete_size, .. } => {
                 let alloc_ref = ctx.func_refs.get("rask_alloc")
                     .ok_or_else(|| CodegenError::FunctionNotFound("rask_alloc".to_string()))?;
 
@@ -811,7 +800,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.def_var(*var, dst_addr);
             }
 
-            MirStmt::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
+            MirStmtKind::TraitCall { dst, trait_object, method_name, vtable_offset, args } => {
                 // Load fat pointer components from trait object stack slot
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
@@ -854,7 +843,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirStmt::TraitDrop { trait_object } => {
+            MirStmtKind::TraitDrop { trait_object } => {
                 let obj_val = builder.use_var(*ctx.var_map.get(trait_object)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "TraitDrop: trait object variable not found".to_string()
@@ -894,7 +883,7 @@ impl<'a> FunctionBuilder<'a> {
         Ok(())
     }
 
-    /// Lower a MirStmt::Call — dispatches builtins, extern calls, and regular calls.
+    /// Lower a `MirStmtKind::Call` — dispatches builtins, extern calls, and regular calls.
     fn lower_call(
         builder: &mut ClifFunctionBuilder,
         dst: Option<&LocalId>,
@@ -1753,8 +1742,8 @@ impl<'a> FunctionBuilder<'a> {
         ctx: &CodegenCtx,
         cleanup_chain_blocks: &HashMap<Vec<BlockId>, cranelift_codegen::ir::Block>,
     ) -> CodegenResult<()> {
-        match term {
-            MirTerminator::Return { value } => {
+        match &term.kind {
+            MirTerminatorKind::Return { value } => {
                 // For small aggregate return values (≤8 bytes) in stack slots,
                 // load the data and return it directly.
                 // For larger aggregates, return the stack slot address. The caller
@@ -1794,13 +1783,13 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirTerminator::Goto { target } => {
+            MirTerminatorKind::Goto { target } => {
                 let target_block = ctx.block_map.get(target)
                     .ok_or_else(|| CodegenError::UnsupportedFeature("Target block not found".to_string()))?;
                 builder.ins().jump(*target_block, &[]);
             }
 
-            MirTerminator::Branch { cond, then_block, else_block } => {
+            MirTerminatorKind::Branch { cond, then_block, else_block } => {
                 let mut cond_val = Self::lower_operand(builder, cond, ctx)?;
 
                 let cond_ty = builder.func.dfg.value_type(cond_val);
@@ -1815,7 +1804,7 @@ impl<'a> FunctionBuilder<'a> {
                 builder.ins().brif(cond_val, *then_cl, &[], *else_cl, &[]);
             }
 
-            MirTerminator::Switch { value, cases, default } => {
+            MirTerminatorKind::Switch { value, cases, default } => {
                 let raw_scrutinee = Self::lower_operand(builder, value, ctx)?;
                 // Extend to i64 if the scrutinee is a narrower type (e.g. u8 enum tag)
                 let scrutinee_val = {
@@ -1855,11 +1844,11 @@ impl<'a> FunctionBuilder<'a> {
                 }
             }
 
-            MirTerminator::Unreachable => {
+            MirTerminatorKind::Unreachable => {
                 builder.ins().trap(TrapCode::user(1).unwrap());
             }
 
-            MirTerminator::CleanupReturn { value, cleanup_chain } => {
+            MirTerminatorKind::CleanupReturn { value, cleanup_chain } => {
                 if !cleanup_chain.is_empty() {
                     if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
                         // Jump to shared cleanup block, passing return value.

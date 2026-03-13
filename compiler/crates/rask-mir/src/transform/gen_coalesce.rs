@@ -11,7 +11,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt};
+use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
 use crate::analysis::{cfg, uses};
 
 /// Key for tracking validated (pool, handle) pairs.
@@ -53,7 +53,7 @@ fn coalesce_function(func: &mut MirFunction) {
     let pool_locals: HashSet<LocalId> = func.blocks.iter()
         .flat_map(|b| b.statements.iter())
         .filter_map(|stmt| {
-            if let MirStmt::PoolCheckedAccess { pool, .. } = stmt {
+            if let MirStmtKind::PoolCheckedAccess { pool, .. } = &stmt.kind {
                 Some(*pool)
             } else {
                 None
@@ -145,7 +145,7 @@ fn compute_block_exit_state(
     for stmt in stmts {
         process_invalidations(stmt, &mut checked, pool_locals);
 
-        if let MirStmt::PoolCheckedAccess { dst, pool, handle } = stmt {
+        if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
             checked.entry((*pool, *handle)).or_insert(*dst);
         }
         // Coalesced accesses (Assign from a checked local) also carry forward
@@ -187,16 +187,18 @@ fn apply_incoming_checks(
         // Invalidations kill entries
         process_invalidations(stmt, &mut live, pool_locals);
 
-        if let MirStmt::PoolCheckedAccess { dst, pool, handle } = stmt {
+        if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
             let key = (*pool, *handle);
+            let dst = *dst;
             if let Some(&prev_dst) = live.get(&key) {
                 // Already validated by predecessor — reuse
-                *stmt = MirStmt::Assign {
-                    dst: *dst,
+                let span = stmt.span;
+                *stmt = MirStmt::new(MirStmtKind::Assign {
+                    dst,
                     rvalue: MirRValue::Use(MirOperand::Local(prev_dst)),
-                };
+                }, span);
             } else {
-                live.insert(key, *dst);
+                live.insert(key, dst);
             }
         }
     }
@@ -212,7 +214,7 @@ fn process_invalidations(
         checked.retain(|&(pool, _), _| pool != mutated_pool);
     }
 
-    if let MirStmt::Call { func, args, .. } = stmt {
+    if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
         if !is_pool_mutator(&func.name) && !is_safe_pool_call(&func.name) {
             for arg in args.iter() {
                 if let MirOperand::Local(id) = arg {
@@ -225,12 +227,12 @@ fn process_invalidations(
         }
     }
 
-    if matches!(stmt, MirStmt::ClosureCall { .. }) {
+    if matches!(&stmt.kind, MirStmtKind::ClosureCall { .. }) {
         checked.clear();
     }
 
     if let Some(assigned) = uses::stmt_def(stmt) {
-        if !matches!(stmt, MirStmt::PoolCheckedAccess { .. }) {
+        if !matches!(&stmt.kind, MirStmtKind::PoolCheckedAccess { .. }) {
             checked.retain(|&(pool, handle), &mut dst| {
                 pool != assigned && handle != assigned && dst != assigned
             });
@@ -250,7 +252,7 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
         }
 
         // Unknown calls with a pool arg invalidate that pool's entries (MT3, CF4)
-        if let MirStmt::Call { func, args, .. } = stmt {
+        if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
             if !is_pool_mutator(&func.name) && !is_safe_pool_call(&func.name) {
                 for arg in args.iter() {
                     if let MirOperand::Local(id) = arg {
@@ -264,13 +266,13 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
         }
 
         // Closure calls could capture pool references (conservative)
-        if matches!(stmt, MirStmt::ClosureCall { .. }) {
+        if matches!(&stmt.kind, MirStmtKind::ClosureCall { .. }) {
             checked.clear();
         }
 
         // Handle reassignment invalidates entries referencing that local (GC3)
         if let Some(assigned) = uses::stmt_def(stmt) {
-            if !matches!(stmt, MirStmt::PoolCheckedAccess { .. }) {
+            if !matches!(&stmt.kind, MirStmtKind::PoolCheckedAccess { .. }) {
                 checked.retain(|&(pool, handle), &mut dst| {
                     pool != assigned && handle != assigned && dst != assigned
                 });
@@ -278,16 +280,18 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
         }
 
         // Coalesce PoolCheckedAccess
-        if let MirStmt::PoolCheckedAccess { dst, pool, handle } = stmt {
+        if let MirStmtKind::PoolCheckedAccess { dst, pool, handle } = &stmt.kind {
             let key = (*pool, *handle);
+            let dst = *dst;
             if let Some(&prev_dst) = checked.get(&key) {
                 // Redundant check — reuse previous result
-                *stmt = MirStmt::Assign {
-                    dst: *dst,
+                let span = stmt.span;
+                *stmt = MirStmt::new(MirStmtKind::Assign {
+                    dst,
                     rvalue: MirRValue::Use(MirOperand::Local(prev_dst)),
-                };
+                }, span);
             } else {
-                checked.insert(key, *dst);
+                checked.insert(key, dst);
             }
         }
     }
@@ -295,7 +299,7 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
 
 /// If this statement is a pool mutation, return the pool local being mutated.
 fn pool_mutation(stmt: &MirStmt) -> Option<LocalId> {
-    if let MirStmt::Call { func, args, .. } = stmt {
+    if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
         if is_pool_mutator(&func.name) {
             if let Some(MirOperand::Local(pool_id)) = args.first() {
                 return Some(*pool_id);
@@ -317,9 +321,8 @@ fn is_safe_pool_call(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BlockId, FunctionRef, MirType};
+    use crate::{BlockId, FunctionRef, MirTerminator, MirTerminatorKind, MirType};
     use crate::function::{MirBlock, MirLocal};
-    use crate::MirTerminator;
 
     fn local(id: u32) -> LocalId {
         LocalId(id)
@@ -342,7 +345,7 @@ mod tests {
             blocks: vec![MirBlock {
                 id: BlockId(0),
                 statements: stmts,
-                terminator: MirTerminator::Return { value: None },
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
             }],
             entry_block: BlockId(0),
             is_extern_c: false,
@@ -351,27 +354,27 @@ mod tests {
     }
 
     fn pool_access(dst: u32, pool: u32, handle: u32) -> MirStmt {
-        MirStmt::PoolCheckedAccess {
+        MirStmt::dummy(MirStmtKind::PoolCheckedAccess {
             dst: local(dst),
             pool: local(pool),
             handle: local(handle),
-        }
+        })
     }
 
     fn pool_call(name: &str, pool: u32) -> MirStmt {
-        MirStmt::Call {
+        MirStmt::dummy(MirStmtKind::Call {
             dst: None,
             func: FunctionRef::internal(name.to_string()),
             args: vec![MirOperand::Local(local(pool))],
-        }
+        })
     }
 
     fn is_coalesced(stmt: &MirStmt) -> bool {
-        matches!(stmt, MirStmt::Assign { rvalue: MirRValue::Use(MirOperand::Local(_)), .. })
+        matches!(&stmt.kind, MirStmtKind::Assign { rvalue: MirRValue::Use(MirOperand::Local(_)), .. })
     }
 
     fn is_pool_checked(stmt: &MirStmt) -> bool {
-        matches!(stmt, MirStmt::PoolCheckedAccess { .. })
+        matches!(&stmt.kind, MirStmtKind::PoolCheckedAccess { .. })
     }
 
     #[test]
@@ -460,10 +463,10 @@ mod tests {
         // pool[h], h = new_val, pool[h] → no coalescing
         let mut f = make_fn(vec![
             pool_access(2, 0, 1),
-            MirStmt::Assign {
+            MirStmt::dummy(MirStmtKind::Assign {
                 dst: local(1), // reassign handle
                 rvalue: MirRValue::Use(MirOperand::Constant(crate::MirConst::Int(42))),
-            },
+            }),
             pool_access(3, 0, 1),
         ]);
         coalesce_function(&mut f);
@@ -477,11 +480,11 @@ mod tests {
         // pool[h], print(42), pool[h] → coalesces
         let mut f = make_fn(vec![
             pool_access(2, 0, 1),
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("print_i64".to_string()),
                 args: vec![MirOperand::Constant(crate::MirConst::Int(42))],
-            },
+            }),
             pool_access(3, 0, 1),
         ]);
         coalesce_function(&mut f);
@@ -494,11 +497,11 @@ mod tests {
     fn closure_call_invalidates_all() {
         let mut f = make_fn(vec![
             pool_access(2, 0, 1),
-            MirStmt::ClosureCall {
+            MirStmt::dummy(MirStmtKind::ClosureCall {
                 dst: None,
                 closure: local(6),
                 args: vec![],
-            },
+            }),
             pool_access(3, 0, 1),
         ]);
         coalesce_function(&mut f);
@@ -526,12 +529,12 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![pool_access(2, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(1) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
                 },
                 MirBlock {
                     id: BlockId(1),
                     statements: vec![pool_access(3, 0, 1)],
-                    terminator: MirTerminator::Return { value: None },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
                 },
             ],
             entry_block: BlockId(0),
@@ -566,26 +569,26 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![pool_access(2, 0, 1)],
-                    terminator: MirTerminator::Branch {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
                         cond: MirOperand::Constant(crate::MirConst::Bool(true)),
                         then_block: BlockId(1),
                         else_block: BlockId(2),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(1),
                     statements: vec![pool_access(3, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(3) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) }),
                 },
                 MirBlock {
                     id: BlockId(2),
                     statements: vec![pool_access(4, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(3) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(3) }),
                 },
                 MirBlock {
                     id: BlockId(3),
                     statements: vec![pool_access(5, 0, 1)],
-                    terminator: MirTerminator::Return { value: None },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
                 },
             ],
             entry_block: BlockId(0),
@@ -620,7 +623,7 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![pool_access(2, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(1) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
                 },
                 MirBlock {
                     id: BlockId(1),
@@ -628,7 +631,7 @@ mod tests {
                         pool_call("Pool_insert", 0),
                         pool_access(3, 0, 1),
                     ],
-                    terminator: MirTerminator::Return { value: None },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return { value: None }),
                 },
             ],
             entry_block: BlockId(0),
@@ -661,12 +664,12 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![pool_access(2, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(1) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(1) }),
                 },
                 MirBlock {
                     id: BlockId(1),
                     statements: vec![pool_access(3, 0, 1)],
-                    terminator: MirTerminator::Goto { target: BlockId(0) },
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto { target: BlockId(0) }),
                 },
             ],
             entry_block: BlockId(0),
@@ -683,14 +686,14 @@ mod tests {
     #[test]
     fn no_pool_accesses_is_noop() {
         let mut f = make_fn(vec![
-            MirStmt::Call {
+            MirStmt::dummy(MirStmtKind::Call {
                 dst: None,
                 func: FunctionRef::internal("print_i64".to_string()),
                 args: vec![MirOperand::Constant(crate::MirConst::Int(1))],
-            },
+            }),
         ]);
         coalesce_function(&mut f);
         // Should not crash or modify anything
-        assert!(matches!(&f.blocks[0].statements[0], MirStmt::Call { .. }));
+        assert!(matches!(&f.blocks[0].statements[0].kind, MirStmtKind::Call { .. }));
     }
 }

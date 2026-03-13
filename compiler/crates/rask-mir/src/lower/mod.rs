@@ -12,8 +12,8 @@ mod match_lower;
 mod stmt;
 
 use crate::{
-    BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirTerminator, MirType, BlockId,
-    LocalId, operand::MirConst,
+    BlockBuilder, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind, MirTerminator,
+    MirTerminatorKind, MirType, BlockId, LocalId, operand::MirConst,
 };
 use crate::types::{StructLayoutId, EnumLayoutId};
 use rask_ast::{
@@ -762,10 +762,10 @@ impl<'a> MirLowerer<'a> {
                 }
                 if let Some((op, ty)) = lowerer.try_eval_const_init(&c.init, c.ty.as_deref()) {
                     let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
-                    lowerer.builder.push_stmt(MirStmt::Assign {
+                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                         dst: local_id,
                         rvalue: MirRValue::Use(op),
-                    });
+                    }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
                 }
             }
@@ -781,9 +781,9 @@ impl<'a> MirLowerer<'a> {
         // must ensure all paths return explicitly).
         if lowerer.builder.current_block_unterminated() {
             if matches!(ret_ty, MirType::Void) {
-                lowerer.builder.terminate(MirTerminator::Return { value: None });
+                lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
             } else {
-                lowerer.builder.terminate(MirTerminator::Unreachable);
+                lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
             }
         }
 
@@ -830,14 +830,6 @@ impl<'a> MirLowerer<'a> {
             ExprKind::String(s) => Some((MirOperand::Constant(MirConst::String(s.clone())), MirType::String)),
             ExprKind::Bool(b) => Some((MirOperand::Constant(MirConst::Bool(*b)), MirType::Bool)),
             _ => None,
-        }
-    }
-
-    /// Emit a SourceLocation statement for the given span (if line_map is available).
-    fn emit_source_location(&mut self, span: &Span) {
-        if let Some(line_map) = self.ctx.line_map {
-            let (line, col) = line_map.offset_to_line_col(span.start);
-            self.builder.push_stmt(MirStmt::SourceLocation { line, col });
         }
     }
 
@@ -986,21 +978,21 @@ impl<'a> MirLowerer<'a> {
     fn emit_option_tag(&mut self, value: &MirOperand, is_niche: bool) -> LocalId {
         if is_niche {
             let result = self.builder.alloc_temp(MirType::U8);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::BinaryOp {
                     op: crate::operand::BinOp::Eq,
                     left: value.clone(),
                     right: MirOperand::Constant(MirConst::Int(HANDLE_NONE_SENTINEL)),
                 },
-            });
+            }));
             result
         } else {
             let result = self.builder.alloc_temp(MirType::U8);
-            self.builder.push_stmt(MirStmt::Assign {
+            self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                 dst: result,
                 rvalue: MirRValue::EnumTag { value: value.clone() },
-            });
+            }));
             result
         }
     }
@@ -1019,7 +1011,7 @@ impl<'a> MirLowerer<'a> {
         } else {
             MirRValue::Field { base: value, field_index: 0, byte_offset: None, field_size: None }
         };
-        self.builder.push_stmt(MirStmt::Assign { dst: result, rvalue });
+        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign { dst: result, rvalue }));
         result
     }
 
@@ -1063,10 +1055,10 @@ impl<'a> MirLowerer<'a> {
                                 field_size: None,
                             }
                         };
-                        self.builder.push_stmt(MirStmt::Assign {
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
                             dst: local,
                             rvalue,
-                        });
+                        }));
                         // Set type prefix so method calls on this binding
                         // get correct qualification (e.g., data.lines() → string_lines)
                         if let Some(prefix) = self.mir_type_name(&field_ty) {
@@ -1920,19 +1912,19 @@ mod tests {
     // ── helpers for inspecting MIR ──────────────────────────────
 
     fn has_return(f: &MirFunction) -> bool {
-        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Return { .. }))
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Return { .. }))
     }
 
     fn has_branch(f: &MirFunction) -> bool {
-        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Branch { .. }))
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Branch { .. }))
     }
 
     fn has_switch(f: &MirFunction) -> bool {
-        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Switch { .. }))
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Switch { .. }))
     }
 
     fn has_goto(f: &MirFunction) -> bool {
-        f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Goto { .. }))
+        f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Goto { .. }))
     }
 
     fn count_blocks(f: &MirFunction) -> usize {
@@ -1941,37 +1933,37 @@ mod tests {
 
     fn find_call(f: &MirFunction, func_name: &str) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Call { func, .. } if func.name == func_name))
+            b.statements.iter().any(|s| matches!(&s.kind, MirStmtKind::Call { func, .. } if func.name == func_name))
         })
     }
 
     fn find_assign_binop(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::BinaryOp { .. }, .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::BinaryOp { .. }, .. }))
         })
     }
 
     fn find_assign_unaryop(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::UnaryOp { .. }, .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::UnaryOp { .. }, .. }))
         })
     }
 
     fn find_ensure_push(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::EnsurePush { .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::EnsurePush { .. }))
         })
     }
 
     fn find_ensure_pop(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::EnsurePop))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::EnsurePop))
         })
     }
 
     fn find_enum_tag(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::EnumTag { .. }, .. }))
         })
     }
 
@@ -1983,8 +1975,8 @@ mod tests {
     fn lower_integer_literal() {
         let decl = make_fn("f", vec![], Some("i64"), vec![return_stmt(Some(int_expr(42)))]);
         let f = lower_one(&decl);
-        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
-        if let MirTerminator::Return { value: Some(MirOperand::Constant(MirConst::Int(42))) } = &ret_block.terminator {
+        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator.kind, MirTerminatorKind::Return { .. })).unwrap();
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Constant(MirConst::Int(42))) } = &ret_block.terminator.kind {
             // good
         } else {
             panic!("Expected return 42, got: {:?}", ret_block.terminator);
@@ -2002,8 +1994,8 @@ mod tests {
     fn lower_bool_literal() {
         let decl = make_fn("f", vec![], Some("bool"), vec![return_stmt(Some(bool_expr(true)))]);
         let f = lower_one(&decl);
-        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
-        if let MirTerminator::Return { value: Some(MirOperand::Constant(MirConst::Bool(true))) } = &ret_block.terminator {
+        let ret_block = f.blocks.iter().find(|b| matches!(b.terminator.kind, MirTerminatorKind::Return { .. })).unwrap();
+        if let MirTerminatorKind::Return { value: Some(MirOperand::Constant(MirConst::Bool(true))) } = &ret_block.terminator.kind {
             // good
         } else {
             panic!("Expected return true, got: {:?}", ret_block.terminator);
@@ -2066,7 +2058,7 @@ mod tests {
         let f = lower_one(&decl);
         let assign_count = f.blocks.iter()
             .flat_map(|b| b.statements.iter())
-            .filter(|s| matches!(s, MirStmt::Assign { .. }))
+            .filter(|s| matches!(s.kind, MirStmtKind::Assign { .. }))
             .count();
         assert!(assign_count >= 2);
     }
@@ -2168,8 +2160,8 @@ mod tests {
     fn lower_void_return() {
         let decl = make_fn("f", vec![], None, vec![return_stmt(None)]);
         let f = lower_one(&decl);
-        let ret = f.blocks.iter().find(|b| matches!(b.terminator, MirTerminator::Return { .. })).unwrap();
-        assert!(matches!(ret.terminator, MirTerminator::Return { value: None }));
+        let ret = f.blocks.iter().find(|b| matches!(b.terminator.kind, MirTerminatorKind::Return { .. })).unwrap();
+        assert!(matches!(ret.terminator.kind, MirTerminatorKind::Return { value: None }));
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -2296,7 +2288,7 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         let goto_count = f.blocks.iter()
-            .filter(|b| matches!(b.terminator, MirTerminator::Goto { .. }))
+            .filter(|b| matches!(b.terminator.kind, MirTerminatorKind::Goto { .. }))
             .count();
         assert!(goto_count >= 2);
     }
@@ -2379,7 +2371,7 @@ mod tests {
         assert!(find_enum_tag(&f));
         assert!(has_branch(&f));
         assert!(find_call(&f, "panic_unwrap"));
-        assert!(f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Unreachable)));
+        assert!(f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable)));
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -2440,7 +2432,7 @@ mod tests {
         let f = lower_one(&decl);
         assert!(has_branch(&f));
         assert!(find_call(&f, "assert_fail"));
-        assert!(f.blocks.iter().any(|b| matches!(b.terminator, MirTerminator::Unreachable)));
+        assert!(f.blocks.iter().any(|b| matches!(b.terminator.kind, MirTerminatorKind::Unreachable)));
     }
 
     #[test]
@@ -2457,7 +2449,7 @@ mod tests {
         ]);
         let f = lower_one(&decl);
         let has_cast = f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Assign { rvalue: MirRValue::Cast { .. }, .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Assign { rvalue: MirRValue::Cast { .. }, .. }))
         });
         assert!(has_cast);
     }
@@ -2473,14 +2465,14 @@ mod tests {
 
     fn find_store(f: &MirFunction) -> bool {
         f.blocks.iter().any(|b| {
-            b.statements.iter().any(|s| matches!(s, MirStmt::Store { .. }))
+            b.statements.iter().any(|s| matches!(s.kind, MirStmtKind::Store { .. }))
         })
     }
 
     fn count_stores(f: &MirFunction) -> usize {
         f.blocks.iter()
             .flat_map(|b| b.statements.iter())
-            .filter(|s| matches!(s, MirStmt::Store { .. }))
+            .filter(|s| matches!(s.kind, MirStmtKind::Store { .. }))
             .count()
     }
 

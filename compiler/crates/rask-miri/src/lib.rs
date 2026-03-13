@@ -369,9 +369,9 @@ mod tests {
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![],
-                terminator: MirTerminator::Return {
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Constant(MirConst::Int(42))),
-                },
+                }),
             }],
         );
 
@@ -395,17 +395,17 @@ mod tests {
             ],
             vec![MirBlock {
                 id: BlockId(0),
-                statements: vec![MirStmt::Assign {
+                statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                     dst: LocalId(2),
                     rvalue: MirRValue::BinaryOp {
                         op: BinOp::Add,
                         left: MirOperand::Local(LocalId(0)),
                         right: MirOperand::Local(LocalId(1)),
                     },
-                }],
-                terminator: MirTerminator::Return {
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Local(LocalId(2))),
-                },
+                }),
             }],
         );
 
@@ -433,39 +433,39 @@ mod tests {
             vec![
                 MirBlock {
                     id: BlockId(0),
-                    statements: vec![MirStmt::Assign {
+                    statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                         dst: LocalId(1),
                         rvalue: MirRValue::BinaryOp {
                             op: BinOp::Lt,
                             left: MirOperand::Local(LocalId(0)),
                             right: MirOperand::Constant(MirConst::Int(0)),
                         },
-                    }],
-                    terminator: MirTerminator::Branch {
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
                         cond: MirOperand::Local(LocalId(1)),
                         then_block: BlockId(1),
                         else_block: BlockId(2),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(1),
-                    statements: vec![MirStmt::Assign {
+                    statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                         dst: LocalId(2),
                         rvalue: MirRValue::UnaryOp {
                             op: UnaryOp::Neg,
                             operand: MirOperand::Local(LocalId(0)),
                         },
-                    }],
-                    terminator: MirTerminator::Return {
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Local(LocalId(2))),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(2),
                     statements: vec![],
-                    terminator: MirTerminator::Return {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Local(LocalId(0))),
-                    },
+                    }),
                 },
             ],
         );
@@ -493,9 +493,9 @@ mod tests {
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![],
-                terminator: MirTerminator::Goto {
+                terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
                     target: BlockId(0),
-                },
+                }),
             }],
         );
 
@@ -518,17 +518,17 @@ mod tests {
             vec![param(0, MirType::I64), local(1, MirType::I64)],
             vec![MirBlock {
                 id: BlockId(0),
-                statements: vec![MirStmt::Assign {
+                statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                     dst: LocalId(1),
                     rvalue: MirRValue::BinaryOp {
                         op: BinOp::Add,
                         left: MirOperand::Local(LocalId(0)),
                         right: MirOperand::Local(LocalId(0)),
                     },
-                }],
-                terminator: MirTerminator::Return {
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Local(LocalId(1))),
-                },
+                }),
             }],
         );
 
@@ -539,14 +539,14 @@ mod tests {
             vec![local(0, MirType::I64)],
             vec![MirBlock {
                 id: BlockId(0),
-                statements: vec![MirStmt::Call {
+                statements: vec![MirStmt::dummy(MirStmtKind::Call {
                     dst: Some(LocalId(0)),
                     func: FunctionRef::internal("double".to_string()),
                     args: vec![MirOperand::Constant(MirConst::Int(21))],
-                }],
-                terminator: MirTerminator::Return {
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Local(LocalId(0))),
-                },
+                }),
             }],
         );
 
@@ -581,65 +581,65 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![
-                        MirStmt::Assign {
+                        MirStmt::dummy(MirStmtKind::Assign {
                             dst: LocalId(0),
                             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-                        },
-                        MirStmt::Assign {
+                        }),
+                        MirStmt::dummy(MirStmtKind::Assign {
                             dst: LocalId(1),
                             rvalue: MirRValue::Use(MirOperand::Constant(MirConst::Int(0))),
-                        },
+                        }),
                     ],
-                    terminator: MirTerminator::Goto {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
                         target: BlockId(1),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(1),
-                    statements: vec![MirStmt::Assign {
+                    statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                         dst: LocalId(2),
                         rvalue: MirRValue::BinaryOp {
                             op: BinOp::Lt,
                             left: MirOperand::Local(LocalId(1)),
                             right: MirOperand::Constant(MirConst::Int(10)),
                         },
-                    }],
-                    terminator: MirTerminator::Branch {
+                    })],
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Branch {
                         cond: MirOperand::Local(LocalId(2)),
                         then_block: BlockId(2),
                         else_block: BlockId(3),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(2),
                     statements: vec![
-                        MirStmt::Assign {
+                        MirStmt::dummy(MirStmtKind::Assign {
                             dst: LocalId(0),
                             rvalue: MirRValue::BinaryOp {
                                 op: BinOp::Add,
                                 left: MirOperand::Local(LocalId(0)),
                                 right: MirOperand::Local(LocalId(1)),
                             },
-                        },
-                        MirStmt::Assign {
+                        }),
+                        MirStmt::dummy(MirStmtKind::Assign {
                             dst: LocalId(1),
                             rvalue: MirRValue::BinaryOp {
                                 op: BinOp::Add,
                                 left: MirOperand::Local(LocalId(1)),
                                 right: MirOperand::Constant(MirConst::Int(1)),
                             },
-                        },
+                        }),
                     ],
-                    terminator: MirTerminator::Goto {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Goto {
                         target: BlockId(1),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(3),
                     statements: vec![],
-                    terminator: MirTerminator::Return {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Local(LocalId(0))),
-                    },
+                    }),
                 },
             ],
         );
@@ -660,17 +660,17 @@ mod tests {
             vec![local(0, MirType::I64)],
             vec![MirBlock {
                 id: BlockId(0),
-                statements: vec![MirStmt::Assign {
+                statements: vec![MirStmt::dummy(MirStmtKind::Assign {
                     dst: LocalId(0),
                     rvalue: MirRValue::BinaryOp {
                         op: BinOp::Div,
                         left: MirOperand::Constant(MirConst::Int(10)),
                         right: MirOperand::Constant(MirConst::Int(0)),
                     },
-                }],
-                terminator: MirTerminator::Return {
+                })],
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Local(LocalId(0))),
-                },
+                }),
             }],
         );
 
@@ -690,9 +690,9 @@ mod tests {
             vec![MirBlock {
                 id: BlockId(0),
                 statements: vec![],
-                terminator: MirTerminator::Return {
+                terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                     value: Some(MirOperand::Constant(MirConst::String("hello".to_string()))),
-                },
+                }),
             }],
         );
 
@@ -727,32 +727,32 @@ mod tests {
                 MirBlock {
                     id: BlockId(0),
                     statements: vec![],
-                    terminator: MirTerminator::Switch {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Switch {
                         value: MirOperand::Local(LocalId(0)),
                         cases: vec![(0, BlockId(1)), (1, BlockId(2))],
                         default: BlockId(3),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(1),
                     statements: vec![],
-                    terminator: MirTerminator::Return {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Constant(MirConst::Int(10))),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(2),
                     statements: vec![],
-                    terminator: MirTerminator::Return {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Constant(MirConst::Int(20))),
-                    },
+                    }),
                 },
                 MirBlock {
                     id: BlockId(3),
                     statements: vec![],
-                    terminator: MirTerminator::Return {
+                    terminator: MirTerminator::dummy(MirTerminatorKind::Return {
                         value: Some(MirOperand::Constant(MirConst::Int(30))),
-                    },
+                    }),
                 },
             ],
         );
