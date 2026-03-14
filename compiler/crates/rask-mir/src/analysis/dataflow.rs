@@ -47,6 +47,23 @@ pub trait DataflowAnalysis {
     fn widen(&self, _old: &Self::Domain, new: &Self::Domain) -> Self::Domain {
         new.clone()
     }
+
+    /// Optional per-edge transfer for conditional narrowing.
+    ///
+    /// Applied after exit state is computed, before joining into the successor.
+    /// Override to produce different states for different branch targets (e.g.,
+    /// narrowing a handle to Valid in the true branch of `pool.get(h) is Some`).
+    ///
+    /// Default: pass exit state through unchanged.
+    fn transfer_edge(
+        &self,
+        _from: BlockId,
+        _to: BlockId,
+        _terminator: &crate::MirTerminator,
+        exit_state: &Self::Domain,
+    ) -> Self::Domain {
+        exit_state.clone()
+    }
 }
 
 /// Results of a dataflow analysis — entry and exit states per block.
@@ -156,17 +173,20 @@ pub fn solve<A: DataflowAnalysis>(
 
         match analysis.direction() {
             Direction::Forward => {
-                // Join predecessor exits
+                // Join predecessor exits, applying per-edge transfer
                 let block_preds = preds.get(&block_id).cloned().unwrap_or_default();
                 let new_entry = if block_id == func.entry_block {
-                    // Entry block starts at bottom (or a custom init — bottom works for liveness)
                     entry[&block_id].clone()
                 } else if block_preds.is_empty() {
                     bottom.clone()
                 } else {
-                    let mut joined = exit[&block_preds[0]].clone();
+                    let edge_state = |pred: &BlockId| {
+                        let pred_term = &block_map[pred].terminator;
+                        analysis.transfer_edge(*pred, block_id, pred_term, &exit[pred])
+                    };
+                    let mut joined = edge_state(&block_preds[0]);
                     for pred in &block_preds[1..] {
-                        joined = analysis.join(&joined, &exit[pred]);
+                        joined = analysis.join(&joined, &edge_state(pred));
                     }
                     joined
                 };

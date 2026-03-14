@@ -2,6 +2,7 @@
 
 //! MIR transform passes.
 
+pub mod bounds_elim;
 pub mod clone_elision;
 pub mod dce;
 pub mod gen_coalesce;
@@ -12,3 +13,4 @@ pub mod rc_insert;
 pub mod ssa;
 pub mod state_machine;
 pub mod string_append;
+pub mod typestate;

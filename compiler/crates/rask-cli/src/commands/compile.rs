@@ -6,6 +6,7 @@ use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::expr::{Expr, ExprKind};
 use rask_ast::stmt::{Stmt, StmtKind};
 use rask_ast::{NodeId, Span};
+use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_mono::MonoProgram;
 use std::collections::HashMap;
 
@@ -99,6 +100,28 @@ fn lower_to_mir(
     }
 
     Ok((mir_functions, pipeline_result))
+}
+
+/// Format and print MIR analysis diagnostics. Returns true if any are errors.
+fn report_mir_diagnostics(
+    diagnostics: &[rask_diagnostics::Diagnostic],
+    source_text: Option<&str>,
+    source_file: Option<&str>,
+) -> bool {
+    if diagnostics.is_empty() {
+        return false;
+    }
+    let source = source_text.unwrap_or("");
+    let file_name = source_file.unwrap_or("<unknown>");
+    let fmt = DiagnosticFormatter::new(source).with_file_name(file_name);
+    let mut has_errors = false;
+    for d in diagnostics {
+        eprintln!("{}", fmt.format(d));
+        if d.severity == rask_diagnostics::Severity::Error {
+            has_errors = true;
+        }
+    }
+    has_errors
 }
 
 /// Initialize codegen and declare all runtime/stdlib/extern functions.
@@ -209,6 +232,14 @@ pub fn compile_to_object(
     };
 
     let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
+
+    // Report MIR analysis diagnostics (typestate errors, warnings, etc.)
+    let has_mir_errors = report_mir_diagnostics(
+        &pipeline_result.diagnostics, source_text, source_file,
+    );
+    if has_mir_errors {
+        return Err(vec!["aborting due to MIR analysis errors".to_string()]);
+    }
 
     if mir_functions.is_empty() {
         return Err(vec!["no functions to compile".to_string()]);
@@ -437,7 +468,14 @@ pub fn compile_benchmarks_to_object(
         call_rewrites: &mono.call_rewrites,
     };
 
-    let (mut mir_functions, _pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
+    let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
+
+    let has_mir_errors = report_mir_diagnostics(
+        &pipeline_result.diagnostics, source_text, source_file,
+    );
+    if has_mir_errors {
+        return Err(vec!["aborting due to MIR analysis errors".to_string()]);
+    }
 
     if mir_functions.is_empty() && benchmarks.is_empty() {
         return Err(vec!["no functions or benchmarks to compile".to_string()]);

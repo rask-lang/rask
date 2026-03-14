@@ -2143,7 +2143,7 @@ impl<'a> FunctionBuilder<'a> {
             }
 
             // Vec get/index: result is void*, deref to get value
-            "Vec_get" | "Vec_index" | "index" => CallAdapt::DerefResult,
+            "Vec_get" | "Vec_get_unchecked" | "Vec_index" | "index" => CallAdapt::DerefResult,
 
             // Map insert: wrap key and value as pointers
             "Map_insert" => {

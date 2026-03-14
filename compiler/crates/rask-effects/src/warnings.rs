@@ -419,7 +419,7 @@ mod tests {
 
     fn effects_with_io(name: &str) -> EffectMap {
         let mut m = HashMap::new();
-        m.insert(name.into(), crate::Effects { io: true, async_: false, mutation: false });
+        m.insert(name.into(), crate::Effects { io: true, async_: false, grow: false, shrink: false });
         m
     }
 
