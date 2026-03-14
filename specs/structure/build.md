@@ -479,7 +479,7 @@ myproject/
 | **OD4: Binary naming** | Binary name = package name from `build.rk` (or directory name if no build.rk) |
 | **OD5: .gitignore** | `rask build` auto-creates `build/.gitignore` with `*` on first run |
 | **OD6: Clean** | `rask clean` removes `build/` entirely. `rask clean --all` also removes `~/.rask/cache/` entries for this project |
-| **OD7: Multi-binary** | `rask build` builds all binaries. `rask run --bin <name>` selects which to run |
+| **OD7: Workspace binaries** | `rask build` builds all workspace executable members. `rask run --member <name>` selects which to run |
 
 ## Cross-Compilation
 
