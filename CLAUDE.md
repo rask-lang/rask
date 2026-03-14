@@ -267,7 +267,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 
 | Area | Status |
 |------|--------|
-| Build system | Mostly working, cross-package symbol export still open |
+| Build system | Working, including cross-package symbol export |
 | Macros/attributes | Not specified |
 | Frontend caching | LSP works, incremental check caching not yet implemented |
 | Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
