@@ -1069,14 +1069,18 @@ impl TypeChecker {
         };
 
         match method {
-            // pool.alloc(value: T) -> Handle<T>
+            // pool.insert(value: T) -> Result<Handle<T>, string> (spec PL3/PL8)
             "alloc" | "insert" if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
                 let handle_ty = Type::UnresolvedGeneric {
                     name: "Handle".to_string(),
                     args: vec![GenericArg::Type(Box::new(inner_type))],
                 };
-                self.unify(ret, &handle_ty, span)
+                let result_ty = Type::Result {
+                    ok: Box::new(handle_ty),
+                    err: Box::new(Type::String),
+                };
+                self.unify(ret, &result_ty, span)
             }
             // pool.get(h: Handle<T>) -> T?
             "get" if args.len() == 1 => {
