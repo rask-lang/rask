@@ -8,6 +8,7 @@ pub mod cfg;
 pub mod dataflow;
 pub mod dominators;
 pub mod escape;
+pub mod intervals;
 pub mod liveness;
 pub mod loops;
 pub mod uses;
