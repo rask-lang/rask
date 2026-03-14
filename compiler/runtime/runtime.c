@@ -55,10 +55,8 @@ void rask_print_u64(uint64_t val) {
     printf("%llu", (unsigned long long)val);
 }
 
-void rask_print_string(const RaskString *s) {
-    if (s) {
-        fputs(rask_string_ptr(s), stdout);
-    }
+void rask_print_string(const RaskStr *s) {
+    fputs(rask_string_ptr(s), stdout);
 }
 
 void rask_print_newline(void) {
@@ -112,14 +110,15 @@ int64_t rask_io_write(int64_t fd, const void *buf, int64_t len) {
 int64_t rask_clone(int64_t value) { return value; }
 
 // ─── CLI module ───────────────────────────────────────────────────
-// cli.args() → Vec of RaskString* pointers.
+// cli.args() → Vec of RaskStr values (16 bytes each).
 
 RaskVec *rask_cli_args(void) {
-    RaskVec *v = rask_vec_new(sizeof(RaskString *));
+    RaskVec *v = rask_vec_new(16);
     int64_t count = rask_args_count();
     for (int64_t i = 0; i < count; i++) {
         const char *arg = rask_args_get(i);
-        RaskString *s = rask_string_from(arg);
+        RaskStr s;
+        rask_string_from(&s, arg);
         rask_vec_push(v, &s);
     }
     return v;
@@ -127,9 +126,9 @@ RaskVec *rask_cli_args(void) {
 
 // ─── FS module ────────────────────────────────────────────────────
 
-RaskVec *rask_fs_read_lines(const RaskString *path) {
-    RaskVec *v = rask_vec_new(sizeof(RaskString *));
-    const char *p = path ? rask_string_ptr(path) : "";
+RaskVec *rask_fs_read_lines(const RaskStr *path) {
+    RaskVec *v = rask_vec_new(16);
+    const char *p = rask_string_ptr(path);
 
     FILE *f = fopen(p, "r");
     if (!f) return v;
@@ -140,7 +139,8 @@ RaskVec *rask_fs_read_lines(const RaskString *path) {
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
         if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
 
-        RaskString *line = rask_string_from_bytes(buf, (int64_t)len);
+        RaskStr line;
+        rask_string_from_bytes(&line, buf, (int64_t)len);
         rask_vec_push(v, &line);
     }
 
@@ -150,23 +150,24 @@ RaskVec *rask_fs_read_lines(const RaskString *path) {
 
 // ─── IO module ────────────────────────────────────────────────────
 
-RaskString *rask_io_read_line(void) {
+void rask_io_read_line(RaskStr *out) {
     char buf[4096];
     if (!fgets(buf, sizeof(buf), stdin)) {
-        return rask_string_new();
+        rask_string_new(out);
+        return;
     }
     size_t len = strlen(buf);
     if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
     if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
-    return rask_string_from_bytes(buf, (int64_t)len);
+    rask_string_from_bytes(out, buf, (int64_t)len);
 }
 
 // ─── More FS module ───────────────────────────────────────────────
 
-RaskString *rask_fs_read_file(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+void rask_fs_read_file(RaskStr *out, const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "rb");
-    if (!f) return rask_string_new();
+    if (!f) { rask_string_new(out); return; }
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
@@ -174,23 +175,22 @@ RaskString *rask_fs_read_file(const RaskString *path) {
     size_t n = fread(buf, 1, (size_t)size, f);
     buf[n] = '\0';
     fclose(f);
-    RaskString *s = rask_string_from_bytes(buf, (int64_t)n);
+    rask_string_from_bytes(out, buf, (int64_t)n);
     rask_free(buf);
-    return s;
 }
 
-void rask_fs_write_file(const RaskString *path, const RaskString *content) {
-    const char *p = path ? rask_string_ptr(path) : "";
-    const char *c = content ? rask_string_ptr(content) : "";
-    int64_t clen = content ? rask_string_len(content) : 0;
+void rask_fs_write_file(const RaskStr *path, const RaskStr *content) {
+    const char *p = rask_string_ptr(path);
+    const char *c = rask_string_ptr(content);
+    int64_t clen = rask_string_len(content);
     FILE *f = fopen(p, "wb");
     if (!f) return;
     fwrite(c, 1, (size_t)clen, f);
     fclose(f);
 }
 
-int8_t rask_fs_exists(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+int8_t rask_fs_exists(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");
     if (f) { fclose(f); return 1; }
     return 0;
@@ -198,29 +198,29 @@ int8_t rask_fs_exists(const RaskString *path) {
 
 // ─── More FS module ───────────────────────────────────────────────
 
-int64_t rask_fs_open(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+int64_t rask_fs_open(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "r");
     return (int64_t)(uintptr_t)f;
 }
 
-int64_t rask_fs_create(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+int64_t rask_fs_create(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     FILE *f = fopen(p, "w");
     return (int64_t)(uintptr_t)f;
 }
 
-RaskString *rask_fs_canonicalize(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+void rask_fs_canonicalize(RaskStr *out, const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     char resolved[4096];
     char *r = realpath(p, resolved);
-    if (!r) return rask_string_new();
-    return rask_string_from(resolved);
+    if (!r) { rask_string_new(out); return; }
+    rask_string_from(out, resolved);
 }
 
-int64_t rask_fs_copy(const RaskString *from, const RaskString *to) {
-    const char *src = from ? rask_string_ptr(from) : "";
-    const char *dst = to ? rask_string_ptr(to) : "";
+int64_t rask_fs_copy(const RaskStr *from, const RaskStr *to) {
+    const char *src = rask_string_ptr(from);
+    const char *dst = rask_string_ptr(to);
     FILE *in = fopen(src, "rb");
     if (!in) return -1;
     FILE *out = fopen(dst, "wb");
@@ -237,26 +237,26 @@ int64_t rask_fs_copy(const RaskString *from, const RaskString *to) {
     return total;
 }
 
-void rask_fs_rename(const RaskString *from, const RaskString *to) {
-    const char *s = from ? rask_string_ptr(from) : "";
-    const char *d = to ? rask_string_ptr(to) : "";
+void rask_fs_rename(const RaskStr *from, const RaskStr *to) {
+    const char *s = rask_string_ptr(from);
+    const char *d = rask_string_ptr(to);
     rename(s, d);
 }
 
-void rask_fs_remove(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+void rask_fs_remove(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     remove(p);
 }
 
 #include <sys/stat.h>
 
-void rask_fs_create_dir(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+void rask_fs_create_dir(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     mkdir(p, 0755);
 }
 
-void rask_fs_create_dir_all(const RaskString *path) {
-    const char *p = path ? rask_string_ptr(path) : "";
+void rask_fs_create_dir_all(const RaskStr *path) {
+    const char *p = rask_string_ptr(path);
     char tmp[4096];
     snprintf(tmp, sizeof(tmp), "%s", p);
     for (char *c = tmp + 1; *c; c++) {
@@ -269,10 +269,10 @@ void rask_fs_create_dir_all(const RaskString *path) {
     mkdir(tmp, 0755);
 }
 
-void rask_fs_append_file(const RaskString *path, const RaskString *content) {
-    const char *p = path ? rask_string_ptr(path) : "";
-    const char *c = content ? rask_string_ptr(content) : "";
-    int64_t clen = content ? rask_string_len(content) : 0;
+void rask_fs_append_file(const RaskStr *path, const RaskStr *content) {
+    const char *p = rask_string_ptr(path);
+    const char *c = rask_string_ptr(content);
+    int64_t clen = rask_string_len(content);
     FILE *f = fopen(p, "ab");
     if (!f) return;
     fwrite(c, 1, (size_t)clen, f);
@@ -287,9 +287,9 @@ void rask_file_close(int64_t file) {
     if (f) fclose(f);
 }
 
-RaskString *rask_file_read_all(int64_t file) {
+void rask_file_read_all(RaskStr *out, int64_t file) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f) return rask_string_new();
+    if (!f) { rask_string_new(out); return; }
     // Read from current position to end
     long start = ftell(f);
     fseek(f, 0, SEEK_END);
@@ -299,20 +299,19 @@ RaskString *rask_file_read_all(int64_t file) {
     char *buf = (char *)rask_alloc((int64_t)size + 1);
     size_t n = fread(buf, 1, (size_t)size, f);
     buf[n] = '\0';
-    RaskString *s = rask_string_from_bytes(buf, (int64_t)n);
+    rask_string_from_bytes(out, buf, (int64_t)n);
     rask_free(buf);
-    return s;
 }
 
-void rask_file_write(int64_t file, const RaskString *content) {
+void rask_file_write(int64_t file, const RaskStr *content) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f || !content) return;
+    if (!f) return;
     fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
 }
 
-void rask_file_write_all(int64_t file, const RaskString *content) {
+void rask_file_write_all(int64_t file, const RaskStr *content) {
     FILE *f = (FILE *)(uintptr_t)file;
-    if (!f || !content) return;
+    if (!f) return;
     const char *ptr = rask_string_ptr(content);
     size_t remaining = (size_t)rask_string_len(content);
     while (remaining > 0) {
@@ -324,17 +323,15 @@ void rask_file_write_all(int64_t file, const RaskString *content) {
     fflush(f);
 }
 
-void rask_file_write_line(int64_t file, const RaskString *content) {
+void rask_file_write_line(int64_t file, const RaskStr *content) {
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return;
-    if (content) {
-        fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
-    }
+    fwrite(rask_string_ptr(content), 1, (size_t)rask_string_len(content), f);
     fputc('\n', f);
 }
 
 RaskVec *rask_file_lines(int64_t file) {
-    RaskVec *v = rask_vec_new(sizeof(RaskString *));
+    RaskVec *v = rask_vec_new(16);
     FILE *f = (FILE *)(uintptr_t)file;
     if (!f) return v;
     // Rewind to start
@@ -344,7 +341,8 @@ RaskVec *rask_file_lines(int64_t file) {
         size_t len = strlen(buf);
         if (len > 0 && buf[len - 1] == '\n') buf[--len] = '\0';
         if (len > 0 && buf[len - 1] == '\r') buf[--len] = '\0';
-        RaskString *line = rask_string_from_bytes(buf, (int64_t)len);
+        RaskStr line;
+        rask_string_from_bytes(&line, buf, (int64_t)len);
         rask_vec_push(v, &line);
     }
     return v;
@@ -357,8 +355,8 @@ RaskVec *rask_file_lines(int64_t file) {
 #include <arpa/inet.h>
 #include <netdb.h>
 
-int64_t rask_net_tcp_listen(const RaskString *addr) {
-    const char *a = addr ? rask_string_ptr(addr) : "0.0.0.0:0";
+int64_t rask_net_tcp_listen(const RaskStr *addr) {
+    const char *a = rask_string_ptr(addr);
 
     // Parse "host:port"
     char host[256] = "0.0.0.0";
@@ -401,8 +399,8 @@ int64_t rask_net_tcp_accept(int64_t listen_fd) {
     return (int64_t)client;
 }
 
-int64_t rask_net_tcp_connect(const RaskString *addr) {
-    const char *a = addr ? rask_string_ptr(addr) : "127.0.0.1:80";
+int64_t rask_net_tcp_connect(const RaskStr *addr) {
+    const char *a = rask_string_ptr(addr);
 
     // Parse "host:port"
     char host[256] = "127.0.0.1";
@@ -447,8 +445,8 @@ int64_t rask_net_tcp_connect(const RaskString *addr) {
 
 // ─── String-based socket I/O (used by Rask stdlib HTTP parser) ────
 
-// Read up to max_len bytes from fd, return as RaskString.
-RaskString *rask_io_read_string(int64_t fd, int64_t max_len) {
+// Read up to max_len bytes from fd, return as RaskStr.
+static void io_read_string(RaskStr *out, int64_t fd, int64_t max_len) {
     if (max_len <= 0 || max_len > 1024 * 1024) max_len = 65536;
     char *buf = (char *)rask_alloc(max_len);
     int64_t total = 0;
@@ -463,23 +461,19 @@ RaskString *rask_io_read_string(int64_t fd, int64_t max_len) {
             for (int64_t i = total - 4; i >= 0 && i >= total - n - 3; i--) {
                 if (buf[i] == '\r' && buf[i+1] == '\n' &&
                     buf[i+2] == '\r' && buf[i+3] == '\n') {
-                    // Found header boundary — check Content-Length for body
-                    // For simplicity, just return what we have (sufficient for
-                    // simple JSON APIs where body fits in first read)
                     goto done;
                 }
             }
         }
     }
 done:;
-    RaskString *s = rask_string_from_bytes(buf, total);
+    rask_string_from_bytes(out, buf, total);
     rask_free(buf);
-    return s;
 }
 
 // Read until connection closes or max_len reached. For HTTP client responses
 // where Connection: close is used.
-RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len) {
+void rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len) {
     if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 1048576;
     char *buf = (char *)rask_alloc(max_len);
     int64_t total = 0;
@@ -488,14 +482,13 @@ RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len) {
         if (n <= 0) break;
         total += n;
     }
-    RaskString *s = rask_string_from_bytes(buf, total);
+    rask_string_from_bytes(out, buf, total);
     rask_free(buf);
-    return s;
 }
 
-// Write a RaskString to fd. Returns bytes written or -1.
+// Write a RaskStr to fd. Returns bytes written or -1.
 int64_t rask_io_write_string(int64_t fd, int64_t str_ptr) {
-    const RaskString *s = (const RaskString *)(uintptr_t)str_ptr;
+    const RaskStr *s = (const RaskStr *)(uintptr_t)str_ptr;
     if (!s) return 0;
     const char *data = rask_string_ptr(s);
     int64_t len = rask_string_len(s);
@@ -516,21 +509,28 @@ void rask_io_close_fd(int64_t fd) {
 // ─── HTTP helpers (called from Rask stdlib via extern "C") ──────
 
 // Parse HTTP/1.1 request from socket fd. Returns pointer to
-// [method, path, body, headers] struct (4 x i64).
+// [method, path, body, headers] — each string field is a 16-byte RaskStr.
+// Layout: [RaskStr method (16B)][RaskStr path (16B)][RaskStr body (16B)][Map* headers (8B)]
 int64_t rask_http_parse_request(int64_t conn_fd) {
-    RaskString *raw = rask_io_read_string(conn_fd, 65536);
-    if (!raw || rask_string_len(raw) == 0) {
+    RaskStr raw;
+    io_read_string(&raw, conn_fd, 65536);
+    if (rask_string_len(&raw) == 0) {
         // Empty request — return minimal struct
-        int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 4);
-        req[0] = (int64_t)(uintptr_t)rask_string_from_bytes("GET", 3);
-        req[1] = (int64_t)(uintptr_t)rask_string_from_bytes("/", 1);
-        req[2] = (int64_t)(uintptr_t)rask_string_from_bytes("", 0);
-        req[3] = (int64_t)(uintptr_t)rask_map_new(8, 8);
+        // Allocate: 3 * 16 bytes (strings) + 8 bytes (map ptr) = 56 bytes
+        uint8_t *req = (uint8_t *)rask_alloc(56);
+        memset(req, 0, 56);
+        RaskStr *method = (RaskStr *)req;
+        RaskStr *path = (RaskStr *)(req + 16);
+        RaskStr *body = (RaskStr *)(req + 32);
+        rask_string_from_bytes(method, "GET", 3);
+        rask_string_from_bytes(path, "/", 1);
+        rask_string_new(body);
+        *(int64_t *)(req + 48) = (int64_t)(uintptr_t)rask_map_new(16, 16);
         return (int64_t)(uintptr_t)req;
     }
 
-    const char *data = rask_string_ptr(raw);
-    int64_t len = rask_string_len(raw);
+    const char *data = rask_string_ptr(&raw);
+    int64_t len = rask_string_len(&raw);
 
     // Find end of headers (\r\n\r\n)
     int64_t header_end = -1;
@@ -543,14 +543,6 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
     }
     if (header_end < 0) header_end = len;
 
-    // Extract body (after \r\n\r\n)
-    RaskString *body;
-    if (header_end + 4 < len) {
-        body = rask_string_from_bytes(data + header_end + 4, len - header_end - 4);
-    } else {
-        body = rask_string_from_bytes("", 0);
-    }
-
     // Parse request line: "METHOD PATH HTTP/1.1\r\n"
     int64_t first_space = -1, second_space = -1;
     for (int64_t i = 0; i < header_end; i++) {
@@ -561,18 +553,31 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
         if (data[i] == '\r') break;
     }
 
-    RaskString *method, *path;
+    // Allocate result: 3 RaskStr (48B) + 1 Map* (8B) = 56B
+    uint8_t *req = (uint8_t *)rask_alloc(56);
+    memset(req, 0, 56);
+    RaskStr *method = (RaskStr *)req;
+    RaskStr *path_str = (RaskStr *)(req + 16);
+    RaskStr *body = (RaskStr *)(req + 32);
+
     if (first_space > 0 && second_space > first_space) {
-        method = rask_string_from_bytes(data, first_space);
-        path = rask_string_from_bytes(data + first_space + 1,
-                                       second_space - first_space - 1);
+        rask_string_from_bytes(method, data, first_space);
+        rask_string_from_bytes(path_str, data + first_space + 1,
+                               second_space - first_space - 1);
     } else {
-        method = rask_string_from_bytes("GET", 3);
-        path = rask_string_from_bytes("/", 1);
+        rask_string_from_bytes(method, "GET", 3);
+        rask_string_from_bytes(path_str, "/", 1);
     }
 
-    // Parse headers
-    RaskMap *headers = rask_map_new(8, 8);
+    // Extract body (after \r\n\r\n)
+    if (header_end + 4 < len) {
+        rask_string_from_bytes(body, data + header_end + 4, len - header_end - 4);
+    } else {
+        rask_string_new(body);
+    }
+
+    // Parse headers — map stores RaskStr keys and values (16B each)
+    RaskMap *headers = rask_map_new_string_keys(16, 16);
     int64_t line_start = -1;
     // Find start of second line (after first \r\n)
     for (int64_t i = 0; i < header_end; i++) {
@@ -595,34 +600,31 @@ int64_t rask_http_parse_request(int64_t conn_fd) {
                 if (data[i] == ':' && data[i+1] == ' ') { colon = i; break; }
             }
             if (colon > pos) {
-                RaskString *key = rask_string_from_bytes(data + pos, colon - pos);
-                RaskString *val = rask_string_from_bytes(data + colon + 2,
-                                                          line_end - colon - 2);
-                int64_t key_ptr = (int64_t)(uintptr_t)key;
-                int64_t val_ptr = (int64_t)(uintptr_t)val;
-                rask_map_insert(headers, &key_ptr, &val_ptr);
+                RaskStr key, val;
+                rask_string_from_bytes(&key, data + pos, colon - pos);
+                rask_string_from_bytes(&val, data + colon + 2,
+                                       line_end - colon - 2);
+                rask_map_insert(headers, &key, &val);
             }
             // Skip \r\n to next line
             pos = line_end + 2;
         }
     }
 
-    // Build HttpRequest struct: [method, path, body, headers]
-    int64_t *req = (int64_t *)rask_alloc(sizeof(int64_t) * 4);
-    req[0] = (int64_t)(uintptr_t)method;
-    req[1] = (int64_t)(uintptr_t)path;
-    req[2] = (int64_t)(uintptr_t)body;
-    req[3] = (int64_t)(uintptr_t)headers;
+    *(int64_t *)(req + 48) = (int64_t)(uintptr_t)headers;
+
+    rask_string_free(&raw);
     return (int64_t)(uintptr_t)req;
 }
 
 // Format and write HTTP response to socket fd.
-// resp_ptr points to [status(i64), headers(Map*), body(String*)].
+// resp_ptr points to [RaskStr status_str (16B) ... ] — but currently uses
+// [status(i64), headers(Map*), body_ptr]. Keep old ABI for now.
 int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
     int64_t *resp = (int64_t *)(uintptr_t)response_ptr;
     int64_t status = resp[0];
     RaskMap *headers = (RaskMap *)(uintptr_t)resp[1];
-    RaskString *body = (RaskString *)(uintptr_t)resp[2];
+    const RaskStr *body = (const RaskStr *)(uintptr_t)resp[2];
 
     const char *reason = "OK";
     switch ((int)status) {
@@ -637,42 +639,49 @@ int64_t rask_http_write_response(int64_t conn_fd, int64_t response_ptr) {
     int64_t body_len = body ? rask_string_len(body) : 0;
 
     // Build response into a growable string
-    RaskString *out = rask_string_new();
+    RaskStr out;
+    rask_string_new(&out);
     char line_buf[256];
-    int n = snprintf(line_buf, sizeof(line_buf),
-                     "HTTP/1.1 %d %s\r\n", (int)status, reason);
-    rask_string_append_cstr(out, line_buf);
+    snprintf(line_buf, sizeof(line_buf),
+             "HTTP/1.1 %d %s\r\n", (int)status, reason);
+    rask_string_append_cstr(&out, &out, line_buf);
 
     // Write user headers from Map
     if (headers && rask_map_len(headers) > 0) {
         RaskVec *keys = rask_map_keys(headers);
         for (int64_t i = 0; i < rask_vec_len(keys); i++) {
-            int64_t *key_slot = (int64_t *)rask_vec_get(keys, i);
-            if (!key_slot) continue;
-            RaskString *key = (RaskString *)(uintptr_t)*key_slot;
-            int64_t *val_slot = (int64_t *)rask_map_get(headers, key_slot);
-            if (!val_slot) continue;
-            RaskString *val = (RaskString *)(uintptr_t)*val_slot;
-            rask_string_append_cstr(out, rask_string_ptr(key));
-            rask_string_append_cstr(out, ": ");
-            rask_string_append_cstr(out, rask_string_ptr(val));
-            rask_string_append_cstr(out, "\r\n");
+            RaskStr *key = (RaskStr *)rask_vec_get(keys, i);
+            if (!key) continue;
+            RaskStr *val = (RaskStr *)rask_map_get(headers, key);
+            if (!val) continue;
+            RaskStr tmp;
+            rask_string_append_cstr(&tmp, &out, rask_string_ptr(key));
+            rask_string_free(&out);
+            rask_string_append_cstr(&out, &tmp, ": ");
+            rask_string_free(&tmp);
+            rask_string_append_cstr(&tmp, &out, rask_string_ptr(val));
+            rask_string_free(&out);
+            rask_string_append_cstr(&out, &tmp, "\r\n");
+            rask_string_free(&tmp);
         }
         rask_vec_free(keys);
     }
 
     // Content-Length header
-    n = snprintf(line_buf, sizeof(line_buf),
-                 "Content-Length: %lld\r\n\r\n", (long long)body_len);
-    rask_string_append_cstr(out, line_buf);
+    snprintf(line_buf, sizeof(line_buf),
+             "Content-Length: %lld\r\n\r\n", (long long)body_len);
+    RaskStr tmp;
+    rask_string_append_cstr(&tmp, &out, line_buf);
+    rask_string_free(&out);
+    out = tmp;
 
     // Write header + body
-    rask_io_write_string(conn_fd, (int64_t)(uintptr_t)out);
+    rask_io_write_string(conn_fd, (int64_t)(uintptr_t)&out);
     if (body_len > 0) {
         rask_io_write_string(conn_fd, (int64_t)(uintptr_t)body);
     }
 
-    rask_string_free(out);
+    rask_string_free(&out);
     return 0;
 }
 
@@ -692,8 +701,9 @@ int64_t rask_map_from(int64_t pairs_ptr) {
 }
 
 // Stub: generic json.encode — returns JSON string representation.
-RaskString *rask_json_encode(int64_t value_ptr) {
-    return rask_string_from_bytes("{}", 2);
+void rask_json_encode(RaskStr *out, int64_t value_ptr) {
+    (void)value_ptr;
+    rask_string_from_bytes(out, "{}", 2);
 }
 
 // ─── JSON module ──────────────────────────────────────────────────
@@ -753,19 +763,15 @@ RaskJsonBuf *rask_json_buf_new(void) {
     return b;
 }
 
-void rask_json_buf_add_string(RaskJsonBuf *buf, const RaskString *key, const RaskString *val) {
+void rask_json_buf_add_string(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, ":");
-    if (val) {
-        json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
-    } else {
-        json_buf_append_cstr(buf, "null");
-    }
+    json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
     buf->field_count++;
 }
 
-void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskString *key, int64_t val) {
+void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskStr *key, int64_t val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     char num[32];
@@ -774,7 +780,7 @@ void rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskString *key, int64_t val)
     buf->field_count++;
 }
 
-void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskString *key, double val) {
+void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskStr *key, double val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     char num[64];
@@ -783,31 +789,26 @@ void rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskString *key, double val) 
     buf->field_count++;
 }
 
-void rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskString *key, int64_t val) {
+void rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskStr *key, int64_t val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, val ? ":true" : ":false");
     buf->field_count++;
 }
 
-void rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskString *key, const RaskString *raw_json) {
+void rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *raw_json) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
     json_buf_append_escaped(buf, rask_string_ptr(key), rask_string_len(key));
     json_buf_append_cstr(buf, ":");
-    if (raw_json) {
-        json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
-    } else {
-        json_buf_append_cstr(buf, "null");
-    }
+    json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
     buf->field_count++;
 }
 
-RaskString *rask_json_buf_finish(RaskJsonBuf *buf) {
+void rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf) {
     json_buf_append_cstr(buf, "}");
-    RaskString *s = rask_string_from_bytes(buf->data, buf->len);
+    rask_string_from_bytes(out, buf->data, buf->len);
     rask_free(buf->data);
     rask_free(buf);
-    return s;
 }
 
 // ─── JSON array buffer ──────────────────────────────────────────
@@ -822,23 +823,15 @@ RaskJsonBuf *rask_json_buf_new_array(void) {
     return b;
 }
 
-void rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskString *raw_json) {
+void rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskStr *raw_json) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    if (raw_json) {
-        json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
-    } else {
-        json_buf_append_cstr(buf, "null");
-    }
+    json_buf_append(buf, rask_string_ptr(raw_json), rask_string_len(raw_json));
     buf->field_count++;
 }
 
-void rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskString *val) {
+void rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskStr *val) {
     if (buf->field_count > 0) json_buf_append_cstr(buf, ",");
-    if (val) {
-        json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
-    } else {
-        json_buf_append_cstr(buf, "null");
-    }
+    json_buf_append_escaped(buf, rask_string_ptr(val), rask_string_len(val));
     buf->field_count++;
 }
 
@@ -864,34 +857,28 @@ void rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val) {
     buf->field_count++;
 }
 
-RaskString *rask_json_buf_finish_array(RaskJsonBuf *buf) {
+void rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf) {
     json_buf_append_cstr(buf, "]");
-    RaskString *s = rask_string_from_bytes(buf->data, buf->len);
+    rask_string_from_bytes(out, buf->data, buf->len);
     rask_free(buf->data);
     rask_free(buf);
-    return s;
 }
 
-RaskString *rask_json_encode_string(const RaskString *s) {
+void rask_json_encode_string(RaskStr *out, const RaskStr *s) {
     struct RaskJsonBuf b;
     b.cap = 256;
     b.data = (char *)rask_alloc(b.cap);
     b.len = 0;
     b.field_count = 0;
-    if (s) {
-        json_buf_append_escaped(&b, rask_string_ptr(s), rask_string_len(s));
-    } else {
-        json_buf_append_cstr(&b, "null");
-    }
-    RaskString *result = rask_string_from_bytes(b.data, b.len);
+    json_buf_append_escaped(&b, rask_string_ptr(s), rask_string_len(s));
+    rask_string_from_bytes(out, b.data, b.len);
     rask_free(b.data);
-    return result;
 }
 
-RaskString *rask_json_encode_i64(int64_t val) {
+void rask_json_encode_i64(RaskStr *out, int64_t val) {
     char buf[32];
     int len = snprintf(buf, sizeof(buf), "%lld", (long long)val);
-    return rask_string_from_bytes(buf, (int64_t)len);
+    rask_string_from_bytes(out, buf, (int64_t)len);
 }
 
 // ─── JSON decode ──────────────────────────────────────────────────
@@ -902,7 +889,7 @@ struct RaskJsonField {
     char key[128];
     enum { JSON_STRING, JSON_NUMBER, JSON_BOOL } type;
     union {
-        RaskString *str_val;
+        RaskStr str_val;
         double num_val;
         int8_t bool_val;
     };
@@ -917,35 +904,57 @@ static void json_skip_ws(const char **p) {
     while (**p == ' ' || **p == '\t' || **p == '\n' || **p == '\r') (*p)++;
 }
 
-static RaskString *json_parse_string(const char **p) {
-    if (**p != '"') return rask_string_new();
+static void json_parse_string(RaskStr *out, const char **p) {
+    if (**p != '"') { rask_string_new(out); return; }
     (*p)++;
-    RaskString *s = rask_string_new();
+    // Scan for closing quote to know total length
+    const char *start = *p;
+    int has_escapes = 0;
+    while (**p && **p != '"') {
+        if (**p == '\\') { has_escapes = 1; (*p)++; if (**p) (*p)++; }
+        else (*p)++;
+    }
+    if (!has_escapes) {
+        // Fast path: no escapes, just copy the raw bytes
+        rask_string_from_bytes(out, start, (int64_t)(*p - start));
+        if (**p == '"') (*p)++;
+        return;
+    }
+    // Slow path: unescape. Reset and rebuild.
+    *p = start;
+    RaskStr s;
+    rask_string_new(&s);
     while (**p && **p != '"') {
         if (**p == '\\' && *(*p + 1)) {
             char c = *(*p + 1);
+            uint8_t byte;
             switch (c) {
-                case '"': case '\\': case '/':
-                    rask_string_push_byte(s, (uint8_t)c); break;
-                case 'n': rask_string_push_byte(s, '\n'); break;
-                case 't': rask_string_push_byte(s, '\t'); break;
-                case 'r': rask_string_push_byte(s, '\r'); break;
-                default: rask_string_push_byte(s, (uint8_t)c); break;
+                case '"': case '\\': case '/': byte = (uint8_t)c; break;
+                case 'n': byte = '\n'; break;
+                case 't': byte = '\t'; break;
+                case 'r': byte = '\r'; break;
+                default: byte = (uint8_t)c; break;
             }
+            RaskStr tmp;
+            rask_string_push_byte(&tmp, &s, byte);
+            rask_string_free(&s);
+            s = tmp;
             *p += 2;
         } else {
-            rask_string_push_byte(s, (uint8_t)**p);
+            RaskStr tmp;
+            rask_string_push_byte(&tmp, &s, (uint8_t)**p);
+            rask_string_free(&s);
+            s = tmp;
             (*p)++;
         }
     }
     if (**p == '"') (*p)++;
-    return s;
+    *out = s;
 }
 
-RaskJsonObj *rask_json_parse(const RaskString *s) {
+RaskJsonObj *rask_json_parse(const RaskStr *s) {
     RaskJsonObj *obj = (RaskJsonObj *)rask_alloc(sizeof(RaskJsonObj));
     memset(obj, 0, sizeof(RaskJsonObj));
-    if (!s) return obj;
 
     const char *p = rask_string_ptr(s);
     json_skip_ws(&p);
@@ -958,10 +967,11 @@ RaskJsonObj *rask_json_parse(const RaskString *s) {
         if (*p == ',') { p++; json_skip_ws(&p); }
 
         if (*p != '"') break;
-        RaskString *key = json_parse_string(&p);
+        RaskStr key;
+        json_parse_string(&key, &p);
         struct RaskJsonField *f = &obj->fields[obj->count];
-        snprintf(f->key, sizeof(f->key), "%s", rask_string_ptr(key));
-        rask_string_free(key);
+        snprintf(f->key, sizeof(f->key), "%s", rask_string_ptr(&key));
+        rask_string_free(&key);
 
         json_skip_ws(&p);
         if (*p != ':') break;
@@ -970,14 +980,14 @@ RaskJsonObj *rask_json_parse(const RaskString *s) {
 
         if (*p == '"') {
             f->type = JSON_STRING;
-            f->str_val = json_parse_string(&p);
+            json_parse_string(&f->str_val, &p);
         } else if (*p == 't' || *p == 'f') {
             f->type = JSON_BOOL;
             if (strncmp(p, "true", 4) == 0) { f->bool_val = 1; p += 4; }
             else if (strncmp(p, "false", 5) == 0) { f->bool_val = 0; p += 5; }
         } else if (*p == 'n' && strncmp(p, "null", 4) == 0) {
             f->type = JSON_STRING;
-            f->str_val = NULL;
+            rask_string_new(&f->str_val);
             p += 4;
         } else {
             f->type = JSON_NUMBER;
@@ -998,10 +1008,12 @@ static struct RaskJsonField *json_find_field(RaskJsonObj *obj, const char *key) 
     return NULL;
 }
 
-RaskString *rask_json_get_string(RaskJsonObj *obj, const char *key) {
+void rask_json_get_string(RaskStr *out, RaskJsonObj *obj, const char *key) {
     struct RaskJsonField *f = json_find_field(obj, key);
-    if (!f || f->type != JSON_STRING) return rask_string_new();
-    return f->str_val ? rask_string_clone(f->str_val) : rask_string_new();
+    if (!f || f->type != JSON_STRING) { rask_string_new(out); return; }
+    // Copy the field's string value
+    *out = f->str_val;
+    rask_string_clone(out); // RC inc if heap
 }
 
 int64_t rask_json_get_i64(RaskJsonObj *obj, const char *key) {
@@ -1022,7 +1034,7 @@ int8_t rask_json_get_bool(RaskJsonObj *obj, const char *key) {
     return f->bool_val;
 }
 
-int64_t rask_json_decode(const RaskString *s) {
+int64_t rask_json_decode(const RaskStr *s) {
     return (int64_t)(uintptr_t)rask_json_parse(s);
 }
 
