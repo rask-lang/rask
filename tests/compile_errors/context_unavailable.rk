@@ -49,7 +49,7 @@ func process_damage_explicit(enemies: Pool<Enemy>, h: Handle<Enemy>) {
 // FIX 3: Have pool in scope via local variable
 func game_loop() {
     const enemies = Pool.new()
-    const h = try enemies.insert(Enemy { health: 100, position: Vec3.zero() })
+    const h = enemies.insert(Enemy { health: 100, position: Vec3.zero() })
 
     damage(h, 10)    // ✅ Compiler passes enemies implicitly
 }
