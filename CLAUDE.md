@@ -260,13 +260,17 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | HTTP | Client + server, linear Responder, HttpClient | [http.md](specs/stdlib/http.md) |
 | Time | Duration, Instant, SystemTime, Duration scaling | [time.md](specs/stdlib/time.md) |
 | OS | Env, args, subprocess spawning, signal handling | [os.md](specs/stdlib/os.md) |
+| Compiler architecture | IR layers, SSA pipeline, analysis framework, pass manager, CTFE, debug info | [architecture.md](specs/compiler/architecture.md) |
+| Code generation | MIR-based pipeline, Cranelift backend, runtime library | [codegen.md](specs/compiler/codegen.md) |
 
 ### Open
 
 | Area | Status |
 |------|--------|
-| Build system | Skeleton only |
+| Build system | Mostly working, cross-package symbol export still open |
 | Macros/attributes | Not specified |
+| Frontend caching | LSP works, incremental check caching not yet implemented |
+| Parallel compilation | Semantic hashing done, rayon parallelism not yet implemented |
 
 See [TODO.md](TODO.md) for full list.
 

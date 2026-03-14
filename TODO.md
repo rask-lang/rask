@@ -157,6 +157,17 @@ Hardening for the package ecosystem. Not blocking any examples.
 - [x] Tuple spec, destructuring spec
 - [x] `format!` rejected (string interpolation covers it)
 
+### Compiler Architecture
+- [x] Analysis foundation — dominator tree, dataflow framework, liveness, escape, intervals, typestate, loops, call graph
+- [x] SSA construction + de-SSA — hybrid SSA pipeline (`comp.architecture/IR3`)
+- [x] String RC insertion + elision — `rc_insert.rs`, `rc_elide.rs`
+- [x] MIR CTFE — `rask-miri` crate (MIR interpreter for comptime evaluation)
+- [x] Debug info — DWARF emission via `debug_info.rs`
+- [x] Inlining — cross-function MIR inliner with call graph analysis
+- [x] Advanced analyses — handle typestate, bounds check elimination, generation coalescing, interval analysis
+- [x] MIR optimization passes — DCE, clone elision, string append, state machine (async), constant propagation
+- [x] Architecture spec promoted from proposed to decided
+
 ### Design Decisions
 - [x] Serialization / encoding spec
 - [x] Granular unsafe operations — keep blanket unsafe blocks
