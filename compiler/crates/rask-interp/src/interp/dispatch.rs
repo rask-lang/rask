@@ -211,6 +211,14 @@ impl Interpreter {
                 let guard = s.lock().unwrap();
                 self.call_args_method(&guard.fields, method, args)
             }
+            Value::Struct(ref s) if s.lock().unwrap().name == "Request" => {
+                let guard = s.lock().unwrap();
+                self.call_request_instance_method(&guard.fields, method, args)
+            }
+            Value::Struct(ref s) if s.lock().unwrap().name == "Response" => {
+                drop(s.lock().unwrap());
+                self.call_response_instance_method(receiver, method, args)
+            }
             Value::Struct(ref s) if s.lock().unwrap().name == "BuildContext" => {
                 if method == "step" {
                     return self.call_build_step(args);

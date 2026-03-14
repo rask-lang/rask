@@ -75,7 +75,7 @@ Order: generics, parameters, return type, `using` clause, `where` clause, body.
 ```rask
 func game_tick() {
     const players = Pool.new()
-    const h = try players.insert(Player.new())
+    const h = players.insert(Player.new())
     damage(h, 10)    // CC4: compiler finds local `players`, passes it
 }
 

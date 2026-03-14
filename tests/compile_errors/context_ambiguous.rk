@@ -18,7 +18,7 @@ func process_teams() {
     const team_a = Pool::<Player>.new()
     const team_b = Pool::<Player>.new()
 
-    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+    const h = team_a.insert(Player { health: 100, team_id: 1 })
 
     damage(h, 10)    // ERROR: which pool should satisfy Pool<Player>?
 }
@@ -47,7 +47,7 @@ func process_teams_fixed() {
     const team_a = Pool::<Player>.new()
     const team_b = Pool::<Player>.new()
 
-    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+    const h = team_a.insert(Player { health: 100, team_id: 1 })
 
     team_a[h].health -= 10    // ✅ Explicit pool, no ambiguity
 }
@@ -56,13 +56,13 @@ func process_teams_fixed() {
 func process_teams_scoped() {
     {
         const team_a = Pool::<Player>.new()
-        const h = try team_a.insert(Player { health: 100, team_id: 1 })
+        const h = team_a.insert(Player { health: 100, team_id: 1 })
         damage(h, 10)    // ✅ Only one Pool<Player> in scope
     }
 
     {
         const team_b = Pool::<Player>.new()
-        const h = try team_b.insert(Player { health: 100, team_id: 2 })
+        const h = team_b.insert(Player { health: 100, team_id: 2 })
         damage(h, 10)    // ✅ Only one Pool<Player> in scope
     }
 }
@@ -76,7 +76,7 @@ func process_teams_explicit() {
     const team_a = Pool::<Player>.new()
     const team_b = Pool::<Player>.new()
 
-    const h = try team_a.insert(Player { health: 100, team_id: 1 })
+    const h = team_a.insert(Player { health: 100, team_id: 1 })
 
     damage_explicit(team_a, h, 10)    // ✅ Explicitly specify pool
 }

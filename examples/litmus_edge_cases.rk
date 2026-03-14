@@ -1,0 +1,403 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Edge case tests discovered during litmus program validation.
+//
+// Tests: string Copy semantics, try-else with method calls, Vec.get() returning
+// Option<T>, and basic type system features.
+//
+// Run: rask test examples/litmus_edge_cases.rk
+
+// ─── String Copy semantics (std.strings/S1) ─────────────────────
+
+struct TextBuffer {
+    lines: Vec<string>
+}
+
+extend TextBuffer {
+    func new() -> TextBuffer {
+        return TextBuffer { lines: Vec.new() }
+    }
+
+    func add(self, text: string) {
+        self.lines.push(text)
+    }
+
+    // Requires string to be Copy — reading old_text must not borrow self.lines
+    func replace(self, index: i32, new_text: string) -> string {
+        const old_text = self.lines[index as usize]
+        self.lines[index as usize] = new_text
+        return old_text
+    }
+}
+
+test "string is Copy — read then write same container" {
+    let buf = TextBuffer.new()
+    buf.add("hello")
+    buf.add("world")
+    const old = buf.replace(0, "changed")
+    assert old == "hello"
+    assert buf.lines[0] == "changed"
+    assert buf.lines[1] == "world"
+}
+
+test "string Copy — multiple bindings same source" {
+    const original = "hello world"
+    const copy1 = original
+    const copy2 = original
+    assert original == "hello world"
+    assert copy1 == "hello world"
+    assert copy2 == "hello world"
+}
+
+struct Named { name: string }
+
+test "string Copy — assign from struct field" {
+    const obj = Named { name: "Alice" }
+    const n1 = obj.name
+    const n2 = obj.name
+    assert n1 == "Alice"
+    assert n2 == "Alice"
+}
+
+// ─── Vec.get() returns Option<T> (collections/V3) ───────────────
+
+test "Vec.get returns Some for valid index" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    const first = v.get(0)
+    assert first is Some
+
+    const second = v.get(1).unwrap()
+    assert second == 20
+}
+
+test "Vec.get returns None for out of bounds" {
+    const v = Vec.new()
+    v.push(42)
+
+    const out = v.get(5)
+    assert out is None
+}
+
+test "Vec.get unwrap matches expected value" {
+    const v = Vec.new()
+    v.push(100)
+    v.push(200)
+    assert v.get(0).unwrap() == 100
+    assert v.get(1).unwrap() == 200
+}
+
+// ─── try-else with method calls ────────────────────────────────
+
+enum InnerError {
+    BadInput(string),
+}
+
+enum OuterError {
+    Wrapped(InnerError),
+    Other(string),
+}
+
+struct Validator {
+    threshold: i32
+}
+
+extend Validator {
+    func check(self, value: i32) -> i32 or InnerError {
+        if value < self.threshold {
+            return Err(InnerError.BadInput("below threshold"))
+        }
+        return Ok(value * 2)
+    }
+}
+
+func use_validator(v: Validator, x: i32) -> i32 or OuterError {
+    const result = try v.check(x) else |e| OuterError.Wrapped(e)
+    return Ok(result)
+}
+
+func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
+    const result = try v.check(x)
+        else |e| OuterError.Wrapped(e)
+    return Ok(result)
+}
+
+test "try-else with method call — success" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator(v, 10)
+    assert result is Ok
+}
+
+test "try-else with method call — error transforms" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator(v, 3)
+    assert result is Err
+}
+
+test "try-else multiline with method call — success" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator_multiline(v, 10)
+    assert result is Ok
+}
+
+test "try-else multiline with method call — error transforms" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator_multiline(v, 3)
+    assert result is Err
+}
+
+// ─── try-else with trait objects ────────────────────────────────
+
+enum ParseError {
+    InvalidFormat(string),
+}
+
+enum ProcessError {
+    Parse(ParseError),
+    Logic(string),
+}
+
+trait Parser {
+    func parse(self, input: string) -> i32 or ParseError
+}
+
+struct StrictParser {}
+
+extend StrictParser with Parser {
+    func parse(self, input: string) -> i32 or ParseError {
+        if input == "42" {
+            return Ok(42)
+        }
+        return Err(ParseError.InvalidFormat("not 42"))
+    }
+}
+
+func process_with_parser(p: any Parser, input: string) -> i32 or ProcessError {
+    const val = try p.parse(input) else |e| ProcessError.Parse(e)
+    return Ok(val * 2)
+}
+
+test "try-else with trait object — success" {
+    const p = StrictParser {}
+    const result = process_with_parser(p, "42")
+    assert result is Ok
+    assert result.unwrap() == 84
+}
+
+test "try-else with trait object — error transforms" {
+    const p = StrictParser {}
+    const result = process_with_parser(p, "bad")
+    assert result is Err
+}
+
+// ─── String Copy in collections ─────────────────────────────────
+
+test "string Copy — Vec of strings, read multiple" {
+    const names = Vec.new()
+    names.push("Alice")
+    names.push("Bob")
+    names.push("Charlie")
+    // Read same element multiple times — must not move
+    const a1 = names[0]
+    const a2 = names[0]
+    assert a1 == "Alice"
+    assert a2 == "Alice"
+    assert names.len() == 3
+}
+
+test "string Copy — Map with string keys and values" {
+    const m = Map.new()
+    m.insert("key1", "value1")
+    m.insert("key2", "value2")
+    const v1 = m["key1"]
+    const v2 = m["key1"]
+    assert v1 == "value1"
+    assert v2 == "value1"
+}
+
+func take_string(s: string) -> string {
+    return s
+}
+
+test "string Copy — pass to function and keep original" {
+    const original = "immutable"
+    const copy = take_string(original)
+    assert original == "immutable"
+    assert copy == "immutable"
+}
+
+// ─── Pool with string fields ────────────────────────────────────
+
+struct Entity {
+    name: string
+    health: i32
+}
+
+test "Pool — string fields Copy correctly" {
+    const pool = Pool.new()
+    const h = pool.insert(Entity { name: "Hero", health: 100 })
+    // Read string field — should be Copy, not move
+    const name1 = pool[h].name
+    const name2 = pool[h].name
+    assert name1 == "Hero"
+    assert name2 == "Hero"
+    assert pool[h].health == 100
+}
+
+test "Pool — modify non-string field after reading string" {
+    const pool = Pool.new()
+    const h = pool.insert(Entity { name: "Hero", health: 100 })
+    const name = pool[h].name
+    with pool[h] as e {
+        e.health = 50
+    }
+    assert name == "Hero"
+    assert pool[h].health == 50
+}
+
+// ─── Vec.get with pattern matching ──────────────────────────────
+
+test "Vec.get — pattern match Some" {
+    const v = Vec.new()
+    v.push("hello")
+    if v.get(0) is Some(val) {
+        assert val == "hello"
+    } else {
+        assert false, "expected Some"
+    }
+}
+
+test "Vec.get — pattern match None" {
+    const v = Vec.new()
+    v.push(1)
+    if v.get(99) is Some {
+        assert false, "expected None"
+    }
+}
+
+test "Vec.get — guard pattern" {
+    const v = Vec.new()
+    v.push(42)
+    const val = v.get(0) is Some else { panic("missing") }
+    assert val == 42
+}
+
+// ─── try-else error value verification ──────────────────────────
+
+test "try-else — error value is correctly transformed" {
+    const v = Validator { threshold: 10 }
+    const result = use_validator(v, 3)
+    match result {
+        Err(OuterError.Wrapped(InnerError.BadInput(msg))) => {
+            assert msg == "below threshold"
+        }
+        _ => assert false, "expected Wrapped(BadInput)"
+    }
+}
+
+// ─── Chained try-else ───────────────────────────────────────────
+
+enum ChainError {
+    Step1(string),
+    Step2(string),
+}
+
+func step1(x: i32) -> i32 or string {
+    if x < 0 { return Err("negative") }
+    return Ok(x + 1)
+}
+
+func step2(x: i32) -> i32 or string {
+    if x > 100 { return Err("too large") }
+    return Ok(x * 2)
+}
+
+func chained(x: i32) -> i32 or ChainError {
+    const a = try step1(x) else |e| ChainError.Step1(e)
+    const b = try step2(a) else |e| ChainError.Step2(e)
+    return Ok(b)
+}
+
+test "chained try-else — all succeed" {
+    const result = chained(5)
+    assert result is Ok
+    assert result.unwrap() == 12
+}
+
+test "chained try-else — first fails" {
+    const result = chained(-1)
+    assert result is Err(ChainError.Step1(_))
+}
+
+test "chained try-else — second fails" {
+    const result = chained(99)
+    const result2 = chained(200)
+    assert result is Ok
+    assert result2 is Err(ChainError.Step2(_))
+}
+
+// ─── HTTP types (Response constructors, Request.path) ───────────
+
+import http
+
+test "Response.ok creates 200 response" {
+    const resp = Response.ok("hello")
+    assert resp.status == 200
+    assert resp.body == "hello"
+}
+
+test "Response.not_found creates 404" {
+    const resp = Response.not_found()
+    assert resp.status == 404
+}
+
+test "Response.json sets content type" {
+    const resp = Response.json("{}")
+    assert resp.status == 200
+    assert resp.body == "{}"
+}
+
+test "Response.with_status changes status" {
+    const resp = Response.ok("created").with_status(201)
+    assert resp.status == 201
+    assert resp.body == "created"
+}
+
+test "Response.bad_request creates 400" {
+    const resp = Response.bad_request("invalid")
+    assert resp.status == 400
+    assert resp.body == "invalid"
+}
+
+// ─── File I/O round-trip ────────────────────────────────────────
+
+import fs
+
+test "fs write and read round-trip" {
+    const path = "/tmp/rask_test_litmus.txt"
+    const content = "hello from rask\nsecond line\n"
+    fs.write_file(path, content)
+    const read_back = fs.read_file(path) is Ok(data) else {
+        assert false, "failed to read back"
+        return
+    }
+    assert read_back == content
+}
+
+test "fs read_lines returns correct line count" {
+    const path = "/tmp/rask_test_litmus2.txt"
+    fs.write_file(path, "line1\nline2\nline3\n")
+    const lines = fs.read_lines(path) is Ok(l) else {
+        assert false, "failed to read lines"
+        return
+    }
+    assert lines.len() == 3
+}
+
+// ─── Entry point ────────────────────────────────────────────────
+
+func main() {
+    println("Run 'rask test examples/litmus_edge_cases.rk' to run tests")
+}

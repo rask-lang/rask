@@ -67,7 +67,7 @@ extend GameState {
         let entities = Pool.new()
 
         // Spawn player at center
-        const player_handle = try entities.insert(Entity {
+        const player_handle = entities.insert(Entity {
             position: Position { x: 400.0f32, y: 300.0f32 },
             velocity: Velocity { dx: 0.0f32, dy: 0.0f32 },
             health: Health { current: 100, max: 100 },

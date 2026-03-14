@@ -282,7 +282,7 @@ func process_many_files(paths: Vec<string>) -> () or Error {
 
     for path in paths {
         const file = try File.open(path)
-        const h = try files.insert(file)
+        const h = files.insert(file)
         // ... use files[h] ...
     }
 
@@ -301,7 +301,7 @@ func process_many_files_careful(paths: Vec<string>) -> () or Error {
 
     for path in paths {
         const file = try File.open(path)
-        const h = try files.insert(file)
+        const h = files.insert(file)
         // ... use files[h] ...
     }
 
