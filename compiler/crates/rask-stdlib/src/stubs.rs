@@ -107,13 +107,17 @@ impl StubRegistry {
     /// referenced by impl blocks and function bodies.
     pub fn compilable_decls() -> Vec<Decl> {
         let mut decls = Vec::new();
+        // Start NodeIds high to avoid collision with user code NodeIds.
+        let mut next_id: u32 = 1_000_000;
 
         for (_filename, source) in STUB_SOURCES {
             let lex_result = rask_lexer::Lexer::new(source).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let parse_result = parser.parse();
+            next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
                 DeclKind::Fn(f) => !f.body.is_empty(),
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
@@ -145,13 +149,16 @@ impl StubRegistry {
     /// function bodies. Injected into the monomorphizer for layout computation.
     pub fn compilable_struct_defs() -> Vec<Decl> {
         let mut decls = Vec::new();
+        let mut next_id: u32 = 2_000_000;
 
         for (_filename, source) in STUB_SOURCES {
             let lex_result = rask_lexer::Lexer::new(source).tokenize();
             if !lex_result.is_ok() {
                 continue;
             }
-            let parse_result = rask_parser::Parser::new(lex_result.tokens).parse();
+            let mut parser = rask_parser::Parser::new_with_start_id(lex_result.tokens, next_id);
+            let parse_result = parser.parse();
+            next_id = parser.next_node_id();
             let has_fn_body = parse_result.decls.iter().any(|d| match &d.kind {
                 DeclKind::Fn(f) => !f.body.is_empty(),
                 DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
