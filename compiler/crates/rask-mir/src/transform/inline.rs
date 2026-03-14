@@ -16,9 +16,22 @@ use std::collections::HashMap;
 
 use crate::analysis::call_graph::CallGraph;
 use crate::{
-    BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand, MirRValue,
-    MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
+    BlockId, FunctionRef, LocalId, MirBlock, MirFunction, MirLocal, MirOperand,
+    MirRValue, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType, Span,
 };
+
+/// DI5: metadata for a region of inlined code within a function.
+/// Returned as a side-channel from the inlining pass — not stored on MirFunction.
+#[derive(Debug, Clone)]
+pub struct InlineRegion {
+    /// Name of the callee function that was inlined.
+    pub callee_name: String,
+    /// Span of the call site in the caller (for DW_AT_call_line).
+    pub call_site: Span,
+    /// Source byte offset range of the callee's body.
+    /// Used to identify which native srclocs belong to this inline region.
+    pub callee_body_span: Span,
+}
 
 /// Maximum MIR statement count for size-based inlining (IN2).
 const MAX_INLINE_STMTS: usize = 20;
@@ -29,9 +42,11 @@ const MAX_INLINE_DEPTH: usize = 8;
 
 /// Run the inlining pass over all functions.
 ///
-/// This is a cross-function pass: it reads all functions to build a call graph,
-/// then modifies callers by splicing in callee bodies.
-pub fn inline_functions(fns: &mut Vec<MirFunction>) {
+/// Returns DI5 inline region metadata as a side-channel (caller name → regions).
+/// This keeps debug concerns out of MirFunction.
+pub fn inline_functions(fns: &mut Vec<MirFunction>) -> HashMap<String, Vec<InlineRegion>> {
+    let mut inline_metadata: HashMap<String, Vec<InlineRegion>> = HashMap::new();
+
     // Build call graph for heuristics
     let cg = CallGraph::build(fns);
 
@@ -44,13 +59,15 @@ pub fn inline_functions(fns: &mut Vec<MirFunction>) {
         .collect();
 
     if callee_bodies.is_empty() {
-        return;
+        return inline_metadata;
     }
 
     // Inline into each function
     for func in fns.iter_mut() {
-        inline_into_function(func, &callee_bodies, &cg, 0);
+        inline_into_function(func, &callee_bodies, &cg, 0, &mut inline_metadata);
     }
+
+    inline_metadata
 }
 
 /// Determine if a function is a candidate for inlining at any call site.
@@ -80,6 +97,7 @@ fn inline_into_function(
     callee_bodies: &HashMap<String, MirFunction>,
     cg: &CallGraph,
     depth: usize,
+    inline_metadata: &mut HashMap<String, Vec<InlineRegion>>,
 ) {
     if depth >= MAX_INLINE_DEPTH {
         return;
@@ -102,7 +120,7 @@ fn inline_into_function(
             };
 
             if should {
-                let did_inline = try_inline_call(func, block_idx, stmt_idx, callee_bodies, cg, depth);
+                let did_inline = try_inline_call(func, block_idx, stmt_idx, callee_bodies, cg, depth, inline_metadata);
                 if did_inline {
                     // After inlining, the block was split. The current block_idx
                     // now ends with a Goto into the inlined code. Don't advance
@@ -126,6 +144,7 @@ fn try_inline_call(
     callee_bodies: &HashMap<String, MirFunction>,
     _cg: &CallGraph,
     _depth: usize,
+    inline_metadata: &mut HashMap<String, Vec<InlineRegion>>,
 ) -> bool {
     // Extract call info
     let (dst, callee_name, args, call_span) = {
@@ -287,7 +306,46 @@ fn try_inline_call(
         fixup_return_values(caller, callee, &block_map, &local_map, ret_dst);
     }
 
+    // DI5: record inline region so DWARF can emit DW_TAG_inlined_subroutine
+    let callee_body_span = compute_body_span(callee);
+    if callee_body_span.end > 0 {
+        inline_metadata
+            .entry(caller.name.clone())
+            .or_default()
+            .push(InlineRegion {
+                callee_name: callee_name.clone(),
+                call_site: call_span,
+                callee_body_span,
+            });
+    }
+
     true
+}
+
+/// Compute the min..max source byte offset range across all statements
+/// and terminators in a function. Returns Span(0, 0) if no real spans found.
+fn compute_body_span(func: &MirFunction) -> Span {
+    let mut min_start = u32::MAX;
+    let mut max_end = 0u32;
+    for block in &func.blocks {
+        for stmt in &block.statements {
+            let s = stmt.span;
+            if s.end > 0 {
+                min_start = min_start.min(s.start as u32);
+                max_end = max_end.max(s.end as u32);
+            }
+        }
+        let t = block.terminator.span;
+        if t.end > 0 {
+            min_start = min_start.min(t.start as u32);
+            max_end = max_end.max(t.end as u32);
+        }
+    }
+    if max_end == 0 {
+        Span::new(0, 0)
+    } else {
+        Span::new(min_start as usize, max_end as usize)
+    }
 }
 
 // --- Renumbering helpers ---
@@ -669,6 +727,7 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             source_file: None,
+
         }
     }
 
@@ -695,13 +754,14 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             source_file: None,
+
         }
     }
 
     #[test]
     fn basic_inline() {
         let mut fns = vec![make_caller(), make_simple_callee()];
-        inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns);
 
         let main = &fns[0];
         // Original block should now end with Goto (not the call)
@@ -740,10 +800,11 @@ mod tests {
                 entry_block: BlockId(0),
                 is_extern_c: false,
                 source_file: None,
+    
             },
         ];
         let blocks_before = fns[0].blocks.len();
-        inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns);
         // Should NOT have inlined — block count unchanged
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
@@ -767,9 +828,10 @@ mod tests {
             entry_block: BlockId(0),
             is_extern_c: false,
             source_file: None,
+
         }];
         let blocks_before = fns[0].blocks.len();
-        inline_functions(&mut fns);
+        let _ = inline_functions(&mut fns);
         assert_eq!(fns[0].blocks.len(), blocks_before);
     }
 

@@ -3,27 +3,39 @@
 //! Pass manager — runs MIR optimization passes in sequence.
 //!
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
-//! providing shared context for cross-function analysis.
+//! threading a `PassContext` through for side-channel metadata collection.
 
+use std::collections::HashMap;
 use crate::MirFunction;
+use crate::transform::inline::InlineRegion;
 
 /// A MIR-to-MIR transformation pass.
 pub trait MirPass {
     /// Short name for logging/debugging.
     fn name(&self) -> &str;
 
-    /// Run on the full set of functions. Default iterates per-function.
-    /// Override for cross-function passes (e.g., closure escape analysis).
-    fn run(&self, fns: &mut Vec<MirFunction>) {
+    /// Run on the full set of functions with shared context.
+    /// Default iterates per-function (ignoring ctx).
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         for func in fns.iter_mut() {
             self.run_function(func);
         }
     }
 
     /// Run on a single function. Default is no-op.
-    /// Most passes override this.
     fn run_function(&self, _func: &mut MirFunction) {}
 }
+
+/// Shared context threaded through the pass pipeline.
+/// Passes can write metadata here; downstream consumers read it.
+#[derive(Debug, Default)]
+pub struct PassContext {
+    /// DI5: inline region metadata per caller function name.
+    pub inline_regions: HashMap<String, Vec<InlineRegion>>,
+}
+
+/// Convenience alias — the result of running the pipeline is the context.
+pub type PipelineResult = PassContext;
 
 /// Runs a sequence of MIR passes.
 pub struct PassManager {
@@ -40,11 +52,13 @@ impl PassManager {
         self.passes.push(Box::new(pass));
     }
 
-    /// Run all passes in order.
-    pub fn run(&self, fns: &mut Vec<MirFunction>) {
+    /// Run all passes in order. Returns the accumulated context.
+    pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
+        let mut ctx = PassContext::default();
         for pass in &self.passes {
-            pass.run(fns);
+            pass.run(fns, &mut ctx);
         }
+        ctx
     }
 
     /// Build the default optimization pipeline.
@@ -71,7 +85,7 @@ pub struct ClosureOptimizationPass;
 
 impl MirPass for ClosureOptimizationPass {
     fn name(&self) -> &str { "closure_optimization" }
-    fn run(&self, fns: &mut Vec<MirFunction>) {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_all_closures(fns);
     }
 }
@@ -81,8 +95,8 @@ pub struct InliningPass;
 
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
-    fn run(&self, fns: &mut Vec<MirFunction>) {
-        crate::transform::inline::inline_functions(fns);
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        ctx.inline_regions = crate::transform::inline::inline_functions(fns);
     }
 }
 
@@ -91,7 +105,7 @@ pub struct StringConcatPass;
 
 impl MirPass for StringConcatPass {
     fn name(&self) -> &str { "string_concat" }
-    fn run(&self, fns: &mut Vec<MirFunction>) {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_string_concat(fns);
     }
 }
@@ -101,7 +115,7 @@ pub struct CloneElisionPass;
 
 impl MirPass for CloneElisionPass {
     fn name(&self) -> &str { "clone_elision" }
-    fn run(&self, fns: &mut Vec<MirFunction>) {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::elide_clones(fns);
     }
 }
@@ -141,7 +155,7 @@ pub struct GenerationCoalescingPass;
 
 impl MirPass for GenerationCoalescingPass {
     fn name(&self) -> &str { "generation_coalescing" }
-    fn run(&self, fns: &mut Vec<MirFunction>) {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::coalesce_generation_checks(fns);
     }
 }

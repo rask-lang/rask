@@ -8,6 +8,7 @@ use cranelift_module::{DataDescription, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use std::collections::{HashMap, HashSet};
 
+use rask_ast::LineMap;
 use rask_mir::{MirConst, MirFunction, MirOperand};
 use rask_mono::{EnumLayout, MonoProgram, StructLayout};
 use crate::builder::FunctionBuilder;
@@ -34,6 +35,14 @@ pub struct CodeGenerator {
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
+    /// Collected debug info per function (debug builds only)
+    debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
+    /// Line map for converting byte offsets to line:col (debug builds)
+    line_map: Option<LineMap>,
+    /// Source file name for DWARF emission
+    source_file_name: Option<String>,
+    /// DI5: inline region metadata from the inlining pass (caller name → regions)
+    inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
 }
 
 impl CodeGenerator {
@@ -65,6 +74,10 @@ impl CodeGenerator {
             internal_fns: HashSet::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            debug_srclocs: Vec::new(),
+            line_map: None,
+            source_file_name: None,
+            inline_regions: HashMap::new(),
         })
     }
 
@@ -107,7 +120,24 @@ impl CodeGenerator {
             internal_fns: HashSet::new(),
             build_mode,
             vtable_data: HashMap::new(),
+            debug_srclocs: Vec::new(),
+            line_map: None,
+            source_file_name: None,
+            inline_regions: HashMap::new(),
         })
+    }
+
+    /// Set debug info context for DWARF emission.
+    /// Call before gen_function() if you want debug line tables.
+    pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
+        self.source_file_name = Some(source_file.to_string());
+        self.line_map = Some(line_map);
+    }
+
+    /// Set DI5 inline region metadata from the inlining pass.
+    /// Call before gen_function() in debug builds.
+    pub fn set_inline_regions(&mut self, regions: HashMap<String, Vec<rask_mir::InlineRegion>>) {
+        self.inline_regions = regions;
     }
 
     /// Declare runtime functions as external imports.
@@ -762,6 +792,20 @@ impl CodeGenerator {
             .define_function(*func_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
+        // Collect debug info (srclocs, variables, inline regions)
+        if self.build_mode == BuildMode::Debug {
+            if let Some(compiled) = self.ctx.compiled_code() {
+                let inline_regions = self.inline_regions.get(&mir_fn.name)
+                    .map(|v| v.as_slice()).unwrap_or(&[]);
+                if let Some(info) = crate::debug_info::collect_function_debug(
+                    compiled, *func_id, mir_fn, inline_regions,
+                    &self.struct_layouts, &self.enum_layouts, self.line_map.as_ref(),
+                ) {
+                    self.debug_srclocs.push(info);
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -926,7 +970,20 @@ impl CodeGenerator {
 
     /// Emit the final object file. Consumes self because finish() takes ownership.
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
-        let product = self.module.finish();
+        let mut product = self.module.finish();
+
+        // Emit DWARF debug info in debug builds
+        if self.build_mode == BuildMode::Debug {
+            if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {
+                let resolved = crate::debug_info::resolve_debug_info(
+                    &self.debug_srclocs, &product,
+                );
+                crate::debug_info::emit_dwarf(
+                    &mut product.object, &resolved, line_map, source_file,
+                )?;
+            }
+        }
+
         let bytes = product.emit()
             .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
 

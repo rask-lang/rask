@@ -3,7 +3,7 @@
 //! Function builder — lowers MIR to Cranelift IR.
 
 use cranelift::prelude::*;
-use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, StackSlot, StackSlotData, StackSlotKind};
+use cranelift_codegen::ir::{FuncRef, Function, GlobalValue, InstBuilder, MemFlags, SourceLoc, StackSlot, StackSlotData, StackSlotKind};
 use cranelift_codegen::ir::condcodes::{FloatCC, IntCC};
 use cranelift_frontend::{FunctionBuilder as ClifFunctionBuilder, FunctionBuilderContext};
 use std::collections::{HashMap, HashSet};
@@ -245,10 +245,12 @@ impl<'a> FunctionBuilder<'a> {
 
             // Lower statements
             for stmt in &mir_block.statements {
+                Self::apply_srcloc(&mut builder, stmt.span);
                 Self::lower_stmt(&mut builder, stmt, &ctx)?;
             }
 
             // Lower terminator
+            Self::apply_srcloc(&mut builder, mir_block.terminator.span);
             Self::lower_terminator(&mut builder, &mir_block.terminator, &ctx, &cleanup_chain_blocks)?;
         }
 
@@ -300,6 +302,20 @@ impl<'a> FunctionBuilder<'a> {
 
         builder.finalize();
         Ok(())
+    }
+
+    /// Set Cranelift source location from a MIR span.
+    /// Real spans (end > 0) encode as SourceLoc(start + 1) to avoid the
+    /// SourceLoc(0) value which Cranelift reserves internally.
+    /// Dummy spans (0..0) clear the location.
+    fn apply_srcloc(builder: &mut ClifFunctionBuilder, span: rask_mir::Span) {
+        if span.end > 0 {
+            // +1 so that byte offset 0 becomes SourceLoc(1), avoiding any
+            // ambiguity with "no location" values.
+            builder.set_srcloc(SourceLoc::new(span.start as u32 + 1));
+        } else {
+            builder.set_srcloc(SourceLoc::default());
+        }
     }
 
     fn lower_stmt(
