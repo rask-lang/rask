@@ -15,31 +15,6 @@ use crate::builder::FunctionBuilder;
 use crate::types::{mir_to_cranelift_type, type_string_to_mir};
 use crate::{BuildMode, CodegenError, CodegenResult};
 
-/// Source location entry mapping native code offset to source byte offset.
-#[derive(Debug, Clone)]
-pub struct SrcLocEntry {
-    /// Offset within the function's native code
-    pub native_offset: u32,
-    /// Byte offset in the source file (the SourceLoc value)
-    pub source_offset: u32,
-}
-
-/// Per-function debug info collected after compilation.
-#[derive(Debug, Clone)]
-pub struct FunctionDebugInfo {
-    pub func_id: cranelift_module::FuncId,
-    pub name: String,
-    pub srclocs: Vec<SrcLocEntry>,
-    /// Native code byte length (for DW_AT_high_pc).
-    pub code_size: u32,
-    /// Formal parameters (DI3).
-    pub params: Vec<crate::debug_info::VarInfo>,
-    /// Named local variables (DI3).
-    pub locals: Vec<crate::debug_info::VarInfo>,
-    /// DI5: inlined callees with their native address ranges.
-    pub inlined_callees: Vec<crate::debug_info::InlinedCalleeInfo>,
-}
-
 pub struct CodeGenerator {
     module: ObjectModule,
     ctx: codegen::Context,
@@ -60,8 +35,8 @@ pub struct CodeGenerator {
     build_mode: BuildMode,
     /// VTable data sections for trait objects (vtable_name → DataId)
     vtable_data: HashMap<String, cranelift_module::DataId>,
-    /// Collected srcloc mappings per function (debug builds only)
-    debug_srclocs: Vec<FunctionDebugInfo>,
+    /// Collected debug info per function (debug builds only)
+    debug_srclocs: Vec<crate::debug_info::FunctionDebugInfo>,
     /// Line map for converting byte offsets to line:col (debug builds)
     line_map: Option<LineMap>,
     /// Source file name for DWARF emission
@@ -817,54 +792,16 @@ impl CodeGenerator {
             .define_function(*func_id, &mut self.ctx)
             .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
 
-        // Collect srcloc mappings for debug info (DI2)
+        // Collect debug info (srclocs, variables, inline regions)
         if self.build_mode == BuildMode::Debug {
             if let Some(compiled) = self.ctx.compiled_code() {
-                let all_srclocs = compiled.buffer.get_srclocs_sorted();
-                let mut srclocs = Vec::new();
-                for entry in all_srclocs {
-                    if !entry.loc.is_default() && entry.loc.bits() > 0 {
-                        srclocs.push(SrcLocEntry {
-                            native_offset: entry.start,
-                            // Decode: apply_srcloc encodes as offset+1
-                            source_offset: entry.loc.bits() - 1,
-                        });
-                    }
-                }
-                if !srclocs.is_empty() {
-                    let code_size = all_srclocs.last().map(|e| e.end).unwrap_or(0);
-                    let params: Vec<_> = mir_fn.params.iter()
-                        .map(|p| mir_type_to_var_info(
-                            p.name.as_deref().unwrap_or("_"),
-                            &p.ty,
-                            &self.struct_layouts,
-                            &self.enum_layouts,
-                        ))
-                        .collect();
-                    let locals: Vec<_> = mir_fn.locals.iter()
-                        .filter(|l| l.name.is_some() && !l.is_param)
-                        .map(|l| mir_type_to_var_info(
-                            l.name.as_deref().unwrap(),
-                            &l.ty,
-                            &self.struct_layouts,
-                            &self.enum_layouts,
-                        ))
-                        .collect();
-                    // DI5: compute native address ranges for inlined callees
-                    let inlined_callees = compute_inline_ranges(
-                        &srclocs,
-                        self.inline_regions.get(&mir_fn.name).map(|v| v.as_slice()).unwrap_or(&[]),
-                        self.line_map.as_ref(),
-                    );
-                    self.debug_srclocs.push(FunctionDebugInfo {
-                        func_id: *func_id,
-                        name: mir_fn.name.clone(),
-                        srclocs,
-                        code_size,
-                        params,
-                        locals,
-                        inlined_callees,
-                    });
+                let inline_regions = self.inline_regions.get(&mir_fn.name)
+                    .map(|v| v.as_slice()).unwrap_or(&[]);
+                if let Some(info) = crate::debug_info::collect_function_debug(
+                    compiled, *func_id, mir_fn, inline_regions,
+                    &self.struct_layouts, &self.enum_layouts, self.line_map.as_ref(),
+                ) {
+                    self.debug_srclocs.push(info);
                 }
             }
         }
@@ -1038,27 +975,11 @@ impl CodeGenerator {
         // Emit DWARF debug info in debug builds
         if self.build_mode == BuildMode::Debug {
             if let (Some(line_map), Some(source_file)) = (&self.line_map, &self.source_file_name) {
-                // Resolve FuncId → object SymbolId for DWARF address references
-                let resolved: Vec<crate::debug_info::ResolvedFunctionDebug> = self.debug_srclocs.iter()
-                    .map(|f| {
-                        let sym = product.function_symbol(f.func_id);
-                        crate::debug_info::ResolvedFunctionDebug {
-                            symbol_id: sym,
-                            name: f.name.clone(),
-                            srclocs: f.srclocs.clone(),
-                            code_size: f.code_size,
-                            params: f.params.clone(),
-                            locals: f.locals.clone(),
-                            inlined_callees: f.inlined_callees.clone(),
-                        }
-                    })
-                    .collect();
-
+                let resolved = crate::debug_info::resolve_debug_info(
+                    &self.debug_srclocs, &product,
+                );
                 crate::debug_info::emit_dwarf(
-                    &mut product.object,
-                    &resolved,
-                    line_map,
-                    source_file,
+                    &mut product.object, &resolved, line_map, source_file,
                 )?;
             }
         }
@@ -1071,95 +992,6 @@ impl CodeGenerator {
 
         Ok(())
     }
-}
-
-/// DI5: For each inline region, find the native offset range of srclocs
-/// whose source_offset falls within the callee's body span.
-fn compute_inline_ranges(
-    srclocs: &[SrcLocEntry],
-    inline_regions: &[rask_mir::InlineRegion],
-    _line_map: Option<&LineMap>,
-) -> Vec<crate::debug_info::InlinedCalleeInfo> {
-    let mut result = Vec::new();
-    for region in inline_regions {
-        let callee_start = region.callee_body_span.start as u32;
-        let callee_end = region.callee_body_span.end as u32;
-        if callee_end == 0 {
-            continue;
-        }
-
-        let mut native_min = u32::MAX;
-        let mut native_max = 0u32;
-        for entry in srclocs {
-            if entry.source_offset >= callee_start && entry.source_offset < callee_end {
-                native_min = native_min.min(entry.native_offset);
-                native_max = native_max.max(entry.native_offset);
-            }
-        }
-
-        if native_max > 0 && native_min < u32::MAX {
-            result.push(crate::debug_info::InlinedCalleeInfo {
-                callee_name: region.callee_name.clone(),
-                call_site_offset: region.call_site.start as u32,
-                native_start: native_min,
-                native_end: native_max + 1, // past-the-end
-            });
-        }
-    }
-    result
-}
-
-/// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4.
-fn mir_type_to_var_info(
-    name: &str,
-    ty: &rask_mir::MirType,
-    struct_layouts: &[StructLayout],
-    enum_layouts: &[EnumLayout],
-) -> crate::debug_info::VarInfo {
-    use crate::debug_info::{TypeKind, VarInfo};
-    use rask_mir::{EnumLayoutId, StructLayoutId};
-
-    let (type_name, byte_size, type_kind) = match ty {
-        rask_mir::MirType::Void     => ("void".into(), 0u32, TypeKind::Other),
-        rask_mir::MirType::Bool     => ("bool".into(), 1, TypeKind::Boolean),
-        rask_mir::MirType::I8       => ("i8".into(), 1, TypeKind::Signed),
-        rask_mir::MirType::I16      => ("i16".into(), 2, TypeKind::Signed),
-        rask_mir::MirType::I32      => ("i32".into(), 4, TypeKind::Signed),
-        rask_mir::MirType::I64      => ("i64".into(), 8, TypeKind::Signed),
-        rask_mir::MirType::U8       => ("u8".into(), 1, TypeKind::Unsigned),
-        rask_mir::MirType::U16      => ("u16".into(), 2, TypeKind::Unsigned),
-        rask_mir::MirType::U32      => ("u32".into(), 4, TypeKind::Unsigned),
-        rask_mir::MirType::U64      => ("u64".into(), 8, TypeKind::Unsigned),
-        rask_mir::MirType::F32      => ("f32".into(), 4, TypeKind::Float),
-        rask_mir::MirType::F64      => ("f64".into(), 8, TypeKind::Float),
-        rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
-        rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
-        rask_mir::MirType::String   => ("string".into(), 8, TypeKind::Address),
-        rask_mir::MirType::Handle   => ("Handle".into(), 8, TypeKind::Signed),
-        rask_mir::MirType::Struct(StructLayoutId(id)) => {
-            let sname = struct_layouts.get(*id as usize)
-                .map(|s| s.name.clone())
-                .unwrap_or_else(|| "struct".into());
-            let size = struct_layouts.get(*id as usize).map(|s| s.size).unwrap_or(8);
-            (sname, size, TypeKind::Other)
-        }
-        rask_mir::MirType::Enum(EnumLayoutId(id)) => {
-            let ename = enum_layouts.get(*id as usize)
-                .map(|e| e.name.clone())
-                .unwrap_or_else(|| "enum".into());
-            let size = enum_layouts.get(*id as usize).map(|e| e.size).unwrap_or(8);
-            (ename, size, TypeKind::Other)
-        }
-        // Complex types: use a reasonable approximation
-        rask_mir::MirType::Option(inner) => {
-            let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
-            (format!("Option<{}>", inner.type_name), inner.byte_size + 8, TypeKind::Other)
-        }
-        rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
-        rask_mir::MirType::Slice(_) => ("slice".into(), 16, TypeKind::Other),
-        _ => ("unknown".into(), 8, TypeKind::Other),
-    };
-    VarInfo { name: name.to_owned(), type_name, byte_size, type_kind }
 }
 
 impl crate::Backend for CodeGenerator {

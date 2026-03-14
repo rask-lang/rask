@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 
-//! DWARF debug info emission (DI1–DI4).
+//! DWARF debug info — all debug concerns live here (DI1–DI5).
 //!
-//! Writes `.debug_info`, `.debug_abbrev`, `.debug_line`, and `.debug_str`
-//! sections into the object file. Gives debuggers line-level stepping,
-//! variable names, and type information for Rask source code.
-//!
-//! Only active in debug builds — release builds skip DWARF entirely.
+//! Collects per-function debug data after Cranelift compilation, then emits
+//! `.debug_info`, `.debug_abbrev`, `.debug_line`, and `.debug_str` sections.
+//! Only active in debug builds — release builds skip this module entirely.
 //!
 //! ## Linking requirement
 //!
 //! The Rask .o must appear *before* the C runtime sources on the link
 //! command so our DWARF sections land at offset 0 in each merged section.
-//! Without this, the CU's abbrev_offset and stmt_list point into the wrong
-//! section data. See `link.rs` for the ordering.
+//! See `link.rs` for the ordering.
+
+use std::collections::HashMap;
 
 use gimli::write::{
     Address, AttributeValue, DwarfUnit, EndianVec, LineProgram, LineString,
@@ -31,11 +30,20 @@ use gimli::{
 };
 use object::write::{Object, Relocation, SymbolId};
 use rask_ast::LineMap;
+use rask_mono::{EnumLayout, StructLayout};
 
-use crate::module::SrcLocEntry;
 use crate::CodegenError;
 
-// ── Public types (used by module.rs) ────────────────────────────────────────
+// ── Public types ─────────────────────────────────────────────────────────────
+
+/// Source location entry mapping native code offset to source byte offset.
+#[derive(Debug, Clone)]
+pub struct SrcLocEntry {
+    /// Offset within the function's native code
+    pub native_offset: u32,
+    /// Byte offset in the source file (the SourceLoc value)
+    pub source_offset: u32,
+}
 
 /// DWARF type category for a variable's type.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -66,24 +74,206 @@ pub struct InlinedCalleeInfo {
     pub native_end: u32,
 }
 
-/// Per-function debug info with resolved object symbol ID.
+/// Per-function debug info collected after compilation.
+#[derive(Debug, Clone)]
+pub struct FunctionDebugInfo {
+    pub func_id: cranelift_module::FuncId,
+    pub name: String,
+    pub srclocs: Vec<SrcLocEntry>,
+    /// Native code byte length (for DW_AT_high_pc).
+    pub code_size: u32,
+    /// Formal parameters (DI3).
+    pub params: Vec<VarInfo>,
+    /// Named local variables (DI3).
+    pub locals: Vec<VarInfo>,
+    /// DI5: inlined callees with their native address ranges.
+    pub inlined_callees: Vec<InlinedCalleeInfo>,
+}
+
+/// Per-function debug info with resolved object symbol ID (ready for DWARF emission).
 pub struct ResolvedFunctionDebug {
     pub symbol_id: SymbolId,
     pub name: String,
     pub srclocs: Vec<SrcLocEntry>,
-    /// Native code byte length (DW_AT_high_pc offset from low_pc).
     pub code_size: u32,
-    /// Formal parameters (DI3: DW_TAG_formal_parameter).
     pub params: Vec<VarInfo>,
-    /// Named local variables (DI3: DW_TAG_variable).
     pub locals: Vec<VarInfo>,
-    /// DI5: inlined callees with native address ranges.
     pub inlined_callees: Vec<InlinedCalleeInfo>,
+}
+
+// ── Debug info collection (called from module.rs after each function compile) ─
+
+/// Extract srcloc mappings and variable info from a compiled function.
+///
+/// Called by CodeGenerator::gen_function after Cranelift compilation.
+/// Returns None if no srclocs were emitted.
+pub fn collect_function_debug(
+    compiled: &cranelift_codegen::CompiledCode,
+    func_id: cranelift_module::FuncId,
+    mir_fn: &rask_mir::MirFunction,
+    inline_regions: &[rask_mir::InlineRegion],
+    struct_layouts: &[StructLayout],
+    enum_layouts: &[EnumLayout],
+    line_map: Option<&LineMap>,
+) -> Option<FunctionDebugInfo> {
+    let all_srclocs = compiled.buffer.get_srclocs_sorted();
+    let mut srclocs = Vec::new();
+    for entry in all_srclocs {
+        if !entry.loc.is_default() && entry.loc.bits() > 0 {
+            srclocs.push(SrcLocEntry {
+                native_offset: entry.start,
+                // Decode: apply_srcloc encodes as offset+1
+                source_offset: entry.loc.bits() - 1,
+            });
+        }
+    }
+
+    if srclocs.is_empty() {
+        return None;
+    }
+
+    let code_size = all_srclocs.last().map(|e| e.end).unwrap_or(0);
+    let params: Vec<_> = mir_fn.params.iter()
+        .map(|p| mir_type_to_var_info(
+            p.name.as_deref().unwrap_or("_"),
+            &p.ty, struct_layouts, enum_layouts,
+        ))
+        .collect();
+    let locals: Vec<_> = mir_fn.locals.iter()
+        .filter(|l| l.name.is_some() && !l.is_param)
+        .map(|l| mir_type_to_var_info(
+            l.name.as_deref().unwrap(),
+            &l.ty, struct_layouts, enum_layouts,
+        ))
+        .collect();
+
+    let inlined_callees = compute_inline_ranges(&srclocs, inline_regions, line_map);
+
+    Some(FunctionDebugInfo {
+        func_id,
+        name: mir_fn.name.clone(),
+        srclocs,
+        code_size,
+        params,
+        locals,
+        inlined_callees,
+    })
+}
+
+/// Resolve FuncId → SymbolId and prepare for DWARF emission.
+pub fn resolve_debug_info(
+    debug_info: &[FunctionDebugInfo],
+    product: &cranelift_object::ObjectProduct,
+) -> Vec<ResolvedFunctionDebug> {
+    debug_info.iter()
+        .map(|f| {
+            let sym = product.function_symbol(f.func_id);
+            ResolvedFunctionDebug {
+                symbol_id: sym,
+                name: f.name.clone(),
+                srclocs: f.srclocs.clone(),
+                code_size: f.code_size,
+                params: f.params.clone(),
+                locals: f.locals.clone(),
+                inlined_callees: f.inlined_callees.clone(),
+            }
+        })
+        .collect()
+}
+
+// ── MIR type → VarInfo conversion ────────────────────────────────────────────
+
+/// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4.
+fn mir_type_to_var_info(
+    name: &str,
+    ty: &rask_mir::MirType,
+    struct_layouts: &[StructLayout],
+    enum_layouts: &[EnumLayout],
+) -> VarInfo {
+    use rask_mir::{EnumLayoutId, StructLayoutId};
+
+    let (type_name, byte_size, type_kind) = match ty {
+        rask_mir::MirType::Void     => ("void".into(), 0u32, TypeKind::Other),
+        rask_mir::MirType::Bool     => ("bool".into(), 1, TypeKind::Boolean),
+        rask_mir::MirType::I8       => ("i8".into(), 1, TypeKind::Signed),
+        rask_mir::MirType::I16      => ("i16".into(), 2, TypeKind::Signed),
+        rask_mir::MirType::I32      => ("i32".into(), 4, TypeKind::Signed),
+        rask_mir::MirType::I64      => ("i64".into(), 8, TypeKind::Signed),
+        rask_mir::MirType::U8       => ("u8".into(), 1, TypeKind::Unsigned),
+        rask_mir::MirType::U16      => ("u16".into(), 2, TypeKind::Unsigned),
+        rask_mir::MirType::U32      => ("u32".into(), 4, TypeKind::Unsigned),
+        rask_mir::MirType::U64      => ("u64".into(), 8, TypeKind::Unsigned),
+        rask_mir::MirType::F32      => ("f32".into(), 4, TypeKind::Float),
+        rask_mir::MirType::F64      => ("f64".into(), 8, TypeKind::Float),
+        rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
+        rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
+        rask_mir::MirType::String   => ("string".into(), 8, TypeKind::Address),
+        rask_mir::MirType::Handle   => ("Handle".into(), 8, TypeKind::Signed),
+        rask_mir::MirType::Struct(StructLayoutId(id)) => {
+            let sname = struct_layouts.get(*id as usize)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "struct".into());
+            let size = struct_layouts.get(*id as usize).map(|s| s.size).unwrap_or(8);
+            (sname, size, TypeKind::Other)
+        }
+        rask_mir::MirType::Enum(EnumLayoutId(id)) => {
+            let ename = enum_layouts.get(*id as usize)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "enum".into());
+            let size = enum_layouts.get(*id as usize).map(|e| e.size).unwrap_or(8);
+            (ename, size, TypeKind::Other)
+        }
+        rask_mir::MirType::Option(inner) => {
+            let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
+            (format!("Option<{}>", inner.type_name), inner.byte_size + 8, TypeKind::Other)
+        }
+        rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
+        rask_mir::MirType::Slice(_) => ("slice".into(), 16, TypeKind::Other),
+        _ => ("unknown".into(), 8, TypeKind::Other),
+    };
+    VarInfo { name: name.to_owned(), type_name, byte_size, type_kind }
+}
+
+// ── DI5: inline range computation ────────────────────────────────────────────
+
+/// For each inline region, find the native offset range of srclocs
+/// whose source_offset falls within the callee's body span.
+fn compute_inline_ranges(
+    srclocs: &[SrcLocEntry],
+    inline_regions: &[rask_mir::InlineRegion],
+    _line_map: Option<&LineMap>,
+) -> Vec<InlinedCalleeInfo> {
+    let mut result = Vec::new();
+    for region in inline_regions {
+        let callee_start = region.callee_body_span.start as u32;
+        let callee_end = region.callee_body_span.end as u32;
+        if callee_end == 0 {
+            continue;
+        }
+
+        let mut native_min = u32::MAX;
+        let mut native_max = 0u32;
+        for entry in srclocs {
+            if entry.source_offset >= callee_start && entry.source_offset < callee_end {
+                native_min = native_min.min(entry.native_offset);
+                native_max = native_max.max(entry.native_offset);
+            }
+        }
+
+        if native_max > 0 && native_min < u32::MAX {
+            result.push(InlinedCalleeInfo {
+                callee_name: region.callee_name.clone(),
+                call_site_offset: region.call_site.start as u32,
+                native_start: native_min,
+                native_end: native_max + 1, // past-the-end
+            });
+        }
+    }
+    result
 }
 
 // ── Internal writer with relocation tracking ─────────────────────────────────
 
-/// Tracked relocation from gimli address writes.
 #[derive(Clone)]
 struct PendingReloc {
     offset: usize,
@@ -92,7 +282,6 @@ struct PendingReloc {
     addend: i64,
 }
 
-/// Writer that records relocations for Address::Symbol references.
 #[derive(Clone)]
 struct RelocWriter {
     inner: EndianVec<RunTimeEndian>,
@@ -151,12 +340,10 @@ impl Writer for RelocWriter {
 
 // ── DWARF type deduplication ──────────────────────────────────────────────────
 
-/// Create or look up a DW_TAG_base_type / DW_TAG_structure_type entry.
-/// Returns the entry ID to use in DW_AT_type references.
 fn get_or_create_type(
     unit: &mut gimli::write::Unit,
     root: UnitEntryId,
-    type_map: &mut std::collections::HashMap<(String, u32), UnitEntryId>,
+    type_map: &mut HashMap<(String, u32), UnitEntryId>,
     var: &VarInfo,
 ) -> UnitEntryId {
     let key = (var.type_name.clone(), var.byte_size);
@@ -187,7 +374,6 @@ fn get_or_create_type(
             id
         }
         TypeKind::Other => {
-            // Structs, enums, and complex types — emit as opaque structure.
             let id = unit.add(root, gimli::DW_TAG_structure_type);
             unit.get_mut(id).set(
                 DW_AT_name,
@@ -204,7 +390,7 @@ fn get_or_create_type(
     entry_id
 }
 
-// ── Main entry point ──────────────────────────────────────────────────────────
+// ── DWARF emission ───────────────────────────────────────────────────────────
 
 /// Emit DWARF debug sections into the object file.
 ///
@@ -219,7 +405,6 @@ pub fn emit_dwarf(
         return Ok(());
     }
 
-    // Build symbol map: gimli symbol index → object SymbolId
     let symbol_map: Vec<SymbolId> = functions.iter().map(|f| f.symbol_id).collect();
 
     let encoding = Encoding {
@@ -247,7 +432,7 @@ pub fn emit_dwarf(
         .to_string_lossy()
         .into_owned();
 
-    // ── Line program (DI2) ────────────────────────────────────────────────────
+    // ── Line program (DI2) ──────────────────────────────────────────────
     let dir = LineString::String(comp_dir.as_bytes().to_vec());
     let file_name = LineString::String(file_base.as_bytes().to_vec());
     let mut program = LineProgram::new(encoding, line_encoding, dir, file_name.clone(), None);
@@ -279,7 +464,7 @@ pub fn emit_dwarf(
         );
     }
 
-    // ── DWARF compilation unit ────────────────────────────────────────────────
+    // ── Compilation unit (DI1) ──────────────────────────────────────────
     let mut dwarf = DwarfUnit::new(encoding);
     dwarf.unit.line_program = program;
 
@@ -293,9 +478,8 @@ pub fn emit_dwarf(
         root.set(DW_AT_stmt_list, AttributeValue::LineProgramRef);
     }
 
-    // ── DI4: Type entries ─────────────────────────────────────────────────────
-    let mut type_map: std::collections::HashMap<(String, u32), UnitEntryId> =
-        std::collections::HashMap::new();
+    // ── DI4: Type entries ───────────────────────────────────────────────
+    let mut type_map: HashMap<(String, u32), UnitEntryId> = HashMap::new();
 
     for func in functions {
         for var in func.params.iter().chain(func.locals.iter()) {
@@ -305,10 +489,8 @@ pub fn emit_dwarf(
         }
     }
 
-    // ── DI3: Subprogram + variable DIEs ───────────────────────────────────────
-    // Map function name → subprogram entry ID (for DI5 abstract_origin refs)
-    let mut subprogram_map: std::collections::HashMap<String, UnitEntryId> =
-        std::collections::HashMap::new();
+    // ── DI3: Subprogram + variable DIEs ─────────────────────────────────
+    let mut subprogram_map: HashMap<String, UnitEntryId> = HashMap::new();
 
     for (idx, func) in functions.iter().enumerate() {
         let sp = dwarf.unit.add(root_id, DW_TAG_subprogram);
@@ -356,9 +538,7 @@ pub fn emit_dwarf(
         }
     }
 
-    // ── DI5: Abstract instances + inlined subroutine DIEs ────────────────────
-    // Create abstract instance subprograms for inlined callees that don't
-    // already have a concrete subprogram (fully inlined, no out-of-line copy).
+    // ── DI5: Abstract instances + inlined subroutine DIEs ───────────────
     for func in functions {
         for ic in &func.inlined_callees {
             if !subprogram_map.contains_key(&ic.callee_name) {
@@ -376,7 +556,6 @@ pub fn emit_dwarf(
         }
     }
 
-    // Emit DW_TAG_inlined_subroutine inside each caller's subprogram
     for (idx, func) in functions.iter().enumerate() {
         if func.inlined_callees.is_empty() {
             continue;
@@ -397,7 +576,6 @@ pub fn emit_dwarf(
                 DW_AT_abstract_origin,
                 AttributeValue::UnitRef(callee_sp),
             );
-            // Address range: low_pc = function_symbol + native_start
             dwarf.unit.get_mut(is).set(
                 DW_AT_low_pc,
                 AttributeValue::Address(Address::Symbol {
@@ -409,19 +587,17 @@ pub fn emit_dwarf(
                 DW_AT_high_pc,
                 AttributeValue::Udata((ic.native_end - ic.native_start) as u64),
             );
-            // Call site location
             let (call_line, _call_col) = line_map.offset_to_line_col(ic.call_site_offset as usize);
             dwarf.unit.get_mut(is).set(DW_AT_call_file, AttributeValue::FileIndex(Some(file_id)));
             dwarf.unit.get_mut(is).set(DW_AT_call_line, AttributeValue::Udata(call_line as u64));
         }
     }
 
-    // ── Write sections ────────────────────────────────────────────────────────
+    // ── Write sections ──────────────────────────────────────────────────
     let mut sections = Sections::new(RelocWriter::new(symbol_map));
     dwarf.write(&mut sections)
         .map_err(|e| CodegenError::CraneliftError(format!("DWARF write: {}", e)))?;
 
-    // Collect section data before adding to object (need IDs for reloc pass)
     let mut section_data: Vec<(SectionId, Vec<u8>, Vec<PendingReloc>)> = Vec::new();
     sections.for_each_mut(|id, writer| {
         if !writer.inner.slice().is_empty() {
@@ -432,9 +608,7 @@ pub fn emit_dwarf(
         CodegenError::CraneliftError(format!("DWARF section: {}", e))
     })?;
 
-    // Add sections to object, track IDs
-    let mut obj_sections: std::collections::HashMap<SectionId, object::write::SectionId> =
-        std::collections::HashMap::new();
+    let mut obj_sections: HashMap<SectionId, object::write::SectionId> = HashMap::new();
     for (id, bytes, _) in &section_data {
         let name = dwarf_section_name(*id);
         if name.is_empty() {
@@ -449,7 +623,6 @@ pub fn emit_dwarf(
         obj_sections.insert(*id, sec_id);
     }
 
-    // Add address relocations (for DW_AT_low_pc and line sequence start addresses)
     for (id, _, relocs) in &section_data {
         if let Some(&sec_id) = obj_sections.get(id) {
             for reloc in relocs {
