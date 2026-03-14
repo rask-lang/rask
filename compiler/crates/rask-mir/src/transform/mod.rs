@@ -12,3 +12,4 @@ pub mod rc_insert;
 pub mod ssa;
 pub mod state_machine;
 pub mod string_append;
+pub mod typestate;

@@ -562,7 +562,7 @@ The LSP path runs the frontend (lex → typecheck → ownership) and stops — i
 | **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection |
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
 | **F: Inlining** ✓ | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
-| **G: Advanced analyses** | Typestate, intervals, bounds check elimination, devirtualization | `comp.advanced` spec |
+| **G: Advanced analyses** ◐ | Handle typestate (TS1-TS8, MA1-MA5) done; intervals, BCE, frozen pending | `comp.advanced` spec |
 | **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience |
 | **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance |
 

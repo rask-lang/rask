@@ -12,34 +12,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{BlockId, LocalId, MirFunction, MirOperand, MirRValue, MirStmt, MirStmtKind};
-use crate::analysis::{cfg, uses};
+use crate::analysis::{cfg, pool_ops, uses};
 
 /// Key for tracking validated (pool, handle) pairs.
 type CheckKey = (LocalId, LocalId);
 
 /// Checked state at the exit of a block: maps (pool, handle) → result local.
 type CheckedMap = HashMap<CheckKey, LocalId>;
-
-/// Pool-mutating function names that invalidate coalesced checks (MT1).
-const POOL_MUTATORS: &[&str] = &[
-    "Pool_insert",
-    "Pool_remove",
-    "Pool_clear",
-    "Pool_drain",
-    "Pool_alloc",
-];
-
-/// Known-safe pool reads that don't invalidate coalescing (MT4).
-const SAFE_POOL_CALLS: &[&str] = &[
-    "Pool_get",
-    "Pool_index",
-    "Pool_checked_access",
-    "Pool_len",
-    "Pool_handles",
-    "Pool_values",
-    "Pool_is_empty",
-    "Pool_modify",
-];
 
 /// Coalesce redundant generation checks across all functions.
 pub fn coalesce_generation_checks(fns: &mut [MirFunction]) {
@@ -210,12 +189,12 @@ fn process_invalidations(
     checked: &mut CheckedMap,
     pool_locals: &HashSet<LocalId>,
 ) {
-    if let Some(mutated_pool) = pool_mutation(stmt) {
+    if let Some(mutated_pool) = pool_ops::pool_mutation(stmt) {
         checked.retain(|&(pool, _), _| pool != mutated_pool);
     }
 
     if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
-        if !is_pool_mutator(&func.name) && !is_safe_pool_call(&func.name) {
+        if !pool_ops::is_pool_mutator(&func.name) && !pool_ops::is_safe_pool_call(&func.name) {
             for arg in args.iter() {
                 if let MirOperand::Local(id) = arg {
                     if pool_locals.contains(id) {
@@ -247,13 +226,13 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
 
     for stmt in stmts.iter_mut() {
         // Check for pool mutations before processing this statement
-        if let Some(mutated_pool) = pool_mutation(stmt) {
+        if let Some(mutated_pool) = pool_ops::pool_mutation(stmt) {
             checked.retain(|&(pool, _), _| pool != mutated_pool);
         }
 
         // Unknown calls with a pool arg invalidate that pool's entries (MT3, CF4)
         if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
-            if !is_pool_mutator(&func.name) && !is_safe_pool_call(&func.name) {
+            if !pool_ops::is_pool_mutator(&func.name) && !pool_ops::is_safe_pool_call(&func.name) {
                 for arg in args.iter() {
                     if let MirOperand::Local(id) = arg {
                         if pool_locals.contains(id) {
@@ -297,25 +276,6 @@ fn coalesce_block(stmts: &mut [MirStmt], pool_locals: &HashSet<LocalId>) {
     }
 }
 
-/// If this statement is a pool mutation, return the pool local being mutated.
-fn pool_mutation(stmt: &MirStmt) -> Option<LocalId> {
-    if let MirStmtKind::Call { func, args, .. } = &stmt.kind {
-        if is_pool_mutator(&func.name) {
-            if let Some(MirOperand::Local(pool_id)) = args.first() {
-                return Some(*pool_id);
-            }
-        }
-    }
-    None
-}
-
-fn is_pool_mutator(name: &str) -> bool {
-    POOL_MUTATORS.iter().any(|m| *m == name)
-}
-
-fn is_safe_pool_call(name: &str) -> bool {
-    SAFE_POOL_CALLS.iter().any(|s| *s == name)
-}
 
 
 #[cfg(test)]
