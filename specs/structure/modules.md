@@ -249,9 +249,16 @@ struct Node {
 
 If multi-package published libraries become common, revisit with a package-level `internal: true` flag in `build.rk` (import restriction, not item-level visibility). The *package* is internal, not individual items.
 
-### Open Questions
+### Rejected: File-Level Package Granularity
 
-**Package granularity (deferred):** Current design is directory = package (Go-style). File = package (Zig-style) is an alternative. Deferring until validation programs exist.
+**File = package granularity (rejected):** Considered making each `.rk` file its own module/namespace (Zig-style) instead of directory = package (Go-style). Rejected because:
+
+1. File = module adds 2-6 internal imports per file plus `public` on every cross-file function — strictly noisier than Go, violating the ergonomic litmus test.
+2. Tightly-coupled code (editor commands + buffer, game systems + entities) ends up marking everything `public` anyway, making file-level encapsulation counterproductive.
+3. Intra-package circular references are natural in systems code. File = module turns these into circular import errors, forcing architectural changes for module-system reasons rather than design reasons.
+4. The existing "package = team" trust model (package-default visibility) already assumes files within a package cooperate freely.
+
+Tradeoff acknowledged: directory = package makes intra-package dependencies invisible at the file level. This is a tooling problem (LSP go-to-definition), not a language problem. Scaling to large packages is handled by splitting into subdirectories — the same mechanism Go uses at Google scale.
 
 ### Implementation Status
 

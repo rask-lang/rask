@@ -63,7 +63,6 @@ Hardening for the package ecosystem. Not blocking any examples.
 
 ## Design Questions
 
-- [ ] Package granularity — folder = package (Go-style) vs file = package (Zig-style)
 - [ ] Task-local storage syntax
 - [ ] **String interop** — `as_c_str()`, `string.from_c()`
 - [ ] **Small string optimization (SSO)** — Hybrid `string` layout: inline for ≤15 bytes (no heap, no refcount), refcounted heap for larger. Most strings are short — SSO eliminates atomic overhead entirely for the common case. See `comp.string-refcount-elision` for the heap path.
