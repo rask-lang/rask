@@ -116,15 +116,38 @@ impl Interval {
     }
 }
 
+/// Metadata about a comparison that produced a boolean value.
+#[derive(Debug, Clone)]
+struct ComparisonInfo {
+    op: BinOp,
+    left: LocalId,
+    right: LocalId,
+}
+
+impl PartialEq for ComparisonInfo {
+    fn eq(&self, other: &Self) -> bool {
+        // BinOp doesn't derive Eq — compare via discriminant
+        std::mem::discriminant(&self.op) == std::mem::discriminant(&other.op)
+            && self.left == other.left
+            && self.right == other.right
+    }
+}
+impl Eq for ComparisonInfo {}
+
 /// Per-function interval map: local → interval.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntervalDomain {
     pub ranges: HashMap<LocalId, Interval>,
+    /// Tracks which comparison produced each boolean local (for branch narrowing).
+    comparisons: HashMap<LocalId, ComparisonInfo>,
+    /// Relational constraints: (a, b) means a < b is known to hold.
+    /// Survives widening better than absolute intervals.
+    pub known_lt: HashSet<(LocalId, LocalId)>,
 }
 
 impl IntervalDomain {
     pub fn new() -> Self {
-        Self { ranges: HashMap::new() }
+        Self { ranges: HashMap::new(), comparisons: HashMap::new(), known_lt: HashSet::new() }
     }
 
     pub fn get(&self, local: LocalId) -> Interval {
@@ -293,6 +316,8 @@ impl DataflowAnalysis for IntervalAnalysis {
             let ib = b.get(*key);
             result.set(*key, ia.union(ib));
         }
+        // Relational constraints: only keep what both branches agree on
+        result.known_lt = a.known_lt.intersection(&b.known_lt).copied().collect();
         result
     }
 
@@ -327,16 +352,96 @@ impl DataflowAnalysis for IntervalAnalysis {
     fn transfer_edge(
         &self,
         _from: BlockId,
-        _to: BlockId,
-        _terminator: &MirTerminator,
+        to: BlockId,
+        terminator: &MirTerminator,
         exit_state: &IntervalDomain,
     ) -> IntervalDomain {
         // IV4: Conditional narrowing after branch.
-        // Full edge narrowing (e.g., narrowing `i` to [0, len-1] in the true branch
-        // of `i < len`) requires tracking which comparison produced the branch condition.
-        // This is a follow-up — for now, the loop counter pattern is handled by the
-        // widening + constant init combination.
-        exit_state.clone()
+        let MirTerminatorKind::Branch { cond: MirOperand::Local(cond_local), then_block, else_block } = &terminator.kind else {
+            return exit_state.clone();
+        };
+
+        let Some(cmp) = exit_state.comparisons.get(cond_local) else {
+            return exit_state.clone();
+        };
+
+        let left_iv = exit_state.get(cmp.left);
+        let right_iv = exit_state.get(cmp.right);
+        let is_true_branch = to == *then_block;
+        let is_false_branch = to == *else_block;
+
+        if !is_true_branch && !is_false_branch {
+            return exit_state.clone();
+        }
+
+        let mut narrowed = exit_state.clone();
+
+        // Narrow based on comparison op and branch direction.
+        // true branch of (left < right)  → left in [left.lo, min(left.hi, right.hi - 1)]
+        //                                   right in [max(right.lo, left.lo + 1), right.hi]
+        // false branch of (left < right) → left >= right
+        //                                   left in [max(left.lo, right.lo), left.hi]
+        match (cmp.op, is_true_branch) {
+            (BinOp::Lt, true) => {
+                // left < right is true
+                narrowed.known_lt.insert((cmp.left, cmp.right));
+                if !right_iv.is_bottom() && right_iv.hi != i64::MIN {
+                    let new_left = left_iv.intersect(Interval::new(i64::MIN, right_iv.hi.saturating_sub(1)));
+                    if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+                }
+                if !left_iv.is_bottom() {
+                    let new_right = right_iv.intersect(Interval::new(left_iv.lo.saturating_add(1), i64::MAX));
+                    if !new_right.is_bottom() { narrowed.set(cmp.right, new_right); }
+                }
+            }
+            (BinOp::Lt, false) => {
+                // left >= right
+                let new_left = left_iv.intersect(Interval::new(right_iv.lo, i64::MAX));
+                if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+            }
+            (BinOp::Le, true) => {
+                // left <= right
+                let new_left = left_iv.intersect(Interval::new(i64::MIN, right_iv.hi));
+                if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+            }
+            (BinOp::Le, false) => {
+                // left > right → right < left
+                narrowed.known_lt.insert((cmp.right, cmp.left));
+                if !right_iv.is_bottom() {
+                    let new_left = left_iv.intersect(Interval::new(right_iv.lo.saturating_add(1), i64::MAX));
+                    if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+                }
+            }
+            (BinOp::Gt, true) => {
+                // left > right → same as right < left
+                narrowed.known_lt.insert((cmp.right, cmp.left));
+                if !right_iv.is_bottom() {
+                    let new_left = left_iv.intersect(Interval::new(right_iv.lo.saturating_add(1), i64::MAX));
+                    if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+                }
+            }
+            (BinOp::Gt, false) => {
+                // left <= right
+                let new_left = left_iv.intersect(Interval::new(i64::MIN, right_iv.hi));
+                if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+            }
+            (BinOp::Ge, true) => {
+                // left >= right
+                let new_left = left_iv.intersect(Interval::new(right_iv.lo, i64::MAX));
+                if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+            }
+            (BinOp::Ge, false) => {
+                // left < right
+                narrowed.known_lt.insert((cmp.left, cmp.right));
+                if !right_iv.is_bottom() && right_iv.hi != i64::MIN {
+                    let new_left = left_iv.intersect(Interval::new(i64::MIN, right_iv.hi.saturating_sub(1)));
+                    if !new_left.is_bottom() { narrowed.set(cmp.left, new_left); }
+                }
+            }
+            _ => {}
+        }
+
+        narrowed
     }
 }
 
@@ -349,6 +454,18 @@ fn transfer_stmt(
 ) {
     match &stmt.kind {
         MirStmtKind::Assign { dst, rvalue } => {
+            // Track comparisons for branch narrowing (IV4)
+            if let MirRValue::BinaryOp { op, left: MirOperand::Local(l), right: MirOperand::Local(r) } = rvalue {
+                if matches!(op, BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge) {
+                    state.comparisons.insert(*dst, ComparisonInfo {
+                        op: *op,
+                        left: *l,
+                        right: *r,
+                    });
+                }
+            }
+            // Invalidate relational constraints involving the reassigned local
+            state.known_lt.retain(|&(a, b)| a != *dst && b != *dst);
             if !int_locals.contains(dst) {
                 return;
             }
@@ -356,6 +473,7 @@ fn transfer_stmt(
             state.set(*dst, interval);
         }
         MirStmtKind::Call { dst: Some(dst), func, args: _ } => {
+            state.known_lt.retain(|&(a, b)| a != *dst && b != *dst);
             if !int_locals.contains(dst) {
                 return;
             }
@@ -368,6 +486,7 @@ fn transfer_stmt(
             }
         }
         MirStmtKind::Phi { dst, args } => {
+            state.known_lt.retain(|&(a, b)| a != *dst && b != *dst);
             if !int_locals.contains(dst) {
                 return;
             }
@@ -489,7 +608,15 @@ pub fn is_in_bounds(
     // For Vec_get: check against the length local's interval
     if let Some(len_local) = op.len_local {
         let len_interval = state.get(len_local);
-        return index_interval.provably_in_bounds(&len_interval);
+        // Absolute interval proof: index.hi < len.lo
+        if index_interval.provably_in_bounds(&len_interval) {
+            return true;
+        }
+        // Relational proof: known index < len AND index >= 0
+        if index_interval.lo >= 0 && state.known_lt.contains(&(op.index, len_local)) {
+            return true;
+        }
+        return false;
     }
 
     // For fixed-size arrays, we'd need the array length from the type.
@@ -740,20 +867,32 @@ mod tests {
         assert_eq!(ops[0].block, block(2));
         assert_eq!(ops[0].index, local(2));
 
-        // In the loop body (block 2), i has been widened by the loop.
-        // After widening, i is [0, MAX] and len is [0, MAX].
-        // Without edge narrowing, we can't prove i < len in the body.
-        // This is expected — full conditional narrowing is a follow-up optimization.
-        // The analysis still correctly identifies the index op and its intervals.
+        // With transfer_edge narrowing (IV4):
+        // Block 1 has `cond = i < len`, then branches to block 2 (true) / block 3 (false).
+        // In block 2 (true branch), i is narrowed to [i.lo, len.hi - 1].
+        // After widening, i is [0, MAX] in block 1. len is [0, MAX].
+        // In the true branch: i narrowed to [0, MAX-1].
+        // len narrowed to [1, MAX] (since i < len and i >= 0).
         let block2 = func.blocks.iter().find(|b| b.id == block(2)).unwrap();
         let state = results.state_at_statement(&analysis, block2, 0);
         let i_interval = state.get(local(2));
         let len_interval = state.get(local(1));
 
-        // i starts at 0, widened at loop header
+        // i starts at 0, widened at loop header, narrowed by i < len in true branch
         assert!(i_interval.lo >= 0, "i should be non-negative: {:?}", i_interval);
-        // len from Vec_len is [0, MAX]
-        assert_eq!(len_interval.lo, 0);
+        // len narrowed by i < len: len.lo >= i.lo + 1 = 1
+        assert!(len_interval.lo >= 1, "len in true branch should be >= 1: {:?}", len_interval);
+        // Absolute intervals are too wide after widening (i.hi = MAX-1 vs len.lo = 1).
+        // But relational constraint (i < len) survives widening.
+        assert!(
+            state.known_lt.contains(&(local(2), local(1))),
+            "should have relational constraint i < len",
+        );
+        // Full is_in_bounds check uses both absolute + relational
+        assert!(
+            is_in_bounds(&func, &analysis, &results, &ops[0]),
+            "loop index should be provably in bounds via relational constraint",
+        );
     }
 
     #[test]

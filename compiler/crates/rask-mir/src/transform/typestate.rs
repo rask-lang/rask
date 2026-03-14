@@ -16,6 +16,9 @@ use crate::MirFunction;
 ///
 /// Catches stale handle access at compile time by tracking handle validity
 /// states through control flow. Emits errors for provably invalid accesses.
+///
+/// Uses interprocedural summaries: scans all functions first to determine
+/// which callees invalidate handle parameters, then uses that during analysis.
 pub struct TypestatePass;
 
 impl MirPass for TypestatePass {
@@ -23,14 +26,20 @@ impl MirPass for TypestatePass {
         "typestate"
     }
 
-    fn run_function(&self, func: &mut MirFunction, ctx: &mut PassContext) {
-        let Some((analysis, results)) = typestate::analyze(func) else {
-            return;
-        };
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        // Phase 1: compute interprocedural summaries from all functions
+        let summaries = typestate::compute_summaries(fns);
 
-        let errors = typestate::check_errors(func, &analysis, &results);
-        for e in &errors {
-            ctx.diagnostics.push(error_to_diagnostic(e));
+        // Phase 2: analyze each function with summaries
+        for func in fns.iter() {
+            let Some((analysis, results)) = typestate::analyze_with_summaries(func, &summaries) else {
+                continue;
+            };
+
+            let errors = typestate::check_errors(func, &analysis, &results);
+            for e in &errors {
+                ctx.diagnostics.push(error_to_diagnostic(e));
+            }
         }
     }
 }

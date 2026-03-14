@@ -119,6 +119,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: true,
         },
+        // rask_vec_get_unchecked(v: const RaskVec*, index: i64) → void*
+        // Bounds already proven at compile time by interval analysis.
+        StdlibEntry {
+            mir_name: "Vec_get_unchecked",
+            c_name: "rask_vec_get_unchecked",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         // rask_vec_set(v: RaskVec*, index: i64, elem: const void*)
         StdlibEntry {
             mir_name: "Vec_set",

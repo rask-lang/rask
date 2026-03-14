@@ -249,6 +249,8 @@ pub struct TypestateAnalysis {
     pub pool_locals: HashSet<LocalId>,
     /// Initial state for the entry block (parameters → Unknown).
     pub init_state: TypestateDomain,
+    /// Interprocedural summaries for called functions.
+    pub summaries: HashMap<String, FunctionSummary>,
 }
 
 impl TypestateAnalysis {
@@ -315,6 +317,7 @@ impl TypestateAnalysis {
             handle_locals,
             pool_locals,
             init_state,
+            summaries: HashMap::new(),
         })
     }
 }
@@ -327,6 +330,7 @@ pub fn transfer_stmt(
     state: &mut TypestateDomain,
     handle_locals: &HashSet<LocalId>,
     pool_locals: &HashSet<LocalId>,
+    summaries: &HashMap<String, FunctionSummary>,
 ) {
     let span = stmt.span;
 
@@ -470,11 +474,30 @@ pub fn transfer_stmt(
             }
         }
 
-        // Function call with handle args: break aliases (MA3)
+        // Function call with handle args: break aliases (MA3) + apply summaries
         MirStmtKind::Call { func, args, .. }
             if !pool_ops::is_pool_mutator(&func.name)
                 && !pool_ops::is_safe_pool_call(&func.name) =>
         {
+            // Apply interprocedural summaries: if the callee invalidates a param,
+            // mark the corresponding argument handle as Invalid.
+            if let Some(summary) = summaries.get(&func.name) {
+                for &param_idx in &summary.invalidated_params {
+                    if let Some(MirOperand::Local(id)) = args.get(param_idx) {
+                        if handle_locals.contains(id) {
+                            state.set_state(*id, HandleState::Invalid, span);
+                        }
+                    }
+                }
+                for &param_idx in &summary.widened_params {
+                    if let Some(MirOperand::Local(id)) = args.get(param_idx) {
+                        if handle_locals.contains(id) {
+                            state.set_state(*id, HandleState::Unknown, span);
+                        }
+                    }
+                }
+            }
+
             for arg in args {
                 if let MirOperand::Local(id) = arg {
                     if handle_locals.contains(id) {
@@ -543,7 +566,7 @@ impl DataflowAnalysis for TypestateAnalysis {
     fn transfer_block(&self, block: &MirBlock, in_state: &TypestateDomain) -> TypestateDomain {
         let mut state = in_state.clone();
         for stmt in &block.statements {
-            transfer_stmt(stmt, &mut state, &self.handle_locals, &self.pool_locals);
+            transfer_stmt(stmt, &mut state, &self.handle_locals, &self.pool_locals, &self.summaries);
         }
         state
     }
@@ -624,11 +647,113 @@ pub fn check_errors(
                 }
             }
 
-            transfer_stmt(stmt, &mut state, &analysis.handle_locals, &analysis.pool_locals);
+            transfer_stmt(stmt, &mut state, &analysis.handle_locals, &analysis.pool_locals, &analysis.summaries);
         }
     }
 
     errors
+}
+
+// ── Interprocedural Summaries ────────────────────────────────────────────
+
+/// Summary of a function's effect on handle parameters.
+/// Computed by lightweight scanning — no dataflow needed.
+#[derive(Debug, Clone, Default)]
+pub struct FunctionSummary {
+    /// Parameter indices (0-based) that may be invalidated by the function.
+    /// "Invalidated" = the function calls Pool_remove/Pool_clear on a handle param.
+    pub invalidated_params: HashSet<usize>,
+    /// Parameter indices that may be widened (passed to pool mutators).
+    pub widened_params: HashSet<usize>,
+}
+
+/// Compute summaries for all functions by scanning their bodies.
+/// No dataflow — just checks if handle parameters flow into Pool_remove/Pool_clear.
+pub fn compute_summaries(functions: &[MirFunction]) -> HashMap<String, FunctionSummary> {
+    let mut summaries = HashMap::new();
+
+    for func in functions {
+        if func.params.is_empty() {
+            continue;
+        }
+
+        // Map param LocalId → argument position (matches call site arg order)
+        let param_index: HashMap<LocalId, usize> = func
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (p.id, i))
+            .collect();
+
+        let handle_params: HashSet<LocalId> = func
+            .params
+            .iter()
+            .filter(|p| p.ty == MirType::Handle)
+            .map(|p| p.id)
+            .collect();
+
+        if handle_params.is_empty() {
+            continue;
+        }
+
+        let mut summary = FunctionSummary::default();
+
+        for block in &func.blocks {
+            for stmt in &block.statements {
+                match &stmt.kind {
+                    // Pool_remove(pool, handle) — if handle is a param, it's invalidated
+                    MirStmtKind::Call { func: fref, args, .. }
+                        if fref.name == "Pool_remove" || fref.name == "Pool_clear"
+                            || fref.name == "Pool_drain" =>
+                    {
+                        for arg in args {
+                            if let MirOperand::Local(id) = arg {
+                                if handle_params.contains(id) {
+                                    if let Some(&idx) = param_index.get(id) {
+                                        summary.invalidated_params.insert(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Pool mutators widen handle params
+                    MirStmtKind::Call { func: fref, args, .. }
+                        if pool_ops::is_pool_mutator(&fref.name) =>
+                    {
+                        for arg in args {
+                            if let MirOperand::Local(id) = arg {
+                                if handle_params.contains(id) {
+                                    if let Some(&idx) = param_index.get(id) {
+                                        summary.widened_params.insert(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if !summary.invalidated_params.is_empty() || !summary.widened_params.is_empty() {
+            summaries.insert(func.name.clone(), summary);
+        }
+    }
+
+    summaries
+}
+
+/// Run typestate analysis with interprocedural summaries.
+/// Phase 1: compute summaries. Phase 2: analyze with summary-aware transfer.
+pub fn analyze_with_summaries(
+    func: &MirFunction,
+    summaries: &HashMap<String, FunctionSummary>,
+) -> Option<(TypestateAnalysis, DataflowResults<TypestateDomain>)> {
+    let mut analysis = TypestateAnalysis::from_function(func)?;
+    analysis.summaries = summaries.clone();
+    let dom = DominatorTree::build(func);
+    let results = dataflow::solve(func, &analysis, &dom);
+    Some((analysis, results))
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────
@@ -949,6 +1074,83 @@ mod tests {
         assert!(
             errors.is_empty(),
             "h2 was reassigned so alias with h1 is broken"
+        );
+    }
+
+    /// Interprocedural: callee that removes a handle parameter invalidates it at call site.
+    #[test]
+    fn interprocedural_invalidation() {
+        let pool_param = MirLocal {
+            id: local(0), name: Some("pool".into()), ty: MirType::I64, is_param: true,
+        };
+        let handle_param = MirLocal {
+            id: local(1), name: Some("h".into()), ty: MirType::Handle, is_param: true,
+        };
+
+        // Callee: func destroy(pool, handle) { Pool_remove(pool, handle) }
+        let callee = MirFunction {
+            name: "destroy".to_string(),
+            params: vec![pool_param.clone(), handle_param.clone()],
+            ret_ty: MirType::Void,
+            locals: vec![pool_param, handle_param],
+            blocks: vec![MirBlock {
+                id: block(0),
+                statements: vec![pool_remove(0, 1)],
+                terminator: term_ret(),
+            }],
+            entry_block: block(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+
+        // Caller: insert h, call destroy(pool, h), access pool[h] → error
+        let caller = MirFunction {
+            name: "caller".to_string(),
+            params: vec![],
+            ret_ty: MirType::Void,
+            locals: vec![
+                pool_local(0),
+                handle_local(1, "h", false),
+                pool_local(10),
+            ],
+            blocks: vec![MirBlock {
+                id: block(0),
+                statements: vec![
+                    pool_insert(1, 0),
+                    // Call destroy(pool, h)
+                    MirStmt::dummy(MirStmtKind::Call {
+                        dst: None,
+                        func: FunctionRef::internal("destroy".to_string()),
+                        args: vec![
+                            MirOperand::Local(local(0)),
+                            MirOperand::Local(local(1)),
+                        ],
+                    }),
+                    pool_access(10, 0, 1), // access after destroy → should be error
+                ],
+                terminator: term_ret(),
+            }],
+            entry_block: block(0),
+            is_extern_c: false,
+            source_file: None,
+        };
+
+        let all_fns = vec![callee, caller];
+        let summaries = compute_summaries(&all_fns);
+
+        // Verify summary: param 1 (handle, the second parameter) is invalidated
+        assert!(summaries.contains_key("destroy"), "should have summary for destroy");
+        assert!(
+            summaries["destroy"].invalidated_params.contains(&1),
+            "destroy should invalidate param 1 (handle)"
+        );
+
+        // Analyze caller with summaries
+        let (analysis, results) = analyze_with_summaries(&all_fns[1], &summaries).unwrap();
+        let errors = check_errors(&all_fns[1], &analysis, &results);
+        assert_eq!(
+            errors.len(), 1,
+            "should detect stale handle after interprocedural invalidation"
         );
     }
 }
