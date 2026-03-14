@@ -597,12 +597,7 @@ impl Interpreter {
                 let mut pool = p.lock().unwrap();
                 let pool_id = pool.pool_id;
                 let (index, generation) = pool.insert(item);
-                Ok(Value::Enum {
-                    name: "Result".to_string(),
-                    variant: "Ok".to_string(),
-                    fields: vec![Value::Handle { pool_id, index, generation }],
-                    variant_index: 0,
-                })
+                Ok(Value::Handle { pool_id, index, generation })
             }
             "get" => {
                 if let Some(Value::Handle { pool_id, index, generation }) = args.first() {

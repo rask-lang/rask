@@ -237,7 +237,7 @@ struct Entity {
 
 test "Pool — string fields Copy correctly" {
     const pool = Pool.new()
-    const h = pool.insert(Entity { name: "Hero", health: 100 }).unwrap()
+    const h = pool.insert(Entity { name: "Hero", health: 100 })
     // Read string field — should be Copy, not move
     const name1 = pool[h].name
     const name2 = pool[h].name
@@ -248,7 +248,7 @@ test "Pool — string fields Copy correctly" {
 
 test "Pool — modify non-string field after reading string" {
     const pool = Pool.new()
-    const h = pool.insert(Entity { name: "Hero", health: 100 }).unwrap()
+    const h = pool.insert(Entity { name: "Hero", health: 100 })
     const name = pool[h].name
     with pool[h] as e {
         e.health = 50

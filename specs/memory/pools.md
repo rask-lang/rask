@@ -14,7 +14,7 @@
 |------|-----------|---------|-------------|
 | **PL1: Create** | `Pool.new()` | `Pool<T>` | Create unbounded pool |
 | **PL2: Create bounded** | `Pool.with_capacity(n)` | `Pool<T>` | Create bounded pool |
-| **PL3: Insert** | `pool.insert(v)` | `Result<Handle<T>, InsertError>` | Insert, get handle |
+| **PL3: Insert** | `pool.insert(v)` | `Handle<T>` | Insert, get handle (panics on failure) |
 | **PL4: Index access** | `pool[h]` | `&T` or `&mut T` | Access (panics if invalid) |
 | **PL5: Safe access** | `pool.get(h)` | `Option<T>` | Safe access (T: Copy) |
 | **PL6: Remove** | `pool.remove(h)` | `Option<T>` | Remove and return |
@@ -22,7 +22,7 @@
 
 ```rask
 const pool: Pool<Entity> = Pool.new()
-const h: Handle<Entity> = try pool.insert(entity)
+const h: Handle<Entity> = pool.insert(entity)
 pool[h].health -= 10
 pool.remove(h)
 ```
@@ -86,7 +86,7 @@ if pool[h].health <= 0 {     // New inline access
 Aliased handles are safe because each `pool[h]` creates an independent temporary access:
 
 ```rask
-const h1 = try pool.insert(entity)
+const h1 = pool.insert(entity)
 const h2 = h1  // h2 is a copy - both point to same entity
 
 pool[h1].health -= 10    // Access ends after expression
@@ -117,7 +117,7 @@ Pool handles survive reallocation (PL9), so `insert` and `remove(other)` are all
 ```rask
 with pool[h] as entity {
     entity.health -= pool[other_h].bonus    // OK: read other element
-    const ally = try pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
+    const ally = pool.insert(new_ally)  // OK: re-resolves entity  [re-resolved]
     entity.allies.push(ally)                // entity still valid
     pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
 }
@@ -270,7 +270,7 @@ func damage(h: Handle<Player>, amount: i32) using Pool<Player> {
 }
 
 const players = Pool.new()
-const h = try players.insert(Player { health: 100 })
+const h = players.insert(Player { health: 100 })
 damage(h, 10)    // Compiler passes players as hidden parameter
 ```
 
@@ -301,7 +301,7 @@ let (snapshot, mut pool) = entities.snapshot()
 spawn(|| { render_frame(snapshot) })
 
 // Writer can mutate concurrently
-try pool.insert(new_entity)
+pool.insert(new_entity)
 pool.remove(dead_entity)
 ```
 
@@ -340,11 +340,12 @@ ensure files.take_all_with(|f| { f.close(); })
 
 | Rule | Description |
 |------|-------------|
-| **PL8: All inserts fallible** | `insert()` returns `Result<Handle<T>, InsertError<T>>` |
+| **PL8: Insert panics on failure** | `insert()` returns `Handle<T>`, panics if bounded pool is full. Fallible `try_insert()` returns `Result<Handle<T>, InsertError<T>>` |
 | **PL9: Handle stability** | Handles remain valid when pools grow (index-based, not pointer-based) |
 
 ```rask
-try pool.insert(x)   // Result<Handle<T>, InsertError<T>>
+const h = pool.insert(x)           // Handle<T> — panics if full
+const h = try pool.try_insert(x)   // Result<Handle<T>, InsertError<T>>
 
 enum InsertError<T> {
     Full(T),   // Bounded pool at capacity
@@ -484,9 +485,9 @@ struct Node {
 func build_graph() -> Pool<Node> or Error {
     const nodes = Pool.new()
 
-    const a = try nodes.insert(Node { data: "A", edges: Vec.new() })
-    const b = try nodes.insert(Node { data: "B", edges: Vec.new() })
-    const c = try nodes.insert(Node { data: "C", edges: Vec.new() })
+    const a = nodes.insert(Node { data: "A", edges: Vec.new() })
+    const b = nodes.insert(Node { data: "B", edges: Vec.new() })
+    const c = nodes.insert(Node { data: "C", edges: Vec.new() })
 
     nodes[a].edges.push(b)
     nodes[a].edges.push(c)
@@ -558,7 +559,7 @@ with entities[h] as e {
 
 // Pattern 2: Insert/remove other inside with (W2a/W2b)
 with pool[h] as entity {
-    const ally = try pool.insert(new_ally)   // OK: re-resolves
+    const ally = pool.insert(new_ally)   // OK: re-resolves
     entity.allies.push(ally)
     pool.remove(expired_h)                   // OK: re-resolves
 }
