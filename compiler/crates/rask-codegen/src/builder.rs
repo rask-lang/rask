@@ -45,6 +45,12 @@ enum CallAdapt {
     DerefOption,
     /// Pop-style: value written to this stack slot by callee
     PopOutParam(StackSlot),
+    /// String out-param: callee wrote 16-byte RaskStr to this slot.
+    /// Result is the slot address (pointer), not a loaded value.
+    StringOutParam(StackSlot),
+    /// Result is void* pointing to 16-byte string element in Vec.
+    /// Copy to dst's stack slot.
+    DerefStringElement,
 }
 
 pub struct FunctionBuilder<'a> {
@@ -336,9 +342,22 @@ impl<'a> FunctionBuilder<'a> {
                     val = Self::convert_value(builder, val, val_ty, dst_ty);
                 }
 
-                let var = ctx.var_map.get(dst)
-                    .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
-                builder.def_var(*var, val);
+                // String assignment: copy 16 bytes from source to dst stack slot.
+                // Cannot alias pointers — both variables may be live simultaneously.
+                if dst_local.ty == MirType::String {
+                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst) {
+                        Self::copy_aggregate(builder, val, *dst_ss, 16);
+                        // Don't update the variable — it already points to the stack slot
+                    } else {
+                        let var = ctx.var_map.get(dst)
+                            .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                        builder.def_var(*var, val);
+                    }
+                } else {
+                    let var = ctx.var_map.get(dst)
+                        .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
+                    builder.def_var(*var, val);
+                }
             }
 
             MirStmtKind::Store { addr, offset, value, store_size } => {
@@ -1135,7 +1154,7 @@ impl<'a> FunctionBuilder<'a> {
                 }
 
                 // Adapt args for typed runtime API
-                let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, ctx);
+                let adapt = Self::adapt_stdlib_call(builder, &func.name, &mut arg_vals, args, dst, ctx);
 
                 // Re-read signature after adaptation (arg count may have changed)
                 let ext_func = &builder.func.dfg.ext_funcs[*func_ref];
@@ -1263,6 +1282,29 @@ impl<'a> FunctionBuilder<'a> {
                         CallAdapt::PopOutParam(ss) => {
                             // Value was written to stack slot by callee
                             builder.ins().stack_load(types::I64, ss, 0)
+                        }
+                        CallAdapt::StringOutParam(ss) => {
+                            // 16-byte RaskStr written to stack slot — return slot address.
+                            // If this slot is the dst's own slot, mark as already written.
+                            if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                                if *dst_ss == ss {
+                                    slot_already_written = true;
+                                }
+                            }
+                            builder.ins().stack_addr(types::I64, ss, 0)
+                        }
+                        CallAdapt::DerefStringElement => {
+                            // void* pointing to 16-byte string in collection.
+                            // Copy to dst's stack slot.
+                            let results = builder.inst_results(call_inst);
+                            let ptr = if !results.is_empty() { results[0] } else {
+                                builder.ins().iconst(types::I64, 0)
+                            };
+                            if let Some((ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                                Self::copy_aggregate(builder, ptr, *ss, 16);
+                                slot_already_written = true;
+                            }
+                            ptr
                         }
                         _ => {
                             let results = builder.inst_results(call_inst);
@@ -1993,6 +2035,7 @@ impl<'a> FunctionBuilder<'a> {
                 let max_align = fields.iter().map(|f| f.align()).max().unwrap_or(1);
                 Some((offset + max_align - 1) & !(max_align - 1))
             }
+            MirType::String => Some(16),
             MirType::Slice(_) | MirType::TraitObject { .. } => Some(ty.size()),
             MirType::Union(variants) => {
                 let max = variants.iter()
@@ -2077,82 +2120,207 @@ impl<'a> FunctionBuilder<'a> {
     /// Adapt stdlib call args for the typed runtime API.
     /// Injects elem_size args, wraps values as pointers, adds out-params.
     /// Returns the post-call adaptation needed.
+    /// Check if a function produces a string (has out-param as first parameter).
+    fn is_string_out_param_fn(name: &str) -> bool {
+        matches!(name,
+            "string_new" | "string_from" | "string_concat" | "string_substr"
+            | "string_to_lowercase" | "string_to_uppercase"
+            | "string_trim" | "string_trim_start" | "string_trim_end"
+            | "string_repeat" | "string_reverse" | "string_replace"
+            | "string_push_byte" | "string_push_char"
+            | "string_append" | "string_append_cstr" | "string_push_str"
+            | "i64_to_string" | "bool_to_string" | "f64_to_string" | "char_to_string"
+            | "string_builder_build"
+            | "Vec_join" | "Vec_join_i64"
+            | "fs_read_file" | "fs_canonicalize"
+            | "io_read_line" | "io_read_string"
+            | "json_encode" | "json_encode_string" | "json_encode_i64"
+            | "json_buf_finish" | "json_buf_finish_array" | "json_get_string"
+        )
+    }
+
     fn adapt_stdlib_call(
         builder: &mut ClifFunctionBuilder,
         func_name: &str,
         args: &mut Vec<Value>,
         mir_args: &[MirOperand],
+        dst: Option<&LocalId>,
         ctx: &CodegenCtx,
     ) -> CallAdapt {
+        // string_clone / string_to_owned: copy 16 bytes to dst, then RC inc on dst.
+        if func_name == "string_clone" || func_name == "string_to_owned" {
+            if let Some(dst_id) = dst {
+                if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst_id) {
+                    // args[0] = source string pointer. Copy 16 bytes to dst slot.
+                    if !args.is_empty() {
+                        let src_ptr = args[0];
+                        Self::copy_aggregate(builder, src_ptr, *dst_ss, 16);
+                    }
+                    // Now call rask_string_clone on the dst (for RC inc)
+                    let dst_addr = builder.ins().stack_addr(types::I64, *dst_ss, 0);
+                    args[0] = dst_addr;
+                    return CallAdapt::StringOutParam(*dst_ss);
+                }
+            }
+            // Fallthrough: no dst stack slot — just call clone for RC inc
+            return CallAdapt::None;
+        }
+
+        // String-producing functions: inject out-param as first arg
+        if Self::is_string_out_param_fn(func_name) {
+            // Use dst's stack slot directly if available, otherwise create a temp
+            let ss = dst
+                .and_then(|id| ctx.stack_slot_map.get(id))
+                .map(|(ss, _)| *ss)
+                .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 16, 0,
+                )));
+            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+            args.insert(0, addr);
+            return CallAdapt::StringOutParam(ss);
+        }
+
         match func_name {
-            // Constructors: inject elem_size / key_size+val_size
+            // Constructors: inject elem_size / key_size+val_size if not already provided
+            // by MIR lowering. MIR lowering injects sizes for Vec.new() / Map.new()
+            // through the generic type path; other call sites (iterators, variants)
+            // don't inject sizes and need the default.
             "Vec_new" => {
-                let elem_size = builder.ins().iconst(types::I64, 8);
-                args.insert(0, elem_size);
+                if args.is_empty() {
+                    let elem_size = builder.ins().iconst(types::I64, 8);
+                    args.insert(0, elem_size);
+                }
                 CallAdapt::None
             }
             "Map_new" | "Map_new_string_keys" => {
-                let key_size = builder.ins().iconst(types::I64, 8);
-                let val_size = builder.ins().iconst(types::I64, 8);
-                args.insert(0, key_size);
-                args.insert(1, val_size);
+                if args.is_empty() {
+                    let key_size = builder.ins().iconst(types::I64, 8);
+                    let val_size = builder.ins().iconst(types::I64, 8);
+                    args.insert(0, key_size);
+                    args.insert(1, val_size);
+                }
                 CallAdapt::None
             }
             // Pool_new: MIR injects elem_size as first arg.
             // No special codegen handling needed.
             "Pool_new" => CallAdapt::None,
 
-            // Vec push/set: wrap value arg as pointer
+            // Vec push/set: wrap value arg as pointer.
+            // For string elements, the arg is already a pointer to 16-byte data.
             "Vec_push" => {
-                // args: [vec, value] → [vec, &value]
                 if args.len() >= 2 {
-                    let val = args[1];
-                    args[1] = Self::value_to_ptr(builder, val);
+                    let is_string = mir_args.get(1)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !is_string {
+                        let val = args[1];
+                        args[1] = Self::value_to_ptr(builder, val);
+                    }
                 }
                 CallAdapt::None
             }
             "Vec_set" => {
-                // args: [vec, index, value] → [vec, index, &value]
                 if args.len() >= 3 {
-                    let val = args[2];
-                    args[2] = Self::value_to_ptr(builder, val);
+                    let is_string = mir_args.get(2)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !is_string {
+                        let val = args[2];
+                        args[2] = Self::value_to_ptr(builder, val);
+                    }
                 }
                 CallAdapt::None
             }
 
             // Vec pop: add out-param, load result from it
             "Vec_pop" => {
-                // args: [vec] → [vec, &out]
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                args.push(addr);
-                CallAdapt::PopOutParam(ss)
+                // Use dst stack slot for string types, otherwise 8-byte temp
+                let is_string_dst = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| l.ty == MirType::String)
+                    .unwrap_or(false);
+                if is_string_dst {
+                    let ss = dst
+                        .and_then(|id| ctx.stack_slot_map.get(id))
+                        .map(|(ss, _)| *ss)
+                        .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot, 16, 0,
+                        )));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    args.push(addr);
+                    CallAdapt::StringOutParam(ss)
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 8, 0,
+                    ));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    args.push(addr);
+                    CallAdapt::PopOutParam(ss)
+                }
             }
 
             // Vec remove_at: add out-param for the removed element
             "Vec_remove" | "Vec_remove_at" => {
-                // args: [vec, index] → [vec, index, &out]
-                let ss = builder.create_sized_stack_slot(StackSlotData::new(
-                    StackSlotKind::ExplicitSlot, 8, 0,
-                ));
-                let addr = builder.ins().stack_addr(types::I64, ss, 0);
-                args.push(addr);
-                CallAdapt::PopOutParam(ss)
+                let is_string_dst = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| l.ty == MirType::String)
+                    .unwrap_or(false);
+                if is_string_dst {
+                    let ss = dst
+                        .and_then(|id| ctx.stack_slot_map.get(id))
+                        .map(|(ss, _)| *ss)
+                        .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot, 16, 0,
+                        )));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    args.push(addr);
+                    CallAdapt::StringOutParam(ss)
+                } else {
+                    let ss = builder.create_sized_stack_slot(StackSlotData::new(
+                        StackSlotKind::ExplicitSlot, 8, 0,
+                    ));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    args.push(addr);
+                    CallAdapt::PopOutParam(ss)
+                }
             }
 
-            // Vec get/index: result is void*, deref to get value
-            "Vec_get" | "Vec_get_unchecked" | "Vec_index" | "index" => CallAdapt::DerefResult,
+            // Vec get/index: result is void*, deref to get value.
+            // For string elements, copy 16 bytes from returned ptr to dst slot.
+            "Vec_get" | "Vec_get_unchecked" | "Vec_index" | "index" => {
+                let is_string_dst = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| l.ty == MirType::String)
+                    .unwrap_or(false);
+                if is_string_dst {
+                    CallAdapt::DerefStringElement
+                } else {
+                    CallAdapt::DerefResult
+                }
+            }
 
-            // Map insert: wrap key and value as pointers
+            // Map insert: wrap key and value as pointers.
+            // String keys/values are already pointers to 16-byte data.
             "Map_insert" => {
-                // args: [map, key, value] → [map, &key, &value]
                 if args.len() >= 3 {
-                    let key = args[1];
-                    let val = args[2];
-                    args[1] = Self::value_to_ptr(builder, key);
-                    args[2] = Self::value_to_ptr(builder, val);
+                    let key_is_str = mir_args.get(1)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    let val_is_str = mir_args.get(2)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !key_is_str {
+                        let key = args[1];
+                        args[1] = Self::value_to_ptr(builder, key);
+                    }
+                    if !val_is_str {
+                        let val = args[2];
+                        args[2] = Self::value_to_ptr(builder, val);
+                    }
                 }
                 CallAdapt::None
             }
@@ -2160,8 +2328,14 @@ impl<'a> FunctionBuilder<'a> {
             // Map contains_key/remove: wrap key as pointer
             "Map_contains_key" | "Map_remove" => {
                 if args.len() >= 2 {
-                    let key = args[1];
-                    args[1] = Self::value_to_ptr(builder, key);
+                    let key_is_str = mir_args.get(1)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !key_is_str {
+                        let key = args[1];
+                        args[1] = Self::value_to_ptr(builder, key);
+                    }
                 }
                 CallAdapt::None
             }
@@ -2169,17 +2343,33 @@ impl<'a> FunctionBuilder<'a> {
             // Map get: wrap key as pointer, wrap result as Option
             "Map_get" => {
                 if args.len() >= 2 {
-                    let key = args[1];
-                    args[1] = Self::value_to_ptr(builder, key);
+                    let key_is_str = mir_args.get(1)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !key_is_str {
+                        let key = args[1];
+                        args[1] = Self::value_to_ptr(builder, key);
+                    }
                 }
                 CallAdapt::DerefOption
             }
             "Map_get_unwrap" => {
                 if args.len() >= 2 {
-                    let key = args[1];
-                    args[1] = Self::value_to_ptr(builder, key);
+                    let key_is_str = mir_args.get(1)
+                        .and_then(|a| Self::operand_mir_type(a, ctx.locals))
+                        .map(|t| t == MirType::String)
+                        .unwrap_or(false);
+                    if !key_is_str {
+                        let key = args[1];
+                        args[1] = Self::value_to_ptr(builder, key);
+                    }
                 }
-                CallAdapt::DerefResult
+                let is_string_dst = dst
+                    .and_then(|id| ctx.locals.iter().find(|l| l.id == *id))
+                    .map(|l| l.ty == MirType::String)
+                    .unwrap_or(false);
+                if is_string_dst { CallAdapt::DerefStringElement } else { CallAdapt::DerefResult }
             }
 
             // Pool insert: wrap value as pointer, wrap return as Ok Result
@@ -2394,19 +2584,34 @@ impl<'a> FunctionBuilder<'a> {
                         Ok(builder.ins().iconst(types::I32, *c as i64))
                     }
                     MirConst::String(s) => {
-                        // String constants: get raw char* from data section,
-                        // then wrap in RaskString via rask_string_from().
+                        // String constants: allocate a 16-byte stack slot,
+                        // get raw char* from data section, call rask_string_from(out, cstr).
                         if let Some(gv) = ctx.string_globals.get(s.as_str()) {
                             let raw_ptr = builder.ins().global_value(types::I64, *gv);
+                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, 16, 0,
+                            ));
+                            let out_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
                             if let Some(string_from_ref) = ctx.func_refs.get("string_from") {
-                                let call = builder.ins().call(*string_from_ref, &[raw_ptr]);
-                                let results = builder.inst_results(call);
-                                Ok(results[0])
+                                builder.ins().call(*string_from_ref, &[out_ptr, raw_ptr]);
+                                Ok(out_ptr)
                             } else {
                                 return Err(CodegenError::FunctionNotFound("string_from".to_string()))
                             }
                         } else {
-                            Ok(builder.ins().iconst(types::I64, 0))
+                            // Empty string: SSO with remaining=15
+                            let tmp_slot = builder.create_sized_stack_slot(StackSlotData::new(
+                                StackSlotKind::ExplicitSlot, 16, 0,
+                            ));
+                            // Zero first 8 bytes
+                            let zero = builder.ins().iconst(types::I64, 0);
+                            builder.ins().stack_store(zero, tmp_slot, 0);
+                            // Second 8 bytes: remaining=15 in byte 15 (offset 7 of second word)
+                            // Byte 15 = 0x0F → second i64 = 0x0F00_0000_0000_0000
+                            let hi = builder.ins().iconst(types::I64, 0x0F00_0000_0000_0000u64 as i64);
+                            builder.ins().stack_store(hi, tmp_slot, 8);
+                            let out_ptr = builder.ins().stack_addr(types::I64, tmp_slot, 0);
+                            Ok(out_ptr)
                         }
                     }
                 }

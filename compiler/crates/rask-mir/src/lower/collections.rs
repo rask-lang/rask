@@ -355,7 +355,8 @@ impl<'a> MirLowerer<'a> {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
-            | MirType::String | MirType::FuncPtr(_) | MirType::Handle => 8,
+            | MirType::FuncPtr(_) | MirType::Handle => 8,
+            MirType::String => 16,
             MirType::Struct(StructLayoutId(id)) => {
                 self.ctx.struct_layouts.get(*id as usize)
                     .map(|l| l.size as i64)
@@ -372,6 +373,25 @@ impl<'a> MirLowerer<'a> {
             | MirType::SimdVector { .. } | MirType::TraitObject { .. } => ty.size() as i64,
             MirType::Void => 0,
         }
+    }
+
+    /// Size of the Nth generic type parameter in a name like "Vec<string>" or "Map<string, i64>".
+    /// Returns 16 for string, struct layout size for structs, 8 otherwise.
+    pub(super) fn generic_type_param_size(&self, generic_name: &str, index: usize) -> i64 {
+        let inner = generic_name.split('<').nth(1)
+            .and_then(|s| s.strip_suffix('>'));
+        if let Some(params_str) = inner {
+            let params: Vec<&str> = params_str.split(',').map(|s| s.trim()).collect();
+            if let Some(type_name) = params.get(index) {
+                if *type_name == "string" {
+                    return 16;
+                }
+                if let Some((_, layout)) = self.ctx.find_struct(type_name) {
+                    return layout.size as i64;
+                }
+            }
+        }
+        8 // scalar default
     }
 
     /// Clone function name for a type, or None if the type is Copy.

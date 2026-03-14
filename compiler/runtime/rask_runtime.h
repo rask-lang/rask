@@ -83,50 +83,83 @@ void    *rask_vec_first(const RaskVec *v);
 void    *rask_vec_last(const RaskVec *v);
 
 // ─── String ─────────────────────────────────────────────────
-// UTF-8 immutable refcounted string, always null-terminated.
-// Clone is O(1) (atomic refcount increment). Free decrements and frees at 0.
+// 16-byte tagged union with small string optimization (SSO).
+//
+// SSO mode (MSB of byte 15 = 0):
+//   [data: u8[15]][remaining: u8]   remaining = 15 - len
+//   Unused data bytes zeroed → always null-terminated.
+//
+// Heap mode (MSB of byte 15 = 1):
+//   [header_ptr: *u8 (8B)][tagged_len: u64 (8B)]
+//   tagged_len = len | (1<<63). Header: { refcount_u32, cap_u32, data[] }
+//
+// RC only applies to heap mode. Sentinel refcount (UINT32_MAX) = static literal.
 
-typedef struct RaskString RaskString;
+typedef union {
+    struct { uint8_t data[15]; uint8_t remaining; } sso;  // remaining = 15 - len
+    struct { uint8_t *header; uint64_t tagged_len; } heap; // tagged_len = len | (1<<63)
+    uint8_t raw[16];
+} RaskStr;
 
-RaskString *rask_string_new(void);
-RaskString *rask_string_from(const char *s);
-RaskString *rask_string_from_bytes(const char *data, int64_t len);
-void        rask_string_free(RaskString *s);
-int64_t     rask_string_len(const RaskString *s);
-const char *rask_string_ptr(const RaskString *s);
-RaskString *rask_string_push_byte(RaskString *s, uint8_t byte);
-RaskString *rask_string_push_char(RaskString *s, int32_t codepoint);
-RaskString *rask_string_append(RaskString *s, const RaskString *other);
-RaskString *rask_string_append_cstr(RaskString *s, const char *cstr);
-RaskString *rask_string_clone(const RaskString *s);
-int64_t     rask_string_eq(const RaskString *a, const RaskString *b);
-int64_t     rask_string_byte_at(const RaskString *s, int64_t pos);
-RaskString *rask_string_substr(const RaskString *s, int64_t start, int64_t end);
-RaskString *rask_string_concat(const RaskString *a, const RaskString *b);
-int64_t     rask_string_contains(const RaskString *haystack, const RaskString *needle);
-RaskString *rask_string_to_lowercase(const RaskString *s);
-int64_t     rask_string_starts_with(const RaskString *s, const RaskString *prefix);
-int64_t     rask_string_ends_with(const RaskString *s, const RaskString *suffix);
-RaskVec    *rask_string_lines(const RaskString *s);
-RaskString *rask_string_trim(const RaskString *s);
-RaskVec    *rask_string_split(const RaskString *s, const RaskString *sep);
-RaskVec    *rask_string_split_whitespace(const RaskString *s);
-RaskString *rask_string_replace(const RaskString *s, const RaskString *from, const RaskString *to);
-int64_t     rask_string_parse_int(const RaskString *s);
-double      rask_string_parse_float(const RaskString *s);
-int64_t     rask_string_is_empty(const RaskString *s);
-RaskString *rask_string_to_uppercase(const RaskString *s);
-int64_t     rask_string_find(const RaskString *haystack, const RaskString *needle);
-int64_t     rask_string_rfind(const RaskString *haystack, const RaskString *needle);
-int64_t     rask_string_char_at(const RaskString *s, int64_t index);
-RaskString *rask_string_repeat(const RaskString *s, int64_t count);
-RaskString *rask_string_reverse(const RaskString *s);
-RaskString *rask_string_trim_start(const RaskString *s);
-RaskString *rask_string_trim_end(const RaskString *s);
-RaskString *rask_i64_to_string(int64_t val);
-RaskString *rask_bool_to_string(int64_t val);
-RaskString *rask_f64_to_string(double val);
-RaskString *rask_char_to_string(int32_t codepoint);
+// Constructors (out-param)
+void        rask_string_new(RaskStr *out);
+void        rask_string_from(RaskStr *out, const char *s);
+void        rask_string_from_bytes(RaskStr *out, const char *data, int64_t len);
+
+// RC operations — codegen calls after inline tag check (RC5)
+void        rask_string_free(const RaskStr *s);
+void        rask_string_clone(const RaskStr *s);
+
+// Read-only accessors
+int64_t     rask_string_len(const RaskStr *s);
+const char *rask_string_ptr(const RaskStr *s);
+int64_t     rask_string_is_empty(const RaskStr *s);
+int64_t     rask_string_eq(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_compare(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_lt(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_gt(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_le(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_ge(const RaskStr *a, const RaskStr *b);
+int64_t     rask_string_byte_at(const RaskStr *s, int64_t pos);
+int64_t     rask_string_char_at(const RaskStr *s, int64_t index);
+int64_t     rask_string_contains(const RaskStr *haystack, const RaskStr *needle);
+int64_t     rask_string_starts_with(const RaskStr *s, const RaskStr *prefix);
+int64_t     rask_string_ends_with(const RaskStr *s, const RaskStr *suffix);
+int64_t     rask_string_find(const RaskStr *haystack, const RaskStr *needle);
+int64_t     rask_string_rfind(const RaskStr *haystack, const RaskStr *needle);
+int64_t     rask_string_parse_int(const RaskStr *s);
+double      rask_string_parse_float(const RaskStr *s);
+
+// String-producing operations (out-param: RaskStr *out as first param)
+void        rask_string_concat(RaskStr *out, const RaskStr *a, const RaskStr *b);
+void        rask_string_substr(RaskStr *out, const RaskStr *s, int64_t start, int64_t end);
+void        rask_string_to_lowercase(RaskStr *out, const RaskStr *s);
+void        rask_string_to_uppercase(RaskStr *out, const RaskStr *s);
+void        rask_string_trim(RaskStr *out, const RaskStr *s);
+void        rask_string_trim_start(RaskStr *out, const RaskStr *s);
+void        rask_string_trim_end(RaskStr *out, const RaskStr *s);
+void        rask_string_repeat(RaskStr *out, const RaskStr *s, int64_t count);
+void        rask_string_reverse(RaskStr *out, const RaskStr *s);
+void        rask_string_replace(RaskStr *out, const RaskStr *s, const RaskStr *from, const RaskStr *to);
+
+// Builder operations (out-param: mutates string via promote-to-heap)
+void        rask_string_push_byte(RaskStr *out, const RaskStr *s, uint8_t byte);
+void        rask_string_push_char(RaskStr *out, const RaskStr *s, int32_t codepoint);
+void        rask_string_append(RaskStr *out, const RaskStr *s, const RaskStr *other);
+void        rask_string_append_cstr(RaskStr *out, const RaskStr *s, const char *cstr);
+void        rask_string_push_str(RaskStr *out, const RaskStr *s, const RaskStr *other);
+
+// Vec-returning operations (elements are RaskStr, elem_size=16)
+RaskVec    *rask_string_lines(const RaskStr *s);
+RaskVec    *rask_string_split(const RaskStr *s, const RaskStr *sep);
+RaskVec    *rask_string_split_whitespace(const RaskStr *s);
+RaskVec    *rask_string_chars(const RaskStr *s);
+
+// Conversion to string (out-param)
+void        rask_i64_to_string(RaskStr *out, int64_t val);
+void        rask_bool_to_string(RaskStr *out, int64_t val);
+void        rask_f64_to_string(RaskStr *out, double val);
+void        rask_char_to_string(RaskStr *out, int32_t codepoint);
 
 // Char predicates — operate on Unicode codepoints (i32).
 int64_t rask_char_is_digit(int32_t c);
@@ -142,6 +175,10 @@ int64_t rask_char_to_uppercase(int32_t c);
 int64_t rask_char_to_lowercase(int32_t c);
 int64_t rask_char_len_utf8(int32_t c);
 int64_t rask_char_eq(int32_t a, int32_t b);
+
+// ─── Vec (string-dependent) ─────────────────────────────────
+void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
 
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
@@ -238,27 +275,36 @@ int64_t  rask_random_bool(void);
 int64_t  rask_random_range(int64_t lo, int64_t hi);
 
 // ─── FS module ──────────────────────────────────────────────
-// Higher-level file operations. Return FILE* or RaskString* as i64.
+// Higher-level file operations. Return FILE* as i64.
 
-int64_t     rask_fs_open(const RaskString *path);
-int64_t     rask_fs_create(const RaskString *path);
-RaskString *rask_fs_canonicalize(const RaskString *path);
-int64_t     rask_fs_copy(const RaskString *from, const RaskString *to);
-void        rask_fs_rename(const RaskString *from, const RaskString *to);
-void        rask_fs_remove(const RaskString *path);
-void        rask_fs_create_dir(const RaskString *path);
-void        rask_fs_create_dir_all(const RaskString *path);
-void        rask_fs_append_file(const RaskString *path, const RaskString *content);
+int8_t      rask_fs_exists(const RaskStr *path);
+void        rask_fs_read_file(RaskStr *out, const RaskStr *path);
+void        rask_fs_write_file(const RaskStr *path, const RaskStr *content);
+RaskVec    *rask_fs_read_lines(const RaskStr *path);
+RaskVec    *rask_fs_list_dir(const RaskStr *path);
+int64_t     rask_fs_open(const RaskStr *path);
+int64_t     rask_fs_create(const RaskStr *path);
+void        rask_fs_canonicalize(RaskStr *out, const RaskStr *path);
+int64_t     rask_fs_copy(const RaskStr *from, const RaskStr *to);
+void        rask_fs_rename(const RaskStr *from, const RaskStr *to);
+void        rask_fs_remove(const RaskStr *path);
+void        rask_fs_create_dir(const RaskStr *path);
+void        rask_fs_create_dir_all(const RaskStr *path);
+void        rask_fs_append_file(const RaskStr *path, const RaskStr *content);
 
 // ─── File instance methods ──────────────────────────────────
 // Operate on FILE* handles returned by rask_fs_open/rask_fs_create.
 
 void        rask_file_close(int64_t file);
-RaskString *rask_file_read_all(int64_t file);
-void        rask_file_write(int64_t file, const RaskString *content);
-void        rask_file_write_all(int64_t file, const RaskString *content);
-void        rask_file_write_line(int64_t file, const RaskString *content);
+void        rask_file_read_all(RaskStr *out, int64_t file);
+void        rask_file_write(int64_t file, const RaskStr *content);
+void        rask_file_write_all(int64_t file, const RaskStr *content);
+void        rask_file_write_line(int64_t file, const RaskStr *content);
 RaskVec    *rask_file_lines(int64_t file);
+
+// ─── IO module ──────────────────────────────────────────────
+void        rask_io_read_line(RaskStr *out);
+int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
 
 // ─── Time module ────────────────────────────────────────────
 // Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
@@ -275,11 +321,11 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 // ─── Net module ─────────────────────────────────────────────
 // Basic TCP socket operations.
 
-int64_t rask_net_tcp_listen(const RaskString *addr);
-int64_t rask_net_tcp_connect(const RaskString *addr);
+int64_t rask_net_tcp_listen(const RaskStr *addr);
+int64_t rask_net_tcp_connect(const RaskStr *addr);
 
 // Response reading (reads until EOF for Connection: close pattern).
-RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len);
+void    rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len);
 
 // ─── JSON module ────────────────────────────────────────────
 // Encode helpers — used by codegen-generated struct serialization.
@@ -287,34 +333,35 @@ RaskString *rask_io_read_until_close(int64_t fd, int64_t max_len);
 typedef struct RaskJsonBuf RaskJsonBuf;
 
 RaskJsonBuf *rask_json_buf_new(void);
-void         rask_json_buf_add_string(RaskJsonBuf *buf, const RaskString *key, const RaskString *val);
-void         rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskString *key, int64_t val);
-void         rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskString *key, double val);
-void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskString *key, int64_t val);
-void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskString *key, const RaskString *raw_json);
-RaskString  *rask_json_buf_finish(RaskJsonBuf *buf);
+void         rask_json_buf_add_string(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *val);
+void         rask_json_buf_add_i64(RaskJsonBuf *buf, const RaskStr *key, int64_t val);
+void         rask_json_buf_add_f64(RaskJsonBuf *buf, const RaskStr *key, double val);
+void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskStr *key, int64_t val);
+void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *raw_json);
+void         rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf);
 
-RaskString  *rask_json_encode_string(const RaskString *s);
-RaskString  *rask_json_encode_i64(int64_t val);
+void         rask_json_encode(RaskStr *out, int64_t value_ptr);
+void         rask_json_encode_string(RaskStr *out, const RaskStr *s);
+void         rask_json_encode_i64(RaskStr *out, int64_t val);
 
 // JSON array buffer — keyless element encoding for Vec serialization.
 RaskJsonBuf *rask_json_buf_new_array(void);
-void         rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskString *raw_json);
-void         rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskString *val);
+void         rask_json_buf_array_add_raw(RaskJsonBuf *buf, const RaskStr *raw_json);
+void         rask_json_buf_array_add_string(RaskJsonBuf *buf, const RaskStr *val);
 void         rask_json_buf_array_add_i64(RaskJsonBuf *buf, int64_t val);
 void         rask_json_buf_array_add_f64(RaskJsonBuf *buf, double val);
 void         rask_json_buf_array_add_bool(RaskJsonBuf *buf, int64_t val);
-RaskString  *rask_json_buf_finish_array(RaskJsonBuf *buf);
+void         rask_json_buf_finish_array(RaskStr *out, RaskJsonBuf *buf);
 
 // Decode helpers — minimal JSON object parser.
 typedef struct RaskJsonObj RaskJsonObj;
 
-RaskJsonObj *rask_json_parse(const RaskString *s);
-RaskString  *rask_json_get_string(RaskJsonObj *obj, const char *key);
+RaskJsonObj *rask_json_parse(const RaskStr *s);
+void         rask_json_get_string(RaskStr *out, RaskJsonObj *obj, const char *key);
 int64_t      rask_json_get_i64(RaskJsonObj *obj, const char *key);
 double       rask_json_get_f64(RaskJsonObj *obj, const char *key);
 int8_t       rask_json_get_bool(RaskJsonObj *obj, const char *key);
-int64_t      rask_json_decode(const RaskString *s);
+int64_t      rask_json_decode(const RaskStr *s);
 
 // ─── CLI args ───────────────────────────────────────────────
 
