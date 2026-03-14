@@ -50,7 +50,10 @@ impl PassManager {
     /// Build the default optimization pipeline.
     pub fn default_pipeline() -> Self {
         let mut pm = Self::new();
+        // Cross-function passes (sequential) — PC2
         pm.add(ClosureOptimizationPass);
+        pm.add(InliningPass);
+        // Per-function passes — run after inlining for wider optimization window (IN5)
         pm.add(StringConcatPass);
         pm.add(CloneElisionPass);
         pm.add(StringRcInsertionPass);
@@ -70,6 +73,16 @@ impl MirPass for ClosureOptimizationPass {
     fn name(&self) -> &str { "closure_optimization" }
     fn run(&self, fns: &mut Vec<MirFunction>) {
         crate::optimize_all_closures(fns);
+    }
+}
+
+/// Cross-function inliner — splices small/once-called function bodies into callers (IN1-IN5).
+pub struct InliningPass;
+
+impl MirPass for InliningPass {
+    fn name(&self) -> &str { "inlining" }
+    fn run(&self, fns: &mut Vec<MirFunction>) {
+        crate::transform::inline::inline_functions(fns);
     }
 }
 
