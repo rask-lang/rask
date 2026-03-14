@@ -16,6 +16,7 @@ use rask_ast::{
 
 impl<'a> MirLowerer<'a> {
     pub(super) fn lower_stmt(&mut self, stmt: &Stmt) -> Result<(), LoweringError> {
+        self.builder.set_span(stmt.span);
         match &stmt.kind {
             StmtKind::Expr(e) => {
                 self.lower_expr(e)?;

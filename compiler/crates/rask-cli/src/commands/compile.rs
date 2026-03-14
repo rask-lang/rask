@@ -66,7 +66,7 @@ fn lower_to_mir(
     all_mono_decls: &[Decl],
     mir_ctx: &rask_mir::lower::MirContext,
     skip_main: bool,
-) -> Result<Vec<rask_mir::MirFunction>, Vec<String>> {
+) -> Result<(Vec<rask_mir::MirFunction>, rask_mir::PipelineResult), Vec<String>> {
     let mut errors = Vec::new();
     let mut mir_functions = Vec::new();
 
@@ -91,14 +91,14 @@ fn lower_to_mir(
         rask_mir::transform::ssa::construct(func);
     }
 
-    rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
+    let pipeline_result = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 
     // De-SSA: lower phi nodes to copies before codegen.
     for func in &mut mir_functions {
         rask_mir::transform::ssa::destruct(func);
     }
 
-    Ok(mir_functions)
+    Ok((mir_functions, pipeline_result))
 }
 
 /// Initialize codegen and declare all runtime/stdlib/extern functions.
@@ -208,13 +208,21 @@ pub fn compile_to_object(
         call_rewrites: &mono.call_rewrites,
     };
 
-    let mir_functions = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
+    let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
     if mir_functions.is_empty() {
         return Err(vec!["no functions to compile".to_string()]);
     }
 
     let mut codegen = setup_codegen(decls, mono, &mir_functions, comptime_globals, target, build_mode)?;
+
+    // Set debug context for DWARF emission (DI1)
+    if build_mode == rask_codegen::BuildMode::Debug {
+        if let (Some(src_file), Some(lm)) = (source_file, line_map.as_ref()) {
+            codegen.set_debug_context(src_file, lm.clone());
+        }
+        codegen.set_inline_regions(pipeline_result.inline_regions);
+    }
 
     // Build and register vtables for trait objects
     let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
@@ -429,7 +437,7 @@ pub fn compile_benchmarks_to_object(
         call_rewrites: &mono.call_rewrites,
     };
 
-    let mut mir_functions = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
+    let (mut mir_functions, _pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
     if mir_functions.is_empty() && benchmarks.is_empty() {
         return Err(vec!["no functions or benchmarks to compile".to_string()]);
