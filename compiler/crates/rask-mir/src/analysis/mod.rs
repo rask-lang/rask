@@ -3,6 +3,7 @@
 //! MIR analysis utilities — shared graph algorithms and data queries for
 //! optimization passes and codegen.
 
+pub mod call_graph;
 pub mod cfg;
 pub mod dataflow;
 pub mod dominators;
