@@ -36,6 +36,8 @@ pub struct FunctionDebugInfo {
     pub params: Vec<crate::debug_info::VarInfo>,
     /// Named local variables (DI3).
     pub locals: Vec<crate::debug_info::VarInfo>,
+    /// DI5: inlined callees with their native address ranges.
+    pub inlined_callees: Vec<crate::debug_info::InlinedCalleeInfo>,
 }
 
 pub struct CodeGenerator {
@@ -64,6 +66,8 @@ pub struct CodeGenerator {
     line_map: Option<LineMap>,
     /// Source file name for DWARF emission
     source_file_name: Option<String>,
+    /// DI5: inline region metadata from the inlining pass (caller name → regions)
+    inline_regions: HashMap<String, Vec<rask_mir::InlineRegion>>,
 }
 
 impl CodeGenerator {
@@ -98,6 +102,7 @@ impl CodeGenerator {
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
+            inline_regions: HashMap::new(),
         })
     }
 
@@ -143,6 +148,7 @@ impl CodeGenerator {
             debug_srclocs: Vec::new(),
             line_map: None,
             source_file_name: None,
+            inline_regions: HashMap::new(),
         })
     }
 
@@ -151,6 +157,12 @@ impl CodeGenerator {
     pub fn set_debug_context(&mut self, source_file: &str, line_map: LineMap) {
         self.source_file_name = Some(source_file.to_string());
         self.line_map = Some(line_map);
+    }
+
+    /// Set DI5 inline region metadata from the inlining pass.
+    /// Call before gen_function() in debug builds.
+    pub fn set_inline_regions(&mut self, regions: HashMap<String, Vec<rask_mir::InlineRegion>>) {
+        self.inline_regions = regions;
     }
 
     /// Declare runtime functions as external imports.
@@ -838,6 +850,12 @@ impl CodeGenerator {
                             &self.enum_layouts,
                         ))
                         .collect();
+                    // DI5: compute native address ranges for inlined callees
+                    let inlined_callees = compute_inline_ranges(
+                        &srclocs,
+                        self.inline_regions.get(&mir_fn.name).map(|v| v.as_slice()).unwrap_or(&[]),
+                        self.line_map.as_ref(),
+                    );
                     self.debug_srclocs.push(FunctionDebugInfo {
                         func_id: *func_id,
                         name: mir_fn.name.clone(),
@@ -845,6 +863,7 @@ impl CodeGenerator {
                         code_size,
                         params,
                         locals,
+                        inlined_callees,
                     });
                 }
             }
@@ -1030,6 +1049,7 @@ impl CodeGenerator {
                             code_size: f.code_size,
                             params: f.params.clone(),
                             locals: f.locals.clone(),
+                            inlined_callees: f.inlined_callees.clone(),
                         }
                     })
                     .collect();
@@ -1051,6 +1071,42 @@ impl CodeGenerator {
 
         Ok(())
     }
+}
+
+/// DI5: For each inline region, find the native offset range of srclocs
+/// whose source_offset falls within the callee's body span.
+fn compute_inline_ranges(
+    srclocs: &[SrcLocEntry],
+    inline_regions: &[rask_mir::InlineRegion],
+    _line_map: Option<&LineMap>,
+) -> Vec<crate::debug_info::InlinedCalleeInfo> {
+    let mut result = Vec::new();
+    for region in inline_regions {
+        let callee_start = region.callee_body_span.start as u32;
+        let callee_end = region.callee_body_span.end as u32;
+        if callee_end == 0 {
+            continue;
+        }
+
+        let mut native_min = u32::MAX;
+        let mut native_max = 0u32;
+        for entry in srclocs {
+            if entry.source_offset >= callee_start && entry.source_offset < callee_end {
+                native_min = native_min.min(entry.native_offset);
+                native_max = native_max.max(entry.native_offset);
+            }
+        }
+
+        if native_max > 0 && native_min < u32::MAX {
+            result.push(crate::debug_info::InlinedCalleeInfo {
+                callee_name: region.callee_name.clone(),
+                call_site_offset: region.call_site.start as u32,
+                native_start: native_min,
+                native_end: native_max + 1, // past-the-end
+            });
+        }
+    }
+    result
 }
 
 /// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4.
