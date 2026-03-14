@@ -184,4 +184,4 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 ## Status
 
-Most specs are in **Draft** status. See [TODO.md](../TODO.md) for open questions.
+Most language specs are **Decided**. Compiler architecture specs (phases A-G) are implemented. See [TODO.md](../TODO.md) for remaining open items.

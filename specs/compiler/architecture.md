@@ -1,13 +1,13 @@
 <!-- id: comp.architecture -->
-<!-- status: proposed -->
-<!-- summary: Target compiler architecture — IR layers, analysis framework, pass pipeline, CTFE, debug info -->
+<!-- status: decided -->
+<!-- summary: Compiler architecture — IR layers, analysis framework, pass pipeline, CTFE, debug info -->
 <!-- depends: compiler/codegen.md, compiler/advanced-analyses.md, compiler/clone-elision.md, compiler/string-refcount-elision.md, compiler/incremental.md, compiler/effects.md -->
 
 # Compiler Architecture
 
-The compiler grew feature-by-feature. This spec defines the target architecture so that string RC optimization, SSO strings, MIR-based CTFE, reflection, debugging, borrow analysis, effects, incremental compilation, and parallel compilation all have clean extension points — not bolted on after the fact.
+The compiler architecture — IR layers, analysis framework, pass pipeline, CTFE, debug info. String RC optimization, SSO strings, MIR-based CTFE, reflection, debugging, borrow analysis, effects, incremental compilation, and parallel compilation all have clean extension points.
 
-I'm writing this now because every one of those features touches the MIR layer. If MIR's structure is wrong, every feature fights it. Getting the bones right means each feature is a pass, not a rewrite.
+Every one of those features touches the MIR layer. If MIR's structure is wrong, every feature fights it. Getting the bones right means each feature is a pass, not a rewrite.
 
 ---
 
@@ -554,17 +554,17 @@ The LSP path runs the frontend (lex → typecheck → ownership) and stops — i
 
 ## Implementation Phases
 
-| Phase | What | Enables |
-|-------|------|---------|
-| **A: Analysis foundation** | Dominator tree, dataflow framework, liveness | Everything else |
-| **B: SSA** | SSA construction + de-SSA | String RC, constant prop, precise analyses |
-| **C: String RC** | RC insertion/fusion/elision/reuse for strings | `comp.string-refcount-elision`, SSO preparation |
-| **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection |
-| **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
-| **F: Inlining** ✓ | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
-| **G: Advanced analyses** ✓ | Handle typestate (TS1-TS8, MA1-MA5), frozen enforcement (EF1-EF6, FL1), interval analysis (IV1-IV7), bounds check elimination (BE1-BE4) | `comp.advanced` spec |
-| **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience |
-| **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance |
+| Phase | What | Enables | Status |
+|-------|------|---------|--------|
+| **A: Analysis foundation** | Dominator tree, dataflow framework, liveness | Everything else | ✅ Done — `analysis/dominators.rs`, `analysis/dataflow.rs`, `analysis/liveness.rs`, `analysis/escape.rs`, `analysis/intervals.rs`, `analysis/typestate.rs`, `analysis/loops.rs`, `analysis/call_graph.rs` |
+| **B: SSA** | SSA construction + de-SSA | String RC, constant prop, precise analyses | ✅ Done — `transform/ssa.rs` |
+| **C: String RC** | RC insertion/fusion/elision/reuse for strings | `comp.string-refcount-elision`, SSO preparation | ✅ Done — `transform/rc_insert.rs`, `transform/rc_elide.rs` |
+| **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection | ✅ Done — `rask-miri` crate (`lib.rs`, `memory.rs`, `eval.rs`, `intrinsics.rs`, `stdlib.rs`) |
+| **E: Debug info** | Spans on MIR, DWARF emission | Debugger support | ✅ Done — `rask-codegen/src/debug_info.rs` |
+| **F: Inlining** | Cross-function inliner with span preservation | Wider optimization window for per-function passes | ✅ Done — `transform/inline.rs`, `analysis/call_graph.rs` |
+| **G: Advanced analyses** | Handle typestate (TS1-TS8, MA1-MA5), frozen enforcement (EF1-EF6, FL1), interval analysis (IV1-IV7), bounds check elimination (BE1-BE4) | `comp.advanced` spec | ✅ Done — `transform/typestate.rs`, `transform/bounds_elim.rs`, `transform/gen_coalesce.rs`, `analysis/typestate.rs`, `analysis/intervals.rs` |
+| **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience | Partial — LSP server works (`rask-lsp`), frontend caching and suggested fixes not yet implemented |
+| **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance | Partial — semantic hashing done (`rask-semantic-hash`), MIR serialization and parallel codegen not yet implemented |
 
 Phase A is prerequisite for B, C, G. Phases D, E, F are independent of each other. Phase H can start early — frontend caching and error restructuring don't depend on MIR work. Phase I is independent but benefits from all others.
 
