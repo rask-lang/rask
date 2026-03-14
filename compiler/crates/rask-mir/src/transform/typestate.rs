@@ -9,7 +9,7 @@
 use rask_diagnostics::Diagnostic;
 
 use crate::analysis::typestate;
-use crate::transform::pass::{MirPass, PassResult};
+use crate::transform::pass::{MirPass, PassContext};
 use crate::MirFunction;
 
 /// Handle typestate checking pass (comp.advanced TS1-TS8).
@@ -23,22 +23,15 @@ impl MirPass for TypestatePass {
         "typestate"
     }
 
-    fn run_function(&self, func: &mut MirFunction) -> PassResult {
+    fn run_function(&self, func: &mut MirFunction, ctx: &mut PassContext) {
         let Some((analysis, results)) = typestate::analyze(func) else {
-            return PassResult::ok();
+            return;
         };
 
         let errors = typestate::check_errors(func, &analysis, &results);
-        if errors.is_empty() {
-            return PassResult::ok();
+        for e in &errors {
+            ctx.diagnostics.push(error_to_diagnostic(e));
         }
-
-        let diagnostics = errors
-            .into_iter()
-            .map(|e| error_to_diagnostic(&e))
-            .collect();
-
-        PassResult { diagnostics }
     }
 }
 

@@ -273,11 +273,12 @@ pub fn link_executable_with(
         cmd.arg("-O2");
     } else {
         cmd.arg("-DRASK_DEBUG");
+        cmd.arg("-g"); // preserve DWARF debug info
     }
+    cmd.arg(obj_path); // Rask .o first: keeps our DWARF section offsets valid
     for src in &config.sources {
         cmd.arg(runtime_dir.join(src));
     }
-    cmd.arg(obj_path);
     for obj in &opts.objects {
         cmd.arg(obj);
     }

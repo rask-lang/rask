@@ -18,4 +18,5 @@ cranelift-frontend = "0.114"
 
 target-lexicon = "0.12"
 object = "0.36"
+gimli = { version = "0.31", features = ["write"] }
 
