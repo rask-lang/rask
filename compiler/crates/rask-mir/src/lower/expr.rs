@@ -785,6 +785,21 @@ impl<'a> MirLowerer<'a> {
                                 arg_operands.insert(0, size_op);
                             }
 
+                            // Vec.new(): inject elem_size so runtime allocates correct slots.
+                            // string elements need 16 bytes; structs use layout size; default 8.
+                            if base_name == "Vec" && method == "new" {
+                                let elem_size = self.generic_type_param_size(name, 0);
+                                let size_op = MirOperand::Constant(MirConst::Int(elem_size));
+                                arg_operands.insert(0, size_op);
+                            }
+                            // Map.new(): inject key_size, val_size
+                            if (base_name == "Map") && method == "new" {
+                                let key_size = self.generic_type_param_size(name, 0);
+                                let val_size = self.generic_type_param_size(name, 1);
+                                arg_operands.insert(0, MirOperand::Constant(MirConst::Int(key_size)));
+                                arg_operands.insert(1, MirOperand::Constant(MirConst::Int(val_size)));
+                            }
+
                             // Map.new() with string keys → use string hash/eq
                             let func_name = if func_name == "Map_new" {
                                 let has_string_keys = self.ctx.lookup_raw_type(expr.id)

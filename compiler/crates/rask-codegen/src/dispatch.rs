@@ -226,20 +226,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_vec_join(v: Vec<string>*, separator: string*) → string*
+        // rask_vec_join(out: RaskStr*, v: Vec<string>*, separator: RaskStr*) → void
         StdlibEntry {
             mir_name: "Vec_join",
             c_name: "rask_vec_join",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
-        // rask_vec_join_i64(v: Vec<i64>*, separator: string*) → string*
+        // rask_vec_join_i64(out: RaskStr*, v: Vec<i64>*, separator: RaskStr*) → void
         StdlibEntry {
             mir_name: "Vec_join_i64",
             c_name: "rask_vec_join_i64",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
 
@@ -336,7 +336,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         },
 
         // ── String operations ──────────────────────────────────
-        // rask_string_free(s: RaskString*) → void
+        // SSO: strings are 16-byte RaskStr values on stack. Functions receive
+        // pointers to caller's stack slots. String-producing functions take
+        // RaskStr *out as first param and return void.
+
+        // RC operations (codegen calls after inline tag check)
+        // rask_string_free(s: const RaskStr*) → void
         StdlibEntry {
             mir_name: "string_free",
             c_name: "rask_string_free",
@@ -344,23 +349,51 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: None,
             can_panic: false,
         },
-        // rask_string_new() → RaskString*
+        // rask_string_clone(s: const RaskStr*) → void (RC inc only)
+        StdlibEntry {
+            mir_name: "string_clone",
+            c_name: "rask_string_clone",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // string.to_owned() → alias for clone (RC inc, value copy in codegen)
+        StdlibEntry {
+            mir_name: "string_to_owned",
+            c_name: "rask_string_clone",
+            params: &[types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+
+        // Constructors (out-param)
+        // rask_string_new(out: RaskStr*) → void
         StdlibEntry {
             mir_name: "string_new",
             c_name: "rask_string_new",
-            params: &[],
-            ret_ty: Some(types::I64),
+            params: &[types::I64],
+            ret_ty: None,
             can_panic: false,
         },
-        // rask_string_from(cstr: const char*) → RaskString*
+        // rask_string_from(out: RaskStr*, cstr: const char*) → void
         StdlibEntry {
             mir_name: "string_from",
             c_name: "rask_string_from",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
-        // rask_string_len(s: const RaskString*) → i64
+        // string.from_c(ptr): copy from null-terminated C string
+        StdlibEntry {
+            mir_name: "string_from_c",
+            c_name: "rask_string_from",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+
+        // Read-only accessors (no signature change — param is pointer to 16B value)
+        // rask_string_len(s: const RaskStr*) → i64
         StdlibEntry {
             mir_name: "string_len",
             c_name: "rask_string_len",
@@ -368,7 +401,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_string_eq(a, b: const RaskString*) → i64 (0 or 1)
+        // rask_string_eq(a, b: const RaskStr*) → i64
         StdlibEntry {
             mir_name: "string_eq",
             c_name: "rask_string_eq",
@@ -376,7 +409,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // rask_string_ptr(s: const RaskString*) → const char*
+        // rask_string_ptr(s: const RaskStr*) → const char*
         StdlibEntry {
             mir_name: "string_as_ptr",
             c_name: "rask_string_ptr",
@@ -384,7 +417,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // as_c_str(): null-terminated pointer for C interop (same as ptr — strings are always null-terminated)
         StdlibEntry {
             mir_name: "string_as_c_str",
             c_name: "rask_string_ptr",
@@ -392,52 +424,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // string.from_c(ptr): copy from null-terminated C string
-        StdlibEntry {
-            mir_name: "string_from_c",
-            c_name: "rask_string_from",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        // rask_string_concat(a, b: const RaskString*) → RaskString*
-        StdlibEntry {
-            mir_name: "concat",
-            c_name: "rask_string_concat",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        // rask_string_append(s: RaskString*, other: const RaskString*) → RaskString*
-        // Returns s (or a COW copy if refcount > 1).
-        StdlibEntry {
-            mir_name: "string_append",
-            c_name: "rask_string_append",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        // rask_string_append_cstr(s: RaskString*, cstr: const char*) → RaskString*
-        // COW-safe variant for string constant args.
-        StdlibEntry {
-            mir_name: "string_append_cstr",
-            c_name: "rask_string_append_cstr",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-
-        // ── String methods ────────────────────────────────────
         StdlibEntry {
             mir_name: "string_is_empty",
             c_name: "rask_string_is_empty",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_to_uppercase",
-            c_name: "rask_string_to_uppercase",
             params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
@@ -471,41 +460,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_repeat",
-            c_name: "rask_string_repeat",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_reverse",
-            c_name: "rask_string_reverse",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_trim_start",
-            c_name: "rask_string_trim_start",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_trim_end",
-            c_name: "rask_string_trim_end",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_to_lowercase",
-            c_name: "rask_string_to_lowercase",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
             mir_name: "string_starts_with",
             c_name: "rask_string_starts_with",
             params: &[types::I64, types::I64],
@@ -513,36 +467,26 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_lines",
-            c_name: "rask_string_lines",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_trim",
-            c_name: "rask_string_trim",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        // Result_map_err: both closure and variant constructor forms
-        // are expanded inline at MIR level (lower_map_err / lower_map_err_constructor).
-        StdlibEntry {
-            mir_name: "string_split",
-            c_name: "rask_string_split",
+            mir_name: "string_ends_with",
+            c_name: "rask_string_ends_with",
             params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_split_whitespace",
-            c_name: "rask_string_split_whitespace",
-            params: &[types::I64],
+            mir_name: "string_contains",
+            c_name: "rask_string_contains",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
-        // Fallback: unresolved .parse() defaults to parse_float (f64-returning)
+        StdlibEntry {
+            mir_name: "string_byte_at",
+            c_name: "rask_string_byte_at",
+            params: &[types::I64, types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         StdlibEntry {
             mir_name: "string_parse",
             c_name: "rask_string_parse_float",
@@ -565,68 +509,207 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_byte_at",
-            c_name: "rask_string_byte_at",
-            params: &[types::I64, types::I64],
+            mir_name: "string_parse_i32",
+            c_name: "rask_string_parse_int",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        StdlibEntry {
+            mir_name: "string_parse_i64",
+            c_name: "rask_string_parse_int",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_parse_f64",
+            c_name: "rask_string_parse_float",
+            params: &[types::I64],
+            ret_ty: Some(types::F64),
+            can_panic: false,
+        },
+
+        // String-producing operations (out-param: RaskStr *out as first param, void return)
+        // rask_string_concat(out, a, b: const RaskStr*) → void
+        StdlibEntry {
+            mir_name: "concat",
+            c_name: "rask_string_concat",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_substr(out, s: const RaskStr*, start, end: i64) → void
         StdlibEntry {
             mir_name: "string_substr",
             c_name: "rask_string_substr",
-            params: &[types::I64, types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_to_lowercase(out, s: const RaskStr*) → void
+        StdlibEntry {
+            mir_name: "string_to_lowercase",
+            c_name: "rask_string_to_lowercase",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_ends_with",
-            c_name: "rask_string_ends_with",
+            mir_name: "string_to_uppercase",
+            c_name: "rask_string_to_uppercase",
             params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            ret_ty: None,
             can_panic: false,
         },
+        StdlibEntry {
+            mir_name: "string_trim",
+            c_name: "rask_string_trim",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_trim_start",
+            c_name: "rask_string_trim_start",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_trim_end",
+            c_name: "rask_string_trim_end",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_repeat(out, s: const RaskStr*, count: i64) → void
+        StdlibEntry {
+            mir_name: "string_repeat",
+            c_name: "rask_string_repeat",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_reverse",
+            c_name: "rask_string_reverse",
+            params: &[types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_replace(out, s, from, to: const RaskStr*) → void
         StdlibEntry {
             mir_name: "string_replace",
             c_name: "rask_string_replace",
+            params: &[types::I64, types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+
+        // Builder operations (out-param: RaskStr *out, const RaskStr *s, ...)
+        // rask_string_append(out, s, other: const RaskStr*) → void
+        StdlibEntry {
+            mir_name: "string_append",
+            c_name: "rask_string_append",
             params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_append_cstr(out, s: const RaskStr*, cstr: const char*) → void
+        StdlibEntry {
+            mir_name: "string_append_cstr",
+            c_name: "rask_string_append_cstr",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_push_str(out, s, other: const RaskStr*) → void
+        StdlibEntry {
+            mir_name: "string_push_str",
+            c_name: "rask_string_push_str",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        // rask_string_push_char(out, s: const RaskStr*, cp: i32) → void
+        StdlibEntry {
+            mir_name: "string_push_char",
+            c_name: "rask_string_push_char",
+            params: &[types::I64, types::I64, types::I32],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_push",
+            c_name: "rask_string_push_char",
+            params: &[types::I64, types::I64, types::I32],
+            ret_ty: None,
+            can_panic: false,
+        },
+
+        // Vec-returning operations (elements are 16-byte RaskStr values)
+        StdlibEntry {
+            mir_name: "string_lines",
+            c_name: "rask_string_lines",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // Result_map_err: both closure and variant constructor forms
+        // are expanded inline at MIR level (lower_map_err / lower_map_err_constructor).
+        StdlibEntry {
+            mir_name: "string_split",
+            c_name: "rask_string_split",
+            params: &[types::I64, types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
         StdlibEntry {
-            mir_name: "string_contains",
-            c_name: "rask_string_contains",
-            params: &[types::I64, types::I64],
+            mir_name: "string_split_whitespace",
+            c_name: "rask_string_split_whitespace",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "string_chars",
+            c_name: "rask_string_chars",
+            params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,
         },
 
-        // ── Conversion to string ──────────────────────────────
+        // ── Conversion to string (out-param) ──────────────────
+        // rask_i64_to_string(out: RaskStr*, val: i64) → void
         StdlibEntry {
             mir_name: "i64_to_string",
             c_name: "rask_i64_to_string",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
             mir_name: "bool_to_string",
             c_name: "rask_bool_to_string",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
+        // rask_f64_to_string(out: RaskStr*, val: f64) → void
         StdlibEntry {
             mir_name: "f64_to_string",
             c_name: "rask_f64_to_string",
-            params: &[types::F64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::F64],
+            ret_ty: None,
             can_panic: false,
         },
+        // rask_char_to_string(out: RaskStr*, cp: i32) → void
         StdlibEntry {
             mir_name: "char_to_string",
             c_name: "rask_char_to_string",
-            params: &[types::I32],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I32],
+            ret_ty: None,
             can_panic: false,
         },
 
@@ -1171,8 +1254,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "io_read_line",
             c_name: "rask_io_read_line",
-            params: &[],
-            ret_ty: Some(types::I64),
+            params: &[types::I64],
+            ret_ty: None,
             can_panic: false,
         },
 
@@ -1180,8 +1263,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "fs_read_file",
             c_name: "rask_fs_read_file",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1215,8 +1298,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "fs_canonicalize",
             c_name: "rask_fs_canonicalize",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1324,9 +1407,9 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         // ── I/O primitives (used by Rask stdlib HTTP parser) ─────────
         StdlibEntry {
             mir_name: "io_read_string",
-            c_name: "rask_io_read_string",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            c_name: "rask_io_read_until_close",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1380,8 +1463,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_encode",
             c_name: "rask_json_encode",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
 
@@ -1389,15 +1472,15 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_encode_string",
             c_name: "rask_json_encode_string",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
             mir_name: "json_encode_i64",
             c_name: "rask_json_encode_i64",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1445,8 +1528,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_buf_finish",
             c_name: "rask_json_buf_finish",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         // JSON array buffer — Vec serialization
@@ -1495,8 +1578,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_buf_finish_array",
             c_name: "rask_json_buf_finish_array",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1509,8 +1592,8 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "json_get_string",
             c_name: "rask_json_get_string",
-            params: &[types::I64, types::I64],
-            ret_ty: Some(types::I64),
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
             can_panic: false,
         },
         StdlibEntry {
@@ -1562,21 +1645,6 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry {
             mir_name: "Map_clone",
             c_name: "rask_map_clone",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        StdlibEntry {
-            mir_name: "string_clone",
-            c_name: "rask_string_clone",
-            params: &[types::I64],
-            ret_ty: Some(types::I64),
-            can_panic: false,
-        },
-        // string.to_owned() → alias for clone
-        StdlibEntry {
-            mir_name: "string_to_owned",
-            c_name: "rask_string_clone",
             params: &[types::I64],
             ret_ty: Some(types::I64),
             can_panic: false,

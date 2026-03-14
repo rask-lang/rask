@@ -176,6 +176,10 @@ int64_t rask_char_to_lowercase(int32_t c);
 int64_t rask_char_len_utf8(int32_t c);
 int64_t rask_char_eq(int32_t a, int32_t b);
 
+// ─── Vec (string-dependent) ─────────────────────────────────
+void     rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+void     rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep);
+
 // ─── Map ────────────────────────────────────────────────────
 // Open-addressing hash map with linear probing.
 // Keys and values stored as raw bytes. Uses FNV-1a hashing + memcmp by default.
@@ -273,6 +277,11 @@ int64_t  rask_random_range(int64_t lo, int64_t hi);
 // ─── FS module ──────────────────────────────────────────────
 // Higher-level file operations. Return FILE* as i64.
 
+int8_t      rask_fs_exists(const RaskStr *path);
+void        rask_fs_read_file(RaskStr *out, const RaskStr *path);
+void        rask_fs_write_file(const RaskStr *path, const RaskStr *content);
+RaskVec    *rask_fs_read_lines(const RaskStr *path);
+RaskVec    *rask_fs_list_dir(const RaskStr *path);
 int64_t     rask_fs_open(const RaskStr *path);
 int64_t     rask_fs_create(const RaskStr *path);
 void        rask_fs_canonicalize(RaskStr *out, const RaskStr *path);
@@ -292,6 +301,10 @@ void        rask_file_write(int64_t file, const RaskStr *content);
 void        rask_file_write_all(int64_t file, const RaskStr *content);
 void        rask_file_write_line(int64_t file, const RaskStr *content);
 RaskVec    *rask_file_lines(int64_t file);
+
+// ─── IO module ──────────────────────────────────────────────
+void        rask_io_read_line(RaskStr *out);
+int64_t     rask_io_write_string(int64_t fd, int64_t str_ptr);
 
 // ─── Time module ────────────────────────────────────────────
 // Instant = i64 nanoseconds (CLOCK_MONOTONIC), Duration = i64 nanoseconds.
@@ -327,6 +340,7 @@ void         rask_json_buf_add_bool(RaskJsonBuf *buf, const RaskStr *key, int64_
 void         rask_json_buf_add_raw(RaskJsonBuf *buf, const RaskStr *key, const RaskStr *raw_json);
 void         rask_json_buf_finish(RaskStr *out, RaskJsonBuf *buf);
 
+void         rask_json_encode(RaskStr *out, int64_t value_ptr);
 void         rask_json_encode_string(RaskStr *out, const RaskStr *s);
 void         rask_json_encode_i64(RaskStr *out, int64_t val);
 
