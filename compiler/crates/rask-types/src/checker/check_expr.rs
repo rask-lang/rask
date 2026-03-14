@@ -505,7 +505,21 @@ impl TypeChecker {
                                         err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &result_ty, expr.span);
-                                    if self.accumulate_errors {
+                                    if let Some(ec) = else_clause {
+                                        // try...else with unresolved inner: bind error, infer handler,
+                                        // unify handler type with function's error return type
+                                        self.push_scope();
+                                        if let Some(scope) = self.local_types.last_mut() {
+                                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                                        }
+                                        let handler_ty = self.infer_expr(&ec.body);
+                                        self.pop_scope();
+                                        if self.accumulate_errors {
+                                            self.inferred_errors.push(handler_ty);
+                                        } else {
+                                            let _ = self.unify(&handler_ty, ret_err, expr.span);
+                                        }
+                                    } else if self.accumulate_errors {
                                         // ER20: Collect instead of unifying with return
                                         self.inferred_errors.push(err_ty);
                                     } else {
@@ -523,7 +537,24 @@ impl TypeChecker {
                                         err: Box::new(err_ty.clone()),
                                     };
                                     let _ = self.unify(&inner_ty, &inner_result, expr.span);
-                                    if self.accumulate_errors {
+                                    if let Some(ec) = else_clause {
+                                        // try...else with both types unresolved
+                                        self.push_scope();
+                                        if let Some(scope) = self.local_types.last_mut() {
+                                            scope.insert(ec.error_binding.clone(), (err_ty, true));
+                                        }
+                                        let handler_ty = self.infer_expr(&ec.body);
+                                        self.pop_scope();
+                                        if self.accumulate_errors {
+                                            self.inferred_errors.push(handler_ty.clone());
+                                        }
+                                        let ret_ok = self.ctx.fresh_var();
+                                        let ret_result = Type::Result {
+                                            ok: Box::new(ret_ok),
+                                            err: Box::new(handler_ty),
+                                        };
+                                        let _ = self.unify(&resolved_ret, &ret_result, expr.span);
+                                    } else if self.accumulate_errors {
                                         // ER20: Collect instead of unifying with return
                                         self.inferred_errors.push(err_ty);
                                     } else {

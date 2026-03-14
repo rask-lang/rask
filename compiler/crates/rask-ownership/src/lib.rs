@@ -853,8 +853,8 @@ impl<'a> OwnershipChecker<'a> {
             Type::F32 | Type::F64 => true,
             Type::Never => true,
 
-            // String is NOT Copy (owns heap memory)
-            Type::String => false,
+            // String is Copy (immutable, refcounted, 16 bytes — std.strings/S1)
+            Type::String => true,
 
             // Arrays: Copy if element is Copy and size <= 16 bytes
             Type::Array { elem, len: _ } => {
@@ -973,7 +973,8 @@ impl<'a> OwnershipChecker<'a> {
     fn move_reason(&self, ty: &Type) -> MoveReason {
         let type_name = format!("{}", ty);
         match ty {
-            Type::String => MoveReason::OwnsHeapMemory { type_name },
+            // String is Copy (S1) — this branch shouldn't be reached
+            Type::String => MoveReason::Unknown,
             Type::Generic { base, .. } => {
                 // Check if the base type is a heap-owning collection
                 let base_name = if let Some(def) = self.program.types.get(*base) {
