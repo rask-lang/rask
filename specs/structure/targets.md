@@ -5,7 +5,7 @@
 
 # Libraries vs Executables
 
-Package role is determined by presence of `func main()`. No manifest flags, no dual-purpose packages. `@entry` is optional — only needed for non-main entry points.
+Package role is determined by presence of `func main()`. No manifest flags, no dual-purpose packages. A package is either a library or an executable — never both. `@entry` is optional — only needed for non-main entry points.
 
 ## Package Classification
 
@@ -71,13 +71,36 @@ public func main(args: Args) {
 | **EX4: Panic** | Panic → status 101, message to stderr |
 | **EX5: Ensure runs** | `ensure` blocks run before exit (unless `sys.exit()`) |
 
-## Multi-Binary Projects
+## One Package, One Role
 
 | Rule | Description |
 |------|-------------|
-| **MB1: CLI selection** | `raskc myapp/cli.rk` compiles specific binary |
-| **MB2: Manifest** | `bin: ["cli.rk", "server.rk"]` in `build.rk` |
-| **MB3: Shared code** | Files not in `bin` list are library code |
+| **MB1: No dual-purpose** | A package with `func main()` is an executable. A package without is a library. Never both |
+| **MB2: Lib + CLI pattern** | Library package + thin executable package in a workspace. The executable imports the library |
+| **MB3: Multi-binary pattern** | Multiple executable packages in a workspace, each importing shared library packages |
+
+```
+mylib/
+  build.rk            # members: ["mylib", "cli"]
+  mylib/
+    parser.rk          # public API — library
+    format.rk
+  cli/
+    main.rk            # import mylib — executable wrapper
+```
+
+Multiple binaries:
+
+```
+myproject/
+  build.rk            # members: ["core", "client", "server"]
+  core/
+    protocol.rk        # shared library
+  client/
+    main.rk            # import core
+  server/
+    main.rk            # import core
+```
 
 ## Error Messages
 
@@ -105,7 +128,7 @@ ERROR [struct.targets/EP1]: entry point not public
 | Both `main()` and `@entry` | PC3 | Compile error: ambiguous |
 | `sys.exit()` with unconsumed linear resource | EX3 | Resource leaked |
 | `init()` failure before `main()` | — | Entry function never runs |
-| Library with `main()` imported | PC1 | Import gets library API, not entry point |
+| Importing an executable package | MB1 | Compile error — executables are not importable |
 
 ---
 
@@ -116,6 +139,8 @@ ERROR [struct.targets/EP1]: entry point not public
 **PC1 (main() convention):** `func main()` is universal (C, Go, Rust, Java). No build file needed for basic usage. Follows "package = directory" — structure determines behavior.
 
 **EP3 (@entry):** Exists for the rare case where `main` conflicts with a domain term. Not needed in practice.
+
+**MB1 (no dual-purpose):** Rust allows `src/lib.rs` + `src/main.rs` in one crate — a package that's both library and executable. This creates ambiguity: what does "import X" mean when X has a `main()`? I chose one package, one role. The cost is a thin wrapper directory for the CLI case. The benefit is that "library" and "executable" are always unambiguous from the package structure. Simple over easy.
 
 ### Examples
 
@@ -135,13 +160,17 @@ public func new(method: string, path: string) -> Request { ... }
 // No func main() → library
 ```
 
-**Examples directory pattern:**
+**Library + CLI (workspace):**
 ```
 mylib/
-  core.rk
+  build.rk          // members: ["mylib", "cli"]
+  mylib/
+    core.rk
+  cli/
+    main.rk         // import mylib; thin wrapper
   examples/
-    basic.rk      // func main()
-    advanced.rk   // func main()
+    basic.rk        // func main()
+    advanced.rk     // func main()
 ```
 
 ### Comparison
@@ -156,4 +185,4 @@ mylib/
 ### See Also
 
 - `struct.modules` — visibility, package organization
-- `struct.build` — build configuration, multi-binary
+- `struct.build` — build configuration, workspaces
