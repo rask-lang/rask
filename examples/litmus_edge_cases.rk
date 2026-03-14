@@ -150,27 +150,27 @@ test "try-else multiline with method call — error transforms" {
 
 // ─── try-else with trait objects ────────────────────────────────
 
-enum MyParseError {
+enum ParseError {
     InvalidFormat(string),
 }
 
 enum ProcessError {
-    Parse(MyParseError),
+    Parse(ParseError),
     Logic(string),
 }
 
 trait Parser {
-    func parse(self, input: string) -> i32 or MyParseError
+    func parse(self, input: string) -> i32 or ParseError
 }
 
 struct StrictParser {}
 
 extend StrictParser with Parser {
-    func parse(self, input: string) -> i32 or MyParseError {
+    func parse(self, input: string) -> i32 or ParseError {
         if input == "42" {
             return Ok(42)
         }
-        return Err(MyParseError.InvalidFormat("not 42"))
+        return Err(ParseError.InvalidFormat("not 42"))
     }
 }
 
@@ -235,38 +235,26 @@ struct Entity {
     health: i32
 }
 
-func test_pool_string_copy() -> () or string {
+test "Pool — string fields Copy correctly" {
     const pool = Pool.new()
-    const h = try pool.insert(Entity { name: "Hero", health: 100 })
+    const h = pool.insert(Entity { name: "Hero", health: 100 }).unwrap()
     // Read string field — should be Copy, not move
     const name1 = pool[h].name
     const name2 = pool[h].name
     assert name1 == "Hero"
     assert name2 == "Hero"
     assert pool[h].health == 100
-    return Ok(())
 }
 
-func test_pool_modify_after_read() -> () or string {
+test "Pool — modify non-string field after reading string" {
     const pool = Pool.new()
-    const h = try pool.insert(Entity { name: "Hero", health: 100 })
+    const h = pool.insert(Entity { name: "Hero", health: 100 }).unwrap()
     const name = pool[h].name
     with pool[h] as e {
         e.health = 50
     }
     assert name == "Hero"
     assert pool[h].health == 50
-    return Ok(())
-}
-
-test "Pool — string fields Copy correctly" {
-    const result = test_pool_string_copy()
-    assert result is Ok
-}
-
-test "Pool — modify non-string field after reading string" {
-    const result = test_pool_modify_after_read()
-    assert result is Ok
 }
 
 // ─── Vec.get with pattern matching ──────────────────────────────
@@ -392,7 +380,8 @@ test "fs write and read round-trip" {
     const content = "hello from rask\nsecond line\n"
     fs.write_file(path, content)
     const read_back = fs.read_file(path) is Ok(data) else {
-        panic("failed to read back")
+        assert false, "failed to read back"
+        return
     }
     assert read_back == content
 }
@@ -401,7 +390,8 @@ test "fs read_lines returns correct line count" {
     const path = "/tmp/rask_test_litmus2.txt"
     fs.write_file(path, "line1\nline2\nline3\n")
     const lines = fs.read_lines(path) is Ok(l) else {
-        panic("failed to read lines")
+        assert false, "failed to read lines"
+        return
     }
     assert lines.len() == 3
 }
