@@ -30,6 +30,12 @@ pub struct FunctionDebugInfo {
     pub func_id: cranelift_module::FuncId,
     pub name: String,
     pub srclocs: Vec<SrcLocEntry>,
+    /// Native code byte length (for DW_AT_high_pc).
+    pub code_size: u32,
+    /// Formal parameters (DI3).
+    pub params: Vec<crate::debug_info::VarInfo>,
+    /// Named local variables (DI3).
+    pub locals: Vec<crate::debug_info::VarInfo>,
 }
 
 pub struct CodeGenerator {
@@ -814,10 +820,31 @@ impl CodeGenerator {
                     }
                 }
                 if !srclocs.is_empty() {
+                    let code_size = all_srclocs.last().map(|e| e.end).unwrap_or(0);
+                    let params: Vec<_> = mir_fn.params.iter()
+                        .map(|p| mir_type_to_var_info(
+                            p.name.as_deref().unwrap_or("_"),
+                            &p.ty,
+                            &self.struct_layouts,
+                            &self.enum_layouts,
+                        ))
+                        .collect();
+                    let locals: Vec<_> = mir_fn.locals.iter()
+                        .filter(|l| l.name.is_some() && !l.is_param)
+                        .map(|l| mir_type_to_var_info(
+                            l.name.as_deref().unwrap(),
+                            &l.ty,
+                            &self.struct_layouts,
+                            &self.enum_layouts,
+                        ))
+                        .collect();
                     self.debug_srclocs.push(FunctionDebugInfo {
                         func_id: *func_id,
                         name: mir_fn.name.clone(),
                         srclocs,
+                        code_size,
+                        params,
+                        locals,
                     });
                 }
             }
@@ -1000,6 +1027,9 @@ impl CodeGenerator {
                             symbol_id: sym,
                             name: f.name.clone(),
                             srclocs: f.srclocs.clone(),
+                            code_size: f.code_size,
+                            params: f.params.clone(),
+                            locals: f.locals.clone(),
                         }
                     })
                     .collect();
@@ -1021,6 +1051,59 @@ impl CodeGenerator {
 
         Ok(())
     }
+}
+
+/// Convert a MIR local's type to the VarInfo needed for DWARF DI3/DI4.
+fn mir_type_to_var_info(
+    name: &str,
+    ty: &rask_mir::MirType,
+    struct_layouts: &[StructLayout],
+    enum_layouts: &[EnumLayout],
+) -> crate::debug_info::VarInfo {
+    use crate::debug_info::{TypeKind, VarInfo};
+    use rask_mir::{EnumLayoutId, StructLayoutId};
+
+    let (type_name, byte_size, type_kind) = match ty {
+        rask_mir::MirType::Void     => ("void".into(), 0u32, TypeKind::Other),
+        rask_mir::MirType::Bool     => ("bool".into(), 1, TypeKind::Boolean),
+        rask_mir::MirType::I8       => ("i8".into(), 1, TypeKind::Signed),
+        rask_mir::MirType::I16      => ("i16".into(), 2, TypeKind::Signed),
+        rask_mir::MirType::I32      => ("i32".into(), 4, TypeKind::Signed),
+        rask_mir::MirType::I64      => ("i64".into(), 8, TypeKind::Signed),
+        rask_mir::MirType::U8       => ("u8".into(), 1, TypeKind::Unsigned),
+        rask_mir::MirType::U16      => ("u16".into(), 2, TypeKind::Unsigned),
+        rask_mir::MirType::U32      => ("u32".into(), 4, TypeKind::Unsigned),
+        rask_mir::MirType::U64      => ("u64".into(), 8, TypeKind::Unsigned),
+        rask_mir::MirType::F32      => ("f32".into(), 4, TypeKind::Float),
+        rask_mir::MirType::F64      => ("f64".into(), 8, TypeKind::Float),
+        rask_mir::MirType::Char     => ("char".into(), 4, TypeKind::Unsigned),
+        rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
+        rask_mir::MirType::String   => ("string".into(), 8, TypeKind::Address),
+        rask_mir::MirType::Handle   => ("Handle".into(), 8, TypeKind::Signed),
+        rask_mir::MirType::Struct(StructLayoutId(id)) => {
+            let sname = struct_layouts.get(*id as usize)
+                .map(|s| s.name.clone())
+                .unwrap_or_else(|| "struct".into());
+            let size = struct_layouts.get(*id as usize).map(|s| s.size).unwrap_or(8);
+            (sname, size, TypeKind::Other)
+        }
+        rask_mir::MirType::Enum(EnumLayoutId(id)) => {
+            let ename = enum_layouts.get(*id as usize)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| "enum".into());
+            let size = enum_layouts.get(*id as usize).map(|e| e.size).unwrap_or(8);
+            (ename, size, TypeKind::Other)
+        }
+        // Complex types: use a reasonable approximation
+        rask_mir::MirType::Option(inner) => {
+            let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
+            (format!("Option<{}>", inner.type_name), inner.byte_size + 8, TypeKind::Other)
+        }
+        rask_mir::MirType::Tuple(_) => ("tuple".into(), 8, TypeKind::Other),
+        rask_mir::MirType::Slice(_) => ("slice".into(), 16, TypeKind::Other),
+        _ => ("unknown".into(), 8, TypeKind::Other),
+    };
+    VarInfo { name: name.to_owned(), type_name, byte_size, type_kind }
 }
 
 impl crate::Backend for CodeGenerator {
