@@ -54,6 +54,17 @@ impl TypeChecker {
                 if let Some(type_id) = self.types.get_type_id(name) {
                     return Type::Named(type_id);
                 }
+                // Qualified type name: "pkg.Type" → look up "Type" then "pkg$Type"
+                if let Some(dot) = name.find('.') {
+                    let type_name = &name[dot + 1..];
+                    if let Some(type_id) = self.types.get_type_id(type_name) {
+                        return Type::Named(type_id);
+                    }
+                    let prefixed = format!("{}${}", &name[..dot], type_name);
+                    if let Some(type_id) = self.types.get_type_id(&prefixed) {
+                        return Type::Named(type_id);
+                    }
+                }
                 ty.clone()
             }
             Type::UnresolvedGeneric { name, args } => {

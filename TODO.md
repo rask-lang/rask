@@ -47,7 +47,7 @@ Ownership checking works for common patterns but has gaps in error reporting and
 
 Single-file compilation works. Multi-file packages have symbol visibility issues.
 
-- [ ] **Cross-package public symbol export** — `public` types/funcs not visible via `import pkg` in workspace path deps. `lsm.DbError` resolves to `no such field on __module_lsm`. Blocks multi-package examples.
+- [x] **Cross-package public symbol export** — `public` types/funcs not visible via `import pkg` in workspace path deps. Fixed: resolver now inserts resolutions for imported symbols in field access; stdlib NodeIds no longer collide with user code; type checker resolves qualified type names (`pkg.Type`).
 - [x] **Parser: empty guard else block** — `expr is Ok else {}` with empty braces causes brace mismatch.
 
 ## 8. Build Infrastructure & Security

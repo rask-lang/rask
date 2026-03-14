@@ -1485,6 +1485,11 @@ impl Resolver {
                     }
 
                     if self.imported_symbols.contains(name) {
+                        // Resolve the imported identifier so the type checker
+                        // has a proper NodeId → SymbolId mapping.
+                        if let Some(sym_id) = self.scopes.lookup(name) {
+                            self.resolutions.insert(object.id, sym_id);
+                        }
                         return;
                     }
                     // Skip resolution for primitive type constants (u64.MAX, etc.)
@@ -2385,5 +2390,97 @@ mod tests {
         let resolved = result.unwrap();
         assert!(!resolved.external_decls.contains_key("lib"),
             "Package with only private types should not appear in external_decls");
+    }
+
+    #[test]
+    fn test_imported_symbol_field_access_resolved() {
+        // Regression: field access on an imported type (e.g., DbError.NotFound)
+        // must insert a resolution for the object ident, even though it's in
+        // imported_symbols. Without this, stale resolutions from other passes
+        // (stdlib) can leak through.
+        use crate::PackageRegistry;
+        use std::path::PathBuf;
+        use rask_ast::expr::{Expr, ExprKind};
+        use rask_ast::stmt::{Stmt, StmtKind};
+
+        let mut registry = PackageRegistry::new();
+
+        let _lib_pkg = registry.add_package_with_decls(
+            "lib".to_string(),
+            vec!["lib".to_string()],
+            PathBuf::from("/lib"),
+            vec![make_pub_enum_decl("DbError", &["NotFound", "Corruption"])],
+        );
+
+        let app_pkg = registry.add_package(
+            "app".to_string(),
+            vec!["app".to_string()],
+            PathBuf::from("/app"),
+        );
+
+        // Build: import lib; import lib.DbError; func main() { DbError.NotFound }
+        let field_expr = Expr {
+            id: NodeId(10),
+            kind: ExprKind::Field {
+                object: Box::new(Expr {
+                    id: NodeId(11),
+                    kind: ExprKind::Ident("DbError".to_string()),
+                    span: Span::new(0, 7),
+                }),
+                field: "NotFound".to_string(),
+            },
+            span: Span::new(0, 16),
+        };
+
+        let main_decl = Decl {
+            id: NodeId(12),
+            kind: DeclKind::Fn(FnDecl {
+                name: "main".to_string(),
+                type_params: vec![],
+                params: vec![],
+                ret_ty: None,
+                context_clauses: vec![],
+                body: vec![Stmt {
+                    id: NodeId(13),
+                    kind: StmtKind::Expr(field_expr),
+                    span: Span::new(0, 16),
+                }],
+                is_pub: false,
+                is_private: false,
+                is_comptime: false,
+                is_unsafe: false,
+                abi: None,
+                attrs: vec![],
+                doc: None,
+                span: Span::new(0, 20),
+            }),
+            span: Span::new(0, 20),
+        };
+
+        let decls = vec![
+            make_import_decl(vec!["lib"], None, false, false),
+            make_import_decl(vec!["lib", "DbError"], None, false, false),
+            main_decl,
+        ];
+
+        let result = Resolver::resolve_package(&decls, &registry, app_pkg);
+        assert!(result.is_ok(), "Should resolve: {:?}", result.err());
+
+        let resolved = result.unwrap();
+
+        // The DbError ident (NodeId 11) must have a resolution pointing to the
+        // exported Enum symbol, not be left unresolved.
+        assert!(
+            resolved.resolutions.contains_key(&NodeId(11)),
+            "DbError ident in field access must be resolved"
+        );
+
+        let sym_id = resolved.resolutions[&NodeId(11)];
+        let sym = resolved.symbols.get(sym_id).expect("symbol should exist");
+        assert!(
+            matches!(sym.kind, SymbolKind::Enum { .. }),
+            "DbError should resolve to Enum, got {:?}",
+            sym.kind
+        );
     }
 }
