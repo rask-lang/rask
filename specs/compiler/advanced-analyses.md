@@ -39,7 +39,7 @@ Track handle validity states through control flow to catch stale handle access a
 <!-- test: compile-fail -->
 ```rask
 func bad_example() using Pool<Player> {
-    const h = try pool.insert(player)  // h: Fresh
+    const h = pool.insert(player)  // h: Fresh
     pool.remove(h)                     // h: Invalid
     pool[h].health -= 10               // ERROR [comp.advanced/TS8]: h is Invalid
 }
@@ -70,7 +70,7 @@ func bad_example() using Pool<Player> {
 <!-- test: compile-fail -->
 ```rask
 func alias_example() using Pool<Player> {
-    const h1 = try pool.insert(player)  // h1: Fresh, aliases: {}
+    const h1 = pool.insert(player)  // h1: Fresh, aliases: {}
     const h2 = h1                       // h2: Fresh, aliases: {h1}
     pool.remove(h1)                     // h1: Invalid, h2: Invalid (via alias)
     pool[h2].health -= 10               // ERROR [comp.advanced/TS8]: h2 is Invalid
@@ -399,12 +399,12 @@ The target of 500K LOC/sec is based on Rask's simpler type system, lack of lifet
 **When typestate catches bugs:**
 ```rask
 // Pattern: remove then use
-const h = try pool.insert(entity)
+const h = pool.insert(entity)
 pool.remove(h)
 pool[h].health -= 10  // ERROR: caught at compile time
 
 // Pattern: aliased remove
-const h1 = try pool.insert(a)
+const h1 = pool.insert(a)
 const h2 = h1
 pool.remove(h1)
 pool[h2].update()  // ERROR: caught via must-alias
@@ -420,7 +420,7 @@ pool[h].render()  // ERROR: h is Invalid in one path
 **When typestate doesn't catch (requires runtime check):**
 ```rask
 // Pattern: cross-function aliasing
-const h1 = try pool.insert(a)
+const h1 = pool.insert(a)
 const h2 = get_other_handle()  // Unknown whether h1 == h2
 pool.remove(h1)
 pool[h2].update()  // OK at compile time, runtime generation check

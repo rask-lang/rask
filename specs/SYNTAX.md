@@ -464,7 +464,7 @@ func get_health(h: Handle<Player>) using frozen Pool<Player> -> i32 {
 func spawn(count: i32) using enemies: Pool<Enemy> -> Vec<Handle<Enemy>> {
     const handles = Vec.new()
     for i in 0..count {
-        handles.push(try enemies.insert(Enemy.new()))
+        handles.push(enemies.insert(Enemy.new()))
     }
     return handles
 }

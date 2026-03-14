@@ -229,7 +229,7 @@ with pool[h] as entity {
     pool[other_h].last_attacker = Some(h)   // OK: inline write to other element
 
     // Pool-specific: insert and remove(other) are allowed
-    const ally = try pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
+    const ally = pool.insert(new_ally)  // OK: re-resolves entity binding  [re-resolved]
     entity.allies.push(ally)                // entity still valid after insert
     pool.remove(expired_h)                  // OK: re-resolves  [re-resolved]
 }

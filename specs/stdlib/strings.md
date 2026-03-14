@@ -484,7 +484,7 @@ process(s2[view])  // user ensures s2 is still valid
 ```rask
 func tokenize(source: string) -> (StringPool, Vec<Token>) or Error {
     const pool = StringPool.new()
-    const source_handle = try pool.insert(source)
+    const source_handle = pool.insert(source)
     const tokens: Vec<Token> = Vec.new()
 
     for (start, end, kind) in scan(pool[source_handle]) {
