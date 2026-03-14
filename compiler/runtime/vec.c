@@ -195,32 +195,44 @@ RaskVec *rask_vec_clone(const RaskVec *src) {
 }
 
 // join(vec_of_strings, separator) — concatenate strings with separator.
-RaskString *rask_vec_join(const RaskVec *src, const RaskString *sep) {
-    RaskString *result = rask_string_new();
-    if (!src || src->len == 0) return result;
+void rask_vec_join(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
+    rask_string_new(out);
+    if (!src || src->len == 0) return;
     for (int64_t i = 0; i < src->len; i++) {
         if (i > 0 && sep) {
-            rask_string_append(result, sep);
+            RaskStr tmp;
+            rask_string_append(&tmp, out, sep);
+            rask_string_free(out);
+            *out = tmp;
         }
-        RaskString *elem = *(RaskString **)(src->data + i * src->elem_size);
-        if (elem) rask_string_append(result, elem);
+        const RaskStr *elem = (const RaskStr *)(src->data + i * src->elem_size);
+        RaskStr tmp;
+        rask_string_append(&tmp, out, elem);
+        rask_string_free(out);
+        *out = tmp;
     }
-    return result;
 }
 
 // join(vec_of_ints, separator) — convert integers to strings and concatenate.
-RaskString *rask_vec_join_i64(const RaskVec *src, const RaskString *sep) {
-    RaskString *result = rask_string_new();
-    if (!src || src->len == 0) return result;
+void rask_vec_join_i64(RaskStr *out, const RaskVec *src, const RaskStr *sep) {
+    rask_string_new(out);
+    if (!src || src->len == 0) return;
     for (int64_t i = 0; i < src->len; i++) {
         if (i > 0 && sep) {
-            rask_string_append(result, sep);
+            RaskStr tmp;
+            rask_string_append(&tmp, out, sep);
+            rask_string_free(out);
+            *out = tmp;
         }
         int64_t val = *(int64_t *)(src->data + i * src->elem_size);
-        RaskString *s = rask_i64_to_string(val);
-        rask_string_append(result, s);
+        RaskStr s;
+        rask_i64_to_string(&s, val);
+        RaskStr tmp;
+        rask_string_append(&tmp, out, &s);
+        rask_string_free(out);
+        rask_string_free(&s);
+        *out = tmp;
     }
-    return result;
 }
 
 // slice(vec, start, end) — returns a new Vec with elements [start..end).
