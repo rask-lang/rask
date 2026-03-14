@@ -1545,6 +1545,7 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
     }
     // String-returning functions
     if func_name == "string_new" || func_name == "string_from"
+        || func_name == "string_from_c"
         || func_name == "string_clone"
         || func_name == "Vec_join" || func_name == "Vec_join_i64"
         || func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")

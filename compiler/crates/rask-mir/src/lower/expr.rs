@@ -1182,7 +1182,8 @@ impl<'a> MirLowerer<'a> {
                         | "lines" | "split" | "split_whitespace"
                         | "char_at" | "index_of"
                         | "chars" | "push_str" | "push_char"
-                        | "compare" => Some("string".to_string()),
+                        | "compare"
+                        | "as_c_str" | "as_ptr" => Some("string".to_string()),
                         // Vec / iterator (no other Rask type has these)
                         "push" | "remove_at" | "to_vec" | "chunks" | "skip"
                         | "map" | "filter" | "collect"
