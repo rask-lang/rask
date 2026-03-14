@@ -126,7 +126,7 @@ impl InferPass {
                 }
                 self.effects.insert(
                     e.name.clone(),
-                    Effects { io: true, async_: false, mutation: false },
+                    Effects { io: true, async_: false, grow: false, shrink: false },
                 );
             }
         }
@@ -687,7 +687,7 @@ mod tests {
             expr_stmt(method_call("pool", "insert")),
         ])];
         let effects = infer(&decls);
-        assert!(effects["grow"].mutation);
+        assert!(effects["grow"].mutation());
         assert!(!effects["grow"].io, "Mutation is orthogonal to IO");
     }
 
@@ -701,7 +701,7 @@ mod tests {
         let effects = infer(&decls);
         assert!(effects["complex"].io);
         assert!(effects["complex"].async_);
-        assert!(effects["complex"].mutation);
+        assert!(effects["complex"].mutation());
     }
 
     #[test]

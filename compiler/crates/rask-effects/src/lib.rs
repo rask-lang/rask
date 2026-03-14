@@ -13,6 +13,7 @@
 //!
 //! Run after type checking. No AST modifications — annotation only.
 
+pub mod frozen;
 pub mod infer;
 pub mod sources;
 pub mod warnings;
@@ -22,30 +23,43 @@ use std::collections::HashMap;
 use rask_ast::Span;
 use rask_ast::decl::Decl;
 
-/// 3-bit effect mask per function (FX1).
+/// Effect mask per function (FX1, EF1).
+///
+/// `grow` and `shrink` replace the old single `mutation` flag (EF1 split).
+/// `mutation()` is a convenience that returns true if either is set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Effects {
     pub io: bool,
     pub async_: bool,
-    pub mutation: bool,
+    /// Grow effect: pool.insert, pool.alloc (EF1).
+    pub grow: bool,
+    /// Shrink effect: pool.remove, pool.clear, pool.drain (EF1).
+    pub shrink: bool,
 }
 
 impl Effects {
     /// PU1: A function is pure if it has no effects.
     pub fn is_pure(&self) -> bool {
-        !self.io && !self.async_ && !self.mutation
+        !self.io && !self.async_ && !self.grow && !self.shrink
+    }
+
+    /// Whether this function performs structural pool mutations.
+    pub fn mutation(&self) -> bool {
+        self.grow || self.shrink
     }
 
     /// Merge another effect set into this one.
     pub fn union(&mut self, other: Effects) {
         self.io |= other.io;
         self.async_ |= other.async_;
-        self.mutation |= other.mutation;
+        self.grow |= other.grow;
+        self.shrink |= other.shrink;
     }
 
     /// Ghost text label for IDE display (IDE1).
     pub fn label(&self) -> &'static str {
-        match (self.io, self.async_, self.mutation) {
+        let mutation = self.mutation();
+        match (self.io, self.async_, mutation) {
             (false, false, false) => "[pure]",
             (true, false, false) => "[io]",
             (true, true, false) => "[io, async]",
@@ -53,7 +67,6 @@ impl Effects {
             (true, false, true) => "[io, mutation]",
             (true, true, true) => "[io, async, mutation]",
             // AS3: Async implies IO, so async without io shouldn't happen.
-            // Handle defensively anyway.
             (false, true, false) => "[async]",
             (false, true, true) => "[async, mutation]",
         }
@@ -91,26 +104,35 @@ mod tests {
 
     #[test]
     fn effects_union() {
-        let mut a = Effects { io: true, async_: false, mutation: false };
-        let b = Effects { io: false, async_: true, mutation: true };
+        let mut a = Effects { io: true, async_: false, grow: false, shrink: false };
+        let b = Effects { io: false, async_: true, grow: true, shrink: true };
         a.union(b);
         assert!(a.io);
         assert!(a.async_);
-        assert!(a.mutation);
+        assert!(a.grow);
+        assert!(a.shrink);
     }
 
     #[test]
     fn pure_detection() {
         assert!(Effects::default().is_pure());
         assert!(!Effects { io: true, ..Default::default() }.is_pure());
+        assert!(!Effects { grow: true, ..Default::default() }.is_pure());
+    }
+
+    #[test]
+    fn mutation_convenience() {
+        assert!(!Effects::default().mutation());
+        assert!(Effects { grow: true, ..Default::default() }.mutation());
+        assert!(Effects { shrink: true, ..Default::default() }.mutation());
     }
 
     #[test]
     fn label_format() {
         assert_eq!(Effects::default().label(), "[pure]");
-        assert_eq!(Effects { io: true, async_: false, mutation: false }.label(), "[io]");
-        assert_eq!(Effects { io: true, async_: true, mutation: false }.label(), "[io, async]");
-        assert_eq!(Effects { io: false, async_: false, mutation: true }.label(), "[mutation]");
-        assert_eq!(Effects { io: true, async_: false, mutation: true }.label(), "[io, mutation]");
+        assert_eq!(Effects { io: true, ..Default::default() }.label(), "[io]");
+        assert_eq!(Effects { io: true, async_: true, ..Default::default() }.label(), "[io, async]");
+        assert_eq!(Effects { grow: true, ..Default::default() }.label(), "[mutation]");
+        assert_eq!(Effects { io: true, shrink: true, ..Default::default() }.label(), "[io, mutation]");
     }
 }

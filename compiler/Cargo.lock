@@ -1511,6 +1511,7 @@ version = "0.1.0"
 dependencies = [
  "rask-ast",
  "rask-comptime",
+ "rask-diagnostics",
  "rask-mono",
  "rask-types",
 ]

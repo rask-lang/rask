@@ -93,6 +93,11 @@ void *rask_vec_get(const RaskVec *v, int64_t index) {
     return v->data + index * v->elem_size;
 }
 
+// Unchecked variant — bounds already proven by the compiler.
+void *rask_vec_get_unchecked(const RaskVec *v, int64_t index) {
+    return v->data + index * v->elem_size;
+}
+
 void rask_vec_set(RaskVec *v, int64_t index, const void *elem) {
     if (!v || index < 0 || index >= v->len) {
         rask_panic_fmt("index out of bounds: index %lld, len %lld",

@@ -3,11 +3,31 @@
 //! Pass manager — runs MIR optimization passes in sequence.
 //!
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
-//! threading a `PassContext` through for side-channel metadata collection.
+//! threading a `PassContext` for metadata collection and diagnostic accumulation.
 
 use std::collections::HashMap;
+use rask_diagnostics::Diagnostic;
 use crate::MirFunction;
+use crate::transform::bounds_elim::BoundsCheckElimPass;
+use crate::transform::typestate::TypestatePass;
 use crate::transform::inline::InlineRegion;
+
+/// Shared context threaded through the pass pipeline.
+/// Passes write metadata and diagnostics here; downstream consumers read them.
+#[derive(Debug, Default)]
+pub struct PassContext {
+    /// DI5: inline region metadata per caller function name.
+    pub inline_regions: HashMap<String, Vec<InlineRegion>>,
+    /// Accumulated diagnostics from analysis passes (typestate errors, etc.).
+    pub diagnostics: Vec<Diagnostic>,
+    /// BE1: Number of bounds checks proven unnecessary by interval analysis.
+    pub bounds_checks_eliminated: u32,
+    /// BE2: Number of bounds checks retained (couldn't prove in-bounds).
+    pub bounds_checks_retained: u32,
+}
+
+/// Convenience alias.
+pub type PipelineResult = PassContext;
 
 /// A MIR-to-MIR transformation pass.
 pub trait MirPass {
@@ -15,27 +35,16 @@ pub trait MirPass {
     fn name(&self) -> &str;
 
     /// Run on the full set of functions with shared context.
-    /// Default iterates per-function (ignoring ctx).
-    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
+    /// Default iterates per-function.
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         for func in fns.iter_mut() {
-            self.run_function(func);
+            self.run_function(func, ctx);
         }
     }
 
     /// Run on a single function. Default is no-op.
-    fn run_function(&self, _func: &mut MirFunction) {}
+    fn run_function(&self, _func: &mut MirFunction, _ctx: &mut PassContext) {}
 }
-
-/// Shared context threaded through the pass pipeline.
-/// Passes can write metadata here; downstream consumers read it.
-#[derive(Debug, Default)]
-pub struct PassContext {
-    /// DI5: inline region metadata per caller function name.
-    pub inline_regions: HashMap<String, Vec<InlineRegion>>,
-}
-
-/// Convenience alias — the result of running the pipeline is the context.
-pub type PipelineResult = PassContext;
 
 /// Runs a sequence of MIR passes.
 pub struct PassManager {
@@ -72,6 +81,9 @@ impl PassManager {
         pm.add(CloneElisionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
+        // Phase G: Advanced analyses before gen coalescing (needs PoolCheckedAccess intact)
+        pm.add(TypestatePass);
+        pm.add(BoundsCheckElimPass);
         pm.add(GenerationCoalescingPass);
         pm.add(DeadCodeEliminationPass);
         pm
@@ -125,7 +137,7 @@ pub struct DeadCodeEliminationPass;
 
 impl MirPass for DeadCodeEliminationPass {
     fn name(&self) -> &str { "dce" }
-    fn run_function(&self, func: &mut MirFunction) {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::dce::eliminate_dead_code(func);
     }
 }
@@ -135,7 +147,7 @@ pub struct StringRcInsertionPass;
 
 impl MirPass for StringRcInsertionPass {
     fn name(&self) -> &str { "string_rc_insert" }
-    fn run_function(&self, func: &mut MirFunction) {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::rc_insert::insert_rc_ops(func);
     }
 }
@@ -145,7 +157,7 @@ pub struct StringRcElisionPass;
 
 impl MirPass for StringRcElisionPass {
     fn name(&self) -> &str { "string_rc_elide" }
-    fn run_function(&self, func: &mut MirFunction) {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::rc_elide::elide_rc_ops(func);
     }
 }
