@@ -12,7 +12,7 @@ Rask compiles through non-SSA MIR (mid-level IR) as control-flow graph. Monomorp
 | Rule | Description |
 |------|-------------|
 | **P1: MIR intermediary** | All source compiles through MIR before backend lowering |
-| **P2: Non-SSA** | MIR uses non-SSA form; backends construct SSA internally |
+| **P2: Hybrid SSA** | MIR is non-SSA during initial lowering, converted to SSA for optimization, de-SSA before codegen. Superseded by `comp.architecture/IR3` |
 | **P3: Cranelift dev** | Dev builds use Cranelift backend |
 | **P4: LLVM release** | Release builds may use LLVM backend (additive, future) |
 | **P5: Runtime link** | Executables link against `rask-rt` static library |
@@ -226,7 +226,7 @@ FIX: Ensure all call sites provide concrete type arguments.
 
 **P1, P2 (MIR as intermediary):** AST is tree-shaped with high-level constructs (ensure, try, pattern matching). Backend IRs are flat CFGs. MIR separates Rask-specific lowering from backend-specific lowering. Adding a second backend is straightforward.
 
-**P2 (non-SSA):** Cranelift's `FunctionBuilder` accepts non-SSA input. LLVM has `mem2reg`. Non-SSA MIR is the simplest form both backends accept.
+**P2 (hybrid SSA):** MIR lowering produces non-SSA (simpler generation), then converts to SSA for optimization passes that need precise def-use chains (string RC, constant propagation, escape analysis). De-SSA before codegen. See `comp.architecture/IR3` for rationale.
 
 **P3 (Cranelift first):** Pure Rust, no external dependencies. ~40% faster compilation than LLVM. ~10-15% slower runtime output — acceptable during language development. Industry precedent: Rust adding Cranelift for dev builds, Zig uses LLVM for release + custom backend for dev.
 
