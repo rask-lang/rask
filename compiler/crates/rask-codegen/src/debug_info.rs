@@ -20,12 +20,14 @@ use gimli::write::{
     Sections, UnitEntryId, Writer,
 };
 use gimli::{
-    DW_AT_byte_size, DW_AT_comp_dir, DW_AT_encoding, DW_AT_external,
-    DW_AT_high_pc, DW_AT_language, DW_AT_low_pc, DW_AT_name, DW_AT_producer,
-    DW_AT_stmt_list, DW_AT_type,
+    DW_AT_abstract_origin, DW_AT_byte_size, DW_AT_call_file, DW_AT_call_line,
+    DW_AT_comp_dir, DW_AT_encoding, DW_AT_external, DW_AT_high_pc, DW_AT_inline,
+    DW_AT_language, DW_AT_low_pc, DW_AT_name, DW_AT_producer, DW_AT_stmt_list,
+    DW_AT_type,
     DW_ATE_address, DW_ATE_boolean, DW_ATE_float, DW_ATE_signed, DW_ATE_unsigned,
-    DW_LANG_C99, DW_TAG_base_type, DW_TAG_formal_parameter, DW_TAG_subprogram,
-    DW_TAG_variable, Encoding, Format, LineEncoding, RunTimeEndian, SectionId,
+    DW_INL_inlined, DW_LANG_C99, DW_TAG_base_type, DW_TAG_formal_parameter,
+    DW_TAG_inlined_subroutine, DW_TAG_subprogram, DW_TAG_variable,
+    Encoding, Format, LineEncoding, RunTimeEndian, SectionId,
 };
 use object::write::{Object, Relocation, SymbolId};
 use rask_ast::LineMap;
@@ -55,6 +57,15 @@ pub struct VarInfo {
     pub type_kind: TypeKind,
 }
 
+/// DI5: An inlined callee with its native address range.
+#[derive(Debug, Clone)]
+pub struct InlinedCalleeInfo {
+    pub callee_name: String,
+    pub call_site_offset: u32,
+    pub native_start: u32,
+    pub native_end: u32,
+}
+
 /// Per-function debug info with resolved object symbol ID.
 pub struct ResolvedFunctionDebug {
     pub symbol_id: SymbolId,
@@ -66,6 +77,8 @@ pub struct ResolvedFunctionDebug {
     pub params: Vec<VarInfo>,
     /// Named local variables (DI3: DW_TAG_variable).
     pub locals: Vec<VarInfo>,
+    /// DI5: inlined callees with native address ranges.
+    pub inlined_callees: Vec<InlinedCalleeInfo>,
 }
 
 // ── Internal writer with relocation tracking ─────────────────────────────────
@@ -293,8 +306,13 @@ pub fn emit_dwarf(
     }
 
     // ── DI3: Subprogram + variable DIEs ───────────────────────────────────────
+    // Map function name → subprogram entry ID (for DI5 abstract_origin refs)
+    let mut subprogram_map: std::collections::HashMap<String, UnitEntryId> =
+        std::collections::HashMap::new();
+
     for (idx, func) in functions.iter().enumerate() {
         let sp = dwarf.unit.add(root_id, DW_TAG_subprogram);
+        subprogram_map.insert(func.name.clone(), sp);
         dwarf.unit.get_mut(sp).set(
             DW_AT_name,
             AttributeValue::StringRef(dwarf.strings.add(func.name.as_str())),
@@ -335,6 +353,66 @@ pub fn emit_dwarf(
                     dwarf.unit.get_mut(v).set(DW_AT_type, AttributeValue::UnitRef(type_id));
                 }
             }
+        }
+    }
+
+    // ── DI5: Abstract instances + inlined subroutine DIEs ────────────────────
+    // Create abstract instance subprograms for inlined callees that don't
+    // already have a concrete subprogram (fully inlined, no out-of-line copy).
+    for func in functions {
+        for ic in &func.inlined_callees {
+            if !subprogram_map.contains_key(&ic.callee_name) {
+                let abs = dwarf.unit.add(root_id, DW_TAG_subprogram);
+                dwarf.unit.get_mut(abs).set(
+                    DW_AT_name,
+                    AttributeValue::StringRef(dwarf.strings.add(ic.callee_name.as_str())),
+                );
+                dwarf.unit.get_mut(abs).set(
+                    DW_AT_inline,
+                    AttributeValue::Inline(DW_INL_inlined),
+                );
+                subprogram_map.insert(ic.callee_name.clone(), abs);
+            }
+        }
+    }
+
+    // Emit DW_TAG_inlined_subroutine inside each caller's subprogram
+    for (idx, func) in functions.iter().enumerate() {
+        if func.inlined_callees.is_empty() {
+            continue;
+        }
+        let caller_sp = match subprogram_map.get(&func.name) {
+            Some(&sp) => sp,
+            None => continue,
+        };
+
+        for ic in &func.inlined_callees {
+            let callee_sp = match subprogram_map.get(&ic.callee_name) {
+                Some(&sp) => sp,
+                None => continue,
+            };
+
+            let is = dwarf.unit.add(caller_sp, DW_TAG_inlined_subroutine);
+            dwarf.unit.get_mut(is).set(
+                DW_AT_abstract_origin,
+                AttributeValue::UnitRef(callee_sp),
+            );
+            // Address range: low_pc = function_symbol + native_start
+            dwarf.unit.get_mut(is).set(
+                DW_AT_low_pc,
+                AttributeValue::Address(Address::Symbol {
+                    symbol: idx,
+                    addend: ic.native_start as i64,
+                }),
+            );
+            dwarf.unit.get_mut(is).set(
+                DW_AT_high_pc,
+                AttributeValue::Udata((ic.native_end - ic.native_start) as u64),
+            );
+            // Call site location
+            let (call_line, _call_col) = line_map.offset_to_line_col(ic.call_site_offset as usize);
+            dwarf.unit.get_mut(is).set(DW_AT_call_file, AttributeValue::FileIndex(Some(file_id)));
+            dwarf.unit.get_mut(is).set(DW_AT_call_line, AttributeValue::Udata(call_line as u64));
         }
     }
 

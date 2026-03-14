@@ -5,7 +5,9 @@
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
 //! providing shared context for cross-function analysis.
 
+use std::collections::HashMap;
 use crate::MirFunction;
+use crate::transform::inline::InlineRegion;
 
 /// A MIR-to-MIR transformation pass.
 pub trait MirPass {
@@ -25,6 +27,14 @@ pub trait MirPass {
     fn run_function(&self, _func: &mut MirFunction) {}
 }
 
+/// Side-channel metadata collected during the pass pipeline.
+/// Keeps debug concerns out of MirFunction.
+#[derive(Debug, Default)]
+pub struct PipelineResult {
+    /// DI5: inline region metadata per caller function name.
+    pub inline_regions: HashMap<String, Vec<InlineRegion>>,
+}
+
 /// Runs a sequence of MIR passes.
 pub struct PassManager {
     passes: Vec<Box<dyn MirPass>>,
@@ -40,11 +50,18 @@ impl PassManager {
         self.passes.push(Box::new(pass));
     }
 
-    /// Run all passes in order.
-    pub fn run(&self, fns: &mut Vec<MirFunction>) {
+    /// Run all passes in order. Returns side-channel metadata from passes
+    /// that produce debug info (e.g., inlining).
+    pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
+        let mut result = PipelineResult::default();
         for pass in &self.passes {
-            pass.run(fns);
+            if pass.name() == "inlining" {
+                result.inline_regions = crate::transform::inline::inline_functions(fns);
+            } else {
+                pass.run(fns);
+            }
         }
+        result
     }
 
     /// Build the default optimization pipeline.
@@ -81,8 +98,11 @@ pub struct InliningPass;
 
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
+    // Inlining is dispatched directly by PassManager::run to capture
+    // the returned InlineRegion metadata. This run() is unused but
+    // kept for the trait contract.
     fn run(&self, fns: &mut Vec<MirFunction>) {
-        crate::transform::inline::inline_functions(fns);
+        let _ = crate::transform::inline::inline_functions(fns);
     }
 }
 
