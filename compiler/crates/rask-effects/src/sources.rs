@@ -17,19 +17,22 @@ pub fn classify_call(callee: &str) -> Effects {
     if is_io_source(callee) {
         // Some IO sources are also Async (AS3: Async implies IO)
         if is_async_source(callee) {
-            return Effects { io: true, async_: true, mutation: false };
+            return Effects { io: true, async_: true, grow: false, shrink: false };
         }
-        return Effects { io: true, async_: false, mutation: false };
+        return Effects { io: true, async_: false, grow: false, shrink: false };
     }
 
     // Async-only sources (also get IO via AS3)
     if is_async_source(callee) {
-        return Effects { io: true, async_: true, mutation: false };
+        return Effects { io: true, async_: true, grow: false, shrink: false };
     }
 
-    // Pool structural mutation sources
-    if is_mutation_source(callee) {
-        return Effects { io: false, async_: false, mutation: true };
+    // Pool structural mutation sources (EF1: split into Grow/Shrink)
+    if is_grow_source(callee) {
+        return Effects { io: false, async_: false, grow: true, shrink: false };
+    }
+    if is_shrink_source(callee) {
+        return Effects { io: false, async_: false, grow: false, shrink: true };
     }
 
     Effects::default()
@@ -62,13 +65,19 @@ fn is_async_source(callee: &str) -> bool {
     )
 }
 
-fn is_mutation_source(callee: &str) -> bool {
-    // Pool structural operations (Grow/Shrink from comp.advanced/EF1-EF6).
-    // Method calls like `pool.insert(x)` arrive as callee "insert" or
-    // "pool.insert" depending on resolution. Match both forms.
+fn is_grow_source(callee: &str) -> bool {
+    // Pool structural growth (EF1: Grow effect).
     matches!(callee,
-        "insert" | "remove"
-        | "pool.insert" | "pool.remove"
+        "insert" | "pool.insert" | "alloc" | "pool.alloc"
+    )
+}
+
+fn is_shrink_source(callee: &str) -> bool {
+    // Pool structural shrinkage (EF1: Shrink effect).
+    matches!(callee,
+        "remove" | "pool.remove"
+        | "clear" | "pool.clear"
+        | "drain" | "pool.drain"
     )
 }
 
@@ -81,7 +90,7 @@ mod tests {
         let e = classify_call("File.open");
         assert!(e.io);
         assert!(!e.async_);
-        assert!(!e.mutation);
+        assert!(!e.mutation());
 
         assert!(classify_call("println").io);
         assert!(classify_call("fs.read_file").io);
@@ -100,13 +109,27 @@ mod tests {
     }
 
     #[test]
-    fn mutation_sources_classified() {
+    fn grow_sources_classified() {
         let e = classify_call("pool.insert");
-        assert!(e.mutation);
+        assert!(e.grow);
+        assert!(!e.shrink);
         assert!(!e.io);
 
+        let e = classify_call("insert");
+        assert!(e.grow);
+    }
+
+    #[test]
+    fn shrink_sources_classified() {
         let e = classify_call("remove");
-        assert!(e.mutation);
+        assert!(e.shrink);
+        assert!(!e.grow);
+
+        let e = classify_call("pool.remove");
+        assert!(e.shrink);
+
+        let e = classify_call("pool.clear");
+        assert!(e.shrink);
     }
 
     #[test]
@@ -126,6 +149,6 @@ mod tests {
         let e = classify_call("sleep");
         assert!(e.io);
         assert!(e.async_);
-        assert!(!e.mutation);
+        assert!(!e.mutation());
     }
 }
