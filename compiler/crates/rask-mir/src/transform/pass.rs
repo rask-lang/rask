@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use rask_diagnostics::Diagnostic;
 use crate::MirFunction;
+use crate::transform::bounds_elim::BoundsCheckElimPass;
 use crate::transform::typestate::TypestatePass;
 use crate::transform::inline::InlineRegion;
 
@@ -19,6 +20,10 @@ pub struct PassContext {
     pub inline_regions: HashMap<String, Vec<InlineRegion>>,
     /// Accumulated diagnostics from analysis passes (typestate errors, etc.).
     pub diagnostics: Vec<Diagnostic>,
+    /// BE1: Number of bounds checks proven unnecessary by interval analysis.
+    pub bounds_checks_eliminated: u32,
+    /// BE2: Number of bounds checks retained (couldn't prove in-bounds).
+    pub bounds_checks_retained: u32,
 }
 
 /// Convenience alias.
@@ -76,8 +81,9 @@ impl PassManager {
         pm.add(CloneElisionPass);
         pm.add(StringRcInsertionPass);
         pm.add(StringRcElisionPass);
-        // Phase G: Typestate checking before gen coalescing (needs PoolCheckedAccess intact)
+        // Phase G: Advanced analyses before gen coalescing (needs PoolCheckedAccess intact)
         pm.add(TypestatePass);
+        pm.add(BoundsCheckElimPass);
         pm.add(GenerationCoalescingPass);
         pm.add(DeadCodeEliminationPass);
         pm

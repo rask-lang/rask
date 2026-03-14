@@ -1,5 +1,5 @@
 <!-- id: comp.advanced -->
-<!-- status: partial -->
+<!-- status: implemented -->
 <!-- summary: Advanced compile-time analyses for stale handle detection and bounds elimination -->
 <!-- depends: memory/pools.md, memory/borrowing.md, compiler/generation-coalescing.md -->
 

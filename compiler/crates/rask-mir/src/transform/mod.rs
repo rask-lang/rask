@@ -2,6 +2,7 @@
 
 //! MIR transform passes.
 
+pub mod bounds_elim;
 pub mod clone_elision;
 pub mod dce;
 pub mod gen_coalesce;
