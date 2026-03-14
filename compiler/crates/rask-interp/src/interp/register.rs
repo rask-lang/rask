@@ -110,6 +110,7 @@ impl Interpreter {
                             "net" => Some(ModuleKind::Net),
                             "async" => Some(ModuleKind::Async),
                             "thread" => Some(ModuleKind::Thread),
+                            "http" => Some(ModuleKind::Http),
                             _ => None,
                         };
 
@@ -313,7 +314,22 @@ impl Interpreter {
         );
 
         for (name, kind) in imports {
-            self.env.define(name, Value::Module(kind));
+            self.env.define(name.clone(), Value::Module(kind));
+            // Register exported types for modules that define them
+            match kind {
+                ModuleKind::Http => {
+                    self.env.define("Request".to_string(), Value::Type("Request".to_string()));
+                    self.env.define("Response".to_string(), Value::Type("Response".to_string()));
+                    self.env.define("Method".to_string(), Value::Type("Method".to_string()));
+                    self.env.define("Headers".to_string(), Value::Type("Headers".to_string()));
+                }
+                ModuleKind::Time => {
+                    // time module exports Instant and Duration
+                    self.env.define("Instant".to_string(), Value::Type("Instant".to_string()));
+                    self.env.define("Duration".to_string(), Value::Type("Duration".to_string()));
+                }
+                _ => {}
+            }
         }
 
         // Evaluate top-level const declarations after builtins are registered

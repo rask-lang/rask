@@ -187,7 +187,7 @@ impl Interpreter {
     }
 
     /// Parse an HTTP/1.1 request from a TCP stream.
-    fn read_http_request(
+    pub(crate) fn read_http_request(
         &self,
         stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
     ) -> Result<Value, RuntimeError> {
@@ -255,13 +255,39 @@ impl Interpreter {
             })
             .collect();
 
+        // Map HTTP method string to Method enum variant
+        let method_value = Value::Enum {
+            name: "Method".to_string(),
+            variant: match method.as_str() {
+                "GET" => "Get",
+                "HEAD" => "Head",
+                "POST" => "Post",
+                "PUT" => "Put",
+                "DELETE" => "Delete",
+                "PATCH" => "Patch",
+                "OPTIONS" => "Options",
+                _ => "Get",
+            }.to_string(),
+            fields: vec![],
+            variant_index: match method.as_str() {
+                "GET" => 0,
+                "HEAD" => 1,
+                "POST" => 2,
+                "PUT" => 3,
+                "DELETE" => 4,
+                "PATCH" => 5,
+                "OPTIONS" => 6,
+                _ => 0,
+            },
+        };
+
         let mut fields = IndexMap::new();
         fields.insert(
             "method".to_string(),
-            Value::String(Arc::new(Mutex::new(method))),
+            method_value,
         );
         fields.insert(
-            "path".to_string(),
+            "url".to_string(),
             Value::String(Arc::new(Mutex::new(path))),
         );
         fields.insert(
@@ -281,7 +307,7 @@ impl Interpreter {
     }
 
     /// Write an HTTP/1.1 response to a TCP stream.
-    fn write_http_response(
+    pub(crate) fn write_http_response(
         &self,
         stream: &Arc<Mutex<Option<std::net::TcpStream>>>,
         response: &Value,

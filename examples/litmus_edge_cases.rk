@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+// Edge case tests discovered during litmus program validation.
+//
+// Tests: string Copy semantics, try-else with method calls, Vec.get() returning
+// Option<T>, and basic type system features.
+//
+// Run: rask test examples/litmus_edge_cases.rk
+
+// ─── String Copy semantics (std.strings/S1) ─────────────────────
+
+struct TextBuffer {
+    lines: Vec<string>
+}
+
+extend TextBuffer {
+    func new() -> TextBuffer {
+        return TextBuffer { lines: Vec.new() }
+    }
+
+    func add(self, text: string) {
+        self.lines.push(text)
+    }
+
+    // Requires string to be Copy — reading old_text must not borrow self.lines
+    func replace(self, index: i32, new_text: string) -> string {
+        const old_text = self.lines[index as usize]
+        self.lines[index as usize] = new_text
+        return old_text
+    }
+}
+
+test "string is Copy — read then write same container" {
+    let buf = TextBuffer.new()
+    buf.add("hello")
+    buf.add("world")
+    const old = buf.replace(0, "changed")
+    assert old == "hello"
+    assert buf.lines[0] == "changed"
+    assert buf.lines[1] == "world"
+}
+
+test "string Copy — multiple bindings same source" {
+    const original = "hello world"
+    const copy1 = original
+    const copy2 = original
+    assert original == "hello world"
+    assert copy1 == "hello world"
+    assert copy2 == "hello world"
+}
+
+struct Named { name: string }
+
+test "string Copy — assign from struct field" {
+    const obj = Named { name: "Alice" }
+    const n1 = obj.name
+    const n2 = obj.name
+    assert n1 == "Alice"
+    assert n2 == "Alice"
+}
+
+// ─── Vec.get() returns Option<T> (collections/V3) ───────────────
+
+test "Vec.get returns Some for valid index" {
+    const v = Vec.new()
+    v.push(10)
+    v.push(20)
+    v.push(30)
+
+    const first = v.get(0)
+    assert first is Some
+
+    const second = v.get(1).unwrap()
+    assert second == 20
+}
+
+test "Vec.get returns None for out of bounds" {
+    const v = Vec.new()
+    v.push(42)
+
+    const out = v.get(5)
+    assert out is None
+}
+
+test "Vec.get unwrap matches expected value" {
+    const v = Vec.new()
+    v.push(100)
+    v.push(200)
+    assert v.get(0).unwrap() == 100
+    assert v.get(1).unwrap() == 200
+}
+
+// ─── try-else with method calls ────────────────────────────────
+
+enum InnerError {
+    BadInput(string),
+}
+
+enum OuterError {
+    Wrapped(InnerError),
+    Other(string),
+}
+
+struct Validator {
+    threshold: i32
+}
+
+extend Validator {
+    func check(self, value: i32) -> i32 or InnerError {
+        if value < self.threshold {
+            return Err(InnerError.BadInput("below threshold"))
+        }
+        return Ok(value * 2)
+    }
+}
+
+func use_validator(v: Validator, x: i32) -> i32 or OuterError {
+    const result = try v.check(x) else |e| OuterError.Wrapped(e)
+    return Ok(result)
+}
+
+func use_validator_multiline(v: Validator, x: i32) -> i32 or OuterError {
+    const result = try v.check(x)
+        else |e| OuterError.Wrapped(e)
+    return Ok(result)
+}
+
+test "try-else with method call — success" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator(v, 10)
+    assert result is Ok
+}
+
+test "try-else with method call — error transforms" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator(v, 3)
+    assert result is Err
+}
+
+test "try-else multiline with method call — success" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator_multiline(v, 10)
+    assert result is Ok
+}
+
+test "try-else multiline with method call — error transforms" {
+    const v = Validator { threshold: 5 }
+    const result = use_validator_multiline(v, 3)
+    assert result is Err
+}
+
+// ─── Entry point ────────────────────────────────────────────────
+
+func main() {
+    println("Run 'rask test examples/litmus_edge_cases.rk' to run tests")
+}
