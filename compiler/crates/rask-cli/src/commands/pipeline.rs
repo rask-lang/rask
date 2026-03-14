@@ -37,6 +37,8 @@ pub struct FrontendResult {
     pub effects: rask_effects::EffectMap,
     /// Effect warnings (CW1, CW2).
     pub effect_warnings: Vec<rask_effects::EffectWarning>,
+    /// Frozen context diagnostics (EF4/FL1).
+    pub frozen_diagnostics: Vec<rask_effects::frozen::FrozenDiagnostic>,
 }
 
 /// Run the frontend pipeline on a .rk file.
@@ -132,6 +134,21 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         show_diagnostics(&diags, &source, path, "effects", format);
     }
 
+    // Frozen context enforcement (EF4) and missing-frozen lint (FL1)
+    let frozen_diagnostics = rask_effects::frozen::check(&parse_result.decls, &effects);
+    if !frozen_diagnostics.is_empty() && format == Format::Human {
+        let diags: Vec<Diagnostic> = frozen_diagnostics.iter()
+            .map(|d| frozen_to_diagnostic(d))
+            .collect();
+        show_diagnostics(&diags, &source, path, "frozen", format);
+
+        let has_errors = frozen_diagnostics.iter().any(|d| d.is_error);
+        if has_errors {
+            eprintln!("\n{}", output::banner_fail("Frozen", frozen_diagnostics.iter().filter(|d| d.is_error).count()));
+            process::exit(1);
+        }
+    }
+
     FrontendResult {
         decls: parse_result.decls,
         typed,
@@ -140,6 +157,7 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         source_files: vec![],
         effects,
         effect_warnings,
+        frozen_diagnostics,
     }
 }
 
@@ -282,6 +300,22 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         show_multifile_diagnostics(&diags, &source_files, format);
     }
 
+    // Frozen context enforcement (EF4) and missing-frozen lint (FL1)
+    let frozen_diagnostics = rask_effects::frozen::check(&pkg_ctx.all_decls, &effects);
+    if !frozen_diagnostics.is_empty() && format == Format::Human {
+        let diags: Vec<Diagnostic> = frozen_diagnostics.iter()
+            .map(|d| frozen_to_diagnostic(d))
+            .collect();
+        show_multifile_diagnostics(&diags, &source_files, format);
+
+        let has_errors = frozen_diagnostics.iter().any(|d| d.is_error);
+        if has_errors {
+            let err_count = frozen_diagnostics.iter().filter(|d| d.is_error).count();
+            eprintln!("\n{}", output::banner_fail("Frozen", err_count));
+            process::exit(1);
+        }
+    }
+
     FrontendResult {
         decls: std::mem::take(&mut pkg_ctx.all_decls),
         typed,
@@ -290,6 +324,7 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         source_files,
         effects,
         effect_warnings,
+        frozen_diagnostics,
     }
 }
 
@@ -298,6 +333,16 @@ fn effect_warning_to_diagnostic(w: &rask_effects::EffectWarning) -> Diagnostic {
     Diagnostic::warning(&w.message)
         .with_code(w.code)
         .with_primary(w.span, format!("`{}` has IO effect", w.callee_name))
+}
+
+/// Convert a frozen diagnostic to a Diagnostic for display.
+fn frozen_to_diagnostic(d: &rask_effects::frozen::FrozenDiagnostic) -> Diagnostic {
+    let diag = if d.is_error {
+        Diagnostic::error(&d.message)
+    } else {
+        Diagnostic::warning(&d.message)
+    };
+    diag.with_code(d.code).with_primary(d.span, "")
 }
 
 /// Show diagnostics for multi-file packages.
