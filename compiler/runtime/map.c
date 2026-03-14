@@ -45,11 +45,10 @@ int rask_eq_bytes(const void *a, const void *b, int64_t key_size) {
     return memcmp(a, b, (size_t)key_size) == 0;
 }
 
-// String-keyed maps: key slot holds a RaskString*, hash/eq use string content
+// String-keyed maps: key slot holds a 16-byte RaskStr value, hash/eq use string content
 uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
     (void)key_size;
-    const RaskString *s = *(RaskString *const *)key;
-    if (!s) return 0;
+    const RaskStr *s = (const RaskStr *)key;
     int64_t len = rask_string_len(s);
     const char *data = rask_string_ptr(s);
     uint64_t h = 0xcbf29ce484222325ULL;
@@ -62,10 +61,10 @@ uint64_t rask_hash_string_key(const void *key, int64_t key_size) {
 
 int rask_eq_string_key(const void *a, const void *b, int64_t key_size) {
     (void)key_size;
-    const RaskString *sa = *(RaskString *const *)a;
-    const RaskString *sb = *(RaskString *const *)b;
-    if (sa == sb) return 1;
-    if (!sa || !sb) return 0;
+    const RaskStr *sa = (const RaskStr *)a;
+    const RaskStr *sb = (const RaskStr *)b;
+    // Fast path: bitwise identical (same SSO or same heap pointer+len)
+    if (memcmp(sa, sb, 16) == 0) return 1;
     int64_t la = rask_string_len(sa);
     int64_t lb = rask_string_len(sb);
     if (la != lb) return 0;
