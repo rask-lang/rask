@@ -43,8 +43,8 @@ func main() {
         std.exit(1)
     }
 
-    const pattern = args.get(1)
-    const file_path = args.get(2)
+    const pattern = args.get(1).unwrap()
+    const file_path = args.get(2).unwrap()
 
     println("Searching for '{pattern}' in {file_path}...")
 

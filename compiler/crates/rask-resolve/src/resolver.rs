@@ -263,7 +263,7 @@ impl Resolver {
                     SymbolKind::BuiltinType { .. }
                         | SymbolKind::BuiltinFunction { .. }
                         | SymbolKind::BuiltinModule { .. }
-                ) || (matches!(sym.kind, SymbolKind::Enum { .. } | SymbolKind::EnumVariant { .. })
+                ) || (matches!(sym.kind, SymbolKind::Enum { .. })
                     && sym.span == Span::new(0, 0));
             }
         }
@@ -975,14 +975,15 @@ impl Resolver {
                     self.resolve_expr(&const_decl.init);
                 }
                 DeclKind::Test(test_decl) => {
-                    self.scopes.push(ScopeKind::Block);
+                    // Test blocks are function-like: allow return for early exit
+                    self.scopes.push(ScopeKind::Function(SymbolId(u32::MAX)));
                     for stmt in &test_decl.body {
                         self.resolve_stmt(stmt);
                     }
                     self.scopes.pop();
                 }
                 DeclKind::Benchmark(bench_decl) => {
-                    self.scopes.push(ScopeKind::Block);
+                    self.scopes.push(ScopeKind::Function(SymbolId(u32::MAX)));
                     for stmt in &bench_decl.body {
                         self.resolve_stmt(stmt);
                     }

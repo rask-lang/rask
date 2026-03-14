@@ -124,7 +124,7 @@ func load_state(bytes: Vec<u8>) -> Pool<Player> or DecodeError {
 ```rask
 func test_handle_roundtrip() -> () or Error {
     const pool = Pool.new()
-    const h = try pool.insert(Player { id: 1, health: 100, score: 0 })
+    const h = pool.insert(Player { id: 1, health: 100, score: 0 })
 
     const bytes = try pool.to_bytes()
     const restored = try Pool.from_bytes(bytes)

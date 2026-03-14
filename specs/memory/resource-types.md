@@ -225,7 +225,7 @@ func read_config(file: File) -> Config or FileError {
 <!-- test: skip -->
 ```rask
 const connections: Pool<Connection> = Pool.new()
-const h = try connections.insert(try Connection.open(addr))
+const h = connections.insert(try Connection.open(addr))
 
 // Later: explicit consumption required
 const conn = connections.remove(h)!

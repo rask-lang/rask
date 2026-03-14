@@ -19,6 +19,8 @@ mod path;
 mod random;
 mod thread;
 mod time;
+#[cfg(not(target_arch = "wasm32"))]
+mod http;
 
 use crate::interp::{Interpreter, RuntimeError};
 use crate::value::{ModuleKind, Value};
@@ -61,6 +63,13 @@ impl Interpreter {
             ModuleKind::Path => self.call_path_module_method(method, args),
             ModuleKind::Async => self.call_async_method(method, args),
             ModuleKind::Thread => self.call_thread_method(method, args),
+            #[cfg(not(target_arch = "wasm32"))]
+            ModuleKind::Http => self.call_http_method(method, args),
+            #[cfg(target_arch = "wasm32")]
+            ModuleKind::Http => Err(RuntimeError::Generic(
+                "http module not available in browser playground".to_string()
+            )),
+
             // Legacy aliases — forward to new modules
             ModuleKind::Env => self.call_env_method(method, args),
             ModuleKind::Cli => self.call_cli_module_method(method, args),
@@ -163,6 +172,9 @@ impl Interpreter {
                     )))
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            "Response" => self.call_response_type_method(method, args),
+            "Method" => self.call_method_enum_constructor(method),
             _ => {
                 // Auto-derived default() — construct struct with default-valued fields
                 if method == "default" {

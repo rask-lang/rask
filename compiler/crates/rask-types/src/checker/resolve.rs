@@ -1069,7 +1069,7 @@ impl TypeChecker {
         };
 
         match method {
-            // pool.alloc(value: T) -> Handle<T>
+            // pool.insert(value: T) -> Handle<T> (panics on failure, like Vec.push)
             "alloc" | "insert" if args.len() == 1 => {
                 let _ = self.unify(&args[0], &inner_type, span);
                 let handle_ty = Type::UnresolvedGeneric {
