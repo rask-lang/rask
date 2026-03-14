@@ -84,4 +84,16 @@ extend string {
 
     /// Iterate over characters (same as chars).
     public func iter(self) -> Iterator<char> { }
+
+    // ── C interop ────────────────────────────────────────────
+
+    /// Null-terminated pointer for C APIs. Zero-cost (strings are always null-terminated).
+    /// Pointer is valid as long as the string is alive.
+    public unsafe func as_c_str(self) -> *u8 { }
+
+    /// Raw data pointer + .len() for pointer+length C APIs.
+    public unsafe func as_ptr(self) -> *u8 { }
+
+    /// Copy from a null-terminated C string. Caller must ensure ptr is valid.
+    public unsafe func from_c(ptr: *u8) -> string { }
 }

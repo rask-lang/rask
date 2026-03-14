@@ -1115,6 +1115,15 @@ impl Interpreter {
             (TypeConstructorKind::String, "new") => {
                 Ok(Value::String(Arc::new(Mutex::new(String::new()))))
             }
+            (TypeConstructorKind::String, "from_c") => {
+                // In the interpreter, from_c just copies the string (no real raw pointers).
+                // Accept either a string or int (simulated pointer) argument.
+                match args.first() {
+                    Some(Value::String(s)) => Ok(Value::String(Arc::new(Mutex::new(s.lock().unwrap().clone())))),
+                    Some(Value::Int(_)) => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                    _ => Ok(Value::String(Arc::new(Mutex::new(String::new())))),
+                }
+            }
             (TypeConstructorKind::Pool, "new") => {
                 Ok(Value::Pool(Arc::new(Mutex::new(PoolData::with_type_param(type_param.clone())))))
             }

@@ -384,6 +384,22 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+        // as_c_str(): null-terminated pointer for C interop (same as ptr — strings are always null-terminated)
+        StdlibEntry {
+            mir_name: "string_as_c_str",
+            c_name: "rask_string_ptr",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
+        // string.from_c(ptr): copy from null-terminated C string
+        StdlibEntry {
+            mir_name: "string_from_c",
+            c_name: "rask_string_from",
+            params: &[types::I64],
+            ret_ty: Some(types::I64),
+            can_panic: false,
+        },
         // rask_string_concat(a, b: const RaskString*) → RaskString*
         StdlibEntry {
             mir_name: "concat",

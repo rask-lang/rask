@@ -292,6 +292,10 @@ impl Interpreter {
                     variant_index: 0,
                 })
             }
+            // C interop: returns raw pointer (simulated as Int in interpreter)
+            "as_c_str" | "as_ptr" => {
+                Ok(Value::Int(0)) // Opaque pointer — meaningful only in compiled code
+            }
             _ => Err(RuntimeError::NoSuchMethod {
                 ty: "string".to_string(),
                 method: method.to_string(),
