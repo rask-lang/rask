@@ -19,6 +19,9 @@ build/
 *.o
 compiler/runtime/*.a
 
+# Runtime artifacts from example programs
+rask-db/
+
 # Playground builds
 docs/playground/dist/
 docs/playground/node_modules/
