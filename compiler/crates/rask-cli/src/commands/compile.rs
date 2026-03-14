@@ -60,12 +60,6 @@ fn build_trait_methods(typed: &rask_types::TypedProgram) -> HashMap<String, Vec<
         .collect()
 }
 
-/// MIR lowering result — functions plus any diagnostics from analysis passes.
-struct MirResult {
-    functions: Vec<rask_mir::MirFunction>,
-    diagnostics: Vec<rask_diagnostics::Diagnostic>,
-}
-
 /// Lower mono functions to MIR and run optimization passes.
 /// `skip_main` skips the synthetic main() for benchmarks.
 fn lower_to_mir(
@@ -73,7 +67,7 @@ fn lower_to_mir(
     all_mono_decls: &[Decl],
     mir_ctx: &rask_mir::lower::MirContext,
     skip_main: bool,
-) -> Result<MirResult, Vec<String>> {
+) -> Result<(Vec<rask_mir::MirFunction>, rask_mir::PipelineResult), Vec<String>> {
     let mut errors = Vec::new();
     let mut mir_functions = Vec::new();
 
@@ -98,14 +92,14 @@ fn lower_to_mir(
         rask_mir::transform::ssa::construct(func);
     }
 
-    let diagnostics = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
+    let pipeline_result = rask_mir::PassManager::default_pipeline().run(&mut mir_functions);
 
     // De-SSA: lower phi nodes to copies before codegen.
     for func in &mut mir_functions {
         rask_mir::transform::ssa::destruct(func);
     }
 
-    Ok(MirResult { functions: mir_functions, diagnostics })
+    Ok((mir_functions, pipeline_result))
 }
 
 /// Format and print MIR analysis diagnostics. Returns true if any are errors.
@@ -237,23 +231,29 @@ pub fn compile_to_object(
         call_rewrites: &mono.call_rewrites,
     };
 
-    let mir_result = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
+    let (mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, false)?;
 
     // Report MIR analysis diagnostics (typestate errors, warnings, etc.)
     let has_mir_errors = report_mir_diagnostics(
-        &mir_result.diagnostics, source_text, source_file,
+        &pipeline_result.diagnostics, source_text, source_file,
     );
     if has_mir_errors {
         return Err(vec!["aborting due to MIR analysis errors".to_string()]);
     }
-
-    let mir_functions = mir_result.functions;
 
     if mir_functions.is_empty() {
         return Err(vec!["no functions to compile".to_string()]);
     }
 
     let mut codegen = setup_codegen(decls, mono, &mir_functions, comptime_globals, target, build_mode)?;
+
+    // Set debug context for DWARF emission (DI1)
+    if build_mode == rask_codegen::BuildMode::Debug {
+        if let (Some(src_file), Some(lm)) = (source_file, line_map.as_ref()) {
+            codegen.set_debug_context(src_file, lm.clone());
+        }
+        codegen.set_inline_regions(pipeline_result.inline_regions);
+    }
 
     // Build and register vtables for trait objects
     let vtables = collect_vtables(&mir_functions, &trait_methods, mono);
@@ -468,16 +468,14 @@ pub fn compile_benchmarks_to_object(
         call_rewrites: &mono.call_rewrites,
     };
 
-    let mir_result = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
+    let (mut mir_functions, pipeline_result) = lower_to_mir(mono, &all_mono_decls, &mir_ctx, true)?;
 
     let has_mir_errors = report_mir_diagnostics(
-        &mir_result.diagnostics, source_text, source_file,
+        &pipeline_result.diagnostics, source_text, source_file,
     );
     if has_mir_errors {
         return Err(vec!["aborting due to MIR analysis errors".to_string()]);
     }
-
-    let mut mir_functions = mir_result.functions;
 
     if mir_functions.is_empty() && benchmarks.is_empty() {
         return Err(vec!["no functions or benchmarks to compile".to_string()]);

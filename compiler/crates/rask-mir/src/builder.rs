@@ -3,12 +3,15 @@
 //! BlockBuilder - helper for CFG construction during lowering.
 
 use crate::{BlockId, LocalId, MirBlock, MirFunction, MirLocal, MirStmt, MirStmtKind, MirTerminator, MirTerminatorKind, MirType};
+use rask_ast::Span;
 
 pub struct BlockBuilder {
     function: MirFunction,
     current_block: BlockId,
     next_local_id: u32,
     next_block_id: u32,
+    /// Current source span — stamped onto statements/terminators with dummy spans.
+    current_span: Span,
 }
 
 impl BlockBuilder {
@@ -34,6 +37,7 @@ impl BlockBuilder {
             current_block: entry_block,
             next_local_id: 0,
             next_block_id: 1,
+            current_span: Span::new(0, 0),
         }
     }
 
@@ -97,12 +101,25 @@ impl BlockBuilder {
             .map(|l| l.ty.clone())
     }
 
-    pub fn push_stmt(&mut self, stmt: MirStmt) {
+    /// Set the current source span. Subsequent push_stmt/terminate calls
+    /// will stamp this span onto any statement/terminator with a dummy span.
+    pub fn set_span(&mut self, span: Span) {
+        self.current_span = span;
+    }
+
+    pub fn push_stmt(&mut self, mut stmt: MirStmt) {
+        // Stamp current span onto dummy-spanned statements
+        if stmt.span.start == 0 && stmt.span.end == 0 && self.current_span.end > 0 {
+            stmt.span = self.current_span;
+        }
         let block = &mut self.function.blocks[self.current_block.0 as usize];
         block.statements.push(stmt);
     }
 
-    pub fn terminate(&mut self, term: MirTerminator) {
+    pub fn terminate(&mut self, mut term: MirTerminator) {
+        if term.span.start == 0 && term.span.end == 0 && self.current_span.end > 0 {
+            term.span = self.current_span;
+        }
         let block = &mut self.function.blocks[self.current_block.0 as usize];
         block.terminator = term;
     }

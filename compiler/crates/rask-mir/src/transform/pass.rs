@@ -3,46 +3,42 @@
 //! Pass manager — runs MIR optimization passes in sequence.
 //!
 //! Each pass implements `MirPass`. The `PassManager` runs them in order,
-//! collecting diagnostics from analysis passes (e.g., typestate checking).
+//! threading a `PassContext` for metadata collection and diagnostic accumulation.
 
+use std::collections::HashMap;
 use rask_diagnostics::Diagnostic;
-
 use crate::MirFunction;
 use crate::transform::typestate::TypestatePass;
+use crate::transform::inline::InlineRegion;
 
-/// Result of running a pass — may contain diagnostics (errors, warnings, notes).
-pub struct PassResult {
+/// Shared context threaded through the pass pipeline.
+/// Passes write metadata and diagnostics here; downstream consumers read them.
+#[derive(Debug, Default)]
+pub struct PassContext {
+    /// DI5: inline region metadata per caller function name.
+    pub inline_regions: HashMap<String, Vec<InlineRegion>>,
+    /// Accumulated diagnostics from analysis passes (typestate errors, etc.).
     pub diagnostics: Vec<Diagnostic>,
 }
 
-impl PassResult {
-    /// No diagnostics produced.
-    pub fn ok() -> Self {
-        Self { diagnostics: vec![] }
-    }
-}
+/// Convenience alias.
+pub type PipelineResult = PassContext;
 
 /// A MIR-to-MIR transformation pass.
 pub trait MirPass {
     /// Short name for logging/debugging.
     fn name(&self) -> &str;
 
-    /// Run on the full set of functions. Default iterates per-function.
-    /// Override for cross-function passes (e.g., closure escape analysis).
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
-        let mut result = PassResult::ok();
+    /// Run on the full set of functions with shared context.
+    /// Default iterates per-function.
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
         for func in fns.iter_mut() {
-            let r = self.run_function(func);
-            result.diagnostics.extend(r.diagnostics);
+            self.run_function(func, ctx);
         }
-        result
     }
 
     /// Run on a single function. Default is no-op.
-    /// Most passes override this.
-    fn run_function(&self, _func: &mut MirFunction) -> PassResult {
-        PassResult::ok()
-    }
+    fn run_function(&self, _func: &mut MirFunction, _ctx: &mut PassContext) {}
 }
 
 /// Runs a sequence of MIR passes.
@@ -60,14 +56,13 @@ impl PassManager {
         self.passes.push(Box::new(pass));
     }
 
-    /// Run all passes in order, collecting diagnostics.
-    pub fn run(&self, fns: &mut Vec<MirFunction>) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
+    /// Run all passes in order. Returns the accumulated context.
+    pub fn run(&self, fns: &mut Vec<MirFunction>) -> PipelineResult {
+        let mut ctx = PassContext::default();
         for pass in &self.passes {
-            let result = pass.run(fns);
-            diagnostics.extend(result.diagnostics);
+            pass.run(fns, &mut ctx);
         }
-        diagnostics
+        ctx
     }
 
     /// Build the default optimization pipeline.
@@ -96,9 +91,8 @@ pub struct ClosureOptimizationPass;
 
 impl MirPass for ClosureOptimizationPass {
     fn name(&self) -> &str { "closure_optimization" }
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_all_closures(fns);
-        PassResult::ok()
     }
 }
 
@@ -107,20 +101,18 @@ pub struct InliningPass;
 
 impl MirPass for InliningPass {
     fn name(&self) -> &str { "inlining" }
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
-        crate::transform::inline::inline_functions(fns);
-        PassResult::ok()
+    fn run(&self, fns: &mut Vec<MirFunction>, ctx: &mut PassContext) {
+        ctx.inline_regions = crate::transform::inline::inline_functions(fns);
     }
 }
 
-/// Self-concat → in-place append (eliminates O(n² string building).
+/// Self-concat → in-place append (eliminates O(n²) string building).
 pub struct StringConcatPass;
 
 impl MirPass for StringConcatPass {
     fn name(&self) -> &str { "string_concat" }
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::optimize_string_concat(fns);
-        PassResult::ok()
     }
 }
 
@@ -129,9 +121,8 @@ pub struct CloneElisionPass;
 
 impl MirPass for CloneElisionPass {
     fn name(&self) -> &str { "clone_elision" }
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::elide_clones(fns);
-        PassResult::ok()
     }
 }
 
@@ -140,9 +131,8 @@ pub struct DeadCodeEliminationPass;
 
 impl MirPass for DeadCodeEliminationPass {
     fn name(&self) -> &str { "dce" }
-    fn run_function(&self, func: &mut MirFunction) -> PassResult {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::dce::eliminate_dead_code(func);
-        PassResult::ok()
     }
 }
 
@@ -151,9 +141,8 @@ pub struct StringRcInsertionPass;
 
 impl MirPass for StringRcInsertionPass {
     fn name(&self) -> &str { "string_rc_insert" }
-    fn run_function(&self, func: &mut MirFunction) -> PassResult {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::rc_insert::insert_rc_ops(func);
-        PassResult::ok()
     }
 }
 
@@ -162,9 +151,8 @@ pub struct StringRcElisionPass;
 
 impl MirPass for StringRcElisionPass {
     fn name(&self) -> &str { "string_rc_elide" }
-    fn run_function(&self, func: &mut MirFunction) -> PassResult {
+    fn run_function(&self, func: &mut MirFunction, _ctx: &mut PassContext) {
         crate::transform::rc_elide::elide_rc_ops(func);
-        PassResult::ok()
     }
 }
 
@@ -173,8 +161,7 @@ pub struct GenerationCoalescingPass;
 
 impl MirPass for GenerationCoalescingPass {
     fn name(&self) -> &str { "generation_coalescing" }
-    fn run(&self, fns: &mut Vec<MirFunction>) -> PassResult {
+    fn run(&self, fns: &mut Vec<MirFunction>, _ctx: &mut PassContext) {
         crate::coalesce_generation_checks(fns);
-        PassResult::ok()
     }
 }
