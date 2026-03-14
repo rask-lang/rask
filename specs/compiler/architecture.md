@@ -116,7 +116,7 @@ These features resolve in the frontend or lower to existing MIR constructs. They
 | **IN4: Span preservation** | Inlined code retains original source spans plus inline metadata. Required for debug info (DI5) — debugger shows "inlined from file:line" |
 | **IN5: Interplay with other passes** | Inlining expands the scope of per-function analyses. After inlining, escape analysis, RC elision, and interval analysis see more context — wider optimization window |
 
-Inlining is listed as `comp.codegen/O6` but has no implementation yet. The architecture needs to support it as a cross-function MIR transform, not a codegen-level optimization — by the time we reach codegen, the opportunity for Rask-specific optimizations on the inlined code is lost.
+Inlining is implemented as a cross-function MIR transform (`transform/inline.rs`), not a codegen-level optimization — by the time we reach codegen, the opportunity for Rask-specific optimizations on the inlined code is lost. The call graph (`analysis/call_graph.rs`) drives heuristic decisions. Supersedes `comp.codegen/O6`.
 
 ---
 
@@ -561,7 +561,7 @@ The LSP path runs the frontend (lex → typecheck → ownership) and stops — i
 | **C: String RC** | RC insertion/fusion/elision/reuse for strings | `comp.string-refcount-elision`, SSO preparation |
 | **D: MIR CTFE** | MIR interpreter crate | Comptime correctness, reflection |
 | **E: Debug info** | Spans on MIR, DWARF emission | Debugger support |
-| **F: Inlining** | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
+| **F: Inlining** ✓ | Cross-function inliner with span preservation | Wider optimization window for per-function passes |
 | **G: Advanced analyses** | Typestate, intervals, bounds check elimination, devirtualization | `comp.advanced` spec |
 | **H: Interactive compilation** | Frontend caching, LSP mode, suggested fixes, error restructuring | Modern dev experience |
 | **I: Parallel + Incremental** | Rayon, MIR serialization, MIR cache layer | Build performance |
