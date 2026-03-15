@@ -93,6 +93,16 @@ func bad_pure(path: string) -> Config or Error {
 | **ST1: snake-case-func** | Function names are `snake_case` | warning |
 | **ST2: pascal-case-type** | Type/enum/trait names are `PascalCase` | warning |
 | **ST3: public-return-type** | Public functions have explicit return type annotations | error |
+| **ST4: context-clause-count** | Function has >3 `using` clauses | warning |
+
+```
+WARNING [tool.lint/ST4]: function has 4 context clauses (recommend ≤3)
+   |
+1  |  func render(h: Handle<Entity>) using Pool<Entity>, Pool<Mesh>, Pool<Texture>, Allocator {
+   |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+FIX: Pass a struct containing the dependencies, or split the function.
+```
 
 ## Suppression
 
