@@ -174,6 +174,7 @@ impl Interpreter {
             }
             #[cfg(not(target_arch = "wasm32"))]
             "Response" => self.call_response_type_method(method, args),
+            #[cfg(not(target_arch = "wasm32"))]
             "Method" => self.call_method_enum_constructor(method),
             _ => {
                 // Auto-derived default() — construct struct with default-valued fields
