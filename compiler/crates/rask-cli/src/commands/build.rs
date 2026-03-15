@@ -436,6 +436,8 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                 extra_objects: Vec::new(),
                 declared_deps: Vec::new(),
                 tool_versions: std::collections::HashMap::new(),
+                // Root package is unrestricted (struct.build/PM9)
+                allowed_capabilities: None,
             };
 
             let mut interp = rask_interp::Interpreter::new();
