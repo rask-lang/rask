@@ -33,6 +33,10 @@ pub struct BuildState {
     pub declared_deps: Vec<PathBuf>,
     /// Tool version strings recorded for step cache keys.
     pub tool_versions: HashMap<String, String>,
+    /// Allowed capabilities for this build script (struct.build/PM9).
+    /// `None` = unrestricted (root package). `Some(caps)` = only these
+    /// capabilities are permitted (dependency packages).
+    pub allowed_capabilities: Option<Vec<String>>,
 }
 
 impl BuildState {
@@ -94,6 +98,22 @@ fn expect_string_vec(val: &Value, context: &str) -> Result<Vec<String>, String> 
         }
         _ => Err(format!("{}: expected Vec<string>", context)),
     }
+}
+
+/// Check that `build_exec` capability is allowed (struct.build/PM9).
+/// Root packages (allowed_capabilities = None) are always permitted.
+fn check_build_exec(state: &BuildState, method: &str) -> Result<(), String> {
+    if let Some(ref allowed) = state.allowed_capabilities {
+        if !allowed.iter().any(|c| c == "build_exec") {
+            return Err(format!(
+                "[struct.build/PM9]: build_exec capability required\n\
+                 \x20  dependency '{}' build script calls {}() but is not allowed\n\
+                 \x20  add `allow: [\"build_exec\"]` to the dep declaration in build.rk",
+                state.package_name, method,
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Dispatch a method call on BuildContext.
@@ -187,6 +207,7 @@ pub fn call_method(
 
         "exec" => {
             // exec(program: string, args: [string]) -> () or Error
+            check_build_exec(state, "exec")?;
             if args.len() != 2 {
                 return Err(format!("exec expects 2 args, got {}", args.len()));
             }
@@ -208,6 +229,7 @@ pub fn call_method(
 
         "exec_output" => {
             // exec_output(program: string, args: [string]) -> string or Error
+            check_build_exec(state, "exec_output")?;
             if args.len() != 2 {
                 return Err(format!("exec_output expects 2 args, got {}", args.len()));
             }
@@ -490,4 +512,123 @@ fn matches_glob(pattern: &str, name: &str) -> bool {
         return name.starts_with(prefix);
     }
     pattern == name
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_state(allowed_capabilities: Option<Vec<String>>) -> BuildState {
+        BuildState {
+            package_name: "test-dep".into(),
+            package_version: "1.0.0".into(),
+            package_dir: PathBuf::from("/tmp"),
+            profile: "debug".into(),
+            target: "x86_64-linux".into(),
+            host: "x86_64-linux".into(),
+            gen_dir: PathBuf::from("/tmp/rask-test-gen"),
+            out_dir: PathBuf::from("/tmp/rask-test-out"),
+            step_cache_dir: None,
+            link_libraries: vec![],
+            link_search_paths: vec![],
+            extra_objects: vec![],
+            declared_deps: vec![],
+            tool_versions: HashMap::new(),
+            allowed_capabilities,
+        }
+    }
+
+    fn str_val(s: &str) -> Value {
+        Value::String(Arc::new(Mutex::new(s.to_string())))
+    }
+
+    fn empty_vec() -> Value {
+        Value::Vec(Arc::new(Mutex::new(vec![])))
+    }
+
+    // PM9: exec() blocked without build_exec capability
+    #[test]
+    fn exec_blocked_without_build_exec() {
+        let mut state = make_state(Some(vec![]));
+        let result = call_method(&mut state, "exec", vec![str_val("echo"), empty_vec()]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("build_exec"), "should mention build_exec: {}", err);
+        assert!(err.contains("PM9"), "should cite PM9: {}", err);
+        assert!(err.contains("test-dep"), "should name the package: {}", err);
+    }
+
+    // PM9: exec_output() blocked without build_exec capability
+    #[test]
+    fn exec_output_blocked_without_build_exec() {
+        let mut state = make_state(Some(vec!["net".into(), "read".into()]));
+        let result = call_method(&mut state, "exec_output", vec![str_val("echo"), empty_vec()]);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("build_exec"));
+        assert!(err.contains("exec_output"), "should name the method: {}", err);
+    }
+
+    // PM9: exec() allowed with build_exec capability
+    #[test]
+    fn exec_allowed_with_build_exec() {
+        let mut state = make_state(Some(vec!["build_exec".into()]));
+        let result = call_method(&mut state, "exec", vec![str_val("echo"), empty_vec()]);
+        assert!(result.is_ok(), "should succeed with build_exec: {:?}", result);
+    }
+
+    // PM9: exec_output() allowed with build_exec capability
+    #[test]
+    fn exec_output_allowed_with_build_exec() {
+        let mut state = make_state(Some(vec!["build_exec".into()]));
+        let result = call_method(&mut state, "exec_output", vec![str_val("echo"), empty_vec()]);
+        assert!(result.is_ok(), "should succeed with build_exec: {:?}", result);
+    }
+
+    // PM9: Root package (None) is always unrestricted
+    #[test]
+    fn root_package_unrestricted() {
+        let mut state = make_state(None);
+        let result = call_method(&mut state, "exec", vec![str_val("echo"), empty_vec()]);
+        assert!(result.is_ok(), "root package should always work: {:?}", result);
+    }
+
+    // PM10: Structured APIs don't require build_exec
+    #[test]
+    fn structured_apis_no_capability_needed() {
+        let mut state = make_state(Some(vec![]));
+
+        // link_library — pure state accumulation
+        let result = call_method(&mut state, "link_library", vec![str_val("ssl")]);
+        assert!(result.is_ok(), "link_library needs no capability: {:?}", result);
+
+        // link_search_path — pure state accumulation
+        let result = call_method(&mut state, "link_search_path", vec![str_val("/usr/lib")]);
+        assert!(result.is_ok(), "link_search_path needs no capability: {:?}", result);
+
+        // env — read-only
+        let result = call_method(&mut state, "env", vec![str_val("HOME")]);
+        assert!(result.is_ok(), "env needs no capability: {:?}", result);
+
+        // warning — stderr only
+        let result = call_method(&mut state, "warning", vec![str_val("test")]);
+        assert!(result.is_ok(), "warning needs no capability: {:?}", result);
+
+        // find_program — read-only PATH search
+        let result = call_method(&mut state, "find_program", vec![str_val("nonexistent-xyz")]);
+        assert!(result.is_ok(), "find_program needs no capability: {:?}", result);
+
+        // is_cross_compiling — pure computation
+        let result = call_method(&mut state, "is_cross_compiling", vec![]);
+        assert!(result.is_ok(), "is_cross_compiling needs no capability: {:?}", result);
+    }
+
+    // PM9: Error message includes actionable fix
+    #[test]
+    fn error_message_includes_fix() {
+        let mut state = make_state(Some(vec![]));
+        let err = call_method(&mut state, "exec", vec![str_val("echo"), empty_vec()]).unwrap_err();
+        assert!(err.contains(r#"add `allow: ["build_exec"]`"#), "should suggest fix: {}", err);
+        assert!(err.contains("build.rk"), "should mention build.rk: {}", err);
+    }
 }
