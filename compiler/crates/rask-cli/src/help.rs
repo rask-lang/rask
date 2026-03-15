@@ -8,7 +8,7 @@ pub fn print_usage() {
     println!(
         "{} {} - Safety and performance without the pain",
         output::title("Rask"),
-        output::version("0.1.0")
+        output::version(env!("CARGO_PKG_VERSION"))
     );
     println!();
     println!(

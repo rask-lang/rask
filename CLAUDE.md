@@ -31,6 +31,9 @@ Choose simple over easy
 | `rask check <file>` | Type-check a .rk file |
 | `rask run <file>` | Execute a .rk program |
 
+Binary: `compiler/target/release/rask` (build: `cd compiler && cargo build --release -p rask-cli`)
+Releases: https://github.com/rask-lang/rask/releases
+
 Hooks auto-run `rask lint` after editing `.rk` files and `rask test-specs` after editing `specs/*.md`.
 
 # Rask Writing Style Guide

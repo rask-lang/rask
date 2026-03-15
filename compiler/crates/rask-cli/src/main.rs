@@ -592,7 +592,7 @@ fn main() {
             help::print_usage();
         }
         "version" | "--version" | "-V" => {
-            println!("{} {}", output::title("rask"), output::version("0.1.0"));
+            println!("{} {}", output::title("rask"), output::version(env!("CARGO_PKG_VERSION")));
         }
         other => {
             eprintln!("{}: Unknown command '{}'", output::error_label(), other);
