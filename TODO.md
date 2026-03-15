@@ -63,12 +63,9 @@ Hardening for the package ecosystem. Not blocking any examples.
 
 ## Design Questions
 
-- [ ] Task-local storage syntax
+- [ ] Task-local storage syntax — deferred until M:N scheduler is real and explicit param passing proves inadequate
 - [ ] **String interop** — `as_c_str()`, `string.from_c()`
 - [ ] **Small string optimization (SSO)** — Hybrid `string` layout: inline for ≤15 bytes (no heap, no refcount), refcounted heap for larger. Most strings are short — SSO eliminates atomic overhead entirely for the common case. See `comp.string-refcount-elision` for the heap path.
-- [ ] `pool.remove_with(h, |val| { ... })` — cascading @resource cleanup helper
-- [ ] Style guideline: max 3 context clauses per function
-- [ ] **Trait satisfaction on methods** — Annotate individual methods with which trait they satisfy instead of `extend Type with Trait { }`.
 
 ## Post-v1.0
 
