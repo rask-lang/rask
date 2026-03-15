@@ -613,8 +613,8 @@ mod tests {
                     name: "Container".to_string(),
                     type_params: vec![],
                     fields: vec![
-                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), is_pub: false },
-                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                        Field { name: "kind".to_string(), name_span: sp(), ty: "Kind".to_string(), visibility: FieldVisibility::Package },
+                        Field { name: "value".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
                     ],
                     methods: vec![],
                     is_pub: false,
@@ -632,8 +632,8 @@ mod tests {
                         Variant {
                             name: "Alpha".to_string(),
                             fields: vec![
-                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
-                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), is_pub: false },
+                                Field { name: "x".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
+                                Field { name: "y".to_string(), name_span: sp(), ty: "i32".to_string(), visibility: FieldVisibility::Package },
                             ],
                             attrs: vec![],
                         },

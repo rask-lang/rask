@@ -494,16 +494,47 @@ impl Interpreter {
         !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
     }
 
-    /// Check if a module method dispatches.
+    /// Check if a module method is recognized by the interpreter dispatch.
+    /// Uses name-only matching — never executes the method body — so it
+    /// won't block on I/O (stdin, network, etc.).
     pub(crate) fn has_module_dispatch(
-        &mut self,
+        &self,
         module: &crate::value::ModuleKind,
         method: &str,
     ) -> bool {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.call_module_method(module, method, vec![])
-        }));
-        !matches!(result, Ok(Err(RuntimeError::NoSuchMethod { .. })))
+        use crate::value::ModuleKind::*;
+        match module {
+            Fs => matches!(method,
+                "read_file" | "read_lines" | "write_file" | "append_file"
+                | "exists" | "open" | "create" | "canonicalize" | "metadata"
+                | "delete" | "remove" | "remove_dir" | "create_dir" | "create_dir_all"
+                | "rename" | "copy" | "list_dir"
+            ),
+            Io => matches!(method, "read_line"),
+            Net => matches!(method, "tcp_listen" | "tcp_connect"),
+            Time => matches!(method, "sleep"),
+            Random => matches!(method, "f32" | "f64" | "i64" | "bool" | "range"),
+            Math => matches!(method,
+                "sin" | "cos" | "tan" | "asin" | "acos" | "atan" | "atan2"
+                | "exp" | "ln" | "log2" | "log10"
+                | "hypot" | "clamp" | "to_radians" | "to_degrees"
+                | "is_nan" | "is_inf" | "is_finite"
+            ),
+            Os | Std => matches!(method,
+                "env" | "env_or" | "set_env" | "remove_env" | "vars"
+                | "args" | "exit" | "getpid" | "platform" | "arch"
+            ),
+            Json => matches!(method,
+                "parse" | "stringify" | "stringify_pretty"
+                | "encode" | "encode_pretty" | "to_value" | "decode"
+            ),
+            Path => false, // Path module has no module-level methods
+            Async => matches!(method, "spawn"),
+            Thread => matches!(method, "Thread" | "ThreadPool"),
+            Http => matches!(method, "listen_and_serve"),
+            Env => matches!(method, "var" | "vars"),
+            Cli => matches!(method, "args" | "parse"),
+        }
     }
 }
 
