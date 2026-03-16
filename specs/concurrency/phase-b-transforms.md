@@ -139,6 +139,8 @@ State machine variants correspond to yield points in the spawn closure's control
 
 This section makes explicit what existing specs already imply. The `__ctx` parameter is part of the compiled function signature, stored in module metadata like any other type information. Cross-module calls resolve it the same way they resolve regular parameters.
 
+**SC4: Generic functions store conservative effects.** A generic public function `func process<T: Handler>(h: T)` might have different effects depending on `T`. Module metadata stores the union of effects across the generic body plus a "may vary by type parameter" flag. Post-monomorphization, effects are precise per instantiation (`comp.effects` edge case: "Effects inferred per monomorphized instance"). The state machine transform uses the conservative metadata for cross-module generics, precise data for local monomorphizations.
+
 ### Compilation flow
 
 ```
@@ -237,6 +239,7 @@ using Multitasking, ThreadPool {
 | `any Reader` in non-async context | VT3 | __ctx = None passed. Blocking path used |
 | Pure closure stored in variable, called in spawn | FP1, FP3 | Wide ABI, yield point generated. Poll returns Ready immediately |
 | Cross-module function gains `__ctx` internally | SC3 | Not a breaking change if function is private. Public functions require explicit `using` clause |
+| Cross-module generic with type-dependent effects | SC4 | Conservative metadata (union of effects). Precise after monomorphization |
 | FFI call returns in <1ms | FFI4 | No compensation thread, zero overhead |
 | Many concurrent blocking FFI calls | FFI4 | Scheduler grows temporarily. Bounded by OS thread limits |
 | FFI callback into Rask code | FFI1 | Runs on FFI's OS thread. No __ctx. Blocking behavior |
