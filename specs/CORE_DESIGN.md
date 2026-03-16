@@ -263,6 +263,8 @@ No lifetime annotations needed. Function signatures are simple. Reasoning about 
 
 **Concrete benefit — relocatable state:** Because user-visible types contain only owned values and integer handles (never pointers), pool state can be serialized, memory-mapped, and sent across processes without pointer fixup. Handles survive round-trips because they're integers, not addresses. See `mem.relocatable` for the full specification.
 
+**Concrete benefit — no Pin in async:** State machines from spawn closures only hold owned values (closures can't capture borrows cross-task — mem.closures/SL2). Self-referential futures are impossible by construction, so `Pin` is unnecessary. Tasks are plain movable values. See conc.runtime/T1.
+
 **The fundamental choice:** I trade "hold a reference to data owned elsewhere" for "hold a handle/key/index to data in a collection." The former requires tracking lifetimes; the latter requires explicit indirection. I think the explicitness is worth it.
 
 ### Comptime Limitations

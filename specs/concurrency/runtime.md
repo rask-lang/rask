@@ -39,7 +39,7 @@ Task<T> {
     waker: Mutex<Option<Waker>>,        // Reactor wake-up handle
     cancel_flag: AtomicBool,            // Cooperative cancellation (CN1)
     ensure_hooks: Mutex<Vec<EnsureHook>>, // Resource cleanup (mem.resources/R4)
-    future: Pin<Box<dyn Future<Output = T>>>, // Compiler-generated state machine
+    future: Box<dyn Future<Output = T>>,  // State machine — no Pin needed (see T3-NOTE)
     spawn_location: (&'static str, u32), // (file, line) for debug traces
 }
 ```
@@ -163,6 +163,8 @@ impl Future for State {
     }
 }
 ```
+
+> **T3-NOTE: No Pin required.** Rask's "no storable references" rule (CORE_DESIGN.md §3) means state machine variants only hold owned values — `IoFuture<File>`, `File`, `Vec<u8>` in the example above. No self-referential pointers. In Rust, `Pin` exists because async state machines can hold references to their own fields. Rask closures passed to `spawn` can only capture owned or Copy values (mem.closures/SL2), so the generated state machine can never reference itself. The `future` field in T1 is a plain `Box`, not `Pin<Box>`.
 
 **Current interpreter:** No state machine transform. Closures execute on real OS thread stacks. Full transform planned for compiled version.
 
