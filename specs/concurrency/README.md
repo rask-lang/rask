@@ -26,6 +26,7 @@ Concurrency model for Rask.
 | [io-context.md](io-context.md) | Draft | **I/O dispatch**: How stdlib detects async context, sync/async code paths |
 | [sync.md](sync.md) | Draft | **Shared state**: Shared<T>, Mutex<T> for cross-task access |
 | [select.md](select.md) | Draft | Select statement, multiplexing |
+| [phase-b-transforms.md](phase-b-transforms.md) | Proposed | **Phase B transforms**: vtable ABI, closures, separate compilation, FFI |
 
 **Start here:** [async.md](async.md) for the execution model overview, then [runtime-strategy.md](runtime-strategy.md) for implementation plan.
 
