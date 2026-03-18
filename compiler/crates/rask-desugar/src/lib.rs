@@ -541,15 +541,21 @@ impl Desugarer {
                         span,
                     });
                 }
-                InterpSegment::Expr(expr_str) => {
+                InterpSegment::Expr(expr_str, offset_in_str) => {
                     // Parse the expression using the real lexer/parser
                     let lex = rask_lexer::Lexer::new(expr_str).tokenize();
                     if !lex.errors.is_empty() {
                         return None; // Parse error — leave as raw string
                     }
                     let mut parser = rask_parser::Parser::new(lex.tokens);
-                    let parsed = parser.parse_expr().ok()?;
+                    let mut parsed = parser.parse_expr().ok()?;
 
+                    // Remap spans from 0-based (within expr_str) to absolute file position.
+                    // span.start is the opening quote, +1 for the content start, +offset for position within content.
+                    let abs_offset = span.start + 1 + *offset_in_str;
+                    offset_expr_spans(&mut parsed, abs_offset);
+
+                    let expr_span = parsed.span;
                     // Wrap in to_string() call
                     let to_string_call = Expr {
                         id: self.fresh_id(),
@@ -559,7 +565,7 @@ impl Desugarer {
                             type_args: None,
                             args: vec![],
                         },
-                        span,
+                        span: expr_span,
                     };
                     exprs.push(to_string_call);
                 }
@@ -654,10 +660,54 @@ fn unary_op_method(op: UnaryOp) -> Option<&'static str> {
     }
 }
 
+/// Shift all spans in an expression tree by `offset` bytes.
+fn offset_expr_spans(expr: &mut Expr, offset: usize) {
+    expr.span.start += offset;
+    expr.span.end += offset;
+    match &mut expr.kind {
+        ExprKind::Binary { left, right, .. } => {
+            offset_expr_spans(left, offset);
+            offset_expr_spans(right, offset);
+        }
+        ExprKind::Unary { operand, .. } => offset_expr_spans(operand, offset),
+        ExprKind::Call { func, args } => {
+            offset_expr_spans(func, offset);
+            for arg in args { offset_expr_spans(&mut arg.expr, offset); }
+        }
+        ExprKind::MethodCall { object, args, .. } => {
+            offset_expr_spans(object, offset);
+            for arg in args { offset_expr_spans(&mut arg.expr, offset); }
+        }
+        ExprKind::Field { object, .. } | ExprKind::OptionalField { object, .. } => {
+            offset_expr_spans(object, offset);
+        }
+        ExprKind::Index { object, index } => {
+            offset_expr_spans(object, offset);
+            offset_expr_spans(index, offset);
+        }
+        ExprKind::Try { expr, else_clause } => {
+            offset_expr_spans(expr, offset);
+            if let Some(tc) = else_clause { offset_expr_spans(&mut tc.body, offset); }
+        }
+        ExprKind::Unwrap { expr, .. } => offset_expr_spans(expr, offset),
+        ExprKind::Cast { expr, .. } => offset_expr_spans(expr, offset),
+        ExprKind::NullCoalesce { value, default } => {
+            offset_expr_spans(value, offset);
+            offset_expr_spans(default, offset);
+        }
+        ExprKind::Array(exprs) | ExprKind::Tuple(exprs) => {
+            for e in exprs { offset_expr_spans(e, offset); }
+        }
+        // Leaf nodes and complex variants unlikely in interpolation — no nested Exprs to fix
+        _ => {}
+    }
+}
+
 /// Segment of an interpolated string.
 enum InterpSegment {
     Literal(String),
-    Expr(String),
+    /// Expression text and its byte offset within the original string content.
+    Expr(String, usize),
 }
 
 /// Parse a string containing `{expr}` interpolation into segments.
@@ -668,16 +718,20 @@ fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
     let mut literal = String::new();
     let mut chars = s.chars().peekable();
     let mut has_interp = false;
+    let mut byte_pos: usize = 0;
 
     while let Some(c) = chars.next() {
+        byte_pos += c.len_utf8();
         if c == '{' {
             has_interp = true;
             if !literal.is_empty() {
                 segments.push(InterpSegment::Literal(std::mem::take(&mut literal)));
             }
+            let expr_start = byte_pos; // byte offset right after '{'
             let mut expr_str = String::new();
             let mut depth = 1;
             for ch in chars.by_ref() {
+                byte_pos += ch.len_utf8();
                 if ch == '{' {
                     depth += 1;
                     expr_str.push(ch);
@@ -689,7 +743,7 @@ fn parse_interpolation_segments(s: &str) -> Option<Vec<InterpSegment>> {
                     expr_str.push(ch);
                 }
             }
-            segments.push(InterpSegment::Expr(expr_str));
+            segments.push(InterpSegment::Expr(expr_str, expr_start));
         } else {
             literal.push(c);
         }
@@ -710,7 +764,7 @@ mod tests {
         let segs = parse_interpolation_segments("hello {name}").unwrap();
         assert_eq!(segs.len(), 2);
         assert!(matches!(&segs[0], InterpSegment::Literal(s) if s == "hello "));
-        assert!(matches!(&segs[1], InterpSegment::Expr(s) if s == "name"));
+        assert!(matches!(&segs[1], InterpSegment::Expr(s, 7) if s == "name"));
     }
 
     #[test]

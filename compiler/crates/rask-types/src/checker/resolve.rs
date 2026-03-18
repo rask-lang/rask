@@ -23,6 +23,8 @@ impl TypeChecker {
         let ty = self.resolve_named(&self.ctx.apply(&ty));
 
         match &ty {
+            // Source error already reported — suppress cascading field errors
+            Type::Error => Ok(false),
             Type::Var(_) => {
                 self.ctx.add_constraint(TypeConstraint::HasField {
                     ty,
@@ -196,6 +198,8 @@ impl TypeChecker {
         }
 
         match &ty {
+            // Source error already reported — suppress cascading method errors
+            Type::Error => Ok(false),
             Type::Var(_) => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty,

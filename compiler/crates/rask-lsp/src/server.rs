@@ -211,21 +211,90 @@ impl LanguageServer for Backend {
                         };
                         contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
 
-                        // Add doc comment from stubs for builtins
+                        // Add doc comment and method signatures from stubs for builtins
                         match &symbol.kind {
                             rask_resolve::SymbolKind::BuiltinType { .. }
                             | rask_resolve::SymbolKind::BuiltinFunction { .. }
                             | rask_resolve::SymbolKind::BuiltinModule { .. } => {
                                 let reg = rask_stdlib::StubRegistry::load();
-                                let doc = if let Some(ts) = reg.get_type(&name) {
-                                    ts.doc.as_deref()
+                                if let Some(ts) = reg.get_type(&name) {
+                                    if let Some(doc) = &ts.doc {
+                                        contents.push_str(&format!("\n\n---\n\n{}", doc));
+                                    }
+                                    if !ts.methods.is_empty() {
+                                        contents.push_str("\n\n**Methods:**\n");
+                                        for m in &ts.methods {
+                                            let params_str = m.params.iter()
+                                                .map(|(n, t)| format!("{}: {}", n, t))
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
+                                            let self_prefix = if m.takes_self { "self, " } else { "" };
+                                            contents.push_str(&format!(
+                                                "\n- `{}({}{}) -> {}`",
+                                                m.name, self_prefix, params_str, m.ret_ty
+                                            ));
+                                        }
+                                    }
                                 } else {
-                                    reg.functions().iter()
+                                    let doc = reg.functions().iter()
                                         .find(|f| f.name == name)
-                                        .and_then(|f| f.doc.as_deref())
-                                };
-                                if let Some(doc) = doc {
-                                    contents.push_str(&format!("\n\n---\n\n{}", doc));
+                                        .and_then(|f| f.doc.as_deref());
+                                    if let Some(doc) = doc {
+                                        contents.push_str(&format!("\n\n---\n\n{}", doc));
+                                    }
+                                }
+                            }
+                            rask_resolve::SymbolKind::Struct { .. }
+                            | rask_resolve::SymbolKind::Enum { .. } => {
+                                // Show fields/variants and methods for user-defined types
+                                if let Some(type_id) = cached.typed.types.get_type_id(&name) {
+                                    if let Some(def) = cached.typed.types.get(type_id) {
+                                        match def {
+                                            rask_types::TypeDef::Struct { fields, methods, .. } => {
+                                                if !fields.is_empty() {
+                                                    contents.push_str("\n\n**Fields:**\n");
+                                                    for (fname, fty) in fields {
+                                                        contents.push_str(&format!(
+                                                            "\n- `{}: {}`", fname, formatter.format(fty)
+                                                        ));
+                                                    }
+                                                }
+                                                if !methods.is_empty() {
+                                                    contents.push_str("\n\n**Methods:**\n");
+                                                    for m in methods {
+                                                        contents.push_str(&format!(
+                                                            "\n- `{}`", m.name
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            rask_types::TypeDef::Enum { variants, methods, .. } => {
+                                                if !variants.is_empty() {
+                                                    contents.push_str("\n\n**Variants:**\n");
+                                                    for (vname, fields) in variants {
+                                                        if fields.is_empty() {
+                                                            contents.push_str(&format!("\n- `{}`", vname));
+                                                        } else {
+                                                            let fields_str = fields.iter()
+                                                                .map(|t| formatter.format(t))
+                                                                .collect::<Vec<_>>()
+                                                                .join(", ");
+                                                            contents.push_str(&format!("\n- `{}({})`", vname, fields_str));
+                                                        }
+                                                    }
+                                                }
+                                                if !methods.is_empty() {
+                                                    contents.push_str("\n\n**Methods:**\n");
+                                                    for m in methods {
+                                                        contents.push_str(&format!(
+                                                            "\n- `{}`", m.name
+                                                        ));
+                                                    }
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
                                 }
                             }
                             _ => {}
@@ -520,6 +589,8 @@ fn type_to_stub_name(
         rask_types::Type::Generic { base, .. } => {
             Some(cached.typed.types.type_name(*base))
         }
+        rask_types::Type::UnresolvedNamed(name) => Some(name.clone()),
+        rask_types::Type::UnresolvedGeneric { name, .. } => Some(name.clone()),
         rask_types::Type::Option(_) => Some("Option".to_string()),
         rask_types::Type::Result { .. } => Some("Result".to_string()),
         rask_types::Type::Array { .. } | rask_types::Type::Slice(_) => Some("Vec".to_string()),

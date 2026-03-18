@@ -490,6 +490,15 @@ impl ToDiagnostic for rask_types::TypeError {
                 .with_help("use the \"Make error type explicit\" quick action to fill in the inferred union")
             }
 
+            UndefinedName { name, span } => {
+                Diagnostic::error(format!("undefined name `{}`", name))
+                    .with_code("E0341")
+                    .with_primary(*span, format!("`{}` is not defined", name))
+                    .with_help("check spelling or add an import for this name")
+                    .with_fix("check spelling or add an import")
+                    .with_why("all names must be defined or imported before use")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {

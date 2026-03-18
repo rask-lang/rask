@@ -174,7 +174,8 @@ pub fn solve<A: DataflowAnalysis>(
         match analysis.direction() {
             Direction::Forward => {
                 // Join predecessor exits, applying per-edge transfer
-                let block_preds = preds.get(&block_id).cloned().unwrap_or_default();
+                let block_preds: Vec<BlockId> = preds.get(&block_id).cloned().unwrap_or_default()
+                    .into_iter().filter(|p| rpo_index.contains_key(p)).collect();
                 let new_entry = if block_id == func.entry_block {
                     entry[&block_id].clone()
                 } else if block_preds.is_empty() {
@@ -212,7 +213,8 @@ pub fn solve<A: DataflowAnalysis>(
             }
             Direction::Backward => {
                 // Join successor entries
-                let block_succs = succs.get(&block_id).cloned().unwrap_or_default();
+                let block_succs: Vec<BlockId> = succs.get(&block_id).cloned().unwrap_or_default()
+                    .into_iter().filter(|s| rpo_index.contains_key(s)).collect();
                 let new_exit = if block_succs.is_empty() {
                     exit[&block_id].clone()
                 } else {

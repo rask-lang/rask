@@ -143,8 +143,10 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
                     if let Some(&cached) = cache.get(name.as_str()) {
                         cached
                     } else {
+                        // Treat as opaque pointer-sized. If this is a user type,
+                        // it should have been caught by the type checker.
                         eprintln!(
-                            "warning: unknown type '{}' in layout, defaulting to (8, 8)",
+                            "warning: unknown type '{}' in layout, defaulting to pointer size (8, 8)",
                             name
                         );
                         (8, 8)

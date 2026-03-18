@@ -18,8 +18,16 @@ impl<'a> TypeFormatter<'a> {
             Type::Unit => "()".to_string(),
             Type::Never => "!".to_string(),
             Type::Bool => "bool".to_string(),
+            Type::I8 => "i8".to_string(),
+            Type::I16 => "i16".to_string(),
             Type::I32 => "i32".to_string(),
             Type::I64 => "i64".to_string(),
+            Type::I128 => "i128".to_string(),
+            Type::U8 => "u8".to_string(),
+            Type::U16 => "u16".to_string(),
+            Type::U32 => "u32".to_string(),
+            Type::U64 => "u64".to_string(),
+            Type::U128 => "u128".to_string(),
             Type::F32 => "f32".to_string(),
             Type::F64 => "f64".to_string(),
             Type::String => "string".to_string(),
@@ -72,9 +80,20 @@ impl<'a> TypeFormatter<'a> {
                 format!("({})", elems_str)
             }
 
+            Type::Array { elem, len } => format!("[{}; {}]", self.format(elem), len),
+            Type::Slice(elem) => format!("[{}]", self.format(elem)),
+            Type::RawPtr(inner) => format!("*{}", self.format(inner)),
+            Type::Union(types) => {
+                types.iter()
+                    .map(|t| self.format(t))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }
+            Type::SimdVector { elem, lanes } => format!("{}x{}", self.format(elem), lanes),
+            Type::TraitObject { trait_name } => format!("any {}", trait_name),
+            Type::Var(_) => "_".to_string(),
             Type::UnresolvedNamed(name) => name.clone(),
             Type::Error => "<error>".to_string(),
-            _ => format!("{:?}", ty),
         }
     }
 

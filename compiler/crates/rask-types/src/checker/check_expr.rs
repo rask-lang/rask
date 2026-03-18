@@ -87,6 +87,10 @@ impl TypeChecker {
                     // Imported type name (struct/enum) without resolver entry
                     Type::Named(type_id)
                 } else {
+                    self.errors.push(TypeError::UndefinedName {
+                        name: name.clone(),
+                        span: expr.span,
+                    });
                     Type::Error
                 }
             }
