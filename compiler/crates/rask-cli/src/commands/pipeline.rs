@@ -51,6 +51,25 @@ pub fn run_frontend(path: &str, format: Format) -> FrontendResult {
 }
 
 /// Frontend pipeline for a single .rk file (existing behavior).
+/// Extract builtin module names from import declarations.
+/// Single-file mode doesn't go through the package registry, so we detect
+/// stdlib imports here to populate `package_modules` for MIR lowering.
+fn collect_builtin_imports(decls: &[Decl]) -> Vec<String> {
+    let mut names = Vec::new();
+    for decl in decls {
+        if let DeclKind::Import(import) = &decl.kind {
+            if let Some(first) = import.path.first() {
+                if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str())
+                    && !names.contains(first)
+                {
+                    names.push(first.clone());
+                }
+            }
+        }
+    }
+    names
+}
+
 fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -149,11 +168,13 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         }
     }
 
+    let package_names = collect_builtin_imports(&parse_result.decls);
+
     FrontendResult {
         decls: parse_result.decls,
         typed,
         source: Some(source),
-        package_names: vec![],
+        package_names,
         source_files: vec![],
         effects,
         effect_warnings,
@@ -415,8 +436,15 @@ pub fn detect_package(file_path: &str) -> Option<PackageContext> {
     let path = Path::new(file_path);
     let file_dir = path.parent()?;
 
+    // Bare filename (e.g. "main.rk") gives empty parent — use cwd
+    let file_dir = if file_dir.as_os_str().is_empty() {
+        std::env::current_dir().ok()?
+    } else {
+        file_dir.to_path_buf()
+    };
+
     // Walk up looking for build.rk, stop at .git or root
-    if let Some(project_root) = find_project_root(file_dir) {
+    if let Some(project_root) = find_project_root(&file_dir) {
         return discover_package(&project_root);
     }
 
@@ -454,7 +482,12 @@ fn find_project_root(start_dir: &Path) -> Option<std::path::PathBuf> {
 pub fn find_project_root_from(file_path: &str) -> Option<std::path::PathBuf> {
     let path = Path::new(file_path);
     let file_dir = path.parent()?;
-    find_project_root(file_dir)
+    let file_dir = if file_dir.as_os_str().is_empty() {
+        std::env::current_dir().ok()?
+    } else {
+        file_dir.to_path_buf()
+    };
+    find_project_root(&file_dir)
 }
 
 /// Run PackageRegistry::discover on a directory and build a PackageContext.

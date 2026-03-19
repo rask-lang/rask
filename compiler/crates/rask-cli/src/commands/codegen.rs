@@ -10,7 +10,7 @@ use crate::{output, Format};
 
 /// Run the full front-end pipeline + monomorphize. Exits on error.
 /// Returns (mono, typed, decls, source) — source is the original .rk text.
-fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram, Vec<rask_ast::decl::Decl>, Option<String>) {
+fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedProgram, Vec<rask_ast::decl::Decl>, Option<String>, Vec<String>) {
     let mut result = super::pipeline::run_frontend(path, format);
 
     // Hidden parameter pass — desugar `using` clauses into explicit params
@@ -33,6 +33,7 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
 
     let decls = result.decls.clone();
     let source = result.source.clone();
+    let package_names = result.package_names.clone();
 
     // Monomorphize
     let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
@@ -43,7 +44,7 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
         }
     };
 
-    (mono, result.typed, decls, source)
+    (mono, result.typed, decls, source, package_names)
 }
 
 /// Evaluate comptime const declarations and return serialized data.
@@ -319,7 +320,7 @@ fn is_comptime_init(init: &rask_ast::expr::Expr, decls: &[rask_ast::decl::Decl])
 
 /// Dump monomorphization output for a single file.
 pub fn cmd_mono(path: &str, format: Format) {
-    let (mono, _typed, _decls, _source) = run_pipeline(path, format);
+    let (mono, _typed, _decls, _source, _package_names) = run_pipeline(path, format);
 
     if format == Format::Human {
         println!(
@@ -426,7 +427,7 @@ pub fn cmd_mono(path: &str, format: Format) {
 
 /// Dump MIR for a single file.
 pub fn cmd_mir(path: &str, format: Format) {
-    let (mono, typed, decls, source) = run_pipeline(path, format);
+    let (mono, typed, decls, source, _package_names) = run_pipeline(path, format);
 
     // Lower each monomorphized function to MIR
     if format == Format::Human {
@@ -553,7 +554,7 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
         }
     }
 
-    let (mono, typed, decls, source) = run_pipeline(path, format);
+    let (mono, typed, decls, source, package_names) = run_pipeline(path, format);
     let profile = if release { "release" } else { "debug" };
     let cfg = rask_comptime::CfgConfig::from_target_or_host(target, profile, vec![]);
     let comptime_globals = evaluate_comptime_globals(&decls, Some(&cfg), Some(MirEvalContext { mono: &mono, typed: &typed }));
@@ -584,11 +585,11 @@ pub fn cmd_compile(path: &str, output_path: Option<&str>, format: Format, quiet:
     };
     let obj_path = format!("{}.o", bin_path);
 
-    let empty_packages = std::collections::HashSet::new();
+    let package_modules: std::collections::HashSet<String> = package_names.into_iter().collect();
     if let Err(errors) = super::compile::compile_to_object(
         &mono, &typed, &decls, &comptime_globals,
         Some(path), source.as_deref(), target, &obj_path, build_mode, Some(&cfg),
-        &empty_packages,
+        &package_modules,
     ) {
         for e in &errors {
             eprintln!("{}: {}", output::error_label(), e);

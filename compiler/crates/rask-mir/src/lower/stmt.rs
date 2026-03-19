@@ -623,7 +623,7 @@ impl<'a> MirLowerer<'a> {
             let mut found_prefix = false;
             if let Some(ref elems) = tuple_elems {
                 if let Some(elem_type) = elems.get(i) {
-                    if let Some(prefix) = super::MirContext::type_prefix(elem_type) {
+                    if let Some(prefix) = super::MirContext::type_prefix(elem_type, self.ctx.type_names) {
                         self.local_type_prefix.insert(name.clone(), prefix);
                         found_prefix = true;
                     }

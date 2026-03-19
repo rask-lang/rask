@@ -429,11 +429,21 @@ impl<'a> MirContext<'a> {
     /// Extends `stdlib_type_prefix` to also handle user-defined struct/enum
     /// types from extend blocks. Monomorphization produces qualified names
     /// like "Person_greet"; this ensures MIR calls match.
-    pub fn type_prefix(ty: &Type) -> Option<String> {
+    pub fn type_prefix(ty: &Type, type_names: &HashMap<rask_types::TypeId, String>) -> Option<String> {
         if let Some(s) = Self::stdlib_type_prefix(ty) {
             return Some(s.to_string());
         }
         match ty {
+            Type::Named(id) => {
+                type_names.get(id)
+                    .filter(|name| name.chars().next().map_or(false, |c| c.is_uppercase()))
+                    .cloned()
+            }
+            Type::Generic { base, .. } => {
+                type_names.get(base)
+                    .filter(|name| name.chars().next().map_or(false, |c| c.is_uppercase()))
+                    .cloned()
+            }
             Type::UnresolvedNamed(name)
                 if name.chars().next().map_or(false, |c| c.is_uppercase()) =>
             {

@@ -1166,7 +1166,7 @@ impl<'a> MirLowerer<'a> {
                                     if let Some(MirType::Struct(StructLayoutId(id))) = local_ty {
                                         if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
                                             if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
-                                                return super::MirContext::type_prefix(&fl.ty);
+                                                return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
                                             }
                                         }
                                     }
@@ -1177,18 +1177,10 @@ impl<'a> MirLowerer<'a> {
                             None
                         }
                     })
-                    .or_else(|| {
-                        self.ctx.lookup_raw_type(object.id)
-                            .and_then(|ty| super::MirContext::type_prefix(ty))
-                    })
-                    // Fallback: derive prefix from MIR type (catches F64, String, etc.)
-                    .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
-                    // parse<T> always belongs to string (structural, not type-prefix related)
-                    .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
                     // Unambiguous method names — each belongs to exactly one type.
-                    // Needed because field access chains (e.g. entry.timestamp.elapsed())
-                    // and closure params lose type info when intermediates become MirType::Ptr.
-                    // Only methods that are unique to a single type belong here.
+                    // Checked early because type-checker info can be wrong for
+                    // unresolved types (e.g. tuple destructures from stdlib methods).
+                    // Only methods unique to a single type belong here.
                     .or_else(|| match method.as_str() {
                         // String (unique to string — Vec/Map don't have these)
                         "contains" | "starts_with" | "ends_with" | "trim"
@@ -1218,10 +1210,19 @@ impl<'a> MirLowerer<'a> {
                         // Net/HTTP
                         "read_http_request" | "write_http_response" => Some("TcpConnection".to_string()),
                         "accept" => Some("TcpListener".to_string()),
+                        "respond" => Some("Responder".to_string()),
                         // Thread
                         "join" => Some("ThreadHandle".to_string()),
                         _ => None,
                     })
+                    .or_else(|| {
+                        self.ctx.lookup_raw_type(object.id)
+                            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                    })
+                    // Fallback: derive prefix from MIR type (catches F64, String, etc.)
+                    .or_else(|| super::mir_type_method_prefix(&obj_ty).map(|s| s.to_string()))
+                    // parse<T> always belongs to string (structural, not type-prefix related)
+                    .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
                     .map(|prefix| format!("{}_{}", prefix, method))
                     .unwrap_or_else(|| method.clone());
 
@@ -1731,7 +1732,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     .or_else(|| {
                         self.ctx.lookup_raw_type(object.id)
-                            .and_then(|ty| super::MirContext::type_prefix(ty))
+                            .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
                     });
 
                 // Pool index: emit PoolCheckedAccess for generation checking

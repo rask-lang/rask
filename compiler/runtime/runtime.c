@@ -105,6 +105,16 @@ int64_t rask_io_write(int64_t fd, const void *buf, int64_t len) {
     return (int64_t)write((int)fd, buf, (size_t)len);
 }
 
+// Single read into a string (up to max_len bytes).
+void rask_io_read_string(RaskStr *out, int64_t fd, int64_t max_len) {
+    if (max_len <= 0 || max_len > 4 * 1024 * 1024) max_len = 65536;
+    char *buf = (char *)rask_alloc(max_len);
+    ssize_t n = read((int)fd, buf, (size_t)max_len);
+    if (n < 0) n = 0;
+    rask_string_from_bytes(out, buf, n);
+    rask_free(buf);
+}
+
 // ─── Clone (shallow copy for i64-sized values) ───────────────────
 // Strings and collection handles are pointer-sized; clone is identity.
 int64_t rask_clone(int64_t value) { return value; }

@@ -640,6 +640,16 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                     }
                 }
             }
+            // Include builtin stdlib modules referenced by imports.
+            for decl in &all_decls {
+                if let rask_ast::decl::DeclKind::Import(import) = &decl.kind {
+                    if let Some(first) = import.path.first() {
+                        if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str()) {
+                            package_modules.insert(first.clone());
+                        }
+                    }
+                }
+            }
 
             // Resolve with stdlib decls in stdlib_mode (bypasses shadow checks)
             let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();

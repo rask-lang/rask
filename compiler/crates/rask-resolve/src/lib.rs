@@ -37,6 +37,12 @@ use rask_ast::decl::Decl;
 use rask_ast::NodeId;
 use std::collections::HashMap;
 
+/// Names of all builtin stdlib modules available via `import`.
+pub const BUILTIN_MODULE_NAMES: &[&str] = &[
+    "io", "fs", "cli", "std", "json", "random", "time", "math",
+    "path", "os", "net", "core", "async", "cfg", "http",
+];
+
 /// The result of name resolution.
 #[derive(Debug, Default)]
 pub struct ResolvedProgram {

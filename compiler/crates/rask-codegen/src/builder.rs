@@ -1071,6 +1071,8 @@ impl<'a> FunctionBuilder<'a> {
                 }
             } else if func.is_extern {
                 // Extern "C" call — use declared signature directly, no stdlib adaptation
+                // EXCEPT for string-out-param functions where the C ABI uses an out-param
+                // that the Rask source doesn't expose.
                 let func_ref = ctx.func_refs.get(&func.name)
                     .ok_or_else(|| CodegenError::FunctionNotFound(func.name.clone()))?;
 
@@ -1095,9 +1097,35 @@ impl<'a> FunctionBuilder<'a> {
                     }
                 }
 
+                // Inject string out-param for extern C functions that use the
+                // out-param ABI (declared with N+1 params, called with N args)
+                let needs_out_param = param_types.len() == arg_vals.len() + 1
+                    && Self::is_string_out_param_fn(&func.name);
+                let out_param_slot = if needs_out_param {
+                    let ss = dst
+                        .and_then(|id| ctx.stack_slot_map.get(id))
+                        .map(|(ss, _)| *ss)
+                        .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                            StackSlotKind::ExplicitSlot, 16, 0,
+                        )));
+                    let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                    arg_vals.insert(0, addr);
+                    Some(ss)
+                } else {
+                    None
+                };
+
                 let call_inst = builder.ins().call(*func_ref, &arg_vals);
 
-                if let Some(dst_id) = dst {
+                if let Some(ss) = out_param_slot {
+                    // String out-param: result is in the stack slot, define dst var as pointer
+                    if let Some(dst_id) = dst {
+                        if let Some(var) = ctx.var_map.get(dst_id) {
+                            let addr = builder.ins().stack_addr(types::I64, ss, 0);
+                            builder.def_var(*var, addr);
+                        }
+                    }
+                } else if let Some(dst_id) = dst {
                     let dst_local = ctx.locals.iter().find(|l| l.id == *dst_id);
                     let is_void = matches!(dst_local.map(|l| &l.ty), Some(MirType::Void));
                     if !is_void {
@@ -2123,7 +2151,8 @@ impl<'a> FunctionBuilder<'a> {
     /// Check if a function produces a string (has out-param as first parameter).
     fn is_string_out_param_fn(name: &str) -> bool {
         matches!(name,
-            "string_new" | "string_from" | "string_concat" | "string_substr"
+            "string_new" | "string_from" | "concat" | "string_concat" | "string_substr"
+            | "rask_io_read_until_close" | "rask_io_read_string"
             | "string_to_lowercase" | "string_to_uppercase"
             | "string_trim" | "string_trim_start" | "string_trim_end"
             | "string_repeat" | "string_reverse" | "string_replace"

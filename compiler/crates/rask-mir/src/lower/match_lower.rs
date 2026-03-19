@@ -193,7 +193,7 @@ impl<'a> MirLowerer<'a> {
                                         self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
                                             layout.variants.iter().find(|v| v.name == *name).and_then(|v| {
                                                 v.fields.get(j).and_then(|f| {
-                                                    super::MirContext::type_prefix(&f.ty)
+                                                    super::MirContext::type_prefix(&f.ty, self.ctx.type_names)
                                                 })
                                             })
                                         })
@@ -242,7 +242,7 @@ impl<'a> MirLowerer<'a> {
                                                 rvalue,
                                             }));
                                             if let Some(p) = self.mir_type_name(&field_ty)
-                                                .or_else(|| super::MirContext::type_prefix(&field_layout.ty))
+                                                .or_else(|| super::MirContext::type_prefix(&field_layout.ty, self.ctx.type_names))
                                             {
                                                 self.local_type_prefix.insert(binding.clone(), p);
                                             }

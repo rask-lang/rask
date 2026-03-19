@@ -7,6 +7,8 @@ use std::sync::RwLock;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 
+use std::path::Path;
+
 use rask_ast::decl::Decl;
 use rask_diagnostics::ToDiagnostic;
 use rask_lexer::Lexer;
@@ -106,6 +108,12 @@ impl Backend {
         // Desugar operators
         rask_desugar::desugar(&mut parse_result.decls);
 
+        // Load sibling declarations from the same package (multi-file support)
+        let sibling_decls = load_sibling_decls(uri);
+        if !sibling_decls.is_empty() {
+            parse_result.decls.extend(sibling_decls);
+        }
+
         // Run name resolution (stdlib stubs skip builtin shadowing checks)
         let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
         let resolve_result = if is_stdlib {
@@ -163,4 +171,58 @@ impl Backend {
 
         rask_diagnostics
     }
+}
+
+/// Load declarations from sibling .rk files in the same package.
+/// Returns empty vec if not in a package (no build.rk found).
+fn load_sibling_decls(uri: &Url) -> Vec<Decl> {
+    let file_path = match uri.to_file_path() {
+        Ok(p) => p,
+        Err(_) => return Vec::new(),
+    };
+    let dir = match file_path.parent() {
+        Some(d) => d,
+        None => return Vec::new(),
+    };
+
+    // Only load siblings if this is a package (has build.rk)
+    if !dir.join("build.rk").is_file() {
+        return Vec::new();
+    }
+
+    let mut decls = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("rk") {
+            continue;
+        }
+        // Skip the file being analyzed and build.rk
+        if path == file_path || path.file_name().and_then(|n| n.to_str()) == Some("build.rk") {
+            continue;
+        }
+
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let lex = Lexer::new(&source).tokenize();
+        if !lex.is_ok() {
+            continue;
+        }
+        let mut parse_result = Parser::new(lex.tokens).parse();
+        if parse_result.is_ok() {
+            rask_desugar::desugar(&mut parse_result.decls);
+            decls.extend(parse_result.decls);
+        }
+    }
+
+    decls
 }

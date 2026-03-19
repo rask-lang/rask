@@ -18,7 +18,7 @@ impl<'a> MirLowerer<'a> {
                     if let rask_types::Type::UnresolvedNamed(name) = inner.as_ref() {
                         return Some(name.clone());
                     }
-                    if let Some(prefix) = super::MirContext::type_prefix(inner) {
+                    if let Some(prefix) = super::MirContext::type_prefix(inner, self.ctx.type_names) {
                         return Some(prefix);
                     }
                 }

@@ -1413,6 +1413,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             can_panic: false,
         },
         StdlibEntry {
+            mir_name: "rask_io_read_string",
+            c_name: "rask_io_read_string",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
+            mir_name: "rask_io_read_until_close",
+            c_name: "rask_io_read_until_close",
+            params: &[types::I64, types::I64, types::I64],
+            ret_ty: None,
+            can_panic: false,
+        },
+        StdlibEntry {
             mir_name: "io_write_string",
             c_name: "rask_io_write_string",
             params: &[types::I64, types::I64],
