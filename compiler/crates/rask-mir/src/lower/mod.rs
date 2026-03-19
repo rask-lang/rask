@@ -789,8 +789,12 @@ impl<'a> MirLowerer<'a> {
         // Implicit return for functions that don't explicitly return.
         // Void functions get `return`, non-void get Unreachable (caller
         // must ensure all paths return explicitly).
+        // Result { ok: Void, .. } also gets an implicit return — codegen
+        // wraps the void value as Ok in the Result slot.
         if lowerer.builder.current_block_unterminated() {
-            if matches!(ret_ty, MirType::Void) {
+            let implicit_ok = matches!(ret_ty, MirType::Void)
+                || matches!(&ret_ty, MirType::Result { ok, .. } if matches!(ok.as_ref(), MirType::Void));
+            if implicit_ok {
                 lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return { value: None }));
             } else {
                 lowerer.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));

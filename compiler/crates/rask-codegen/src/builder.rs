@@ -33,6 +33,7 @@ struct CodegenCtx<'a> {
     current_line: u32,
     current_col: u32,
     ret_ty: &'a MirType,
+    is_main: bool,
 }
 
 /// Result of adapting a stdlib call for the typed runtime API.
@@ -235,6 +236,7 @@ impl<'a> FunctionBuilder<'a> {
             current_line: self.current_line,
             current_col: self.current_col,
             ret_ty: &self.mir_fn.ret_ty,
+            is_main: self.mir_fn.name == "main",
         };
 
         // Lower each block (skip cleanup-only blocks)
@@ -266,7 +268,9 @@ impl<'a> FunctionBuilder<'a> {
             builder.switch_to_block(shared_block);
 
             // Add return value as block parameter if function returns a value
-            let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void) {
+            // (main is called from C as void — never returns a value)
+            let is_main = self.mir_fn.name == "main";
+            let ret_param = if !matches!(self.mir_fn.ret_ty, MirType::Void) && !is_main {
                 let ret_cl_ty = mir_to_cranelift_type(&self.mir_fn.ret_ty)?;
                 Some(builder.append_block_param(shared_block, ret_cl_ty))
             } else {
@@ -1856,12 +1860,16 @@ impl<'a> FunctionBuilder<'a> {
     ) -> CodegenResult<()> {
         match &term.kind {
             MirTerminatorKind::Return { value } => {
-                // For small aggregate return values (≤8 bytes) in stack slots,
-                // load the data and return it directly.
-                // For larger aggregates, return the stack slot address. The caller
-                // copies from it immediately via copy_aggregate (the callee stack
-                // is still accessible at that point on x86-64).
-                if let Some(stack_info) = Self::return_stack_info(value.as_ref(), ctx.stack_slot_map) {
+                // main is called from C as void rask_main(void) — always return void.
+                // TODO: on error path, print the error and exit(1) instead of silently returning.
+                if ctx.is_main {
+                    builder.ins().return_(&[]);
+                } else if let Some(stack_info) = Self::return_stack_info(value.as_ref(), ctx.stack_slot_map) {
+                    // For small aggregate return values (≤8 bytes) in stack slots,
+                    // load the data and return it directly.
+                    // For larger aggregates, return the stack slot address. The caller
+                    // copies from it immediately via copy_aggregate (the callee stack
+                    // is still accessible at that point on x86-64).
                     let (_local_id, ss, size) = stack_info;
                     if size <= 8 {
                         let loaded = builder.ins().stack_load(types::I64, ss, 0);
@@ -1964,7 +1972,10 @@ impl<'a> FunctionBuilder<'a> {
                 if !cleanup_chain.is_empty() {
                     if let Some(&shared_block) = cleanup_chain_blocks.get(cleanup_chain) {
                         // Jump to shared cleanup block, passing return value.
-                        if let Some(val_op) = value {
+                        // main is void — never pass a return value.
+                        if ctx.is_main {
+                            builder.ins().jump(shared_block, &[]);
+                        } else if let Some(val_op) = value {
                             let expected_ty = mir_to_cranelift_type(ctx.ret_ty)?;
                             let val = Self::lower_operand_typed(builder, val_op, Some(expected_ty), ctx)?;
                             let actual_ty = builder.func.dfg.value_type(val);
@@ -1979,11 +1990,19 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     } else {
                         // Fallback: inline (shouldn't happen with the setup above)
-                        Self::emit_return(builder, value.as_ref(), ctx)?;
+                        if ctx.is_main {
+                            builder.ins().return_(&[]);
+                        } else {
+                            Self::emit_return(builder, value.as_ref(), ctx)?;
+                        }
                     }
                 } else {
                     // Empty cleanup chain — just return directly
-                    Self::emit_return(builder, value.as_ref(), ctx)?;
+                    if ctx.is_main {
+                        builder.ins().return_(&[]);
+                    } else {
+                        Self::emit_return(builder, value.as_ref(), ctx)?;
+                    }
                 }
             }
         }

@@ -459,9 +459,12 @@ impl CodeGenerator {
                 sig.params.push(AbiParam::new(param_ty));
             }
 
-            // Build return type
+            // Build return type.
+            // "main" is called from C as void rask_main(void), so it must
+            // not declare a return type even when the Rask source returns a Result.
+            let is_main = mir_fn.name == "main";
             let ret_ty = mir_to_cranelift_type(&mir_fn.ret_ty)?;
-            if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) {
+            if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) && !is_main {
                 sig.returns.push(AbiParam::new(ret_ty));
             }
 
@@ -717,13 +720,14 @@ impl CodeGenerator {
         self.ctx.clear();
 
         // Build the signature (must match declaration)
+        let is_main = mir_fn.name == "main";
         let mut sig = self.module.make_signature();
         for param in &mir_fn.params {
             let param_ty = mir_to_cranelift_type(&param.ty)?;
             sig.params.push(AbiParam::new(param_ty));
         }
         let ret_ty = mir_to_cranelift_type(&mir_fn.ret_ty)?;
-        if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) {
+        if !matches!(mir_fn.ret_ty, rask_mir::MirType::Void) && !is_main {
             sig.returns.push(AbiParam::new(ret_ty));
         }
         self.ctx.func.signature = sig;

@@ -2042,7 +2042,11 @@ impl<'a> MirLowerer<'a> {
                 // Else branch diverges (return, panic, etc.)
                 self.builder.switch_to_block(else_block);
                 self.lower_expr(else_branch)?;
-                self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                // Only add unreachable if the else branch didn't already terminate
+                // (e.g. via return or break)
+                if self.builder.current_block_unterminated() {
+                    self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Unreachable));
+                }
 
                 // Ok block: bind payload and continue
                 self.builder.switch_to_block(ok_block);

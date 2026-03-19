@@ -1,0 +1,22 @@
+import http
+
+
+func main () -> () or Error {
+    const server : HttpServer = HttpServer.listen("0.0.0.0:8080")
+    ensure server.close()
+
+    const upstream = "example.com"
+
+    println("Proxy server listening on 0.0.0.0:8080")
+    using MultiTasking {
+        loop {
+            const (request, responder) = try server.accept()
+            spawn(|| {
+                println("Received request: {request.method} {request.path()}")
+                const response = try forward(request, upstream) else |e| { return Response.internal_error() }
+                try responder.respond(response)
+            }).detach()
+        }
+    }
+
+}
