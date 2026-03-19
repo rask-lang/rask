@@ -44,6 +44,33 @@ pub fn cmd_run(path: &str, program_args: Vec<String>, format: Format) {
     }
 }
 
+/// Build a project directory and run the resulting binary.
+pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build::BuildOptions) {
+    let profile = opts.profile.clone();
+    let target = opts.target.clone();
+    let bin_path = super::build::project_binary_path(path, &profile, target.as_deref());
+
+    // Build (exits on failure)
+    super::build::cmd_build(path, opts);
+
+    // Execute
+    let status = process::Command::new(&bin_path)
+        .args(&program_args)
+        .status();
+
+    match status {
+        Ok(s) => {
+            if !s.success() {
+                process::exit(s.code().unwrap_or(1));
+            }
+        }
+        Err(e) => {
+            eprintln!("{}: executing {}: {}", output::error_label(), bin_path.display(), e);
+            process::exit(1);
+        }
+    }
+}
+
 pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
     let result = super::pipeline::run_frontend(path, format);
 

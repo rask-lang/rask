@@ -972,6 +972,107 @@ impl CodeGenerator {
         Ok(())
     }
 
+    /// Generate a test runner entry point (`rask_main`).
+    ///
+    /// For each test, calls `rask_test_run(fn_addr, name_ptr)` which returns
+    /// 0 on pass, 1 on fail. Accumulates failures and calls `rask_exit(1)` if
+    /// any test failed.
+    pub fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()> {
+        use cranelift::prelude::*;
+
+        // Register test name strings as data
+        for (name, _) in tests {
+            self.register_string(name)?;
+        }
+
+        // Declare rask_main (the entry point)
+        let sig = self.module.make_signature(); // void -> void
+        let main_id = self.module
+            .declare_function("rask_main", Linkage::Export, &sig)
+            .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+
+        self.ctx.clear();
+        self.ctx.func.signature = sig.clone();
+
+        // Import all functions into this function's namespace
+        let mut func_refs = HashMap::new();
+        for (name, fid) in &self.func_ids {
+            let func_ref = self.module.declare_func_in_func(*fid, &mut self.ctx.func);
+            self.ctx.func.stencil.dfg.ext_funcs[func_ref].colocated = true;
+            func_refs.insert(name.clone(), func_ref);
+        }
+
+        // Import string data globals
+        let mut string_globals: HashMap<String, GlobalValue> = HashMap::new();
+        for (content, data_id) in &self.string_data {
+            let gv = self.module.declare_data_in_func(*data_id, &mut self.ctx.func);
+            string_globals.insert(content.clone(), gv);
+        }
+
+        // Build the runner function body
+        let mut fn_builder_ctx = cranelift::prelude::FunctionBuilderContext::new();
+        let mut fn_builder = cranelift::prelude::FunctionBuilder::new(
+            &mut self.ctx.func, &mut fn_builder_ctx,
+        );
+
+        let entry_block = fn_builder.create_block();
+        fn_builder.switch_to_block(entry_block);
+        fn_builder.seal_block(entry_block);
+
+        let test_run_ref = func_refs.get("rask_test_run")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_test_run".to_string()))?;
+        let exit_ref = func_refs.get("rask_exit")
+            .ok_or_else(|| CodegenError::FunctionNotFound("rask_exit".to_string()))?;
+
+        // Track total failures
+        let mut failures = fn_builder.ins().iconst(types::I64, 0);
+
+        for (name, fn_name) in tests {
+            let test_fn_ref = func_refs.get(fn_name)
+                .ok_or_else(|| CodegenError::FunctionNotFound(fn_name.clone()))?;
+            let fn_addr = fn_builder.ins().func_addr(types::I64, *test_fn_ref);
+
+            let name_gv = string_globals.get(name)
+                .ok_or_else(|| CodegenError::FunctionNotFound(
+                    format!("string global for test name '{}'", name)
+                ))?;
+            let name_ptr = fn_builder.ins().global_value(types::I64, *name_gv);
+
+            // rask_test_run returns i32: 0=pass, 1=fail
+            let call = fn_builder.ins().call(*test_run_ref, &[fn_addr, name_ptr]);
+            let result = fn_builder.inst_results(call)[0];
+            let result_i64 = fn_builder.ins().sextend(types::I64, result);
+            failures = fn_builder.ins().iadd(failures, result_i64);
+        }
+
+        // If failures > 0, exit(1)
+        let zero = fn_builder.ins().iconst(types::I64, 0);
+        let has_failures = fn_builder.ins().icmp(IntCC::NotEqual, failures, zero);
+
+        let fail_block = fn_builder.create_block();
+        let ok_block = fn_builder.create_block();
+
+        fn_builder.ins().brif(has_failures, fail_block, &[], ok_block, &[]);
+
+        fn_builder.switch_to_block(fail_block);
+        fn_builder.seal_block(fail_block);
+        let one = fn_builder.ins().iconst(types::I64, 1);
+        fn_builder.ins().call(*exit_ref, &[one]);
+        fn_builder.ins().return_(&[]);
+
+        fn_builder.switch_to_block(ok_block);
+        fn_builder.seal_block(ok_block);
+        fn_builder.ins().return_(&[]);
+
+        fn_builder.finalize();
+
+        self.module
+            .define_function(main_id, &mut self.ctx)
+            .map_err(|e| CodegenError::CraneliftError(format!("{:?}", e)))?;
+
+        Ok(())
+    }
+
     /// Emit the final object file. Consumes self because finish() takes ownership.
     pub fn emit_object(self, path: &str) -> CodegenResult<()> {
         let mut product = self.module.finish();
@@ -1036,6 +1137,10 @@ impl crate::Backend for CodeGenerator {
 
     fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()> {
         self.gen_benchmark_runner(benchmarks)
+    }
+
+    fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()> {
+        self.gen_test_runner(tests)
     }
 
     fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()> {

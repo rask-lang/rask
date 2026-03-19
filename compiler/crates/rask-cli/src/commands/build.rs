@@ -66,6 +66,25 @@ fn ensure_gitignore(root: &Path) {
     }
 }
 
+/// Compute the output binary path for a project directory.
+/// Used by `rask run <dir>` to know what to execute after building.
+pub fn project_binary_path(path: &str, profile: &str, target: Option<&str>) -> std::path::PathBuf {
+    let root = Path::new(path).canonicalize().unwrap_or_else(|_| PathBuf::from(path));
+    let out_dir = output_dir(&root, profile, target);
+
+    // Try to get name from build.rk manifest, fall back to directory name
+    let mut registry = rask_resolve::PackageRegistry::new();
+    let bin_name = match registry.discover_workspace(&root) {
+        Ok(ids) => registry
+            .get(ids[0])
+            .and_then(|pkg| pkg.manifest.as_ref().map(|m| m.name.clone()))
+            .unwrap_or_else(|| binary_name(&root)),
+        Err(_) => binary_name(&root),
+    };
+
+    out_dir.join(&bin_name)
+}
+
 pub fn cmd_build(path: &str, opts: BuildOptions) {
     use rask_ast::decl::DeclKind;
     use rask_resolve::PackageRegistry;

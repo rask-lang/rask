@@ -196,30 +196,56 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("run"), output::arg("<file.rk | dir> [-- args]"));
                 process::exit(1);
             }
             let release = cmd_args.contains(&"--release");
-            let native = cmd_args.contains(&"--native") || release; // CL2: --release implies native
+            let verbose = cmd_args.contains(&"--verbose") || cmd_args.contains(&"-v");
             let link_libs = extract_repeated_flag(&cmd_args, "--link-lib");
             let link_objs = extract_repeated_flag(&cmd_args, "--link-obj");
             let link_opts = commands::link::LinkOptions { libs: link_libs, objects: link_objs, search_paths: vec![] };
-            let file_arg = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj"]);
+            let file_arg = find_positional_arg(&cmd_args, 2, &["--link-lib", "--link-obj", "--profile", "--target", "--jobs", "-j"]);
             let file = match file_arg {
                 Some(f) => f,
                 None => {
-                    eprintln!("{}: missing file argument", output::error_label());
+                    eprintln!("{}: missing file or directory argument", output::error_label());
                     process::exit(1);
                 }
             };
-            if native {
-                let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
-                commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
+
+            if Path::new(file).is_dir() {
+                let profile = if release {
+                    "release".to_string()
+                } else if let Some(p) = extract_flag_value(&cmd_args, "--profile") {
+                    p
+                } else {
+                    "debug".to_string()
+                };
+                let target = extract_flag_value(&cmd_args, "--target");
+                let jobs = extract_flag_value(&cmd_args, "--jobs")
+                    .or_else(|| extract_flag_value(&cmd_args, "-j"))
+                    .and_then(|s| s.parse::<usize>().ok());
+                let opts = commands::build::BuildOptions {
+                    profile,
+                    verbose,
+                    target,
+                    no_cache: false,
+                    force: false,
+                    jobs,
+                };
+                let run_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+                commands::run::cmd_run_project(file, run_args, opts);
             } else {
-                let mut program_args: Vec<String> = vec![file.to_string()];
-                program_args.extend(prog_args.iter().map(|s| s.to_string()));
-                commands::run::cmd_run(file, program_args, format);
+                let native = cmd_args.contains(&"--native") || release; // CL2: --release implies native
+                if native {
+                    let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+                    commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
+                } else {
+                    let mut program_args: Vec<String> = vec![file.to_string()];
+                    program_args.extend(prog_args.iter().map(|s| s.to_string()));
+                    commands::run::cmd_run(file, program_args, format);
+                }
             }
         }
         "compile" => {

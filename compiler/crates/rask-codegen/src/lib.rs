@@ -95,6 +95,9 @@ pub trait Backend {
     /// Generate benchmark runner entry point.
     fn gen_benchmark_runner(&mut self, benchmarks: &[(String, String)]) -> CodegenResult<()>;
 
+    /// Generate test runner entry point.
+    fn gen_test_runner(&mut self, tests: &[(String, String)]) -> CodegenResult<()>;
+
     /// Emit the compiled code as an object file.
     fn emit_object(self: Box<Self>, path: &str) -> CodegenResult<()>;
 }

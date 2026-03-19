@@ -20,7 +20,7 @@ pub fn print_usage() {
     );
     println!();
     println!("{}", output::section_header("Common:"));
-    println!("  {} {}       Run a Rask program (interpreter)", output::command("run"), output::arg("<file>"));
+    println!("  {} {}  Build and run, or run a single file", output::command("run"), output::arg("<file | dir>"));
     println!("  {} {}   Compile to native executable", output::command("compile"), output::arg("<file>"));
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
     println!("  {} {}     Remove build artifacts", output::command("clean"), output::arg("[dir]"));
@@ -113,33 +113,41 @@ pub fn print_help_help() {
 pub fn print_run_help() {
     println!("{}", output::section_header("Run"));
     println!();
-    println!("Execute a Rask program. Uses the interpreter by default.");
-    println!("With --native, compiles to a temp executable and runs it.");
+    println!("Execute a Rask program.");
+    println!();
+    println!("For single files: uses the interpreter by default, --native compiles first.");
+    println!("For directories: builds the project and runs the resulting binary.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("run"),
-        output::arg("<file.rk> [--native] [-- <program args>]"));
+        output::arg("<file.rk | dir> [options] [-- <program args>]"));
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}    Compile and run as native executable", output::arg("--native"));
+    println!("  {}    Compile single file and run as native executable", output::arg("--native"));
+    println!("  {}   Build in release mode", output::arg("--release"));
+    println!("  {}   Verbose output", output::arg("--verbose"));
     println!("  {}        Output diagnostics as structured JSON", output::arg("--json"));
     println!("  {}             Pass arguments to the program (after --)", output::arg("--"));
     println!();
     println!("{}", output::section_header("Examples:"));
-    println!("  {} {} {}              Run via interpreter",
+    println!("  {} {} {}              Run file via interpreter",
         output::command("rask"),
         output::command("run"),
         output::arg("main.rk"));
-    println!("  {} {} {} {}   Compile and run natively",
+    println!("  {} {} {} {}   Compile file and run natively",
         output::command("rask"),
         output::command("run"),
         output::arg("main.rk"),
         output::arg("--native"));
+    println!("  {} {} {}                  Build and run project",
+        output::command("rask"),
+        output::command("run"),
+        output::arg("."));
     println!("  {} {} {} {} {}   Pass args to program",
         output::command("rask"),
         output::command("run"),
-        output::arg("main.rk"),
+        output::arg("."),
         output::arg("--"),
         output::arg("arg1 arg2"));
 }

@@ -1,8 +1,10 @@
 import http
+import async.spawn
+import net
 
 
 func main () -> () or Error {
-    const server : HttpServer = HttpServer.listen("0.0.0.0:8080")
+    const server : http.HttpServer = http.HttpServer.listen("0.0.0.0:8080")
     ensure server.close()
 
     const upstream = "example.com"
@@ -19,4 +21,11 @@ func main () -> () or Error {
         }
     }
 
+}
+
+
+test "proxy" {
+    const response = http.send_request("GET", "http://localhost:8080/")!
+    assert(response.status_code == 200)
+    println("Received response with status code: {response.status_code}")
 }

@@ -65,8 +65,6 @@ impl Resolver {
             ("print", BuiltinFunctionKind::Print, None),
             ("panic", BuiltinFunctionKind::Panic, Some("!")),
             ("format", BuiltinFunctionKind::Format, None),
-            ("spawn", BuiltinFunctionKind::Spawn, None),
-            ("transmute", BuiltinFunctionKind::Transmute, None),
             ("todo", BuiltinFunctionKind::Todo, Some("!")),
             ("unreachable", BuiltinFunctionKind::Unreachable, Some("!")),
             ("min", BuiltinFunctionKind::Min, None),
@@ -109,26 +107,6 @@ impl Resolver {
             ("Shared", BuiltinTypeKind::Shared),
             ("Mutex", BuiltinTypeKind::Mutex),
             ("Owned", BuiltinTypeKind::Owned),
-            ("f32x4", BuiltinTypeKind::Simd),
-            ("f32x8", BuiltinTypeKind::Simd),
-            ("f64x2", BuiltinTypeKind::Simd),
-            ("f64x4", BuiltinTypeKind::Simd),
-            ("i32x4", BuiltinTypeKind::Simd),
-            ("i32x8", BuiltinTypeKind::Simd),
-            ("Rng", BuiltinTypeKind::Rng),
-            ("File", BuiltinTypeKind::File),
-            // Atomic types
-            ("AtomicBool", BuiltinTypeKind::Atomic),
-            ("AtomicI8", BuiltinTypeKind::Atomic),
-            ("AtomicU8", BuiltinTypeKind::Atomic),
-            ("AtomicI16", BuiltinTypeKind::Atomic),
-            ("AtomicU16", BuiltinTypeKind::Atomic),
-            ("AtomicI32", BuiltinTypeKind::Atomic),
-            ("AtomicU32", BuiltinTypeKind::Atomic),
-            ("AtomicI64", BuiltinTypeKind::Atomic),
-            ("AtomicU64", BuiltinTypeKind::Atomic),
-            ("AtomicUsize", BuiltinTypeKind::Atomic),
-            ("AtomicIsize", BuiltinTypeKind::Atomic),
         ];
 
         for (name, builtin) in builtin_types {
@@ -148,65 +126,12 @@ impl Resolver {
             "Less", "Equal", "Greater",                          // comparison
             "Relaxed", "Acquire", "Release", "AcqRel", "SeqCst", // memory
         ]);
-        self.register_builtin_enum("Method", &[
-            "Get", "Head", "Post", "Put", "Delete", "Patch", "Options",
-        ]);
-        self.register_builtin_enum("JsonValue", &[
-            "Null", "Bool", "Number", "String", "Array", "Object",
-        ]);
-        self.register_builtin_enum("JsonError", &[
-            "ParseError", "TypeError", "MissingField",
-        ]);
-        self.register_builtin_enum("HttpError", &[
-            "ConnectionFailed", "Timeout", "InvalidUrl", "InvalidResponse",
-            "TooManyRedirects", "Io",
-        ]);
+        // Domain-specific enums (Method, JsonValue, JsonError, HttpError)
+        // are registered when their module is imported — see resolve_import().
 
-        let builtin_modules = [
-            ("io", BuiltinModuleKind::Io),
-            ("fs", BuiltinModuleKind::Fs),
-            ("cli", BuiltinModuleKind::Cli),
-            ("std", BuiltinModuleKind::Std),
-            ("json", BuiltinModuleKind::Json),
-            ("random", BuiltinModuleKind::Random),
-            ("time", BuiltinModuleKind::Time),
-            ("math", BuiltinModuleKind::Math),
-            ("path", BuiltinModuleKind::Path),
-            ("os", BuiltinModuleKind::Os),
-            ("net", BuiltinModuleKind::Net),
-            ("core", BuiltinModuleKind::Core),
-            ("async", BuiltinModuleKind::Async),
-            ("cfg", BuiltinModuleKind::Cfg),
-            ("http", BuiltinModuleKind::Http),
-        ];
-
-        for (name, module) in builtin_modules {
-            let sym_id = self.symbols.insert(
-                name.to_string(),
-                SymbolKind::BuiltinModule { module },
-                None,
-                Span::new(0, 0),
-                true,
-            );
-            let _ = self.scopes.define(name.to_string(), sym_id, Span::new(0, 0));
-        }
-
-        // Register net/http module types
-        for net_type in &[
-            "TcpListener", "TcpConnection",
-            "Request", "Response", "Method", "Headers",
-            "HttpServer", "Responder", "HttpClient", "HttpError",
-            "JsonValue", "JsonError",
-        ] {
-            let sym_id = self.symbols.insert(
-                net_type.to_string(),
-                SymbolKind::Struct { fields: vec![] },
-                None,
-                Span::new(0, 0),
-                true,
-            );
-            let _ = self.scopes.define(net_type.to_string(), sym_id, Span::new(0, 0));
-        }
+        // Stdlib modules, domain types, and domain enums are NOT registered
+        // in the global scope — they require explicit `import` statements.
+        // See resolve_import() for how they enter scope.
 
         // Register null constant for unsafe pointer comparisons
         let null_sym = self.symbols.insert(
@@ -244,6 +169,116 @@ impl Resolver {
 
         if let Some(sym) = self.symbols.get_mut(enum_sym_id) {
             sym.kind = SymbolKind::Enum { variants: variant_syms };
+        }
+    }
+
+    /// When a stdlib module is imported, register its companion types and enums
+    /// into scope so users don't need separate imports for each type.
+    fn register_module_companions(&mut self, module: BuiltinModuleKind, span: Span) {
+        use crate::symbol::BuiltinTypeKind;
+
+        use crate::symbol::BuiltinFunctionKind;
+
+        // Companion functions that come into scope with the module
+        let functions: &[(&str, BuiltinFunctionKind, Option<&str>)] = match module {
+            BuiltinModuleKind::Async => &[("spawn", BuiltinFunctionKind::Spawn, None)],
+            BuiltinModuleKind::Core => &[("transmute", BuiltinFunctionKind::Transmute, None)],
+            _ => &[],
+        };
+
+        for (name, builtin, ret_ty) in functions {
+            if self.scopes.lookup(name).is_some() {
+                continue;
+            }
+            let sym_id = self.symbols.insert(
+                name.to_string(),
+                SymbolKind::BuiltinFunction { builtin: *builtin },
+                ret_ty.map(|s| s.to_string()),
+                span,
+                false,
+            );
+            let _ = self.scopes.define(name.to_string(), sym_id, span);
+        }
+
+        let types: &[&str] = match module {
+            BuiltinModuleKind::Net => &["TcpListener", "TcpConnection"],
+            BuiltinModuleKind::Http => &[
+                "Request", "Response", "Headers",
+                "HttpServer", "Responder", "HttpClient",
+            ],
+            BuiltinModuleKind::Fs => &["File"],
+            BuiltinModuleKind::Random => &["Rng"],
+            _ => &[],
+        };
+
+        let enums: &[(&str, &[&str])] = match module {
+            BuiltinModuleKind::Http => &[
+                ("Method", &["Get", "Head", "Post", "Put", "Delete", "Patch", "Options"]),
+                ("HttpError", &[
+                    "ConnectionFailed", "Timeout", "InvalidUrl", "InvalidResponse",
+                    "TooManyRedirects", "Io",
+                ]),
+            ],
+            BuiltinModuleKind::Json => &[
+                ("JsonValue", &["Null", "Bool", "Number", "String", "Array", "Object"]),
+                ("JsonError", &["ParseError", "TypeError", "MissingField"]),
+            ],
+            _ => &[],
+        };
+
+        let builtin_types: &[(&str, BuiltinTypeKind)] = match module {
+            BuiltinModuleKind::Fs => &[("File", BuiltinTypeKind::File)],
+            BuiltinModuleKind::Random => &[("Rng", BuiltinTypeKind::Rng)],
+            BuiltinModuleKind::Math => &[
+                ("f32x4", BuiltinTypeKind::Simd),
+                ("f32x8", BuiltinTypeKind::Simd),
+                ("f64x2", BuiltinTypeKind::Simd),
+                ("f64x4", BuiltinTypeKind::Simd),
+                ("i32x4", BuiltinTypeKind::Simd),
+                ("i32x8", BuiltinTypeKind::Simd),
+            ],
+            _ => &[],
+        };
+
+        // Register plain struct-like types
+        for type_name in types {
+            if builtin_types.iter().any(|(n, _)| n == type_name) {
+                continue; // handled below as BuiltinType
+            }
+            if self.scopes.lookup(type_name).is_some() {
+                continue;
+            }
+            let sym_id = self.symbols.insert(
+                type_name.to_string(),
+                SymbolKind::Struct { fields: vec![] },
+                None,
+                span,
+                false,
+            );
+            let _ = self.scopes.define(type_name.to_string(), sym_id, span);
+        }
+
+        // Register builtin types (File, Rng, SIMD)
+        for (name, kind) in builtin_types {
+            if self.scopes.lookup(name).is_some() {
+                continue;
+            }
+            let sym_id = self.symbols.insert(
+                name.to_string(),
+                SymbolKind::BuiltinType { builtin: *kind },
+                None,
+                span,
+                false,
+            );
+            let _ = self.scopes.define(name.to_string(), sym_id, span);
+        }
+
+        // Register enums
+        for (enum_name, variants) in enums {
+            if self.scopes.lookup(enum_name).is_some() {
+                continue;
+            }
+            self.register_builtin_enum(enum_name, variants);
         }
     }
 
@@ -807,6 +842,7 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
+                self.register_module_companions(module_kind, span);
             } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
                 // External package import — register as a package namespace
                 if import_decl.is_glob {
