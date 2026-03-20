@@ -165,6 +165,18 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
 | [tooling/debugging.md](tooling/debugging.md) | Debugging strategy: DWARF, time-travel, pool inspectors |
 
+## Raido — Embedded scripting language
+
+| Spec | Description |
+|------|-------------|
+| [README.md](raido/README.md) | **Overview**: what Raido is, why it exists, positioning |
+| [values.md](raido/values.md) | Value model, NaN-boxing, handles, Rask type mapping |
+| [syntax.md](raido/syntax.md) | Lua-inspired syntax with Rask adjustments |
+| [vm.md](raido/vm.md) | Register-based VM, arena allocation, instruction limits |
+| [interop.md](raido/interop.md) | Rask integration API: VM creation, pools, function registration |
+| [coroutines.md](raido/coroutines.md) | Cooperative multitasking for game AI |
+| [stdlib.md](raido/stdlib.md) | Built-in library (math, string, table — no I/O) |
+
 ## Compiler — Compiler internals
 
 | Spec | Description |
