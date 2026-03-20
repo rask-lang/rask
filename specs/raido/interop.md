@@ -1,7 +1,7 @@
 <!-- id: raido.interop -->
 <!-- status: proposed -->
-<!-- summary: Rask integration API — VM creation, serialization, pool access, error propagation -->
-<!-- depends: raido/vm.md, raido/values.md, memory/pools.md, memory/borrowing.md -->
+<!-- summary: Rask integration API — VM creation, host functions, host references, serialization -->
+<!-- depends: raido/vm.md, raido/values.md -->
 
 # Rask Integration
 
@@ -16,83 +16,103 @@ const vm = raido.Vm.new(raido.Config {
 })
 ensure vm.close()
 
-const chunk = try vm.compile("game.raido", source)
+const chunk = try vm.compile("script.raido", source)
 try vm.exec(chunk)
+const result = try vm.call("process", [raido.Value.int(42)])
 ```
 
-`Vm` is `@resource` — must be closed. `compile()` can fail. `exec()`/`call()` can fail with `ScriptError`.
-
-## Game Loop
+## Host Functions
 
 ```rask
-while running {
-    try vm.exec_with(|scope| {
-        scope.provide_pool("enemies", enemies)
-        scope.call("on_update", [raido.Value.number(dt)])
-    })
-    vm.frame_end()  // arena wraps — frame temporaries freed, persistent state kept
-}
-```
-
-## Function Registration
-
-```rask
-vm.register("damage", |ctx| {
-    const target = try ctx.arg_handle(0)
-    const amount = try ctx.arg_int(1)
-    ctx.pool("enemies")[target].health -= amount
+vm.register("send_message", |ctx| {
+    const target = try ctx.arg_string(0)
+    const body = try ctx.arg_string(1)
+    messenger.send(target, body)
 })
 ```
 
-Host functions are registered by name. On serialize/deserialize, only the name is stored — the host must re-register functions after restoring a VM. Rask errors in registered functions become Raido runtime errors.
+Registered by name. On serialize, only the name is stored — host re-registers after restore. Rask errors in host functions become Raido runtime errors.
 
-## Pool Access (exec_with)
+## Host References
+
+Opaque references to host-managed data. The VM doesn't know what's behind them. The host defines field access.
 
 ```rask
-try vm.exec_with(|scope| {
-    scope.provide_pool("enemies", enemies, raido.Fields {
-        fields: [
-            raido.Field.int("health"),
-            raido.Field.number("x"),
-            raido.Field.number("y"),
-        ],
-    })
-    scope.call("on_update", [raido.Value.number(dt)])
+// Define a reference type with field accessors
+vm.register_ref_type("enemy", raido.RefType {
+    fields: [
+        raido.HostField.int("health", |r| r.health, |r, v| r.health = v),
+        raido.HostField.number("x", |r| r.x, |r, v| r.x = v),
+        raido.HostField.number("y", |r| r.y, |r, v| r.y = v),
+        raido.HostField.string("name", |r| r.name, |r, _| error("read-only")),
+    ],
 })
+
+// Pass a reference to the script
+vm.set_global("target", vm.create_ref("enemy", enemy_id))
 ```
 
-- **Scoped borrowing.** Pools borrowed for the closure's duration, then released.
-- **Explicit field registration.** Only registered fields are visible to scripts.
-- **Multiple pools.** Handle pool tags route field access to the correct pool.
+```raido
+// Script sees an object with fields
+target.health -= 10
+print("Hit {target.name} at ({target.x}, {target.y})")
+```
 
-This is what makes Raido possible without unsafe. Rask's borrowing model requires known scopes — `exec_with` creates that scope.
+**For game servers using pools:** build a `provide_pool` helper that creates host refs for each entity and registers field accessors against the pool. This is a library on top of the core ref mechanism, not a VM built-in.
+
+```rask
+// Game extension (library, not VM core)
+import raido.game
+
+raido.game.provide_pool(vm, "enemies", enemies, [
+    raido.game.Field.int("health"),
+    raido.game.Field.number("x"),
+    raido.game.Field.number("y"),
+])
+```
+
+## Scoped Bindings
+
+Host references need access to host data (pools, DBs, etc). Scoped bindings provide this safely:
+
+```rask
+try vm.with_context(|ctx| {
+    ctx.bind("enemies", enemies)  // borrow for this scope
+    ctx.call("on_update", [raido.Value.number(dt)])
+})
+// borrow released
+```
+
+Same scoped borrowing pattern as before, but generalized. The host binds whatever data host functions and ref accessors need — pools, database connections, message queues. The VM doesn't care what it is.
 
 ## Serialization
 
 ```rask
-// Snapshot
 const bytes = vm.serialize()
-
-// Restore
 const vm2 = raido.Vm.deserialize(bytes)
-// Re-register host functions
-vm2.register("damage", damage_fn)
-// Re-provide pools via exec_with as usual
+// Re-register host functions and ref types
+// Re-bind contexts before calling
 ```
 
-Serialize captures: value stack, globals, coroutine states, arena contents, PRNG state, instruction counter. Does not capture: host function closures (by name), pool references (re-provided), bytecode (re-loaded).
+Serializes: value stack, globals, coroutines, arena, PRNG, instruction counter.
+Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
+
+## Environment Configuration
+
+The host controls what's available:
+
+```rask
+const vm = raido.Vm.new(raido.Config {
+    arena_size: 256.kilobytes(),
+    instruction_limit: 100_000,
+    stdlib: [raido.Stdlib.math, raido.Stdlib.string],  // only these modules
+})
+```
+
+No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 ## Error Propagation
 
-- **Script → Host:** Runtime errors become `raido.ScriptError` (message, file, line, stack trace).
-- **Host → Script:** Rask errors in registered functions become Raido runtime errors.
-- **In-script:** `pcall(func, args...)` catches errors. `error(msg)` raises them.
-
-## Globals and Userdata
-
-```rask
-vm.set_global("max_health", 100)
-vm.set_global("gravity", 9.81)
-```
-
-Userdata must be serializable — host registers serialize/deserialize pairs. `@resource` types and non-serializable types cannot be userdata.
+- **Script → Host:** `raido.ScriptError` (message, file, line, stack trace).
+- **Host → Script:** Rask errors in host functions become Raido runtime errors.
+- **In-script:** `pcall(f, ...)` catches errors. `error(msg)` raises them.

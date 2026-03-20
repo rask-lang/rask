@@ -1,75 +1,63 @@
 <!-- id: raido.coroutines -->
 <!-- status: proposed -->
-<!-- summary: Cooperative multitasking for game AI — yield/resume with arena-allocated state -->
+<!-- summary: Cooperative multitasking — yield/resume with serializable state -->
 <!-- depends: raido/vm.md, raido/syntax.md -->
 
 # Coroutines
 
-Cooperative multitasking for game AI. Yield mid-function, resume next frame. State preserved in the arena.
+Cooperative multitasking. Yield mid-function, resume later. State preserved in arena and serializable.
 
-## The Point
+## API
 
-Without coroutines, AI is a state machine:
+- `coroutine.create(func)` — wrap a function.
+- `coroutine.resume(co, args...)` — resume. Returns `true, values` or `false, error`.
+- `yield(values...)` — suspend, return values to resumer.
+- `coroutine.status(co)` — `"suspended"`, `"running"`, `"dead"`.
+
+## Why
+
+Coroutines turn state machines into sequential code. The host resumes, the script picks up where it left off.
+
+**Game AI:**
 ```raido
-func on_update(h, dt) {
-    match h.ai_state {
-        "patrol" => {
-            move_toward(h, h.waypoint)
-            if arrived(h) { h.ai_state = "wait"; h.wait_timer = 2.0 }
-        },
-        "wait" => {
-            h.wait_timer = h.wait_timer - dt
-            if h.wait_timer <= 0 { h.ai_state = "patrol" }
-        },
-        _ => {},
-    }
-}
-```
-
-With coroutines, AI reads like a sequence:
-```raido
-func patrol(h) {
+func patrol(entity) {
     while true {
-        const wp = next_waypoint(h)
-        while !near(h, wp) { move_toward(h, wp); yield() }
+        const wp = next_waypoint(entity)
+        while !near(entity, wp) {
+            move_toward(entity, wp)
+            yield()
+        }
         wait(2.0)
     }
 }
 ```
 
-## API
-
-- `coroutine.create(func)` — wrap a function in a coroutine.
-- `coroutine.resume(co, args...)` — resume. Returns `true, values` or `false, error`.
-- `yield(values...)` — suspend, return values to resumer.
-- `coroutine.status(co)` — `"suspended"`, `"running"`, or `"dead"`.
-- `wait(seconds)` — built-in helper, yields until duration elapsed (uses dt from resume).
-
-## Game Pattern
-
-Host creates a coroutine per entity, resumes each frame:
-
-```rask
-try vm.exec_with(|scope| {
-    scope.provide_pool("enemies", enemies)
-    scope.call("resume_ai", [raido.Value.string(enemy_id), raido.Value.number(dt)])
-})
+**Workflow steps:**
+```raido
+func onboarding(user) {
+    send_welcome_email(user)
+    yield()  // host resumes when email confirmed
+    create_account(user)
+    yield()  // host resumes when account provisioned
+    send_setup_guide(user)
+}
 ```
 
+**Interactive dialogue:**
 ```raido
-func enemy_brain(h) {
-    while true {
-        if h.health < 20 {
-            flee(h)
-        } else if can_see_player(h) {
-            chase(h)
-            attack(h)
-        } else {
-            patrol(h)
-        }
-        yield()
+func conversation(npc, player) {
+    say(npc, "Hello, traveler.")
+    const choice = yield()  // host resumes with player's choice
+    match choice {
+        "quest" => start_quest(npc, player),
+        "trade" => open_shop(npc, player),
+        _ => say(npc, "Safe travels."),
     }
 }
 ```
 
-Coroutine state lives in the arena. `vm.reset()` kills all coroutines. ~200-500 bytes per suspended coroutine.
+## Serialization
+
+Coroutine state (suspended stack, PC, locals) is part of the VM's serializable state. A workflow can yield, the server serializes the VM, restarts, deserializes, and the coroutine resumes exactly where it left off.
+
+~200-500 bytes per suspended coroutine in the arena.
