@@ -58,18 +58,23 @@ target.health -= 10
 print("Hit {target.name} at ({target.x}, {target.y})")
 ```
 
-**For game servers using pools:** build a `provide_pool` helper that creates host refs for each entity and registers field accessors against the pool. This is a library on top of the core ref mechanism, not a VM built-in.
+**Binding helpers** (`raido.bind`) reduce the boilerplate of mapping host data to refs:
 
 ```rask
-// Game extension (library, not VM core)
-import raido.game
+import raido.bind
 
-raido.game.provide_pool(vm, "enemies", enemies, [
-    raido.game.Field.int("health"),
-    raido.game.Field.number("x"),
-    raido.game.Field.number("y"),
+// Bind a pool — each handle becomes a host ref
+raido.bind.pool(vm, "enemies", enemies, [
+    bind.Field.int("health"),
+    bind.Field.number("x"),
+    bind.Field.number("y"),
 ])
+
+// Bind a struct directly
+raido.bind.struct(vm, "config", config)
 ```
+
+`raido.bind` is a convenience library, not VM core. It generates `register_ref_type` calls.
 
 ## Scoped Bindings
 
