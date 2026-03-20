@@ -4,7 +4,7 @@
 
 # Raido
 
-Deterministic scratchpad scripting language for custom entity scripts on game servers. Dynamic subset of Rask syntax. Serializable VM state. Softfloat arithmetic.
+Deterministic scratchpad scripting language for custom entity scripts on game servers. Dynamic subset of Rask syntax. Serializable VM state. Fixed-point arithmetic.
 
 **Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures. No type annotations, no ownership, no `try`/`ensure`. Modders learning Raido are learning Rask syntax.
 
@@ -13,7 +13,7 @@ Deterministic scratchpad scripting language for custom entity scripts on game se
 1. Every Lua API call requires `unsafe`. Raido's host API is fully safe.
 2. Lua doesn't know about `Handle<T>`. Raido makes handles first-class — `h.health -= 1` resolves through the host pool.
 3. Lua's `longjmp` errors skip `ensure` blocks. Raido errors propagate through `T or E`.
-4. Lua is not deterministic. Raido uses softfloat for bitwise-identical cross-platform results.
+4. Lua is not deterministic. Raido uses fixed-point math for bitwise-identical cross-platform results.
 5. Lua state is not trivially serializable. Raido VM state serializes to bytes — save, migrate, replay.
 
 ## Host API
@@ -72,9 +72,9 @@ func patrol(h) {
 |----------|--------|-----------|
 | Syntax | Dynamic Rask subset | Modders learn Rask syntax. No new language to learn. |
 | VM | Stack-based | Simpler to implement, simpler to serialize. |
-| Determinism | Softfloat (software f64) | Bitwise-identical across x86/ARM/etc. Enables lockstep, replay, migration. |
+| Determinism | Fixed-point 32.32 `number` | Integer math = deterministic + fast. Scripts write `3.14`, compiler handles conversion. |
 | Serialization | Entire VM state → bytes | Save/restore, server migration, replay. No pointers in values — arena offsets only. |
-| Values | 8 bytes, 10 types | nil, bool, int, number, string, array, map, function, handle, userdata. |
+| Values | 8 bytes, 10 types | nil, bool, int, number (32.32 fixed), string, array, map, function, handle, userdata. |
 | Collections | Separate array `[]` and map `{k: v}` | Maps to Rask's Vec/Map. No Lua table confusion. |
 | Handles | First-class with pool-resolved field access | `h.field` does a pool lookup. Core innovation. |
 | Memory | Arena with per-frame wrapping | Temporaries freed at `frame_end()`. Persistent state (globals, coroutines) survives. |
@@ -84,7 +84,7 @@ func patrol(h) {
 | Strings | `"damage: {amount}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializes with the VM. |
 | Coroutines | yield/resume, `wait(seconds)` | Sequential AI without state machines. State serializable. |
-| Stdlib | Math (softfloat clamp/lerp), string, array, map, bit. No I/O. | Host provides capabilities. |
+| Stdlib | Math (fixed-point clamp/lerp), string, array, map, bit. No I/O. | Host provides capabilities. |
 
 ## Detailed Specs
 
@@ -101,7 +101,7 @@ func patrol(h) {
 
 - Arena frame wrapping: how does the persistent region grow? Fixed budget? Promote on assignment to global?
 - Coroutine locals: persistent or frame-local? (Must be persistent — they survive across yields.)
-- Softfloat library choice: Berkeley SoftFloat? Hand-rolled? Rask stdlib?
-- Serialization format: custom binary? Deterministic enough for cross-version compat?
+- Fixed-point: 32.32 or 48.16? More integer range vs more precision.
+- Serialization format: custom binary? Versioned for forward compat?
 - How do closures serialize when they capture mutable upvalues?
-- Map iteration order: insertion order (deterministic) or hash order?
+- Should Raido ship as part of Rask stdlib or as a separate crate?

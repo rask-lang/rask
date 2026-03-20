@@ -1,6 +1,6 @@
 <!-- id: raido.vm -->
 <!-- status: proposed -->
-<!-- summary: Deterministic stack-based VM with softfloat, serializable state, frame-wrapping arena -->
+<!-- summary: Deterministic stack-based VM with fixed-point math, serializable state, frame-wrapping arena -->
 <!-- depends: raido/values.md -->
 
 # VM Architecture
@@ -17,16 +17,16 @@ Stack-based bytecode VM. Deterministic execution. Serializable state. Arena allo
 
 ## Determinism
 
-All floating-point arithmetic is software-emulated (softfloat). No hardware FPU instructions. This guarantees bitwise-identical results on x86, ARM, RISC-V, whatever the server runs on.
+All `number` arithmetic is 32.32 fixed-point (integer math). No hardware FPU instructions, no platform-dependent rounding. Bitwise-identical results on x86, ARM, RISC-V.
 
-Cost: ~10x slower float ops. For entity scripts doing `h.x + h.vx * dt` a few hundred times per frame, this is negligible. If a script needs fast math, do it on the host side in Rask (which uses hardware floats) and pass results in.
+Fast — add/sub are single i64 ops, mul/div use 128-bit intermediate. No softfloat overhead.
 
 Determinism enables:
 - **Lockstep networking.** Two servers running the same script with the same inputs produce the same outputs.
 - **Replay.** Record inputs, replay deterministically.
 - **Migration.** Serialize VM, send to another node, resume.
 
-`math.random()` uses a seedable PRNG that's part of the VM state (and therefore serializable/deterministic).
+`math.random()` uses a seedable PRNG that's part of the VM state (serializable/deterministic). Map iteration is insertion-ordered (deterministic).
 
 ## Serializable State
 
@@ -95,7 +95,7 @@ Stack-based — operands come from the stack, results pushed onto the stack.
 |----------|---------|
 | Stack | `PUSH_NIL`, `PUSH_TRUE`, `PUSH_FALSE`, `PUSH_INT`, `PUSH_NUM`, `PUSH_CONST`, `POP`, `DUP` |
 | Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
-| Arithmetic | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `NEG` (all softfloat for number operands) |
+| Arithmetic | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `NEG` (fixed-point for number operands) |
 | Comparison | `EQ`, `NE`, `LT`, `LE`, `GT`, `GE` |
 | Logic | `NOT`, `AND`, `OR` |
 | String | `CONCAT`, `LEN`, `INTERPOLATE` |
