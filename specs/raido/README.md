@@ -1,32 +1,22 @@
 <!-- id: raido.overview -->
 <!-- status: proposed -->
-<!-- summary: Embedded scripting language for Rask — Lua-like VM for games and game servers -->
+<!-- summary: Raido — scratchpad scripting language with VM and Rask interop -->
 
 # Raido
 
-Tiny embedded scripting language for Rask applications. Think Lua, but native to Rask's ownership model and entity systems.
+Dynamic subset of Rask syntax running in an arena-allocated VM. Scratchpad language for custom entity scripts on game servers.
 
-## Why Raido Exists
+**Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures. No type annotations, no ownership, no `try`/`ensure`. Modders learning Raido are learning Rask syntax.
 
-Games and game servers need a scripting layer. Modders write gameplay logic, AI behaviors, and plugin systems in a dynamic language while the engine runs compiled Rask. The obvious answer is "embed Lua via C FFI" — Rask already supports `import c "lua.h"`.
+## Why Not Lua-via-FFI
 
-I chose to build a native alternative because the Lua-via-FFI experience is bad for Rask specifically:
+1. Every Lua API call requires `unsafe`. Raido's host API is fully safe.
+2. Lua doesn't know about `Handle<T>`. Raido makes handles first-class — `h.health -= 1` resolves through the host pool.
+3. Lua's `longjmp` errors skip `ensure` blocks. Raido errors propagate through `T or E`.
+4. Syntax discontinuity. Raido scripts read like untyped Rask code.
 
-1. **Every Lua API call requires `unsafe`.** Creating a VM, pushing values, calling functions — all unsafe. A game loop touching entities every frame means hundreds of unsafe blocks.
+## Host API
 
-2. **Lua doesn't know about handles.** Rask's entity system is `Pool<T>` + `Handle<T>`. Exposing this to Lua means manual `void*` userdata with C-level lifecycle management. Raido makes handles a first-class type — scripts do `h.health -= 1` and the VM resolves the handle against a host-provided pool.
-
-3. **`longjmp` breaks `ensure`.** Lua uses `longjmp` for errors, which skips Rask's `ensure` cleanup blocks. Raido errors are values that propagate through Rask's `T or E` system.
-
-4. **String copies everywhere.** Lua has its own interned string system. Every string crossing the boundary gets copied. Raido shares Rask's immutable refcounted `string` — zero-copy in both directions.
-
-5. **No C toolchain dependency.** Raido ships as a Rask library. No system Lua, no pkg-config, no header files.
-
-**When to use Lua instead:** If you need Lua's ecosystem — existing scripts, community libraries, LuaJIT performance. Raido is for when you want tight Rask integration without unsafe ceremony.
-
-## The 30-Second Pitch
-
-Host side (Rask):
 ```rask
 import raido
 
@@ -40,7 +30,6 @@ func game_loop(enemies: Pool<Enemy>, dt: f64) -> () or Error {
     const script = try vm.compile("ai.raido", ai_source)
     try vm.exec(script)
 
-    // Run script with pool access — scoped borrowing
     try vm.exec_with(|scope| {
         scope.provide_pool("enemies", enemies)
         scope.call("on_update", [raido.Value.number(dt)])
@@ -48,64 +37,69 @@ func game_loop(enemies: Pool<Enemy>, dt: f64) -> () or Error {
 }
 ```
 
-Script side (Raido):
+## Script Example
+
 ```raido
-func on_update(dt)
-    for h in handles("enemies") do
+func on_update(dt) {
+    for h in handles("enemies") {
         h.x = h.x + h.vx * dt
         h.y = h.y + h.vy * dt
 
-        if h.health <= 0 then
+        if h.health <= 0 {
             remove(h)
-        end
-    end
-end
+        }
+    }
+}
+
+// Coroutine-based AI
+func patrol(h) {
+    while true {
+        const wp = next_waypoint(h)
+        while !near(h, wp) {
+            move_toward(h, wp)
+            yield()
+        }
+        wait(2.0)
+    }
+}
 ```
 
-No unsafe. No FFI glue. Handles resolve through pools provided by the host. Arena allocation — no GC pauses. The VM enforces memory and instruction limits.
+## Key Decisions
 
-## Design Principles
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Syntax | Dynamic Rask subset | Modders learn Rask syntax. No new language to learn. |
+| Values | NaN-boxed 8 bytes, 9 types | nil, bool, int, number, string, array, map, function, handle (+userdata) |
+| Collections | Separate array `[]` and map `{k: v}` | Maps to Rask's Vec/Map. No Lua table confusion. |
+| Handles | First-class type with pool-resolved field access | `h.field` does a pool lookup. Core innovation. |
+| Memory | Arena allocation, no GC | Bump alloc, bulk reset. Hundreds of VMs per server. |
+| Strings | Arena-allocated, copied at boundary | Simple. No shared refcount lifetimes. |
+| Safety | `exec_with` scoped pool borrowing | Pools borrowed for closure duration. No unsafe. |
+| Globals | Explicit `global` keyword | No accidental globals (Lua's worst footgun). |
+| Comments | `//` and `/* */` | Matches Rask. |
+| Equality | `!=`, `&&`, `\|\|` | Matches Rask. No `~=`/`and`/`or`. |
+| String interpolation | `"damage: {amount}"` | Kills `..` concatenation chains. |
+| Iteration | `for x in arr {}`, `for k,v in map {}` | No `pairs()`/`ipairs()`. VM dispatches by type. |
+| Coroutines | yield/resume, `wait(seconds)` | Sequential AI without state machines. |
+| Stdlib | Math (with clamp/lerp), string, array, map, bit. No I/O. | Host provides capabilities. Scripts are sandboxed. |
+| VM | Register-based, 32-bit instructions | ~1 KB base. Instruction budget per call. |
+| Hot reload | `vm.reset()` + recompile | Arena reset destroys script state. Pool data survives. |
 
-| Principle | Means |
-|-----------|-------|
-| **Tiny** | Small VM (~1 KB base), small stdlib, small language. Hundreds of VMs per server. |
-| **Handle-native** | Handles are a first-class type. `h.field` does a pool lookup in the VM. |
-| **Safe boundary** | All host interaction through typed API. No unsafe required. |
-| **Host controls everything** | No I/O, no filesystem, no networking by default. Host provides capabilities. |
-| **Game-loop friendly** | Instruction limits, memory limits, hot reload, coroutines for AI. |
+## Detailed Specs
 
-## Specs
+| Spec | What it covers |
+|------|----------------|
+| [values.md](values.md) | NaN-boxing layout, type rules, array/map semantics, handle resolution, userdata |
+| [syntax.md](syntax.md) | Grammar, variables, functions, control flow, operators, closures |
+| [vm.md](vm.md) | Arena allocation, instruction set, bytecode format, call frames, limits |
+| [interop.md](interop.md) | VM lifecycle, function registration, `exec_with`, field registration, error propagation |
+| [coroutines.md](coroutines.md) | Cooperative multitasking, yield/resume, `wait()`, game AI patterns |
+| [stdlib.md](stdlib.md) | Built-in functions: math, string, array, map, bit, core |
 
-| Spec | Description |
-|------|-------------|
-| [values.md](values.md) | Value model, types, NaN-boxing, Rask type mapping |
-| [syntax.md](syntax.md) | Language syntax and semantics |
-| [vm.md](vm.md) | Register-based VM, GC, memory/instruction limits |
-| [interop.md](interop.md) | Rask integration API — the critical spec |
-| [coroutines.md](coroutines.md) | Cooperative multitasking for game AI |
-| [stdlib.md](stdlib.md) | Built-in library (minimal, host-controlled) |
+## Open Questions
 
-## Use Cases
-
-1. **Game AI** — Coroutine-based behavior: patrol, chase, flee. Scripts yield between states, resume each frame.
-2. **Modding** — Players write gameplay modifications. Sandboxed: memory-limited, no filesystem access, instruction-capped.
-3. **Game server plugins** — Server operators extend behavior. Hot-reloadable without server restart.
-4. **Level scripting** — Trigger zones, cutscenes, quest logic. Event-driven with handle-based entity access.
-5. **Configuration** — Dynamic config that's more than key-value but less than a full program.
-
----
-
-## Appendix (non-normative)
-
-### Rationale
-
-I went back and forth on whether Raido should exist at all. The honest answer: for most applications, Lua-via-FFI is fine. Raido exists specifically because Rask's entity system (`Pool<T>` + `Handle<T>`) is central to game architecture, and bridging it through C FFI is a poor experience.
-
-The handle-as-first-class-type decision is what makes this worth building. If Rask used raw pointers for entities (like C++), Lua's userdata model would work fine and Raido wouldn't be necessary.
-
-### See Also
-
-- `mem.pools` — Handle-based entity storage
-- `mem.borrowing` — Block-scoped borrowing (basis for `exec_with`)
-- `mem.resource-types` — Why `@resource` types can't be userdata
-- `struct.c-interop` — The Lua-via-FFI alternative
+- Should `for i, v in arr {}` use tuple destructuring or magic multiple binding?
+- String interning strategy — intern all strings or only literals?
+- Should closures capture by reference or by value?
+- Method syntax for array/map (`arr.push(x)`) — how does the VM dispatch this?
+- Error recovery in compilation — one error or collect many?

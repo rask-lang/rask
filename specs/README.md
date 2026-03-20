@@ -167,15 +167,17 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 
 ## Raido — Embedded scripting language
 
+Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-allocated VM.
+
 | Spec | Description |
 |------|-------------|
-| [README.md](raido/README.md) | **Overview**: what Raido is, why it exists, positioning |
-| [values.md](raido/values.md) | Value model, NaN-boxing, handles, Rask type mapping |
-| [syntax.md](raido/syntax.md) | Lua-inspired syntax with Rask adjustments |
-| [vm.md](raido/vm.md) | Register-based VM, arena allocation, instruction limits |
-| [interop.md](raido/interop.md) | Rask integration API: VM creation, pools, function registration |
-| [coroutines.md](raido/coroutines.md) | Cooperative multitasking for game AI |
-| [stdlib.md](raido/stdlib.md) | Built-in library (math, string, table — no I/O) |
+| [README.md](raido/README.md) | Overview, key decisions, open questions |
+| [syntax.md](raido/syntax.md) | Dynamic Rask subset syntax |
+| [values.md](raido/values.md) | NaN-boxed values, arrays, maps, handles |
+| [vm.md](raido/vm.md) | Arena-allocated register VM |
+| [interop.md](raido/interop.md) | Rask host API |
+| [coroutines.md](raido/coroutines.md) | Cooperative AI |
+| [stdlib.md](raido/stdlib.md) | Minimal built-ins |
 
 ## Compiler — Compiler internals
 
