@@ -1,10 +1,10 @@
 <!-- id: raido.overview -->
 <!-- status: proposed -->
-<!-- summary: Raido — scratchpad scripting language with VM and Rask interop -->
+<!-- summary: Raido — deterministic scratchpad scripting language with serializable VM and Rask interop -->
 
 # Raido
 
-Dynamic subset of Rask syntax running in an arena-allocated VM. Scratchpad language for custom entity scripts on game servers.
+Deterministic scratchpad scripting language for custom entity scripts on game servers. Dynamic subset of Rask syntax. Serializable VM state. Softfloat arithmetic.
 
 **Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures. No type annotations, no ownership, no `try`/`ensure`. Modders learning Raido are learning Rask syntax.
 
@@ -13,7 +13,8 @@ Dynamic subset of Rask syntax running in an arena-allocated VM. Scratchpad langu
 1. Every Lua API call requires `unsafe`. Raido's host API is fully safe.
 2. Lua doesn't know about `Handle<T>`. Raido makes handles first-class — `h.health -= 1` resolves through the host pool.
 3. Lua's `longjmp` errors skip `ensure` blocks. Raido errors propagate through `T or E`.
-4. Syntax discontinuity. Raido scripts read like untyped Rask code.
+4. Lua is not deterministic. Raido uses softfloat for bitwise-identical cross-platform results.
+5. Lua state is not trivially serializable. Raido VM state serializes to bytes — save, migrate, replay.
 
 ## Host API
 
@@ -34,6 +35,7 @@ func game_loop(enemies: Pool<Enemy>, dt: f64) -> () or Error {
         scope.provide_pool("enemies", enemies)
         scope.call("on_update", [raido.Value.number(dt)])
     })
+    vm.frame_end()  // arena wraps — frame temporaries freed
 }
 ```
 
@@ -69,37 +71,37 @@ func patrol(h) {
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Syntax | Dynamic Rask subset | Modders learn Rask syntax. No new language to learn. |
-| Values | NaN-boxed 8 bytes, 9 types | nil, bool, int, number, string, array, map, function, handle (+userdata) |
+| VM | Stack-based | Simpler to implement, simpler to serialize. |
+| Determinism | Softfloat (software f64) | Bitwise-identical across x86/ARM/etc. Enables lockstep, replay, migration. |
+| Serialization | Entire VM state → bytes | Save/restore, server migration, replay. No pointers in values — arena offsets only. |
+| Values | 8 bytes, 10 types | nil, bool, int, number, string, array, map, function, handle, userdata. |
 | Collections | Separate array `[]` and map `{k: v}` | Maps to Rask's Vec/Map. No Lua table confusion. |
-| Handles | First-class type with pool-resolved field access | `h.field` does a pool lookup. Core innovation. |
-| Memory | Arena allocation, no GC | Bump alloc, bulk reset. Hundreds of VMs per server. |
-| Strings | Arena-allocated, copied at boundary | Simple. No shared refcount lifetimes. |
+| Handles | First-class with pool-resolved field access | `h.field` does a pool lookup. Core innovation. |
+| Memory | Arena with per-frame wrapping | Temporaries freed at `frame_end()`. Persistent state (globals, coroutines) survives. |
+| Functions | Host functions by name, not pointer | Serializable. Re-registered on deserialize. |
 | Safety | `exec_with` scoped pool borrowing | Pools borrowed for closure duration. No unsafe. |
-| Globals | Explicit `global` keyword | No accidental globals (Lua's worst footgun). |
-| Comments | `//` and `/* */` | Matches Rask. |
-| Equality | `!=`, `&&`, `\|\|` | Matches Rask. No `~=`/`and`/`or`. |
-| String interpolation | `"damage: {amount}"` | Kills `..` concatenation chains. |
-| Iteration | `for x in arr {}`, `for k,v in map {}` | No `pairs()`/`ipairs()`. VM dispatches by type. |
-| Coroutines | yield/resume, `wait(seconds)` | Sequential AI without state machines. |
-| Stdlib | Math (with clamp/lerp), string, array, map, bit. No I/O. | Host provides capabilities. Scripts are sandboxed. |
-| VM | Register-based, 32-bit instructions | ~1 KB base. Instruction budget per call. |
-| Hot reload | `vm.reset()` + recompile | Arena reset destroys script state. Pool data survives. |
+| Globals | Explicit `global` keyword | No accidental globals. |
+| Strings | `"damage: {amount}"` interpolation | Kills concatenation chains. |
+| Random | Seedable PRNG in VM state | Deterministic. Serializes with the VM. |
+| Coroutines | yield/resume, `wait(seconds)` | Sequential AI without state machines. State serializable. |
+| Stdlib | Math (softfloat clamp/lerp), string, array, map, bit. No I/O. | Host provides capabilities. |
 
 ## Detailed Specs
 
 | Spec | What it covers |
 |------|----------------|
-| [values.md](values.md) | NaN-boxing layout, type rules, array/map semantics, handle resolution, userdata |
-| [syntax.md](syntax.md) | Grammar, variables, functions, control flow, operators, closures |
-| [vm.md](vm.md) | Arena allocation, instruction set, bytecode format, call frames, limits |
-| [interop.md](interop.md) | VM lifecycle, function registration, `exec_with`, field registration, error propagation |
-| [coroutines.md](coroutines.md) | Cooperative multitasking, yield/resume, `wait()`, game AI patterns |
-| [stdlib.md](stdlib.md) | Built-in functions: math, string, array, map, bit, core |
+| [values.md](values.md) | Types, softfloat, serializable representation, handles |
+| [syntax.md](syntax.md) | Grammar, variables, functions, control flow, operators |
+| [vm.md](vm.md) | Stack VM, determinism, serialization, frame wrapping, instruction set |
+| [interop.md](interop.md) | VM lifecycle, function registration, `exec_with`, error propagation |
+| [coroutines.md](coroutines.md) | Cooperative multitasking, game AI patterns |
+| [stdlib.md](stdlib.md) | Built-in functions |
 
 ## Open Questions
 
-- Should `for i, v in arr {}` use tuple destructuring or magic multiple binding?
-- String interning strategy — intern all strings or only literals?
-- Should closures capture by reference or by value?
-- Method syntax for array/map (`arr.push(x)`) — how does the VM dispatch this?
-- Error recovery in compilation — one error or collect many?
+- Arena frame wrapping: how does the persistent region grow? Fixed budget? Promote on assignment to global?
+- Coroutine locals: persistent or frame-local? (Must be persistent — they survive across yields.)
+- Softfloat library choice: Berkeley SoftFloat? Hand-rolled? Rask stdlib?
+- Serialization format: custom binary? Deterministic enough for cross-version compat?
+- How do closures serialize when they capture mutable upvalues?
+- Map iteration order: insertion order (deterministic) or hash order?

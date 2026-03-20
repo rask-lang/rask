@@ -1,56 +1,111 @@
 <!-- id: raido.vm -->
 <!-- status: proposed -->
-<!-- summary: Register-based VM with arena allocation, memory limits, and instruction budgets -->
+<!-- summary: Deterministic stack-based VM with softfloat, serializable state, frame-wrapping arena -->
 <!-- depends: raido/values.md -->
 
 # VM Architecture
 
-Register-based bytecode VM. Arena allocation (no GC). Memory-limited, instruction-budgeted, single-threaded.
+Stack-based bytecode VM. Deterministic execution. Serializable state. Arena allocation with per-frame wrapping.
 
 ## Core Properties
 
-- **Register-based, 32-bit instructions.** Fewer instructions per operation than stack VMs.
+- **Stack-based.** Simpler to implement, simpler to serialize (stack is just a value array).
+- **Deterministic.** Softfloat arithmetic — bitwise-identical results across platforms.
+- **Serializable.** Entire VM state (stack, globals, call frames, coroutine positions) can be dumped to bytes and restored.
 - **Send, not Sync.** A VM can move between threads but not be shared.
 - **`@resource`** in Rask — must be closed via `vm.close()`.
-- **~1 KB base overhead.** A server can run hundreds of VMs.
 
-## Arena Allocation
+## Determinism
 
-All VM allocations (arrays, maps, strings, closures, bytecode) come from one contiguous arena.
+All floating-point arithmetic is software-emulated (softfloat). No hardware FPU instructions. This guarantees bitwise-identical results on x86, ARM, RISC-V, whatever the server runs on.
 
-- **Bump allocator.** O(1) allocation.
-- **Bulk reset.** `vm.reset()` frees everything at once. Pointer resets to start.
-- **Fixed size.** Set at creation (default 256 KB). Exceeding it raises a runtime error.
-- **No GC.** No mark phase, no sweep, no write barriers, no pauses.
+Cost: ~10x slower float ops. For entity scripts doing `h.x + h.vx * dt` a few hundred times per frame, this is negligible. If a script needs fast math, do it on the host side in Rask (which uses hardware floats) and pass results in.
 
-Persistent state lives in Rask pools, not in the VM. The arena holds temporaries — intermediate values, string concatenations, closure captures. Reset clears script state; pool data survives.
+Determinism enables:
+- **Lockstep networking.** Two servers running the same script with the same inputs produce the same outputs.
+- **Replay.** Record inputs, replay deterministically.
+- **Migration.** Serialize VM, send to another node, resume.
+
+`math.random()` uses a seedable PRNG that's part of the VM state (and therefore serializable/deterministic).
+
+## Serializable State
+
+The entire VM can be serialized to a byte buffer and restored:
+
+```rask
+// Snapshot
+const snapshot = vm.serialize()
+
+// Restore
+const vm2 = raido.Vm.deserialize(snapshot)
+
+// Or persist to disk
+try fs.write("save.bin", vm.serialize())
+```
+
+What gets serialized:
+- Value stack
+- Call frame stack (PCs, stack pointers)
+- Global table
+- All coroutine states (suspended stack, PC)
+- Arena contents (arrays, maps, strings, closures)
+- PRNG state
+- Instruction counter
+
+What does NOT serialize:
+- Host function bindings (referenced by name, re-registered on restore)
+- Pool references (re-provided via `exec_with` after restore)
+- Bytecode (re-compiled or loaded separately)
+
+Host functions are stored as string names in the serialized state. On restore, the host must re-register functions with the same names. Missing a function is an error on first call, not on restore.
+
+## Arena with Frame Wrapping
+
+The arena wraps at frame boundaries. Previous frame's temporaries get overwritten.
+
+- **Per-frame bump allocator.** Allocations within a frame bump a pointer forward.
+- **Frame reset.** At `vm.frame_end()`, the arena pointer resets. Previous allocations gone.
+- **Persistent slots.** Globals, coroutine state, and explicitly-held values live in a separate persistent region that doesn't wrap.
+- **Fixed size.** Arena + persistent region have a combined limit. Exceeding raises a runtime error.
+
+```rask
+// Game loop
+while running {
+    try vm.exec_with(|scope| {
+        scope.provide_pool("enemies", enemies)
+        scope.call("on_update", [raido.Value.number(dt)])
+    })
+    vm.frame_end()  // arena wraps — frame temporaries freed
+}
+```
+
+This means scripts can't hold references to frame-local data across yields... unless the data is in a global, a coroutine local, or a pool field. Temporaries (intermediate concat strings, temporary arrays) vanish at frame end.
+
+**Why not explicit `vm.reset()`?** Reset destroys everything — globals, coroutines, all state. Frame wrapping preserves persistent state (globals, coroutines, closures assigned to globals) while reclaiming frame temporaries. Reset is still available for hot reload.
 
 ## Instruction Limits
 
-Each `vm.call()` / `vm.exec()` has an instruction budget. Every instruction decrements it. Exceeding it raises a runtime error. Prevents runaway scripts from freezing the server.
-
-## Hot Reload
-
-`vm.reset()` then `vm.exec(new_chunk)`. Clean slate — old code gone, new code loaded. Entity data in pools untouched.
-
-```rask
-const new_chunk = try vm.compile("goblin_ai.raido", new_source)
-vm.reset()
-try vm.exec(new_chunk)
-```
+Each `vm.call()` has an instruction budget. Every instruction decrements it. Exceeding raises a runtime error. Budget is part of the serialized state.
 
 ## Instruction Set (sketch)
 
+Stack-based — operands come from the stack, results pushed onto the stack.
+
 | Category | Opcodes |
 |----------|---------|
-| Load | `LOADNIL`, `LOADBOOL`, `LOADINT`, `LOADNUM`, `LOADK`, `LOADGLOBAL`, `STOREGLOBAL` |
-| Arithmetic | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `NEG` |
+| Stack | `PUSH_NIL`, `PUSH_TRUE`, `PUSH_FALSE`, `PUSH_INT`, `PUSH_NUM`, `PUSH_CONST`, `POP`, `DUP` |
+| Variables | `GET_LOCAL`, `SET_LOCAL`, `GET_GLOBAL`, `SET_GLOBAL`, `GET_UPVALUE`, `SET_UPVALUE` |
+| Arithmetic | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `NEG` (all softfloat for number operands) |
 | Comparison | `EQ`, `NE`, `LT`, `LE`, `GT`, `GE` |
 | Logic | `NOT`, `AND`, `OR` |
 | String | `CONCAT`, `LEN`, `INTERPOLATE` |
-| Collection | `NEWARRAY`, `NEWMAP`, `GETINDEX`, `SETINDEX`, `GETFIELD`, `SETFIELD` |
-| Handle | `GETHANDLE`, `SETHANDLE` |
-| Function | `CALL`, `RETURN`, `TAILCALL`, `CLOSURE` |
-| Jump | `JMP`, `JMPIF`, `JMPIFNOT` |
-| Loop | `FORPREP`, `FORLOOP`, `ITERPREP`, `ITERLOOP` |
+| Collection | `NEW_ARRAY`, `NEW_MAP`, `GET_INDEX`, `SET_INDEX`, `GET_FIELD`, `SET_FIELD`, `PUSH_ELEM` |
+| Handle | `GET_HANDLE_FIELD`, `SET_HANDLE_FIELD` |
+| Function | `CALL`, `RETURN`, `TAIL_CALL`, `CLOSURE` |
+| Jump | `JMP`, `JMP_IF`, `JMP_IF_NOT` |
+| Loop | `FOR_ITER`, `FOR_RANGE` |
 | Coroutine | `YIELD`, `RESUME` |
+
+## Hot Reload
+
+`vm.reset()` destroys all state (globals, coroutines, arena), then `vm.exec(new_chunk)` loads fresh code. Pool data in Rask is untouched.
