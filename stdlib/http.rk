@@ -9,6 +9,7 @@
 
 import net
 import json
+impor async.spawn
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -690,7 +691,6 @@ extend Responder {
         const raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
         self.sent = true
-        return Ok(())
     }
 }
 
@@ -701,7 +701,8 @@ struct http { }
 extend http {
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires `using Multitasking`.
-    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError {
+    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError 
+    {
         const server = try HttpServer.listen(addr)
         ensure server.close()
 

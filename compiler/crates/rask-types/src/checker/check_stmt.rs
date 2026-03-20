@@ -187,16 +187,24 @@ impl TypeChecker {
             StmtKind::LetTuple { names, init } | StmtKind::ConstTuple { names, init } => {
                 let init_ty = self.infer_expr(init);
                 // Bind each destructured name to its tuple element type
-                if let Type::Tuple(elems) = &init_ty {
+                let resolved = self.ctx.apply(&init_ty);
+                if let Type::Tuple(elems) = &resolved {
                     for (i, name) in names.iter().enumerate() {
                         if let Some(elem_ty) = elems.get(i) {
                             self.define_local(name.clone(), elem_ty.clone());
                         }
                     }
                 } else {
-                    // Not a known tuple type — bind all names as the inferred type
-                    for name in names {
-                        self.define_local(name.clone(), init_ty.clone());
+                    // Init type not yet resolved — create fresh vars for each
+                    // element and unify with a tuple so destructuring works
+                    // when constraints are solved later.
+                    let elem_vars: Vec<Type> = names.iter()
+                        .map(|_| self.ctx.fresh_var())
+                        .collect();
+                    let tuple_ty = Type::Tuple(elem_vars.clone());
+                    let _ = self.unify(&init_ty, &tuple_ty, stmt.span);
+                    for (name, var) in names.iter().zip(elem_vars) {
+                        self.define_local(name.clone(), var);
                     }
                 }
             }

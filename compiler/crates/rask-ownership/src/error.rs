@@ -71,6 +71,13 @@ pub enum OwnershipErrorKind {
         name: String,
     },
 
+    /// Resource captured by closure/spawn not consumed on all code paths.
+    #[error("resource `{name}` captured by {context} is not consumed on all code paths")]
+    ResourceNotConsumedInClosure {
+        name: String,
+        context: String,
+    },
+
     /// Trying to move a value out of a borrowed parameter.
     #[error("cannot move `{name}` — parameter is borrowed, not owned")]
     MoveFromBorrowedParam {

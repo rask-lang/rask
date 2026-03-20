@@ -295,3 +295,14 @@ pub fn typecheck(resolved: ResolvedProgram, decls: &[Decl]) -> Result<TypedProgr
     let checker = TypeChecker::new(resolved);
     checker.check(decls)
 }
+
+/// Typecheck with stdlib type/method declarations registered but not body-checked.
+pub fn typecheck_with_stdlib(
+    resolved: ResolvedProgram,
+    decls: &[Decl],
+    stdlib_decls: &[Decl],
+) -> Result<TypedProgram, Vec<TypeError>> {
+    let mut checker = TypeChecker::new(resolved);
+    checker.collect_type_declarations(stdlib_decls);
+    checker.check(decls)
+}

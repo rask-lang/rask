@@ -30,6 +30,8 @@ pub struct Resolver {
     package_exports: HashMap<PackageId, HashMap<String, SymbolId>>,
     /// When true, declarations can shadow builtin names without E0209.
     stdlib_mode: bool,
+    /// Symbols defined during stdlib_mode — imports may override these.
+    stdlib_symbols: HashSet<SymbolId>,
     /// Compile-time cfg values for dead branch elimination in `comptime if`.
     /// Maps field names (os, arch, env, profile) to their values.
     cfg_values: HashMap<String, String>,
@@ -50,6 +52,7 @@ impl Resolver {
             type_param_map: HashMap::new(),
             package_exports: HashMap::new(),
             stdlib_mode: false,
+            stdlib_symbols: HashSet::new(),
             cfg_values: HashMap::new(),
         };
 
@@ -706,6 +709,9 @@ impl Resolver {
         if let Err(e) = self.scopes.define(base, sym_id, span) {
             self.errors.push(e);
         }
+        if self.stdlib_mode {
+            self.stdlib_symbols.insert(sym_id);
+        }
         sym_id
     }
 
@@ -724,6 +730,9 @@ impl Resolver {
         );
         if let Err(e) = self.scopes.define(base.clone(), sym_id, span) {
             self.errors.push(e);
+        }
+        if self.stdlib_mode {
+            self.stdlib_symbols.insert(sym_id);
         }
 
         // Store type params for extend block resolution
@@ -792,6 +801,9 @@ impl Resolver {
         );
         if let Err(e) = self.scopes.define(base.clone(), sym_id, span) {
             self.errors.push(e);
+        }
+        if self.stdlib_mode {
+            self.stdlib_symbols.insert(sym_id);
         }
 
         // Store type params for extend block resolution
@@ -938,8 +950,7 @@ impl Resolver {
             let binding_name = import_decl.alias.as_ref().unwrap_or(symbol_name).clone();
 
             if let Some(existing_id) = self.scopes.lookup(&binding_name) {
-                // Allow imports to replace builtins (e.g. `import async.spawn`
-                // replaces the builtin `spawn`)
+                // Allow imports to replace builtins and stdlib-defined symbols
                 let is_builtin = self.symbols.get(existing_id).map_or(false, |sym| {
                     matches!(
                         sym.kind,
@@ -948,7 +959,8 @@ impl Resolver {
                             | SymbolKind::BuiltinModule { .. }
                     )
                 });
-                if !is_builtin {
+                let is_stdlib = self.stdlib_symbols.contains(&existing_id);
+                if !is_builtin && !is_stdlib {
                     self.errors.push(ResolveError::shadows_import(binding_name.clone(), span));
                     return;
                 }

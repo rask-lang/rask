@@ -9,7 +9,7 @@ mod traits;
 
 pub use types::{GenericArg, Type, TypeId, TypeVarId};
 pub use checker::{
-    typecheck, TypeChecker, TypedProgram, TypeTable, TypeDef,
+    typecheck, typecheck_with_stdlib, TypeChecker, TypedProgram, TypeTable, TypeDef,
     TypeError, InferenceContext, TypeConstraint, MethodSig, SelfParam,
     parse_type_string, UnsafeCategory,
 };

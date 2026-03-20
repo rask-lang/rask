@@ -254,8 +254,20 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::LetTuple { names, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, true);
-                for name in names {
+                let elem_types = match self.program.node_types.get(&init.id) {
+                    Some(Type::Tuple(elems)) => Some(elems.clone()),
+                    _ => None,
+                };
+                for (i, name) in names.iter().enumerate() {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    if let Some(ref elems) = elem_types {
+                        if let Some(elem_ty) = elems.get(i) {
+                            self.binding_types.insert(name.clone(), elem_ty.clone());
+                            if self.type_is_resource(elem_ty) {
+                                self.resource_bindings.insert(name.clone());
+                            }
+                        }
+                    }
                 }
             }
             StmtKind::Const { name, name_span: _, ty, init } => {
@@ -279,8 +291,20 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::ConstTuple { names, init } => {
                 self.check_expr(init);
                 self.handle_assignment(init, stmt.span, false);
-                for name in names {
+                let elem_types = match self.program.node_types.get(&init.id) {
+                    Some(Type::Tuple(elems)) => Some(elems.clone()),
+                    _ => None,
+                };
+                for (i, name) in names.iter().enumerate() {
                     self.bindings.insert(name.clone(), BindingState::Owned);
+                    if let Some(ref elems) = elem_types {
+                        if let Some(elem_ty) = elems.get(i) {
+                            self.binding_types.insert(name.clone(), elem_ty.clone());
+                            if self.type_is_resource(elem_ty) {
+                                self.resource_bindings.insert(name.clone());
+                            }
+                        }
+                    }
                 }
             }
             StmtKind::Expr(expr) => {
@@ -516,30 +540,76 @@ impl<'a> OwnershipChecker<'a> {
                 // Collect names from closure params (these shadow outer bindings)
                 let param_names: HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
 
-                // Scan body for free variables and create borrows in enclosing scope
+                // Scan body for free variables
                 let mut captures = Vec::new();
                 self.collect_free_vars(body, &param_names, &mut captures);
+
+                // Separate resource captures from non-resource captures
+                let resource_captures: Vec<String> = captures.iter()
+                    .filter(|name| self.resource_bindings.contains(*name))
+                    .cloned()
+                    .collect();
+
+                // Move resource captures in outer scope
+                for name in &resource_captures {
+                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                }
+
+                // Shared borrow for non-resource captures
                 for name in &captures {
-                    if self.bindings.contains_key(name) {
-                        // Create a shared borrow for each captured variable
-                        self.borrows.push(ActiveBorrow::new(
-                            name.clone(),
-                            BorrowMode::Shared,
-                            BorrowScope::Persistent { block_id: self.current_block },
-                            expr.span,
-                        ));
+                    if !resource_captures.contains(name) {
+                        if self.bindings.contains_key(name) {
+                            self.borrows.push(ActiveBorrow::new(
+                                name.clone(),
+                                BorrowMode::Shared,
+                                BorrowScope::Persistent { block_id: self.current_block },
+                                expr.span,
+                            ));
+                        }
                     }
                 }
 
-                // Check the closure body with its own bindings
+                // Check closure body with isolated state
                 let saved_bindings = self.bindings.clone();
                 let saved_borrows = self.borrows.clone();
+                let saved_resources = self.resource_bindings.clone();
+                let saved_ensure = self.ensure_registered.clone();
+
+                self.resource_bindings.clear();
+                self.ensure_registered.clear();
+
+                // Register closure params as owned
                 for p in params {
                     self.bindings.insert(p.name.clone(), BindingState::Owned);
                 }
+
+                // Register resource captures in closure's resource set
+                for name in &resource_captures {
+                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.resource_bindings.insert(name.clone());
+                }
+                // Register non-resource captures as owned
+                for name in &captures {
+                    if !resource_captures.contains(name) {
+                        self.bindings.insert(name.clone(), BindingState::Owned);
+                    }
+                }
+
                 self.check_expr(body);
+
+                // Check resource consumption at closure exit
+                self.check_resource_consumption_in_closure(expr.span, "closure");
+
+                // Restore outer scope
                 self.bindings = saved_bindings;
                 self.borrows = saved_borrows;
+                self.resource_bindings = saved_resources;
+                self.ensure_registered = saved_ensure;
+
+                // Remove moved resources from outer tracking
+                for name in &resource_captures {
+                    self.resource_bindings.remove(name);
+                }
             }
             ExprKind::If { cond, then_branch, else_branch } => {
                 self.check_expr(cond);
@@ -631,7 +701,74 @@ impl<'a> OwnershipChecker<'a> {
                 self.active_with_bindings.truncate(prev_count);
             }
             ExprKind::Spawn { body } => {
+                // Collect free variables from spawn body
+                let mut captures = Vec::new();
+                let empty_params = HashSet::new();
+                for stmt in body {
+                    self.collect_free_vars_stmt(stmt, &empty_params, &mut captures);
+                }
+                captures.dedup();
+
+                // Separate resource captures
+                let resource_captures: Vec<String> = captures.iter()
+                    .filter(|name| self.resource_bindings.contains(*name))
+                    .cloned()
+                    .collect();
+
+                // Move resource captures in outer scope
+                for name in &resource_captures {
+                    self.bindings.insert(name.clone(), BindingState::Moved { at: expr.span });
+                }
+
+                // Shared borrow for non-resource captures
+                for name in &captures {
+                    if !resource_captures.contains(name) {
+                        if self.bindings.contains_key(name) {
+                            self.borrows.push(ActiveBorrow::new(
+                                name.clone(),
+                                BorrowMode::Shared,
+                                BorrowScope::Persistent { block_id: self.current_block },
+                                expr.span,
+                            ));
+                        }
+                    }
+                }
+
+                // Check spawn body with isolated state
+                let saved_bindings = self.bindings.clone();
+                let saved_borrows = self.borrows.clone();
+                let saved_resources = self.resource_bindings.clone();
+                let saved_ensure = self.ensure_registered.clone();
+
+                self.resource_bindings.clear();
+                self.ensure_registered.clear();
+
+                // Register captures in spawn scope
+                for name in &resource_captures {
+                    self.bindings.insert(name.clone(), BindingState::Owned);
+                    self.resource_bindings.insert(name.clone());
+                }
+                for name in &captures {
+                    if !resource_captures.contains(name) {
+                        self.bindings.insert(name.clone(), BindingState::Owned);
+                    }
+                }
+
                 self.check_block(body);
+
+                // Check resource consumption at spawn exit
+                self.check_resource_consumption_in_closure(expr.span, "spawn");
+
+                // Restore outer scope
+                self.bindings = saved_bindings;
+                self.borrows = saved_borrows;
+                self.resource_bindings = saved_resources;
+                self.ensure_registered = saved_ensure;
+
+                // Remove moved resources from outer tracking
+                for name in &resource_captures {
+                    self.resource_bindings.remove(name);
+                }
             }
             ExprKind::BlockCall { name: _, body } => {
                 self.check_block(body);
@@ -1220,18 +1357,31 @@ impl<'a> OwnershipChecker<'a> {
         self.program.types.is_resource_type(base)
     }
 
+    /// Check if a Type value refers to a @resource struct.
+    fn type_is_resource(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Named(type_id) => {
+                if let Some(rask_types::TypeDef::Struct { is_resource, .. }) = self.program.types.get(*type_id) {
+                    return *is_resource;
+                }
+                false
+            }
+            Type::Generic { base, .. } => {
+                if let Some(rask_types::TypeDef::Struct { is_resource, .. }) = self.program.types.get(*base) {
+                    return *is_resource;
+                }
+                false
+            }
+            Type::UnresolvedNamed(name) => self.is_resource_type_name(name),
+            Type::UnresolvedGeneric { name, .. } => self.is_resource_type_name(name),
+            _ => false,
+        }
+    }
+
     /// Check if an expression's inferred type is a @resource type.
     fn expr_is_resource_type(&self, expr: &Expr) -> bool {
-        if let Some(ty) = self.program.node_types.get(&expr.id) {
-            if let Type::Named(type_id) = ty {
-                if let Some(def) = self.program.types.get(*type_id) {
-                    if let rask_types::TypeDef::Struct { is_resource, .. } = def {
-                        return *is_resource;
-                    }
-                }
-            }
-        }
-        false
+        self.program.node_types.get(&expr.id)
+            .map_or(false, |ty| self.type_is_resource(ty))
     }
 
     /// Scan ensure body for resource references and mark them.
@@ -1266,6 +1416,32 @@ impl<'a> OwnershipChecker<'a> {
                 self.mark_ensure_expr(func);
             }
             _ => {}
+        }
+    }
+
+    /// At closure/spawn exit, emit errors for unconsumed @resource captures.
+    fn check_resource_consumption_in_closure(&mut self, span: Span, context: &str) {
+        let unconsumed: Vec<String> = self.resource_bindings.iter()
+            .filter(|name| {
+                if self.ensure_registered.contains(*name) {
+                    return false;
+                }
+                match self.bindings.get(*name) {
+                    Some(BindingState::Moved { .. }) => false,
+                    _ => true,
+                }
+            })
+            .cloned()
+            .collect();
+
+        for name in unconsumed {
+            self.errors.push(OwnershipError {
+                kind: OwnershipErrorKind::ResourceNotConsumedInClosure {
+                    name,
+                    context: context.to_string(),
+                },
+                span,
+            });
         }
     }
 

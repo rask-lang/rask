@@ -766,6 +766,21 @@ impl ToDiagnostic for rask_ownership::OwnershipError {
                 .with_why("resource types must be explicitly consumed — this prevents resource leaks")
             }
 
+            ResourceNotConsumedInClosure { name, context } => {
+                Diagnostic::error(format!(
+                    "resource `{}` captured by {} is not consumed on all code paths",
+                    name, context
+                ))
+                .with_code("E0810")
+                .with_primary(self.span, format!("{} body ends without consuming `{}`", context, name))
+                .with_help(format!(
+                    "consume `{}` on every code path, or use `ensure` inside the {} body",
+                    name, context
+                ))
+                .with_fix(format!("add `ensure {{ {}.close() }}` at the top of the {} body", name, context))
+                .with_why("resource types must be consumed exactly once — a closure/spawn that captures a resource takes ownership and must consume it")
+            }
+
             FrozenContextMutation { context_ty, operation } => {
                 Diagnostic::error(format!(
                     "cannot {} in frozen context `{}`",

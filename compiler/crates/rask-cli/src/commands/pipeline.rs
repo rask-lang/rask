@@ -120,7 +120,9 @@ fn run_frontend_single(path: &str, format: Format) -> FrontendResult {
         }
     };
 
-    let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+
+    let typed = match rask_types::typecheck_with_stdlib(resolved, &parse_result.decls, &stdlib_decls) {
         Ok(t) => t,
         Err(errors) => {
             let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();
@@ -286,7 +288,9 @@ fn run_frontend_package(pkg_ctx: &mut PackageContext, path: &str, format: Format
         }
     }
 
-    let typed = match rask_types::typecheck(resolved, &pkg_ctx.all_decls) {
+    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+
+    let typed = match rask_types::typecheck_with_stdlib(resolved, &pkg_ctx.all_decls, &stdlib_decls) {
         Ok(t) => t,
         Err(errors) => {
             let diags: Vec<Diagnostic> = errors.iter().map(|e| e.to_diagnostic()).collect();

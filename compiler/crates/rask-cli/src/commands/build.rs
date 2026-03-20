@@ -714,8 +714,8 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
 
             match rask_resolve::resolve_package_with_stdlib(&all_decls, &registry, root_id, &stdlib_decls) {
                 Ok(resolved) => {
-                    // Typecheck user decls only (stdlib bodies aren't fully type-checkable)
-                    match rask_types::typecheck(resolved, &all_decls) {
+                    // Register stdlib types/methods, then typecheck user decls only
+                    match rask_types::typecheck_with_stdlib(resolved, &all_decls, &stdlib_decls) {
                         Ok(typed) => {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                             if !ownership_result.is_ok() {
