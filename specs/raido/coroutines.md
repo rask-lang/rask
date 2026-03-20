@@ -11,7 +11,7 @@ Cooperative multitasking for game AI. A coroutine yields mid-function, the host 
 
 Game AI without coroutines:
 ```raido
--- State machine approach: manual, error-prone
+// State machine approach: manual, error-prone
 func on_update(h, dt)
     match h.ai_state
         case "patrol" then
@@ -33,7 +33,7 @@ end
 
 Game AI with coroutines:
 ```raido
--- Coroutine approach: reads like a sequence
+// Coroutine approach: reads like a sequence
 func patrol(h)
     while true do
         const wp = next_waypoint(h)
@@ -59,9 +59,9 @@ The coroutine version is shorter, sequential, and doesn't need explicit state ma
 | **C7: Dead on finish** | When the coroutine's function returns, the coroutine becomes `"dead"`. Resuming a dead coroutine returns an error. |
 
 ```raido
--- Basic yield/resume
+// Basic yield/resume
 func counter(start)
-    local n = start
+    let n = start
     while true do
         yield(n)
         n = n + 1
@@ -69,9 +69,9 @@ func counter(start)
 end
 
 const co = coroutine.create(counter)
-print(coroutine.resume(co, 10))  -- true, 10
-print(coroutine.resume(co))       -- true, 11
-print(coroutine.resume(co))       -- true, 12
+print(coroutine.resume(co, 10))  // true, 10
+print(coroutine.resume(co))       // true, 11
+print(coroutine.resume(co))       // true, 12
 ```
 
 ## Game AI Pattern
@@ -107,24 +107,24 @@ end
 
 func resume_ai(co_name, dt)
     const co = _G[co_name]
-    if co and coroutine.status(co) ~= "dead" then
+    if co and coroutine.status(co) != "dead" then
         coroutine.resume(co, dt)
     end
 end
 
--- AI behavior — reads sequentially, yields between steps
+// AI behavior — reads sequentially, yields between steps
 func patrol(h)
     while true do
         const wp = next_waypoint(h)
 
-        -- Move toward waypoint, yielding each frame
+        // Move toward waypoint, yielding each frame
         while not near(h, wp) do
             move_toward(h, wp)
             yield()
         end
 
-        -- Wait 2 seconds
-        local timer = 2.0
+        // Wait 2 seconds
+        let timer = 2.0
         while timer > 0 do
             const dt = yield()
             timer = timer - dt
@@ -147,20 +147,20 @@ end
 | **W2: Uses dt** | `wait` expects `dt` (delta time) to be passed via `coroutine.resume(co, dt)`. |
 
 ```raido
--- wait() is roughly:
+// wait() is roughly:
 func wait(seconds)
-    local remaining = seconds
+    let remaining = seconds
     while remaining > 0 do
         const dt = yield()
         remaining = remaining - dt
     end
 end
 
--- Usage in AI
+// Usage in AI
 func guard_behavior(h)
     while true do
         patrol(h)
-        wait(3.0)      -- stand still for 3 seconds
+        wait(3.0)      // stand still for 3 seconds
         look_around(h)
         wait(1.0)
     end
@@ -201,7 +201,7 @@ ERROR [raido.coroutines/C7]: cannot resume dead coroutine
 WHY: The coroutine's function has returned or raised an error.
 
 FIX: Check status before resuming:
-   if coroutine.status(co) ~= "dead" then
+   if coroutine.status(co) != "dead" then
        coroutine.resume(co)
    end
 ```

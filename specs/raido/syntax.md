@@ -1,27 +1,27 @@
 <!-- id: raido.syntax -->
 <!-- status: proposed -->
-<!-- summary: Raido language syntax — Lua-inspired with Rask-flavored adjustments -->
+<!-- summary: Raido language syntax — Lua structure with Rask vocabulary (let/const, //, !=, func) -->
 <!-- depends: raido/values.md -->
 
 # Syntax
 
-Lua-inspired with targeted adjustments: `func` not `function`, 0-indexed arrays, newline-terminated statements.
+Lua structure (if/then/end, tables, coroutines) with Rask vocabulary (`let`/`const`, `//` comments, `!=`, `func`). 0-indexed arrays, newline-terminated statements.
 
 ## Lexical Structure
 
 | Rule | Description |
 |------|-------------|
 | **L1: Newline-terminated** | Statements end at newlines. No semicolons. Semicolons allowed but optional. |
-| **L2: Comments** | `--` for line comments. `--[[ ]]--` for block comments. |
+| **L2: Comments** | `//` for line comments. `/* */` for block comments. |
 | **L3: Identifiers** | `[a-zA-Z_][a-zA-Z0-9_]*`. Case-sensitive. |
-| **L4: Keywords** | `and`, `break`, `case`, `const`, `do`, `else`, `elseif`, `end`, `false`, `for`, `func`, `if`, `in`, `local`, `match`, `nil`, `not`, `or`, `repeat`, `return`, `then`, `true`, `until`, `while`, `yield` |
+| **L4: Keywords** | `and`, `break`, `case`, `const`, `do`, `else`, `elseif`, `end`, `false`, `for`, `func`, `if`, `in`, `let`, `match`, `nil`, `not`, `or`, `repeat`, `return`, `then`, `true`, `until`, `while`, `yield` |
 | **L5: Strings** | Double-quoted `"hello"`, single-quoted `'hello'`, long strings `[[ ... ]]`. Escape sequences: `\n`, `\t`, `\\`, `\"`, `\'`. |
 | **L6: Numbers** | `42` (int), `3.14` (number), `0xff` (hex int), `0b1010` (binary int), `1e6` (number). Underscores allowed: `1_000_000`. |
 
 ```raido
--- This is a comment
---[[ This is a
-     block comment ]]--
+// This is a comment
+/* This is a
+   block comment */
 
 name = "Raido"
 count = 1_000
@@ -33,21 +33,21 @@ mask = 0xff
 | Rule | Description |
 |------|-------------|
 | **V1: Global by default** | Bare assignment creates/updates a global: `x = 42`. |
-| **V2: Local** | `local x = 42` creates a block-scoped local. |
+| **V2: Local** | `let x = 42` creates a mutable block-scoped local. |
 | **V3: Const local** | `const x = 42` creates an immutable block-scoped local. |
 | **V4: Multiple assignment** | `a, b = 1, 2` and `local a, b = foo()` for multiple returns. |
 | **V5: Nil default** | Uninitialized locals are `nil`. |
 
 ```raido
-x = 42             -- global
-local y = 10       -- mutable local
-const z = 100      -- immutable local
+x = 42             // global
+let y = 10         // mutable local
+const z = 100      // immutable local
 
-a, b, c = 1, 2, 3  -- multiple assignment
-local x, y = position()  -- capture multiple returns
+a, b, c = 1, 2, 3       // multiple assignment
+let x, y = position()   // capture multiple returns
 ```
 
-`const` is borrowed from Rask. Lua doesn't have `const` locals (until 5.4's `<const>` attribute, which is clunky). Game config values and cached references should be immutable — `const` makes that explicit without ceremony.
+`const`/`let` are borrowed from Rask. Lua doesn't have `const` locals (until 5.4's `<const>` attribute, which is clunky). `let` matches Rask's mutable binding. Game config values and cached references should be immutable — `const` makes that explicit without ceremony.
 
 ## Functions
 
@@ -66,10 +66,10 @@ func greet(name)
     return "Hello, " .. name
 end
 
--- Anonymous
+// Anonymous
 const double = func(x) return x * 2 end
 
--- Multiple returns
+// Multiple returns
 func minmax(a, b)
     if a < b then
         return a, b
@@ -77,20 +77,20 @@ func minmax(a, b)
     return b, a
 end
 
-local lo, hi = minmax(5, 3)
+let lo, hi = minmax(5, 3)
 
--- Variadic
+// Variadic
 func sum(...)
-    local total = 0
+    let total = 0
     for _, v in ipairs({...}) do
         total = total + v
     end
     return total
 end
 
--- Closure
+// Closure
 func counter(start)
-    local n = start
+    let n = start
     return func()
         n = n + 1
         return n
@@ -111,7 +111,7 @@ end
 | **C7: Match** | `match expr case pattern then ... case pattern then ... end` for value-based branching. |
 
 ```raido
--- If
+// If
 if health <= 0 then
     die()
 elseif health < 20 then
@@ -120,21 +120,21 @@ else
     fight()
 end
 
--- While
+// While
 while queue_size() > 0 do
     process(dequeue())
 end
 
--- Numeric for (inclusive)
+// Numeric for (inclusive)
 for i = 0, 9 do
-    print(i)  -- 0 through 9
+    print(i)  // 0 through 9
 end
 
 for i = 10, 0, -1 do
-    print(i)  -- countdown
+    print(i)  // countdown
 end
 
--- Generic for
+// Generic for
 for k, v in pairs(config) do
     print(k, v)
 end
@@ -143,7 +143,7 @@ for i, item in ipairs(inventory) do
     print(i, item)
 end
 
--- Match
+// Match
 match state
     case "idle" then
         wait()
@@ -169,7 +169,7 @@ end
 | 3 | `*`, `/`, `//`, `%` | Left |
 | 4 | `+`, `-` | Left |
 | 5 | `..` (concat) | Right |
-| 6 | `<`, `>`, `<=`, `>=`, `==`, `~=` | Left |
+| 6 | `<`, `>`, `<=`, `>=`, `==`, `!=` | Left |
 | 7 | `and` | Left |
 | 8 (lowest) | `or` | Left |
 
@@ -177,19 +177,19 @@ end
 |------|-------------|
 | **O1: String concat** | `..` concatenates strings. Coerces numbers to strings. |
 | **O2: Length** | `#t` returns array length of table (highest contiguous 0-based index + 1). `#s` returns string byte length. |
-| **O3: Equality** | `==` and `~=`. Tables/functions compared by reference. Strings by value. Int/number by mathematical value. |
+| **O3: Equality** | `==` and `!=`. Tables/functions compared by reference. Strings by value. Int/number by mathematical value. |
 | **O4: Logical** | `and`/`or` return operand values (short-circuit), not just bools. `not` always returns bool. |
 | **O5: No bitwise operators** | Use `bit.and()`, `bit.or()`, `bit.xor()`, `bit.lshift()`, `bit.rshift()`. Keeps operator count small. |
 
 ```raido
--- Concat
+// Concat
 name = "player" .. "_" .. tostring(id)
 
--- Length
+// Length
 items = {10, 20, 30}
-print(#items)  -- 3
+print(#items)  // 3
 
--- Logical (returns operand, not bool)
+// Logical (returns operand, not bool)
 default = config.timeout or 30
 name = player and player.name or "unknown"
 ```
@@ -207,16 +207,16 @@ name = player and player.name or "unknown"
 | **TC5: Trailing comma** | Optional trailing comma allowed. |
 
 ```raido
--- Array
+// Array
 colors = {"red", "green", "blue"}
 
--- Hash
+// Hash
 point = { x = 10, y = 20 }
 
--- Computed key
+// Computed key
 lookup = { [get_key()] = true }
 
--- Mixed
+// Mixed
 entity = {
     "enemy",
     type = "goblin",
@@ -232,7 +232,7 @@ entity = {
 | **MC1: Colon syntax** | `obj:method(args)` is sugar for `obj.method(obj, args)`. |
 
 ```raido
--- These are equivalent:
+// These are equivalent:
 player.take_damage(player, 10)
 player:take_damage(10)
 ```
@@ -260,18 +260,18 @@ This is pure Lua compatibility. Game scripts use this constantly for entity beha
 
 **F1 (`func` not `function`):** `function` is 8 characters of noise repeated hundreds of times in a game script. `func` is 4. Matches Rask. The Lua community informally abbreviates it already.
 
-**V3 (`const`):** Lua 5.4 added `<const>` attributes: `local x <const> = 42`. That's ugly. Rask uses `const` as a keyword. Raido follows Rask — it's cleaner and game config values should be immutable by default.
+**V2/V3 (`let`/`const`):** Rask uses `let` for mutable and `const` for immutable. Raido follows suit instead of Lua's `local`. Every other modern language uses `let` or `const` — Lua's `local` is the outlier. This also means switching between Rask and Raido code has less friction.
 
 ### Grammar Sketch (EBNF)
 
 ```ebnf
 program     = { statement }
-statement   = assignment | local_decl | const_decl | func_decl
+statement   = assignment | let_decl | const_decl | func_decl
             | if_stmt | while_stmt | repeat_stmt | for_stmt
             | match_stmt | return_stmt | break_stmt | call_stmt
 
 assignment  = var_list '=' expr_list
-local_decl  = 'local' name_list ['=' expr_list]
+let_decl    = 'let' name_list ['=' expr_list]
 const_decl  = 'const' name_list '=' expr_list
 func_decl   = 'func' name '(' [param_list] ')' block 'end'
 

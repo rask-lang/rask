@@ -137,13 +137,13 @@ func game_update(
 
 ```raido
 func on_update(dt)
-    -- handles("enemies") iterates Handle values from the "enemies" pool
+    // handles("enemies") iterates Handle values from the "enemies" pool
     for h in handles("enemies") do
         h.x = h.x + h.vx * dt
         h.y = h.y + h.vy * dt
 
         if h.health <= 0 then
-            -- drop_loot creates items in the "items" pool
+            // drop_loot creates items in the "items" pool
             drop_loot(h.x, h.y)
             remove(h)
         end
@@ -246,7 +246,7 @@ vm.register_method::<Color>("darken", |ctx| {
 ```
 
 ```raido
--- Script side
+// Script side
 const darker = red:darken(0.5)
 set_background(darker)
 ```
@@ -273,7 +273,7 @@ match vm.call("on_update", args) {
 ```
 
 ```raido
--- Script catches errors
+// Script catches errors
 local ok, err = pcall(func()
     dangerous_operation()
 end)

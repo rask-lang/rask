@@ -24,13 +24,13 @@ Minimal. No I/O, no filesystem, no networking. The host provides capabilities. B
 | `handles(pool_name)` | string → iterator | Iterate all live handles in a named pool. |
 
 ```raido
-print(type(42))        -- "int"
-print(type(3.14))      -- "number"
-print(type("hello"))   -- "string"
+print(type(42))        // "int"
+print(type(3.14))      // "number"
+print(type("hello"))   // "string"
 
-const n = tonumber("42.5")  -- 42.5 (number)
-const i = toint("42")       -- 42 (int)
-const bad = toint("42.5")   -- nil (fractional)
+const n = tonumber("42.5")  // 42.5 (number)
+const i = toint("42")       // 42 (int)
+const bad = toint("42.5")   // nil (fractional)
 
 if valid(h) then
     h.health -= 10
@@ -60,7 +60,7 @@ end
 | `math.huge` | Infinity |
 
 ```raido
--- Game math
+// Game math
 const angle = math.atan2(dy, dx)
 const speed = math.clamp(raw_speed, 0, max_speed)
 const smooth = math.lerp(old_pos, new_pos, 0.1)
@@ -89,12 +89,12 @@ const spread = math.random() * 0.2 - 0.1
 
 ```raido
 const name = "Goblin_Chief"
-print(string.lower(name))             -- "goblin_chief"
-print(string.sub(name, 0, 5))         -- "Goblin"
-print(string.starts_with(name, "Gob")) -- true
+print(string.lower(name))             // "goblin_chief"
+print(string.sub(name, 0, 5))         // "Goblin"
+print(string.starts_with(name, "Gob")) // true
 
 const parts = string.split("a,b,c", ",")
--- parts = {"a", "b", "c"}
+// parts = {"a", "b", "c"}
 ```
 
 **No regex.** String patterns are plain substring matching. Regex adds complexity and arena bloat. Game scripts rarely need regex — entity names, config keys, and chat messages use simple string ops.
@@ -134,11 +134,11 @@ const nearest = enemies[0]
 | `bit.rshift(a, n)` | Logical right shift |
 
 ```raido
--- Flag checking
+// Flag checking
 const HAS_ARMOR = 0x01
 const HAS_WEAPON = 0x02
 
-if bit.and(h.flags, HAS_ARMOR) ~= 0 then
+if bit.and(h.flags, HAS_ARMOR) != 0 then
     damage = damage // 2
 end
 
