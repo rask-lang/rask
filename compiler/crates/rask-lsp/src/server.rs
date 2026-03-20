@@ -134,6 +134,23 @@ impl LanguageServer for Backend {
                 return Ok(self.resolve_builtin_location(&symbol.name, None));
             }
 
+            // Check if this symbol was defined in a sibling file
+            if let Some(sibling) = cached.sibling_decl_names.get(&symbol.name) {
+                // Validate the span falls within the sibling source
+                if symbol.span.end <= sibling.source.len() {
+                    let def_range = Range::new(
+                        byte_offset_to_position(&sibling.source, symbol.span.start),
+                        byte_offset_to_position(&sibling.source, symbol.span.end),
+                    );
+                    let sibling_uri = Url::from_file_path(&sibling.path)
+                        .unwrap_or_else(|_| uri.clone());
+                    return Ok(Some(GotoDefinitionResponse::Scalar(Location {
+                        uri: sibling_uri,
+                        range: def_range,
+                    })));
+                }
+            }
+
             let def_range = Range::new(
                 byte_offset_to_position(&cached.source, symbol.span.start),
                 byte_offset_to_position(&cached.source, symbol.span.end),
@@ -171,12 +188,58 @@ impl LanguageServer for Backend {
         };
 
         // Get type for this node
-        let Some(ty) = cached.typed.node_types.get(&node_id) else {
+        let formatter = TypeFormatter::new(&cached.typed.types);
+        let ty_opt = cached.typed.node_types.get(&node_id);
+
+        // If no type info, try StubRegistry fallback for stdlib types
+        if ty_opt.is_none() {
+            if let Some((_, ident_name)) = cached.position_index.ident_at_position(offset) {
+                let reg = rask_stdlib::StubRegistry::load();
+                // Check if it's a known stdlib type (e.g., Response, Request, HttpServer)
+                if let Some(ts) = reg.get_type(&ident_name) {
+                    let mut contents = format!("**Stdlib Type:** `{}`", ident_name);
+                    if let Some(doc) = &ts.doc {
+                        contents.push_str(&format!("\n\n---\n\n{}", doc));
+                    }
+                    if !ts.methods.is_empty() {
+                        contents.push_str("\n\n**Methods:**\n");
+                        for m in &ts.methods {
+                            let params_str = m.params.iter()
+                                .map(|(n, t)| format!("{}: {}", n, t))
+                                .collect::<Vec<_>>()
+                                .join(", ");
+                            let self_prefix = if m.takes_self { "self, " } else { "" };
+                            contents.push_str(&format!(
+                                "\n- `{}({}{}) -> {}`",
+                                m.name, self_prefix, params_str, m.ret_ty
+                            ));
+                        }
+                    }
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: contents,
+                        }),
+                        range: None,
+                    }));
+                }
+                // Check if it's a method on a known type
+                if let Some(doc) = self.try_method_hover(&cached.source, offset, &ident_name, cached) {
+                    return Ok(Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: doc,
+                        }),
+                        range: None,
+                    }));
+                }
+            }
             return Ok(None);
-        };
+        }
+
+        let ty = ty_opt.unwrap();
 
         // Format type for display
-        let formatter = TypeFormatter::new(&cached.typed.types);
         let type_str = formatter.format(ty);
 
         // Build hover content
@@ -304,6 +367,30 @@ impl LanguageServer for Backend {
                     // No symbol — try method hover for builtin types
                     if let Some(doc) = self.try_method_hover(&cached.source, offset, &name, cached) {
                         contents.push_str(&format!("\n\n---\n\n{}", doc));
+                    }
+                }
+            }
+        }
+
+        // Enrich UnresolvedNamed types with StubRegistry info
+        if let rask_types::Type::UnresolvedNamed(name) = ty {
+            let reg = rask_stdlib::StubRegistry::load();
+            if let Some(ts) = reg.get_type(name) {
+                if let Some(doc) = &ts.doc {
+                    contents.push_str(&format!("\n\n---\n\n{}", doc));
+                }
+                if !ts.methods.is_empty() {
+                    contents.push_str("\n\n**Methods:**\n");
+                    for m in &ts.methods {
+                        let params_str = m.params.iter()
+                            .map(|(n, t)| format!("{}: {}", n, t))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        let self_prefix = if m.takes_self { "self, " } else { "" };
+                        contents.push_str(&format!(
+                            "\n- `{}({}{}) -> {}`",
+                            m.name, self_prefix, params_str, m.ret_ty
+                        ));
                     }
                 }
             }
@@ -535,7 +622,21 @@ impl Backend {
             _ => &type_name,
         };
         let method = reg.lookup_method(normalized, method_name)?;
-        method.doc.clone()
+
+        // Build a richer hover with signature + doc
+        let params_str = method.params.iter()
+            .map(|(n, t)| format!("{}: {}", n, t))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let self_prefix = if method.takes_self { "self, " } else { "" };
+        let mut result = format!(
+            "**Method:** `{}.{}({}{}) -> {}`",
+            normalized, method.name, self_prefix, params_str, method.ret_ty
+        );
+        if let Some(doc) = &method.doc {
+            result.push_str(&format!("\n\n---\n\n{}", doc));
+        }
+        Some(result)
     }
 
     /// Given a dot position in source, determine the receiver's type name for stub lookup.

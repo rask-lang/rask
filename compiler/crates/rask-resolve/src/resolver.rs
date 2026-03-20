@@ -282,6 +282,56 @@ impl Resolver {
         }
     }
 
+    /// Returns enum variants if the symbol is a known stdlib enum.
+    fn stdlib_enum_variants(module: &str, symbol: &str) -> Option<&'static [&'static str]> {
+        match (module, symbol) {
+            ("http", "Method") => Some(&["Get", "Head", "Post", "Put", "Delete", "Patch", "Options"]),
+            ("http", "HttpError") => Some(&[
+                "ConnectionFailed", "Timeout", "InvalidUrl", "InvalidResponse",
+                "TooManyRedirects", "Io",
+            ]),
+            ("json", "JsonValue") => Some(&["Null", "Bool", "Number", "String", "Array", "Object"]),
+            ("json", "JsonError") => Some(&["ParseError", "TypeError", "MissingField"]),
+            _ => None,
+        }
+    }
+
+    /// Look up the correct SymbolKind for a selective stdlib import
+    /// like `import http.HttpServer` or `import async.spawn`.
+    fn resolve_stdlib_symbol(&self, module: &str, symbol: &str) -> SymbolKind {
+        use crate::symbol::{BuiltinFunctionKind, BuiltinTypeKind};
+
+        // Builtin functions
+        match (module, symbol) {
+            ("async", "spawn") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Spawn },
+            ("core", "transmute") => return SymbolKind::BuiltinFunction { builtin: BuiltinFunctionKind::Transmute },
+            _ => {}
+        }
+
+        // Builtin types
+        let builtin_type = match (module, symbol) {
+            ("fs", "File") => Some(BuiltinTypeKind::File),
+            ("random", "Rng") => Some(BuiltinTypeKind::Rng),
+            ("math", "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8") => Some(BuiltinTypeKind::Simd),
+            _ => None,
+        };
+        if let Some(kind) = builtin_type {
+            return SymbolKind::BuiltinType { builtin: kind };
+        }
+
+        // Struct-like types
+        let is_struct = matches!((module, symbol),
+            ("net", "TcpListener" | "TcpConnection")
+            | ("http", "Request" | "Response" | "Headers" | "HttpServer" | "Responder" | "HttpClient")
+        );
+        if is_struct {
+            return SymbolKind::Struct { fields: vec![] };
+        }
+
+        // Fallback — treat as a variable binding
+        SymbolKind::Variable { mutable: false }
+    }
+
     fn is_primitive_type(name: &str) -> bool {
         matches!(name,
             "u8" | "u16" | "u32" | "u64" | "u128" | "usize" |
@@ -842,7 +892,11 @@ impl Resolver {
                 if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
                     self.errors.push(e);
                 }
-                self.register_module_companions(module_kind, span);
+                // IM1: qualified import — access as pkg.Name, no unqualified injection.
+                // For glob imports (IM6), inject all companions unqualified.
+                if import_decl.is_glob {
+                    self.register_module_companions(module_kind, span);
+                }
             } else if let Some(&pkg_id) = self.package_bindings.get(pkg_name) {
                 // External package import — register as a package namespace
                 if import_decl.is_glob {
@@ -926,18 +980,23 @@ impl Resolver {
             );
 
             if is_stdlib_module {
-                // For stdlib imports like `import async.spawn`, the binding may
-                // already exist as a builtin. Accept it without redefinition.
+                // IM4: selective import — register with correct symbol kind.
                 if self.scopes.lookup(&binding_name).is_none() {
-                    let sym_id = self.symbols.insert(
-                        binding_name.clone(),
-                        SymbolKind::Variable { mutable: false },
-                        None,
-                        span,
-                        false,
-                    );
-                    if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
-                        self.errors.push(e);
+                    // Enums need special handling (register variants too)
+                    if let Some(variants) = Self::stdlib_enum_variants(pkg_name, symbol_name) {
+                        self.register_builtin_enum(symbol_name, variants);
+                    } else {
+                        let kind = self.resolve_stdlib_symbol(pkg_name, symbol_name);
+                        let sym_id = self.symbols.insert(
+                            binding_name.clone(),
+                            kind,
+                            None,
+                            span,
+                            false,
+                        );
+                        if let Err(e) = self.scopes.define(binding_name.clone(), sym_id, span) {
+                            self.errors.push(e);
+                        }
                     }
                 }
             } else {

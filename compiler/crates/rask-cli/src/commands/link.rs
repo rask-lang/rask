@@ -19,6 +19,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "atomic.c",
     "simd.c",
     "bench.c",
+    "test.c",
     "ptr.c",
 ];
 

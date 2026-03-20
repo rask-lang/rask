@@ -53,7 +53,7 @@ pub fn print_usage() {
 
     println!();
     println!("{}", output::section_header("Testing:"));
-    println!("  {} {}      Run tests in a file", output::command("test"), output::arg("<file>"));
+    println!("  {} {} Compile and run tests", output::command("test"), output::arg("<file | dir>"));
     println!("  {} {} Run benchmarks in a file", output::command("benchmark"), output::arg("<file>"));
     println!("  {} {} Run spec documentation tests", output::command("test-specs"), output::arg("[dir]"));
 
@@ -306,23 +306,28 @@ pub fn print_watch_help() {
 pub fn print_test_help() {
     println!("{}", output::section_header("Test"));
     println!();
-    println!("Run test functions (functions with @test attribute) in a file.");
+    println!("Compile and run tests natively.");
+    println!("Accepts a single file or a project directory.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("test"),
-        output::arg("<file.rk> [-f <pattern>]"));
+        output::arg("<file.rk | dir> [-f <pattern>]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}       Output as structured JSON", output::arg("--json"));
     println!("  {} {} Filter tests by name pattern", output::arg("-f"), output::arg("<pattern>"));
     println!();
     println!("{}", output::section_header("Examples:"));
-    println!("  {} {} {}        Run all tests",
+    println!("  {} {} {}        Run all tests in file",
         output::command("rask"),
         output::command("test"),
         output::arg("tests.rk"));
-    println!("  {} {} {} {} {}  Run tests matching pattern",
+    println!("  {} {} {}                Run all tests in project",
+        output::command("rask"),
+        output::command("test"),
+        output::arg("."));
+    println!("  {} {} {} {} {}  Filter tests by pattern",
         output::command("rask"),
         output::command("test"),
         output::arg("tests.rk"),

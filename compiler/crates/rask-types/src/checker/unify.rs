@@ -28,6 +28,77 @@ impl TypeChecker {
                 }
             }
         }
+
+        // Report leftover constraints that the solver couldn't resolve.
+        // These are real errors — silently dropping them lets bad code
+        // reach MIR/codegen where it panics or produces wrong results.
+        let leftovers = std::mem::take(&mut self.ctx.constraints);
+        for constraint in leftovers {
+            match constraint {
+                TypeConstraint::HasField { ty, field, span, .. } => {
+                    let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    if !Self::is_placeholder_type(&resolved) {
+                        self.errors.push(TypeError::NoSuchField {
+                            ty: resolved,
+                            field,
+                            span,
+                        });
+                    }
+                }
+                TypeConstraint::HasMethod { ty, method, span, .. } => {
+                    let resolved = self.resolve_named(&self.ctx.apply(&ty));
+                    // Skip operator methods on primitive types — these are
+                    // desugared from +, *, etc. and resolved at the MIR level.
+                    if !Self::is_placeholder_type(&resolved)
+                        && !Self::is_operator_on_primitive(&resolved, &method)
+                    {
+                        self.errors.push(TypeError::NoSuchMethod {
+                            ty: resolved,
+                            method,
+                            span,
+                        });
+                    }
+                }
+                // Leftover Equal/ReturnValue constraints on type vars
+                // that never unified — not necessarily errors (can be
+                // resolved by literal defaults), so skip for now.
+                _ => {}
+            }
+        }
+    }
+
+    /// Types that legitimately stay unresolved (generic params, placeholders).
+    fn is_placeholder_type(ty: &Type) -> bool {
+        match ty {
+            Type::UnresolvedNamed(name) => {
+                name == "Self"
+                    || name.starts_with('_')
+                    || name.starts_with("__module_")
+            }
+            Type::Var(_) | Type::Error => true,
+            _ => false,
+        }
+    }
+
+    /// Operator methods desugared from +, *, etc. on primitive types.
+    /// These are resolved at the MIR level, not in the type checker.
+    fn is_operator_on_primitive(ty: &Type, method: &str) -> bool {
+        let is_primitive = matches!(
+            ty,
+            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::I128
+            | Type::U8 | Type::U16 | Type::U32 | Type::U64 | Type::U128
+            | Type::F32 | Type::F64 | Type::Bool | Type::Char
+        );
+        if !is_primitive {
+            return false;
+        }
+        matches!(
+            method,
+            "add" | "sub" | "mul" | "div" | "rem"
+            | "eq" | "ne" | "lt" | "gt" | "le" | "ge"
+            | "neg" | "not" | "and" | "or"
+            | "bitand" | "bitor" | "bitxor" | "shl" | "shr"
+        )
     }
 
     pub(super) fn solve_constraint(&mut self, constraint: TypeConstraint) -> Result<bool, TypeError> {

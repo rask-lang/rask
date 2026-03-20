@@ -173,6 +173,9 @@ impl Default for ErrorCodeRegistry {
                 "E0324" => ("heap allocation in @no_alloc function", Type,
                     "@no_alloc functions run in real-time contexts where heap allocation causes unpredictable latency. Use stack-allocated alternatives or pre-allocated buffers.",
                     "@no_alloc\nfunc process(data: [f32; 64]) {\n    const v = Vec.new()  // error: allocates\n}"),
+                "E0342" => ("unknown context", Type,
+                    "A `using` block references a context that doesn't exist. Valid contexts are `Multitasking` and `ThreadPool`.",
+                    "using Foo {\n    // error: unknown context `Foo`\n}"),
 
                 // Trait errors (E07xx)
                 "E0700" => ("trait bound not satisfied", Trait,

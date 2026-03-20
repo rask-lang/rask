@@ -254,7 +254,7 @@ fn try_inline_call(
             entry_prefix.push(MirStmt::new(
                 MirStmtKind::Assign {
                     dst: new_param_local,
-                    rvalue: MirRValue::Use(remap_operand(&args[i], &local_map)),
+                    rvalue: MirRValue::Use(args[i].clone()),
                 },
                 call_span,
             ));

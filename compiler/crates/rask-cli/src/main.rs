@@ -280,8 +280,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {} {}", "Usage".yellow(), output::command("rask"), output::command("test"), output::arg("<file.rk>"), output::arg("[-f pattern]"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {} {}", "Usage".yellow(), output::command("rask"), output::command("test"), output::arg("<file.rk | dir>"), output::arg("[-f pattern]"));
                 process::exit(1);
             }
             let filter = extract_filter(&cmd_args);
@@ -289,11 +289,15 @@ fn main() {
             let file = match file_arg {
                 Some(f) => f,
                 None => {
-                    eprintln!("{}: missing file argument", output::error_label());
+                    eprintln!("{}: missing file or directory argument", output::error_label());
                     process::exit(1);
                 }
             };
-            commands::run::cmd_test(file, filter, format);
+            if Path::new(file).is_dir() {
+                commands::run::cmd_test_project(file, filter, format);
+            } else {
+                commands::run::cmd_test_native(file, filter, format);
+            }
         }
         "benchmark" | "bench" => {
             if cmd_args.contains(&"--help") || cmd_args.contains(&"-h") {

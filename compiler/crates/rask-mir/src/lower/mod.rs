@@ -369,54 +369,29 @@ impl<'a> MirContext<'a> {
     /// qualified method names like "Vec_push", "Map_get", "string_len".
     /// Without qualification, bare names like "get" or "len" are ambiguous
     /// across Vec, Map, String, and Pool.
-    pub fn stdlib_type_prefix(ty: &Type) -> Option<&'static str> {
+    ///
+    /// Type/module names are derived from stdlib stub files via
+    /// `rask_stdlib::mir_metadata`. Structural types (Result, Option, Ptr)
+    /// are matched directly since they're language-level, not stdlib.
+    pub fn stdlib_type_prefix(ty: &Type) -> Option<&str> {
+        let names = rask_stdlib::mir_metadata::stdlib_type_names();
+        let modules = rask_stdlib::mir_metadata::stdlib_module_names();
         match ty {
             Type::String => Some("string"),
-            Type::UnresolvedNamed(name) => match name.as_str() {
-                "string" => Some("string"),
-                "Vec" => Some("Vec"),
-                "Map" => Some("Map"),
-                "Pool" => Some("Pool"),
-                "Rng" => Some("Rng"),
-                "File" => Some("File"),
-                "AtomicBool" => Some("AtomicBool"),
-                "AtomicI8" => Some("AtomicI8"),
-                "AtomicU8" => Some("AtomicU8"),
-                "AtomicI16" => Some("AtomicI16"),
-                "AtomicU16" => Some("AtomicU16"),
-                "AtomicI32" => Some("AtomicI32"),
-                "AtomicU32" => Some("AtomicU32"),
-                "AtomicI64" => Some("AtomicI64"),
-                "AtomicU64" => Some("AtomicU64"),
-                "AtomicUsize" => Some("AtomicUsize"),
-                "AtomicIsize" => Some("AtomicIsize"),
-                "f32x4" => Some("f32x4"),
-                "f32x8" => Some("f32x8"),
-                "f64x2" => Some("f64x2"),
-                "f64x4" => Some("f64x4"),
-                "i32x4" => Some("i32x4"),
-                "i32x8" => Some("i32x8"),
-                "Shared" => Some("Shared"),
-                "Mutex" => Some("Mutex"),
-                "Channel" => Some("Channel"),
-                "Sender" => Some("Sender"),
-                "Receiver" => Some("Receiver"),
-                _ => None,
-            },
-            Type::UnresolvedGeneric { name, .. } => match name.as_str() {
-                "Vec" => Some("Vec"),
-                "Map" => Some("Map"),
-                "Pool" => Some("Pool"),
-                "Handle" => Some("Handle"),
-                "Rng" => Some("Rng"),
-                "File" => Some("File"),
-                "Shared" => Some("Shared"),
-                "Mutex" => Some("Mutex"),
-                "Channel" => Some("Channel"),
-                "Sender" => Some("Sender"),
-                "Receiver" => Some("Receiver"),
-                _ => None,
-            },
+            Type::UnresolvedNamed(name) => {
+                if names.contains(name.as_str()) || modules.contains(name.as_str()) {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            }
+            Type::UnresolvedGeneric { name, .. } => {
+                if names.contains(name.as_str()) || modules.contains(name.as_str()) {
+                    Some(name.as_str())
+                } else {
+                    None
+                }
+            }
             Type::Result { .. } => Some("Result"),
             Type::Option(_) => Some("Option"),
             Type::RawPtr(_) => Some("Ptr"),
@@ -596,93 +571,12 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Inject signatures for stdlib module methods so return types resolve
-        for (name, ret) in [
-            ("cli_args", MirType::I64),
-            ("io_read_line", MirType::I64),
-            ("std_exit", MirType::Void),
-            ("fs_open", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("fs_create", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("fs_write_file", MirType::Void),
-            ("fs_exists", MirType::Bool),
-            ("fs_canonicalize", MirType::I64),
-            ("fs_copy", MirType::I64),
-            ("fs_rename", MirType::Void),
-            ("fs_remove", MirType::Void),
-            ("fs_create_dir", MirType::Void),
-            ("fs_create_dir_all", MirType::Void),
-            ("fs_append_file", MirType::Void),
-            ("json_encode", MirType::I64),
-            ("json_decode", MirType::I64),
-            ("io_read_string", MirType::I64),
-            ("io_write_string", MirType::I64),
-            ("io_close_fd", MirType::Void),
-            ("net_tcp_listen", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("TcpListener_accept", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("TcpConnection_read_http_request", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("TcpConnection_write_http_response", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            // Channel send/recv return status codes; typed as Result
-            // so `try` correctly wraps them via wrap_ok_into_slot.
-            ("Sender_send", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("Sender_try_send", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            ("Receiver_recv", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            // Struct recv: panics on closed channel, returns struct pointer directly
-            ("Receiver_recv_struct", MirType::Ptr),
-            ("Receiver_try_recv", MirType::Result {
-                ok: Box::new(MirType::I64),
-                err: Box::new(MirType::I64),
-            }),
-            // Rng type methods
-            ("Rng_new", MirType::I64),
-            ("Rng_from_seed", MirType::I64),
-            ("Rng_u64", MirType::I64),
-            ("Rng_i64", MirType::I64),
-            ("Rng_f64", MirType::I64),
-            ("Rng_f32", MirType::I64),
-            ("Rng_bool", MirType::I64),
-            ("Rng_range", MirType::I64),
-            // Random module convenience
-            ("random_f64", MirType::I64),
-            ("random_f32", MirType::I64),
-            ("random_i64", MirType::I64),
-            ("random_bool", MirType::I64),
-            ("random_range", MirType::I64),
-            // File instance methods
-            ("File_close", MirType::Void),
-            ("File_read_all", MirType::I64),
-            ("File_read_text", MirType::I64),
-            ("File_write", MirType::Void),
-            ("File_write_line", MirType::Void),
-            ("File_lines", MirType::I64),
-        ] {
-            func_sigs.entry(name.to_string()).or_insert(FuncSig { ret_ty: ret });
+        // Inject signatures for stdlib methods so return types resolve.
+        // Derived from stub files via rask_stdlib::mir_metadata.
+        for meta in rask_stdlib::mir_metadata::method_metas() {
+            func_sigs.entry(meta.qualified_name.clone()).or_insert(FuncSig {
+                ret_ty: ret_category_to_mir_type(&meta.ret_category),
+            });
         }
 
         let func_name = qualified_name
@@ -1464,14 +1358,11 @@ pub(crate) fn is_variant_name(name: &str) -> bool {
 /// Detect identifiers that name types or stdlib modules rather than values.
 ///
 /// Uppercase-initial names are user-defined types (structs, enums, traits).
-/// Lowercase names include built-in types (`string`) and stdlib modules
-/// (`cli`, `fs`, `std`, `io`) that support static method syntax.
+/// Lowercase names are checked against stdlib stub registrations.
 fn is_type_constructor_name(name: &str) -> bool {
     name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-        || matches!(name,
-            "string" | "cli" | "fs" | "std" | "io" | "json" | "net" | "random" | "time"
-            | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8"
-        )
+        || rask_stdlib::mir_metadata::stdlib_type_names().contains(name)
+        || rask_stdlib::mir_metadata::stdlib_module_names().contains(name)
 }
 
 /// Map a qualified function name to the stdlib type prefix of its return value.
@@ -1479,27 +1370,27 @@ fn is_type_constructor_name(name: &str) -> bool {
 /// When the type checker can't resolve concrete types (leaves `Var(TypeVarId(...))`),
 /// the MIR lowerer uses this to track which type a local holds, so later
 /// method calls get correctly qualified (e.g. `rng.range()` → `Rng_range`).
-fn func_return_type_prefix(func_name: &str) -> Option<&'static str> {
-    match func_name {
-        "fs_open" | "fs_create" => Some("File"),
-        "File_lines" | "File_read_all" | "fs_read_lines" | "cli_args"
-        | "string_lines" | "string_split" | "string_split_whitespace"
-        | "Map_keys" | "Map_values" => Some("Vec"),
-        "Vec_pop" | "Vec_get" | "Map_get" => Some("Option"),
-        "Thread_spawn" => Some("ThreadHandle"),
-        "Shared_clone" => Some("Shared"),
-        "Mutex_new" => Some("Mutex"),
-        "Sender_clone" => Some("Sender"),
-        "Receiver_clone" => Some("Receiver"),
-        _ if func_name.starts_with("AtomicBool_") => Some("AtomicBool"),
-        _ if func_name.starts_with("f32x4_") && !is_scalar_return(func_name) => Some("f32x4"),
-        _ if func_name.starts_with("f32x8_") && !is_scalar_return(func_name) => Some("f32x8"),
-        _ if func_name.starts_with("f64x2_") && !is_scalar_return(func_name) => Some("f64x2"),
-        _ if func_name.starts_with("f64x4_") && !is_scalar_return(func_name) => Some("f64x4"),
-        _ if func_name.starts_with("i32x4_") && !is_scalar_return(func_name) => Some("i32x4"),
-        _ if func_name.starts_with("i32x8_") && !is_scalar_return(func_name) => Some("i32x8"),
-        _ => None,
+///
+/// Derived from stdlib stub files. SIMD scalar returns are handled as a
+/// fallback since stubs don't distinguish vector vs scalar return methods.
+fn func_return_type_prefix(func_name: &str) -> Option<&str> {
+    // SIMD: non-scalar-returning methods keep their type prefix
+    if is_simd_prefix(func_name) && !is_scalar_return(func_name) {
+        return func_name.split('_').next();
     }
+
+    // Look up from stub-derived metadata
+    if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
+        return meta.ret_type_prefix.as_deref();
+    }
+
+    None
+}
+
+fn is_simd_prefix(name: &str) -> bool {
+    name.starts_with("f32x4_") || name.starts_with("f32x8_")
+        || name.starts_with("f64x2_") || name.starts_with("f64x4_")
+        || name.starts_with("i32x4_") || name.starts_with("i32x8_")
 }
 
 /// SIMD methods that return a scalar, not a vector.
@@ -1515,54 +1406,24 @@ fn is_scalar_return(func_name: &str) -> bool {
 
 /// Return type for known stdlib functions that don't return I64.
 /// Supplements func_sigs (which only has user-defined functions).
+///
+/// Primary source: stub-derived metadata. Suffix-based patterns serve as
+/// fallbacks for user type methods and methods not yet in stubs.
 fn stdlib_return_mir_type(func_name: &str) -> MirType {
-    // Functions returning Result types
-    match func_name {
-        "fs_read_file" | "fs_read_lines" => return MirType::Result {
-            ok: Box::new(MirType::String),
-            err: Box::new(MirType::String),
-        },
-        // Pool.insert returns Handle or Error — codegen wraps raw i64
-        // handle into a Result stack slot (tag at offset 0, payload at 8).
-        // Without this, field extraction uses offset 0 (the tag) instead
-        // of 8, returning wrong handle values for non-first inserts.
-        "Pool_alloc" | "Pool_insert" => return MirType::Result {
-            ok: Box::new(MirType::I64),
-            err: Box::new(MirType::I64),
-        },
-        "Map_get" => return MirType::Option(Box::new(MirType::I64)),
-        "ThreadHandle_join" | "Thread_join" => return MirType::Result {
-            ok: Box::new(MirType::I64),
-            err: Box::new(MirType::String),
-        },
-        "string_parse_i32" | "string_parse_i64" | "string_parse_int" => return MirType::Result {
-            ok: Box::new(MirType::I64),
-            err: Box::new(MirType::String),
-        },
-        "string_parse_f64" | "string_parse_float" | "string_parse" => return MirType::Result {
-            ok: Box::new(MirType::F64),
-            err: Box::new(MirType::String),
-        },
-        _ => {}
+    // Try stub-derived metadata first
+    if let Some(meta) = rask_stdlib::mir_metadata::lookup(func_name) {
+        return ret_category_to_mir_type(&meta.ret_category);
     }
-    // Pointer methods
-    match func_name {
-        "Ptr_add" | "Ptr_sub" | "Ptr_offset" | "Ptr_cast" => return MirType::Ptr,
-        "Ptr_is_null" => return MirType::Bool,
-        _ => {}
-    }
+
     // SIMD float reductions return F64
     if is_scalar_return(func_name) && !func_name.ends_with("_store") && !func_name.ends_with("_set") {
         if func_name.starts_with("f32x") || func_name.starts_with("f64x") {
             return MirType::F64;
         }
     }
-    // String-returning functions
-    if func_name == "string_new" || func_name == "string_from"
-        || func_name == "string_from_c"
-        || func_name == "string_clone"
-        || func_name == "Vec_join" || func_name == "Vec_join_i64"
-        || func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
+
+    // Suffix-based fallbacks for methods not in stubs (user types, etc.)
+    if func_name.ends_with("_to_string") || func_name.ends_with("_to_uppercase")
         || func_name.ends_with("_to_lowercase") || func_name.ends_with("_trim")
         || func_name.ends_with("_trim_start") || func_name.ends_with("_trim_end")
         || func_name.ends_with("_replace") || func_name.ends_with("_substring")
@@ -1571,22 +1432,35 @@ fn stdlib_return_mir_type(func_name: &str) -> MirType {
     {
         return MirType::String;
     }
-    if func_name == "i64_to_string" || func_name == "f64_to_string"
-        || func_name == "bool_to_string" || func_name == "char_to_string"
-    {
-        return MirType::String;
-    }
-    // Bool-returning functions
     if func_name.ends_with("_is_empty") || func_name.ends_with("_contains")
         || func_name.ends_with("_starts_with") || func_name.ends_with("_ends_with")
     {
         return MirType::Bool;
     }
-    // Char predicates return bool
     if func_name.starts_with("char_is_") || func_name == "char_eq" {
         return MirType::Bool;
     }
+
     MirType::I64
+}
+
+/// Convert a stub-derived RetCategory to a MirType.
+fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> MirType {
+    use rask_stdlib::mir_metadata::RetCategory;
+    match cat {
+        RetCategory::Void => MirType::Void,
+        RetCategory::Bool => MirType::Bool,
+        RetCategory::I64 => MirType::I64,
+        RetCategory::F64 => MirType::F64,
+        RetCategory::String => MirType::String,
+        RetCategory::Ptr => MirType::Ptr,
+        RetCategory::Option(inner) => MirType::Option(Box::new(ret_category_to_mir_type(inner))),
+        RetCategory::Result { ok, err } => MirType::Result {
+            ok: Box::new(ret_category_to_mir_type(ok)),
+            err: Box::new(ret_category_to_mir_type(err)),
+        },
+        RetCategory::Named(_) => MirType::I64,
+    }
 }
 
 /// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).

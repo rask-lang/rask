@@ -582,7 +582,8 @@ func parse_http_response(raw: string) -> Response or HttpError {
 }
 
 // Connect, send request, read response, close connection.
-func send_request(method: Method, url: string, body: string, extra_headers: Headers) -> Response or HttpError {
+// Internal helper — called from extend http {} and extend HttpClient {}.
+func _send_request_impl(method: Method, url: string, body: string, extra_headers: Headers) -> Response or HttpError {
     const (host, port, path) = try parse_url(url)
     const addr = "{host}:{port}"
 
@@ -715,23 +716,27 @@ extend http {
     }
 
     public func get(url: string) -> Response or HttpError {
-        return send_request(Method.Get, url, "", Headers.new())
+        return _send_request_impl(Method.Get, url, "", Headers.new())
     }
 
     public func post(url: string, body: string) -> Response or HttpError {
-        return send_request(Method.Post, url, body, Headers.new())
+        return _send_request_impl(Method.Post, url, body, Headers.new())
     }
 
     public func put(url: string, body: string) -> Response or HttpError {
-        return send_request(Method.Put, url, body, Headers.new())
+        return _send_request_impl(Method.Put, url, body, Headers.new())
     }
 
     public func delete(url: string) -> Response or HttpError {
-        return send_request(Method.Delete, url, "", Headers.new())
+        return _send_request_impl(Method.Delete, url, "", Headers.new())
     }
 
     public func request(request: Request) -> Response or HttpError {
-        return send_request(request.method, request.url, request.body, request.headers)
+        return _send_request_impl(request.method, request.url, request.body, request.headers)
+    }
+
+    public func send_request(method: Method, url: string, body: string, headers: Headers) -> Response or HttpError {
+        return _send_request_impl(method, url, body, headers)
     }
 }
 
@@ -762,22 +767,22 @@ extend HttpClient {
     }
 
     public func get(self, url: string) -> Response or HttpError {
-        return send_request(Method.Get, url, "", self.default_headers)
+        return _send_request_impl(Method.Get, url, "", self.default_headers)
     }
 
     public func post(self, url: string, body: string) -> Response or HttpError {
-        return send_request(Method.Post, url, body, self.default_headers)
+        return _send_request_impl(Method.Post, url, body, self.default_headers)
     }
 
     public func put(self, url: string, body: string) -> Response or HttpError {
-        return send_request(Method.Put, url, body, self.default_headers)
+        return _send_request_impl(Method.Put, url, body, self.default_headers)
     }
 
     public func delete(self, url: string) -> Response or HttpError {
-        return send_request(Method.Delete, url, "", self.default_headers)
+        return _send_request_impl(Method.Delete, url, "", self.default_headers)
     }
 
     public func request(self, request: Request) -> Response or HttpError {
-        return send_request(request.method, request.url, request.body, self.default_headers)
+        return _send_request_impl(request.method, request.url, request.body, self.default_headers)
     }
 }

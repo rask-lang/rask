@@ -2,12 +2,11 @@
 //! Core backend struct and compilation pipeline.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
-
-use std::path::Path;
 
 use rask_ast::decl::Decl;
 use rask_diagnostics::ToDiagnostic;
@@ -17,6 +16,13 @@ use rask_types::TypedProgram;
 
 use crate::convert::{byte_offset_to_position, to_lsp_diagnostic};
 use crate::position_index::{build_position_index, PositionIndex};
+
+/// Sibling file info for cross-file navigation.
+#[derive(Debug)]
+pub struct SiblingFile {
+    pub path: PathBuf,
+    pub source: String,
+}
 
 /// Cached compilation result for a file.
 #[derive(Debug)]
@@ -31,6 +37,8 @@ pub struct CompilationResult {
     pub diagnostics: Vec<rask_diagnostics::Diagnostic>,
     /// Position index for fast lookups
     pub position_index: PositionIndex,
+    /// Maps top-level declaration names from sibling files to their source info.
+    pub sibling_decl_names: HashMap<String, SiblingFile>,
 }
 
 #[derive(Debug)]
@@ -109,7 +117,7 @@ impl Backend {
         rask_desugar::desugar(&mut parse_result.decls);
 
         // Load sibling declarations from the same package (multi-file support)
-        let sibling_decls = load_sibling_decls(uri);
+        let (sibling_decls, sibling_decl_names) = load_sibling_decls(uri);
         if !sibling_decls.is_empty() {
             parse_result.decls.extend(sibling_decls);
         }
@@ -163,6 +171,7 @@ impl Backend {
             typed,
             diagnostics: rask_diagnostics.clone(),
             position_index,
+            sibling_decl_names,
         };
 
         // Cache the result (only if successful compilation)
@@ -174,26 +183,27 @@ impl Backend {
 }
 
 /// Load declarations from sibling .rk files in the same package.
-/// Returns empty vec if not in a package (no build.rk found).
-fn load_sibling_decls(uri: &Url) -> Vec<Decl> {
+/// Returns (merged decls, name→sibling file mapping for cross-file navigation).
+fn load_sibling_decls(uri: &Url) -> (Vec<Decl>, HashMap<String, SiblingFile>) {
     let file_path = match uri.to_file_path() {
         Ok(p) => p,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), HashMap::new()),
     };
     let dir = match file_path.parent() {
         Some(d) => d,
-        None => return Vec::new(),
+        None => return (Vec::new(), HashMap::new()),
     };
 
     // Only load siblings if this is a package (has build.rk)
     if !dir.join("build.rk").is_file() {
-        return Vec::new();
+        return (Vec::new(), HashMap::new());
     }
 
     let mut decls = Vec::new();
+    let mut sibling_decl_names: HashMap<String, SiblingFile> = HashMap::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return Vec::new(),
+        Err(_) => return (Vec::new(), HashMap::new()),
     };
 
     for entry in entries.flatten() {
@@ -220,9 +230,30 @@ fn load_sibling_decls(uri: &Url) -> Vec<Decl> {
         let mut parse_result = Parser::new(lex.tokens).parse();
         if parse_result.is_ok() {
             rask_desugar::desugar(&mut parse_result.decls);
+
+            // Track top-level declaration names from this sibling file
+            use rask_ast::decl::DeclKind;
+            for decl in &parse_result.decls {
+                let name = match &decl.kind {
+                    DeclKind::Fn(f) => Some(f.name.clone()),
+                    DeclKind::Struct(s) => Some(s.name.clone()),
+                    DeclKind::Enum(e) => Some(e.name.clone()),
+                    DeclKind::Trait(t) => Some(t.name.clone()),
+                    DeclKind::Const(c) => Some(c.name.clone()),
+                    DeclKind::Union(u) => Some(u.name.clone()),
+                    _ => None,
+                };
+                if let Some(name) = name {
+                    sibling_decl_names.entry(name).or_insert_with(|| SiblingFile {
+                        path: path.clone(),
+                        source: source.clone(),
+                    });
+                }
+            }
+
             decls.extend(parse_result.decls);
         }
     }
 
-    decls
+    (decls, sibling_decl_names)
 }

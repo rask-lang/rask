@@ -517,7 +517,12 @@ impl<'a> MirLowerer<'a> {
                 if let ExprKind::Ident(name) = &object.kind {
                     if !self.locals.contains_key(name) {
                         // Cross-package call: pkg.func() → direct call to func
-                        if self.ctx.package_modules.contains(name) {
+                        // Skip builtin stdlib modules — they use prefixed names
+                        // (e.g. net.tcp_listen → net_tcp_listen) handled by
+                        // the is_known_type path below.
+                        if self.ctx.package_modules.contains(name)
+                            && !super::is_type_constructor_name(name)
+                        {
                             let func_name = method.clone();
                             let mut arg_operands = Vec::new();
                             for arg in args {
@@ -1224,7 +1229,13 @@ impl<'a> MirLowerer<'a> {
                     // parse<T> always belongs to string (structural, not type-prefix related)
                     .or_else(|| if method.starts_with("parse_") { Some("string".to_string()) } else { None })
                     .map(|prefix| format!("{}_{}", prefix, method))
-                    .unwrap_or_else(|| method.clone());
+                    .unwrap_or_else(|| {
+                        eprintln!(
+                            "[mir] method `{}` has no type prefix — type checker should have resolved this",
+                            method
+                        );
+                        method.clone()
+                    });
 
                 // If still unqualified, search func_sigs for a matching *_method entry
                 let qualified_name = if qualified_name == method {
@@ -1603,7 +1614,13 @@ impl<'a> MirLowerer<'a> {
                     if !resolved {
                         rt = self.ctx.lookup_node_type(expr.id)
                             .filter(|t| !matches!(t, MirType::Ptr))
-                            .unwrap_or(MirType::I64);
+                            .unwrap_or_else(|| {
+                                eprintln!(
+                                    "[mir] unresolved field `{}` — defaulting to I64 (should be caught by type checker)",
+                                    field
+                                );
+                                MirType::I64
+                            });
                     }
 
                     (fi, rt, bo, fs)
@@ -2279,7 +2296,7 @@ impl<'a> MirLowerer<'a> {
 
             // Using block — emit runtime init/shutdown for Multitasking/ThreadPool
             ExprKind::UsingBlock { name, args, body } => {
-                if name == "Multitasking" || name == "multitasking"
+                if name == "Multitasking" || name == "MultiTasking" || name == "multitasking"
                     || name == "ThreadPool" || name == "threadpool"
                 {
                     // Extract worker count from args, default to 0 (auto-detect)

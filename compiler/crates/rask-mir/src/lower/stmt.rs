@@ -418,7 +418,13 @@ impl<'a> MirLowerer<'a> {
         // Track stdlib type prefix for variables assigned from type constructors,
         // known module functions, or method calls on tracked variables,
         // so later method calls dispatch correctly.
-        if let ExprKind::MethodCall { object, method, .. } = &init.kind {
+        // Unwrap try/unwrap wrappers to see the underlying expression.
+        let init_inner = match &init.kind {
+            ExprKind::Try { expr, .. } => expr.as_ref(),
+            ExprKind::Unwrap { expr, .. } => expr.as_ref(),
+            _ => init,
+        };
+        if let ExprKind::MethodCall { object, method, .. } = &init_inner.kind {
             if let ExprKind::Ident(obj_name) = &object.kind {
                 if super::is_type_constructor_name(obj_name) {
                     // Type.method() → prefix is the type name.
@@ -449,6 +455,16 @@ impl<'a> MirLowerer<'a> {
                         if let Some(full_ty) = self.local_full_type.get(obj_name).cloned() {
                             self.local_full_type.insert(name.to_string(), full_ty);
                         }
+                    }
+                }
+            }
+            // Module.Type.method() pattern: http.HttpServer.listen() → prefix "HttpServer"
+            if let ExprKind::Field { object: inner_obj, field: type_name } = &object.kind {
+                if let ExprKind::Ident(module_name) = &inner_obj.kind {
+                    if !self.locals.contains_key(module_name)
+                        && super::is_type_constructor_name(module_name)
+                    {
+                        self.local_type_prefix.insert(name.to_string(), type_name.clone());
                     }
                 }
             }

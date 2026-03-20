@@ -9,3 +9,4 @@ rask-types = { path = "../rask-types" }
 rask-mono = { path = "../rask-mono" }
 rask-comptime = { path = "../rask-comptime" }
 rask-diagnostics = { path = "../rask-diagnostics" }
+rask-stdlib = { path = "../rask-stdlib" }

@@ -85,7 +85,24 @@ pub fn project_binary_path(path: &str, profile: &str, target: Option<&str>) -> s
     out_dir.join(&bin_name)
 }
 
-pub fn cmd_build(path: &str, opts: BuildOptions) {
+/// State produced by the shared build preparation pipeline.
+/// Used by both `cmd_build` and `cmd_test_project`.
+pub struct PreparedBuild {
+    pub registry: rask_resolve::PackageRegistry,
+    pub root_id: rask_resolve::PackageId,
+    pub root: PathBuf,
+    pub link_opts: super::link::LinkOptions,
+    pub bin_name: String,
+    pub out_dir: PathBuf,
+    pub resolved_feature_names: Vec<String>,
+    pub dep_errors: usize,
+    pub opts: BuildOptions,
+    pub start: Instant,
+}
+
+/// Run the shared build preparation pipeline: discover packages, validate
+/// manifest, run build script, check dependencies. Exits on fatal errors.
+pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
     use rask_ast::decl::DeclKind;
     use rask_resolve::PackageRegistry;
 
@@ -345,13 +362,6 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
         println!();
     }
 
-    let compile_label = if let Some(ref t) = opts.target {
-        format!("{}, {}", opts.profile, t)
-    } else {
-        opts.profile.clone()
-    };
-    println!("{} {} ({})", "  Compiling".green().bold(), bin_name, compile_label);
-
     if opts.verbose {
         println!("  Discovered {} package(s):", registry.len());
         for pkg in registry.packages() {
@@ -514,7 +524,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
     }
 
     // === LC1 Step 7: Check all packages, codegen root only ===
-    let mut total_errors = 0;
+    let mut dep_errors = 0;
 
     // Check dependencies in parallel by dependency level (PP1-PP3)
     let dep_levels = toposort_levels(&registry, root_id);
@@ -574,11 +584,40 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
             });
         }
 
-        total_errors += level_errors.load(Ordering::Relaxed);
-        if total_errors > 0 {
+        dep_errors += level_errors.load(Ordering::Relaxed);
+        if dep_errors > 0 {
             break; // Don't check later levels if earlier ones failed
         }
     }
+
+    PreparedBuild {
+        registry,
+        root_id,
+        root,
+        link_opts,
+        bin_name,
+        out_dir,
+        resolved_feature_names,
+        dep_errors,
+        opts,
+        start,
+    }
+}
+
+pub fn cmd_build(path: &str, opts: BuildOptions) {
+    let PreparedBuild {
+        registry, root_id, root, link_opts, bin_name, out_dir,
+        resolved_feature_names, dep_errors, opts, start,
+    } = prepare_build(path, opts);
+
+    let mut total_errors = dep_errors;
+
+    let compile_label = if let Some(ref t) = opts.target {
+        format!("{}, {}", opts.profile, t)
+    } else {
+        opts.profile.clone()
+    };
+    println!("{} {} ({})", "  Compiling".green().bold(), bin_name, compile_label);
 
     // Compile root package (full pipeline, with compilation cache XC1-XC5)
     if total_errors == 0 {

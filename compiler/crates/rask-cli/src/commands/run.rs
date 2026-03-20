@@ -71,16 +71,212 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
     }
 }
 
-pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
-    let result = super::pipeline::run_frontend(path, format);
+/// Build a project directory and run its tests natively.
+/// Uses the full build pipeline (package resolution, build script, deps)
+/// but compiles with a test runner entry point instead of main().
+pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
+    use colored::Colorize;
+    use rask_diagnostics::formatter::DiagnosticFormatter;
 
-    let mut interp = rask_interp::Interpreter::new();
-    if !result.package_names.is_empty() {
-        interp.register_packages(&result.package_names);
+    let opts = super::build::BuildOptions {
+        profile: "debug".to_string(),
+        verbose: false,
+        target: None,
+        no_cache: false,
+        force: false,
+        jobs: None,
+    };
+
+    let prepared = super::build::prepare_build(path, opts);
+
+    if prepared.dep_errors > 0 {
+        eprintln!("{}", output::banner_fail("Build", prepared.dep_errors));
+        process::exit(1);
     }
-    let results = interp.run_tests(&result.decls, filter.as_deref());
 
-    if results.is_empty() {
+    let root_pkg = match prepared.registry.get(prepared.root_id) {
+        Some(p) => p,
+        None => {
+            eprintln!("{}: root package not found", output::error_label());
+            process::exit(1);
+        }
+    };
+
+    let source_files: Vec<_> = root_pkg.files.iter()
+        .map(|f| (f.path.clone(), f.source.clone()))
+        .collect();
+
+    let mut all_decls: Vec<_> = root_pkg.all_decls().cloned().collect();
+    rask_desugar::desugar(&mut all_decls);
+
+    // Collect dependency declarations and package modules (same as cmd_build)
+    let mut package_modules = std::collections::HashSet::new();
+    let mut dep_decls = Vec::new();
+    for pkg in prepared.registry.packages() {
+        if pkg.id == prepared.root_id { continue; }
+        package_modules.insert(pkg.name.clone());
+        for decl in pkg.all_decls() {
+            match &decl.kind {
+                rask_ast::decl::DeclKind::Fn(_)
+                | rask_ast::decl::DeclKind::Struct(_)
+                | rask_ast::decl::DeclKind::Enum(_)
+                | rask_ast::decl::DeclKind::Impl(_)
+                | rask_ast::decl::DeclKind::Const(_) => {
+                    dep_decls.push(decl.clone());
+                }
+                _ => {}
+            }
+        }
+    }
+    for decl in &all_decls {
+        if let rask_ast::decl::DeclKind::Import(import) = &decl.kind {
+            if let Some(first) = import.path.first() {
+                if rask_resolve::BUILTIN_MODULE_NAMES.contains(&first.as_str()) {
+                    package_modules.insert(first.clone());
+                }
+            }
+        }
+    }
+
+    let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+
+    match rask_resolve::resolve_package_with_stdlib(&all_decls, &prepared.registry, prepared.root_id, &stdlib_decls) {
+        Ok(resolved) => {
+            match rask_types::typecheck(resolved, &all_decls) {
+                Ok(typed) => {
+                    let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
+                    if !ownership_result.is_ok() {
+                        for error in &ownership_result.errors {
+                            let d = rask_diagnostics::ToDiagnostic::to_diagnostic(error);
+                            let primary_end = d.labels.iter()
+                                .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+                                .map(|l| l.span.end);
+                            let matched = primary_end.and_then(|end| {
+                                let candidates: Vec<_> = source_files.iter()
+                                    .filter(|(_, src)| end <= src.len() && !src.is_empty())
+                                    .collect();
+                                if candidates.len() == 1 { Some(candidates[0]) } else { None }
+                            });
+                            if let Some((path, source)) = matched {
+                                let file_name = path.to_string_lossy();
+                                let fmt = DiagnosticFormatter::new(source)
+                                    .with_file_name(&file_name);
+                                eprintln!("{}", fmt.format(&d));
+                            } else {
+                                eprintln!("{}: {}", output::error_label(), d.message);
+                            }
+                        }
+                        eprintln!("{}", output::banner_fail("Ownership", ownership_result.errors.len()));
+                        process::exit(1);
+                    }
+
+                    // Merge stdlib + dep decls
+                    all_decls.extend(stdlib_decls);
+                    let mut dep_decls_desugared = dep_decls;
+                    rask_desugar::desugar(&mut dep_decls_desugared);
+                    all_decls.extend(dep_decls_desugared);
+                    rask_hidden_params::desugar_hidden_params(&mut all_decls);
+
+                    // Extract tests (replaces main, adds test body functions)
+                    let tests = super::compile::extract_tests(&mut all_decls, filter.as_deref());
+
+                    if tests.is_empty() {
+                        if format == Format::Human {
+                            println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
+                            println!("  No tests found.");
+                        }
+                        return;
+                    }
+
+                    match rask_mono::monomorphize_with_packages(&typed, &all_decls, package_modules) {
+                        Ok(mono) => {
+                            let cfg = rask_comptime::CfgConfig::from_host("debug", prepared.resolved_feature_names);
+                            let comptime_globals = super::codegen::evaluate_comptime_globals(
+                                &all_decls, Some(&cfg),
+                                Some(super::codegen::MirEvalContext { mono: &mono, typed: &typed }),
+                            );
+
+                            let tmp_dir = std::env::temp_dir();
+                            let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
+                            let bin_str = bin_path.to_string_lossy().to_string();
+                            let obj_path = format!("{}.o", bin_str);
+
+                            if let Err(errors) = super::compile::compile_tests_to_object(
+                                &mono, &typed, &all_decls, &comptime_globals,
+                                &tests, None, None, &obj_path, Some(&cfg),
+                            ) {
+                                for e in &errors {
+                                    eprintln!("{}: compile: {}", output::error_label(), e);
+                                }
+                                let _ = std::fs::remove_file(&obj_path);
+                                process::exit(1);
+                            }
+
+                            if let Err(e) = super::link::link_executable_with(
+                                &obj_path, &bin_str, &prepared.link_opts, false, None,
+                            ) {
+                                eprintln!("{}: link: {}", output::error_label(), e);
+                                let _ = std::fs::remove_file(&obj_path);
+                                process::exit(1);
+                            }
+                            let _ = std::fs::remove_file(&obj_path);
+
+                            let output = process::Command::new(&bin_str).output();
+                            let _ = std::fs::remove_file(&bin_path);
+
+                            match output {
+                                Ok(out) => {
+                                    let stdout = String::from_utf8_lossy(&out.stdout);
+                                    display_test_results(&stdout, path, format);
+                                    if !out.status.success() {
+                                        process::exit(1);
+                                    }
+                                }
+                                Err(e) => {
+                                    eprintln!("{}: executing test binary: {}", output::error_label(), e);
+                                    process::exit(1);
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("monomorphization error: {:?}", e);
+                            process::exit(1);
+                        }
+                    }
+                }
+                Err(errors) => {
+                    for error in &errors {
+                        eprintln!("type error: {}", error);
+                    }
+                    process::exit(1);
+                }
+            }
+        }
+        Err(errors) => {
+            for error in &errors {
+                eprintln!("resolve error: {}", error.kind);
+            }
+            process::exit(1);
+        }
+    }
+}
+
+/// Compile a .rk file's tests natively and run them.
+pub fn cmd_test_native(path: &str, filter: Option<String>, format: Format) {
+    let mut result = match std::panic::catch_unwind(|| {
+        super::pipeline::run_frontend(path, format)
+    }) {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!("{}: frontend panic for {}", output::error_label(), path);
+            process::exit(1);
+        }
+    };
+
+    rask_hidden_params::desugar_hidden_params(&mut result.decls);
+    let tests = super::compile::extract_tests(&mut result.decls, filter.as_deref());
+
+    if tests.is_empty() {
         if format == Format::Human {
             println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
             println!("  No tests found.");
@@ -88,49 +284,141 @@ pub fn cmd_test(path: &str, filter: Option<String>, format: Format) {
         return;
     }
 
-    if format == Format::Human {
-        println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
+    // Inject compiled stdlib functions + struct defs for mono/codegen
+    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
+    if !stdlib_fn_decls.is_empty() {
+        result.decls.extend(stdlib_fn_decls);
+    }
+    if !stdlib_struct_defs.is_empty() {
+        result.decls.extend(stdlib_struct_defs);
+    }
 
-        let mut passed = 0;
-        let mut failed = 0;
-        let mut total_duration = std::time::Duration::ZERO;
+    let mono = match rask_mono::monomorphize(&result.typed, &result.decls) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("{}: mono: {:?}", output::error_label(), e);
+            process::exit(1);
+        }
+    };
+    let cfg = rask_comptime::CfgConfig::from_host("debug", vec![]);
+    let comptime_globals = super::codegen::evaluate_comptime_globals(
+        &result.decls, Some(&cfg),
+        Some(super::codegen::MirEvalContext { mono: &mono, typed: &result.typed }),
+    );
 
-        for r in &results {
-            total_duration += r.duration;
-            if r.passed {
-                passed += 1;
-                println!("  {} {} {}",
-                    output::status_pass(),
-                    r.name,
-                    format!("({}ms)", r.duration.as_millis()).dimmed(),
-                );
-            } else {
-                failed += 1;
-                println!("  {} {}",
-                    output::status_fail(),
-                    r.name,
-                );
-                for err in &r.errors {
-                    println!("      {}", err.red());
-                }
+    let tmp_dir = std::env::temp_dir();
+    let bin_path = tmp_dir.join(format!("rask_test_{}", process::id()));
+    let bin_str = bin_path.to_string_lossy().to_string();
+    let obj_path = format!("{}.o", bin_str);
+
+    if let Err(errors) = super::compile::compile_tests_to_object(
+        &mono, &result.typed, &result.decls, &comptime_globals,
+        &tests, Some(path), result.source.as_deref(), &obj_path, Some(&cfg),
+    ) {
+        for e in &errors {
+            eprintln!("{}: compile: {}", output::error_label(), e);
+        }
+        let _ = std::fs::remove_file(&obj_path);
+        process::exit(1);
+    }
+
+    let link_opts = super::link::LinkOptions::default();
+    if let Err(e) = super::link::link_executable_with(&obj_path, &bin_str, &link_opts, false, None) {
+        eprintln!("{}: link: {}", output::error_label(), e);
+        let _ = std::fs::remove_file(&obj_path);
+        process::exit(1);
+    }
+    let _ = std::fs::remove_file(&obj_path);
+
+    let output = process::Command::new(&bin_str).output();
+    let _ = std::fs::remove_file(&bin_path);
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            display_test_results(&stdout, path, format);
+            if !out.status.success() {
+                process::exit(1);
             }
         }
-
-        println!();
-        println!("{}", output::separator(50));
-        println!(
-            "{} tests, {}, {} ({}ms)",
-            results.len(),
-            output::passed_count(passed),
-            output::failed_count(failed),
-            total_duration.as_millis(),
-        );
-
-        if failed > 0 {
+        Err(e) => {
+            eprintln!("{}: executing test binary: {}", output::error_label(), e);
             process::exit(1);
         }
     }
 }
+
+/// Parse and display test results from JSON output lines.
+fn display_test_results(stdout: &str, path: &str, format: Format) {
+    if format != Format::Human {
+        // JSON mode: pass through raw output
+        print!("{}", stdout);
+        return;
+    }
+
+    println!("{} Testing {} {}\n", "===".dimmed(), output::file_path(path), "===".dimmed());
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut total_duration = std::time::Duration::ZERO;
+
+    for line in stdout.lines() {
+        let line = line.trim();
+        if !line.starts_with('{') { continue; }
+
+        let name = parse_json_str(line, "name").unwrap_or("?");
+        let passed_val = line.contains("\"passed\":true");
+        let duration_ns = parse_json_i64(line, "duration_ns").unwrap_or(0);
+        let duration = std::time::Duration::from_nanos(duration_ns as u64);
+        total_duration += duration;
+
+        if passed_val {
+            passed += 1;
+            println!("  {} {} {}",
+                output::status_pass(),
+                name,
+                format!("({}ms)", duration.as_millis()).dimmed(),
+            );
+        } else {
+            failed += 1;
+            println!("  {} {}",
+                output::status_fail(),
+                name,
+            );
+            if let Some(error) = parse_json_str(line, "error") {
+                println!("      {}", error.red());
+            }
+        }
+    }
+
+    println!();
+    println!("{}", output::separator(50));
+    println!(
+        "{} tests, {}, {} ({}ms)",
+        passed + failed,
+        output::passed_count(passed),
+        output::failed_count(failed),
+        total_duration.as_millis(),
+    );
+}
+
+fn parse_json_str<'a>(s: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("\"{}\":\"", key);
+    let start = s.find(&pat)? + pat.len();
+    let end = s[start..].find('"')? + start;
+    Some(&s[start..end])
+}
+
+fn parse_json_i64(s: &str, key: &str) -> Option<i64> {
+    let pat = format!("\"{}\":", key);
+    let start = s.find(&pat)? + pat.len();
+    let rest = &s[start..];
+    let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+
 
 /// Compile a .rk file to a temp executable and run it.
 pub fn cmd_run_native(path: &str, program_args: Vec<String>, format: Format, link_opts: &super::link::LinkOptions, release: bool) {

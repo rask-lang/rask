@@ -402,6 +402,18 @@ impl CodeGenerator {
             self.func_ids.insert("rask_bench_run".to_string(), id);
         }
 
+        // rask_test_run(fn_ptr: i64, name_ptr: i64) -> i32 (0=pass, 1=fail)
+        {
+            let mut sig = self.module.make_signature();
+            sig.params.push(AbiParam::new(types::I64)); // function pointer
+            sig.params.push(AbiParam::new(types::I64)); // name (const char*)
+            sig.returns.push(AbiParam::new(types::I32)); // 0=pass, 1=fail
+            let id = self.module
+                .declare_function("rask_test_run", Linkage::Import, &sig)
+                .map_err(|e| CodegenError::CraneliftError(e.to_string()))?;
+            self.func_ids.insert("rask_test_run".to_string(), id);
+        }
+
         Ok(())
     }
 

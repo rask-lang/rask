@@ -776,7 +776,18 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::UsingBlock { args, body, .. } => {
+            ExprKind::UsingBlock { name, args, body } => {
+                // Validate context name
+                match name.as_str() {
+                    "Multitasking" | "MultiTasking" | "multitasking"
+                    | "ThreadPool" | "threadpool" => {}
+                    _ => {
+                        self.errors.push(TypeError::UnknownContext {
+                            name: name.clone(),
+                            span: expr.span,
+                        });
+                    }
+                }
                 for arg in args {
                     self.infer_expr(&arg.expr);
                 }

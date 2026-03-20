@@ -8,6 +8,7 @@ mod builtins;
 pub mod types;
 pub mod registry;
 pub mod stubs;
+pub mod mir_metadata;
 
 pub use builtins::{Builtin, BuiltinKind};
 pub use types::{MethodStub, has_method, lookup_method, methods_for};

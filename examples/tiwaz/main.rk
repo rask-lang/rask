@@ -1,26 +1,26 @@
 import http
-import async.spawn
 import net
+import async.spawn
 
 
-func main () -> () or Error {
-    const server : http.HttpServer = http.HttpServer.listen("0.0.0.0:8080")
-    ensure server.close()
+func main() -> () or Error {
+    using Multitasking {
+        const server = try http.HttpServer.listen("0.0.0.0:8080")
+        ensure server.close()
 
-    const upstream = "example.com"
+        const upstream = "example.com"
 
-    println("Proxy server listening on 0.0.0.0:8080")
-    using MultiTasking {
+        println("Proxy server listening on 0.0.0.0:8080")
         loop {
+            println("Waiting for incoming requests...")
             const (request, responder) = try server.accept()
             spawn(|| {
                 println("Received request: {request.method} {request.path()}")
-                const response = try forward(request, upstream) else |e| { return Response.internal_error() }
+                const response = try forward(request, upstream) else |e| { return Response.internal_error("proxy error") }
                 try responder.respond(response)
             }).detach()
         }
     }
-
 }
 
 

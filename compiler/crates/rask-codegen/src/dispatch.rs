@@ -1471,6 +1471,7 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
             ret_ty: Some(types::I64),
             can_panic: false,
         },
+
         // Map_from for clone lives at line ~475 (rask_map_clone).
         // rask_map_from (construct from pairs) is a stub — not wired up yet.
         // When needed, give it a distinct MIR name like "Map_from_pairs".

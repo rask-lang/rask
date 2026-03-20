@@ -1490,6 +1490,8 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::Fn { .. } | RaskType::Slice(_) => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
+            // Unresolved named types (TcpListener, TcpConnection, etc.) — pointer-sized scalars
+            RaskType::UnresolvedNamed(_) | RaskType::Named(_) => false,
             // Niche-optimized Option<Handle<T>> — scalar (sentinel value, no tag)
             RaskType::Option(inner)
                 if matches!(inner.as_ref(), RaskType::UnresolvedGeneric { name, .. } if name == "Handle") =>

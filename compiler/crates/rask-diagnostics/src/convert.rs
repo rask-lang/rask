@@ -499,6 +499,15 @@ impl ToDiagnostic for rask_types::TypeError {
                     .with_why("all names must be defined or imported before use")
             }
 
+            UnknownContext { name, span } => {
+                Diagnostic::error(format!("unknown context `{}` in `using` block", name))
+                    .with_code("E0342")
+                    .with_primary(*span, "not a recognized context")
+                    .with_help("valid contexts are: `Multitasking`, `ThreadPool`")
+                    .with_fix("replace with a valid context name")
+                    .with_why("`using` blocks require a known runtime context to initialize")
+            }
+
             PublicMissingAnnotation { function_name, params, missing_return, span } => {
                 let mut msg = format!("public function `{}` requires explicit type annotations", function_name);
                 if !params.is_empty() {
