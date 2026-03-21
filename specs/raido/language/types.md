@@ -15,7 +15,7 @@ All values are 8 bytes. Dynamically typed. Deterministic.
 | `bool` | `true`/`false`. Only `nil` and `false` are falsy. |
 | `int` | i64. Counters, IDs, bitfields. |
 | `number` | Fixed-point 32.32. Deterministic, hardware-speed. |
-| `string` | Immutable, UTF-8. |
+| `string` | Immutable, UTF-8. First-class — interpolation, multiline, comparison, iteration. |
 | `array` | 0-indexed growable sequence. `[a, b, c]`. |
 | `map` | Key-value store. `{k: v}`. Insertion-ordered. Keys: string, int, bool. |
 | `function` | Closure or host function. |

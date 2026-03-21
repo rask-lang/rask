@@ -11,8 +11,30 @@ Dynamic subset of Rask. Same `{}` blocks, `match`/`=>`, `if`/`else if`, `for`/`i
 
 - Newline-terminated statements. Semicolons optional.
 - `//` line comments, `/* */` block comments.
-- `"hello {name}"` string interpolation (double-quoted). `'raw string'` (single-quoted, no interpolation).
 - Numbers: `42` (int), `3.14` (number), `0xff`, `0b1010`, `1_000_000`.
+
+### Strings
+
+Strings are a first-class type. Immutable, UTF-8.
+
+```raido
+"hello"                     // basic string
+"hello {name}"              // interpolation — any expression in {}
+"value: {x + 1}"            // expressions in interpolation
+'no interpolation here'     // single-quoted: raw, no escapes, no interpolation
+"""
+multi-line string
+with {interpolation}
+"""                         // triple-quoted: preserves newlines, strips common indent
+'''
+raw multi-line
+no {interpolation}
+'''                         // triple single-quoted: raw multi-line
+```
+
+Escape sequences (double-quoted only): `\n`, `\t`, `\\`, `\"`, `\{` (literal brace), `\0`.
+
+Triple-quoted strings strip leading indentation: the common whitespace prefix of all non-empty lines is removed. Same behavior as Rask.
 
 ## Variables
 

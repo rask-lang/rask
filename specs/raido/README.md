@@ -90,7 +90,7 @@ const result = try process(42) else |e| {
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
 | Errors | `try`/`else`, `error()` | Same syntax as Rask. No `pcall`. |
 | Coroutines | `coroutine(f)`, methods | Create/resume/yield. Method-based, not Lua module-style. |
-| Config | Host configures available stdlib, limits, capabilities | VM is a blank slate. Host shapes the environment. |
+| Stdlib | `core` always present, modules opt-in by host | `core` is the language. Modules are capabilities. Host controls the surface area. |
 
 ## Use Cases
 
@@ -136,4 +136,6 @@ const result = try process(42) else |e| {
 
 ## Open Questions
 
-None currently.
+- **String encoding depth.** Current spec is ASCII-only for `upper`/`lower`, byte-indexed for `sub`/`byte`. Is this enough or do scripts need Unicode-aware operations? Leaning no — keeps implementation tiny.
+- **Map growth strategy.** Open addressing with linear probing, but load factor threshold and growth factor not specified.
+- **Serialization migration.** Version header exists but no policy for forward/backward compatibility or migration between versions.
