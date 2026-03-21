@@ -48,15 +48,49 @@ All VM allocations (arrays, maps, strings, closures, upvalues) come from a conti
 - **`reset()`.** Clears everything — globals, coroutines, all state. Default strategy for rule engines, workflows, and between independent evaluations.
 - **`frame_end()` (opt-in).** Resets the arena's frame region, keeping persistent state. For game-loop embedders that call scripts every frame. Non-loop embedders don't need this.
 
-## Instruction Limits
+## Resource Limits
 
-Per-call instruction budget. Every instruction decrements. Exceeding = runtime error. Prevents runaway scripts.
+Three runaway vectors, three limits:
+
+### Fuel (instruction budget)
+
+Fuel-based execution control. Every instruction costs 1 fuel. Reaching zero = runtime error.
+
+```rask
+const vm = raido.Vm.new(raido.Config {
+    arena_size: 256.kilobytes(),
+    initial_fuel: 100_000,
+    max_call_depth: 256,
+})
+```
+
+The host can inspect and adjust fuel between calls or from host functions:
+
+```rask
+const remaining = vm.fuel()       // check remaining
+vm.add_fuel(50_000)               // top up (game loop: add fuel each frame)
+vm.set_fuel(100_000)              // reset to specific amount
+```
+
+**Determinism constraint.** Fuel is part of VM state and serialized. For deterministic replay, hosts must add fuel at the same points with the same amounts. Fuel operations are not implicit — the host controls them explicitly. If two hosts diverge on fuel, execution diverges. This is the host's responsibility, same as providing identical host function results.
+
+### Call Depth
+
+Maximum call stack depth. Default 256. Every `CALL` / `RESUME` increments, `RETURN` / `YIELD` decrements. Exceeding = runtime error.
+
+Prevents stack overflow from unbounded recursion. Cheap — one comparison per call instruction.
+
+`TAIL_CALL` doesn't increment (it reuses the current frame), so tail-recursive scripts aren't depth-limited.
+
+### Arena Size
+
+Fixed. Exceeding = runtime error. Already covered in the Arena section above.
 
 ## Serialization
 
 `vm.serialize()` → bytes. `Vm.deserialize(bytes)` → restored VM. Format is versioned — version header from day one so format changes don't break existing snapshots.
 
-Captures: register windows, call frames, globals, coroutines (suspended register windows + PC), arena contents (including upvalues), PRNG state, instruction counter.
+Captures: register windows, call frames (including call depth), globals, coroutines (suspended register windows + PC), arena contents (including upvalues), PRNG state, fuel remaining.
 Does not capture: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
 
 Coroutine state is ~200-500 bytes per suspended coroutine in the arena.

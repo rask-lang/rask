@@ -35,7 +35,8 @@ import raido
 
 const vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
-    instruction_limit: 100_000,
+    initial_fuel: 100_000,
+    max_call_depth: 256,
 })
 ensure vm.close()
 

@@ -12,7 +12,8 @@ Host API for embedding Raido. All interaction is safe — no `unsafe` required.
 ```rask
 const vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
-    instruction_limit: 100_000,
+    initial_fuel: 100_000,
+    max_call_depth: 256,
 })
 ensure vm.close()
 
@@ -104,7 +105,7 @@ const vm2 = raido.Vm.deserialize(bytes)
 
 Format is versioned — version header from day one. Deserialize rejects unknown versions with a clear error.
 
-Serializes: value stack, globals, coroutines, arena, PRNG, instruction counter.
+Serializes: register windows, globals, coroutines, arena, PRNG, fuel counter, call depth.
 Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
 
 ## Environment Configuration
@@ -114,7 +115,8 @@ The host controls what's available:
 ```rask
 const vm = raido.Vm.new(raido.Config {
     arena_size: 256.kilobytes(),
-    instruction_limit: 100_000,
+    initial_fuel: 100_000,
+    max_call_depth: 256,
     stdlib: [raido.Stdlib.math, raido.Stdlib.string],  // only these modules
 })
 ```
