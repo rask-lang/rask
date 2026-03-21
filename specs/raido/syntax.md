@@ -124,6 +124,6 @@ assert(x > 0, "x must be positive")
 
 ## Keywords
 
-`break`, `const`, `coroutine`, `else`, `false`, `for`, `func`, `global`, `if`, `in`, `let`, `match`, `nil`, `return`, `true`, `try`, `while`, `yield`
+`break`, `const`, `else`, `false`, `for`, `func`, `global`, `if`, `in`, `let`, `match`, `nil`, `return`, `true`, `try`, `while`, `yield`
 
-`error()` and `assert()` are built-in functions (core), not keywords.
+`coroutine()`, `error()`, and `assert()` are built-in functions (core), not keywords.

@@ -17,7 +17,7 @@ const vm = raido.Vm.new(raido.Config {
 
 Always-available primitives (not opt-in — these are the language):
 
-`type(v)`, `tostring(v)`, `tonumber(v)`, `toint(v)`, `len(v)`, `error(msg)`, `assert(v, msg?)`
+`type(v)`, `tostring(v)`, `tonumber(v)`, `toint(v)`, `len(v)`, `error(msg)`, `assert(v, msg?)`, `coroutine(func, args...)`
 
 Error catching uses `try`/`else` (see [syntax.md](syntax.md#error-handling)), not a stdlib function.
 
