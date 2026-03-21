@@ -120,4 +120,4 @@ No stdlib modules loaded by default. Host opts in to what scripts can access.
 
 - **Script → Host:** `raido.ScriptError` (message, file, line, stack trace).
 - **Host → Script:** Rask errors in host functions become Raido runtime errors.
-- **In-script:** `pcall(f, ...)` catches errors. `error(msg)` raises them.
+- **In-script:** `try expr` propagates errors. `try expr else |e| { ... }` catches them. `error(msg)` raises them. Same syntax as Rask.

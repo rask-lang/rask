@@ -1,6 +1,6 @@
 <!-- id: raido.coroutines -->
 <!-- status: proposed -->
-<!-- summary: Cooperative multitasking — yield/resume with serializable state -->
+<!-- summary: Cooperative multitasking — coroutine values with methods, try integration, serializable state -->
 <!-- depends: raido/vm.md, raido/syntax.md -->
 
 # Coroutines
@@ -9,10 +9,26 @@ Cooperative multitasking. Yield mid-function, resume later. State preserved in a
 
 ## API
 
-- `coroutine.create(func)` — wrap a function.
-- `coroutine.resume(co, args...)` — resume. Returns `true, values` or `false, error`.
-- `yield(values...)` — suspend, return values to resumer.
-- `coroutine.status(co)` — `"suspended"`, `"running"`, `"dead"`.
+Method-based, matching Rask's object-oriented style:
+
+```raido
+const co = coroutine(patrol, entity)   // create from function + args
+const value = try co.resume()          // resume — errors propagate via try
+const s = co.status                    // "suspended", "running", "dead"
+yield(values...)                       // suspend, return values to resumer
+```
+
+`coroutine(func, args...)` creates a suspended coroutine. The function and initial args are captured — `resume()` starts execution on first call, continues from last `yield` on subsequent calls.
+
+`co.resume(args...)` returns the value passed to `yield()`. If the coroutine errors, the error propagates through `try` like any other call. No special `true/false` return convention.
+
+```raido
+// Catch coroutine errors
+const value = try co.resume() else |e| {
+    log("coroutine failed: {e}")
+    return fallback
+}
+```
 
 ## Why
 
@@ -54,6 +70,13 @@ func conversation(npc, player) {
         _ => say(npc, "Safe travels."),
     }
 }
+```
+
+**Host side (Rask):**
+```rask
+const co_id = try vm.call("coroutine", [raido.Value.func("patrol"), raido.Value.ref(entity)])
+// Each frame:
+try vm.call_method(co_id, "resume", [])
 ```
 
 ## Serialization

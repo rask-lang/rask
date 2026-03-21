@@ -53,10 +53,11 @@ Does not capture: host function closures (by name), host bindings (re-bound), by
 | Arithmetic | `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `NEG` (fixed-point for numbers) |
 | Comparison | `EQ`, `NE`, `LT`, `LE`, `GT`, `GE` |
 | Logic | `NOT`, `AND`, `OR` |
-| String | `CONCAT`, `LEN`, `INTERPOLATE` |
+| String | `LEN`, `INTERPOLATE` |
 | Collection | `NEW_ARRAY`, `NEW_MAP`, `GET_INDEX`, `SET_INDEX`, `GET_FIELD`, `SET_FIELD`, `PUSH_ELEM` |
 | Host ref | `GET_REF_FIELD`, `SET_REF_FIELD` |
 | Function | `CALL`, `RETURN`, `TAIL_CALL`, `CLOSURE` |
 | Jump | `JMP`, `JMP_IF`, `JMP_IF_NOT` |
 | Loop | `FOR_ITER`, `FOR_RANGE` |
-| Coroutine | `YIELD`, `RESUME` |
+| Coroutine | `COROUTINE_NEW`, `YIELD`, `RESUME` |
+| Error | `TRY`, `TRY_ELSE` |

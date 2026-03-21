@@ -6,7 +6,7 @@
 
 Deterministic embeddable scripting VM for Rask. Dynamic subset of Rask syntax. Serializable state. Fixed-point arithmetic. Sandboxed — host controls all capabilities.
 
-**Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures. No type annotations, no ownership, no `try`/`ensure`.
+**Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
 
 ## Why Raido
 
@@ -56,12 +56,19 @@ const vm2 = raido.Vm.deserialize(snapshot)
 
 ```raido
 func process(input) {
-    const result = transform(input)
-    return if result > threshold { result } else { 0 }
+    const data = try transform(input)       // propagate errors
+    return if data > threshold { data } else { 0 }
 }
 
 func transform(x) {
+    if x < 0 { error("negative input") }
     return x * scale + offset
+}
+
+// Error handling
+const result = try process(42) else |e| {
+    log("failed: {e}")
+    return 0
 }
 ```
 
@@ -80,7 +87,8 @@ func transform(x) {
 | Globals | Explicit `global` keyword | No accidental globals. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
 | Random | Seedable PRNG in VM state | Deterministic. Serializable. |
-| Coroutines | yield/resume | Pause/resume long-running scripts. |
+| Errors | `try`/`else`, `error()` | Same syntax as Rask. No `pcall`. |
+| Coroutines | `coroutine(f)`, methods | Create/resume/yield. Method-based, not Lua module-style. |
 | Config | Host configures available stdlib, limits, capabilities | VM is a blank slate. Host shapes the environment. |
 
 ## Use Cases

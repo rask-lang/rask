@@ -17,7 +17,9 @@ const vm = raido.Vm.new(raido.Config {
 
 Always-available primitives (not opt-in — these are the language):
 
-`type(v)`, `tostring(v)`, `tonumber(v)`, `toint(v)`, `error(msg)`, `pcall(f, ...)`, `assert(v, msg?)`
+`type(v)`, `tostring(v)`, `tonumber(v)`, `toint(v)`, `len(v)`, `error(msg)`, `assert(v, msg?)`
+
+Error catching uses `try`/`else` (see [syntax.md](syntax.md#error-handling)), not a stdlib function.
 
 ## math
 
@@ -27,9 +29,9 @@ All deterministic (fixed-point). `random` uses the VM's seedable PRNG.
 
 ## string
 
-`len`, `sub`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `ends_with`, `rep`, `byte`, `char`
+`len`, `sub`, `find`, `upper`, `lower`, `split`, `trim`, `starts_with`, `ends_with`, `rep`, `byte`, `char`, `concat`
 
-No regex. No `format` — string interpolation covers it.
+No regex. No `format` — string interpolation covers it. `string.concat(a, b)` for the rare case interpolation doesn't fit.
 
 ## array
 

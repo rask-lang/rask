@@ -78,15 +78,16 @@ const color = match status { "active" => "green", _ => "gray" }
 
 | Precedence | Operators |
 |-----------|-----------|
-| 1 (highest) | `!`, `-` (unary), `#` (length) |
+| 1 (highest) | `!`, `-` (unary) |
 | 2 | `*`, `/`, `%` |
 | 3 | `+`, `-` |
-| 4 | `..` (concat) |
-| 5 | `<`, `>`, `<=`, `>=`, `==`, `!=` |
-| 6 | `&&` |
-| 7 (lowest) | `\|\|` |
+| 4 | `<`, `>`, `<=`, `>=`, `==`, `!=` |
+| 5 | `&&` |
+| 6 (lowest) | `\|\|` |
 
 `&&`/`||` short-circuit and return operand values. No `//` integer division (conflicts with comments) — use `math.floor(a / b)`.
+
+No `#` length operator — use `len()` from core. No `..` concat operator — string interpolation covers it, `string.concat()` for the rest.
 
 ## Collections
 
@@ -96,6 +97,33 @@ const point = {x: 10, y: 20}            // map
 const empty = {:}                        // empty map ({} is empty block)
 ```
 
+## Error Handling
+
+`try` propagates errors to the caller, matching Rask's error handling syntax:
+
+```raido
+func load_config(path) {
+    const data = try read_file(path)       // propagate on error
+    return parse(data)
+}
+
+// Catch and handle — replaces pcall
+const config = try load_config("app.cfg") else |e| {
+    log("fallback: {e}")
+    return default_config()
+}
+
+// Raise an error
+error("invalid state")
+
+// Assert
+assert(x > 0, "x must be positive")
+```
+
+`try expr` — if `expr` errors, propagate to caller. `try expr else |e| { ... }` — catch and handle. This is the same pattern as Rask, adapted for dynamic types.
+
 ## Keywords
 
-`and`, `break`, `case`, `const`, `else`, `false`, `for`, `func`, `global`, `if`, `in`, `let`, `match`, `nil`, `not`, `or`, `return`, `true`, `while`, `yield`
+`break`, `const`, `coroutine`, `else`, `false`, `for`, `func`, `global`, `if`, `in`, `let`, `match`, `nil`, `return`, `true`, `try`, `while`, `yield`
+
+`error()` and `assert()` are built-in functions (core), not keywords.
