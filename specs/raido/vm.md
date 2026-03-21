@@ -28,10 +28,10 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 All VM allocations (arrays, maps, strings, closures) come from a contiguous arena.
 
 - **Bump allocator.** O(1).
-- **Fixed size.** Exceeding raises a runtime error.
+- **Fixed size.** Exceeding raises a runtime error. No auto-grow — hides allocation cost.
 - **No GC.** No mark/sweep, no pauses.
-- **`frame_end()` (optional).** Resets the arena's frame region, keeping persistent state. For frame-loop embedders (games). Non-loop embedders (rule engines, workflows) can skip this and use `reset()` between evaluations.
-- **`reset()`.** Clears everything — globals, coroutines, all state. For hot reload or between independent evaluations.
+- **`reset()`.** Clears everything — globals, coroutines, all state. Default strategy for rule engines, workflows, and between independent evaluations.
+- **`frame_end()` (opt-in).** Resets the arena's frame region, keeping persistent state. For game-loop embedders that call scripts every frame. Non-loop embedders don't need this.
 
 ## Instruction Limits
 
@@ -39,7 +39,7 @@ Per-call instruction budget. Every instruction decrements. Exceeding = runtime e
 
 ## Serialization
 
-`vm.serialize()` → bytes. `Vm.deserialize(bytes)` → restored VM.
+`vm.serialize()` → bytes. `Vm.deserialize(bytes)` → restored VM. Format is versioned — version header from day one so format changes don't break existing snapshots.
 
 Captures: value stack, call frames, globals, coroutines, arena contents, PRNG state, instruction counter.
 Does not capture: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).

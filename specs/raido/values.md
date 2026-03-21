@@ -25,13 +25,23 @@ All values are 8 bytes. Deterministic, fully serializable.
 
 Stored as i64. 32 integer bits (signed), 32 fractional bits.
 
-- **Range:** ±2.1 billion. **Precision:** ~2^-32.
+- **Range:** ±2.1 billion. **Precision:** ~2^-32 (~9.6 decimal digits).
 - **Deterministic.** Integer math. Same result on every platform.
 - **Fast.** Add/sub = single i64 op. Mul/div = 128-bit intermediate.
 - **No NaN/infinity.** Division by zero = runtime error. Overflow saturates.
 - Scripts write `3.14`, compiler converts to fixed-point.
 
 `int` and `number` are separate. `int + int → int`, `int + number → number`. Division always returns `number`. `42 == 42.0` is true.
+
+### Why 32.32 over 48.16
+
+I chose 32.32 over 48.16. 48.16 gives more integer range (~140 trillion vs ~2.1 billion) but only ~4.8 decimal digits of fractional precision. Simulation showed that's too coarse for real use cases:
+
+- **Physics accumulation** (10K frames at 1/60): 32.32 error 6e-7, 48.16 error 4e-2
+- **Damping chains** (1000 frames × 0.999): 32.32 error 6e-5, 48.16 error 2.6
+- **Financial sums** (0.01 × 10K): 32.32 error 2e-6, 48.16 error 5e-2
+
+The 2.1B integer ceiling is real but manageable — `int` (i64) handles large values. Use `int` for entity IDs, large counters, and scores. Use `number` for positions, velocities, fractions, and math.
 
 ## Host References
 

@@ -99,6 +99,8 @@ const vm2 = raido.Vm.deserialize(bytes)
 // Re-bind contexts before calling
 ```
 
+Format is versioned — version header from day one. Deserialize rejects unknown versions with a clear error.
+
 Serializes: value stack, globals, coroutines, arena, PRNG, instruction counter.
 Does not serialize: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
 

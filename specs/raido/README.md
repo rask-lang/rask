@@ -114,11 +114,16 @@ const result = try process(42) else |e| {
 | [coroutines.md](coroutines.md) | Cooperative multitasking |
 | [stdlib.md](stdlib.md) | Configurable built-in modules |
 
+## Resolved
+
+| Question | Decision | Rationale |
+|----------|----------|-----------|
+| Fixed-point format | **32.32** | ~9.6 decimal digits of precision vs 48.16's ~4.8. Simulation shows 48.16 drifts badly in physics chains (2.6 error after 1000 damping frames vs 6e-5). The 2.1B integer ceiling is mitigated by `int` (i64) being a separate type — use `int` for large values. |
+| Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop embedders opt into `frame_end()` for per-frame cleanup. No auto-grow — hides allocation cost. |
+| Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
+| Packaging | **Separate crate** (`raido`), not part of Rask stdlib. | Most programs won't embed a scripting VM. No reason to bloat the stdlib. |
+
 ## Open Questions
 
-- Fixed-point: 32.32 or 48.16? Or configurable?
-- Arena: frame-wrapping vs explicit reset vs auto-grow?
-- Serialization format: versioned for forward compat?
 - How do closures serialize when they capture mutable upvalues?
-- Should Raido ship as part of Rask stdlib or as a separate crate?
 - Host reference field access: callback-based or vtable?
