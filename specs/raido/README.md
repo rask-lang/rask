@@ -120,6 +120,7 @@ const result = try process(42) else |e| {
 | Spec | What it covers |
 |------|----------------|
 | [vm/architecture.md](vm/architecture.md) | Register VM, arena, instruction set, upvalue storage, serialization |
+| [vm/chunk-format.md](vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](vm/interop.md) | Host API, vtables, host functions, scoped bindings, error propagation |
 
 ## Resolved

@@ -17,10 +17,26 @@ const vm = raido.Vm.new(raido.Config {
 })
 ensure vm.close()
 
+// Register host functions before loading
+vm.register("send_message", |ctx| { ... })
+
+// Compile — validates, derives imports/exports, computes content hash
 const chunk = try vm.compile("script.raido", source)
+
+// Or load pre-compiled bytecode (validates on load)
+const chunk = try vm.load(bytecode_bytes)
+
+// Inspect before running
+chunk.hash()      // content identity (SHA-256)
+chunk.imports()   // host functions the script needs
+chunk.exports()   // functions the host can call
+
+// Load — fails fast if imports aren't satisfied
 try vm.exec(chunk)
 const result = try vm.call("process", [raido.Value.int(42)])
 ```
+
+See [chunk-format.md](chunk-format.md) for format details.
 
 ## Host Functions
 

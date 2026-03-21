@@ -177,6 +177,7 @@ Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-alloca
 | [language/coroutines.md](raido/language/coroutines.md) | Cooperative multitasking |
 | [language/stdlib.md](raido/language/stdlib.md) | Configurable built-in modules |
 | [vm/architecture.md](raido/vm/architecture.md) | Register VM, arena, instruction set, serialization |
+| [vm/chunk-format.md](raido/vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
 | [vm/interop.md](raido/vm/interop.md) | Host API, vtables, scoped bindings |
 
 ## Compiler — Compiler internals
