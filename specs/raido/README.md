@@ -103,16 +103,23 @@ const result = try process(42) else |e| {
 | Data transforms | Deterministic, serializable for checkpointing |
 | Simulation | Deterministic, serializable for snapshots/replay |
 
-## Detailed Specs
+## Specs
+
+### Language — what Raido programs mean
 
 | Spec | What it covers |
 |------|----------------|
-| [values.md](values.md) | Types, fixed-point, serializable representation, host references |
-| [syntax.md](syntax.md) | Grammar, variables, functions, control flow, operators |
-| [vm.md](vm.md) | Stack VM, determinism, serialization, arena, instruction set |
-| [interop.md](interop.md) | VM lifecycle, host functions, host references, error propagation |
-| [coroutines.md](coroutines.md) | Cooperative multitasking |
-| [stdlib.md](stdlib.md) | Configurable built-in modules |
+| [language/types.md](language/types.md) | Value types, fixed-point numbers, closures, host references |
+| [language/syntax.md](language/syntax.md) | Grammar, variables, functions, control flow, operators |
+| [language/coroutines.md](language/coroutines.md) | Cooperative multitasking |
+| [language/stdlib.md](language/stdlib.md) | Configurable built-in modules |
+
+### VM — how the machine executes
+
+| Spec | What it covers |
+|------|----------------|
+| [vm/architecture.md](vm/architecture.md) | Register VM, arena, instruction set, upvalue storage, serialization |
+| [vm/interop.md](vm/interop.md) | Host API, vtables, host functions, scoped bindings, error propagation |
 
 ## Resolved
 

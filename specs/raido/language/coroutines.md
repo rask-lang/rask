@@ -1,11 +1,11 @@
 <!-- id: raido.coroutines -->
 <!-- status: proposed -->
 <!-- summary: Cooperative multitasking — coroutine values with methods, try integration, serializable state -->
-<!-- depends: raido/vm.md, raido/syntax.md -->
+<!-- depends: raido/language/syntax.md -->
 
 # Coroutines
 
-Cooperative multitasking. Yield mid-function, resume later. State preserved in arena and serializable.
+Cooperative multitasking. Yield mid-function, resume later. Fully serializable — a coroutine can be suspended, the VM serialized, and the coroutine resumed on a different machine.
 
 ## API
 
@@ -72,15 +72,6 @@ func conversation(npc, player) {
 }
 ```
 
-**Host side (Rask):**
-```rask
-const co_id = try vm.call("coroutine", [raido.Value.func("patrol"), raido.Value.ref(entity)])
-// Each frame:
-try vm.call_method(co_id, "resume", [])
-```
-
 ## Serialization
 
-Coroutine state (suspended stack, PC, locals) is part of the VM's serializable state. A workflow can yield, the server serializes the VM, restarts, deserializes, and the coroutine resumes exactly where it left off.
-
-~200-500 bytes per suspended coroutine in the arena.
+Coroutine state is part of the VM's serializable state. See [vm/architecture.md](../vm/architecture.md#serialization) for format details.

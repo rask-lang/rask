@@ -1,7 +1,7 @@
 <!-- id: raido.interop -->
 <!-- status: proposed -->
 <!-- summary: Rask integration API — VM creation, host functions, host references, serialization -->
-<!-- depends: raido/vm.md, raido/values.md -->
+<!-- depends: raido/vm/architecture.md, raido/language/types.md -->
 
 # Rask Integration
 

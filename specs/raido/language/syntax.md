@@ -1,7 +1,7 @@
 <!-- id: raido.syntax -->
 <!-- status: proposed -->
 <!-- summary: Raido syntax — dynamic subset of Rask -->
-<!-- depends: raido/values.md -->
+<!-- depends: raido/language/types.md -->
 
 # Syntax
 

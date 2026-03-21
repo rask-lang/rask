@@ -1,7 +1,7 @@
 <!-- id: raido.stdlib -->
 <!-- status: proposed -->
 <!-- summary: Configurable stdlib modules — host opts in to what scripts can access -->
-<!-- depends: raido/values.md, raido/syntax.md -->
+<!-- depends: raido/language/types.md, raido/language/syntax.md -->
 
 # Standard Library
 

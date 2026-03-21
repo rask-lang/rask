@@ -1,7 +1,7 @@
 <!-- id: raido.vm -->
 <!-- status: proposed -->
 <!-- summary: Deterministic register-based VM with fixed-point math, serializable state, configurable arena -->
-<!-- depends: raido/values.md -->
+<!-- depends: raido/language/types.md -->
 
 # VM Architecture
 
@@ -26,6 +26,10 @@ I considered stack-based (simpler compiler, simpler instruction encoding) but re
 
 Lua 5's switch from stack-based to register-based is the canonical precedent — same design context (embeddable, serializable, interpreter-only).
 
+## Value Representation
+
+All values are 8 bytes (tagged). Arena-allocated types (strings, arrays, maps, closures) store an arena offset in the value slot. No pointers — only offsets into the contiguous arena.
+
 ## Determinism
 
 All `number` arithmetic is 32.32 fixed-point (integer math). No FPU. Bitwise-identical on all platforms.
@@ -36,7 +40,7 @@ Determinism enables: lockstep networking, replay, migration, reproducible evalua
 
 ## Arena
 
-All VM allocations (arrays, maps, strings, closures) come from a contiguous arena.
+All VM allocations (arrays, maps, strings, closures, upvalues) come from a contiguous arena.
 
 - **Bump allocator.** O(1).
 - **Fixed size.** Exceeding raises a runtime error. No auto-grow — hides allocation cost.
@@ -52,12 +56,14 @@ Per-call instruction budget. Every instruction decrements. Exceeding = runtime e
 
 `vm.serialize()` → bytes. `Vm.deserialize(bytes)` → restored VM. Format is versioned — version header from day one so format changes don't break existing snapshots.
 
-Captures: register windows, call frames, globals, coroutines, arena contents (including upvalues), PRNG state, instruction counter.
+Captures: register windows, call frames, globals, coroutines (suspended register windows + PC), arena contents (including upvalues), PRNG state, instruction counter.
 Does not capture: host function closures (by name), host bindings (re-bound), bytecode (re-loaded).
+
+Coroutine state is ~200-500 bytes per suspended coroutine in the arena.
 
 ## Closures and Upvalues
 
-Closures capture variables from enclosing scopes. Upvalues live in the arena — closures hold arena offsets to them. This makes closures trivially serializable: a closure is a bytecode index + an array of arena offsets.
+Closures capture variables from enclosing scopes. Upvalues live in the arena — closures hold arena offsets to them. This makes closures trivially serializable: a closure is a bytecode prototype index + an array of arena offsets.
 
 When a local variable is captured:
 1. The variable is "closed over" — moved from the register window into the arena.
