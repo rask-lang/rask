@@ -24,7 +24,7 @@ I considered stack-based (simpler compiler, simpler instruction encoding) but re
 3. **Serialization is equivalent.** A register window is a fixed-size value array per call frame. Same wire format complexity as a stack.
 4. **Compiler cost is one-time.** Linear scan register allocation handles Raido's complexity. No SSA needed.
 
-Lua 5's switch from stack-based to register-based is the canonical precedent — same design context (embeddable, serializable, interpreter-only).
+Lua 5's switch from stack-based to register-based is the canonical precedent — same design context (hosted scripting, serializable, interpreter-only).
 
 ## Value Representation
 

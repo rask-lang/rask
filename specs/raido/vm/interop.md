@@ -5,7 +5,7 @@
 
 # Rask Integration
 
-Host API for embedding Raido. All interaction is safe — no `unsafe` required.
+Host API for integrating Raido. All interaction is safe — no `unsafe` required.
 
 ## VM Lifecycle
 
