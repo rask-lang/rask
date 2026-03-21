@@ -35,16 +35,16 @@ Registered by name. On serialize, only the name is stored — host re-registers 
 
 ## Host References
 
-Opaque references to host-managed data. The VM doesn't know what's behind them. The host defines field access.
+Opaque references to host-managed data. The VM doesn't know what's behind them. The host registers a vtable per ref type — field names map to slot indices at compile time.
 
 ```rask
-// Define a reference type with field accessors
+// Define a reference type with a vtable
 vm.register_ref_type("enemy", raido.RefType {
     fields: [
-        raido.HostField.int("health", |r| r.health, |r, v| r.health = v),
-        raido.HostField.number("x", |r| r.x, |r, v| r.x = v),
-        raido.HostField.number("y", |r| r.y, |r, v| r.y = v),
-        raido.HostField.string("name", |r| r.name, |r, _| error("read-only")),
+        raido.HostField.int("health", get_health, set_health),  // slot 0
+        raido.HostField.number("x", get_x, set_x),              // slot 1
+        raido.HostField.number("y", get_y, set_y),              // slot 2
+        raido.HostField.string("name", get_name, null),         // slot 3, read-only
     ],
 })
 
@@ -54,9 +54,12 @@ vm.set_global("target", vm.create_ref("enemy", enemy_id))
 
 ```raido
 // Script sees an object with fields
+// Compiler resolves "health" → slot 0, emits GET_REF_FIELD r1 r0 0
 target.health -= 10
 print("Hit {target.name} at ({target.x}, {target.y})")
 ```
+
+**Runtime dispatch:** `GET_REF_FIELD` / `SET_REF_FIELD` index into the vtable by slot number. No string hashing, no map lookup. One indexed function pointer call per field access.
 
 **Binding helpers** (`raido.bind`) reduce the boilerplate of mapping host data to refs:
 
@@ -74,7 +77,7 @@ raido.bind.pool(vm, "enemies", enemies, [
 raido.bind.struct(vm, "config", config)
 ```
 
-`raido.bind` is a convenience library, not VM core. It generates `register_ref_type` calls.
+`raido.bind` is a convenience library, not VM core. It generates `register_ref_type` calls with vtable entries.
 
 ## Scoped Bindings
 

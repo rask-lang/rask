@@ -77,12 +77,12 @@ const result = try process(42) else |e| {
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Syntax | Dynamic Rask subset | No new language to learn. Modders are learning Rask. |
-| VM | Stack-based | Simple to implement, simple to serialize. |
+| VM | Register-based | ~30% fewer dispatched instructions than stack-based. Serialization equivalent (register window = value array per frame). Compiler cost is one-time. |
 | Numbers | Fixed-point 32.32 | Deterministic (integer math) + fast (hardware ALU). |
 | State | Fully serializable | Save/restore, migration, replay, checkpointing. |
 | Sandbox | No I/O. Host provides all capabilities. | Safe to run untrusted code. |
 | Collections | Array `[]` + Map `{k: v}` | Maps to Rask's Vec/Map. |
-| Host data | Opaque references with host-registered accessors | VM doesn't know about pools/ECS/DB. Host decides. |
+| Host data | Opaque references with host-registered vtables | Field name → slot index at compile time. No string lookup at runtime. |
 | Functions | Host functions by name | Serializable. Re-registered on restore. |
 | Globals | Explicit `global` keyword | No accidental globals. |
 | Strings | `"value: {x}"` interpolation | Kills concatenation chains. |
@@ -122,8 +122,9 @@ const result = try process(42) else |e| {
 | Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop embedders opt into `frame_end()` for per-frame cleanup. No auto-grow — hides allocation cost. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
 | Packaging | **Separate crate** (`raido`), not part of Rask stdlib. | Most programs won't embed a scripting VM. No reason to bloat the stdlib. |
+| Closure upvalues | **Arena-allocated.** Closures hold arena offsets. | No heap cells, no GC. Multiple closures sharing a variable point to the same arena slot. Serializable as part of arena contents. |
+| Host ref field access | **Vtable.** Field name → slot index at compile time. | No string hashing at runtime. One indexed function pointer call per access. Slot indices stable because field order declared by host. |
 
 ## Open Questions
 
-- How do closures serialize when they capture mutable upvalues?
-- Host reference field access: callback-based or vtable?
+None currently.
