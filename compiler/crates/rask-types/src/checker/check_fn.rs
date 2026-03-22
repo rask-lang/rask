@@ -109,12 +109,13 @@ impl TypeChecker {
         self.push_scope();
         for param in &f.params {
             if param.name == "self" {
-                if let Some(self_ty) = &self.current_self_type {
+                if let Some(self_ty) = self.current_self_type.clone() {
                     if inferred_self_mutate || param.is_mutate || param.is_take {
                         self.define_local("self".to_string(), self_ty.clone());
                     } else {
                         self.define_local_read_only("self".to_string(), self_ty.clone());
                     }
+                    self.span_types.insert((param.name_span.start, param.name_span.end), self_ty);
                 }
                 continue;
             }
@@ -134,10 +135,11 @@ impl TypeChecker {
                 continue;
             };
             if param.is_mutate || param.is_take {
-                self.define_local(param.name.clone(), ty);
+                self.define_local(param.name.clone(), ty.clone());
             } else {
-                self.define_local_read_only(param.name.clone(), ty);
+                self.define_local_read_only(param.name.clone(), ty.clone());
             }
+            self.span_types.insert((param.name_span.start, param.name_span.end), ty);
         }
 
         for stmt in &f.body {
@@ -171,6 +173,13 @@ impl TypeChecker {
 
         let ret_ty = self.current_return_type.as_ref().unwrap();
         let resolved_ret_ty = self.ctx.apply(ret_ty);
+
+        // Empty body with a return type annotation is a stub — skip return check.
+        if f.body.is_empty() && f.ret_ty.is_some() {
+            self.current_return_type = None;
+            self.pop_scope();
+            return;
+        }
 
         match &resolved_ret_ty {
             Type::Unit | Type::Never => {

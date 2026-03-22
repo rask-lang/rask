@@ -183,13 +183,36 @@ impl LanguageServer for Backend {
         let offset = position_to_offset(&cached.source, position);
 
         // Find node at cursor
-        let Some(node_id) = cached.position_index.node_at_position(offset) else {
-            return Ok(None);
-        };
-
-        // Get type for this node
         let formatter = TypeFormatter::new(&cached.typed.types);
-        let ty_opt = cached.typed.node_types.get(&node_id);
+
+        // Try expression node first, then fall back to identifier (bindings/params).
+        // Only show expression hover when cursor is on an identifier — this avoids
+        // showing unhelpful types for keywords like `using`, `ensure`, etc.
+        let on_ident = cached.position_index.ident_at_position(offset).is_some();
+        let expr_node_id = if on_ident {
+            cached.position_index.node_at_position(offset)
+        } else {
+            None
+        };
+        let ty_opt = expr_node_id
+            .and_then(|node_id| cached.typed.node_types.get(&node_id));
+
+        // If no expression type, try span_types for bindings and parameters
+        let span_ty;
+        let ty_opt = if ty_opt.is_some() {
+            ty_opt
+        } else if let Some((ident_span, _, _)) = cached.position_index.idents.iter()
+            .find(|(span, _, _)| span.start <= offset && offset <= span.end)
+        {
+            span_ty = cached.typed.span_types.get(&(ident_span.start, ident_span.end));
+            if span_ty.is_some() {
+                span_ty
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // If no type info, try StubRegistry fallback for stdlib types
         if ty_opt.is_none() {
@@ -245,129 +268,130 @@ impl LanguageServer for Backend {
         // Build hover content
         let mut contents = format!("**Type:** `{}`", type_str);
 
-        // For identifiers, add symbol info
-        if let Some((ident_node_id, name)) = cached.position_index.ident_at_position(offset) {
-            if ident_node_id == node_id {
-                if let Some(&symbol_id) = cached.typed.resolutions.get(&node_id) {
-                    if let Some(symbol) = cached.typed.symbols.get(symbol_id) {
-                        let kind_str = match symbol.kind {
-                            rask_resolve::SymbolKind::Variable { mutable } => {
-                                if mutable {
-                                    "Variable (mutable)"
-                                } else {
-                                    "Variable"
-                                }
+        // For identifiers, add symbol info (only when we have a valid expression node)
+        if let Some((_, name)) = cached.position_index.ident_at_position(offset) {
+            // Use expression node_id for symbol resolution — ident node_ids from
+            // bindings/params use stmt.id which may not have valid resolutions
+            let symbol = expr_node_id
+                .and_then(|nid| cached.typed.resolutions.get(&nid))
+                .and_then(|&sid| cached.typed.symbols.get(sid));
+            if let Some(symbol) = symbol {
+                    let kind_str = match symbol.kind {
+                        rask_resolve::SymbolKind::Variable { mutable } => {
+                            if mutable {
+                                "Variable (mutable)"
+                            } else {
+                                "Variable"
                             }
-                            rask_resolve::SymbolKind::Parameter { .. } => "Parameter",
-                            rask_resolve::SymbolKind::Function { .. } => "Function",
-                            rask_resolve::SymbolKind::Struct { .. } => "Struct",
-                            rask_resolve::SymbolKind::Enum { .. } => "Enum",
-                            rask_resolve::SymbolKind::Field { .. } => "Field",
-                            rask_resolve::SymbolKind::Trait { .. } => "Trait",
-                            rask_resolve::SymbolKind::EnumVariant { .. } => "Enum Variant",
-                            rask_resolve::SymbolKind::BuiltinType { .. } => "Built-in Type",
-                            rask_resolve::SymbolKind::BuiltinFunction { .. } => "Built-in Function",
-                            rask_resolve::SymbolKind::BuiltinModule { .. } => "Built-in Module",
-                            rask_resolve::SymbolKind::ExternFunction { .. } => "Extern Function",
-                            rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
-                            rask_resolve::SymbolKind::TypeAlias { .. } => "Type Alias",
-                        };
-                        contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
+                        }
+                        rask_resolve::SymbolKind::Parameter { .. } => "Parameter",
+                        rask_resolve::SymbolKind::Function { .. } => "Function",
+                        rask_resolve::SymbolKind::Struct { .. } => "Struct",
+                        rask_resolve::SymbolKind::Enum { .. } => "Enum",
+                        rask_resolve::SymbolKind::Field { .. } => "Field",
+                        rask_resolve::SymbolKind::Trait { .. } => "Trait",
+                        rask_resolve::SymbolKind::EnumVariant { .. } => "Enum Variant",
+                        rask_resolve::SymbolKind::BuiltinType { .. } => "Built-in Type",
+                        rask_resolve::SymbolKind::BuiltinFunction { .. } => "Built-in Function",
+                        rask_resolve::SymbolKind::BuiltinModule { .. } => "Built-in Module",
+                        rask_resolve::SymbolKind::ExternFunction { .. } => "Extern Function",
+                        rask_resolve::SymbolKind::ExternalPackage { .. } => "Package",
+                        rask_resolve::SymbolKind::TypeAlias { .. } => "Type Alias",
+                    };
+                    contents = format!("**{}:** `{}`\n\n**Type:** `{}`", kind_str, name, type_str);
 
-                        // Add doc comment and method signatures from stubs for builtins
-                        match &symbol.kind {
-                            rask_resolve::SymbolKind::BuiltinType { .. }
-                            | rask_resolve::SymbolKind::BuiltinFunction { .. }
-                            | rask_resolve::SymbolKind::BuiltinModule { .. } => {
-                                let reg = rask_stdlib::StubRegistry::load();
-                                if let Some(ts) = reg.get_type(&name) {
-                                    if let Some(doc) = &ts.doc {
-                                        contents.push_str(&format!("\n\n---\n\n{}", doc));
-                                    }
-                                    if !ts.methods.is_empty() {
-                                        contents.push_str("\n\n**Methods:**\n");
-                                        for m in &ts.methods {
-                                            let params_str = m.params.iter()
-                                                .map(|(n, t)| format!("{}: {}", n, t))
-                                                .collect::<Vec<_>>()
-                                                .join(", ");
-                                            let self_prefix = if m.takes_self { "self, " } else { "" };
-                                            contents.push_str(&format!(
-                                                "\n- `{}({}{}) -> {}`",
-                                                m.name, self_prefix, params_str, m.ret_ty
-                                            ));
-                                        }
-                                    }
-                                } else {
-                                    let doc = reg.functions().iter()
-                                        .find(|f| f.name == name)
-                                        .and_then(|f| f.doc.as_deref());
-                                    if let Some(doc) = doc {
-                                        contents.push_str(&format!("\n\n---\n\n{}", doc));
-                                    }
+                // Add doc comment and method signatures from stubs for builtins
+                match &symbol.kind {
+                    rask_resolve::SymbolKind::BuiltinType { .. }
+                    | rask_resolve::SymbolKind::BuiltinFunction { .. }
+                    | rask_resolve::SymbolKind::BuiltinModule { .. } => {
+                        let reg = rask_stdlib::StubRegistry::load();
+                        if let Some(ts) = reg.get_type(&name) {
+                            if let Some(doc) = &ts.doc {
+                                contents.push_str(&format!("\n\n---\n\n{}", doc));
+                            }
+                            if !ts.methods.is_empty() {
+                                contents.push_str("\n\n**Methods:**\n");
+                                for m in &ts.methods {
+                                    let params_str = m.params.iter()
+                                        .map(|(n, t)| format!("{}: {}", n, t))
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    let self_prefix = if m.takes_self { "self, " } else { "" };
+                                    contents.push_str(&format!(
+                                        "\n- `{}({}{}) -> {}`",
+                                        m.name, self_prefix, params_str, m.ret_ty
+                                    ));
                                 }
                             }
-                            rask_resolve::SymbolKind::Struct { .. }
-                            | rask_resolve::SymbolKind::Enum { .. } => {
-                                // Show fields/variants and methods for user-defined types
-                                if let Some(type_id) = cached.typed.types.get_type_id(&name) {
-                                    if let Some(def) = cached.typed.types.get(type_id) {
-                                        match def {
-                                            rask_types::TypeDef::Struct { fields, methods, .. } => {
-                                                if !fields.is_empty() {
-                                                    contents.push_str("\n\n**Fields:**\n");
-                                                    for (fname, fty) in fields {
-                                                        contents.push_str(&format!(
-                                                            "\n- `{}: {}`", fname, formatter.format(fty)
-                                                        ));
-                                                    }
-                                                }
-                                                if !methods.is_empty() {
-                                                    contents.push_str("\n\n**Methods:**\n");
-                                                    for m in methods {
-                                                        contents.push_str(&format!(
-                                                            "\n- `{}`", m.name
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                            rask_types::TypeDef::Enum { variants, methods, .. } => {
-                                                if !variants.is_empty() {
-                                                    contents.push_str("\n\n**Variants:**\n");
-                                                    for (vname, fields) in variants {
-                                                        if fields.is_empty() {
-                                                            contents.push_str(&format!("\n- `{}`", vname));
-                                                        } else {
-                                                            let fields_str = fields.iter()
-                                                                .map(|t| formatter.format(t))
-                                                                .collect::<Vec<_>>()
-                                                                .join(", ");
-                                                            contents.push_str(&format!("\n- `{}({})`", vname, fields_str));
-                                                        }
-                                                    }
-                                                }
-                                                if !methods.is_empty() {
-                                                    contents.push_str("\n\n**Methods:**\n");
-                                                    for m in methods {
-                                                        contents.push_str(&format!(
-                                                            "\n- `{}`", m.name
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
+                        } else {
+                            let doc = reg.functions().iter()
+                                .find(|f| f.name == name)
+                                .and_then(|f| f.doc.as_deref());
+                            if let Some(doc) = doc {
+                                contents.push_str(&format!("\n\n---\n\n{}", doc));
                             }
-                            _ => {}
                         }
                     }
-                } else {
-                    // No symbol — try method hover for builtin types
-                    if let Some(doc) = self.try_method_hover(&cached.source, offset, &name, cached) {
-                        contents.push_str(&format!("\n\n---\n\n{}", doc));
+                    rask_resolve::SymbolKind::Struct { .. }
+                    | rask_resolve::SymbolKind::Enum { .. } => {
+                        // Show fields/variants and methods for user-defined types
+                        if let Some(type_id) = cached.typed.types.get_type_id(&name) {
+                            if let Some(def) = cached.typed.types.get(type_id) {
+                                match def {
+                                    rask_types::TypeDef::Struct { fields, methods, .. } => {
+                                        if !fields.is_empty() {
+                                            contents.push_str("\n\n**Fields:**\n");
+                                            for (fname, fty) in fields {
+                                                contents.push_str(&format!(
+                                                    "\n- `{}: {}`", fname, formatter.format(fty)
+                                                ));
+                                            }
+                                        }
+                                        if !methods.is_empty() {
+                                            contents.push_str("\n\n**Methods:**\n");
+                                            for m in methods {
+                                                contents.push_str(&format!(
+                                                    "\n- `{}`", m.name
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    rask_types::TypeDef::Enum { variants, methods, .. } => {
+                                        if !variants.is_empty() {
+                                            contents.push_str("\n\n**Variants:**\n");
+                                            for (vname, fields) in variants {
+                                                if fields.is_empty() {
+                                                    contents.push_str(&format!("\n- `{}`", vname));
+                                                } else {
+                                                    let fields_str = fields.iter()
+                                                        .map(|t| formatter.format(t))
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ");
+                                                    contents.push_str(&format!("\n- `{}({})`", vname, fields_str));
+                                                }
+                                            }
+                                        }
+                                        if !methods.is_empty() {
+                                            contents.push_str("\n\n**Methods:**\n");
+                                            for m in methods {
+                                                contents.push_str(&format!(
+                                                    "\n- `{}`", m.name
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
                     }
+                    _ => {}
+                }
+            } else {
+                // No symbol — try method hover for builtin types
+                if let Some(doc) = self.try_method_hover(&cached.source, offset, &name, cached) {
+                    contents.push_str(&format!("\n\n---\n\n{}", doc));
                 }
             }
         }

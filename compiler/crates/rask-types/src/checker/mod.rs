@@ -93,6 +93,8 @@ pub struct TypeChecker {
     pub(super) inferred_errors: Vec<Type>,
     /// ER20: Whether we're collecting errors instead of unifying them.
     pub(super) accumulate_errors: bool,
+    /// Types for binding names and parameters, keyed by (span.start, span.end).
+    pub(super) span_types: HashMap<(usize, usize), Type>,
 }
 
 impl TypeChecker {
@@ -118,6 +120,7 @@ impl TypeChecker {
             in_assign_target: false,
             trait_coercions: HashMap::new(),
             inferred_errors: Vec::new(),
+            span_types: HashMap::new(),
             accumulate_errors: false,
         }
     }
@@ -167,6 +170,12 @@ impl TypeChecker {
 
         let unsafe_ops = self.unsafe_ops;
 
+        let span_types: HashMap<_, _> = self
+            .span_types
+            .iter()
+            .map(|(key, ty)| (*key, self.ctx.apply(ty)))
+            .collect();
+
         if self.errors.is_empty() {
             Ok(TypedProgram {
                 symbols: self.resolved.symbols,
@@ -176,6 +185,7 @@ impl TypeChecker {
                 call_type_args,
                 trait_coercions,
                 unsafe_ops,
+                span_types,
             })
         } else {
             let ctx = &self.ctx;
@@ -195,6 +205,7 @@ impl TypeChecker {
                     call_type_args,
                     trait_coercions,
                     unsafe_ops,
+                    span_types,
                 })
             } else {
                 Err(errors)

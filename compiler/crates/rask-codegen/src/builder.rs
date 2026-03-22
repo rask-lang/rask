@@ -346,12 +346,21 @@ impl<'a> FunctionBuilder<'a> {
                     val = Self::convert_value(builder, val, val_ty, dst_ty);
                 }
 
-                // String assignment: copy 16 bytes from source to dst stack slot.
-                // Cannot alias pointers — both variables may be live simultaneously.
-                if dst_local.ty == MirType::String {
-                    if let Some((dst_ss, _)) = ctx.stack_slot_map.get(dst) {
-                        Self::copy_aggregate(builder, val, *dst_ss, 16);
-                        // Don't update the variable — it already points to the stack slot
+                // Aggregate assignment: when the destination has a stack slot and
+                // the rvalue produces a pointer to aggregate data, copy the data
+                // into the destination's stack slot rather than aliasing pointers.
+                // This covers String (always 16 bytes) and Field extractions from
+                // Struct/Tuple/Result/Option that return aggregate sub-fields.
+                let needs_copy = match (&dst_local.ty, rvalue) {
+                    (MirType::String, _) => true,
+                    // Field on aggregate base returns pointer for aggregate elements
+                    (MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_) |
+                     MirType::Result { .. } | MirType::Option(_), MirRValue::Field { .. }) => true,
+                    _ => false,
+                };
+                if needs_copy {
+                    if let Some((dst_ss, dst_size)) = ctx.stack_slot_map.get(dst) {
+                        Self::copy_aggregate(builder, val, *dst_ss, *dst_size);
                     } else {
                         let var = ctx.var_map.get(dst)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Variable not found".to_string()))?;
@@ -375,11 +384,22 @@ impl<'a> FunctionBuilder<'a> {
                 // the variable may alias another slot (e.g., p = struct_literal result).
                 let is_aggregate = if let MirOperand::Local(src_id) = value {
                     if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
+                        // Use store_size when available to avoid overflowing the
+                        // destination. Strings have 16-byte stack slots but occupy
+                        // only 8 bytes (a pointer) inside struct fields.
+                        let effective_size = store_size
+                            .map(|ss| ss.min(*src_size))
+                            .unwrap_or(*src_size);
+                        // If the field is pointer-sized, just store the pointer
+                        // value instead of deep-copying the source slot.
+                        if effective_size <= 8 {
+                            false
+                        } else {
                         let src_var = ctx.var_map.get(src_id)
                             .ok_or_else(|| CodegenError::UnsupportedFeature("Aggregate source not found".to_string()))?;
                         let src_addr = builder.use_var(*src_var);
                         let mut byte_offset = 0i32;
-                        let size = *src_size as i32;
+                        let size = effective_size as i32;
                         while byte_offset + 8 <= size {
                             let word = builder.ins().load(types::I64, MemFlags::new(), src_addr, byte_offset);
                             builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
@@ -400,6 +420,7 @@ impl<'a> FunctionBuilder<'a> {
                             builder.ins().store(MemFlags::new(), word, addr_val, *offset as i32 + byte_offset);
                         }
                         true
+                        } // end else (effective_size > 8)
                     } else { false }
                 } else { false };
 
@@ -1503,6 +1524,27 @@ impl<'a> FunctionBuilder<'a> {
         }
     }
 
+    /// Get actual (size, align) for a MirType, looking up struct/enum layouts.
+    fn real_type_size_align(ty: &MirType, ctx: &CodegenCtx) -> (u32, u32) {
+        match ty {
+            MirType::Struct(id) => {
+                if let Some(layout) = ctx.struct_layouts.get(id.0 as usize) {
+                    (layout.size as u32, layout.align as u32)
+                } else {
+                    (8, 8)
+                }
+            }
+            MirType::Enum(id) => {
+                if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
+                    (layout.size as u32, layout.align as u32)
+                } else {
+                    (8, 8)
+                }
+            }
+            _ => (ty.size(), ty.align()),
+        }
+    }
+
     fn lower_rvalue(
         builder: &mut ClifFunctionBuilder,
         rvalue: &MirRValue,
@@ -1671,7 +1713,6 @@ impl<'a> FunctionBuilder<'a> {
                 let base_val = Self::lower_operand(builder, base, ctx)?;
                 let base_ty = Self::operand_mir_type(base, ctx.locals);
                 let mut load_ty = expected_ty.unwrap_or(types::I64);
-
                 let offset = match &base_ty {
                     Some(MirType::Struct(id)) => {
                         if let Some(layout) = ctx.struct_layouts.get(id.0 as usize) {
@@ -1713,24 +1754,30 @@ impl<'a> FunctionBuilder<'a> {
                             0
                         }
                     }
-                    // Tuple: compute offset from element types
+                    // Tuple: compute offset from element types, using actual
+                    // struct/enum layout sizes instead of MirType::size() fallbacks.
                     Some(MirType::Tuple(fields)) => {
                         let mut off = 0u32;
                         for (i, f) in fields.iter().enumerate() {
-                            let align = f.align();
-                            off = (off + align - 1) & !(align - 1);
+                            let (elem_size, elem_align) = Self::real_type_size_align(f, ctx);
+                            off = (off + elem_align - 1) & !(elem_align - 1);
                             if i == *field_index as usize {
+                                // Aggregate element: return pointer, don't load scalar
+                                if elem_size > 8 || matches!(f, MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
+                                    let addr = builder.ins().iadd_imm(base_val, off as i64);
+                                    return Ok(addr);
+                                }
                                 break;
                             }
-                            off += f.size();
+                            off += elem_size;
                         }
                         off as i32
                     }
                     // Option/Result: payload starts after 8-byte tag.
                     // MIR uses EnumTag for the tag; Field indices are payload-relative.
                     Some(MirType::Option(inner)) => {
-                        // Aggregate payload (struct/enum): return address, not load
-                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_)) {
+                        // Aggregate payload (struct/enum/tuple): return address, not load
+                        if matches!(inner.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
                             let payload_addr = builder.ins().iadd_imm(base_val, 8);
                             return Ok(payload_addr);
                         }
@@ -1738,7 +1785,7 @@ impl<'a> FunctionBuilder<'a> {
                     }
                     Some(MirType::Result { ok, .. }) => {
                         // Aggregate Ok payload: return address, not load
-                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_)) {
+                        if *field_index == 0 && matches!(ok.as_ref(), MirType::Struct(_) | MirType::Enum(_) | MirType::Tuple(_)) {
                             let payload_addr = builder.ins().iadd_imm(base_val, 8);
                             return Ok(payload_addr);
                         }
@@ -2177,8 +2224,7 @@ impl<'a> FunctionBuilder<'a> {
             | "string_to_lowercase" | "string_to_uppercase"
             | "string_trim" | "string_trim_start" | "string_trim_end"
             | "string_repeat" | "string_reverse" | "string_replace"
-            | "string_push_byte" | "string_push_char"
-            | "string_append" | "string_append_cstr" | "string_push_str"
+            | "string_append" | "string_append_cstr"
             | "i64_to_string" | "bool_to_string" | "f64_to_string" | "char_to_string"
             | "string_builder_build"
             | "Vec_join" | "Vec_join_i64"
@@ -2214,6 +2260,27 @@ impl<'a> FunctionBuilder<'a> {
             }
             // Fallthrough: no dst stack slot — just call clone for RC inc
             return CallAdapt::None;
+        }
+
+        // In-place string mutation: out-param IS the self string.
+        // rask_string_push_str(out, s, other) / rask_string_push_char(out, s, ch)
+        // support out == s, so we pass the self pointer for both out and s.
+        if func_name == "string_push_str" || func_name == "string_push_char"
+            || func_name == "string_push_byte"
+        {
+            if !args.is_empty() {
+                let self_ptr = args[0];
+                args.insert(0, self_ptr);
+            }
+            // Look up self's stack slot for the return adapt
+            let ss = mir_args.first()
+                .and_then(|op| if let MirOperand::Local(id) = op { Some(id) } else { None })
+                .and_then(|id| ctx.stack_slot_map.get(id))
+                .map(|(ss, _)| *ss)
+                .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
+                    StackSlotKind::ExplicitSlot, 16, 0,
+                )));
+            return CallAdapt::StringOutParam(ss);
         }
 
         // String-producing functions: inject out-param as first arg

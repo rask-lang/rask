@@ -7,9 +7,9 @@
 // and response formatting are implemented in Rask; socket I/O delegates to
 // the C runtime.
 
+import async.spawn
 import net
 import json
-impor async.spawn
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -25,14 +25,31 @@ enum Method {
 
 extend Method {
     // Parse an HTTP method string into a Method enum.
+    // Uses byte-level matching because stdlib code doesn't go through
+    // the desugar pass, so string == does pointer comparison (not content).
     public func from_string(s: string) -> Method? {
-        if s == "GET" { return Some(Method.Get) }
-        if s == "HEAD" { return Some(Method.Head) }
-        if s == "POST" { return Some(Method.Post) }
-        if s == "PUT" { return Some(Method.Put) }
-        if s == "DELETE" { return Some(Method.Delete) }
-        if s == "PATCH" { return Some(Method.Patch) }
-        if s == "OPTIONS" { return Some(Method.Options) }
+        const len = s.len()
+        if len == 3 && s.byte_at(0) == 71 && s.byte_at(1) == 69 && s.byte_at(2) == 84 {
+            return Some(Method.Get)    // GET
+        }
+        if len == 4 && s.byte_at(0) == 72 && s.byte_at(1) == 69 && s.byte_at(2) == 65 && s.byte_at(3) == 68 {
+            return Some(Method.Head)   // HEAD
+        }
+        if len == 4 && s.byte_at(0) == 80 && s.byte_at(1) == 79 && s.byte_at(2) == 83 && s.byte_at(3) == 84 {
+            return Some(Method.Post)   // POST
+        }
+        if len == 3 && s.byte_at(0) == 80 && s.byte_at(1) == 85 && s.byte_at(2) == 84 {
+            return Some(Method.Put)    // PUT
+        }
+        if len == 6 && s.byte_at(0) == 68 && s.byte_at(1) == 69 && s.byte_at(2) == 76 {
+            return Some(Method.Delete) // DELETE (check first 3 bytes)
+        }
+        if len == 5 && s.byte_at(0) == 80 && s.byte_at(1) == 65 && s.byte_at(2) == 84 {
+            return Some(Method.Patch)  // PATCH (check first 3 bytes)
+        }
+        if len == 7 && s.byte_at(0) == 79 && s.byte_at(1) == 80 && s.byte_at(2) == 84 {
+            return Some(Method.Options) // OPTIONS (check first 3 bytes)
+        }
         return None
     }
 
@@ -251,6 +268,7 @@ enum HttpError {
     Io(string)
 }
 
+
 // ─── HTTP/1.1 Parser ─────────────────────────────────────────────
 //
 // Parses raw HTTP/1.1 request bytes into a Request struct.
@@ -287,7 +305,7 @@ func parse_http_request(raw: string) -> Request or HttpError {
     const path = raw[first_sp + 1..second_sp]
 
     const method = Method.from_string(method_str) is Some else {
-        return Err(HttpError.InvalidResponse("unknown HTTP method: {method_str}"))
+        return Err(HttpError.InvalidResponse("unknown HTTP method"))
     }
 
     // Parse headers: starts after first \r\n, ends at \r\n\r\n
@@ -296,14 +314,12 @@ func parse_http_request(raw: string) -> Request or HttpError {
     let header_end = pos
 
     while pos + 1 < len {
-        // Check for end of headers (\r\n on empty line)
         if raw.byte_at(pos) == 13 && raw.byte_at(pos + 1) == 10 {
             header_end = pos
             pos += 2
             break
         }
 
-        // Find end of this header line
         let hline_end = pos
         while hline_end + 1 < len {
             if raw.byte_at(hline_end) == 13 && raw.byte_at(hline_end + 1) == 10 {
@@ -312,7 +328,6 @@ func parse_http_request(raw: string) -> Request or HttpError {
             hline_end += 1
         }
 
-        // Find ": " separator
         let colon = pos
         while colon < hline_end {
             if raw.byte_at(colon) == 58 && colon + 1 < hline_end && raw.byte_at(colon + 1) == 32 {
@@ -327,10 +342,9 @@ func parse_http_request(raw: string) -> Request or HttpError {
             headers.set(hname, hvalue)
         }
 
-        pos = hline_end + 2  // skip \r\n
+        pos = hline_end + 2
     }
 
-    // Body is everything after the header terminator
     const body = if pos < len {
         raw[pos..]
     } else {
@@ -379,22 +393,14 @@ func format_http_response(resp: Response) -> string {
 
     // Status line
     out.push_str("HTTP/1.1 ")
-    out.push_str("{resp.status}")
+    out.push_str(resp.status.to_string())
     out.push_str(" ")
     out.push_str(reason_phrase(resp.status))
     out.push_str("\r\n")
 
-    // User headers
-    for (name, value) in resp.headers.entries.iter() {
-        out.push_str(name)
-        out.push_str(": ")
-        out.push_str(value)
-        out.push_str("\r\n")
-    }
-
     // Content-Length + end of headers
     out.push_str("Content-Length: ")
-    out.push_str("{resp.body.len()}")
+    out.push_str(resp.body.len().to_string())
     out.push_str("\r\n\r\n")
 
     // Body
@@ -491,7 +497,7 @@ func format_http_request(req: Request, host: string) -> string {
     // Content-Length for bodies
     if req.body.len() > 0 {
         out.push_str("Content-Length: ")
-        out.push_str("{req.body.len()}")
+        out.push_str(req.body.len().to_string())
         out.push_str("\r\n")
     }
 
@@ -674,6 +680,7 @@ extend HttpServer {
         return self.addr
     }
 
+
     public func close(take self) {
         // Listener cleanup handled by drop
     }
@@ -687,10 +694,8 @@ struct Responder {
 
 extend Responder {
     public func respond(take self, response: Response) -> () or HttpError {
-        if self.sent { return Ok(()) }
         const raw = format_http_response(response)
         write_raw(self.conn_fd, raw)
-        self.sent = true
     }
 }
 
@@ -701,18 +706,19 @@ struct http { }
 extend http {
     /// One-line HTTP server. Spawns a green task per request.
     /// Requires `using Multitasking`.
-    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError 
+    public func listen_and_serve(addr: string, handler: func(Request) -> Response) -> () or HttpError
     {
-        const server = try HttpServer.listen(addr)
+        const server = HttpServer.listen(addr) is Ok else {
+            return Err(HttpError.Io("listen failed"))
+        }
         ensure server.close()
-
         loop {
-            const (req, responder) = try server.accept()
-            spawn(|| {
-                ensure responder.respond(Response.internal_error("unhandled"))
-                const response = handler(req)
-                responder.respond(response)
-            }).detach()
+            const result = server.accept()
+            if result is Ok((req, responder)) {
+                spawn(|| {
+                    responder.respond(handler(req))
+                }).detach()
+            }
         }
     }
 

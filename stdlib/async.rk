@@ -1,0 +1,100 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// --- Task spawning ---
+
+/// Spawn a green task on the current scheduler.
+/// Requires `using Multitasking`.
+public func spawn(f: func()) -> TaskHandle { }
+
+/// Check if the current task has been cancelled.
+/// Returns true if cancel was requested. Use in long-running loops.
+public func cancelled() -> bool { }
+
+// --- Task handles ---
+
+/// Handle to a spawned task. Must be joined or detached — dropping
+/// an unconsumed handle is a compile error.
+public struct TaskHandle<T> { }
+
+extend TaskHandle<T> {
+    /// Wait for the task to finish and return its result.
+    /// Consumes the handle.
+    public func join(take self) -> T or JoinError { }
+
+    /// Detach the task (fire-and-forget). Consumes the handle.
+    public func detach(take self) { }
+
+    /// Request cooperative cancellation, wait for exit.
+    /// Consumes the handle.
+    public func cancel(take self) -> T or JoinError { }
+}
+
+public enum JoinError {
+    Panicked(string),
+    Cancelled,
+}
+
+// --- Multiple tasks ---
+
+/// Wait for all tasks to complete. Returns results in order.
+public func join_all(handles: Vec<TaskHandle<T>>) -> Vec<T or JoinError> { }
+
+/// Return the first result, cancel remaining tasks.
+public func select_first(handles: Vec<TaskHandle<T>>) -> T or JoinError { }
+
+/// Dynamic task group for spawning a variable number of tasks.
+public struct TaskGroup<T> { }
+
+extend TaskGroup<T> {
+    public func new() -> TaskGroup<T> { }
+
+    /// Spawn a task in this group.
+    public func spawn(self, f: func() -> T) { }
+
+    /// Wait for all tasks in the group. Returns results in spawn order.
+    public func join_all(take self) -> Vec<T or JoinError> { }
+}
+
+// --- Channels ---
+
+extend Channel<T> {
+    /// Create a buffered channel with the given capacity.
+    public func buffered(capacity: u64) -> (Sender<T>, Receiver<T>) { }
+
+    /// Create an unbuffered (synchronous) channel.
+    public func unbuffered() -> (Sender<T>, Receiver<T>) { }
+}
+
+public struct Sender<T> { }
+
+extend Sender<T> {
+    /// Send a value. Pauses/blocks if buffer full.
+    public func send(self, value: T) -> () or SendError { }
+
+    /// Non-blocking send. Returns error if full or closed.
+    public func try_send(self, value: T) -> () or TrySendError { }
+
+    /// Explicitly close the sender.
+    public func close(self) -> () or CloseError { }
+}
+
+public struct Receiver<T> { }
+
+extend Receiver<T> {
+    /// Receive a value. Pauses/blocks if buffer empty.
+    public func recv(self) -> T or RecvError { }
+
+    /// Non-blocking receive. Returns error if empty or closed.
+    public func try_recv(self) -> T or TryRecvError { }
+
+    /// Explicitly close the receiver.
+    public func close(self) -> () or CloseError { }
+}
+
+// --- Channel errors ---
+
+public enum SendError { Closed }
+public enum RecvError { Closed }
+public enum CloseError { AlreadyClosed, FlushFailed }
+public enum TrySendError { Full(T), Closed(T) }
+public enum TryRecvError { Empty, Closed }

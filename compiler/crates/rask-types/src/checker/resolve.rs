@@ -390,7 +390,9 @@ impl TypeChecker {
                 self.resolve_concurrency_generic_method(name, &type_args, &method, &args, &ret, span)
             }
             // Builtin runtime types: Instant, Duration, TcpListener, TcpConnection, Shared (bare)
-            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex") => {
+            Type::UnresolvedNamed(name) if matches!(name.as_str(), "Instant" | "Duration" | "TcpListener" | "TcpConnection" | "Response" | "Request" | "Shared" | "Mutex")
+                || rask_stdlib::StubRegistry::load().get_type(name).is_some()
+            => {
                 self.resolve_runtime_method(name, &method, &args, &ret, span)
             }
             Type::Generic { base, args: generic_args } => {
@@ -581,14 +583,8 @@ impl TypeChecker {
                     span,
                 });
             }
-            return match method_def.ret_ty.as_str() {
-                "usize" => self.unify(ret, &Type::U64, span),
-                "bool" => self.unify(ret, &Type::Bool, span),
-                "()" => self.unify(ret, &Type::Unit, span),
-                "string" => self.unify(ret, &Type::String, span),
-                "char" => self.unify(ret, &Type::Char, span),
-                _ => Ok(false),
-            };
+            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
+            return self.unify(ret, &ret_ty, span);
         }
 
         match method {
@@ -625,12 +621,8 @@ impl TypeChecker {
                     span,
                 });
             }
-            return match method_def.ret_ty.as_str() {
-                "usize" => self.unify(ret, &Type::U64, span),
-                "bool" => self.unify(ret, &Type::Bool, span),
-                "()" => self.unify(ret, &Type::Unit, span),
-                _ => Ok(false),
-            };
+            let ret_ty = super::builtins::parse_stub_type(&method_def.ret_ty);
+            return self.unify(ret, &ret_ty, span);
         }
 
         match method {
@@ -903,7 +895,24 @@ impl TypeChecker {
                 self.unify(ret, &mutex_ty, span)
             }
             _ => {
-                // Fall through to constraint system for unknown methods
+                // Try stub registry before falling through
+                if let Some(stub) = rask_stdlib::lookup_method(type_name, method) {
+                    let expected_params = stub.params.len();
+                    if args.len() != expected_params {
+                        return Err(TypeError::ArityMismatch {
+                            expected: expected_params,
+                            found: args.len(),
+                            span,
+                        });
+                    }
+                    for ((_, param_ty_str), arg) in stub.params.iter().zip(args.iter()) {
+                        let param_ty = super::builtins::parse_stub_type(param_ty_str);
+                        self.unify(arg, &param_ty, span)?;
+                    }
+                    let ret_ty = super::builtins::parse_stub_type(&stub.ret_ty);
+                    return self.unify(ret, &ret_ty, span);
+                }
+                // Unknown method — re-enqueue for constraint system
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedNamed(type_name.to_string()),
                     method: method.to_string(),

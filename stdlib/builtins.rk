@@ -19,6 +19,3 @@ public func unreachable(msg: string?) { }
 
 /// Format values into a string.
 public func format(fmt: string) -> string { }
-
-/// Spawn a concurrent task.
-public func spawn(f: func()) { }

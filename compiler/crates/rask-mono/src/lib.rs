@@ -418,6 +418,7 @@ mod tests {
             call_type_args: std::collections::HashMap::new(),
             trait_coercions: std::collections::HashMap::new(),
             unsafe_ops: Vec::new(),
+            span_types: std::collections::HashMap::new(),
         }
     }
 

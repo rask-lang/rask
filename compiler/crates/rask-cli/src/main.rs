@@ -26,6 +26,29 @@ fn show_diagnostic(source: &str, file_name: &str, diagnostic: &Diagnostic) {
     eprintln!("{}", formatter.format(diagnostic));
 }
 
+/// Render a diagnostic against multiple source files, matching by span.
+pub(crate) fn show_diagnostic_multi(
+    diagnostic: &Diagnostic,
+    source_files: &[(std::path::PathBuf, String)],
+) {
+    let primary_end = diagnostic.labels.iter()
+        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
+        .map(|l| l.span.end);
+    let matched = primary_end.and_then(|end| {
+        let candidates: Vec<_> = source_files.iter()
+            .filter(|(_, src)| end <= src.len() && !src.is_empty())
+            .collect();
+        if candidates.len() == 1 { Some(candidates[0]) } else { None }
+    });
+    if let Some((path, source)) = matched {
+        let file_name = path.to_string_lossy();
+        let fmt = DiagnosticFormatter::new(source).with_file_name(&file_name);
+        eprintln!("{}", fmt.format(diagnostic));
+    } else {
+        eprintln!("{}: {}", output::error_label(), diagnostic.message);
+    }
+}
+
 /// Show multiple diagnostics. In JSON mode, emit a single structured report.
 pub(crate) fn show_diagnostics(
     diagnostics: &[Diagnostic],

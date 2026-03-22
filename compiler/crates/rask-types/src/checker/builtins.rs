@@ -54,7 +54,7 @@ impl BuiltinModules {
 /// in the string representation. This handles both forms plus primitives,
 /// generic placeholders, and named types. Single uppercase letters become
 /// `_Any` wildcards for the type checker's freshening logic.
-fn parse_stub_type(s: &str) -> Type {
+pub(super) fn parse_stub_type(s: &str) -> Type {
     let s = s.trim();
 
     // Handle "X or Y" result types (raw form, just in case)

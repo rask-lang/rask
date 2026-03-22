@@ -22,7 +22,15 @@ use rask_ast::{NodeId, Span};
 
 /// Desugar all operators in a list of declarations.
 pub fn desugar(decls: &mut [Decl]) {
-    let mut desugarer = Desugarer::new();
+    let mut desugarer = Desugarer::new(1_000_000);
+    for decl in decls {
+        desugarer.desugar_decl(decl);
+    }
+}
+
+/// Desugar with a custom starting NodeId to avoid collisions.
+pub fn desugar_with_start_id(decls: &mut [Decl], start_id: u32) {
+    let mut desugarer = Desugarer::new(start_id);
     for decl in decls {
         desugarer.desugar_decl(decl);
     }
@@ -34,9 +42,8 @@ struct Desugarer {
 }
 
 impl Desugarer {
-    fn new() -> Self {
-        // Start at a high number to avoid collisions with parser-assigned IDs
-        Self { next_id: 1_000_000 }
+    fn new(start_id: u32) -> Self {
+        Self { next_id: start_id }
     }
 
     fn fresh_id(&mut self) -> NodeId {

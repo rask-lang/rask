@@ -229,7 +229,7 @@ impl TypeTable {
         }
     }
 
-    fn resolve_type_names(&self, ty: &Type) -> Type {
+    pub fn resolve_type_names(&self, ty: &Type) -> Type {
         match ty {
             Type::Named(id) => Type::UnresolvedNamed(self.type_name(*id)),
             Type::Option(inner) => Type::Option(Box::new(self.resolve_type_names(inner))),
@@ -326,6 +326,10 @@ impl TypeTable {
                 expected: self.resolve_type_names(&expected),
                 found: self.resolve_type_names(&found),
                 nominal_name,
+                span,
+            },
+            TypeError::GuardElseMustDiverge { found, span } => TypeError::GuardElseMustDiverge {
+                found: self.resolve_type_names(&found),
                 span,
             },
             other => other,

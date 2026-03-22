@@ -76,7 +76,6 @@ pub fn cmd_run_project(path: &str, program_args: Vec<String>, opts: super::build
 /// but compiles with a test runner entry point instead of main().
 pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
     use colored::Colorize;
-    use rask_diagnostics::formatter::DiagnosticFormatter;
 
     let opts = super::build::BuildOptions {
         profile: "debug".to_string(),
@@ -147,24 +146,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                     let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                     if !ownership_result.is_ok() {
                         for error in &ownership_result.errors {
-                            let d = rask_diagnostics::ToDiagnostic::to_diagnostic(error);
-                            let primary_end = d.labels.iter()
-                                .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
-                                .map(|l| l.span.end);
-                            let matched = primary_end.and_then(|end| {
-                                let candidates: Vec<_> = source_files.iter()
-                                    .filter(|(_, src)| end <= src.len() && !src.is_empty())
-                                    .collect();
-                                if candidates.len() == 1 { Some(candidates[0]) } else { None }
-                            });
-                            if let Some((path, source)) = matched {
-                                let file_name = path.to_string_lossy();
-                                let fmt = DiagnosticFormatter::new(source)
-                                    .with_file_name(&file_name);
-                                eprintln!("{}", fmt.format(&d));
-                            } else {
-                                eprintln!("{}: {}", output::error_label(), d.message);
-                            }
+                            crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
                         }
                         eprintln!("{}", output::banner_fail("Ownership", ownership_result.errors.len()));
                         process::exit(1);
@@ -246,7 +228,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
                 }
                 Err(errors) => {
                     for error in &errors {
-                        eprintln!("type error: {}", error);
+                        crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
                     }
                     process::exit(1);
                 }
@@ -254,7 +236,7 @@ pub fn cmd_test_project(path: &str, filter: Option<String>, format: Format) {
         }
         Err(errors) => {
             for error in &errors {
-                eprintln!("resolve error: {}", error.kind);
+                crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
             }
             process::exit(1);
         }

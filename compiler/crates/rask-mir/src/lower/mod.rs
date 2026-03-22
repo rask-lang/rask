@@ -194,11 +194,11 @@ impl<'a> MirContext<'a> {
             "i8" => MirType::I8,
             "i16" => MirType::I16,
             "i32" => MirType::I32,
-            "i64" => MirType::I64,
+            "i64" | "isize" => MirType::I64,
             "u8" => MirType::U8,
             "u16" => MirType::U16,
             "u32" => MirType::U32,
-            "u64" => MirType::U64,
+            "u64" | "usize" => MirType::U64,
             "f32" => MirType::F32,
             "f64" => MirType::F64,
             "bool" => MirType::Bool,
@@ -209,6 +209,17 @@ impl<'a> MirContext<'a> {
                 // "any TraitName" → TraitObject
                 if let Some(trait_name) = name.strip_prefix("any ") {
                     return MirType::TraitObject { trait_name: trait_name.to_string() };
+                }
+                // "(T1, T2, ...)" → Tuple
+                if name.starts_with('(') && name.ends_with(')') {
+                    let inner = &name[1..name.len() - 1];
+                    if inner.is_empty() {
+                        return MirType::Void;
+                    }
+                    let parts = split_top_level_parens(inner, ',');
+                    return MirType::Tuple(
+                        parts.iter().map(|p| self.resolve_type_str(p.trim())).collect()
+                    );
                 }
                 // "T or E" → Result<T, E>
                 if let Some(or_pos) = name.find(" or ") {
@@ -1460,17 +1471,41 @@ fn ret_category_to_mir_type(cat: &rask_stdlib::mir_metadata::RetCategory) -> Mir
             err: Box::new(ret_category_to_mir_type(err)),
         },
         RetCategory::Named(_) => MirType::I64,
+        RetCategory::Tuple(elems) => MirType::Tuple(
+            elems.iter().map(|e| ret_category_to_mir_type(e)).collect()
+        ),
     }
 }
 
 /// MIR type prefix derived from a MirType (fallback when local_type_prefix is absent).
 /// Find the first comma at nesting depth 0 (respecting `<...>` brackets).
+/// Split a string on a separator character at nesting depth 0,
+/// respecting `<>` and `()` brackets.
+fn split_top_level_parens(s: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            c2 if c2 == sep && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
+}
+
 fn find_top_level_comma(s: &str) -> Option<usize> {
     let mut depth = 0usize;
     for (i, c) in s.char_indices() {
         match c {
-            '<' => depth += 1,
-            '>' => depth = depth.saturating_sub(1),
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
             ',' if depth == 0 => return Some(i),
             _ => {}
         }

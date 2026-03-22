@@ -144,8 +144,9 @@ impl Backend {
             return rask_diagnostics;
         }
 
-        // Run type checking
-        let typed = match rask_types::typecheck(resolved, &parse_result.decls) {
+        // Run type checking (register stdlib types so methods like Request.path() resolve)
+        let stdlib_decls = rask_stdlib::StubRegistry::compilable_decls();
+        let typed = match rask_types::typecheck_with_stdlib(resolved, &parse_result.decls, &stdlib_decls) {
             Ok(t) => t,
             Err(errors) => {
                 for error in &errors {

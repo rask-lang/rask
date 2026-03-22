@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// --- Shared (read-heavy concurrent access) ---
+
+/// Read-heavy concurrent access. Multiple readers, exclusive writer.
+/// Access via `with shared.read() as v { }` or `with shared.write() as v { }`.
+extend Shared<T> {
+    public func new(value: T) -> Shared<T> { }
+
+    /// Expression-scoped read lock.
+    public func read(self) -> T { }
+
+    /// Expression-scoped write lock.
+    public func write(self) -> T { }
+
+    /// Non-blocking read. Returns None if contended.
+    public func try_read(self, f: func(T)) -> Option<T> { }
+
+    /// Non-blocking write. Returns None if contended.
+    public func try_write(self, f: func(T)) -> Option<T> { }
+}
+
+// --- Mutex (exclusive access) ---
+
+/// Exclusive access for write-heavy patterns.
+/// Access via `with mutex as v { }` or `mutex.lock().field`.
+extend Mutex<T> {
+    public func new(value: T) -> Mutex<T> { }
+
+    /// Expression-scoped exclusive lock.
+    public func lock(self) -> T { }
+
+    /// Non-blocking lock. Returns None if held.
+    public func try_lock(self, f: func(T)) -> Option<T> { }
+}

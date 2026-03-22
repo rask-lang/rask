@@ -10,3 +10,8 @@ extend net {
     /// Connect to a remote TCP address. Returns a connection or error.
     public func tcp_connect(addr: string) -> TcpConnection or Error { }
 }
+
+extend TcpListener {
+    /// Accept an incoming TCP connection.
+    public func accept(self) -> TcpConnection or Error { }
+}

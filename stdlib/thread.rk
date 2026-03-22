@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+// --- OS threads ---
+
+/// Raw OS thread. Works anywhere — no context required.
+public struct Thread { }
+
+extend Thread {
+    /// Spawn an OS thread. Returns a handle that must be joined or detached.
+    public func spawn(f: func()) -> ThreadHandle { }
+}
+
+/// Handle to a spawned OS thread. Must be joined or detached.
+public struct ThreadHandle<T> { }
+
+extend ThreadHandle<T> {
+    /// Wait for the thread to finish and return its result.
+    public func join(take self) -> T or JoinError { }
+
+    /// Detach the thread (fire-and-forget).
+    public func detach(take self) { }
+}
+
+// --- Thread pool ---
+
+/// Thread pool for CPU-bound work. Requires `using ThreadPool`.
+public struct ThreadPool { }
+
+extend ThreadPool {
+    /// Spawn work on the thread pool. Returns a handle.
+    public func spawn(f: func()) -> ThreadHandle { }
+}

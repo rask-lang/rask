@@ -605,7 +605,7 @@ impl<'a> MirLowerer<'a> {
 
     /// Lower tuple destructuring: evaluate init, extract each element by field index.
     fn lower_tuple_destructure(&mut self, names: &[String], init: &Expr) -> Result<(), LoweringError> {
-        let (init_op, _) = self.lower_expr(init)?;
+        let (init_op, init_mir_ty) = self.lower_expr(init)?;
 
         // Extract tuple element types from type checker for type prefix tracking.
         // e.g. Channel<T>.buffered() → (Sender<T>, Receiver<T>)
@@ -618,10 +618,17 @@ impl<'a> MirLowerer<'a> {
                 }
             });
 
+        // Extract per-element MIR types from the tuple type.
+        let mir_elem_types: Option<Vec<MirType>> = match &init_mir_ty {
+            MirType::Tuple(fields) => Some(fields.clone()),
+            _ => None,
+        };
+
         for (i, name) in names.iter().enumerate() {
-            let elem_ty = self.lookup_expr_type(init)
-                .or_else(|| Some(MirType::I32))
-                .unwrap_or(MirType::I32);
+            let elem_ty = mir_elem_types.as_ref()
+                .and_then(|elems| elems.get(i).cloned())
+                .or_else(|| self.lookup_expr_type(init))
+                .unwrap_or(MirType::I64);
             let local_id = self.builder.alloc_local(name.clone(), elem_ty.clone());
             self.locals.insert(name.clone(), (local_id, elem_ty));
             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

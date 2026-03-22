@@ -650,7 +650,9 @@ impl<'a> OwnershipChecker<'a> {
             ExprKind::Try { expr: inner, ref else_clause } => {
                 self.check_expr(inner);
                 if let Some(ec) = else_clause {
+                    let pre_else = self.bindings.clone();
                     self.check_expr(&ec.body);
+                    self.bindings = pre_else;
                 }
             }
             ExprKind::Unwrap { expr: inner, .. } => {
@@ -1108,7 +1110,7 @@ impl<'a> OwnershipChecker<'a> {
 
     /// Determine why a type is move-only (not Copy).
     fn move_reason(&self, ty: &Type) -> MoveReason {
-        let type_name = format!("{}", ty);
+        let type_name = format!("{}", self.program.types.resolve_type_names(ty));
         match ty {
             // String is Copy (S1) — this branch shouldn't be reached
             Type::String => MoveReason::Unknown,

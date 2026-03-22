@@ -22,7 +22,9 @@ fn run_pipeline(path: &str, format: Format) -> (MonoProgram, rask_types::TypedPr
     // Inject compiled stdlib functions + struct defs AFTER typechecking.
     // Type signatures come from BuiltinModule stubs during resolve/typecheck.
     // Function bodies and struct layouts are only needed at mono/codegen time.
-    let stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    // Desugar so string ==, interpolation, etc. work in stdlib Rask code.
+    let mut stdlib_fn_decls = rask_stdlib::StubRegistry::compilable_decls();
+    // Stdlib code is NOT desugared — MIR lowering handles BinOp on strings directly.
     let stdlib_struct_defs = rask_stdlib::StubRegistry::compilable_struct_defs();
     if !stdlib_fn_decls.is_empty() {
         result.decls.extend(stdlib_fn_decls);

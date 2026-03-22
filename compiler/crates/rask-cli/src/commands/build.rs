@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process;
 use std::time::Instant;
 
-use rask_diagnostics::formatter::DiagnosticFormatter;
 use rask_diagnostics::ToDiagnostic;
 
 use crate::output;
@@ -563,18 +562,22 @@ pub fn prepare_build(path: &str, opts: BuildOptions) -> PreparedBuild {
                         let mut all_decls: Vec<_> = pkg.all_decls().cloned().collect();
                         rask_desugar::desugar(&mut all_decls);
 
+                        let pkg_source_files: Vec<_> = pkg.files.iter()
+                            .map(|f| (f.path.clone(), f.source.clone()))
+                            .collect();
+
                         match rask_resolve::resolve_package(&all_decls, registry, pkg_id) {
                             Ok(resolved) => {
                                 if let Err(errors) = rask_types::typecheck(resolved, &all_decls) {
                                     for error in &errors {
-                                        eprintln!("type error: {}", error);
+                                        crate::show_diagnostic_multi(&error.to_diagnostic(), &pkg_source_files);
                                     }
                                     level_errors.fetch_add(errors.len(), Ordering::Relaxed);
                                 }
                             }
                             Err(errors) => {
                                 for error in &errors {
-                                    eprintln!("resolve error: {}", error.kind);
+                                    crate::show_diagnostic_multi(&error.to_diagnostic(), &pkg_source_files);
                                 }
                                 level_errors.fetch_add(errors.len(), Ordering::Relaxed);
                             }
@@ -720,24 +723,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                             let ownership_result = rask_ownership::check_ownership(&typed, &all_decls);
                             if !ownership_result.is_ok() {
                                 for error in &ownership_result.errors {
-                                    let d = error.to_diagnostic();
-                                    let primary_end = d.labels.iter()
-                                        .find(|l| l.style == rask_diagnostics::LabelStyle::Primary)
-                                        .map(|l| l.span.end);
-                                    let matched = primary_end.and_then(|end| {
-                                        let candidates: Vec<_> = source_files.iter()
-                                            .filter(|(_, src)| end <= src.len() && !src.is_empty())
-                                            .collect();
-                                        if candidates.len() == 1 { Some(candidates[0]) } else { None }
-                                    });
-                                    if let Some((path, source)) = matched {
-                                        let file_name = path.to_string_lossy();
-                                        let fmt = DiagnosticFormatter::new(source)
-                                            .with_file_name(&file_name);
-                                        eprintln!("{}", fmt.format(&d));
-                                    } else {
-                                        eprintln!("{}: {}", output::error_label(), d.message);
-                                    }
+                                    crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
                                 }
                                 total_errors += ownership_result.errors.len();
                             } else {
@@ -799,7 +785,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                         }
                         Err(errors) => {
                             for error in &errors {
-                                eprintln!("type error: {}", error);
+                                crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
                             }
                             total_errors += errors.len();
                         }
@@ -807,7 +793,7 @@ pub fn cmd_build(path: &str, opts: BuildOptions) {
                 }
                 Err(errors) => {
                     for error in &errors {
-                        eprintln!("resolve error: {}", error.kind);
+                        crate::show_diagnostic_multi(&error.to_diagnostic(), &source_files);
                     }
                     total_errors += errors.len();
                 }

@@ -26,6 +26,8 @@ pub enum RetCategory {
     },
     /// A named stdlib type (e.g., "File", "Vec", "Shared").
     Named(std::string::String),
+    /// Tuple of types (e.g., `(Request, Responder)`).
+    Tuple(Vec<RetCategory>),
 }
 
 /// Metadata for a single stdlib method, derived from stubs.
@@ -204,9 +206,13 @@ fn parse_simple_type(s: &str) -> RetCategory {
         | "isize" | "usize" => RetCategory::I64,
         "f32" | "f64" => RetCategory::F64,
         _ if s.starts_with('*') => RetCategory::Ptr,
-        _ if s.starts_with('(') => {
-            // Tuples are opaque at MIR level
-            RetCategory::I64
+        _ if s.starts_with('(') && s.ends_with(')') => {
+            let inner = &s[1..s.len() - 1];
+            if inner.is_empty() {
+                return RetCategory::Void;
+            }
+            let parts = split_top_level(inner, ',');
+            RetCategory::Tuple(parts.into_iter().map(|p| parse_simple_type(p.trim())).collect())
         }
         _ => {
             // Named type: "File", "Vec<string>", "Iterator<char>", etc.
@@ -233,12 +239,33 @@ fn ret_type_prefix(cat: &RetCategory) -> Option<std::string::String> {
         RetCategory::String => Some("string".to_string()),
         RetCategory::Ptr => Some("Ptr".to_string()),
         RetCategory::Named(name) => Some(name.clone()),
+        RetCategory::Tuple(_) => None,
         RetCategory::Option(_) => Some("Option".to_string()),
         RetCategory::Result { ok, .. } => {
             // The prefix is the ok type's prefix (e.g., Result<File, _> → "File")
             ret_type_prefix(ok)
         }
     }
+}
+
+/// Split a string by a separator at nesting depth 0 (respecting `<...>` and `(...)` brackets).
+fn split_top_level(s: &str, sep: char) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' | '(' => depth += 1,
+            '>' | ')' => depth = depth.saturating_sub(1),
+            c2 if c2 == sep && depth == 0 => {
+                parts.push(&s[start..i]);
+                start = i + c2.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(&s[start..]);
+    parts
 }
 
 /// Find first comma at nesting depth 0 (respecting `<...>` brackets).
@@ -389,6 +416,13 @@ mod tests {
         let vec_push = lookup("Vec_push");
         assert!(vec_push.is_some(), "missing Vec_push meta");
         assert_eq!(vec_push.unwrap().ret_category, RetCategory::Void);
+    }
+
+    #[test]
+    fn tcp_listener_accept_returns_result() {
+        let meta = lookup("TcpListener_accept").expect("missing TcpListener_accept");
+        assert!(matches!(meta.ret_category, RetCategory::Result { .. }),
+            "expected Result, got {:?}", meta.ret_category);
     }
 
     #[test]

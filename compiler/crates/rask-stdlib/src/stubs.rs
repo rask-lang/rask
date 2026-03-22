@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: (MIT OR Apache-2.0)
 //! Stub loader — parses .rk stub files to extract type/method metadata.
 //!
-//! Stub files in stdlib/ are the single source of truth for builtin type APIs.
+//! Stub files in stdlib/ (net.rk, http.rk, etc.) are the single source of truth for builtin type APIs.
+//! (force rebuild 2)
 
 use rask_ast::decl::{Decl, DeclKind, FnDecl};
 use rask_ast::Span;
@@ -24,6 +25,9 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("cli.rk", include_str!("../../../../stdlib/cli.rk")),
     ("std.rk", include_str!("../../../../stdlib/std.rk")),
     ("http.rk", include_str!("../../../../stdlib/http.rk")),
+    ("async.rk", include_str!("../../../../stdlib/async.rk")),
+    ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
+    ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
 ];
 
 /// A method extracted from a stub file.
@@ -133,6 +137,7 @@ impl StubRegistry {
                         DeclKind::Impl(i) => i.methods.iter().any(|m| !m.body.is_empty()),
                         DeclKind::Extern(_) => true,
                         DeclKind::Struct(_) | DeclKind::Enum(_) => true,
+                        DeclKind::Import(_) => true,
                         _ => false,
                     };
                     if dominated {

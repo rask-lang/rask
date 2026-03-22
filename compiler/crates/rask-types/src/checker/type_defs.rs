@@ -96,4 +96,7 @@ pub struct TypedProgram {
     pub trait_coercions: HashMap<NodeId, String>,
     /// Unsafe operations recorded during type checking (span + category).
     pub unsafe_ops: Vec<(rask_ast::Span, super::UnsafeCategory)>,
+    /// Types for binding names and parameters, keyed by (span.start, span.end).
+    /// Used by the LSP for hover on identifiers that aren't expression nodes.
+    pub span_types: HashMap<(usize, usize), Type>,
 }

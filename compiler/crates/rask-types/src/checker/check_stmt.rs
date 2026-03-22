@@ -22,7 +22,7 @@ impl TypeChecker {
                 // ESAD Phase 1: Clear borrows at statement end (semicolon)
                 self.clear_expression_borrows();
             }
-            StmtKind::Let { name, name_span: _, ty, init } => {
+            StmtKind::Let { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         let init_ty = self.infer_expr_expecting(init, &declared);
@@ -33,18 +33,21 @@ impl TypeChecker {
                 } else {
                     (self.infer_expr(init), None)
                 };
-                if let Some(declared) = declared_ty {
+                let binding_ty = if let Some(declared) = declared_ty {
                     self.ctx
                         .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
-                    self.define_local(name.clone(), declared);
+                    self.define_local(name.clone(), declared.clone());
+                    declared
                 } else {
-                    self.define_local(name.clone(), init_ty);
-                }
+                    self.define_local(name.clone(), init_ty.clone());
+                    init_ty
+                };
+                self.span_types.insert((name_span.start, name_span.end), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
                 self.clear_expression_borrows();
             }
-            StmtKind::Const { name, name_span: _, ty, init } => {
+            StmtKind::Const { name, name_span, ty, init } => {
                 let (init_ty, declared_ty) = if let Some(ty_str) = ty {
                     if let Ok(declared) = parse_type_string(ty_str, &self.types) {
                         let init_ty = self.infer_expr_expecting(init, &declared);
@@ -55,13 +58,16 @@ impl TypeChecker {
                 } else {
                     (self.infer_expr(init), None)
                 };
-                if let Some(declared) = declared_ty {
+                let binding_ty = if let Some(declared) = declared_ty {
                     self.ctx
                         .add_constraint(TypeConstraint::Equal(declared.clone(), init_ty, stmt.span));
-                    self.define_local(name.clone(), declared);
+                    self.define_local(name.clone(), declared.clone());
+                    declared
                 } else {
-                    self.define_local(name.clone(), init_ty);
-                }
+                    self.define_local(name.clone(), init_ty.clone());
+                    init_ty
+                };
+                self.span_types.insert((name_span.start, name_span.end), binding_ty);
                 // ESAD Phase 2: Track view creation
                 self.check_view_at_binding(name, init, stmt.span);
                 self.clear_expression_borrows();
