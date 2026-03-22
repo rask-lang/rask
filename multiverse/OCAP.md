@@ -182,6 +182,8 @@ The wire format is undecided. Requirements:
 
 Candidates: MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers. Decision deferred.
 
+Note: Raido has its own serialization format for VM state snapshots (versioned, with content-addressed chunks). The protocol wire format is separate — it carries Transforms, Proofs, and Grants between domains. Raido snapshots travel *inside* the protocol as opaque Object content when migrating running scripts across domains.
+
 ## What We Stole from Where
 
 | Source | What we took | What we skipped |

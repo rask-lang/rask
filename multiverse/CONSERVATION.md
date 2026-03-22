@@ -90,13 +90,15 @@ Physics has the speed of light. We have rate limits.
 
 I considered a gas model (like Ethereum) but rejected it. Gas is UX poison — it makes every action cost something, which kills casual interaction. Rate limits cover the abuse case (no infinite loops, no spam) without burdening normal users.
 
-The exception: if sandboxed scripts (UGC) can be arbitrarily complex, you might need computational metering for those specifically. But that's a sandbox concern, not a protocol-level conservation law.
+Raido already handles the UGC case: fuel limits (instruction budget) and arena limits (memory budget) are per-VM, not catchable by scripts, and not a protocol concern. The protocol enforces rate limits on *operations* (Transforms), not on computation within a sandbox.
 
 ## Law 6: Authority Scoping
 
 > An operation can only affect Objects the initiator has authority over. Authority is non-transitive by default.
 
 A script running in Domain X can't touch Objects in Domain Y. A player's script can't modify another player's inventory. Authority must be explicitly granted and is always scoped — to a domain, a session, a specific object set.
+
+Raido enforces this structurally: scripts have zero I/O and zero ambient authority. Every capability (host function, host reference vtable, stdlib module) is explicitly registered by the host. A Raido script literally cannot reference an Object the host didn't expose.
 
 ### Non-Transitivity
 

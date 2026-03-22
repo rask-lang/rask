@@ -33,11 +33,11 @@ A hybrid. Each component uses the tool that fits.
 
 **Identity and inventory** — federated, like Matrix. You own your data on your home server (or self-host). Portable between domains. No single point of failure.
 
-**Real-time interaction** — deterministic lockstep between peers for small groups (2-16 participants). The host domain acts as arbiter if needed, replaying disputed results headlessly.
+**Real-time interaction** — deterministic lockstep between peers for small groups (2-16 participants). Raido's fixed-point arithmetic and seedable PRNG guarantee bitwise-identical results across machines. The host domain acts as arbiter if needed, replaying disputed results headlessly.
 
 **Persistent world state** — single-owner model. Only the owning domain can mutate an object. This sidesteps concurrent mutation entirely — no CRDTs needed for the base case.
 
-**UGC sandboxing** — WASM, capability-scoped. Scripts get only the references they're handed. Gas-limited execution prevents abuse.
+**UGC sandboxing** — [Raido](../specs/raido/README.md), the deterministic scripting VM. Scripts get only the references the host hands them (registered functions and vtables). Fuel-limited execution prevents abuse. Full VM state is serializable — scripts can be checkpointed, migrated, and replayed across domains with bitwise-identical results.
 
 **Cross-domain communication** — object capability protocol. OCap principles govern all inter-domain interaction. See [OCAP.md](OCAP.md).
 
