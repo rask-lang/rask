@@ -688,7 +688,9 @@ impl<'a> MirLowerer<'a> {
             }
         }
 
-        // Inject module-level constants as locals so functions can reference them
+        // Inject module-level constants as locals so functions can reference them.
+        // Literal consts are evaluated directly; complex initializers (constructor
+        // calls, etc.) are lowered as regular expressions at function entry.
         for d in all_decls {
             if let DeclKind::Const(c) = &d.kind {
                 if lowerer.locals.contains_key(&c.name) {
@@ -701,6 +703,22 @@ impl<'a> MirLowerer<'a> {
                         rvalue: MirRValue::Use(op),
                     }));
                     lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                } else if let Ok((op, ty)) = lowerer.lower_expr(&c.init) {
+                    // Non-literal init (e.g. Shared<T>.new(...)): lower as expression
+                    let local_id = lowerer.builder.alloc_local(c.name.clone(), ty.clone());
+                    lowerer.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {
+                        dst: local_id,
+                        rvalue: MirRValue::Use(op),
+                    }));
+                    lowerer.locals.insert(c.name.clone(), (local_id, ty));
+                    // Extract type prefix from init (e.g. Shared<Metrics>.new() → "Shared")
+                    if let ExprKind::MethodCall { object, .. } = &c.init.kind {
+                        if let ExprKind::Ident(type_name) = &object.kind {
+                            if let Some(prefix) = MirContext::type_prefix_str(type_name) {
+                                lowerer.meta_mut(&c.name).type_prefix = Some(prefix);
+                            }
+                        }
+                    }
                 }
             }
         }

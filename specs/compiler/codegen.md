@@ -62,10 +62,11 @@ All MIR types have known sizes. No generics remain.
 
 ```
 MirType:
-    Void | Bool
+    Void | Bool | Char | String
     I8, I16, I32, I64 | U8, U16, U32, U64 | F32, F64
     Ptr | FatPtr
     Struct(StructLayoutId) | Enum(EnumLayoutId)
+    Tuple(Vec<MirType>) | Option(MirType) | Result { ok, err }
     Array { elem: MirType, len: u32 }
     FuncPtr(SignatureId)
 ```
@@ -135,6 +136,26 @@ const value = try fallible_call()
 | **B2: Variable mapping** | `LocalId` → Cranelift `Variable` via `declare_var`/`def_var`/`use_var` |
 | **B3: Struct passing** | Small structs (16 bytes or less) in registers; larger by pointer |
 | **B4: Object emission** | `cranelift-object` emits ELF (Linux) or Mach-O (macOS) |
+| **B5: String locals** | String locals get 16-byte stack slots. Variables hold the slot address (pointer to `RaskStr`), not the value |
+| **B6: String as aggregate** | Strings are 16-byte aggregates, not scalars. Field access on structs containing strings returns a pointer into the parent, same as other aggregates |
+
+## String Runtime Convention
+
+Strings are 16-byte values (`std.strings/S8`), passed by pointer to C runtime functions. Three calling patterns:
+
+| Rule | Description |
+|------|-------------|
+| **STR1: Out-param** | String-producing C functions take `RaskStr *out` as first parameter. Codegen allocates a 16-byte stack slot and passes its address. Result is read from the slot after the call |
+| **STR2: In-place mutation** | `push_str`, `push_char`, `push_byte` use signature `fn(out, self, arg)` — three parameters. `out` receives the mutated string, `self` points to the original, `arg` is the value to append. Codegen prepends the out-param (same slot as self for in-place semantics) |
+| **STR3: Read-only** | Non-mutating string functions (`len`, `eq`, `contains`, etc.) take `const RaskStr *` parameters — pointer to 16-byte value, no out-param |
+| **STR4: Literal init** | String constants lower to `rask_string_from(out, cstr)` where `cstr` is a `const char*` from the data section |
+
+```
+// STR2 example: s.push_str("world")
+// MIR:  call string_push_str(s, "world")
+// Cranelift: call rask_string_push_str(s_slot_addr, s_slot_addr, world_slot_addr)
+//            s_slot_addr serves as both out and self
+```
 
 ## Runtime Library (`rask-rt`)
 
@@ -142,7 +163,7 @@ const value = try fallible_call()
 |------|-------------|
 | **RT1: Core always linked** | Allocator, panic, string, Vec, Map, Pool, IO, ensure stack, resource tracker |
 | **RT2: Concurrency conditional** | Thread, thread pool, channels, join — linked only when used |
-| **RT3: Rust implementation** | Runtime is Rust, compiled to static library |
+| **RT3: C implementation** | Runtime is C, compiled to static library |
 
 ### Core API
 
@@ -150,7 +171,7 @@ const value = try fallible_call()
 |-----------|-----|
 | **Allocator** | `rask_alloc(size, align) -> *u8`, `rask_dealloc(ptr, size, align)` |
 | **Panic** | `rask_panic(msg, len, file, line) -> !` — runs ensure handlers LIFO, exits |
-| **String** | `RaskString { ptr, len, cap }` — heap UTF-8 |
+| **String** | `RaskStr` — 16-byte tagged union (SSO/heap), see `comp.memory-layout` and `std.strings/S8` |
 | **Vec** | `RaskVec<T>` — monomorphized growable array |
 | **Map** | `RaskMap<K,V>` — hash map |
 | **Pool** | `RaskPool<T>` — generational sparse storage |

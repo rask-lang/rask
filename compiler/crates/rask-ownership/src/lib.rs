@@ -615,11 +615,23 @@ impl<'a> OwnershipChecker<'a> {
                 self.check_expr(cond);
                 let pre_branch = self.bindings.clone();
                 self.check_expr(then_branch);
+                let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
                     let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
                     self.check_expr(else_branch);
-                    self.merge_branch_bindings(&after_then);
+                    let else_terminal = Self::is_terminal_expr(else_branch);
+                    if then_terminal && !else_terminal {
+                        // then returns — only else state survives
+                    } else if else_terminal && !then_terminal {
+                        // else returns — only then state survives
+                        self.bindings = after_then;
+                    } else {
+                        self.merge_branch_bindings(&after_then);
+                    }
+                } else if then_terminal {
+                    // if-without-else where then returns — restore pre-branch
+                    self.bindings = pre_branch;
                 }
             }
             ExprKind::IfLet { expr: scrutinee, pattern, then_branch, else_branch } => {
@@ -627,11 +639,21 @@ impl<'a> OwnershipChecker<'a> {
                 let pre_branch = self.bindings.clone();
                 self.register_pattern_bindings(pattern);
                 self.check_expr(then_branch);
+                let then_terminal = Self::is_terminal_expr(then_branch);
                 if let Some(else_branch) = else_branch {
                     let after_then = self.bindings.clone();
                     self.bindings = pre_branch;
                     self.check_expr(else_branch);
-                    self.merge_branch_bindings(&after_then);
+                    let else_terminal = Self::is_terminal_expr(else_branch);
+                    if then_terminal && !else_terminal {
+                        // then returns — only else state survives
+                    } else if else_terminal && !then_terminal {
+                        self.bindings = after_then;
+                    } else {
+                        self.merge_branch_bindings(&after_then);
+                    }
+                } else if then_terminal {
+                    self.bindings = pre_branch;
                 }
             }
             ExprKind::Block(stmts) => {
@@ -803,6 +825,23 @@ impl<'a> OwnershipChecker<'a> {
                 }
             }
         }
+    }
+
+    /// Check if an expression is terminal (always returns/breaks/continues).
+    /// Used to determine that code after a branch is unreachable from that branch.
+    fn is_terminal_expr(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Block(stmts) => Self::is_terminal_block(stmts),
+            _ => false,
+        }
+    }
+
+    fn is_terminal_block(stmts: &[Stmt]) -> bool {
+        stmts.last().map_or(false, |s| match &s.kind {
+            StmtKind::Return(_) | StmtKind::Break { .. } | StmtKind::Continue(_) => true,
+            StmtKind::Expr(e) => Self::is_terminal_expr(e),
+            _ => false,
+        })
     }
 
     /// Merge binding states after if/else branches.

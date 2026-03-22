@@ -1091,6 +1091,22 @@ impl TypeChecker {
                 let tuple_ty = Type::Tuple(vec![sender, receiver]);
                 self.unify(ret, &tuple_ty, span)
             }
+            // Shared<T>.new(value) -> Shared<T> (static constructor with explicit type param)
+            ("Shared", "new") if args.len() == 1 => {
+                let shared_ty = Type::UnresolvedGeneric {
+                    name: "Shared".to_string(),
+                    args: type_args.to_vec(),
+                };
+                self.unify(ret, &shared_ty, span)
+            }
+            // Mutex<T>.new(value) -> Mutex<T> (static constructor with explicit type param)
+            ("Mutex", "new") if args.len() == 1 => {
+                let mutex_ty = Type::UnresolvedGeneric {
+                    name: "Mutex".to_string(),
+                    args: type_args.to_vec(),
+                };
+                self.unify(ret, &mutex_ty, span)
+            }
             _ => {
                 self.ctx.add_constraint(TypeConstraint::HasMethod {
                     ty: Type::UnresolvedGeneric {
@@ -1473,11 +1489,8 @@ impl TypeChecker {
             "eq" | "ne" if args.len() == 1 => {
                 self.unify(ret, &Type::Bool, span)
             }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: self_ty,
-                method: method.to_string(),
-                span,
-            }),
+            // Fall through to static methods (e.g. Vec<Route>.from(...))
+            _ => self.resolve_vec_static_method(method, args, ret, span),
         }
     }
 
@@ -1585,14 +1598,8 @@ impl TypeChecker {
                 };
                 self.unify(ret, &vec_ty, span)
             }
-            _ => Err(TypeError::NoSuchMethod {
-                ty: Type::UnresolvedGeneric {
-                    name: "Map".to_string(),
-                    args: type_args.to_vec(),
-                },
-                method: method.to_string(),
-                span,
-            }),
+            // Fall through to static methods (e.g. Map<K,V>.new())
+            _ => self.resolve_map_static_method(method, args, ret, span),
         }
     }
 

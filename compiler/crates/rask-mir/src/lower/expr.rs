@@ -1213,15 +1213,15 @@ impl<'a> MirLowerer<'a> {
                         "values" | "keys" | "contains_key"
                         | "get" | "insert" | "remove" => Some("Map".to_string()),
                         // Time
-                        "elapsed" | "duration_since" => Some("Instant".to_string()),
+                        "now" | "elapsed" | "duration_since" => Some("Instant".to_string()),
                         "as_secs_f64" | "as_secs" | "as_millis" | "as_nanos" => Some("Duration".to_string()),
                         "sleep" => Some("time".to_string()),
                         // Net/HTTP
                         "read_http_request" | "write_http_response" => Some("TcpConnection".to_string()),
                         "accept" => Some("TcpListener".to_string()),
                         "respond" => Some("Responder".to_string()),
-                        // TaskHandle (cancel is unique; join/detach shared with ThreadHandle — resolved by type fallback)
-                        "cancel" => Some("TaskHandle".to_string()),
+                        // TaskHandle/ThreadHandle
+                        "cancel" | "detach" => Some("TaskHandle".to_string()),
                         _ => None,
                     })
                     .or_else(|| {

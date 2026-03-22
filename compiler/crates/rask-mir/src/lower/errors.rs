@@ -171,9 +171,12 @@ impl<'a> MirLowerer<'a> {
 
         let (transformed_op, _transformed_ty) = self.lower_expr(&try_else.body)?;
 
-        self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-            value: Some(transformed_op),
-        }));
+        // Only emit return if body didn't already terminate (e.g. bare `return` in body)
+        if self.builder.current_block_unterminated() {
+            self.builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
+                value: Some(transformed_op),
+            }));
+        }
 
         // Ok path — extract payload
         self.builder.switch_to_block(ok_block);

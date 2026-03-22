@@ -392,8 +392,7 @@ impl<'a> FunctionBuilder<'a> {
                 let is_aggregate = if let MirOperand::Local(src_id) = value {
                     if let Some((_src_slot, src_size)) = ctx.stack_slot_map.get(src_id) {
                         // Use store_size when available to avoid overflowing the
-                        // destination. Strings have 16-byte stack slots but occupy
-                        // only 8 bytes (a pointer) inside struct fields.
+                        // destination.
                         let effective_size = store_size
                             .map(|ss| ss.min(*src_size))
                             .unwrap_or(*src_size);
@@ -1475,7 +1474,7 @@ impl<'a> FunctionBuilder<'a> {
             | RaskType::I8 | RaskType::I16 | RaskType::I32 | RaskType::I64 | RaskType::I128
             | RaskType::U8 | RaskType::U16 | RaskType::U32 | RaskType::U64 | RaskType::U128
             | RaskType::F32 | RaskType::F64
-            | RaskType::Char | RaskType::String
+            | RaskType::Char
             | RaskType::Fn { .. } | RaskType::Slice(_) => false,
             // Runtime-opaque pointer types (Vec, Map, Pool, Handle, Channel, ...)
             RaskType::UnresolvedGeneric { .. } | RaskType::Generic { .. } => false,
@@ -2375,6 +2374,9 @@ impl<'a> FunctionBuilder<'a> {
                     .unwrap_or_else(|| builder.create_sized_stack_slot(StackSlotData::new(
                         StackSlotKind::ExplicitSlot, 16, 0,
                     )));
+                // C signature: push_str(out, s, other) — prepend out-param address
+                let out_addr = builder.ins().stack_addr(types::I64, ss, 0);
+                args.insert(0, out_addr);
                 CallAdapt::StringOutParam(ss)
             }
 
@@ -2384,6 +2386,11 @@ impl<'a> FunctionBuilder<'a> {
 
             ArgAdapt::AppendZero => {
                 args.push(builder.ins().iconst(types::I64, 0));
+                CallAdapt::None
+            }
+
+            ArgAdapt::AppendElemSize => {
+                args.push(builder.ins().iconst(types::I64, 8));
                 CallAdapt::None
             }
 

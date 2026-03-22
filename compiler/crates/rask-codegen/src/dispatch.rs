@@ -48,6 +48,8 @@ pub enum ArgAdapt {
     AppendOutParam,
     /// Append iconst(0) (Channel_unbuffered capacity)
     AppendZero,
+    /// Append iconst(8) as elem_size (Shared_read/write)
+    AppendElemSize,
     /// Complex case handled by hand-written code
     Custom,
 }
@@ -362,20 +364,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("string_le", "rask_string_le", &[types::I64, types::I64], Some(types::I64), false),
         StdlibEntry::simple("string_ge", "rask_string_ge", &[types::I64, types::I64], Some(types::I64), false),
 
-        // In-place string mutation
+        // In-place string mutation — C signature: fn(out, self, arg)
         StdlibEntry {
             mir_name: "string_push_str", c_name: "rask_string_push_str",
-            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
             mir_name: "string_push_char", c_name: "rask_string_push_char",
-            params: &[types::I64, types::I32], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry {
             mir_name: "string_push", c_name: "rask_string_push_char",
-            params: &[types::I64, types::I32], ret_ty: None, can_panic: false,
+            params: &[types::I64, types::I64, types::I32], ret_ty: None, can_panic: false,
             arg_adapt: ArgAdapt::InPlaceStringMut, ret_adapt: RetAdapt::FromArgAdapt,
         },
         StdlibEntry::simple("fs_list_dir", "rask_fs_list_dir", &[types::I64], Some(types::I64), false),
@@ -614,6 +616,10 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("join", "rask_green_join", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("detach", "rask_green_detach", &[types::I64], None, true),
         StdlibEntry::simple("cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
+        // TaskHandle qualified names (same C functions as unqualified)
+        StdlibEntry::simple("TaskHandle_join", "rask_green_join", &[types::I64], Some(types::I64), true),
+        StdlibEntry::simple("TaskHandle_detach", "rask_green_detach", &[types::I64], None, true),
+        StdlibEntry::simple("TaskHandle_cancel", "rask_green_cancel", &[types::I64], Some(types::I64), true),
         StdlibEntry::simple("rask_task_cancelled", "rask_green_task_is_cancelled", &[], Some(types::I32), false),
         StdlibEntry::simple("rask_sleep_ns", "rask_green_sleep_ns", &[types::I64], None, false),
 

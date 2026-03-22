@@ -1241,11 +1241,29 @@ impl TypeChecker {
         // These are type names, not variables — skip ESAD borrow check and
         // emit UnresolvedNamed directly instead of calling infer_expr
         // (which would return Type::Error for unregistered type names).
+        // Also handles generic forms like Vec<Route>.from().
         if let ExprKind::Ident(name) = &object.kind {
-            if matches!(name.as_str(), "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool" | "Mutex")
-                || rask_stdlib::StubRegistry::load().get_type(name).is_some()
+            // Extract base type name for generic types (e.g. "Vec<Route>" → "Vec")
+            let base_name = name.split('<').next().unwrap_or(name);
+            if matches!(base_name, "Vec" | "Map" | "Pool" | "Rng" | "Thread" | "ThreadPool" | "Mutex" | "Shared")
+                || rask_stdlib::StubRegistry::load().get_type(base_name).is_some()
             {
-                let obj_ty = Type::UnresolvedNamed(name.clone());
+                let obj_ty = if name.contains('<') {
+                    // Parse generic args: "Vec<Route>" → UnresolvedGeneric { name: "Vec", args: [Type(Route)] }
+                    let generic_args = name[base_name.len()+1..name.len()-1]
+                        .split(',')
+                        .map(|s| {
+                            let s = s.trim();
+                            GenericArg::Type(Box::new(Type::UnresolvedNamed(s.to_string())))
+                        })
+                        .collect();
+                    Type::UnresolvedGeneric {
+                        name: base_name.to_string(),
+                        args: generic_args,
+                    }
+                } else {
+                    Type::UnresolvedNamed(name.clone())
+                };
                 let arg_types: Vec<_> = args.iter().map(|a| self.infer_expr(&a.expr)).collect();
                 let ret_ty = self.ctx.fresh_var();
                 self.ctx.add_constraint(TypeConstraint::HasMethod {

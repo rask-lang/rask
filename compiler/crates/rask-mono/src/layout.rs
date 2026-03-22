@@ -64,7 +64,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         Type::I64 | Type::U64 | Type::F64 => (8, 8),
         Type::I128 | Type::U128 => (16, 16),
         Type::Char => (8, 8),
-        Type::String => (8, 8), // Opaque pointer (runtime uses RaskString*)
+        Type::String => (16, 8), // 16-byte SSO inline (RaskStr union)
         Type::Slice(_) => (16, 8), // Fat pointer: ptr + len
         Type::Option(inner) => {
             // Niche optimization: Option<Handle<T>> uses sentinel value instead of tag.

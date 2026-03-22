@@ -1,9 +1,7 @@
-import http.{
-    Request,
-    Response,
-    HttpError,
-    HttpServer,
-}
+import http.Request
+import http.Response
+import http.HttpError
+import http.HttpServer
 import async.spawn
 import json
 
@@ -20,34 +18,32 @@ func main() -> () or Error {
             spawn(|| {
                 ensure responder.respond(Response.internal_error("unhandled"))
                 println("forwarding request")
-                
+
                 if request.path() == "/metrics" {
-                    const m = metrics.read()
-                    const body = json.stringify([
-                        ["request_count", m.request_count],
-                        ["error_count", m.error_count],
-                        ["bytes_sent", m.bytes_sent],
-                        ["bytes_received", m.bytes_received],
-                    ])
-                    responder.respond(Response.json(body))
+                    with metrics.read() as m {
+                        const body = json.stringify([["request_count", m.request_count], ["error_count", m.error_count], ["bytes_sent", m.bytes_sent], ["bytes_received", m.bytes_received]])
+                        responder.respond(Response.json(body))
+                    }
                     return
                 }
 
                 const matched_route = match_route(request.path(), routes())
-                if matched_route is Some(route) 
-                {
-                    const response = try forward(request, route.upstream) else |e| {
-                        println("error forwarding request: {e}")
-                        return
+                if matched_route is Some(route) {
+                    const route_and_forward = |request: Request| -> Response {
+                        const result = forward(request, route.upstream)
+                        if result is Ok(response) {
+                            return response
+                        }
+                        println("error forwarding request")
+                        return Response.internal_error("upstream error")
                     }
-                    println("got response from upstream")
-                    responder.respond(response)
-                    println("responded")
+                    const with_middleware = with_metrics(logging(route_and_forward))
+                    const response = with_middleware(request)
+                    const _ = responder.respond(response)
                 } else {
                     responder.respond(Response.not_found())
                     return
                 }
-              
             }).detach()
         }
     }

@@ -1,11 +1,11 @@
-import time 
+import time.Instant
 
-func logging_middleware(next : func(Request) -> Response) -> func(Request) -> Response {
+func logging(next : func(Request) -> Response) -> func(Request) -> Response {
     return |request: Request| {
         println("Received request: {request.method} {request.path()}")
-        const start = time.now()
+        const start = Instant.now()
         const response = next(request)
-        const duration = time.now() - start
+        const duration = start.elapsed().as_millis()
         println("Request processed in {duration} ms")
         println("Responding with status: {response.status}")
         return response
@@ -13,19 +13,17 @@ func logging_middleware(next : func(Request) -> Response) -> func(Request) -> Re
 }
 
 
-func metrics_middleware(next : func(Request) -> Response) -> func(Request) -> Response {
+func with_metrics(next : func(Request) -> Response) -> func(Request) -> Response {
     return |request: Request| {
         const response = next(request)
-        const m = metrics.read()
-        m.request_count += 1
-
-        if response.status >= 400 {
-            m.error_count += 1
+        with metrics.write() as m {
+            m.request_count += 1
+            if response.status >= 400 {
+                m.error_count += 1
+            }
+            m.bytes_sent += response.body.len()
+            m.bytes_received += request.body.len()
         }
-        m.bytes_sent += response.body.len()
-        m.bytes_received += request.body.len()
-        
-        metrics.write(m)
         return response
     }
 }

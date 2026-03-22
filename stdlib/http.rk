@@ -267,6 +267,7 @@ enum HttpError {
     InvalidResponse(string)
     TooManyRedirects
     Io(string)
+    NotFound
 }
 
 

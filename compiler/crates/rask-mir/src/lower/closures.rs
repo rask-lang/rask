@@ -43,9 +43,11 @@ impl<'a> MirLowerer<'a> {
         }
 
         // 4. Synthesize a MIR function for the closure body.
+        // Detect void closures: if no ret_ty annotation and body has bare returns, use Void.
+        let inferred_void = ret_ty.is_none() && Self::body_has_bare_return(body);
         let closure_ret = ret_ty
             .map(|s| self.ctx.resolve_type_str(s))
-            .unwrap_or(MirType::I64);
+            .unwrap_or(if inferred_void { MirType::Void } else { MirType::I64 });
         let mut closure_builder = BlockBuilder::new(closure_name.clone(), closure_ret.clone());
 
         let env_param_id = closure_builder.add_param("__env".to_string(), MirType::Ptr);
@@ -93,8 +95,9 @@ impl<'a> MirLowerer<'a> {
             let (body_val, _body_ty) = body_result?;
 
             if closure_builder.current_block_unterminated() {
+                let ret_value = if closure_ret == MirType::Void { None } else { Some(body_val) };
                 closure_builder.terminate(MirTerminator::dummy(MirTerminatorKind::Return {
-                    value: Some(body_val),
+                    value: ret_value,
                 }));
             }
         }
@@ -279,5 +282,28 @@ impl<'a> MirLowerer<'a> {
         let bound = std::collections::HashSet::new();
         self.walk_free_vars_block(body, &bound, &mut seen, &mut free);
         free
+    }
+
+    /// Check if a closure body contains bare return statements (return without value).
+    fn body_has_bare_return(expr: &rask_ast::expr::Expr) -> bool {
+        use rask_ast::expr::ExprKind;
+        match &expr.kind {
+            ExprKind::Block(stmts) => stmts.iter().any(|s| Self::stmt_has_bare_return(s)),
+            ExprKind::If { then_branch, else_branch, .. }
+            | ExprKind::IfLet { then_branch, else_branch, .. } => {
+                Self::body_has_bare_return(then_branch)
+                || else_branch.as_ref().map_or(false, |e| Self::body_has_bare_return(e))
+            }
+            _ => false,
+        }
+    }
+
+    fn stmt_has_bare_return(stmt: &rask_ast::stmt::Stmt) -> bool {
+        use rask_ast::stmt::StmtKind;
+        match &stmt.kind {
+            StmtKind::Return(None) => true,
+            StmtKind::Expr(e) => Self::body_has_bare_return(e),
+            _ => false,
+        }
     }
 }
