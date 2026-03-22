@@ -181,9 +181,9 @@ Standalone transport protocol for inter-domain communication. No knowledge of ga
 |------|-------------|
 | [README.md](leden/README.md) | Overview, protocol design, key decisions |
 
-## Raido — Embedded scripting language
+## Raido — Deterministic scripting VM
 
-Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-allocated VM. Application-specific — unrelated to Allgard or Leden.
+Independent project. Rask-syntax-flavored scripting VM. Lives in this repo but is not part of Rask — no dependency on the compiler, runtime, or stdlib. Unrelated to Allgard or Leden.
 
 | Spec | Description |
 |------|-------------|
