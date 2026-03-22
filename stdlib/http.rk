@@ -260,6 +260,7 @@ extend Response {
 // ─── Errors ──────────────────────────────────────────────────────
 
 enum HttpError {
+    InternalServerError(string)
     ConnectionFailed(string)
     Timeout
     InvalidUrl(string)

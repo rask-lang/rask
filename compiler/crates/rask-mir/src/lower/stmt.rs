@@ -69,7 +69,7 @@ impl<'a> MirLowerer<'a> {
                         }));
                         self.locals.insert(name.to_string(), (local_id, mir_ty));
                     }
-                    self.local_type_prefix.insert(name.to_string(), meta.type_prefix.clone());
+                    self.meta_mut(name).type_prefix = Some(meta.type_prefix.clone());
                     return Ok(());
                 }
                 self.lower_binding(name, ty.as_deref(), init)
@@ -401,7 +401,7 @@ impl<'a> MirLowerer<'a> {
             if let ExprKind::Ident(obj_name) = &object.kind {
                 match (obj_name.as_str(), method.as_str()) {
                     ("cli", "args") | ("fs", "read_lines") => {
-                        self.collection_elem_types.insert(name.to_string(), MirType::String);
+                        self.meta_mut(name).elem_type = Some(MirType::String);
                     }
                     _ => {}
                 }
@@ -409,7 +409,7 @@ impl<'a> MirLowerer<'a> {
             // String methods that always return Vec<string>
             match method.as_str() {
                 "lines" | "split" | "split_whitespace" => {
-                    self.collection_elem_types.insert(name.to_string(), MirType::String);
+                    self.meta_mut(name).elem_type = Some(MirType::String);
                 }
                 _ => {}
             }
@@ -436,24 +436,24 @@ impl<'a> MirLowerer<'a> {
                     ).is_some()
                         || base_name.chars().next().map_or(false, |c| c.is_uppercase())
                     {
-                        self.local_type_prefix.insert(name.to_string(), base_name.to_string());
+                        self.meta_mut(name).type_prefix = Some(base_name.to_string());
                     } else {
                         // Module function (fs.open) → check return type prefix
                         let func_name = format!("{}_{}", obj_name, method);
                         if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                            self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
                         }
                     }
-                } else if let Some(obj_prefix) = self.local_type_prefix.get(obj_name).cloned() {
+                } else if let Some(obj_prefix) = self.meta(obj_name).and_then(|m| m.type_prefix.clone()) {
                     // Instance method on tracked variable (file.lines() → File_lines)
                     let func_name = format!("{}_{}", obj_prefix, method);
                     if let Some(prefix) = super::func_return_type_prefix(&func_name) {
-                        self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                        self.meta_mut(name).type_prefix = Some(prefix.to_string());
                     }
                     // Propagate full generic type through clone (Shared, Sender, Receiver)
                     if method == "clone" {
-                        if let Some(full_ty) = self.local_full_type.get(obj_name).cloned() {
-                            self.local_full_type.insert(name.to_string(), full_ty);
+                        if let Some(full_ty) = self.meta(obj_name).and_then(|m| m.full_type.clone()) {
+                            self.meta_mut(name).full_type = Some(full_ty);
                         }
                     }
                 }
@@ -464,7 +464,7 @@ impl<'a> MirLowerer<'a> {
                     if !self.locals.contains_key(module_name)
                         && super::is_type_constructor_name(module_name)
                     {
-                        self.local_type_prefix.insert(name.to_string(), type_name.clone());
+                        self.meta_mut(name).type_prefix = Some(type_name.clone());
                     }
                 }
             }
@@ -485,14 +485,13 @@ impl<'a> MirLowerer<'a> {
                             } else { None }
                         }
                         ExprKind::Ident(vn) => {
-                            // Look up variable type from local_type_prefix
-                            self.local_type_prefix.get(vn).cloned()
+                            // Look up variable type from local_meta
+                            self.meta(vn).and_then(|m| m.type_prefix.clone())
                         }
                         _ => None,
                     };
                     if let Some(inner) = inner_name {
-                        self.local_full_type.insert(
-                            name.to_string(),
+                        self.meta_mut(name).full_type = Some(
                             format!("Shared<{}>", inner),
                         );
                     }
@@ -508,7 +507,7 @@ impl<'a> MirLowerer<'a> {
                     if let Some(inner) = obj_name.split('<').nth(1).and_then(|s| s.strip_suffix('>')) {
                         let elem_mir = self.ctx.resolve_type_str(inner);
                         if !matches!(elem_mir, MirType::Ptr | MirType::I64) {
-                            self.collection_elem_types.insert(name.to_string(), elem_mir);
+                            self.meta_mut(name).elem_type = Some(elem_mir);
                         }
                     }
                 }
@@ -517,23 +516,23 @@ impl<'a> MirLowerer<'a> {
         // Iterator terminal .collect() returns a Vec
         if let ExprKind::MethodCall { method, .. } = &init.kind {
             if method == "collect" {
-                self.local_type_prefix.insert(name.to_string(), "Vec".to_string());
+                self.meta_mut(name).type_prefix = Some("Vec".to_string());
             }
         }
         // Also track for simple function calls (e.g. cli.args())
         if let ExprKind::Call { func, .. } = &init.kind {
             if let ExprKind::Ident(func_name) = &func.kind {
                 if let Some(prefix) = super::func_return_type_prefix(func_name) {
-                    self.local_type_prefix.insert(name.to_string(), prefix.to_string());
+                    self.meta_mut(name).type_prefix = Some(prefix.to_string());
                 }
             }
         }
         // Index expression: args[1] → if args has known element type, propagate it
         if let ExprKind::Index { object, .. } = &init.kind {
             if let ExprKind::Ident(coll_name) = &object.kind {
-                if let Some(elem_ty) = self.collection_elem_types.get(coll_name).cloned() {
+                if let Some(elem_ty) = self.meta(coll_name).and_then(|m| m.elem_type.clone()) {
                     if let Some(prefix) = self.mir_type_name(&elem_ty) {
-                        self.local_type_prefix.insert(name.to_string(), prefix);
+                        self.meta_mut(name).type_prefix = Some(prefix);
                     }
                 }
             }
@@ -541,12 +540,12 @@ impl<'a> MirLowerer<'a> {
 
         // Fallback: derive prefix from the MIR type (catches String, Struct, Enum)
         // or from the type annotation string (catches Ptr types like Vec<T>, Map<K,V>)
-        if !self.local_type_prefix.contains_key(name) {
+        if self.meta(name).and_then(|m| m.type_prefix.as_ref()).is_none() {
             if let Some(prefix) = self.mir_type_name(&var_ty) {
-                self.local_type_prefix.insert(name.to_string(), prefix);
+                self.meta_mut(name).type_prefix = Some(prefix);
             } else if let Some(ty_str) = ty {
                 if let Some(prefix) = super::type_prefix_from_str(ty_str) {
-                    self.local_type_prefix.insert(name.to_string(), prefix);
+                    self.meta_mut(name).type_prefix = Some(prefix);
                 }
             }
         }
@@ -585,7 +584,7 @@ impl<'a> MirLowerer<'a> {
                 }
                 // Also check if the source variable directly has an element type
                 if let ExprKind::Ident(src_var) = &field.value.kind {
-                    if let Some(elem_ty) = self.collection_elem_types.get(src_var)
+                    if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.as_ref())
                         .or_else(|| shared.get(src_var))
                     {
                         let var_key = format!("{}.{}", name, field.name);
@@ -595,7 +594,7 @@ impl<'a> MirLowerer<'a> {
             }
             drop(shared);
             for (key, ty) in to_add {
-                self.collection_elem_types.insert(key.clone(), ty.clone());
+                self.meta_mut(&key).elem_type = Some(ty.clone());
                 self.ctx.shared_elem_types.borrow_mut().insert(key, ty);
             }
         }
@@ -647,7 +646,7 @@ impl<'a> MirLowerer<'a> {
             if let Some(ref elems) = tuple_elems {
                 if let Some(elem_type) = elems.get(i) {
                     if let Some(prefix) = super::MirContext::type_prefix(elem_type, self.ctx.type_names) {
-                        self.local_type_prefix.insert(name.clone(), prefix);
+                        self.meta_mut(name).type_prefix = Some(prefix);
                         found_prefix = true;
                     }
                 }
@@ -664,7 +663,7 @@ impl<'a> MirLowerer<'a> {
                                 1 => "Receiver",
                                 _ => continue,
                             };
-                            self.local_type_prefix.insert(name.clone(), prefix.to_string());
+                            self.meta_mut(name).type_prefix = Some(prefix.to_string());
                             // Track channel element size for struct-aware recv
                             let inner = type_name.split('<').nth(1)
                                 .and_then(|s| s.strip_suffix('>'));
@@ -675,7 +674,7 @@ impl<'a> MirLowerer<'a> {
                             } else {
                                 8
                             };
-                            self.channel_elem_sizes.insert(name.clone(), elem_size);
+                            self.meta_mut(name).channel_elem_size = Some(elem_size);
                         }
                     }
                 }
@@ -866,17 +865,17 @@ impl<'a> MirLowerer<'a> {
             .unwrap_or(MirType::I64);
         let binding_local = self.builder.alloc_local(single_name.to_string(), elem_ty.clone());
         if let Some(prefix) = self.mir_type_name(&elem_ty) {
-            self.local_type_prefix.insert(single_name.to_string(), prefix);
+            self.meta_mut(single_name).type_prefix = Some(prefix);
         } else {
             // MirType is Ptr — try to derive element prefix from iterable context.
             // Method calls like .chunks() return Vec elements, .handles() returns Handle elements.
             if let ExprKind::MethodCall { method, .. } = &iter_expr.kind {
                 match method.as_str() {
                     "chunks" => {
-                        self.local_type_prefix.insert(single_name.to_string(), "Vec".to_string());
+                        self.meta_mut(single_name).type_prefix = Some("Vec".to_string());
                     }
                     "handles" | "cursor" => {
-                        self.local_type_prefix.insert(single_name.to_string(), "Handle".to_string());
+                        self.meta_mut(single_name).type_prefix = Some("Handle".to_string());
                     }
                     _ => {}
                 }
@@ -1297,7 +1296,7 @@ impl<'a> MirLowerer<'a> {
         // Bind final value to the loop variable
         let binding_local = self.builder.alloc_local(binding_name.to_string(), final_ty.clone());
         if let Some(prefix) = self.mir_type_name(&final_ty) {
-            self.local_type_prefix.insert(binding_name.to_string(), prefix);
+            self.meta_mut(binding_name).type_prefix = Some(prefix);
         }
         self.locals.insert(binding_name.to_string(), (binding_local, final_ty));
         self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Assign {

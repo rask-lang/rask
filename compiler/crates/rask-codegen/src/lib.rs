@@ -7,6 +7,7 @@ mod builder;
 pub mod closures;
 mod debug_info;
 pub mod dispatch;
+pub mod layouts;
 mod module;
 mod tests;
 pub mod vtable;

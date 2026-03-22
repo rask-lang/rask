@@ -38,7 +38,18 @@ pub(crate) fn show_diagnostic_multi(
         let candidates: Vec<_> = source_files.iter()
             .filter(|(_, src)| end <= src.len() && !src.is_empty())
             .collect();
-        if candidates.len() == 1 { Some(candidates[0]) } else { None }
+        if candidates.len() == 1 {
+            Some(candidates[0])
+        } else if candidates.len() > 1 {
+            // Multiple files match by length — pick the smallest file where
+            // the span still fits, since smaller files are more likely to be
+            // the correct match (span offsets are per-file, not global).
+            candidates.iter()
+                .min_by_key(|(_, src)| src.len())
+                .copied()
+        } else {
+            None
+        }
     });
     if let Some((path, source)) = matched {
         let file_name = path.to_string_lossy();

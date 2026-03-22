@@ -1309,8 +1309,78 @@ impl<'a> OwnershipChecker<'a> {
                 for p in params { inner_locals.insert(p.name.clone()); }
                 self.collect_free_vars(body, &inner_locals, out);
             }
+            ExprKind::Match { scrutinee, arms } => {
+                self.collect_free_vars(scrutinee, locals, out);
+                for arm in arms {
+                    self.collect_free_vars(&arm.body, locals, out);
+                    if let Some(g) = &arm.guard { self.collect_free_vars(g, locals, out); }
+                }
+            }
+            ExprKind::IfLet { expr: scrutinee, then_branch, else_branch, .. } => {
+                self.collect_free_vars(scrutinee, locals, out);
+                self.collect_free_vars(then_branch, locals, out);
+                if let Some(e) = else_branch { self.collect_free_vars(e, locals, out); }
+            }
+            ExprKind::GuardPattern { expr: scrutinee, else_branch, .. } => {
+                self.collect_free_vars(scrutinee, locals, out);
+                self.collect_free_vars(else_branch, locals, out);
+            }
+            ExprKind::IsPattern { expr: scrutinee, .. } => {
+                self.collect_free_vars(scrutinee, locals, out);
+            }
+            ExprKind::Try { expr: inner, else_clause } => {
+                self.collect_free_vars(inner, locals, out);
+                if let Some(tc) = else_clause {
+                    self.collect_free_vars(&tc.body, locals, out);
+                }
+            }
+            ExprKind::Unwrap { expr: inner, .. } | ExprKind::Cast { expr: inner, .. } => {
+                self.collect_free_vars(inner, locals, out);
+            }
+            ExprKind::NullCoalesce { value, default } => {
+                self.collect_free_vars(value, locals, out);
+                self.collect_free_vars(default, locals, out);
+            }
+            ExprKind::Range { start, end, .. } => {
+                if let Some(s) = start { self.collect_free_vars(s, locals, out); }
+                if let Some(e) = end { self.collect_free_vars(e, locals, out); }
+            }
+            ExprKind::StructLit { fields, spread, .. } => {
+                for f in fields { self.collect_free_vars(&f.value, locals, out); }
+                if let Some(s) = spread { self.collect_free_vars(s, locals, out); }
+            }
+            ExprKind::Array(elems) | ExprKind::Tuple(elems) => {
+                for e in elems { self.collect_free_vars(e, locals, out); }
+            }
+            ExprKind::ArrayRepeat { value, count } => {
+                self.collect_free_vars(value, locals, out);
+                self.collect_free_vars(count, locals, out);
+            }
+            ExprKind::UsingBlock { args, body, .. } => {
+                for arg in args { self.collect_free_vars(&arg.expr, locals, out); }
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            ExprKind::WithAs { bindings, body } => {
+                for b in bindings { self.collect_free_vars(&b.source, locals, out); }
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            ExprKind::Spawn { body } => {
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            ExprKind::Assert { condition, message } | ExprKind::Check { condition, message, .. } => {
+                self.collect_free_vars(condition, locals, out);
+                if let Some(m) = message { self.collect_free_vars(m, locals, out); }
+            }
+            ExprKind::Select { arms, .. } => {
+                for arm in arms {
+                    self.collect_free_vars(&arm.body, locals, out);
+                }
+            }
+            ExprKind::Unsafe { body } | ExprKind::Comptime { body } | ExprKind::BlockCall { body, .. } => {
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
             _ => {
-                // For other expressions, recurse into sub-expressions
+                // Literals, string interpolation, etc.
             }
         }
     }
@@ -1321,8 +1391,42 @@ impl<'a> OwnershipChecker<'a> {
             StmtKind::Let { init, .. } | StmtKind::Const { init, .. } => {
                 self.collect_free_vars(init, locals, out);
             }
-            StmtKind::Return(Some(e)) => self.collect_free_vars(e, locals, out),
-            _ => {}
+            StmtKind::LetTuple { init, .. } | StmtKind::ConstTuple { init, .. } => {
+                self.collect_free_vars(init, locals, out);
+            }
+            StmtKind::Assign { target, value } => {
+                self.collect_free_vars(target, locals, out);
+                self.collect_free_vars(value, locals, out);
+            }
+            StmtKind::Return(Some(e)) | StmtKind::Break { value: Some(e), .. } => {
+                self.collect_free_vars(e, locals, out);
+            }
+            StmtKind::While { cond, body } => {
+                self.collect_free_vars(cond, locals, out);
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            StmtKind::WhileLet { expr, body, .. } => {
+                self.collect_free_vars(expr, locals, out);
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            StmtKind::Loop { body, .. } => {
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            StmtKind::For { iter, body, .. } => {
+                self.collect_free_vars(iter, locals, out);
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            StmtKind::Ensure { body, else_handler } => {
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+                if let Some((_, handler_body)) = else_handler {
+                    for s in handler_body { self.collect_free_vars_stmt(s, locals, out); }
+                }
+            }
+            StmtKind::Comptime(body) => {
+                for s in body { self.collect_free_vars_stmt(s, locals, out); }
+            }
+            StmtKind::Return(None) | StmtKind::Break { value: None, .. }
+            | StmtKind::Continue(_) => {}
         }
     }
 

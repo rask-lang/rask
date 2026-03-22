@@ -319,6 +319,9 @@ impl TypeChecker {
             Type::UnresolvedGeneric { name, args: type_args } if name == "ThreadHandle" => {
                 self.resolve_thread_handle_method(&type_args, &method, &args, &ret, span)
             }
+            Type::UnresolvedGeneric { name, args: type_args } if name == "TaskHandle" => {
+                self.resolve_task_handle_method(&type_args, &method, &args, &ret, span)
+            }
             // Pool<T>
             Type::UnresolvedGeneric { name, args: type_args } if name == "Pool" => {
                 self.resolve_pool_method(type_args, &method, &args, &ret, span)
@@ -747,6 +750,44 @@ impl TypeChecker {
             _ => Err(TypeError::NoSuchMethod {
                 ty: Type::UnresolvedGeneric {
                     name: "ThreadHandle".to_string(),
+                    args: type_args.to_vec(),
+                },
+                method: method.to_string(),
+                span,
+            }),
+        }
+    }
+
+    pub(super) fn resolve_task_handle_method(
+        &mut self,
+        type_args: &[GenericArg],
+        method: &str,
+        args: &[Type],
+        ret: &Type,
+        span: Span,
+    ) -> Result<bool, TypeError> {
+        match method {
+            "join" if args.is_empty() => {
+                let inner_type = if let Some(GenericArg::Type(t)) = type_args.first() {
+                    *t.clone()
+                } else {
+                    self.ctx.fresh_var()
+                };
+                let result_type = Type::Result {
+                    ok: Box::new(inner_type),
+                    err: Box::new(Type::UnresolvedNamed("JoinError".to_string())),
+                };
+                self.unify(ret, &result_type, span)
+            }
+            "detach" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            "cancel" if args.is_empty() => {
+                self.unify(ret, &Type::Unit, span)
+            }
+            _ => Err(TypeError::NoSuchMethod {
+                ty: Type::UnresolvedGeneric {
+                    name: "TaskHandle".to_string(),
                     args: type_args.to_vec(),
                 },
                 method: method.to_string(),

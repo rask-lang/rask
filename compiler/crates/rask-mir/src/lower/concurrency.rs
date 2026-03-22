@@ -25,7 +25,7 @@ impl<'a> MirLowerer<'a> {
             }
         }
         if let ExprKind::Ident(var_name) = &object.kind {
-            if let Some(full_type) = self.local_full_type.get(var_name) {
+            if let Some(full_type) = self.meta(var_name).and_then(|m| m.full_type.as_deref()) {
                 let inner = full_type.split('<').nth(1)
                     .and_then(|s| s.strip_suffix('>'));
                 if let Some(name) = inner {
@@ -77,7 +77,7 @@ impl<'a> MirLowerer<'a> {
             if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
                 data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
             }
-            self.local_type_prefix.insert(binding_name.to_string(), type_name.clone());
+            self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }
 
         let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());
@@ -187,7 +187,7 @@ impl<'a> MirLowerer<'a> {
             if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
                 data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
             }
-            self.local_type_prefix.insert(binding_name.to_string(), type_name.clone());
+            self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }
 
         let data_param_id = closure_builder.add_param(binding_name.to_string(), data_param_ty.clone());

@@ -4,7 +4,7 @@
 
 /// Spawn a green task on the current scheduler.
 /// Requires `using Multitasking`.
-public func spawn(f: func()) -> TaskHandle { }
+public func spawn(f: func()) -> TaskHandle<()> { }
 
 /// Check if the current task has been cancelled.
 /// Returns true if cancel was requested. Use in long-running loops.

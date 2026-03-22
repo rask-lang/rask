@@ -58,10 +58,10 @@ impl<'a> MirLowerer<'a> {
             let param_id = closure_builder.add_param(param.name.clone(), param_ty.clone());
             closure_locals.insert(param.name.clone(), (param_id, param_ty.clone()));
             if let Some(prefix) = self.mir_type_name(&param_ty) {
-                self.local_type_prefix.insert(param.name.clone(), prefix);
+                self.meta_mut(&param.name).type_prefix = Some(prefix);
             } else if let Some(ty_str) = param.ty.as_deref() {
                 if let Some(prefix) = super::type_prefix_from_str(ty_str) {
-                    self.local_type_prefix.insert(param.name.clone(), prefix);
+                    self.meta_mut(&param.name).type_prefix = Some(prefix);
                 }
             }
         }

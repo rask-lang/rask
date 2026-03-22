@@ -172,6 +172,7 @@ const ARGS_METHODS: &[&str] = &[
 ];
 
 const THREAD_HANDLE_METHODS: &[&str] = &["join", "detach"];
+const TASK_HANDLE_METHODS: &[&str] = &["join", "detach", "cancel"];
 const SENDER_METHODS: &[&str] = &["send"];
 const RECEIVER_METHODS: &[&str] = &["recv", "try_recv"];
 const SHARED_METHODS: &[&str] = &["read", "write", "clone"];
@@ -249,7 +250,7 @@ pub const REGISTERED_TYPES: &[&str] = &[
     "JsonValue",
     "Duration", "Instant",
     "Path", "Args",
-    "ThreadHandle", "Sender", "Receiver", "Shared", "Mutex",
+    "ThreadHandle", "TaskHandle", "Sender", "Receiver", "Shared", "Mutex",
     "AtomicBool", "AtomicI8", "AtomicU8",
     "AtomicI16", "AtomicU16", "AtomicI32", "AtomicU32",
     "AtomicI64", "AtomicU64", "AtomicUsize", "AtomicIsize",
@@ -287,6 +288,7 @@ pub fn type_method_names(type_name: &str) -> &'static [&'static str] {
         "Path" => PATH_METHODS,
         "Args" => ARGS_METHODS,
         "ThreadHandle" => THREAD_HANDLE_METHODS,
+        "TaskHandle" => TASK_HANDLE_METHODS,
         "Sender" => SENDER_METHODS,
         "Receiver" => RECEIVER_METHODS,
         "Shared" => SHARED_METHODS,

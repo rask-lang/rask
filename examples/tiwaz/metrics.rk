@@ -1,0 +1,15 @@
+import sync.Shared
+
+struct Metrics {
+    request_count: u64
+    error_count: u64
+    bytes_sent: u64
+    bytes_received: u64
+}
+
+const metrics = Shared<Metrics>.new(Metrics {
+    request_count: 0,
+    error_count: 0,
+    bytes_sent: 0,
+    bytes_received: 0,
+})

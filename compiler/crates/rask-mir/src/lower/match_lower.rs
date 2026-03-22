@@ -211,7 +211,7 @@ impl<'a> MirLowerer<'a> {
                                     payload_mir.and_then(|t| self.mir_type_name(t))
                                 });
                             if let Some(p) = prefix {
-                                self.local_type_prefix.insert(binding.clone(), p);
+                                self.meta_mut(binding).type_prefix = Some(p);
                             }
                             self.locals.insert(binding.clone(), (payload_local, field_ty));
                         }
@@ -244,7 +244,7 @@ impl<'a> MirLowerer<'a> {
                                             if let Some(p) = self.mir_type_name(&field_ty)
                                                 .or_else(|| super::MirContext::type_prefix(&field_layout.ty, self.ctx.type_names))
                                             {
-                                                self.local_type_prefix.insert(binding.clone(), p);
+                                                self.meta_mut(binding).type_prefix = Some(p);
                                             }
                                             self.locals.insert(binding.clone(), (payload_local, field_ty));
                                         }
@@ -456,7 +456,7 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Use(elem_op.clone()),
                             }));
                             if let Some(prefix) = self.mir_type_name(elem_ty) {
-                                self.local_type_prefix.insert(name.clone(), prefix);
+                                self.meta_mut(name).type_prefix = Some(prefix);
                             }
                             self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
                         }
@@ -514,7 +514,7 @@ impl<'a> MirLowerer<'a> {
                                 rvalue: MirRValue::Use(elem_op.clone()),
                             }));
                             if let Some(prefix) = self.mir_type_name(elem_ty) {
-                                self.local_type_prefix.insert(name.clone(), prefix);
+                                self.meta_mut(name).type_prefix = Some(prefix);
                             }
                             self.locals.insert(name.clone(), (local_id, elem_ty.clone()));
                         }

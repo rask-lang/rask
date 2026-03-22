@@ -205,7 +205,7 @@ impl<'a> MirLowerer<'a> {
                                 MirOperand::Constant(MirConst::Int(meta.elem_count as i64)),
                             ],
                         }));
-                        self.local_type_prefix.insert(name.to_string(), "Vec".to_string());
+                        self.meta_mut(&name).type_prefix = Some("Vec".to_string());
                         Ok((MirOperand::Local(vec_local), MirType::I64))
                     } else {
                         // Scalar global: load value from the data pointer
@@ -668,7 +668,7 @@ impl<'a> MirLowerer<'a> {
                             }
 
                             // Vec<T>: generate loop that encodes each element.
-                            // Detection: check type checker first, fall back to local_type_prefix.
+                            // Detection: check type checker first, fall back to local_meta type_prefix.
                             let raw_ty = self.ctx.lookup_raw_type(args[0].expr.id);
                             let is_vec_from_type = raw_ty.map_or(false, |ty| {
                                 matches!(ty,
@@ -677,7 +677,8 @@ impl<'a> MirLowerer<'a> {
                             });
                             let is_vec_from_prefix = if !is_vec_from_type {
                                 if let ExprKind::Ident(var_name) = &args[0].expr.kind {
-                                    self.local_type_prefix.get(var_name)
+                                    self.meta(var_name)
+                                        .and_then(|m| m.type_prefix.as_deref())
                                         .map(|p| p == "Vec")
                                         .unwrap_or(false)
                                 } else {
@@ -847,8 +848,9 @@ impl<'a> MirLowerer<'a> {
                     .map(|prefix| matches!(prefix, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
                     .unwrap_or(false)
                     || if let ExprKind::Ident(var_name) = &object.kind {
-                        self.local_type_prefix.get(var_name)
-                            .map(|p| matches!(p.as_str(), "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
+                        self.meta(var_name)
+                            .and_then(|m| m.type_prefix.as_deref())
+                            .map(|p| matches!(p, "Shared" | "Mutex" | "Channel" | "Sender" | "Receiver"))
                             .unwrap_or(false)
                     } else {
                         false
@@ -907,8 +909,9 @@ impl<'a> MirLowerer<'a> {
                 } else {
                     matches!(obj_ty, MirType::String)
                     || if let ExprKind::Ident(var_name) = &object.kind {
-                        self.local_type_prefix.get(var_name)
-                            .map(|p| matches!(p.as_str(), "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
+                        self.meta(var_name)
+                            .and_then(|m| m.type_prefix.as_deref())
+                            .map(|p| matches!(p, "string" | "f32x4" | "f32x8" | "f64x2" | "f64x4" | "i32x4" | "i32x8" | "Ptr"))
                             .unwrap_or(false)
                     } else {
                         // Unknown type from complex expression — default to native
@@ -1048,7 +1051,8 @@ impl<'a> MirLowerer<'a> {
                         if inner_method == "get" {
                             // Only rewrite Map_get → Map_get_unwrap, not Pool_get
                             let is_map = if let ExprKind::Ident(name) = &inner_obj.kind {
-                                self.local_type_prefix.get(name.as_str())
+                                self.meta(name.as_str())
+                                    .and_then(|m| m.type_prefix.as_deref())
                                     .map_or(false, |p| p == "Map")
                             } else { false };
                             if is_map {
@@ -1154,11 +1158,11 @@ impl<'a> MirLowerer<'a> {
 
                 // Qualify method name with receiver type to avoid dispatch
                 // ambiguity (e.g. Vec.get vs Map.get vs Pool.get).
-                // Check local_type_prefix first (tracks actual codegen types),
+                // Check local_meta type_prefix first (tracks actual codegen types),
                 // then fall back to type-checker info (handles both stdlib
                 // and user-defined types from extend blocks).
                 let qualified_name = if let ExprKind::Ident(var_name) = &object.kind {
-                        self.local_type_prefix.get(var_name).cloned()
+                        self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
                         None
                     }
@@ -1216,8 +1220,8 @@ impl<'a> MirLowerer<'a> {
                         "read_http_request" | "write_http_response" => Some("TcpConnection".to_string()),
                         "accept" => Some("TcpListener".to_string()),
                         "respond" => Some("Responder".to_string()),
-                        // Thread
-                        "join" => Some("ThreadHandle".to_string()),
+                        // TaskHandle (cancel is unique; join/detach shared with ThreadHandle — resolved by type fallback)
+                        "cancel" => Some("TaskHandle".to_string()),
                         _ => None,
                     })
                     .or_else(|| {
@@ -1264,7 +1268,7 @@ impl<'a> MirLowerer<'a> {
                     if let Some(arg_ty) = arg_types.first() {
                         if !matches!(arg_ty, MirType::I64) {
                             if let Some(key) = Self::vec_tracking_key(object) {
-                                self.collection_elem_types.insert(key.clone(), arg_ty.clone());
+                                self.meta_mut(&key).elem_type = Some(arg_ty.clone());
                                 self.ctx.shared_elem_types.borrow_mut().insert(key, arg_ty.clone());
                             }
                         }
@@ -1275,7 +1279,7 @@ impl<'a> MirLowerer<'a> {
                 // and inject elem_size so the builder can allocate the right buffer.
                 let qualified_name = if qualified_name == "Receiver_recv" {
                     let elem_size = if let ExprKind::Ident(var_name) = &object.kind {
-                        self.channel_elem_sizes.get(var_name).copied().unwrap_or(8)
+                        self.meta(var_name).and_then(|m| m.channel_elem_size).unwrap_or(8)
                     } else {
                         8
                     };
@@ -1294,14 +1298,14 @@ impl<'a> MirLowerer<'a> {
                 let ret_ty = if matches!(qualified_name.as_str(), "Vec_get" | "Vec_index") {
                     Self::vec_tracking_key(object)
                         .and_then(|key| {
-                            self.collection_elem_types.get(&key).cloned()
+                            self.meta(&key).and_then(|m| m.elem_type.clone())
                                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                         })
                 } else if qualified_name == "Pool_get" {
                     // Pool.get returns Option<T> — extract T from tracked element type
                     let elem_ty = Self::vec_tracking_key(object)
                         .and_then(|key| {
-                            self.collection_elem_types.get(&key).cloned()
+                            self.meta(&key).and_then(|m| m.elem_type.clone())
                                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                         })
                         // Fallback: extract from Pool<T> generic parameter
@@ -1388,7 +1392,7 @@ impl<'a> MirLowerer<'a> {
                 } else if qualified_name == "Vec_join" {
                     // Vec_join assumes Vec<string>; use Vec_join_i64 for non-string elements
                     let is_string = Self::vec_tracking_key(object)
-                        .and_then(|key| self.collection_elem_types.get(&key).cloned()
+                        .and_then(|key| self.meta(&key).and_then(|m| m.elem_type.clone())
                             .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned()))
                         .map_or(false, |ty| matches!(ty, MirType::String));
                     if is_string {
@@ -1651,7 +1655,8 @@ impl<'a> MirLowerer<'a> {
                             .map(|ty| matches!(ty, rask_types::Type::String))
                             .unwrap_or(false)
                         || if let ExprKind::Ident(var_name) = &object.kind {
-                            self.local_type_prefix.get(var_name)
+                            self.meta(var_name)
+                                .and_then(|m| m.type_prefix.as_deref())
                                 .map(|p| p == "string")
                                 .unwrap_or(false)
                         } else {
@@ -1737,13 +1742,13 @@ impl<'a> MirLowerer<'a> {
                     .filter(|t| !matches!(t, MirType::Ptr))
                     .or_else(|| {
                         Self::vec_tracking_key(object).and_then(|key| {
-                            self.collection_elem_types.get(&key).cloned()
+                            self.meta(&key).and_then(|m| m.elem_type.clone())
                                 .or_else(|| self.ctx.shared_elem_types.borrow().get(&key).cloned())
                         })
                     })
                     .unwrap_or(MirType::I64);
                 let type_prefix = if let ExprKind::Ident(var_name) = &object.kind {
-                        self.local_type_prefix.get(var_name).cloned()
+                        self.meta(var_name).and_then(|m| m.type_prefix.clone())
                     } else {
                         None
                     }
@@ -1939,11 +1944,11 @@ impl<'a> MirLowerer<'a> {
                     // If v has known elem type F64 and we're constructing State { data: v },
                     // record "self.data" so methods can look it up.
                     if let ExprKind::Ident(src_var) = &field.value.kind {
-                        if let Some(elem_ty) = self.collection_elem_types.get(src_var).cloned()
+                        if let Some(elem_ty) = self.meta(src_var).and_then(|m| m.elem_type.clone())
                             .or_else(|| self.ctx.shared_elem_types.borrow().get(src_var).cloned())
                         {
                             let field_key = format!("self.{}", field.name);
-                            self.collection_elem_types.insert(field_key.clone(), elem_ty.clone());
+                            self.meta_mut(&field_key).elem_type = Some(elem_ty.clone());
                             self.ctx.shared_elem_types.borrow_mut().insert(field_key, elem_ty);
                         }
                     }
@@ -2342,9 +2347,10 @@ impl<'a> MirLowerer<'a> {
                                     if name == "Shared"
                                 )
                             }).unwrap_or(false)
-                            // Fallback: check local_type_prefix
+                            // Fallback: check local_meta type_prefix
                             || if let ExprKind::Ident(var_name) = &object.kind {
-                                self.local_type_prefix.get(var_name)
+                                self.meta(var_name)
+                                    .and_then(|m| m.type_prefix.as_deref())
                                     .map(|p| p == "Shared")
                                     .unwrap_or(false)
                             } else {
@@ -2369,7 +2375,8 @@ impl<'a> MirLowerer<'a> {
                                 if name == "Mutex"
                             ))
                             .unwrap_or(false);
-                        let from_prefix = self.local_type_prefix.get(var_name)
+                        let from_prefix = self.meta(var_name)
+                            .and_then(|m| m.type_prefix.as_deref())
                             .map(|p| p == "Mutex")
                             .unwrap_or(false);
                         from_type || from_prefix
@@ -2388,7 +2395,8 @@ impl<'a> MirLowerer<'a> {
                     // Before lowering, extract pool/handle info for re-resolution tracking
                     let pool_info = if let ExprKind::Index { object, index } = &binding.source.kind {
                         if let ExprKind::Ident(coll_name) = &object.kind {
-                            let is_pool = self.local_type_prefix.get(coll_name)
+                            let is_pool = self.meta(coll_name)
+                                .and_then(|m| m.type_prefix.as_deref())
                                 .map(|p| p == "Pool")
                                 .unwrap_or(false);
                             if is_pool {

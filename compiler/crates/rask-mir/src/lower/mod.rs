@@ -466,6 +466,25 @@ impl<'a> MirContext<'a> {
     }
 }
 
+/// Supplementary metadata for a local variable, keyed by variable name.
+/// Consolidates type prefix, full type string, collection element type,
+/// and channel element size into one struct so they stay in sync.
+#[derive(Clone, Default)]
+pub(crate) struct LocalMeta {
+    /// Stdlib type prefix (e.g. "Rng", "File", "Vec").
+    /// Fallback when the type checker leaves types unresolved.
+    pub type_prefix: Option<String>,
+    /// Full type annotation string (e.g. "Shared<Database>").
+    /// Resolves generic inner types when type checker info is incomplete.
+    pub full_type: Option<String>,
+    /// Collection element MirType (e.g. the T in Vec<T>).
+    /// Propagates element types through for-in iteration after mono.
+    pub elem_type: Option<MirType>,
+    /// Channel/Shared element size in bytes.
+    /// Used by Receiver_recv to allocate correctly-sized output buffers.
+    pub channel_elem_size: Option<i64>,
+}
+
 pub struct MirLowerer<'a> {
     builder: BlockBuilder,
     /// Variable name → (local id, type)
@@ -484,19 +503,9 @@ pub struct MirLowerer<'a> {
     parent_name: String,
     /// Variable names known to hold closure values
     closure_locals: std::collections::HashSet<String>,
-    /// Collection element types: variable name → element MirType
-    /// Used to propagate element types through for-in iteration after mono.
-    collection_elem_types: HashMap<String, MirType>,
-    /// Variable name → stdlib type prefix (e.g. "Rng", "File", "Vec")
-    /// Used as fallback when the type checker leaves types unresolved.
-    local_type_prefix: HashMap<String, String>,
-    /// Channel/Shared element sizes: variable name → elem_size in bytes.
-    /// Populated when destructuring Channel<T>.buffered() results.
-    /// Used by Receiver_recv to allocate correctly-sized output buffers.
-    channel_elem_sizes: HashMap<String, i64>,
-    /// Full type annotation string: variable name → type annotation (e.g. "Shared<Database>").
-    /// Used to resolve generic inner types when the type checker leaves types unresolved.
-    local_full_type: HashMap<String, String>,
+    /// Variable name → supplementary metadata (type prefix, full type, elem type, channel size).
+    /// Keys may exist here without a corresponding entry in `locals` (e.g. module imports).
+    local_meta: HashMap<String, LocalMeta>,
     /// W2a/W2b: Active `with` pool bindings for re-resolution after pool mutators.
     /// Maps pool variable name → Vec of (handle_local, binding_local, pool_local).
     with_pool_bindings: HashMap<String, Vec<(LocalId, LocalId, LocalId)>>,
@@ -509,6 +518,16 @@ pub struct MirLowerer<'a> {
 impl<'a> MirLowerer<'a> {
     /// Lower a monomorphized function declaration to MIR.
     ///
+    /// Get the metadata entry for a variable, creating a default if absent.
+    pub(crate) fn meta_mut(&mut self, name: &str) -> &mut LocalMeta {
+        self.local_meta.entry(name.to_string()).or_default()
+    }
+
+    /// Get the metadata entry for a variable (read-only).
+    pub(crate) fn meta(&self, name: &str) -> Option<&LocalMeta> {
+        self.local_meta.get(name)
+    }
+
     /// `all_decls` provides function signatures for resolving call return types.
     /// `ctx` provides struct/enum layout data for resolving field types and offsets.
     ///
@@ -604,10 +623,7 @@ impl<'a> MirLowerer<'a> {
             closure_counter: 0,
             parent_name: func_name,
             closure_locals: std::collections::HashSet::new(),
-            collection_elem_types: HashMap::new(),
-            local_type_prefix: HashMap::new(),
-            channel_elem_sizes: HashMap::new(),
-            local_full_type: HashMap::new(),
+            local_meta: HashMap::new(),
             with_pool_bindings: HashMap::new(),
             inline_return_target: None,
         };
@@ -634,23 +650,26 @@ impl<'a> MirLowerer<'a> {
             // Set type prefix for parameters so method calls qualify correctly.
             // mir_type_name handles Struct/Enum/String/primitives; type_prefix_from_str
             // catches Ptr types like Vec<T>, Map<K,V> from the annotation string.
-            if let Some(prefix) = lowerer.mir_type_name(&param_ty) {
-                lowerer.local_type_prefix.insert(param.name.clone(), prefix);
-            } else if let Some(prefix) = type_prefix_from_str(param_ty_str) {
-                lowerer.local_type_prefix.insert(param.name.clone(), prefix);
-            }
-            // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
-            if param_ty_str.contains('<') {
-                lowerer.local_full_type.insert(param.name.clone(), param_ty_str.to_string());
-                // Track collection element types so for-loop iteration resolves correctly.
-                // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
-                if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
-                    let elem_mir = ctx.resolve_type_str(elem_str);
-                    lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
+            {
+                let prefix = lowerer.mir_type_name(&param_ty)
+                    .or_else(|| type_prefix_from_str(param_ty_str));
+                let meta = lowerer.local_meta.entry(param.name.clone()).or_default();
+                if let Some(p) = prefix {
+                    meta.type_prefix = Some(p);
                 }
-                if let Some(elem_str) = param_ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
-                    let elem_mir = ctx.resolve_type_str(elem_str);
-                    lowerer.collection_elem_types.insert(param.name.clone(), elem_mir);
+                // Store full annotation for generic types (Shared<T>, Channel<T>, etc.)
+                if param_ty_str.contains('<') {
+                    meta.full_type = Some(param_ty_str.to_string());
+                    // Track collection element types so for-loop iteration resolves correctly.
+                    // e.g., Vec<Inline> → collection_elem_types["children"] = Struct(Inline)
+                    if let Some(elem_str) = param_ty_str.strip_prefix("Vec<").and_then(|s| s.strip_suffix('>')) {
+                        let elem_mir = ctx.resolve_type_str(elem_str);
+                        meta.elem_type = Some(elem_mir);
+                    }
+                    if let Some(elem_str) = param_ty_str.strip_prefix("Pool<").and_then(|s| s.strip_suffix('>')) {
+                        let elem_mir = ctx.resolve_type_str(elem_str);
+                        meta.elem_type = Some(elem_mir);
+                    }
                 }
             }
 
@@ -801,7 +820,7 @@ impl<'a> MirLowerer<'a> {
 
         // Variable bound from a known collection — check tracked element types
         if let ExprKind::Ident(name) = &expr.kind {
-            if let Some(elem_ty) = self.collection_elem_types.get(name) {
+            if let Some(elem_ty) = self.meta(name).and_then(|m| m.elem_type.as_ref()) {
                 return Some(elem_ty.clone());
             }
         }
@@ -981,7 +1000,7 @@ impl<'a> MirLowerer<'a> {
                         // Set type prefix so method calls on this binding
                         // get correct qualification (e.g., data.lines() → string_lines)
                         if let Some(prefix) = self.mir_type_name(&field_ty) {
-                            self.local_type_prefix.insert(name.clone(), prefix);
+                            self.meta_mut(&name).type_prefix = Some(prefix);
                         }
                     }
                     // Wildcard, Literal in field position — skip binding
