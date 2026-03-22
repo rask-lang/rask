@@ -265,6 +265,7 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | OS | Env, args, subprocess spawning, signal handling | [os.md](specs/stdlib/os.md) |
 | Compiler architecture | IR layers, SSA pipeline, analysis framework, pass manager, CTFE, debug info | [architecture.md](specs/compiler/architecture.md) |
 | Code generation | MIR-based pipeline, Cranelift backend, runtime library | [codegen.md](specs/compiler/codegen.md) |
+| Raido | Deterministic scripting VM, separate crate, 32.32 fixed-point, versioned serialization | [raido/](specs/raido/) |
 
 ### Open
 

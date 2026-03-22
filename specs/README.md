@@ -165,6 +165,21 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
 | [tooling/debugging.md](tooling/debugging.md) | Debugging strategy: DWARF, time-travel, pool inspectors |
 
+## Raido — Embedded scripting language
+
+Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-allocated VM.
+
+| Spec | Description |
+|------|-------------|
+| [README.md](raido/README.md) | Overview, key decisions |
+| [language/types.md](raido/language/types.md) | Value types, fixed-point numbers, closures, host references |
+| [language/syntax.md](raido/language/syntax.md) | Dynamic Rask subset syntax |
+| [language/coroutines.md](raido/language/coroutines.md) | Cooperative multitasking |
+| [language/stdlib.md](raido/language/stdlib.md) | Configurable built-in modules |
+| [vm/architecture.md](raido/vm/architecture.md) | Register VM, arena, instruction set, serialization |
+| [vm/chunk-format.md](raido/vm/chunk-format.md) | Bytecode format, imports/exports, validation, content identity |
+| [vm/interop.md](raido/vm/interop.md) | Host API, vtables, scoped bindings |
+
 ## Compiler — Compiler internals
 
 | Spec | Description |
