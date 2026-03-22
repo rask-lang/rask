@@ -36,6 +36,7 @@ Every spec file should have these HTML comment headers at the top:
 | `struct` | structure/ | `struct.modules`, `struct.build`, `struct.c-interop` |
 | `tool` | tooling/ | `tool.lint`, `tool.warnings` |
 | `comp` | compiler/ | `comp.codegen`, `comp.gen-coalesce` |
+| `raido` | raido/ | `raido.overview`, `raido.values`, `raido.vm`, `raido.interop` |
 
 ### Status Values
 
