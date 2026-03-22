@@ -165,9 +165,25 @@ See [concurrency/README.md](concurrency/README.md) for the layered design.
 | [tooling/lint.md](tooling/lint.md) | `rask lint` naming convention and pattern enforcement |
 | [tooling/debugging.md](tooling/debugging.md) | Debugging strategy: DWARF, time-travel, pool inspectors |
 
+## Allgard — Domain orchestration
+
+Orchestration of isolated domains (gards). Uses Leden for transport.
+
+| Spec | Description |
+|------|-------------|
+| [README.md](allgard/README.md) | Overview, gard model, key decisions |
+
+## Leden — Networking and IPC protocol
+
+Standalone transport protocol for inter-domain communication. No knowledge of gards or Allgard.
+
+| Spec | Description |
+|------|-------------|
+| [README.md](leden/README.md) | Overview, protocol design, key decisions |
+
 ## Raido — Embedded scripting language
 
-Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-allocated VM.
+Scratchpad language for custom entity scripts. Dynamic Rask subset, arena-allocated VM. Application-specific — unrelated to Allgard or Leden.
 
 | Spec | Description |
 |------|-------------|
