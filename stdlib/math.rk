@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Mathematical functions and constants.
+struct math { }
+
+extend math {
+    // Trigonometric
+    public func sin(x: f64) -> f64 { }
+    public func cos(x: f64) -> f64 { }
+    public func tan(x: f64) -> f64 { }
+    public func asin(x: f64) -> f64 { }
+    public func acos(x: f64) -> f64 { }
+    public func atan(x: f64) -> f64 { }
+    public func atan2(y: f64, x: f64) -> f64 { }
+
+    // Exponential and logarithmic
+    public func exp(x: f64) -> f64 { }
+    public func ln(x: f64) -> f64 { }
+    public func log2(x: f64) -> f64 { }
+    public func log10(x: f64) -> f64 { }
+
+    // Multi-argument
+    public func hypot(x: f64, y: f64) -> f64 { }
+    public func clamp(x: f64, min: f64, max: f64) -> f64 { }
+
+    // Conversion
+    public func to_radians(degrees: f64) -> f64 { }
+    public func to_degrees(radians: f64) -> f64 { }
+
+    // Classification
+    public func is_nan(x: f64) -> bool { }
+    public func is_inf(x: f64) -> bool { }
+    public func is_finite(x: f64) -> bool { }
+}

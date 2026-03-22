@@ -40,6 +40,9 @@ pub struct CaptureInfo {
     pub local_id: LocalId,
     pub offset: u32,
     pub size: u32,
+    /// True when the capture holds aggregate data (String, Struct, etc.)
+    /// that must be deep-copied from the pointer rather than stored as-is.
+    pub is_aggregate: bool,
 }
 
 impl ClosureEnvLayout {
@@ -52,13 +55,14 @@ impl ClosureEnvLayout {
 
     /// Add a captured variable to the environment layout.
     /// Returns the offset where the variable will be stored (relative to env start).
-    pub fn add_capture(&mut self, local_id: LocalId, size: u32) -> u32 {
+    pub fn add_capture(&mut self, local_id: LocalId, size: u32, is_aggregate: bool) -> u32 {
         // Align to 8 bytes
         let offset = (self.size + 7) & !7;
         self.captures.push(CaptureInfo {
             local_id,
             offset,
             size,
+            is_aggregate,
         });
         self.size = offset + size;
         offset
@@ -128,9 +132,39 @@ fn store_closure_data(
             ))?;
         let val = builder.use_var(*var);
         let store_offset = CLOSURE_ENV_OFFSET as i32 + capture.offset as i32;
-        builder
-            .ins()
-            .store(MemFlags::new(), val, closure_ptr, store_offset);
+
+        if capture.is_aggregate {
+            // Aggregate: val is a pointer to data on the parent's stack.
+            // Deep-copy the data into the closure environment so it survives
+            // after the parent's stack slot is reused (e.g., in a loop).
+            let src_addr = val;
+            let size = capture.size as i32;
+            let mut off = 0i32;
+            while off + 8 <= size {
+                let word = builder.ins().load(types::I64, MemFlags::new(), src_addr, off);
+                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
+                off += 8;
+            }
+            if size - off >= 4 {
+                let word = builder.ins().load(types::I32, MemFlags::new(), src_addr, off);
+                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
+                off += 4;
+            }
+            if size - off >= 2 {
+                let word = builder.ins().load(types::I16, MemFlags::new(), src_addr, off);
+                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
+                off += 2;
+            }
+            if size - off >= 1 {
+                let word = builder.ins().load(types::I8, MemFlags::new(), src_addr, off);
+                builder.ins().store(MemFlags::new(), word, closure_ptr, store_offset + off);
+            }
+        } else {
+            // Scalar: store the value directly
+            builder
+                .ins()
+                .store(MemFlags::new(), val, closure_ptr, store_offset);
+        }
     }
 
     Ok(closure_ptr)

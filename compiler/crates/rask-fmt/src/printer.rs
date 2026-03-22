@@ -286,7 +286,7 @@ impl<'a> Printer<'a> {
             DeclKind::Test(t) => self.format_test_decl(t),
             DeclKind::Benchmark(b) => self.format_benchmark_decl(b),
             DeclKind::Extern(e) => self.format_extern_decl(e),
-            DeclKind::Package(_) => {} // Package blocks formatted by build.rk tooling
+            DeclKind::Package(p) => self.format_package_decl(p),
             DeclKind::Union(u) => self.format_union_decl(u, decl.span),
             DeclKind::TypeAlias(t) => self.format_type_alias_decl(t),
         }
@@ -817,6 +817,243 @@ impl<'a> Printer<'a> {
         self.indent -= 1;
         self.emit_indent();
         self.emit("}");
+    }
+
+    fn format_package_decl(&mut self, p: &PackageDecl) {
+        self.emit_indent();
+        self.emit("package \"");
+        self.emit(&p.name);
+        self.emit("\" \"");
+        self.emit(&p.version);
+        self.emit("\"");
+
+        let has_body = !p.metadata.is_empty()
+            || !p.list_metadata.is_empty()
+            || !p.deps.is_empty()
+            || !p.features.is_empty()
+            || !p.profiles.is_empty();
+
+        if !has_body {
+            return;
+        }
+
+        self.emit(" {");
+        self.emit_newline();
+        self.indent += 1;
+
+        // Metadata (key: "value")
+        for (key, value) in &p.metadata {
+            self.emit_indent();
+            self.emit(key);
+            self.emit(": \"");
+            self.emit(value);
+            self.emit("\"");
+            self.emit_newline();
+        }
+
+        // List metadata (key: ["a", "b"])
+        for (key, values) in &p.list_metadata {
+            self.emit_indent();
+            self.emit(key);
+            self.emit(": [");
+            for (i, v) in values.iter().enumerate() {
+                if i > 0 {
+                    self.emit(", ");
+                }
+                self.emit("\"");
+                self.emit(v);
+                self.emit("\"");
+            }
+            self.emit("]");
+            self.emit_newline();
+        }
+
+        // Dependencies
+        for dep in &p.deps {
+            self.format_dep_decl(dep);
+        }
+
+        // Features
+        for feat in &p.features {
+            self.format_feature_decl(feat);
+        }
+
+        // Profiles
+        for prof in &p.profiles {
+            self.format_profile_decl(prof);
+        }
+
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
+    }
+
+    fn format_dep_decl(&mut self, dep: &DepDecl) {
+        self.emit_indent();
+        self.emit("dep \"");
+        self.emit(&dep.name);
+        self.emit("\"");
+
+        if let Some(ref ver) = dep.version {
+            self.emit(" \"");
+            self.emit(ver);
+            self.emit("\"");
+        }
+
+        let has_options = dep.path.is_some()
+            || dep.git.is_some()
+            || dep.branch.is_some()
+            || !dep.with_features.is_empty()
+            || dep.target.is_some()
+            || !dep.allow.is_empty()
+            || !dep.exclusive_selections.is_empty();
+
+        if has_options {
+            self.emit(" {");
+            self.emit_newline();
+            self.indent += 1;
+
+            if let Some(ref path) = dep.path {
+                self.emit_indent();
+                self.emit("path: \"");
+                self.emit(path);
+                self.emit("\"");
+                self.emit_newline();
+            }
+            if let Some(ref git) = dep.git {
+                self.emit_indent();
+                self.emit("git: \"");
+                self.emit(git);
+                self.emit("\"");
+                self.emit_newline();
+            }
+            if let Some(ref branch) = dep.branch {
+                self.emit_indent();
+                self.emit("branch: \"");
+                self.emit(branch);
+                self.emit("\"");
+                self.emit_newline();
+            }
+            if let Some(ref target) = dep.target {
+                self.emit_indent();
+                self.emit("target: \"");
+                self.emit(target);
+                self.emit("\"");
+                self.emit_newline();
+            }
+            if !dep.with_features.is_empty() {
+                self.emit_indent();
+                self.emit("with: [");
+                for (i, f) in dep.with_features.iter().enumerate() {
+                    if i > 0 {
+                        self.emit(", ");
+                    }
+                    self.emit("\"");
+                    self.emit(f);
+                    self.emit("\"");
+                }
+                self.emit("]");
+                self.emit_newline();
+            }
+            if !dep.allow.is_empty() {
+                self.emit_indent();
+                self.emit("allow: [");
+                for (i, a) in dep.allow.iter().enumerate() {
+                    if i > 0 {
+                        self.emit(", ");
+                    }
+                    self.emit("\"");
+                    self.emit(a);
+                    self.emit("\"");
+                }
+                self.emit("]");
+                self.emit_newline();
+            }
+            for (key, val) in &dep.exclusive_selections {
+                self.emit_indent();
+                self.emit(key);
+                self.emit(": \"");
+                self.emit(val);
+                self.emit("\"");
+                self.emit_newline();
+            }
+
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
+        }
+        self.emit_newline();
+    }
+
+    fn format_feature_decl(&mut self, feat: &FeatureDecl) {
+        self.emit_indent();
+        self.emit("feature \"");
+        self.emit(&feat.name);
+        self.emit("\"");
+
+        if feat.exclusive {
+            self.emit(" exclusive");
+        }
+
+        self.emit(" {");
+        self.emit_newline();
+        self.indent += 1;
+
+        for dep in &feat.deps {
+            self.format_dep_decl(dep);
+        }
+
+        for opt in &feat.options {
+            self.emit_indent();
+            self.emit("\"");
+            self.emit(&opt.name);
+            self.emit("\" {");
+            self.emit_newline();
+            self.indent += 1;
+            for dep in &opt.deps {
+                self.format_dep_decl(dep);
+            }
+            self.indent -= 1;
+            self.emit_indent();
+            self.emit("}");
+            self.emit_newline();
+        }
+
+        if let Some(ref default) = feat.default {
+            self.emit_indent();
+            self.emit("default: \"");
+            self.emit(default);
+            self.emit("\"");
+            self.emit_newline();
+        }
+
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
+        self.emit_newline();
+    }
+
+    fn format_profile_decl(&mut self, prof: &ProfileDecl) {
+        self.emit_indent();
+        self.emit("profile \"");
+        self.emit(&prof.name);
+        self.emit("\" {");
+        self.emit_newline();
+        self.indent += 1;
+
+        for (key, value) in &prof.settings {
+            self.emit_indent();
+            self.emit(key);
+            self.emit(": \"");
+            self.emit(value);
+            self.emit("\"");
+            self.emit_newline();
+        }
+
+        self.indent -= 1;
+        self.emit_indent();
+        self.emit("}");
+        self.emit_newline();
     }
 
     fn format_extern_decl(&mut self, e: &ExternDecl) {

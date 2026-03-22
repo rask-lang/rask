@@ -28,6 +28,12 @@ const STUB_SOURCES: &[(&str, &str)] = &[
     ("async.rk", include_str!("../../../../stdlib/async.rk")),
     ("thread.rk", include_str!("../../../../stdlib/thread.rk")),
     ("sync.rk", include_str!("../../../../stdlib/sync.rk")),
+    ("time.rk", include_str!("../../../../stdlib/time.rk")),
+    ("os.rk", include_str!("../../../../stdlib/os.rk")),
+    ("path.rk", include_str!("../../../../stdlib/path.rk")),
+    ("math.rk", include_str!("../../../../stdlib/math.rk")),
+    ("char.rk", include_str!("../../../../stdlib/char.rk")),
+    ("error_context.rk", include_str!("../../../../stdlib/error_context.rk")),
 ];
 
 /// A method extracted from a stub file.

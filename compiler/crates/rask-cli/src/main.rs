@@ -182,8 +182,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("typecheck"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             commands::analysis::cmd_typecheck(cmd_args[2], format);
@@ -194,8 +194,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("ownership"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("ownership"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             commands::analysis::cmd_ownership(cmd_args[2], format);
@@ -206,8 +206,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("comptime"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("comptime"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             commands::analysis::cmd_comptime(cmd_args[2], format);
@@ -218,8 +218,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("unsafe"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("unsafe"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             commands::analysis::cmd_unsafe_report(cmd_args[2], format);
@@ -271,14 +271,14 @@ fn main() {
                 let run_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
                 commands::run::cmd_run_project(file, run_args, opts);
             } else {
-                let native = cmd_args.contains(&"--native") || release; // CL2: --release implies native
-                if native {
-                    let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
-                    commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
-                } else {
+                let interp = cmd_args.contains(&"--interp");
+                if interp {
                     let mut program_args: Vec<String> = vec![file.to_string()];
                     program_args.extend(prog_args.iter().map(|s| s.to_string()));
                     commands::run::cmd_run(file, program_args, format);
+                } else {
+                    let native_args: Vec<String> = prog_args.iter().map(|s| s.to_string()).collect();
+                    commands::run::cmd_run_native(file, native_args, format, &link_opts, release);
                 }
             }
         }
@@ -552,8 +552,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("fmt"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("fmt"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             let check_only = cmd_args.iter().any(|a| *a == "--check");
@@ -561,7 +561,7 @@ fn main() {
             let file = match file_arg {
                 Some(f) => f,
                 None => {
-                    eprintln!("{}: missing file argument", output::error_label());
+                    eprintln!("{}: missing file or directory argument", output::error_label());
                     process::exit(1);
                 }
             };
@@ -573,8 +573,8 @@ fn main() {
                 return;
             }
             if cmd_args.len() < 3 {
-                eprintln!("{}: missing file argument", output::error_label());
-                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("api"), output::arg("<file.rk>"));
+                eprintln!("{}: missing file or directory argument", output::error_label());
+                eprintln!("{}: {} {} {}", "Usage".yellow(), output::command("rask"), output::command("api"), output::arg("<file.rk | dir>"));
                 process::exit(1);
             }
             let show_all = cmd_args.iter().any(|a| *a == "--all");
@@ -582,7 +582,7 @@ fn main() {
             let file = match file_arg {
                 Some(f) => f,
                 None => {
-                    eprintln!("{}: missing file argument", output::error_label());
+                    eprintln!("{}: missing file or directory argument", output::error_label());
                     process::exit(1);
                 }
             };

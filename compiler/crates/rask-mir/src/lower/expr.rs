@@ -43,11 +43,11 @@ impl<'a> MirLowerer<'a> {
     /// Resolve a MirType to its named type prefix using struct/enum layouts.
     pub(super) fn mir_type_name(&self, ty: &MirType) -> Option<String> {
         match ty {
-            MirType::Struct(crate::types::StructLayoutId(idx)) => {
-                self.ctx.struct_layouts.get(*idx as usize).map(|l| l.name.clone())
+            MirType::Struct(crate::types::StructLayoutId { id, .. }) => {
+                self.ctx.struct_layouts.get(*id as usize).map(|l| l.name.clone())
             }
-            MirType::Enum(crate::types::EnumLayoutId(idx)) => {
-                self.ctx.enum_layouts.get(*idx as usize).map(|l| l.name.clone())
+            MirType::Enum(crate::types::EnumLayoutId { id, .. }) => {
+                self.ctx.enum_layouts.get(*id as usize).map(|l| l.name.clone())
             }
             MirType::String => Some("string".to_string()),
             MirType::F64 | MirType::F32 => Some("f64".to_string()),
@@ -593,6 +593,8 @@ impl<'a> MirLowerer<'a> {
                             let variant = layout.variants.iter().find(|v| v.name == *method)?;
                             Some((
                                 idx,
+                                layout.size,
+                                layout.align,
                                 layout.tag_offset,
                                 variant.tag,
                                 variant.payload_offset,
@@ -600,10 +602,10 @@ impl<'a> MirLowerer<'a> {
                             ))
                         });
 
-                        if let Some((idx, tag_offset, tag_val, payload_offset, fields)) =
+                        if let Some((idx, enum_size, enum_align, tag_offset, tag_val, payload_offset, fields)) =
                             enum_variant
                         {
-                            let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                            let enum_ty = MirType::Enum(EnumLayoutId::new(idx, enum_size, enum_align));
                             let result_local = self.builder.alloc_temp(enum_ty.clone());
 
                             // Store discriminant tag
@@ -661,7 +663,7 @@ impl<'a> MirLowerer<'a> {
                         // json.encode — expand struct/vec/primitive serialization at MIR level
                         if name == "json" && method == "encode" && args.len() == 1 {
                             let (arg_op, arg_ty) = self.lower_expr(&args[0].expr)?;
-                            if let MirType::Struct(StructLayoutId(id)) = &arg_ty {
+                            if let MirType::Struct(StructLayoutId { id, .. }) = &arg_ty {
                                 if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                                     return self.lower_json_encode_struct(arg_op, layout.clone());
                                 }
@@ -1172,7 +1174,7 @@ impl<'a> MirLowerer<'a> {
                             if let ExprKind::Ident(var_name) = &inner_obj.kind {
                                 if let Some((local_id, _)) = self.locals.get(var_name) {
                                     let local_ty = self.builder.local_type(*local_id);
-                                    if let Some(MirType::Struct(StructLayoutId(id))) = local_ty {
+                                    if let Some(MirType::Struct(StructLayoutId { id, .. })) = local_ty {
                                         if let Some(layout) = self.ctx.struct_layouts.get(id as usize) {
                                             if let Some(fl) = layout.fields.iter().find(|f| f.name == *field_name) {
                                                 return super::MirContext::type_prefix(&fl.ty, self.ctx.type_names);
@@ -1214,7 +1216,8 @@ impl<'a> MirLowerer<'a> {
                         | "get" | "insert" | "remove" => Some("Map".to_string()),
                         // Time
                         "now" | "elapsed" | "duration_since" => Some("Instant".to_string()),
-                        "as_secs_f64" | "as_secs" | "as_millis" | "as_nanos" => Some("Duration".to_string()),
+                        "as_secs_f64" | "as_secs_f32" | "as_secs" | "as_millis" | "as_micros" | "as_nanos"
+                        | "seconds" | "millis" | "micros" | "nanos" | "from_secs_f64" => Some("Duration".to_string()),
                         "sleep" => Some("time".to_string()),
                         // Net/HTTP
                         "read_http_request" | "write_http_response" => Some("TcpConnection".to_string()),
@@ -1338,7 +1341,7 @@ impl<'a> MirLowerer<'a> {
                 // heap fields (string, Vec, Map). Avoids needing a generated
                 // runtime clone function for every user struct.
                 if method == "clone" {
-                    if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                    if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                         if let Some(layout) = self.ctx.struct_layouts.get(*id as usize).cloned() {
                             let result_local = self.builder.alloc_temp(obj_ty.clone());
                             let src = all_args[0].clone();
@@ -1378,7 +1381,7 @@ impl<'a> MirLowerer<'a> {
                     }
                     // Enum clone: copy tag, then switch on tag to deep-clone
                     // heap fields per variant.
-                    if let MirType::Enum(EnumLayoutId(id)) = &obj_ty {
+                    if let MirType::Enum(EnumLayoutId { id, .. }) = &obj_ty {
                         if let Some(layout) = self.ctx.enum_layouts.get(*id as usize).cloned() {
                             return self.lower_enum_clone(&layout, &all_args[0], obj_ty);
                         }
@@ -1447,7 +1450,7 @@ impl<'a> MirLowerer<'a> {
                     if self.ctx.package_modules.contains(name) {
                         // Look up the field as an enum type
                         if let Some((idx, layout)) = self.ctx.find_enum(field) {
-                            let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                            let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
                             let result_local = self.builder.alloc_temp(enum_ty.clone());
                             // Default-initialize (tag 0) — caller will likely access a variant
                             self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1459,8 +1462,8 @@ impl<'a> MirLowerer<'a> {
                             return Ok((MirOperand::Local(result_local), enum_ty));
                         }
                         // Look up as a struct type
-                        if let Some((idx, _)) = self.ctx.find_struct(field) {
-                            let struct_ty = MirType::Struct(StructLayoutId(idx));
+                        if let Some((idx, sl)) = self.ctx.find_struct(field) {
+                            let struct_ty = MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align));
                             let result_local = self.builder.alloc_temp(struct_ty.clone());
                             return Ok((MirOperand::Local(result_local), struct_ty));
                         }
@@ -1475,7 +1478,7 @@ impl<'a> MirLowerer<'a> {
                     if !self.locals.contains_key(name) {
                         if let Some((idx, layout)) = self.ctx.find_enum(name) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == *field) {
-                                let enum_ty = MirType::Enum(EnumLayoutId(idx));
+                                let enum_ty = MirType::Enum(EnumLayoutId::new(idx, layout.size, layout.align));
                                 let result_local = self.builder.alloc_temp(enum_ty.clone());
                                 // Store discriminant tag
                                 self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Store {
@@ -1501,7 +1504,7 @@ impl<'a> MirLowerer<'a> {
                 // Resolve field index, type, and byte offset from struct layout.
                 // byte_offset is passed to codegen so it doesn't need to re-derive
                 // the offset (which would require knowing the struct type).
-                let (field_index, result_ty, byte_offset, field_size) = if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                let (field_index, result_ty, byte_offset, field_size) = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                     if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                         if let Some((idx, fl)) = layout.fields.iter().enumerate()
                             .find(|(_, f)| f.name == *field)
@@ -1539,7 +1542,7 @@ impl<'a> MirLowerer<'a> {
                     // Strategy 1: Check type checker's node_types for the object
                     if let Some(raw_ty) = self.ctx.lookup_raw_type(object.id) {
                         let obj_mir = self.ctx.type_to_mir(raw_ty);
-                        if let MirType::Struct(StructLayoutId(sid)) = &obj_mir {
+                        if let MirType::Struct(StructLayoutId { id: sid, .. }) = &obj_mir {
                             if let Some(layout) = self.ctx.struct_layouts.get(*sid as usize) {
                                 if let Some((idx, fl)) = layout.fields.iter().enumerate()
                                     .find(|(_, f)| f.name == *field)
@@ -1574,7 +1577,7 @@ impl<'a> MirLowerer<'a> {
                         if let ExprKind::Ident(var_name) = &object.kind {
                             if let Some((local_id, _)) = self.locals.get(var_name) {
                                 let local_ty = self.builder.local_type(*local_id);
-                                if let Some(MirType::Struct(StructLayoutId(sid))) = local_ty {
+                                if let Some(MirType::Struct(StructLayoutId { id: sid, .. })) = local_ty {
                                     if let Some(layout) = self.ctx.struct_layouts.get(sid as usize) {
                                         if let Some((idx, fl)) = layout.fields.iter().enumerate()
                                             .find(|(_, f)| f.name == *field)
@@ -1887,14 +1890,14 @@ impl<'a> MirLowerer<'a> {
                     if let Some((idx, el)) = self.ctx.find_enum(enum_name) {
                         let variant_info = el.variants.iter().find(|v| v.name == variant_name)
                             .map(|v| (v.tag, v.payload_offset, v.fields.clone()));
-                        (MirType::Enum(EnumLayoutId(idx)), None, variant_info)
+                        (MirType::Enum(EnumLayoutId::new(idx, el.size, el.align)), None, variant_info)
                     } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
-                        (MirType::Struct(StructLayoutId(idx)), Some(sl), None)
+                        (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                     } else {
                         (MirType::Ptr, None, None)
                     }
                 } else if let Some((idx, sl)) = self.ctx.find_struct(name) {
-                    (MirType::Struct(StructLayoutId(idx)), Some(sl), None)
+                    (MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align)), Some(sl), None)
                 } else {
                     (MirType::Ptr, None, None)
                 };

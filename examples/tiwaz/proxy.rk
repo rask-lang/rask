@@ -2,11 +2,6 @@ import http
 
 func forward(request: Request, upstream: string) -> Response or HttpError {
     const url = "http://{upstream}{request.path()}"
-    const response = try http.send_request(
-        request.method,
-        url,
-        request.body,
-        request.headers
-    )
+    const response = try http.send_request(request.method, url, request.body, request.headers)
     return response
 }

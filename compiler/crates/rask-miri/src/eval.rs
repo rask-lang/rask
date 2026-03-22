@@ -434,7 +434,7 @@ impl MiriEngine {
         layout_id: rask_mir::StructLayoutId,
         offset: u32,
     ) -> Option<usize> {
-        let layout = self.struct_layouts.get(layout_id.0 as usize)?;
+        let layout = self.struct_layouts.get(layout_id.id as usize)?;
         layout
             .fields
             .iter()

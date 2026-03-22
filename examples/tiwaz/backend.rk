@@ -1,0 +1,20 @@
+struct BackendPool {
+    backends: Vec<Backend>
+    index: Mutex<usize>
+}
+
+struct Backend {
+    url: string
+}
+
+extend BackendPool {
+    func next_healthy(self) -> Backend or ProxyError {
+        // For simplicity, we just round-robin through the backends without health checks.
+        with self.index.lock() as idx {
+            const backend = self.backends[idx]
+            idx = (idx + 1) % self.backends.len()
+            return backend
+        }
+        return Err(ProxyError.UpstreamUnreachable())
+    }
+}

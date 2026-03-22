@@ -1,18 +1,17 @@
-
 enum ProxyError {
-    UpstreamUnreachable,
-    UpstreamTimeout,
-    BadResponse,
-    NoMatchingRoute,
+    UpstreamUnreachable
+    UpstreamTimeout
+    BadResponse
+    NoMatchingRoute
 }
 
 extend ProxyError {
     public func to_http_error(self) -> HttpError {
         return match self {
-            ProxyError.UpstreamUnreachable => HttpError.InternalServerError("upstream unreachable".to_string()),
-            ProxyError.UpstreamTimeout => HttpError.InternalServerError("upstream timeout".to_string()),
-            ProxyError.BadResponse => HttpError.InternalServerError("bad response from upstream".to_string()),
-            ProxyError.NoMatchingRoute => HttpError.NotFound(),
+            ProxyError.UpstreamUnreachable => HttpError.InternalServerError("upstream unreachable".to_string())
+            ProxyError.UpstreamTimeout => HttpError.InternalServerError("upstream timeout".to_string())
+            ProxyError.BadResponse => HttpError.InternalServerError("bad response from upstream".to_string())
+            ProxyError.NoMatchingRoute => HttpError.NotFound()
         }
     }
 }

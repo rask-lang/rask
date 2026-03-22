@@ -74,8 +74,8 @@ impl<'a> MirLowerer<'a> {
         let mut data_param_ty = MirType::I64;
         let inner_type_name = self.resolve_shared_inner_type_name(object);
         if let Some(ref type_name) = inner_type_name {
-            if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
-                data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
+            if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
+                data_param_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
             }
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }
@@ -184,8 +184,8 @@ impl<'a> MirLowerer<'a> {
         let mut data_param_ty = MirType::I64;
         let inner_type_name = self.resolve_shared_inner_type_name(object);
         if let Some(ref type_name) = inner_type_name {
-            if let Some((layout_idx, _)) = self.ctx.find_struct(type_name) {
-                data_param_ty = MirType::Struct(StructLayoutId(layout_idx));
+            if let Some((layout_idx, sl)) = self.ctx.find_struct(type_name) {
+                data_param_ty = MirType::Struct(StructLayoutId::new(layout_idx, sl.size, sl.align));
             }
             self.meta_mut(binding_name).type_prefix = Some(type_name.clone());
         }

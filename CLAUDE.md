@@ -89,137 +89,36 @@ Add `// SPDX-License-Identifier: (MIT OR Apache-2.0)` to the top of source code 
 **Overall:** Sound like a developer with vision, own tradeoffs, no corporate speak
 
 
-## Rask Syntax Quick Reference
+## Rask Syntax
 
-**Claude: Use this, not Rust syntax.**
+**Claude: Use Rask syntax, not Rust.** Full reference: [specs/SYNTAX.md](specs/SYNTAX.md)
 
-| Concept | Rask ✓ | Rust ✗ |
-|---------|--------|--------|
-| String type | `string` (lowercase, immutable, Copy) | `String` |
-| Immutable | `const x = 1` | `let x = 1` |
-| Mutable | `let x = 1` | `let mut x = 1` |
-| Function | `func foo()` | `fn foo()` |
-| Methods | `extend Type { }` | `impl Type { }` |
-| Item visibility | `public` | `pub` |
-| Field visibility | package (default), `private`, `public` | `pub` / private (default) |
-| Enum variant | `Token.Plus` | `Token::Plus` |
-| Mutable param | `func f(mutate x: T)` | `&mut` / `inout` |
-| Take ownership | `func f(take x: T)` | implicit move |
-| Pass owned | `f(own value)` | implicit move |
-| Return value | `return expr` (explicit) | `expr` (implicit) |
-| Pattern match | `if x is Some` | `if let Some(v) = x` |
-| Guard pattern | `const v = x is Ok else { return }` | `let Ok(v) = x else { return }` |
-| Result type | `T or E` (= `Result<T, E>`) | `Result<T, E>` |
-| Error propagation | `try expr` | `expr?` |
-| Error with context | `try expr else \|e\| context(msg, e)` | `expr.map_err(\|e\| ...)? ` |
-| Inferred error type | `func f() -> T or _` (private only) | N/A |
-| Pool context | `func f() using Pool<T>` | N/A |
-| Runtime context | `using Multitasking { }` | N/A |
-| Element binding | `with pool[h] as x { }` (always mutable) | N/A |
-| Cell/Mutex | `with cell as v { }` / `with mutex as v { }` | N/A |
-| Shared read/write | `with shared.read() as v { }` / `with shared.write() as v { }` | N/A |
-| Inline sync access | `shared.read().field` / `shared.write().field = x` | N/A |
-| Allocator context | `func f() using Allocator` / `using Arena.scoped(1MB) { }` | N/A |
-| Async spawn | `spawn(\|\| {})` | `tokio::spawn(async {})` |
-| Thread pool spawn | `ThreadPool.spawn(\|\| {})` | N/A |
-| OS thread spawn | `Thread.spawn(\|\| {})` | `std::thread::spawn(\|\| {})` |
-| Nominal type | `type UserId = u64` | N/A (struct wrapper) |
-| Transparent alias | `type alias Matrix = Vec<Vec<f64>>` | `type Matrix = Vec<Vec<f64>>` |
-| Statement end | Newline | `;` |
+Key differences from Rust: `const`/`let` (not `let`/`let mut`), `func` (not `fn`), `extend` (not `impl`), `public` (not `pub`), `string` (lowercase), `Token.Plus` (not `::`), `try expr` (not `?`), `T or E` (not `Result<T,E>`), explicit `return` in functions, newlines as terminators.
 
-**Common patterns:**
-```rask
-const x = 42                              // immutable
-let y = 0; y = 1                          // mutable + reassign
-const s = string.new()                    // string is lowercase (primitive)
 
-func add(a: i32, b: i32) -> i32 {
-    return a + b                          // functions require explicit return
-}
+## Compiler
 
-extend Point {
-    func distance(self, other: Point) -> f64 { ... }
-}
+Pipeline: `.rk → Lexer → Parser → Desugar → Resolve → TypeCheck → Comptime → Ownership → MIR → Codegen/Interp`
 
-// Expression context — match/if produce values
-const color = match status {
-    Active => "green",
-    Failed => "red",
-}
-const sign = if x > 0: "+" else: "-"
+For detailed per-crate file maps: [compiler/CLAUDE.md](compiler/CLAUDE.md)
 
-// Statement context — side effects
-if x > 0 {
-    process(x)                            // no value produced
-}
-match event {
-    Click(pos) => handle(pos),
-    Key(k) => process(k),
-}
-
-if user is Some: process(user)               // implicit unwrap (single-payload)
-if result is Ok(v): use(v)                   // explicit binding
-const v = opt is Some else { return None }   // guard pattern
-
-// Error handling
-const data = try fs.read(path)                      // propagate error
-const data = try fs.read(path) else |e| wrap(e)     // propagate with context
-func load() -> Config or _ { ... }                  // infer error union (private only)
-
-func damage(h: Handle<Player>) using Pool<Player> {  // pool context
-    h.health -= 10
-}
-
-using Multitasking {                         // runtime executor
-    spawn(|| { work() }).detach()
-}
-
-with pool[h] as entity {                     // mutable element binding
-    entity.health -= 10
-}
-
-with cell as v { v.count += 1 }             // Cell access (mutable)
-with shared.read() as v { v.timeout }        // Shared read lock (explicit)
-with shared.write() as v { v.count += 1 }    // Shared write lock (explicit)
-with mutex as v { v.push(item) }             // Mutex exclusive lock
-
-const t = shared.read().timeout              // inline sync: lock held for expression only
-shared.write().count += 1                    // inline sync: write lock
-
-// Custom allocators
-using Arena.scoped(1.megabytes()) {          // scoped arena — data can't escape
-    const scratch = Vec.new()                // allocated from arena
-    scratch.push(42)
-}
-
-// Spawning (functions, not keywords)
-import async.spawn
-import thread.{Thread, ThreadPool}
-
-spawn(|| { work() })                         // async spawn
-Thread.spawn(|| { background() })            // raw OS thread
-ThreadPool.spawn(|| { compute() })           // thread pool (needs using ThreadPool)
-```
-
-**Return semantics:**
-- **Functions** (including `comptime func`): require explicit `return`
-- **Blocks** in expression context: last expression is the value (implicit)
-- **Why different?** `return` exits functions, blocks naturally produce values
-```rask
-// Functions need explicit return
-func factorial(n: u32) -> u32 {
-    if n <= 1 { return 1 }
-    return n * factorial(n - 1)  // ✓ explicit
-}
-
-// Blocks use implicit last expression
-const squares = comptime {
-    const arr = Vec.new()
-    for i in 0..10 { arr.push(i * i) }
-    arr  // ✓ implicit (return would exit function!)
-}
-```
-
+| Task | Start here |
+|------|-----------|
+| Parse error / new syntax | `rask-parser/src/parser.rs` |
+| AST node types | `rask-ast/src/{decl,expr,stmt}.rs` |
+| Operator desugaring | `rask-desugar/src/lib.rs` |
+| Name resolution | `rask-resolve/src/resolver.rs`, `scope.rs` |
+| Type error / inference | `rask-types/src/checker/{check_expr,check_stmt,inference,unify}.rs` |
+| Trait / generics | `rask-types/src/checker/{generics,resolve}.rs` |
+| Borrow checking | `rask-types/src/checker/borrow.rs`, `rask-ownership/` |
+| Monomorphization | `rask-mono/src/{reachability,instantiate,layout}.rs` |
+| MIR lowering | `rask-mir/src/lower/{mod,expr,stmt}.rs` |
+| MIR codegen (Cranelift) | `rask-codegen/src/{builder,module}.rs` |
+| Interpreter bugs | `rask-interp/src/interp/`, `rask-interp/src/stdlib/` |
+| Stdlib types/stubs | `rask-stdlib/src/{stubs,types,builtins}.rs` |
+| Error formatting | `rask-diagnostics/src/{formatter,convert}.rs` |
+| CLI commands | `rask-cli/src/commands/`, `main.rs` |
+| Formatter | `rask-fmt/src/printer.rs` |
 
 ## Goal
 

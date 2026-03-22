@@ -167,17 +167,10 @@ impl<'a> MirContext<'a> {
             .map(|(i, s)| (i as u32, s))
     }
 
-    /// Size in bytes for a MirType. Struct/Enum sizes come from layouts; scalars are 8.
+    /// Size in bytes for a MirType. Now just delegates to `MirType::size()` since
+    /// StructLayoutId/EnumLayoutId carry their real byte sizes.
     pub fn mir_type_size(&self, ty: &MirType) -> u32 {
-        match ty {
-            MirType::Struct(StructLayoutId(id)) => {
-                self.struct_layouts.get(*id as usize).map_or(8, |s| s.size)
-            }
-            MirType::Enum(EnumLayoutId(id)) => {
-                self.enum_layouts.get(*id as usize).map_or(8, |e| e.size)
-            }
-            _ => 8,
-        }
+        ty.size()
     }
 
     pub fn find_enum(&self, name: &str) -> Option<(u32, &EnumLayout)> {
@@ -264,16 +257,16 @@ impl<'a> MirContext<'a> {
                 {
                     return MirType::Ptr;
                 }
-                if let Some((idx, _)) = self.find_struct(name) {
-                    MirType::Struct(StructLayoutId(idx))
-                } else if let Some((idx, _)) = self.find_enum(name) {
-                    MirType::Enum(EnumLayoutId(idx))
+                if let Some((idx, sl)) = self.find_struct(name) {
+                    MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
+                } else if let Some((idx, el)) = self.find_enum(name) {
+                    MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                 } else if let Some(base) = name.split('<').next() {
                     // Generic type like "Box<i64>" — try base name "Box"
-                    if let Some((idx, _)) = self.find_struct(base) {
-                        MirType::Struct(StructLayoutId(idx))
-                    } else if let Some((idx, _)) = self.find_enum(base) {
-                        MirType::Enum(EnumLayoutId(idx))
+                    if let Some((idx, sl)) = self.find_struct(base) {
+                        MirType::Struct(StructLayoutId::new(idx, sl.size, sl.align))
+                    } else if let Some((idx, el)) = self.find_enum(base) {
+                        MirType::Enum(EnumLayoutId::new(idx, el.size, el.align))
                     } else {
                         MirType::Ptr
                     }

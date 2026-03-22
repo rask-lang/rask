@@ -115,7 +115,7 @@ impl<'a> MirLowerer<'a> {
                     // Field assignment: obj.field = value → Store at field offset
                     ExprKind::Field { object, field } => {
                         let (obj_op, obj_ty) = self.lower_expr(object)?;
-                        let offset = if let MirType::Struct(StructLayoutId(id)) = &obj_ty {
+                        let offset = if let MirType::Struct(StructLayoutId { id, .. }) = &obj_ty {
                             if let Some(layout) = self.ctx.struct_layouts.get(*id as usize) {
                                 layout.fields.iter()
                                     .find(|f| f.name == *field)

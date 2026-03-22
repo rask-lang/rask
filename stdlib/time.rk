@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Time operations.
+struct time { }
+
+extend time {
+    /// Sleep for the given duration.
+    public func sleep(duration: Duration) -> () or Error { }
+}
+
+/// A span of time.
+public struct Duration { }
+
+extend Duration {
+    /// Create a duration from whole seconds.
+    public func seconds(n: i64) -> Duration { }
+
+    /// Create a duration from milliseconds.
+    public func millis(n: i64) -> Duration { }
+
+    /// Create a duration from microseconds.
+    public func micros(n: i64) -> Duration { }
+
+    /// Create a duration from nanoseconds.
+    public func nanos(n: i64) -> Duration { }
+
+    /// Create a duration from fractional seconds.
+    public func from_secs_f64(secs: f64) -> Duration { }
+
+    /// Create a duration from milliseconds (alias).
+    public func from_millis(n: i64) -> Duration { }
+
+    /// Create a duration from nanoseconds (alias).
+    public func from_nanos(n: i64) -> Duration { }
+
+    /// Whole seconds in this duration.
+    public func as_secs(self) -> i64 { }
+
+    /// Whole milliseconds in this duration.
+    public func as_millis(self) -> i64 { }
+
+    /// Whole microseconds in this duration.
+    public func as_micros(self) -> i64 { }
+
+    /// Nanoseconds in this duration.
+    public func as_nanos(self) -> i64 { }
+
+    /// Duration as f32 seconds.
+    public func as_secs_f32(self) -> f64 { }
+
+    /// Duration as f64 seconds.
+    public func as_secs_f64(self) -> f64 { }
+}
+
+/// A point in monotonic time.
+public struct Instant { }
+
+extend Instant {
+    /// Capture the current instant.
+    public func now() -> Instant { }
+
+    /// Duration elapsed since another instant.
+    public func duration_since(self, earlier: Instant) -> Duration { }
+
+    /// Duration elapsed since this instant was captured.
+    public func elapsed(self) -> Duration { }
+}

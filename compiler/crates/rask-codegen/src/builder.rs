@@ -632,17 +632,27 @@ impl<'a> FunctionBuilder<'a> {
             // ── Closure support ──────────────────────────────────────────
 
             MirStmtKind::ClosureCreate { dst, func_name, captures, heap } => {
-                // Build environment layout from captures
-                let env_layout = crate::closures::ClosureEnvLayout {
-                    size: captures.last()
-                        .map(|c| c.offset + c.size)
-                        .unwrap_or(0),
-                    captures: captures.iter().map(|c| crate::closures::CaptureInfo {
-                        local_id: c.local_id,
-                        offset: c.offset,
-                        size: c.size,
-                    }).collect(),
-                };
+                // Build environment layout from captures, using real aggregate
+                // sizes from codegen layouts instead of MIR fallbacks.
+                // MirType::Struct.size() returns 8 (pointer), but actual structs
+                // may be 16+ bytes. Escaping closures must deep-copy aggregate
+                // data so it survives after the parent's stack is reused.
+                let mut env_layout = crate::closures::ClosureEnvLayout::new();
+                for c in captures {
+                    let local = ctx.locals.iter().find(|l| l.id == c.local_id);
+                    let (real_size, is_aggregate) = if let Some(l) = local {
+                        if let Some(alloc_size) = Self::resolve_type_alloc_size(
+                            &l.ty, ctx.struct_layouts, ctx.enum_layouts,
+                        ) {
+                            (alloc_size, true)
+                        } else {
+                            (c.size, false)
+                        }
+                    } else {
+                        (c.size, false)
+                    };
+                    env_layout.add_capture(c.local_id, real_size, is_aggregate);
+                }
 
                 // Get function pointer for the closure function
                 let func_ref = ctx.func_refs.get(func_name)
@@ -727,13 +737,25 @@ impl<'a> FunctionBuilder<'a> {
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture destination not found".to_string()
                     ))?;
-                let load_ty = mir_to_cranelift_type(&dst_local.ty)?;
-                let val = crate::closures::load_capture(builder, env_val, *offset, load_ty);
                 let var = ctx.var_map.get(dst)
                     .ok_or_else(|| CodegenError::UnsupportedFeature(
                         "LoadCapture destination variable not found".to_string()
                     ))?;
-                builder.def_var(*var, val);
+
+                // Aggregate types (String, Struct, etc.) were deep-copied into
+                // the closure environment. Copy into the local stack slot and
+                // set the variable to the local slot address.
+                if let Some((ss, size)) = ctx.stack_slot_map.get(dst) {
+                    let env_addr = builder.ins().iadd_imm(env_val, *offset as i64);
+                    Self::copy_aggregate(builder, env_addr, *ss, *size);
+                    let local_addr = builder.ins().stack_addr(types::I64, *ss, 0);
+                    builder.def_var(*var, local_addr);
+                } else {
+                    // Scalar: load the value directly
+                    let load_ty = mir_to_cranelift_type(&dst_local.ty)?;
+                    let val = crate::closures::load_capture(builder, env_val, *offset, load_ty);
+                    builder.def_var(*var, val);
+                }
             }
 
             MirStmtKind::ClosureDrop { closure } => {
@@ -1495,14 +1517,14 @@ impl<'a> FunctionBuilder<'a> {
     fn real_type_size_align(ty: &MirType, ctx: &CodegenCtx) -> (u32, u32) {
         match ty {
             MirType::Struct(id) => {
-                if let Some(layout) = ctx.struct_layouts.get(id.0 as usize) {
+                if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
                     (layout.size as u32, layout.align as u32)
                 } else {
                     (8, 8)
                 }
             }
             MirType::Enum(id) => {
-                if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
+                if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                     (layout.size as u32, layout.align as u32)
                 } else {
                     (8, 8)
@@ -1682,7 +1704,7 @@ impl<'a> FunctionBuilder<'a> {
                 let mut load_ty = expected_ty.unwrap_or(types::I64);
                 let offset = match &base_ty {
                     Some(MirType::Struct(id)) => {
-                        if let Some(layout) = ctx.struct_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.struct_layouts.get(id.id as usize) {
                             if let Some(field) = layout.fields.get(*field_index as usize) {
                                 // Aggregate field: return pointer into parent struct.
                                 // Covers both >8-byte structs and ≤8-byte enums/structs
@@ -1706,7 +1728,7 @@ impl<'a> FunctionBuilder<'a> {
                         }
                     }
                     Some(MirType::Enum(id)) => {
-                        if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             // Payload starts at payload_offset; field is relative within payload.
                             // Use the first variant with enough fields for the offset.
                             let variant = layout.variants.iter()
@@ -1793,7 +1815,7 @@ impl<'a> FunctionBuilder<'a> {
 
                 let (tag_offset, tag_cranelift_ty) = match &base_ty {
                     Some(MirType::Enum(id)) => {
-                        if let Some(layout) = ctx.enum_layouts.get(id.0 as usize) {
+                        if let Some(layout) = ctx.enum_layouts.get(id.id as usize) {
                             let offset = layout.tag_offset as i32;
                             // Derive Cranelift type from tag type's size
                             let (tag_size, _) = rask_mono::type_size_align(&layout.tag_ty, &Default::default());
@@ -2100,8 +2122,8 @@ impl<'a> FunctionBuilder<'a> {
         enum_layouts: &[EnumLayout],
     ) -> Option<u32> {
         match ty {
-            MirType::Struct(id) => struct_layouts.get(id.0 as usize).map(|sl| sl.size),
-            MirType::Enum(id) => enum_layouts.get(id.0 as usize).map(|el| el.size),
+            MirType::Struct(id) => struct_layouts.get(id.id as usize).map(|sl| sl.size),
+            MirType::Enum(id) => enum_layouts.get(id.id as usize).map(|el| el.size),
             MirType::Array { elem, len } => Some(elem.size() * len),
             MirType::Result { ok, err } => {
                 let ok_size = Self::resolve_type_alloc_size(ok, struct_layouts, enum_layouts)
@@ -2275,7 +2297,7 @@ impl<'a> FunctionBuilder<'a> {
         if let Some(MirOperand::Local(arg_id)) = mir_args.get(arg_index) {
             if let Some(local) = ctx.locals.iter().find(|l| l.id == *arg_id) {
                 if let MirType::Struct(layout_id) = &local.ty {
-                    if let Some(layout) = ctx.struct_layouts.get(layout_id.0 as usize) {
+                    if let Some(layout) = ctx.struct_layouts.get(layout_id.id as usize) {
                         return (layout.size as i64, true);
                     }
                 }

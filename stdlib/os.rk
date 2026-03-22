@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// Operating system interaction.
+struct os { }
+
+extend os {
+    /// Get an environment variable by name.
+    public func env(name: string) -> Option<string> { }
+
+    /// Get an environment variable or a default value.
+    public func env_or(name: string, default: string) -> string { }
+
+    /// Set an environment variable.
+    public func set_env(name: string, value: string) { }
+
+    /// Remove an environment variable.
+    public func remove_env(name: string) { }
+
+    /// Get all environment variables as key-value pairs.
+    public func vars() -> Vec<(string, string)> { }
+
+    /// Get command-line arguments.
+    public func args() -> Vec<string> { }
+
+    /// Exit the process with a status code.
+    public func exit(code: i64) { }
+
+    /// Get the current process ID.
+    public func getpid() -> i64 { }
+
+    /// Get the operating system name.
+    public func platform() -> string { }
+
+    /// Get the CPU architecture.
+    public func arch() -> string { }
+}

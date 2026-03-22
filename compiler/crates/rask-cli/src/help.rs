@@ -25,7 +25,7 @@ pub fn print_usage() {
     println!("  {} {}      Build a package", output::command("build"), output::arg("[dir]"));
     println!("  {} {}     Remove build artifacts", output::command("clean"), output::arg("[dir]"));
     println!("  {}          List available compilation targets", output::command("targets"));
-    println!("  {} {}       Format source files", output::command("fmt"), output::arg("<file>"));
+    println!("  {} {}  Format source files", output::command("fmt"), output::arg("<file | dir>"));
     println!("  {} {}   Explain an error code", output::command("explain"), output::arg("<code>"));
     println!("  {}             Show this help", output::command("help"));
     println!("  {}          Show version", output::command("version"));
@@ -60,17 +60,17 @@ pub fn print_usage() {
     println!();
     println!("{}", output::section_header("Debugging and Exploration:"));
     println!("  {} {}  Lint source files for conventions", output::command("lint"), output::arg("<file|dir>"));
-    println!("  {} {}       Show a module's public API", output::command("api"), output::arg("<file>"));
-    println!("  {} {}    Report all unsafe operations by category", output::command("unsafe"), output::arg("<file>"));
+    println!("  {} {}  Show a module's public API", output::command("api"), output::arg("<file | dir>"));
+    println!("  {} {} Report all unsafe operations by category", output::command("unsafe"), output::arg("<file | dir>"));
 
     println!();
     println!("{}", output::section_header("Compilation Phases:"));
     println!("  {} {}       Tokenize a file and print tokens", output::command("lex"), output::arg("<file>"));
     println!("  {} {}     Parse a file and print AST", output::command("parse"), output::arg("<file>"));
     println!("  {} {}   Resolve names and print symbols", output::command("resolve"), output::arg("<file>"));
-    println!("  {} {} Type check a file", output::command("typecheck"), output::arg("<file>"));
-    println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file>"));
-    println!("  {} {}  Evaluate comptime blocks", output::command("comptime"), output::arg("<file>"));
+    println!("  {} {} Type check files", output::command("typecheck"), output::arg("<file | dir>"));
+    println!("  {} {} Check ownership and borrowing rules", output::command("ownership"), output::arg("<file | dir>"));
+    println!("  {} {}  Evaluate comptime blocks", output::command("comptime"), output::arg("<file | dir>"));
     println!("  {} {}      Dump monomorphized functions + layouts", output::command("mono"), output::arg("<file>"));
     println!("  {} {}       Dump MIR (mid-level IR)", output::command("mir"), output::arg("<file>"));
 
@@ -115,8 +115,7 @@ pub fn print_run_help() {
     println!();
     println!("Execute a Rask program.");
     println!();
-    println!("For single files: uses the interpreter by default, --native compiles first.");
-    println!("For directories: builds the project and runs the resulting binary.");
+    println!("Compiles and runs a Rask program.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
@@ -124,22 +123,22 @@ pub fn print_run_help() {
         output::arg("<file.rk | dir> [options] [-- <program args>]"));
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}    Compile single file and run as native executable", output::arg("--native"));
+    println!("  {}    Use the interpreter instead of compiling", output::arg("--interp"));
     println!("  {}   Build in release mode", output::arg("--release"));
     println!("  {}   Verbose output", output::arg("--verbose"));
     println!("  {}        Output diagnostics as structured JSON", output::arg("--json"));
     println!("  {}             Pass arguments to the program (after --)", output::arg("--"));
     println!();
     println!("{}", output::section_header("Examples:"));
-    println!("  {} {} {}              Run file via interpreter",
+    println!("  {} {} {}              Compile and run",
         output::command("rask"),
         output::command("run"),
         output::arg("main.rk"));
-    println!("  {} {} {} {}   Compile file and run natively",
+    println!("  {} {} {} {}   Run via interpreter",
         output::command("rask"),
         output::command("run"),
         output::arg("main.rk"),
-        output::arg("--native"));
+        output::arg("--interp"));
     println!("  {} {} {}                  Build and run project",
         output::command("rask"),
         output::command("run"),
@@ -395,21 +394,26 @@ pub fn print_test_specs_help() {
 pub fn print_fmt_help() {
     println!("{}", output::section_header("Format"));
     println!();
-    println!("Format a Rask source file according to standard style.");
+    println!("Format Rask source files according to standard style.");
+    println!("Accepts a single file or a directory (formats all .rk files recursively).");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("fmt"),
-        output::arg("<file.rk> [--check]"));
+        output::arg("<file.rk | dir> [--check]"));
     println!();
     println!("{}", output::section_header("Options:"));
-    println!("  {}  Check if file is formatted without modifying", output::arg("--check"));
+    println!("  {}  Check if files are formatted without modifying", output::arg("--check"));
     println!();
     println!("{}", output::section_header("Examples:"));
     println!("  {} {} {}          Format a file",
         output::command("rask"),
         output::command("fmt"),
         output::arg("main.rk"));
+    println!("  {} {} {}            Format all files in directory",
+        output::command("rask"),
+        output::command("fmt"),
+        output::arg("src/"));
     println!("  {} {} {} {}  Check formatting",
         output::command("rask"),
         output::command("fmt"),
@@ -421,11 +425,12 @@ pub fn print_api_help() {
     println!("{}", output::section_header("API"));
     println!();
     println!("Show a module's public API including structs, functions, and enums.");
+    println!("Accepts a single file or a directory (shows API for all .rk files recursively).");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("api"),
-        output::arg("<file.rk> [--all]"));
+        output::arg("<file.rk | dir> [--all]"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}     Show all items including private ones", output::arg("--all"));
@@ -436,6 +441,10 @@ pub fn print_api_help() {
         output::command("rask"),
         output::command("api"),
         output::arg("module.rk"));
+    println!("  {} {} {}            Show API for all files in directory",
+        output::command("rask"),
+        output::command("api"),
+        output::arg("src/"));
     println!("  {} {} {} {}  Show all items",
         output::command("rask"),
         output::command("api"),
@@ -540,18 +549,19 @@ pub fn print_resolve_help() {
 pub fn print_typecheck_help() {
     println!("{}", output::section_header("Typecheck"));
     println!();
-    println!("Type check a Rask source file and validate type correctness.");
+    println!("Type check Rask source files and validate type correctness.");
+    println!("Accepts a single file or a directory.");
     println!("Fourth phase of compilation - ensures type safety.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("typecheck"),
-        output::arg("<file.rk>"));
+        output::arg("<file.rk | dir>"));
     println!();
     println!("Alias: {} {} {}",
         output::command("rask"),
         output::command("check"),
-        output::arg("<file.rk>"));
+        output::arg("<file.rk | dir>"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output type information as structured JSON", output::arg("--json"));
@@ -560,13 +570,14 @@ pub fn print_typecheck_help() {
 pub fn print_ownership_help() {
     println!("{}", output::section_header("Ownership"));
     println!();
-    println!("Check ownership and borrowing rules for a Rask source file.");
+    println!("Check ownership and borrowing rules for Rask source files.");
+    println!("Accepts a single file or a directory.");
     println!("Fifth phase of compilation - validates memory safety.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("ownership"),
-        output::arg("<file.rk>"));
+        output::arg("<file.rk | dir>"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output ownership errors as structured JSON", output::arg("--json"));
@@ -575,13 +586,14 @@ pub fn print_ownership_help() {
 pub fn print_comptime_help() {
     println!("{}", output::section_header("Comptime"));
     println!();
-    println!("Evaluate compile-time blocks in a Rask source file.");
+    println!("Evaluate compile-time blocks in Rask source files.");
+    println!("Accepts a single file or a directory.");
     println!("Runs comptime blocks and displays their results.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("comptime"),
-        output::arg("<file.rk>"));
+        output::arg("<file.rk | dir>"));
     println!();
     println!("{}", output::section_header("Options:"));
     println!("  {}  Output comptime results as structured JSON", output::arg("--json"));
@@ -590,12 +602,13 @@ pub fn print_comptime_help() {
 pub fn print_unsafe_help() {
     println!("{}", output::section_header("Unsafe Report"));
     println!();
-    println!("Report all unsafe operations in a Rask source file, grouped by category.");
+    println!("Report all unsafe operations in Rask source files, grouped by category.");
+    println!("Accepts a single file or a directory.");
     println!();
     println!("{}: {} {} {}", "Usage".yellow(),
         output::command("rask"),
         output::command("unsafe"),
-        output::arg("<file.rk>"));
+        output::arg("<file.rk | dir>"));
     println!();
     println!("{}", output::section_header("Categories:"));
     println!("  Pointer Dereference, Pointer Dereference (write), Pointer Arithmetic,");

@@ -9,54 +9,103 @@ use std::process;
 use crate::{output, Format, collect_rk_files};
 
 pub fn cmd_fmt(path: &str, check_only: bool) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
-        }
+    let p = Path::new(path);
+    let files: Vec<String> = if p.is_dir() {
+        collect_rk_files(p)
+    } else {
+        vec![path.to_string()]
     };
 
-    let formatted = rask_fmt::format_source(&source);
-
-    if formatted == source {
-        if check_only {
-            println!("{} {}", output::status_pass(), output::file_path(path));
-        }
-        return;
-    }
-
-    if check_only {
-        println!("{} {} (would reformat)", output::status_fail(), output::file_path(path));
+    if files.is_empty() {
+        eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
         process::exit(1);
     }
 
-    match fs::write(path, &formatted) {
-        Ok(_) => {
-            println!("Formatted {}", output::file_path(path));
+    let mut had_failure = false;
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(file), e);
+                had_failure = true;
+                continue;
+            }
+        };
+
+        let formatted = rask_fmt::format_source(&source);
+
+        if formatted == source {
+            if check_only {
+                println!("{} {}", output::status_pass(), output::file_path(file));
+            }
+            continue;
         }
-        Err(e) => {
-            eprintln!("{}: writing {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
+
+        if check_only {
+            println!("{} {} (would reformat)", output::status_fail(), output::file_path(file));
+            had_failure = true;
+            continue;
         }
+
+        match fs::write(file, &formatted) {
+            Ok(_) => {
+                println!("Formatted {}", output::file_path(file));
+            }
+            Err(e) => {
+                eprintln!("{}: writing {}: {}", output::error_label(), output::file_path(file), e);
+                had_failure = true;
+            }
+        }
+    }
+
+    if had_failure {
+        process::exit(1);
     }
 }
 
 pub fn cmd_api(path: &str, format: Format, show_all: bool) {
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
-            process::exit(1);
-        }
+    let p = Path::new(path);
+    let files: Vec<String> = if p.is_dir() {
+        collect_rk_files(p)
+    } else {
+        vec![path.to_string()]
     };
 
-    let opts = rask_describe::DescribeOpts { show_all };
-    let desc = rask_describe::describe(&source, path, opts);
+    if files.is_empty() {
+        eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
+        process::exit(1);
+    }
 
-    match format {
-        Format::Human => print!("{}", rask_describe::describe_text(&desc)),
-        Format::Json => println!("{}", rask_describe::describe_json(&desc)),
+    let multi = files.len() > 1;
+    let mut had_failure = false;
+
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(file), e);
+                had_failure = true;
+                continue;
+            }
+        };
+
+        let opts = rask_describe::DescribeOpts { show_all };
+        let desc = rask_describe::describe(&source, file, opts);
+
+        match format {
+            Format::Human => {
+                if multi {
+                    println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());
+                }
+                print!("{}", rask_describe::describe_text(&desc));
+            }
+            Format::Json => println!("{}", rask_describe::describe_json(&desc)),
+        }
+    }
+
+    if had_failure {
+        process::exit(1);
     }
 }
 

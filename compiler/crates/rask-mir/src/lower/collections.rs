@@ -313,7 +313,7 @@ impl<'a> MirLowerer<'a> {
         }));
 
         let struct_id = self.ctx.find_struct(&layout.name)
-            .map(|(id, _)| StructLayoutId(id));
+            .map(|(id, sl)| StructLayoutId::new(id, sl.size, sl.align));
         let struct_ty = struct_id
             .map(MirType::Struct)
             .unwrap_or(MirType::I64);
@@ -357,16 +357,8 @@ impl<'a> MirLowerer<'a> {
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr
             | MirType::FuncPtr(_) | MirType::Handle => 8,
             MirType::String => 16,
-            MirType::Struct(StructLayoutId(id)) => {
-                self.ctx.struct_layouts.get(*id as usize)
-                    .map(|l| l.size as i64)
-                    .unwrap_or(8)
-            }
-            MirType::Enum(EnumLayoutId(id)) => {
-                self.ctx.enum_layouts.get(*id as usize)
-                    .map(|l| l.size as i64)
-                    .unwrap_or(8)
-            }
+            MirType::Struct(sid) => sid.byte_size as i64,
+            MirType::Enum(eid) => eid.byte_size as i64,
             MirType::Array { elem, len } => self.elem_size_for_type(elem) * (*len as i64),
             MirType::Tuple(_) | MirType::Slice(_) | MirType::Option(_)
             | MirType::Result { .. } | MirType::Union(_)

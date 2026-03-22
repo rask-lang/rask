@@ -599,7 +599,7 @@ mod tests {
         //   return _1
         use rask_mir::MirType;
 
-        let struct_layout_id = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+        let struct_layout_id = rask_mir::MirType::Struct(rask_mir::StructLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "get_y".to_string(),
@@ -635,7 +635,7 @@ mod tests {
         //   store _0 + 4, 20   — y = 20
         //   _1 = Field { base: _0, field_index: 1 }  — read y
         //   return _1
-        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "make_point".to_string(),
@@ -674,7 +674,7 @@ mod tests {
         // func get_tag(r: Result) -> u8 { return r.tag }
         //
         // MIR: _1 = EnumTag { value: _0 }
-        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "get_tag".to_string(),
@@ -711,7 +711,7 @@ mod tests {
         //   bb1: _2 = Field { base: _0, field_index: 0 }  — extract Ok payload
         //        return _2
         //   bb2: return 0
-        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "unwrap_ok".to_string(),
@@ -762,7 +762,7 @@ mod tests {
         //   _0: Struct(0) — stack allocated
         //   _1: Ptr = Ref(_0)
         //   return _1
-        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "ref_struct".to_string(),
@@ -959,7 +959,7 @@ mod tests {
         //   store _0 + 0, 1
         //   store _0 + 4, 2
         //   return 0
-        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId(0));
+        let struct_ty = rask_mir::MirType::Struct(rask_mir::StructLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "alloc_struct".to_string(),
@@ -994,7 +994,7 @@ mod tests {
         //   store _0 + 4, 42 — payload = 42
         //   _1 = EnumTag { value: _0 }
         //   return _1
-        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId(0));
+        let enum_ty = rask_mir::MirType::Enum(rask_mir::EnumLayoutId::new(0, 16, 8));
 
         let mir = MirFunction {
             name: "alloc_enum".to_string(),
@@ -1309,15 +1309,15 @@ mod tests {
         let mut layout = ClosureEnvLayout::new();
         assert_eq!(layout.size, 0);
 
-        let off0 = layout.add_capture(LocalId(0), 8);
+        let off0 = layout.add_capture(LocalId(0), 8, false);
         assert_eq!(off0, 0);
         assert_eq!(layout.size, 8);
 
-        let off1 = layout.add_capture(LocalId(1), 4);
+        let off1 = layout.add_capture(LocalId(1), 4, false);
         assert_eq!(off1, 8); // aligned to 8
         assert_eq!(layout.size, 12);
 
-        let off2 = layout.add_capture(LocalId(2), 8);
+        let off2 = layout.add_capture(LocalId(2), 8, false);
         assert_eq!(off2, 16); // aligned up from 12 → 16
         assert_eq!(layout.size, 24);
 

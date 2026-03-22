@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: (MIT OR Apache-2.0)
+
+/// A filesystem path.
+public struct Path { }
+
+extend Path {
+    /// Create a path from a string.
+    public func new(s: string) -> Path { }
+
+    /// Create a path from a string (alias).
+    public func from(s: string) -> Path { }
+
+    /// Get the parent directory, if any.
+    public func parent(self) -> Option<Path> { }
+
+    /// Get the file name component.
+    public func file_name(self) -> Option<string> { }
+
+    /// Get the file extension.
+    public func extension(self) -> Option<string> { }
+
+    /// Get the file stem (name without extension).
+    public func stem(self) -> Option<string> { }
+
+    /// Get the path components as strings.
+    public func components(self) -> Vec<string> { }
+
+    /// Whether the path is absolute.
+    public func is_absolute(self) -> bool { }
+
+    /// Whether the path is relative.
+    public func is_relative(self) -> bool { }
+
+    /// Whether the path has an extension.
+    public func has_extension(self) -> bool { }
+
+    /// Join this path with another segment.
+    public func join(self, other: string) -> Path { }
+
+    /// Replace the file extension.
+    public func with_extension(self, ext: string) -> Path { }
+
+    /// Replace the file name.
+    public func with_file_name(self, name: string) -> Path { }
+
+    /// Convert to a string.
+    public func to_string(self) -> string { }
+}

@@ -1,6 +1,3 @@
-
-
-
 func match_route(path: string, routes: Vec<Route>) -> Route? {
     for route in routes {
         if path.starts_with(route.prefix) {

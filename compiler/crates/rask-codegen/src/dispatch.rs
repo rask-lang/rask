@@ -522,6 +522,14 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("Duration_as_nanos", "rask_time_Duration_as_nanos", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_secs", "rask_time_Duration_as_secs", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("Duration_as_secs_f64", "rask_time_Duration_as_secs_f64", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Duration_as_millis", "rask_time_Duration_as_millis", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_as_micros", "rask_time_Duration_as_micros", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_as_secs_f32", "rask_time_Duration_as_secs_f32", &[types::I64], Some(types::F64), false),
+        StdlibEntry::simple("Duration_seconds", "rask_time_Duration_seconds", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_millis", "rask_time_Duration_millis", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_micros", "rask_time_Duration_micros", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_nanos", "rask_time_Duration_nanos", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Duration_from_secs_f64", "rask_time_Duration_from_secs_f64", &[types::F64], Some(types::I64), false),
 
         // ── I/O primitives ─────────────────────────────────────────
         StdlibEntry {

@@ -1,12 +1,8 @@
-
-
 struct Route {
     prefix: string
     upstream: string
 }
 
 func routes() -> Vec<Route> {
-    return Vec<Route>.from([
-        Route { prefix: "/", upstream: "example.com" },
-    ])
-} 
+    return Vec<Route>.from([Route { prefix: "/", upstream: "example.com" }])
+}

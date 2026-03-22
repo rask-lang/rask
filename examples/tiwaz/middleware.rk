@@ -1,6 +1,6 @@
 import time.Instant
 
-func logging(next : func(Request) -> Response) -> func(Request) -> Response {
+func logging(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
         println("Received request: {request.method} {request.path()}")
         const start = Instant.now()
@@ -12,17 +12,16 @@ func logging(next : func(Request) -> Response) -> func(Request) -> Response {
     }
 }
 
-
-func with_metrics(next : func(Request) -> Response) -> func(Request) -> Response {
+func with_metrics(next: |Request| -> Response) -> |Request| -> Response {
     return |request: Request| {
         const response = next(request)
         with metrics.write() as m {
-            m.request_count += 1
+            m.request_count = m.request_count + 1
             if response.status >= 400 {
-                m.error_count += 1
+                m.error_count = m.error_count + 1
             }
-            m.bytes_sent += response.body.len()
-            m.bytes_received += request.body.len()
+            m.bytes_sent = m.bytes_sent + response.body.len()
+            m.bytes_received = m.bytes_received + request.body.len()
         }
         return response
     }

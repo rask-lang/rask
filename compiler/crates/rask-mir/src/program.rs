@@ -38,12 +38,12 @@ pub struct MirProgram {
 impl MirProgram {
     /// Look up a struct layout by id.
     pub fn struct_layout(&self, id: crate::StructLayoutId) -> &StructLayout {
-        &self.struct_layouts[id.0 as usize]
+        &self.struct_layouts[id.id as usize]
     }
 
     /// Look up an enum layout by id.
     pub fn enum_layout(&self, id: crate::EnumLayoutId) -> &EnumLayout {
-        &self.enum_layouts[id.0 as usize]
+        &self.enum_layouts[id.id as usize]
     }
 
     /// Iterate over all functions.
@@ -114,7 +114,7 @@ mod tests {
             align: 8,
             fields: vec![],
         });
-        let layout = prog.struct_layout(crate::StructLayoutId(0));
+        let layout = prog.struct_layout(crate::StructLayoutId::new(0, 16, 8));
         assert_eq!(layout.name, "Point");
         assert_eq!(layout.size, 16);
     }

@@ -148,7 +148,7 @@ impl<'a> MirLowerer<'a> {
             if has_tag {
                 if let Pattern::Constructor { name, fields } = &arm.pattern {
                     let variant_fields: Option<Vec<(MirType, u32)>> =
-                        if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
+                        if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                             self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
                                 layout.variants.iter().find(|v| v.name == *name).map(|v| {
                                     v.fields.iter().map(|f| {
@@ -189,7 +189,7 @@ impl<'a> MirLowerer<'a> {
                             }));
                             let prefix = self.mir_type_name(&field_ty)
                                 .or_else(|| {
-                                    if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
+                                    if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                                         self.ctx.enum_layouts.get(*idx as usize).and_then(|layout| {
                                             layout.variants.iter().find(|v| v.name == *name).and_then(|v| {
                                                 v.fields.get(j).and_then(|f| {
@@ -218,7 +218,7 @@ impl<'a> MirLowerer<'a> {
                     }
                 } else if let Pattern::Struct { name, fields, .. } = &arm.pattern {
                     let variant_name = name.rsplit('.').next().unwrap_or(name);
-                    if let MirType::Enum(crate::types::EnumLayoutId(idx)) = &scrutinee_ty {
+                    if let MirType::Enum(crate::types::EnumLayoutId { id: idx, .. }) = &scrutinee_ty {
                         if let Some(layout) = self.ctx.enum_layouts.get(*idx as usize) {
                             if let Some(variant) = layout.variants.iter().find(|v| v.name == variant_name) {
                                 for (field_name, field_pat) in fields {

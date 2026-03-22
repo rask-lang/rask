@@ -67,7 +67,8 @@ impl MirType {
             MirType::I64 | MirType::U64 | MirType::F64 | MirType::Ptr | MirType::FuncPtr(_)
             | MirType::Handle => 8,
             MirType::String => 16,
-            MirType::Struct(_) | MirType::Enum(_) => 8,
+            MirType::Struct(sid) => sid.byte_size,
+            MirType::Enum(eid) => eid.byte_size,
             MirType::Array { elem, len } => elem.size() * len,
             MirType::Tuple(fields) => {
                 let mut offset = 0u32;
@@ -104,6 +105,8 @@ impl MirType {
             MirType::I16 | MirType::U16 => 2,
             MirType::I32 | MirType::U32 | MirType::F32 | MirType::Char => 4,
             MirType::Tuple(fields) => fields.iter().map(|f| f.align()).max().unwrap_or(1),
+            MirType::Struct(sid) => sid.align,
+            MirType::Enum(eid) => eid.align,
             MirType::Slice(_) | MirType::Option(_) | MirType::Result { .. } | MirType::Union(_) => 8,
             _ => 8,
         }
@@ -120,11 +123,47 @@ impl MirType {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StructLayoutId(pub u32);
+#[derive(Debug, Clone, Copy)]
+pub struct StructLayoutId {
+    pub id: u32,
+    pub byte_size: u32,
+    pub align: u32,
+}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct EnumLayoutId(pub u32);
+impl StructLayoutId {
+    pub fn new(id: u32, byte_size: u32, align: u32) -> Self {
+        Self { id, byte_size, align }
+    }
+}
+
+impl PartialEq for StructLayoutId {
+    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+}
+impl Eq for StructLayoutId {}
+impl std::hash::Hash for StructLayoutId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct EnumLayoutId {
+    pub id: u32,
+    pub byte_size: u32,
+    pub align: u32,
+}
+
+impl EnumLayoutId {
+    pub fn new(id: u32, byte_size: u32, align: u32) -> Self {
+        Self { id, byte_size, align }
+    }
+}
+
+impl PartialEq for EnumLayoutId {
+    fn eq(&self, other: &Self) -> bool { self.id == other.id }
+}
+impl Eq for EnumLayoutId {}
+impl std::hash::Hash for EnumLayoutId {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) { self.id.hash(state); }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct SignatureId(pub u32);

@@ -953,15 +953,12 @@ impl TypeChecker {
                     let ret_ty = super::builtins::parse_stub_type(&stub.ret_ty);
                     return self.unify(ret, &ret_ty, span);
                 }
-                // Unknown method — re-enqueue for constraint system
-                self.ctx.add_constraint(TypeConstraint::HasMethod {
+                // Known runtime type but unknown method — hard error
+                Err(TypeError::NoSuchMethod {
                     ty: Type::UnresolvedNamed(type_name.to_string()),
                     method: method.to_string(),
-                    args: args.to_vec(),
-                    ret: ret.clone(),
                     span,
-                });
-                Ok(false)
+                })
             }
         }
     }

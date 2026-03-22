@@ -9,12 +9,48 @@ use std::fmt::Write as _;
 use std::fs;
 use std::process;
 
-use crate::{output, Format, show_diagnostics};
+use std::path::Path;
+
+use crate::{output, Format, show_diagnostics, collect_rk_files};
+
+/// Resolve a path to the .rk file(s) to process.
+/// - Single file: returns it as-is.
+/// - Directory with build.rk: returns the first .rk file (package detection handles the rest).
+/// - Directory without build.rk: returns all .rk files for per-file processing.
+fn resolve_rk_targets(path: &str) -> Vec<String> {
+    let p = Path::new(path);
+    if !p.is_dir() {
+        return vec![path.to_string()];
+    }
+
+    let files = collect_rk_files(p);
+    if files.is_empty() {
+        eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
+        process::exit(1);
+    }
+
+    // Package directory: run_frontend on one file discovers the whole package
+    if p.join("build.rk").is_file() {
+        return vec![files[0].clone()];
+    }
+
+    files
+}
 
 pub fn cmd_typecheck(path: &str, format: Format) {
+    let files = resolve_rk_targets(path);
+    for file in &files {
+        typecheck_single(file, format, files.len() > 1);
+    }
+}
+
+fn typecheck_single(path: &str, format: Format, multi: bool) {
     let result = super::pipeline::run_frontend(path, format);
 
     if format == Format::Human {
+        if multi {
+            println!("{} {} {}", "===".dimmed(), output::file_path(path), "===".dimmed());
+        }
         println!("{} Types ({} registered) {}\n", "===".dimmed(), result.typed.types.iter().count(), "===".dimmed());
         for type_def in result.typed.types.iter() {
             match type_def {
@@ -73,7 +109,10 @@ pub fn cmd_typecheck(path: &str, format: Format) {
 }
 
 pub fn cmd_ownership(path: &str, format: Format) {
-    let _result = super::pipeline::run_frontend(path, format);
+    let files = resolve_rk_targets(path);
+    for file in &files {
+        let _result = super::pipeline::run_frontend(file, format);
+    }
 
     // run_frontend already checked ownership — if we get here, it passed
     if format == Format::Human {
@@ -87,60 +126,83 @@ pub fn cmd_ownership(path: &str, format: Format) {
 }
 
 pub fn cmd_comptime(path: &str, format: Format) {
-    // Comptime uses its own interpreter, so stays single-file for now
-    let source = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(path), e);
+    let p = Path::new(path);
+    let files: Vec<String> = if p.is_dir() {
+        let f = collect_rk_files(p);
+        if f.is_empty() {
+            eprintln!("{}: no .rk files found in {}", output::error_label(), output::file_path(path));
             process::exit(1);
         }
+        f
+    } else {
+        vec![path.to_string()]
     };
 
-    let mut lexer = rask_lexer::Lexer::new(&source);
-    let lex_result = lexer.tokenize();
+    let multi = files.len() > 1;
+    let mut total_evaluated = 0usize;
+    let mut total_errors = 0usize;
 
-    if !lex_result.is_ok() {
-        let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "lex", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
+    for file in &files {
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("{}: reading {}: {}", output::error_label(), output::file_path(file), e);
+                total_errors += 1;
+                continue;
+            }
+        };
+
+        let mut lexer = rask_lexer::Lexer::new(&source);
+        let lex_result = lexer.tokenize();
+
+        if !lex_result.is_ok() {
+            let diags: Vec<Diagnostic> = lex_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, file, "lex", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Lex", lex_result.errors.len()));
+            }
+            total_errors += lex_result.errors.len();
+            continue;
         }
-        process::exit(1);
-    }
 
-    let mut parser = rask_parser::Parser::new(lex_result.tokens);
-    let mut parse_result = parser.parse();
+        let mut parser = rask_parser::Parser::new(lex_result.tokens);
+        let mut parse_result = parser.parse();
 
-    if !parse_result.is_ok() {
-        let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
-        show_diagnostics(&diags, &source, path, "parse", format);
-        if format == Format::Human {
-            eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
+        if !parse_result.is_ok() {
+            let diags: Vec<Diagnostic> = parse_result.errors.iter().map(|e| e.to_diagnostic()).collect();
+            show_diagnostics(&diags, &source, file, "parse", format);
+            if format == Format::Human {
+                eprintln!("\n{}", output::banner_fail("Parse", parse_result.errors.len()));
+            }
+            total_errors += parse_result.errors.len();
+            continue;
         }
-        process::exit(1);
-    }
 
-    rask_desugar::desugar(&mut parse_result.decls);
+        rask_desugar::desugar(&mut parse_result.decls);
 
-    // Evaluate comptime blocks using the restricted comptime interpreter
-    let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
-    comptime_interp.register_functions(&parse_result.decls);
+        let mut comptime_interp = rask_comptime::ComptimeInterpreter::new();
+        comptime_interp.register_functions(&parse_result.decls);
 
-    let mut evaluated = 0usize;
-    let mut errors = Vec::new();
+        if multi && format == Format::Human {
+            println!("{} {} {}", "===".dimmed(), output::file_path(file), "===".dimmed());
+        }
 
-    for decl in &parse_result.decls {
-        if let rask_ast::decl::DeclKind::Const(c) = &decl.kind {
-            if matches!(c.init.kind, rask_ast::expr::ExprKind::Comptime { .. }) {
-                match comptime_interp.eval_expr(&c.init) {
-                    Ok(val) => {
-                        evaluated += 1;
-                        if format == Format::Human {
-                            println!("  {} const {} = {:?}", output::status_pass(), c.name, val);
+        for decl in &parse_result.decls {
+            if let rask_ast::decl::DeclKind::Const(c) = &decl.kind {
+                if matches!(c.init.kind, rask_ast::expr::ExprKind::Comptime { .. }) {
+                    match comptime_interp.eval_expr(&c.init) {
+                        Ok(val) => {
+                            total_evaluated += 1;
+                            if format == Format::Human {
+                                println!("  {} const {} = {:?}", output::status_pass(), c.name, val);
+                            }
                         }
-                    }
-                    Err(e) => {
-                        errors.push((c.name.clone(), e));
+                        Err(e) => {
+                            total_errors += 1;
+                            if format == Format::Human {
+                                eprintln!("  {} const {}: {}", output::status_fail(), c.name, e);
+                            }
+                        }
                     }
                 }
             }
@@ -149,18 +211,14 @@ pub fn cmd_comptime(path: &str, format: Format) {
 
     if format == Format::Human {
         println!();
-        if errors.is_empty() {
+        if total_errors == 0 {
             println!("{}", output::banner_ok("Comptime"));
             println!();
-            println!("Evaluated {} comptime block(s) successfully.", evaluated);
+            println!("Evaluated {} comptime block(s) successfully.", total_evaluated);
         } else {
-            for (name, err) in &errors {
-                eprintln!("  {} const {}: {}", output::status_fail(), name, err);
-            }
+            eprintln!("{}", output::banner_fail("Comptime", total_errors));
             eprintln!();
-            eprintln!("{}", output::banner_fail("Comptime", errors.len()));
-            eprintln!();
-            eprintln!("{} evaluated, {} failed", evaluated, errors.len());
+            eprintln!("{} evaluated, {} failed", total_evaluated, total_errors);
             process::exit(1);
         }
     }
@@ -180,6 +238,14 @@ fn category_label(cat: UnsafeCategory) -> &'static str {
 }
 
 pub fn cmd_unsafe_report(path: &str, format: Format) {
+    let files = resolve_rk_targets(path);
+    let multi = files.len() > 1;
+    for file in &files {
+        unsafe_report_single(file, format, multi);
+    }
+}
+
+fn unsafe_report_single(path: &str, format: Format, multi: bool) {
     let result = super::pipeline::run_frontend(path, format);
 
     let ops = &result.typed.unsafe_ops;
@@ -199,6 +265,10 @@ pub fn cmd_unsafe_report(path: &str, format: Format) {
     }
 
     // Human format
+    if multi {
+        println!("{} {} {}", "===".dimmed(), output::file_path(path), "===".dimmed());
+    }
+
     if ops.is_empty() {
         println!("{}", output::banner_ok("Unsafe Report"));
         println!();

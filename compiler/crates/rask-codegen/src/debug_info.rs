@@ -209,19 +209,17 @@ fn mir_type_to_var_info(
         rask_mir::MirType::Ptr      => ("ptr".into(), 8, TypeKind::Address),
         rask_mir::MirType::String   => ("string".into(), 8, TypeKind::Address),
         rask_mir::MirType::Handle   => ("Handle".into(), 8, TypeKind::Signed),
-        rask_mir::MirType::Struct(StructLayoutId(id)) => {
+        rask_mir::MirType::Struct(StructLayoutId { id, byte_size, .. }) => {
             let sname = struct_layouts.get(*id as usize)
                 .map(|s| s.name.clone())
                 .unwrap_or_else(|| "struct".into());
-            let size = struct_layouts.get(*id as usize).map(|s| s.size).unwrap_or(8);
-            (sname, size, TypeKind::Other)
+            (sname, *byte_size, TypeKind::Other)
         }
-        rask_mir::MirType::Enum(EnumLayoutId(id)) => {
+        rask_mir::MirType::Enum(EnumLayoutId { id, byte_size, .. }) => {
             let ename = enum_layouts.get(*id as usize)
                 .map(|e| e.name.clone())
                 .unwrap_or_else(|| "enum".into());
-            let size = enum_layouts.get(*id as usize).map(|e| e.size).unwrap_or(8);
-            (ename, size, TypeKind::Other)
+            (ename, *byte_size, TypeKind::Other)
         }
         rask_mir::MirType::Option(inner) => {
             let inner = mir_type_to_var_info("", inner, struct_layouts, enum_layouts);
