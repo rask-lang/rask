@@ -1,16 +1,18 @@
 <!-- id: raido.overview -->
 <!-- status: proposed -->
-<!-- summary: Raido — deterministic, serializable scripting VM hosted inside Rask applications -->
+<!-- summary: Raido — independent deterministic scripting VM, Rask-syntax-flavored -->
 
 # Raido
 
-Deterministic scripting VM that runs inside Rask applications. Dynamic subset of Rask syntax. Serializable state. Fixed-point arithmetic. Sandboxed — the host controls all capabilities.
+Independent project. Deterministic scripting VM with Rask-flavored syntax. Lives in this repo for now but is not part of Rask — no dependency on the Rask compiler, runtime, or stdlib.
 
-**Rask without types.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
+Serializable state. Fixed-point arithmetic. Sandboxed — the host controls all capabilities.
+
+**Rask-flavored syntax.** Same `{}` blocks, `if`/`else if`, `match`/`=>`, `for`/`in`, `||` closures, `try`/`else` error handling. No type annotations, no ownership, no `ensure`.
 
 ## Why Raido
 
-Rask needs an answer to "run user-provided code safely." Hosting Lua via C FFI works but:
+Applications need an answer to "run user-provided code safely." Hosting Lua via C FFI works but:
 
 1. Every Lua API call requires `unsafe`.
 2. Lua is not deterministic (hardware floats, platform-dependent behavior).
@@ -25,10 +27,12 @@ Raido's differentiators vs Lua/WASM/JS:
 | Deterministic | Yes (fixed-point) | No | Yes | No |
 | Serializable state | Yes (built-in) | No | Manual | No |
 | Sandboxed | Yes (no I/O) | Partial | Yes | Partial |
-| Safe Rask interop | Yes (no unsafe) | No | No | No |
+| Safe host interop | Yes (no unsafe) | No | No | No |
 | Tiny VM | ~1 KB base | ~20 KB | Runtime-dependent | Heavy |
 
 ## Host API
+
+Example using Rask as the host language (any language with C FFI can host Raido):
 
 ```rask
 import raido
@@ -130,7 +134,7 @@ const result = try process(42) else |e| {
 | Fixed-point format | **32.32** | ~9.6 decimal digits of precision vs 48.16's ~4.8. Simulation shows 48.16 drifts badly in physics chains (2.6 error after 1000 damping frames vs 6e-5). The 2.1B integer ceiling is mitigated by `int` (i64) being a separate type — use `int` for large values. |
 | Arena strategy | **Fixed arena + explicit reset.** `frame_end()` opt-in. | Default: fixed-size arena, `reset()` between evaluations. Game-loop hosts opt into `frame_end()` for per-frame cleanup. No auto-grow — hides allocation cost. |
 | Serialization versioning | **Yes.** Version header from day one. | Without it, any format change breaks all serialized snapshots. |
-| Packaging | **Separate crate** (`raido`), not part of Rask stdlib. | Most programs won't need a scripting VM. No reason to bloat the stdlib. |
+| Packaging | **Independent project** (`raido` crate). Lives in this repo for now. No dependency on Rask. | Not part of Rask. Can be embedded by any host via C FFI. |
 | Closure upvalues | **Arena-allocated.** Closures hold arena offsets. | No heap cells, no GC. Multiple closures sharing a variable point to the same arena slot. Serializable as part of arena contents. |
 | Host ref field access | **Vtable.** Field name → slot index at compile time. | No string hashing at runtime. One indexed function pointer call per access. Slot indices stable because field order declared by host. |
 
