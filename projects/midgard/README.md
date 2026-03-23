@@ -52,21 +52,7 @@ See [CONSERVATION.md](CONSERVATION.md) for details.
 
 ## Object Capabilities
 
-The trust model for cross-domain communication. See [OCAP.md](OCAP.md).
-
-Protocol layers:
-
-```
-┌──────────────────────────────────┐
-│  3. Object                       │  References, calls, pipelining
-├──────────────────────────────────┤
-│  2. Capability                   │  Tokens, delegation, revocation
-├──────────────────────────────────┤
-│  1. Session                      │  Multiplexing, reconnection, identity
-├──────────────────────────────────┤
-│  0. Transport (Leden)            │  TCP, QUIC, Unix socket, whatever
-└──────────────────────────────────┘
-```
+Cross-domain communication uses [Leden's](../leden/) capability protocol. See [OCAP.md](OCAP.md) for how Midgard applies it.
 
 ## What This Doesn't Need
 

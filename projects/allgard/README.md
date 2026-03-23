@@ -61,6 +61,5 @@ Allgard is that "more." It provides:
 - **Supervision strategies.** One-for-one, one-for-all, rest-for-one? Custom?
 - **Hot migration.** Can a gard be serialized and moved to another machine? If so, what are the constraints?
 - **Backpressure.** Per-gard mailbox limits? What happens on overflow?
-- **Bootstrap / discovery.** How does a gard discover other gards? E's "greeter" pattern — a single public capability endpoint, everything else obtained through it — keeps the attack surface minimal.
-- **Third-party introduction.** Gard A introduces Gard B to Gard C without becoming a permanent relay. The introducer hands off a scoped capability, then gets out of the loop. Critical for scaling — without it, every cross-gard interaction needs a central broker.
-- **Capability model.** Should inter-gard authority be capability-based (holding a reference = permission)? Fits naturally with the isolation model. Attenuation (narrowing scope) and revocation (membrane pattern) give fine-grained control.
+
+Inter-gard communication (bootstrap, introduction, capability model) is handled by [Leden](../leden/).
