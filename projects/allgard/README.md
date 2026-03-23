@@ -1,65 +1,71 @@
 <!-- id: allgard.overview -->
 <!-- status: proposed -->
-<!-- summary: Allgard — orchestration of isolated domains (gards) -->
+<!-- summary: Allgard — topology, registry, and discovery for networks of gards -->
 
 # Allgard
 
-Orchestration layer for gards — isolated domains that communicate through message passing. Uses Leden for transport but is a separate concern.
+The map of the multiverse. Allgard knows what gards exist, where they are, and how to find them. [Leden](../leden/) is the web between them.
 
 ## What's a Gard
 
-An isolated domain. Own state, own lifecycle. Communicates with other gards only through messages over Leden. No shared memory between gards.
+A server process with isolated state. Runs independently, talks to other gards over Leden. Could be a game world region, a microservice, a build worker — whatever. Allgard doesn't care what's inside.
 
-Think of it as: a gard is to Allgard what an actor is to an actor system, what a process is to Erlang's VM, what a service is to a microservice architecture. The isolation boundary.
+Gards are coarse-grained. A gard might contain thousands of entities, its own task scheduler, its own pools. It's a domain, not an object.
 
-The difference from actors: gards are coarser-grained. A gard might contain thousands of entities, its own task scheduler, its own pools. It's a world, not an object.
+## What Allgard Does
 
-## Why Allgard
+Leden gives you point-to-point capability-based communication. But it doesn't answer: what endpoints exist? Where are they? How does a new gard join? How do I know one went down?
 
-Rask's concurrency model (`spawn`, channels, `Shared<T>`) handles parallelism within a single domain well. But structuring a system as multiple isolated domains — where failure in one doesn't crash the others, where domains can be distributed across machines — needs more.
+Allgard fills that gap:
 
-Allgard is that "more." It provides:
+1. **Registry** — what gards exist and where they are. The directory.
+2. **Topology** — how gards relate. Which ones should know about each other at startup. What capabilities they bootstrap with.
+3. **Discovery** — a new gard joins the network and finds the others. An existing gard moves and the others find its new address.
+4. **Health** — is a gard up? Leden detects connection drops. Allgard decides what that means — report it, alert an operator, notify dependent gards.
 
-1. **Isolation** — gards don't share memory. One gard panicking doesn't corrupt another.
-2. **Communication** — typed messages between gards, routed over Leden.
-3. **Lifecycle** — start, stop, restart gards. Supervision strategies.
-4. **Location transparency** — a gard doesn't know (or care) if the other gard is in-process, on another core, or on another machine.
+## What Allgard Does Not Do
 
-## Relationship to Other Components
+- **Communication** — that's Leden. Allgard helps you find the address; Leden handles the session, capabilities, and messages.
+- **Process supervision** — restarting crashed processes is your deployment platform's job (systemd, Docker, Kubernetes). Allgard reports health, it doesn't manage processes.
+- **Application logic** — Allgard doesn't know about game worlds, conservation laws, or Raido VMs. That's Midgard.
+
+## How It Fits Together
 
 ```
-┌──────────────────────────────────────────┐
-│ Allgard (orchestration)                  │
-│  ┌─────────┐  ┌─────────┐  ┌─────────┐  │
-│  │  Gard A  │  │  Gard B  │  │  Gard C  │  │
-│  │ (state,  │  │ (state,  │  │ (state,  │  │
-│  │  tasks)  │  │  tasks)  │  │  tasks)  │  │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  │
-│       └──────┬──────┘──────┬──────┘        │
-│              │ Leden (transport)            │
-└──────────────┴─────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│ Allgard (registry, topology, discovery, health) │
+│                                                 │
+│   "Gard A is at 10.0.1.5:9000"                │
+│   "Gard B is at 10.0.2.3:9000"                │
+│   "Gard C just joined at 10.0.3.1:9000"       │
+│   "Gard A hasn't responded in 30s"             │
+│                                                 │
+├─────────────────────────────────────────────────┤
+│ Leden (protocol, sessions, capabilities)        │
+│                                                 │
+│   Gard A ←──session──→ Gard B                  │
+│   Gard B ←──session──→ Gard C                  │
+│                                                 │
+├─────────────────────────────────────────────────┤
+│ Transport (TCP, QUIC, Unix socket)              │
+└─────────────────────────────────────────────────┘
 ```
 
-- **Leden** — moves bytes. No knowledge of gards.
-- **Allgard** — manages gards, routes messages through Leden.
-- **Raido** — unrelated. Application-specific scripting VM. A gard might host a Raido VM, but that's the application's choice.
+Allgard is DNS + service mesh. Leden is the protocol on the wire.
 
 ## Key Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Isolation | No shared memory between gards | Failure isolation. Distribution transparency. |
-| Communication | Message passing over Leden | Decoupled from transport. Same API local or remote. |
-| Granularity | Coarse — a gard is a domain, not an object | Actors are too fine-grained for game worlds, service boundaries. |
-| Supervision | Restart strategies per gard | Erlang got this right. |
-| Packaging | Separate crate (`allgard`) | Not every program needs domain orchestration. |
+| Scope | Registry, topology, discovery, health | Everything between "I have a protocol" and "I have a running system." |
+| Not process management | Delegate to OS/infra | Reinventing systemd is not the goal. |
+| Packaging | Separate crate (`allgard`) | Many Leden users won't need managed topology. |
+| Granularity | Coarse — gards are servers, not objects | Fine-grained actors don't need a registry. Server processes do. |
 
 ## Open Questions
 
-- **Gard definition syntax.** Declarative? Programmatic? Both?
-- **Message routing.** Direct addressing? Topics/channels? Broadcast?
-- **Supervision strategies.** One-for-one, one-for-all, rest-for-one? Custom?
-- **Hot migration.** Can a gard be serialized and moved to another machine? If so, what are the constraints?
-- **Backpressure.** Per-gard mailbox limits? What happens on overflow?
-
-Inter-gard communication (bootstrap, introduction, capability model) is handled by [Leden](../leden/).
+- **Registry implementation.** Central registry gard? Gossip protocol? Static config file? Probably all three for different scales.
+- **Topology definition.** Declarative manifest? Programmatic API? How do you describe "these 5 gards form a cluster, this one is standalone"?
+- **Health semantics.** What's the contract? Heartbeat interval? What does "unhealthy" mean — just report it, or trigger topology changes?
+- **Dynamic membership.** Gards joining and leaving at runtime. How does the registry propagate changes? Eventually consistent is fine, but what's the consistency window?
+- **Migration.** Can a gard's address change (move to a different machine) without breaking existing Leden sessions? Sturdy references help — reconnect and re-present credentials. But the registry needs to know the new address.

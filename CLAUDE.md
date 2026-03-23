@@ -266,8 +266,8 @@ Start with [CORE_DESIGN.md](specs/CORE_DESIGN.md). For specs: [specs/README.md](
 | Compiler architecture | IR layers, SSA pipeline, analysis framework, pass manager, CTFE, debug info | [architecture.md](specs/compiler/architecture.md) |
 | Code generation | MIR-based pipeline, Cranelift backend, runtime library | [codegen.md](specs/compiler/codegen.md) |
 | Raido | Independent deterministic scripting VM, 32.32 fixed-point, versioned serialization (lives in repo, not part of Rask) | [raido/](projects/raido/) |
-| Allgard | Orchestration of isolated domains (gards), supervision, location transparency | [allgard/](projects/allgard/) |
-| Leden | Standalone networking/IPC protocol and transport layer, separate crate | [leden/](projects/leden/) |
+| Allgard | Topology, registry, discovery, and health for networks of gards | [allgard/](projects/allgard/) |
+| Leden | Capability-based networking protocol — sessions, capabilities, object references | [leden/](projects/leden/) |
 | Midgard | Virtual world example — uses Raido, Leden, Allgard together | [midgard/](projects/midgard/) |
 
 ### Open
