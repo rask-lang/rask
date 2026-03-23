@@ -44,3 +44,5 @@ The name comes from the old Scandinavian shipping lanes — established routes b
 - **Multiplexing.** Multiple logical streams over one connection? Or one connection per stream?
 - **Flow control.** Credit-based or window-based?
 - **Reconnection.** Automatic reconnect with message replay? Or surface the failure?
+- **Session persistence.** Should sessions survive transport failures? A network blip shouldn't destroy application state — but the mechanics of re-attaching to a session after reconnect need working out.
+- **Promise pipelining.** Send a message to the result of a message that hasn't resolved yet. Eliminates round-trip latency for operation chains (3 round trips → 1). Requires first-class promise references as message targets. Proven by E/CapTP — worth considering at the transport level.

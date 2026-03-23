@@ -1,6 +1,6 @@
 # Object Capabilities for Cross-Domain Communication
 
-How domains talk to each other. The protocol layer that makes the multiverse work.
+How domains talk to each other. The protocol layer that makes Midgard work.
 
 ## Foundation
 
