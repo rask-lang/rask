@@ -1,8 +1,26 @@
 # Midgard
 
-Virtual world architecture. A concrete example of [Raido](../raido/), [Allgard](../allgard/), and [Leden](../leden/) working together.
+Virtual world architecture built on [Raido](../raido/), [Allgard](../allgard/), and [Leden](../leden/).
 
-Midgard is an application — it uses the infrastructure projects, it doesn't define them. For the federation model, see [Allgard](../allgard/README.md). For capabilities and protocol mapping, see [OCAP.md](OCAP.md).
+## Why
+
+MMOs are broken in three ways:
+
+1. **Only admins create.** Players consume content. They don't build worlds, write mechanics, or define how things work.
+2. **Hosting requires a corporation.** You can't run your own world. Someone else owns the servers, the rules, and your stuff.
+3. **Servers are islands.** Your character is trapped. Your items, your progress, your identity — locked to one operator.
+
+Midgard is the answer to all three. Anyone can host a world. Anyone can create within it. Worlds connect to each other without a central authority.
+
+## How It Works
+
+You spin up a **domain** — that's your world. You're sovereign over it. You write [Raido](../raido/) scripts that define how things work: crafting recipes, combat formulas, NPC behavior, terrain generation, whatever you want. That's your game.
+
+Players in your world use Raido too. They script NPCs, design items, write quest logic. Creation isn't admin-only — it's gameplay. Fuel limits and capability scoping keep it safe.
+
+A player walks to the edge of your world and steps into someone else's. Their character and inventory transfer via [Allgard](../allgard/)'s federation model over [Leden](../leden/)'s protocol. [Conservation laws](../allgard/CONSERVATION.md) ensure nothing gets duped, inflated, or lost in transit.
+
+That's it. The rest is details.
 
 ## What Midgard Adds
 
@@ -13,6 +31,8 @@ Game-specific concerns on top of the federation model:
 - **UGC sandboxing** — entity scripts, modding, NPC AI via Raido. Scripts get only the references the host hands them. Fuel-limited.
 - **Verifiable crafting** — crafting recipes, damage formulas, and economic transforms are Raido scripts. Cross-domain crafting is [verifiable](../allgard/README.md#verifiable-transforms) — the receiving domain re-executes the script to confirm the result.
 - **Cross-domain rate limiting** — Conservation Law 5 is per-domain. Coordinated abuse from multiple domains needs application-level policy.
+
+For deeper exploration of what's possible — AI agents, living worlds, player-run economies, portable NPCs — see [GAME_DESIGN.md](GAME_DESIGN.md).
 
 ## Domain Crossing
 
