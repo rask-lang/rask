@@ -90,6 +90,7 @@ How does the first capability exchange happen between domains that have never me
 | Peer observation | See other domains in the network (gossip accelerator) |
 | Catalog observation | See what asset types and services the domain offers |
 | Transfer inbox | Submit small cross-domain transfers for verification |
+| Supply audit | Verify the domain's self-reported minting and supply (optional) |
 
 That's it. No write access to hosted objects, no minting authority, no delegation. A stranger can look and transact. Everything else is earned through bilateral reputation.
 
@@ -126,8 +127,31 @@ What the protocol provides:
 - **Asset type registration** — domains publish what they mint and its properties (via catalog observation from bootstrapping)
 - **Bilateral exchange** — two domains agree on rates for a specific trade
 - **Conservation Law 1** — every domain's supply is auditable (`total_minted - total_burned = total_existing`)
+- **Supply audit** — verifiable supply reports, cross-checked by gossip (see below)
 
 Convention handles the rest.
+
+### Supply Audit
+
+A domain that wants others to trust its currency offers a **supply audit capability** through its greeter. The audit returns per-asset-type totals: minted, burned, circulating. Self-reported — the domain controls its own ledger.
+
+Self-reported numbers alone are just claims. Three mechanisms make them trustworthy:
+
+**Bilateral verification.** Every cross-domain transfer already carries a Proof (Conservation Law 4). Domain B accumulates a partial view of Domain A's economy — every object that crossed the boundary, every mint and burn B witnessed firsthand. B can check A's self-reported numbers against its own records. If A claims 1000 total minted but B alone has received 1200 through verified transfers, A is lying. No new protocol needed — this falls out of existing Proof mechanics.
+
+**Audit gossip.** Domains share their bilateral observations with each other. B tells C: "I've verified 500 units from A." C says: "I've verified 600." D says: "I've verified 300." Together they've witnessed 1400 — if A claims 1000 total supply, the stories don't add up.
+
+This is village reputation. Nobody has complete information. Everyone has overlapping partial information. Liars get caught because the numbers from independent observers don't reconcile. The more domains that trade with you, the harder it is to inflate undetected.
+
+Audit gossip rides on existing Leden gossip infrastructure. It's not a new protocol — it's a new message type in the peer gossip exchange. Domains that care about supply integrity participate. Domains that don't, ignore it.
+
+**Proof chain inclusion.** The audit includes a Proof chain — the causal ordering mechanism from Law 4 applied to mint and burn events. A verifying domain can't check the complete chain (it doesn't have the issuer's full history), but it can verify that the events it witnessed are included. If a transfer B received from A doesn't appear in A's published audit chain, the audit is fraudulent.
+
+### What This Can't Do
+
+Prevent fraud. A sovereign domain can lie about internal activity that never crosses a boundary. If A mints 10000 units and only circulates 100 externally, no one can see the other 9900.
+
+That's fine. It's the same limitation real economies have. The point isn't omniscience — it's that fraud at scale is detectable. A domain running a major currency has many trading partners. Each one holds a piece of the picture. The gossip network assembles those pieces. Discrepancies surface.
 
 ## Cross-Domain Transfer Routing
 
