@@ -88,12 +88,12 @@ A Transform hasn't happened yet. It's a request: "I want to do this to this obje
 
 | Operation | Description |
 |-----------|------------|
-| `create` | Bring a new Object into existence |
+| `create` | Bring a new Object into existence. Must be backed by a Raido script ([verifiable minting](CONSERVATION.md#verifiable-minting)). |
 | `mutate` | Change an Object's content |
 | `transfer` | Move an Object to a new Owner |
 | `split` | Divide an Object into parts (fungible assets) |
 | `merge` | Combine Objects into one (fungible assets) |
-| `destroy` | Remove an Object from existence (burning) |
+| `destroy` | Remove an Object from existence (burning). Must be backed by a Raido script ([verifiable minting](CONSERVATION.md#verifiable-minting)). |
 
 ### Promise Pipelining
 
@@ -126,9 +126,11 @@ Proofs are the trust-bootstrapping mechanism. When two Domains that have never i
 
 ### Verifiable Proofs
 
-For Transforms backed by [Raido](../raido/) scripts, a Proof can include the script hash, inputs, and outputs. The receiving Domain fetches the script and re-executes — determinism guarantees identical results. This turns a trust-based Proof into a mechanically verifiable one.
+For Transforms backed by [Raido](../raido/) scripts, a Proof includes the script hash, inputs, and outputs. The receiving Domain fetches the script and re-executes — determinism guarantees identical results. This turns a trust-based Proof into a mechanically verifiable one.
 
-Verifiable Proofs are an optional extension. Both Domains must negotiate "verifiable-transform" as a Leden capability. See [Verifiable Transforms](README.md#verifiable-transforms).
+**Required for mint/burn.** Every `create` and `destroy` Transform must include a verifiable Proof. This is not negotiable — it's how [Conservation Law 1](CONSERVATION.md#verifiable-minting) is structurally enforced. A domain that can't produce a verifiable minting Proof can't mint.
+
+**Optional for other transforms.** General transforms (transfer, mutate, split, merge) can use trust-based Proofs. Domains that want stronger guarantees negotiate "verifiable-transform" as a Leden capability. See [Verifiable Transforms](README.md#verifiable-transforms).
 
 ## Grant
 

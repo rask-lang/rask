@@ -32,13 +32,14 @@ The name is Old Norse: *all* + *garðr*. All the gards, together.
 │  Allgard                         │  Federation model: primitives, conservation laws
 ├──────────────────────────────────┤
 │  Leden                           │  Wire protocol: capabilities, sessions, gossip
+├──────────────────────────────────┤
+│  Raido                           │  Required for mint/burn, optional for general transforms
 └──────────────────────────────────┘
-        ↕ Raido (optional extension: verifiable transforms)
 ```
 
-Applications implement domain logic on top of Allgard's model. Allgard's model rides on Leden's protocol. Each layer is independent — you could use Leden without Allgard, or define a different federation model on top of Leden.
+Applications implement domain logic on top of Allgard's model. Allgard's model rides on Leden's protocol. Raido provides the verification layer — required for minting and burning ([Conservation Law 1](CONSERVATION.md#verifiable-minting)), optional for general transforms.
 
-[Raido](../raido/) is a cross-cutting extension, not a layer. Domains that both support Raido can verify each other's transform logic mechanically instead of relying on bilateral trust alone. See [Verifiable Transforms](#verifiable-transforms).
+Each layer above Raido is independent — you could use Leden without Allgard, or define a different federation model on top of Leden. But every Allgard domain must run Raido for minting verification. See [Verifiable Transforms](#verifiable-transforms).
 
 ## How a Gard Joins
 
@@ -138,13 +139,13 @@ Convention handles the rest.
 
 A domain that wants others to trust its currency offers a **supply audit capability** through its greeter. The audit returns per-asset-type totals: minted, burned, circulating. Self-reported — the domain controls its own ledger.
 
-Self-reported numbers alone are just claims. Three mechanisms make them trustworthy:
+Self-reported totals alone are just claims. But with [verifiable minting](CONSERVATION.md#verifiable-minting), the supply audit becomes mechanical:
+
+**Verifiable minting scripts.** Every mint and burn is a Raido script. The audit includes not just totals but the content-addressed scripts that produced them. A verifying domain fetches the scripts, re-executes with the declared inputs, and checks the outputs against the claimed totals. If the math doesn't work, the audit is fraudulent. No trust required.
 
 **Bilateral verification.** Every cross-domain transfer already carries a Proof (Conservation Law 4). Domain B accumulates a partial view of Domain A's economy — every object that crossed the boundary, every mint and burn B witnessed firsthand. B can check A's self-reported numbers against its own records. If A claims 1000 total minted but B alone has received 1200 through verified transfers, A is lying. No new protocol needed — this falls out of existing Proof mechanics.
 
 **Audit gossip.** Domains share their bilateral observations with each other. B tells C: "I've verified 500 units from A." C says: "I've verified 600." D says: "I've verified 300." Together they've witnessed 1400 — if A claims 1000 total supply, the stories don't add up.
-
-This is village reputation. Nobody has complete information. Everyone has overlapping partial information. Liars get caught because the numbers from independent observers don't reconcile. The more domains that trade with you, the harder it is to inflate undetected.
 
 Audit gossip rides on existing Leden gossip infrastructure. It's not a new protocol — it's a new message type in the peer gossip exchange. Domains that care about supply integrity participate. Domains that don't, ignore it.
 
@@ -152,9 +153,7 @@ Audit gossip rides on existing Leden gossip infrastructure. It's not a new proto
 
 ### What This Can't Do
 
-Prevent fraud. A sovereign domain can lie about internal activity that never crosses a boundary. If A mints 10000 units and only circulates 100 externally, no one can see the other 9900.
-
-That's fine. It's the same limitation real economies have. The point isn't omniscience — it's that fraud at scale is detectable. A domain running a major currency has many trading partners. Each one holds a piece of the picture. The gossip network assembles those pieces. Discrepancies surface.
+See internal mutations. A domain that mutates objects internally without exporting them is opaque. But internal mutations don't change supply (minting is verifiable) and don't affect other domains. The blind spot is harmless.
 
 ## Cross-Domain Transfer Routing
 
@@ -170,11 +169,7 @@ No routing protocol. No clearinghouse. If you need to reach a distant domain, yo
 
 ## Verifiable Transforms
 
-Conservation Law 4 requires every Transform to carry a Proof. For simple operations (transfer ownership, burn), the Proof is a signature and a causal link. The receiving domain checks the signature, verifies the chain, done.
-
-But some Transforms have *logic* — crafting recipes, damage calculations, economic formulas. Today those are trust-based: Domain A says "I ran this transform and here's the result." Domain B checks the Proof structure but can't independently verify the computation. B trusts A or doesn't.
-
-[Raido](../raido/) changes this. A verifiable transform includes:
+[Raido](../raido/) provides mechanical verification for transforms. A verifiable transform includes:
 
 1. A Raido script (content-addressed bytecode chunk)
 2. The inputs to the script
@@ -182,23 +177,49 @@ But some Transforms have *logic* — crafting recipes, damage calculations, econ
 
 The receiving domain fetches the script (Leden content store), re-executes with the same inputs. Raido's determinism guarantees identical output. If the result matches, the transform is mechanically verified. If not, the Proof is fraudulent.
 
-### What This Gives You
+### Required: Verifiable Minting
 
-- **Law 4 (Causal Ordering)** goes from "check the receipt" to "re-run the computation." Proofs for scripted transforms become independently verifiable.
-- **Bilateral trust** becomes **bilateral verification** for any transform backed by a Raido script.
-- **Supply audits** can include verifiable minting/burning logic — not just "I claim these totals" but "here's the script that computes them, run it yourself."
+Every `create` and `destroy` Transform must be backed by a Raido script. This is the structural enforcement mechanism for [Conservation Law 1](CONSERVATION.md#verifiable-minting).
 
-### What This Doesn't Change
+A domain's minting logic is a content-addressed Raido script. Any trading partner can fetch it and re-execute. This means:
 
-- Simple transforms (transfer, burn) don't need Raido. Signature + causal link is sufficient.
-- Raido is an optional extension. Domains negotiate "verifiable-transform" as a Leden capability. Domains that don't support it fall back to trust-based Proofs.
-- Domain sovereignty is preserved. A domain can still run private logic internally. Verifiable transforms only apply to cross-domain Proofs where both sides opt in.
+- **Supply audits are mechanical.** Not "I claim these totals" but "here's the script that produces them, run it yourself."
+- **Hidden inflation is impossible.** You can't mint without a script, and the script is verifiable.
+- **Sovereignty is preserved.** You write whatever minting logic you want. You just can't hide it.
+
+A domain that runs only internal objects and never exports anything doesn't need trading partners to verify its minting. But the moment it tries to export value, the receiving domain will demand the minting script. No script, no acceptance.
+
+### Optional: Verifiable General Transforms
+
+For transforms beyond minting — crafting recipes, damage calculations, economic formulas — Raido verification is optional. Domains negotiate "verifiable-transform" as a Leden capability.
+
+Without it: Domain A says "I ran this transform and here's the result." Domain B checks the Proof structure (signature, causal link) but trusts A on the computation. This is fine for simple operations like transfer and split.
+
+With it: Domain B re-executes the computation. Bilateral trust becomes bilateral verification. Domains that support verifiable transforms can offer stronger guarantees, which matters for reputation.
 
 ### Capability Negotiation
 
 Two domains agree to verifiable transforms during Leden capability negotiation. They agree on a Raido chunk format version. From then on, cross-domain Proofs for scripted transforms include the script hash, inputs, and outputs. The receiving domain re-executes to verify.
 
-This is the same pattern as observation in Leden — negotiated, optional, composable. No domain is forced to support it. But domains that do can offer stronger trust guarantees, which matters for reputation.
+This is the same pattern as observation in Leden — negotiated, optional, composable. No domain is forced to support general verification. But every domain must support verifiable minting — that's not negotiable.
+
+## Prior Art and Differentiation
+
+Allgard draws from existing work. Here's what I took, what I didn't, and why.
+
+| System | What Allgard shares | Where Allgard diverges |
+|--------|--------------------|-----------------------|
+| **Blockchains** (Ethereum, Solana) | Conservation of supply, append-only history, auditable state transitions | No global ledger, no consensus mechanism. Trust is bilateral, not majority-vote. No gas fees — rate limits instead. Domains are sovereign; there's no "the chain." |
+| **CRDTs** (Automerge, Yjs) | Distributed state without central coordination | CRDTs solve concurrent mutation via merge semantics. Allgard prevents concurrent mutation entirely — single owner, atomic transfer (Law 2). No merge conflicts because there's nothing to merge. CRDTs are the right tool when you need shared mutable state. Allgard says: don't share mutable state. |
+| **Object capability systems** (E/CapTP, Spritely, Cap'n Proto) | Capability-based authority, fine-grained delegation, revocation | Allgard uses capabilities (via [Leden](../leden/)) but adds conservation laws on top. Pure ocap systems don't constrain *what* capabilities can do economically — you can mint infinite tokens if you hold the minting cap. Allgard's laws constrain the physics. Capabilities control *who can act*; conservation laws control *what actions are valid*. |
+| **Federation protocols** (ActivityPub, Matrix) | Decentralized, no central authority, domain sovereignty | ActivityPub federates *content* (posts, follows). Allgard federates *objects with ownership and value*. The conservation laws have no equivalent in social federation — there's no "supply" of posts to conserve. Matrix is closer (federated state), but uses eventual consistency and state resolution. Allgard uses single-owner semantics to avoid state conflicts entirely. |
+| **Game economies** (EVE Online, WoW) | Conservation of supply, value sinks, anti-inflation mechanics | These are single-domain systems with a central authority. Allgard is multi-domain with no authority. The conservation laws are what a single game server enforces internally, generalized to work across sovereign domains that don't trust each other. |
+
+### The Core Difference
+
+Most distributed systems choose between **consistency** (blockchains — everyone agrees on one truth) and **availability** (CRDTs — everyone can write, merge later). Allgard sidesteps the tradeoff by restricting the data model: single owner per object, atomic transfers, no shared mutable state. This makes consistency trivial (only one writer) and availability a domain-local concern (your domain is always available to you).
+
+The cost: no shared mutable state. You can't have two domains simultaneously editing the same object. If you need that, use Grants to give temporary scoped access, and accept that the Grant holder operates under the owning domain's authority. This is a real limitation, and it's intentional — shared mutable state across trust boundaries is where distributed systems complexity explodes.
 
 ## Open Questions
 
