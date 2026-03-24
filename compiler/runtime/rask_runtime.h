@@ -161,6 +161,32 @@ void        rask_bool_to_string(RaskStr *out, int64_t val);
 void        rask_f64_to_string(RaskStr *out, double val);
 void        rask_char_to_string(RaskStr *out, int32_t codepoint);
 
+// ─── Path ────────────────────────────────────────────────────
+// Filesystem path operations. Path is stored as a plain RaskStr.
+// Option-returning methods return NULL (None) or pointer to
+// thread-local RaskStr (Some). Codegen copies immediately.
+
+// Constructors / conversions (out-param)
+void    rask_path_new(RaskStr *out, const RaskStr *s);
+void    rask_path_to_string(RaskStr *out, const RaskStr *s);
+void    rask_path_join(RaskStr *out, const RaskStr *self, const RaskStr *other);
+void    rask_path_with_extension(RaskStr *out, const RaskStr *self, const RaskStr *ext);
+void    rask_path_with_file_name(RaskStr *out, const RaskStr *self, const RaskStr *name);
+
+// Option-returning (NULL→None, &buf→Some)
+int64_t rask_path_parent(int64_t path_ptr);
+int64_t rask_path_file_name(int64_t path_ptr);
+int64_t rask_path_extension(int64_t path_ptr);
+int64_t rask_path_stem(int64_t path_ptr);
+
+// Bool-returning
+int64_t rask_path_is_absolute(int64_t path_ptr);
+int64_t rask_path_is_relative(int64_t path_ptr);
+int64_t rask_path_has_extension(int64_t path_ptr);
+
+// Vec<string>-returning
+int64_t rask_path_components(int64_t path_ptr);
+
 // Char predicates — operate on Unicode codepoints (i32).
 int64_t rask_char_is_digit(int32_t c);
 int64_t rask_char_is_ascii(int32_t c);
@@ -331,6 +357,27 @@ int64_t rask_time_Instant_duration_since(int64_t self_ns, int64_t other_ns);
 
 int64_t rask_net_tcp_listen(const RaskStr *addr);
 int64_t rask_net_tcp_connect(const RaskStr *addr);
+int64_t rask_net_tcp_accept(int64_t listen_fd);
+void    rask_net_close(int64_t fd);
+int64_t rask_net_clone(int64_t fd);
+int64_t rask_net_read_all(int64_t fd, int64_t out_ptr);
+int64_t rask_net_write_all(int64_t fd, int64_t str_ptr);
+void    rask_net_remote_addr(RaskStr *out, int64_t fd);
+
+// ─── Filesystem metadata ────────────────────────────────────
+int64_t rask_fs_metadata(int64_t path_ptr);
+int64_t rask_metadata_size(int64_t meta_ptr);
+int64_t rask_metadata_accessed(int64_t meta_ptr);
+int64_t rask_metadata_modified(int64_t meta_ptr);
+
+// ─── Args parsing ───────────────────────────────────────────
+int64_t rask_args_parse(void);
+int64_t rask_args_flag(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
+int64_t rask_args_option(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr);
+void    rask_args_option_or(RaskStr *out, int64_t args_ptr, int64_t long_ptr,
+                            int64_t short_ptr, int64_t default_ptr);
+int64_t rask_args_positional(int64_t args_ptr);
+int64_t rask_args_program(int64_t args_ptr);
 
 // Response reading (reads until EOF for Connection: close pattern).
 void    rask_io_read_until_close(RaskStr *out, int64_t fd, int64_t max_len);

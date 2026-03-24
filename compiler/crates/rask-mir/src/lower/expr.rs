@@ -997,27 +997,39 @@ impl<'a> MirLowerer<'a> {
                     return Ok((MirOperand::Local(result_local), MirType::String));
                 }
 
-                // to_string(): route to type-specific runtime function
+                // to_string(): route to type-specific runtime function.
+                // Types with their own to_string in stdlib dispatch (Path, etc.)
+                // fall through to normal method dispatch.
                 if method == "to_string" && args.is_empty() {
-                    let func_name = match &obj_ty {
-                        MirType::String => {
-                            // String.to_string() is identity
-                            return Ok((obj_op, MirType::String));
-                        }
-                        MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8
-                        | MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "i64_to_string",
-                        MirType::F64 | MirType::F32 => "f64_to_string",
-                        MirType::Bool => "bool_to_string",
-                        MirType::Char => "char_to_string",
-                        _ => "i64_to_string", // fallback
-                    };
-                    let result_local = self.builder.alloc_temp(MirType::String);
-                    self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
-                        dst: Some(result_local),
-                        func: FunctionRef::internal(func_name.to_string()),
-                        args: vec![obj_op],
-                    }));
-                    return Ok((MirOperand::Local(result_local), MirType::String));
+                    // Check if the type checker knows this is a type with its own to_string
+                    let has_own_to_string = self.ctx.lookup_raw_type(object.id)
+                        .and_then(|ty| super::MirContext::type_prefix(ty, self.ctx.type_names))
+                        .map(|prefix| {
+                            let qualified = format!("{}_to_string", prefix);
+                            rask_stdlib::mir_metadata::lookup(&qualified).is_some()
+                        })
+                        .unwrap_or(false);
+
+                    if !has_own_to_string {
+                        let func_name = match &obj_ty {
+                            MirType::String => {
+                                return Ok((obj_op, MirType::String));
+                            }
+                            MirType::I64 | MirType::I32 | MirType::I16 | MirType::I8
+                            | MirType::U64 | MirType::U32 | MirType::U16 | MirType::U8 => "i64_to_string",
+                            MirType::F64 | MirType::F32 => "f64_to_string",
+                            MirType::Bool => "bool_to_string",
+                            MirType::Char => "char_to_string",
+                            _ => "i64_to_string",
+                        };
+                        let result_local = self.builder.alloc_temp(MirType::String);
+                        self.builder.push_stmt(MirStmt::dummy(MirStmtKind::Call {
+                            dst: Some(result_local),
+                            func: FunctionRef::internal(func_name.to_string()),
+                            args: vec![obj_op],
+                        }));
+                        return Ok((MirOperand::Local(result_local), MirType::String));
+                    }
                 }
 
                 // map_err: inline expansion — branch on tag, transform error payload
@@ -1214,15 +1226,27 @@ impl<'a> MirLowerer<'a> {
                         // as method calls are effectively Map-only in practice)
                         "values" | "keys" | "contains_key"
                         | "get" | "insert" | "remove" => Some("Map".to_string()),
+                        // Path (unique to Path — Vec/Map/string don't have these)
+                        "parent" | "file_name" | "extension" | "stem"
+                        | "components" | "is_absolute" | "is_relative"
+                        | "has_extension" | "with_extension" | "with_file_name"
+                            => Some("Path".to_string()),
                         // Time
                         "now" | "elapsed" | "duration_since" => Some("Instant".to_string()),
                         "as_secs_f64" | "as_secs_f32" | "as_secs" | "as_millis" | "as_micros" | "as_nanos"
                         | "seconds" | "millis" | "micros" | "nanos" | "from_secs_f64" => Some("Duration".to_string()),
                         "sleep" => Some("time".to_string()),
                         // Net/HTTP
-                        "read_http_request" | "write_http_response" => Some("TcpConnection".to_string()),
+                        "read_http_request" | "write_http_response"
+                        | "read_all" | "write_all" | "remote_addr"
+                            => Some("TcpConnection".to_string()),
                         "accept" => Some("TcpListener".to_string()),
                         "respond" => Some("Responder".to_string()),
+                        // Metadata
+                        "size" | "accessed" | "modified" => Some("Metadata".to_string()),
+                        // Args
+                        "flag" | "option" | "option_or" | "positional" | "program"
+                            => Some("Args".to_string()),
                         // TaskHandle/ThreadHandle
                         "cancel" | "detach" => Some("TaskHandle".to_string()),
                         _ => None,

@@ -131,7 +131,7 @@ pub fn type_size_align(ty: &Type, cache: &LayoutCache) -> (u32, u32) {
         }
         Type::UnresolvedNamed(name) => {
             match name.as_str() {
-                "string" => (16, 8),
+                "string" | "Path" => (16, 8),
                 "bool" => (1, 1),
                 "i8" | "u8" => (1, 1),
                 "i16" | "u16" => (2, 2),

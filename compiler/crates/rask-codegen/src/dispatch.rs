@@ -481,6 +481,20 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Stdlib module calls ─────────────────────────────────
         StdlibEntry::simple("cli_args", "rask_cli_args", &[], Some(types::I64), false),
+        StdlibEntry::simple("cli_parse", "rask_args_parse", &[], Some(types::I64), false),
+        StdlibEntry::simple("Args_flag", "rask_args_flag", &[types::I64, types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "Args_option", c_name: "rask_args_option",
+            params: &[types::I64, types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry {
+            mir_name: "Args_option_or", c_name: "rask_args_option_or",
+            params: &[types::I64, types::I64, types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("Args_positional", "rask_args_positional", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Args_program", "rask_args_program", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("std_exit", "rask_exit", &[types::I64], None, false),
         StdlibEntry::simple("fs_read_lines", "rask_fs_read_lines", &[types::I64], Some(types::I64), false),
 
@@ -512,6 +526,12 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("fs_create_dir", "rask_fs_create_dir", &[types::I64], None, false),
         StdlibEntry::simple("fs_create_dir_all", "rask_fs_create_dir_all", &[types::I64], None, false),
         StdlibEntry::simple("fs_append_file", "rask_fs_append_file", &[types::I64, types::I64], None, false),
+        StdlibEntry::simple("fs_metadata", "rask_fs_metadata", &[types::I64], Some(types::I64), false),
+
+        // ── Metadata methods ────────────────────────────────────────
+        StdlibEntry::simple("Metadata_size", "rask_metadata_size", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Metadata_accessed", "rask_metadata_accessed", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Metadata_modified", "rask_metadata_modified", &[types::I64], Some(types::I64), false),
 
         // ── Time module ─────────────────────────────────────────────
         StdlibEntry::simple("Instant_now", "rask_time_Instant_now", &[], Some(types::I64), false),
@@ -552,9 +572,25 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
 
         // ── Net module ──────────────────────────────────────────────
         StdlibEntry::simple("net_tcp_listen", "rask_net_tcp_listen", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("net_tcp_connect", "rask_net_tcp_connect", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpListener_accept", "rask_net_tcp_accept", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpListener_close", "rask_net_close", &[types::I64], None, false),
+        StdlibEntry::simple("TcpListener_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "TcpConnection_read_all", c_name: "rask_net_read_all",
+            params: &[types::I64, types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::AppendOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry::simple("TcpConnection_write_all", "rask_net_write_all", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry {
+            mir_name: "TcpConnection_remote_addr", c_name: "rask_net_remote_addr",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
         StdlibEntry::simple("TcpConnection_read_http_request", "rask_net_read_http_request", &[types::I64], Some(types::I64), false),
         StdlibEntry::simple("TcpConnection_write_http_response", "rask_net_write_http_response", &[types::I64, types::I64], Some(types::I64), false),
+        StdlibEntry::simple("TcpConnection_close", "rask_net_close", &[types::I64], None, false),
+        StdlibEntry::simple("TcpConnection_clone", "rask_net_clone", &[types::I64], Some(types::I64), false),
 
         // ── JSON module ─────────────────────────────────────────────
         StdlibEntry {
@@ -731,6 +767,64 @@ pub fn stdlib_entries() -> Vec<StdlibEntry> {
         StdlibEntry::simple("char_to_lowercase", "rask_char_to_lowercase", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_len_utf8", "rask_char_len_utf8", &[types::I32], Some(types::I64), false),
         StdlibEntry::simple("char_eq", "rask_char_eq", &[types::I32, types::I32], Some(types::I64), false),
+
+        // ── Path operations ──────────────────────────────────
+        // Path = RaskStr. Constructors/conversions use StringOutParam.
+        // Option-returning methods return NULL (None) or &thread_local (Some).
+        StdlibEntry {
+            mir_name: "Path_new", c_name: "rask_path_new",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_from", c_name: "rask_path_new",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_to_string", c_name: "rask_path_to_string",
+            params: &[types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_join", c_name: "rask_path_join",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_with_extension", c_name: "rask_path_with_extension",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_with_file_name", c_name: "rask_path_with_file_name",
+            params: &[types::I64, types::I64, types::I64], ret_ty: None, can_panic: false,
+            arg_adapt: ArgAdapt::StringOutParam, ret_adapt: RetAdapt::FromArgAdapt,
+        },
+        StdlibEntry {
+            mir_name: "Path_parent", c_name: "rask_path_parent",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry {
+            mir_name: "Path_file_name", c_name: "rask_path_file_name",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry {
+            mir_name: "Path_extension", c_name: "rask_path_extension",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry {
+            mir_name: "Path_stem", c_name: "rask_path_stem",
+            params: &[types::I64], ret_ty: Some(types::I64), can_panic: false,
+            arg_adapt: ArgAdapt::None, ret_adapt: RetAdapt::DerefOption,
+        },
+        StdlibEntry::simple("Path_is_absolute", "rask_path_is_absolute", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Path_is_relative", "rask_path_is_relative", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Path_has_extension", "rask_path_has_extension", &[types::I64], Some(types::I64), false),
+        StdlibEntry::simple("Path_components", "rask_path_components", &[types::I64], Some(types::I64), false),
 
         // ── Raw pointer operations ────────────────────────────
         StdlibEntry::simple("RawPtr_add", "rask_ptr_add", &[types::I64, types::I64], Some(types::I64), false),

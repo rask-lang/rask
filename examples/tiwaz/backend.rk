@@ -15,6 +15,6 @@ extend BackendPool {
             idx = (idx + 1) % self.backends.len()
             return backend
         }
-        return Err(ProxyError.UpstreamUnreachable())
+        return Err(ProxyError.UpstreamUnreachable)
     }
 }

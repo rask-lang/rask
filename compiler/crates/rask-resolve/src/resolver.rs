@@ -209,8 +209,10 @@ impl Resolver {
                 "Request", "Response", "Headers",
                 "HttpServer", "Responder", "HttpClient",
             ],
-            BuiltinModuleKind::Fs => &["File"],
+            BuiltinModuleKind::Fs => &["File", "Metadata"],
             BuiltinModuleKind::Random => &["Rng"],
+            BuiltinModuleKind::Path => &["Path"],
+            BuiltinModuleKind::Cli => &["Args"],
             _ => &[],
         };
 
@@ -326,6 +328,9 @@ impl Resolver {
         let is_struct = matches!((module, symbol),
             ("net", "TcpListener" | "TcpConnection")
             | ("http", "Request" | "Response" | "Headers" | "HttpServer" | "Responder" | "HttpClient")
+            | ("path", "Path")
+            | ("fs", "Metadata")
+            | ("cli", "Args")
         );
         if is_struct {
             return SymbolKind::Struct { fields: vec![] };

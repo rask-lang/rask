@@ -53,6 +53,23 @@ impl Interpreter {
         }
     }
 
+    /// Register companion types for glob imports (`import module.*`).
+    fn register_glob_companions(env: &mut crate::env::Environment, module: ModuleKind) {
+        let types: &[&str] = match module {
+            ModuleKind::Http => &["Request", "Response", "Method", "Headers", "HttpServer", "Responder", "HttpClient"],
+            ModuleKind::Time => &["Instant", "Duration"],
+            ModuleKind::Path => &["Path"],
+            ModuleKind::Fs => &["File", "Metadata"],
+            ModuleKind::Cli => &["Args"],
+            ModuleKind::Net => &["TcpListener", "TcpConnection"],
+            ModuleKind::Random => &["Rng"],
+            _ => &[],
+        };
+        for name in types {
+            env.define(name.to_string(), Value::Type(name.to_string()));
+        }
+    }
+
     pub(super) fn register_declarations(&mut self, decls: &[Decl]) -> Result<RegisteredProgram, RuntimeError> {
         let mut entry_fn: Option<FnDecl> = None;
         let mut imports: Vec<(String, ModuleKind)> = Vec::new();
@@ -115,11 +132,12 @@ impl Interpreter {
                         };
 
                         if let Some(kind) = module_kind {
-                            // Handle two cases:
-                            // 1. `import module` -> bind module itself
-                            // 2. `import module.Member` -> bind specific member
-                            if import.path.len() == 1 {
-                                // Whole module import
+                            if import.path.len() == 1 && import.is_glob {
+                                // Glob import: `import module.*` — inject companions unqualified
+                                imports.push((module_name.clone(), kind));
+                                Self::register_glob_companions(&mut self.env, kind);
+                            } else if import.path.len() == 1 {
+                                // Qualified import: `import module`
                                 let alias = import.alias.clone().unwrap_or_else(|| module_name.clone());
                                 imports.push((alias, kind));
                             } else if import.path.len() == 2 {
@@ -315,21 +333,6 @@ impl Interpreter {
 
         for (name, kind) in imports {
             self.env.define(name.clone(), Value::Module(kind));
-            // Register exported types for modules that define them
-            match kind {
-                ModuleKind::Http => {
-                    self.env.define("Request".to_string(), Value::Type("Request".to_string()));
-                    self.env.define("Response".to_string(), Value::Type("Response".to_string()));
-                    self.env.define("Method".to_string(), Value::Type("Method".to_string()));
-                    self.env.define("Headers".to_string(), Value::Type("Headers".to_string()));
-                }
-                ModuleKind::Time => {
-                    // time module exports Instant and Duration
-                    self.env.define("Instant".to_string(), Value::Type("Instant".to_string()));
-                    self.env.define("Duration".to_string(), Value::Type("Duration".to_string()));
-                }
-                _ => {}
-            }
         }
 
         // Evaluate top-level const declarations after builtins are registered

@@ -11,7 +11,7 @@ extend ProxyError {
             ProxyError.UpstreamUnreachable => HttpError.InternalServerError("upstream unreachable".to_string())
             ProxyError.UpstreamTimeout => HttpError.InternalServerError("upstream timeout".to_string())
             ProxyError.BadResponse => HttpError.InternalServerError("bad response from upstream".to_string())
-            ProxyError.NoMatchingRoute => HttpError.NotFound()
+            ProxyError.NoMatchingRoute => HttpError.NotFound
         }
     }
 }

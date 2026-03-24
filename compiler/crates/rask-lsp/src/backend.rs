@@ -8,10 +8,12 @@ use std::sync::RwLock;
 use tower_lsp::lsp_types::*;
 use tower_lsp::Client;
 
-use rask_ast::decl::Decl;
+use rask_ast::decl::{Decl, DeclKind};
+use rask_ast::Span;
 use rask_diagnostics::ToDiagnostic;
 use rask_lexer::Lexer;
 use rask_parser::Parser;
+use rask_resolve::PackageRegistry;
 use rask_types::TypedProgram;
 
 use crate::convert::{byte_offset_to_position, to_lsp_diagnostic};
@@ -116,26 +118,66 @@ impl Backend {
         // Desugar operators
         rask_desugar::desugar(&mut parse_result.decls);
 
-        // Load sibling declarations from the same package (multi-file support)
-        let (sibling_decls, sibling_decl_names) = load_sibling_decls(uri);
-        if !sibling_decls.is_empty() {
-            parse_result.decls.extend(sibling_decls);
-        }
+        // Record current file's decl span ranges for diagnostic filtering.
+        let current_file_spans: Vec<Span> = parse_result.decls.iter().map(|d| d.span).collect();
 
-        // Run name resolution (stdlib stubs skip builtin shadowing checks)
-        let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
-        let resolve_result = if is_stdlib {
-            rask_resolve::resolve_stdlib(&parse_result.decls)
+        // Detect package context and resolve accordingly.
+        let pkg_ctx = detect_package_context(uri);
+        let sibling_decl_names = if let Some(ref ctx) = pkg_ctx {
+            build_sibling_names(uri, ctx)
         } else {
-            rask_resolve::resolve(&parse_result.decls)
+            HashMap::new()
         };
-        let resolved = match resolve_result {
-            Ok(r) => r,
-            Err(errors) => {
-                for error in &errors {
-                    rask_diagnostics.push(error.to_diagnostic());
+
+        let is_stdlib = rask_stdlib::StubRegistry::is_stdlib_path(uri.path());
+        let resolved = if is_stdlib {
+            match rask_resolve::resolve_stdlib(&parse_result.decls) {
+                Ok(r) => r,
+                Err(errors) => {
+                    for error in &errors {
+                        rask_diagnostics.push(error.to_diagnostic());
+                    }
+                    return rask_diagnostics;
                 }
-                return rask_diagnostics;
+            }
+        } else if let Some(ref ctx) = pkg_ctx {
+            // Multi-file package: use sibling decls from the package registry but
+            // replace the current file's decls with our freshly parsed version
+            // (editor buffer may differ from disk).
+            let file_path = uri.to_file_path().unwrap_or_default();
+            let mut sibling_decls: Vec<Decl> = ctx.registry.get(ctx.root_id)
+                .map(|pkg| {
+                    pkg.files.iter()
+                        .filter(|f| f.path != file_path)
+                        .flat_map(|f| f.decls.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            rask_desugar::desugar(&mut sibling_decls);
+            parse_result.decls.extend(sibling_decls);
+
+            match rask_resolve::resolve_package(&parse_result.decls, &ctx.registry, ctx.root_id) {
+                Ok(r) => r,
+                Err(errors) => {
+                    for error in &errors {
+                        let diag = error.to_diagnostic();
+                        if is_current_file_diagnostic(&diag, &current_file_spans) {
+                            rask_diagnostics.push(diag);
+                        }
+                    }
+                    return rask_diagnostics;
+                }
+            }
+        } else {
+            // Single-file mode
+            match rask_resolve::resolve(&parse_result.decls) {
+                Ok(r) => r,
+                Err(errors) => {
+                    for error in &errors {
+                        rask_diagnostics.push(error.to_diagnostic());
+                    }
+                    return rask_diagnostics;
+                }
             }
         };
 
@@ -150,7 +192,10 @@ impl Backend {
             Ok(t) => t,
             Err(errors) => {
                 for error in &errors {
-                    rask_diagnostics.push(error.to_diagnostic());
+                    let diag = error.to_diagnostic();
+                    if is_current_file_diagnostic(&diag, &current_file_spans) {
+                        rask_diagnostics.push(diag);
+                    }
                 }
                 return rask_diagnostics;
             }
@@ -159,7 +204,10 @@ impl Backend {
         // Run ownership analysis
         let ownership_result = rask_ownership::check_ownership(&typed, &parse_result.decls);
         for error in &ownership_result.errors {
-            rask_diagnostics.push(error.to_diagnostic());
+            let diag = error.to_diagnostic();
+            if is_current_file_diagnostic(&diag, &current_file_spans) {
+                rask_diagnostics.push(diag);
+            }
         }
 
         // Build position index for fast lookups
@@ -183,78 +231,88 @@ impl Backend {
     }
 }
 
-/// Load declarations from sibling .rk files in the same package.
-/// Returns (merged decls, name→sibling file mapping for cross-file navigation).
-fn load_sibling_decls(uri: &Url) -> (Vec<Decl>, HashMap<String, SiblingFile>) {
+/// Package context discovered from the file system.
+struct PackageContext {
+    registry: PackageRegistry,
+    root_id: rask_resolve::PackageId,
+}
+
+/// Detect whether a URI belongs to a multi-file package.
+/// Walks up from the file looking for `build.rk`, then uses PackageRegistry::discover.
+fn detect_package_context(uri: &Url) -> Option<PackageContext> {
+    let file_path = uri.to_file_path().ok()?;
+    let dir = file_path.parent()?;
+
+    // Walk up looking for build.rk
+    let mut search_dir = dir.to_path_buf();
+    loop {
+        if search_dir.join("build.rk").is_file() {
+            let mut registry = PackageRegistry::new();
+            let root_id = registry.discover(&search_dir).ok()?;
+            return Some(PackageContext { registry, root_id });
+        }
+        if search_dir.join(".git").exists() {
+            return None;
+        }
+        match search_dir.parent() {
+            Some(parent) if parent != search_dir => {
+                search_dir = parent.to_path_buf();
+            }
+            _ => return None,
+        }
+    }
+}
+
+/// Build sibling declaration name mapping for cross-file navigation.
+fn build_sibling_names(uri: &Url, ctx: &PackageContext) -> HashMap<String, SiblingFile> {
     let file_path = match uri.to_file_path() {
         Ok(p) => p,
-        Err(_) => return (Vec::new(), HashMap::new()),
+        Err(_) => return HashMap::new(),
     };
-    let dir = match file_path.parent() {
-        Some(d) => d,
-        None => return (Vec::new(), HashMap::new()),
-    };
-
-    // Only load siblings if this is a package (has build.rk)
-    if !dir.join("build.rk").is_file() {
-        return (Vec::new(), HashMap::new());
-    }
-
-    let mut decls = Vec::new();
-    let mut sibling_decl_names: HashMap<String, SiblingFile> = HashMap::new();
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return (Vec::new(), HashMap::new()),
+    let pkg = match ctx.registry.get(ctx.root_id) {
+        Some(p) => p,
+        None => return HashMap::new(),
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
+    let mut names = HashMap::new();
+    for file in &pkg.files {
+        if file.path == file_path {
             continue;
         }
-        if path.extension().and_then(|e| e.to_str()) != Some("rk") {
-            continue;
-        }
-        // Skip the file being analyzed and build.rk
-        if path == file_path || path.file_name().and_then(|n| n.to_str()) == Some("build.rk") {
-            continue;
-        }
-
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-        let lex = Lexer::new(&source).tokenize();
-        if !lex.is_ok() {
-            continue;
-        }
-        let mut parse_result = Parser::new(lex.tokens).parse();
-        if parse_result.is_ok() {
-            rask_desugar::desugar(&mut parse_result.decls);
-
-            // Track top-level declaration names from this sibling file
-            use rask_ast::decl::DeclKind;
-            for decl in &parse_result.decls {
-                let name = match &decl.kind {
-                    DeclKind::Fn(f) => Some(f.name.clone()),
-                    DeclKind::Struct(s) => Some(s.name.clone()),
-                    DeclKind::Enum(e) => Some(e.name.clone()),
-                    DeclKind::Trait(t) => Some(t.name.clone()),
-                    DeclKind::Const(c) => Some(c.name.clone()),
-                    DeclKind::Union(u) => Some(u.name.clone()),
-                    _ => None,
-                };
-                if let Some(name) = name {
-                    sibling_decl_names.entry(name).or_insert_with(|| SiblingFile {
-                        path: path.clone(),
-                        source: source.clone(),
-                    });
-                }
+        for decl in &file.decls {
+            let name = match &decl.kind {
+                DeclKind::Fn(f) => Some(f.name.clone()),
+                DeclKind::Struct(s) => Some(s.name.clone()),
+                DeclKind::Enum(e) => Some(e.name.clone()),
+                DeclKind::Trait(t) => Some(t.name.clone()),
+                DeclKind::Const(c) => Some(c.name.clone()),
+                DeclKind::Union(u) => Some(u.name.clone()),
+                _ => None,
+            };
+            if let Some(name) = name {
+                names.entry(name).or_insert_with(|| SiblingFile {
+                    path: file.path.clone(),
+                    source: file.source.clone(),
+                });
             }
-
-            decls.extend(parse_result.decls);
         }
     }
+    names
+}
 
-    (decls, sibling_decl_names)
+/// Check if a diagnostic's primary span falls within one of the current file's decl spans.
+/// Sibling files are parsed independently (spans start from 0), so we use the current file's
+/// known decl ranges to filter out diagnostics that originated from sibling code.
+fn is_current_file_diagnostic(diag: &rask_diagnostics::Diagnostic, current_file_spans: &[Span]) -> bool {
+    let primary_span = match diag.primary_span() {
+        Some(s) => s,
+        None => return true, // No span — keep it
+    };
+    // If no decls were parsed from the current file, keep all diagnostics
+    if current_file_spans.is_empty() {
+        return true;
+    }
+    current_file_spans.iter().any(|decl_span| {
+        primary_span.start >= decl_span.start && primary_span.end <= decl_span.end
+    })
 }

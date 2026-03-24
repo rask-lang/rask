@@ -21,6 +21,7 @@ const PORTABLE_SOURCES: &[&str] = &[
     "bench.c",
     "test.c",
     "ptr.c",
+    "path.c",
 ];
 
 /// Sources that require pthreads (Linux, macOS — not Windows/bare-metal).

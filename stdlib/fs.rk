@@ -45,4 +45,21 @@ extend fs {
 
     /// List entries in a directory.
     public func list_dir(path: string) -> Vec<string> or IoError { }
+
+    /// Get metadata for a file or directory.
+    public func metadata(path: string) -> Metadata or IoError { }
+}
+
+/// File metadata: size, access time, modification time.
+public struct Metadata { }
+
+extend Metadata {
+    /// File size in bytes.
+    public func size(self) -> u64 { }
+
+    /// Last access time as Unix epoch seconds.
+    public func accessed(self) -> i64 { }
+
+    /// Last modification time as Unix epoch seconds.
+    public func modified(self) -> i64 { }
 }

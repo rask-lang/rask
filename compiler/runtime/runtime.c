@@ -700,6 +700,241 @@ void rask_net_close(int64_t fd) {
     if (fd >= 0) close((int)fd);
 }
 
+// Clone a socket fd via dup().
+int64_t rask_net_clone(int64_t fd) {
+    if (fd < 0) return -1;
+    return (int64_t)dup((int)fd);
+}
+
+// Read all available data from a TCP connection into a string.
+// Reads until EOF or error. Returns Result-encoded value:
+// >=0 = success (string written to out), <0 = error.
+int64_t rask_net_read_all(int64_t fd, int64_t out_ptr) {
+    RaskStr *out = (RaskStr *)(intptr_t)out_ptr;
+    char *buf = (char *)rask_alloc(65536);
+    int64_t total = 0;
+    int64_t cap = 65536;
+    for (;;) {
+        ssize_t n = read((int)fd, buf + total, (size_t)(cap - total));
+        if (n <= 0) break;
+        total += n;
+        if (total >= cap) {
+            cap *= 2;
+            buf = (char *)rask_realloc(buf, cap / 2, cap);
+        }
+    }
+    rask_string_from_bytes(out, buf, total);
+    rask_free(buf);
+    return 0;
+}
+
+// Write all data to a TCP connection. Returns 0 on success, -1 on error.
+int64_t rask_net_write_all(int64_t fd, int64_t str_ptr) {
+    const RaskStr *s = (const RaskStr *)(intptr_t)str_ptr;
+    const char *data = rask_string_ptr(s);
+    int64_t len = rask_string_len(s);
+    int64_t written = 0;
+    while (written < len) {
+        ssize_t n = write((int)fd, data + written, (size_t)(len - written));
+        if (n < 0) return -1;
+        written += n;
+    }
+    return 0;
+}
+
+// Get the remote address of a TCP connection as "ip:port" string.
+void rask_net_remote_addr(RaskStr *out, int64_t fd) {
+    struct sockaddr_in addr;
+    socklen_t addrlen = sizeof(addr);
+    if (getpeername((int)fd, (struct sockaddr *)&addr, &addrlen) < 0) {
+        rask_string_from(out, "unknown");
+        return;
+    }
+    char ip[INET_ADDRSTRLEN];
+    inet_ntop(AF_INET, &addr.sin_addr, ip, sizeof(ip));
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s:%d", ip, ntohs(addr.sin_port));
+    rask_string_from(out, buf);
+}
+
+// Get filesystem metadata for a path. Returns pointer to a
+// [size(8B), accessed(8B), modified(8B)] struct, or NULL on error.
+int64_t rask_fs_metadata(int64_t path_ptr) {
+    const RaskStr *p = (const RaskStr *)(intptr_t)path_ptr;
+    const char *path = rask_string_ptr(p);
+    int64_t len = rask_string_len(p);
+    char *cpath = (char *)rask_alloc(len + 1);
+    memcpy(cpath, path, (size_t)len);
+    cpath[len] = '\0';
+
+    struct stat st;
+    if (stat(cpath, &st) < 0) {
+        rask_free(cpath);
+        return 0;
+    }
+    rask_free(cpath);
+
+    int64_t *meta = (int64_t *)rask_alloc(24);
+    meta[0] = (int64_t)st.st_size;
+    meta[1] = (int64_t)st.st_atime;
+    meta[2] = (int64_t)st.st_mtime;
+    return (int64_t)(intptr_t)meta;
+}
+
+// Metadata field accessors — meta_ptr points to [size, accessed, modified].
+int64_t rask_metadata_size(int64_t meta_ptr) {
+    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
+    return meta ? meta[0] : 0;
+}
+
+int64_t rask_metadata_accessed(int64_t meta_ptr) {
+    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
+    return meta ? meta[1] : 0;
+}
+
+int64_t rask_metadata_modified(int64_t meta_ptr) {
+    int64_t *meta = (int64_t *)(intptr_t)meta_ptr;
+    return meta ? meta[2] : 0;
+}
+
+// ── Args parsing ───────────────────────────────────────────────
+// Parse raw CLI args into an Args struct:
+// [program(16B string), positional(8B Vec*), flags(8B Vec*), options(8B Map*)]
+// Total: 40 bytes at returned pointer.
+
+int64_t rask_args_parse(void) {
+    int64_t count = rask_args_count();
+
+    RaskStr *program = (RaskStr *)rask_alloc(16);
+    rask_string_new(program);
+    if (count > 0) {
+        const char *p = rask_args_get(0);
+        if (p) rask_string_from(program, p);
+    }
+
+    RaskVec *positional = rask_vec_new(16);
+    RaskVec *flags = rask_vec_new(16);
+    RaskMap *options = rask_map_new(16, 16);
+
+    int past_separator = 0;
+    for (int64_t i = 1; i < count; i++) {
+        const char *arg = rask_args_get(i);
+        if (!arg) continue;
+        size_t alen = strlen(arg);
+
+        if (past_separator) {
+            RaskStr s;
+            rask_string_from(&s, arg);
+            rask_vec_push(positional, &s);
+            continue;
+        }
+
+        if (alen == 2 && arg[0] == '-' && arg[1] == '-') {
+            past_separator = 1;
+            continue;
+        }
+
+        if (alen > 2 && arg[0] == '-' && arg[1] == '-') {
+            // --option=value or --flag
+            const char *eq = strchr(arg + 2, '=');
+            if (eq) {
+                RaskStr key, val;
+                rask_string_from_bytes(&key, arg, (int64_t)(eq - arg));
+                rask_string_from(&val, eq + 1);
+                rask_map_insert(options, &key, &val);
+            } else if (i + 1 < count && rask_args_get(i + 1)[0] != '-') {
+                RaskStr key, val;
+                rask_string_from(&key, arg);
+                rask_string_from(&val, rask_args_get(i + 1));
+                rask_map_insert(options, &key, &val);
+                i++;
+            } else {
+                RaskStr f;
+                rask_string_from(&f, arg);
+                rask_vec_push(flags, &f);
+            }
+        } else if (alen > 1 && arg[0] == '-') {
+            // -f or -o value
+            if (alen == 2 && i + 1 < count && rask_args_get(i + 1)[0] != '-') {
+                RaskStr key, val;
+                rask_string_from(&key, arg);
+                rask_string_from(&val, rask_args_get(i + 1));
+                rask_map_insert(options, &key, &val);
+                i++;
+            } else {
+                // Combined short flags: -vn → --v, --n
+                for (size_t j = 1; j < alen; j++) {
+                    char short_flag[3] = { '-', arg[j], '\0' };
+                    RaskStr f;
+                    rask_string_from(&f, short_flag);
+                    rask_vec_push(flags, &f);
+                }
+            }
+        } else {
+            RaskStr s;
+            rask_string_from(&s, arg);
+            rask_vec_push(positional, &s);
+        }
+    }
+
+    // Pack into a 40-byte struct: [program(16B), positional(8B), flags(8B), options(8B)]
+    char *result = (char *)rask_alloc(40);
+    memcpy(result, program, 16);
+    rask_free(program);
+    *(int64_t *)(result + 16) = (int64_t)(intptr_t)positional;
+    *(int64_t *)(result + 24) = (int64_t)(intptr_t)flags;
+    *(int64_t *)(result + 32) = (int64_t)(intptr_t)options;
+    return (int64_t)(intptr_t)result;
+}
+
+// Args method: flag(long, short) -> bool
+int64_t rask_args_flag(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr) {
+    char *a = (char *)(intptr_t)args_ptr;
+    RaskVec *flags = (RaskVec *)(intptr_t)*(int64_t *)(a + 24);
+    const RaskStr *lng = (const RaskStr *)(intptr_t)long_ptr;
+    const RaskStr *sht = (const RaskStr *)(intptr_t)short_ptr;
+    int64_t len = rask_vec_len(flags);
+    for (int64_t i = 0; i < len; i++) {
+        const RaskStr *f = (const RaskStr *)rask_vec_get(flags, i);
+        if (f && (rask_string_eq(f, lng) || rask_string_eq(f, sht))) return 1;
+    }
+    return 0;
+}
+
+// Args method: option(long, short) -> Option<string> (NULL = None, ptr = Some)
+int64_t rask_args_option(int64_t args_ptr, int64_t long_ptr, int64_t short_ptr) {
+    char *a = (char *)(intptr_t)args_ptr;
+    RaskMap *opts = (RaskMap *)(intptr_t)*(int64_t *)(a + 32);
+    void *val = rask_map_get(opts, (const void *)(intptr_t)long_ptr);
+    if (val) return (int64_t)(intptr_t)val;
+    val = rask_map_get(opts, (const void *)(intptr_t)short_ptr);
+    return (int64_t)(intptr_t)val;
+}
+
+// Args method: option_or(long, short, default) -> string
+void rask_args_option_or(RaskStr *out, int64_t args_ptr, int64_t long_ptr,
+                         int64_t short_ptr, int64_t default_ptr) {
+    int64_t val_ptr = rask_args_option(args_ptr, long_ptr, short_ptr);
+    if (val_ptr) {
+        const RaskStr *val = (const RaskStr *)(intptr_t)val_ptr;
+        rask_string_from_bytes(out, rask_string_ptr(val), rask_string_len(val));
+    } else {
+        const RaskStr *def = (const RaskStr *)(intptr_t)default_ptr;
+        rask_string_from_bytes(out, rask_string_ptr(def), rask_string_len(def));
+    }
+}
+
+// Args method: positional() -> Vec<string>
+int64_t rask_args_positional(int64_t args_ptr) {
+    char *a = (char *)(intptr_t)args_ptr;
+    return *(int64_t *)(a + 16);
+}
+
+// Args method: program() -> string
+int64_t rask_args_program(int64_t args_ptr) {
+    return args_ptr; // first 16 bytes IS the program string
+}
+
 // HTTP server accept: accept TCP connection + parse HTTP request.
 // Returns pointer to [request_ptr(8B), conn_fd(8B)] — two i64s.
 // request_ptr points to the 56-byte Request struct from rask_http_parse_request.

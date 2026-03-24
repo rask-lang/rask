@@ -14,4 +14,36 @@ extend net {
 extend TcpListener {
     /// Accept an incoming TCP connection.
     public func accept(self) -> TcpConnection or Error { }
+
+    /// Close the listener.
+    public func close(self) { }
+
+    /// Clone the listener handle.
+    public func clone(self) -> TcpListener { }
+}
+
+/// A TCP connection (socket).
+public struct TcpConnection { }
+
+extend TcpConnection {
+    /// Read all available data as a string.
+    public func read_all(self) -> string or Error { }
+
+    /// Write a string to the connection.
+    public func write_all(self, data: string) -> () or Error { }
+
+    /// Get the remote address as "ip:port".
+    public func remote_addr(self) -> string { }
+
+    /// Read an HTTP/1.1 request from the connection.
+    public func read_http_request(self) -> Request or Error { }
+
+    /// Write an HTTP response to the connection.
+    public func write_http_response(self, response: Response) -> () or Error { }
+
+    /// Close the connection.
+    public func close(self) { }
+
+    /// Clone the connection handle.
+    public func clone(self) -> TcpConnection { }
 }
