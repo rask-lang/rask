@@ -47,4 +47,4 @@ Allgard defines the federation model. Midgard adds game-specific concerns:
 - **Cross-domain transfer routing**: bilateral or through a clearinghouse?
 - **Designed entropy**: what are the value sinks? Without them, economies inflate.
 - **Wire format**: shared concern with Leden — MessagePack, Cap'n Proto, FlatBuffers?
-- **Bootstrapping**: how does first capability exchange happen between unknown domains?
+- **Bootstrapping**: ✅ Resolved — seed nodes, zero trust, bilateral reputation. See [Allgard bootstrapping](../allgard/README.md#bootstrapping).
