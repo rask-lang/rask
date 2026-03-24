@@ -108,6 +108,97 @@ Strategies by risk level (per-capability policy, not global):
 | Pessimistic | High-value operations | Liveness check before honoring |
 | Synchronous | Critical operations | Don't complete until revocation status confirmed |
 
+#### Revocation Message Types
+
+| Message | Direction | Fields | Purpose |
+|---------|-----------|--------|---------|
+| `Revoke` | Revoker → Issuer | `capability_id` | "I want this capability dead" |
+| `RevocationNotice` | Issuer → All holders | `capability_id`, `reason` | "This capability is no longer valid" |
+| `RevocationAck` | Holder → Issuer | `capability_id` | "Acknowledged, I've stopped using it" |
+| `CheckRevocation` | Holder → Issuer | `capability_id` | "Is this still valid?" |
+| `RevocationStatus` | Issuer → Holder | `capability_id`, `valid: bool` | "Yes/no" |
+
+The issuer is the authoritative source for revocation status. It maintains a revocation log — an append-only record of which capabilities were revoked and when.
+
+#### Optimistic Flow
+
+```
+A (revoker)              Issuer              B (holder)
+    |                      |                     |
+    |  Revoke(cap_id)      |                     |
+    |─────────────────────>|                     |
+    |                      | mark revoked        |
+    |                      |                     |
+    |                      | RevocationNotice    |
+    |                      |────────────────────>|
+    |                      |                     | stop using cap
+    |                      |                     |
+```
+
+No synchronization. B might use the capability between "mark revoked" and receiving the notice. That's accepted — the application reconciles later (e.g., undo the operation, compensate).
+
+Best for: read operations, low-value writes, anything where "oops, they saw one more update" is fine.
+
+#### Pessimistic Flow
+
+```
+B (holder)              Issuer
+    |                      |
+    | (wants to use cap)   |
+    | CheckRevocation(id)  |
+    |─────────────────────>|
+    |                      |
+    | RevocationStatus     |
+    |<─────────────────────|
+    |                      |
+    | (proceed or abort)   |
+```
+
+Extra round trip every time B wants to use the capability. Expensive but safe. No window of vulnerability.
+
+The cost is real: one additional RTT per operation. For a 100ms link, that's 100ms added to every call. Use this only when the consequence of using a revoked capability is worse than the latency.
+
+Best for: financial operations, permission changes, anything where "used a revoked capability" is a serious problem.
+
+**Caching:** To reduce the cost, B can cache the status for a short TTL. The TTL trades freshness for latency. A 1-second cache on a 100ms link means at most 1 second of stale status instead of checking every time. The issuer can also push `RevocationNotice` to invalidate caches.
+
+#### Synchronous Flow
+
+```
+A (revoker)              Issuer              B (holder)
+    |                      |                     |
+    |  Revoke(cap_id)      |                     |
+    |─────────────────────>|                     |
+    |                      | RevocationNotice    |
+    |                      |────────────────────>|
+    |                      |                     |
+    |                      |    RevocationAck    |
+    |                      |<────────────────────|
+    |                      |                     |
+    |  Revoked(confirmed)  | all acks received   |
+    |<─────────────────────|                     |
+```
+
+The revoker blocks until all holders have acknowledged. No operations on the capability succeed during this window — the issuer queues them until revocation is confirmed.
+
+This is the slowest strategy. If one holder is unreachable, the revoker blocks. Needs a timeout: if not all acks arrive within the deadline, the revocation is forced and any in-flight operations from unresponsive holders will get `CapabilityRevoked` when they eventually arrive.
+
+Best for: security-critical revocation (revoking a compromised key), administrative operations.
+
+#### Delegated Revocation
+
+When A delegates a capability to B, and B delegates to C, revocation must cascade:
+
+```
+A revokes the original capability
+→ B's derived capability is automatically revoked
+  → C's derived capability is automatically revoked
+```
+
+The issuer tracks the delegation tree. `RevocationNotice` is sent to all nodes in the tree. A holder doesn't need to explicitly revoke derived capabilities — revoking the parent revokes all descendants.
+
+This is why the delegation chain matters for introduction (Layer 2). The issuer must track "who delegated to whom" to propagate revocation correctly.
+
 ### Promise Pipelining
 
 Send a message to the result of a message that hasn't resolved yet.
@@ -149,6 +240,170 @@ A sturdy reference is NOT a capability — it's a *claim* that you once held one
 | Capabilities | Yes | Sturdy references, stored by holder |
 | Sessions | No | Rebuilt on reconnection |
 | Promises | Depends | Resolved = just values. Pending may be lost on restart. |
+
+---
+
+## Session Reconnection
+
+The concrete flow for "transport dropped, reconnect and get my capabilities back."
+
+### Sturdy Reference Structure
+
+A sturdy reference is what you store to prove you held a capability. It contains:
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `issuer` | endpoint identity | Who created the original capability |
+| `object_id` | opaque | Which object this grants access to |
+| `permissions` | bitfield | What operations are allowed (after attenuation) |
+| `nonce` | 256-bit | Unique, unguessable — proves this was issued, not fabricated |
+| `delegation_chain` | hash chain | Cryptographic proof of the delegation path from issuer |
+| `expiry` | optional timestamp | When this sturdy ref becomes invalid (if time-limited) |
+
+The `nonce` is critical. Without it, anyone who knows the object_id could fabricate a sturdy reference. The issuer generates the nonce and stores it — when a client presents a sturdy ref, the issuer checks the nonce against its records.
+
+The `delegation_chain` is a hash chain linking this sturdy ref back to the original capability through every delegation step. C can verify that B's ref chains back through A to the issuer without contacting A.
+
+### Re-attachment Flow
+
+```
+Client                                Server (Issuer)
+   |                                     |
+   |  (transport reconnects)             |
+   |                                     |
+   |  Hello(...)                         |
+   |────────────────────────────────────>|
+   |                                     |
+   |  Welcome(...)                       |
+   |<────────────────────────────────────|
+   |                                     |
+   |  Reattach(sturdy_refs=[...])        |
+   |────────────────────────────────────>|
+   |                                     |
+   |  ReattachResult(results=[           |
+   |    {ref: r1, cap: <live cap>},      |
+   |    {ref: r2, cap: <live cap>},      |
+   |    {ref: r3, err: Revoked},         |
+   |  ])                                 |
+   |<────────────────────────────────────|
+   |                                     |
+   |  (resume operations with live caps) |
+```
+
+### Re-attachment Message Types
+
+| Message | Direction | Fields | Purpose |
+|---------|-----------|--------|---------|
+| `Reattach` | Client → Server | `sturdy_refs[]` | "Here are my claims, give me live capabilities" |
+| `ReattachResult` | Server → Client | `results[]` | Per-ref: live capability or error |
+
+Each sturdy ref is validated independently. Some may succeed while others fail. Possible errors per ref:
+
+| Error | Meaning |
+|-------|---------|
+| `CapabilityRevoked` | Revoked while you were disconnected |
+| `CapabilityExpired` | Time limit passed |
+| `ObjectNotFound` | Object was destroyed |
+| `InvalidNonce` | Nonce doesn't match records — forged or corrupted ref |
+| `IssuerMismatch` | This server didn't issue this ref |
+
+### Batching
+
+`Reattach` takes an array, not a single ref, deliberately. A client reconnecting to a game server might need to re-attach 50 capabilities (world objects, chat channels, inventory). One message, one response. No per-ref round trip.
+
+### Edge Cases
+
+**Revoked during disconnection.** The client gets `CapabilityRevoked` in the reattach result. Clean — you find out immediately on reconnect, not when you try to use it.
+
+**Server restarted too.** The server reconstructs its capability table from its persistent store. Sturdy refs are designed for this — the nonce and delegation chain are verifiable without in-memory state.
+
+**Partial re-attachment.** Some refs succeed, some fail. The client gets a complete picture in one response and decides how to handle failures (request new capabilities from another source, degrade gracefully, etc.).
+
+**Observations.** Active observations are re-established automatically after successful re-attachment (see observation.md). The server sends a snapshot for each to resync state.
+
+**Pending promises.** Handled by the error model's resolution policies (see Error Model). `fail` promises were already rejected. `retry` promises are re-sent. `expire` promises are checked against their deadlines.
+
+---
+
+## Capability Lifecycle
+
+How capabilities are born, shared, and cleaned up. The full picture.
+
+### Creation
+
+Capabilities are created by the endpoint that hosts the object. When the greeter (bootstrap) grants a capability, or when an object method returns a reference to another object, a new capability is minted:
+
+1. Issuer generates a unique `nonce` and stores it
+2. Issuer assigns a `weight` (for reference counting — see GC below)
+3. Issuer records the holder in the delegation tree
+4. Holder receives a live capability (in-session) + a sturdy reference (for persistence)
+
+### Delegation
+
+When A delegates a capability to B:
+
+1. A's capability weight is split — A keeps half, B gets half
+2. The delegation is recorded in the issuer's delegation tree (for revocation cascading)
+3. B receives a new capability with A in its delegation chain
+
+Weight splitting is how the issuer tracks outstanding references without centralized reference counting. The original weight (e.g., 1024) is halved at each delegation. When delegations return their weight (via `Release`), the issuer can determine when all references are accounted for.
+
+### Release and GC
+
+When a holder no longer needs a capability:
+
+| Message | Direction | Fields | Purpose |
+|---------|-----------|--------|---------|
+| `Release` | Holder → Issuer | `capability_id`, `weight` | "I'm done, here's my weight back" |
+
+```
+A creates cap with weight 1024, gives to B
+B delegates to C: B keeps 512, C gets 512
+C delegates to D: C keeps 256, D gets 256
+
+D is done: Release(weight=256) → Issuer, total returned = 256
+C is done: Release(weight=256) → Issuer, total returned = 512
+B is done: Release(weight=512) → Issuer, total returned = 1024 = original
+
+All weight returned → capability can be garbage collected.
+```
+
+When all weight has been returned, no one holds a reference. The issuer cleans up the capability — removes it from the delegation tree, frees the nonce, reclaims any associated resources.
+
+### Lease-Based Expiry
+
+Weight-based GC has a problem: what if a holder crashes and never sends `Release`? The weight is lost. The capability is pinned forever.
+
+Solution: **leases**. Every capability has a lease duration. The holder must periodically renew the lease. If the lease expires, the issuer reclaims the weight and treats the capability as released.
+
+| Message | Direction | Fields | Purpose |
+|---------|-----------|--------|---------|
+| `Renew` | Holder → Issuer | `capability_id` | "I'm still here, extend my lease" |
+| `LeaseExpired` | Issuer → Holder | `capability_id` | "Your lease expired, capability reclaimed" (best-effort) |
+
+Lease duration is set by the issuer when the capability is created. Short leases (seconds) for high-churn objects. Long leases (minutes) for stable references. The holder renews at half the lease interval to avoid races.
+
+If a session reconnects after a lease expired, re-attachment with the sturdy ref will re-issue the capability with a fresh lease — no permanent loss.
+
+### Cycle Detection
+
+The hard problem. A holds a cap to B, B holds a cap to A. Neither releases. Weights never return. Without intervention, both are pinned forever.
+
+This is rare in practice — most capability graphs are trees, not cyclic. But "rare" isn't "impossible," and memory leaks in long-running servers are serious.
+
+**Strategy: trial deletion.**
+
+Adapted from distributed garbage collection literature. Periodically, the issuer suspects a capability might be in a cycle (heuristic: lease renewed many times but never released, low-weight reference that hasn't been delegated further). The issuer initiates a probe:
+
+1. Issuer sends `GCProbe(capability_id, probe_id)` to the holder
+2. Holder checks if it holds any capabilities back to the issuer (or the issuer's objects)
+3. If yes, it forwards the probe along those capabilities
+4. If the probe returns to the issuer, a cycle is confirmed
+5. The issuer can then break the cycle by forcibly reclaiming one of the capabilities
+
+This is expensive and only triggered by heuristics, not on every GC pass. For most applications, leases alone handle the problem — a leaked cycle that renews leases is a memory leak, but a bounded one that the application can monitor.
+
+**Pragmatic reality:** Most deployments won't hit cycles. Leases are the primary GC mechanism. Weight-based counting is the fast path. Cycle detection is a safety net for long-running servers with complex capability graphs.
 
 ---
 
@@ -322,8 +577,4 @@ Candidates: MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers. Decision de
 
 ## Open Design Problems
 
-1. **Session-capability decoupling mechanics.** Sessions and capabilities are separate (unlike CapTP). But the protocol flow for "re-attach capability to new session after reconnect" via sturdy references needs concrete message types.
-
-2. **Distributed revocation latency.** The optimistic/pessimistic/synchronous strategy per capability is right in principle. Needs concrete message types and flows for each.
-
-3. **Capability GC.** When no one holds a reference, the capability should be cleaned up. Distributed reference counting with cycle detection (from E). Needs specification.
+None currently. All previously open problems (session-capability decoupling, distributed revocation flows, capability GC) have been specified above.

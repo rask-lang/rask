@@ -90,7 +90,7 @@ See [protocol.md](protocol.md) for full specification of each layer.
 
 | Spec | What it covers |
 |------|----------------|
-| [protocol.md](protocol.md) | Layers, operations, persistence, version negotiation, error model |
+| [protocol.md](protocol.md) | Layers, operations, persistence, reconnection, capability lifecycle, version negotiation, error model |
 | [content.md](content.md) | Content-addressed blob storage, lazy fetching, chunking |
 | [observation.md](observation.md) | Push-based observation of object state changes |
 
@@ -98,4 +98,3 @@ See [protocol.md](protocol.md) for full specification of each layer.
 
 - **Discovery.** How do endpoints find each other? Static config? DNS? Multicast? Or leave that to Allgard?
 - **Wire format.** MessagePack, Cap'n Proto, FlatBuffers, Protocol Buffers? Must have schema evolution, compact binary, cross-language support, existing tooling.
-- **Capability GC.** Distributed garbage collection via reference counting with cycle detection (from E). Needs specification.
